@@ -666,18 +666,30 @@ function describeTable(t, count, sample) {
 export function summarizeEvents(events) {
   if (!events.length) return 'Nothing yet.';
   const by = new Map();
+  const time = new Map();
   for (const e of events) {
+    if (e.kind === 'leave') {
+      const t = time.get(e.detail) || { n: 0, ms: 0 };
+      t.n++;
+      t.ms += Number(e.ms) || 0;
+      time.set(e.detail, t);
+      continue;
+    }
     const key = e.kind === 'open' ? `opened the ${e.detail} view`
       : e.kind === 'insert' ? `added a row to ${e.detail}`
         : e.kind === 'update' ? `changed ${e.detail}`
           : e.kind === 'delete' ? `deleted a row of ${e.detail}`
             : e.kind === 'call' ? `ran the function ${e.detail}`
-              : e.kind === 'error' ? null
-                : `${e.kind}${e.detail ? ` ${e.detail}` : ''}`;
+              : e.kind === 'abandon' ? `typed into a ${e.detail} form${e.screen ? ` on ${e.screen}` : ''} and closed it unsaved`
+                : e.kind === 'error' ? null
+                  : `${e.kind}${e.detail ? ` ${e.detail}` : ''}${Number(e.results) === 0 && e.results !== null && e.results !== undefined ? ' (found nothing)' : ''}`;
     if (!key) continue;
     by.set(key, (by.get(key) || 0) + 1);
   }
   const lines = [...by.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, n]) => `- ${k}: ${n}x`);
+  const secs = (ms) => (ms >= 90000 ? `${Math.round(ms / 60000)} min` : `${Math.round(ms / 1000)} s`);
+  const spent = [...time].sort((a, b) => b[1].ms - a[1].ms).slice(0, 8).map(([v, t]) => `${v} ${secs(t.ms)} over ${t.n} visit${t.n === 1 ? '' : 's'}`);
+  if (spent.length) lines.push(`- time on views: ${spent.join('; ')}`);
   const first = events[events.length - 1]?.ts;
   return `${events.length} events since ${first}:\n${lines.join('\n')}`;
 }

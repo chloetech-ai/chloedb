@@ -39,18 +39,17 @@ export function parseFunction(sql) {
   return { name: m[1], params: m[2].replace(/\s+/g, ' ').trim(), returns: m[3].toUpperCase(), description: (desc || '').replace(/''/g, "'"), sql };
 }
 
+// The functions of one file, each with the file's title as its group.
+export function readSqlFile(file) {
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file, 'utf8');
+  const group = (text.match(/^--\s*title:\s*(.+)$/m) || [])[1] || file.split('/').pop().replace(/\.sql$/, '');
+  return statements(text).map(parseFunction).filter(Boolean).map((fn) => ({ ...fn, group }));
+}
+
 export function readSqlLibrary(dir) {
   if (!existsSync(dir)) return [];
-  const out = [];
-  for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
-    const text = readFileSync(join(dir, f), 'utf8');
-    const group = (text.match(/^--\s*title:\s*(.+)$/m) || [])[1] || f.replace(/\.sql$/, '');
-    for (const s of statements(text)) {
-      const fn = parseFunction(s);
-      if (fn) out.push({ ...fn, group });
-    }
-  }
-  return out;
+  return readdirSync(dir).filter((x) => x.endsWith('.sql')).sort().flatMap((f) => readSqlFile(join(dir, f)));
 }
 
 // The numbers 0 to NUMBERS, a table that table functions read to make a

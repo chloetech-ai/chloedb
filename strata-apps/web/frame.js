@@ -28,6 +28,8 @@
   window.addEventListener('unhandledrejection', (e) => report(e.reason));
 
   const listeners = [];
+  const leaving = [];
+  window.__sa_onLeave = (fn) => { leaving.push(fn); };
   window.addEventListener('message', (e) => {
     if (e.source !== parent) return;
     const m = e.data;
@@ -43,6 +45,9 @@
       let el = document.getElementById('__design');
       if (!el) { el = document.createElement('style'); el.id = '__design'; document.head.append(el); }
       el.textContent = m.css || '';
+    } else if (m.kind === 'leaving') {
+      // The person moves to another screen: what this one left undone.
+      for (const fn of leaving) { try { fn(); } catch (err) { report(err); } }
     } else if (m.kind === 'change') {
       for (const l of listeners) {
         if (l.tables === '*' || m.tables.some((t) => l.tables.includes(t))) {
@@ -114,7 +119,13 @@
     update: (table, id, fields) => rpc('update', [table, id, fields || {}]),
     remove: (table, id) => rpc('remove', [table, id]),
     call: (name, input) => rpc('call', [name, input === undefined ? null : input]),
-    track: (action, detail) => { post({ kind: 'track', action: String(action), detail: detail === undefined ? '' : String(detail) }); },
+    // track(action, detail, {results, table, ms}): results is how many rows
+    // a search or a filter found (0 says it found nothing).
+    track: (action, detail, more) => {
+      const o = more && typeof more === 'object' ? more : {};
+      const n = (x) => (x === undefined || x === null || !Number.isFinite(Number(x)) ? undefined : Number(x));
+      post({ kind: 'track', action: String(action), detail: detail === undefined ? '' : String(detail), results: n(o.results), table: o.table === undefined ? undefined : String(o.table), ms: n(o.ms) });
+    },
     open: (slug, params) => { post({ kind: 'open', slug, params: params || {} }); },
     onChange: (tables, fn) => {
       if (typeof tables === 'function') { fn = tables; tables = '*'; }

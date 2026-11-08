@@ -27,8 +27,13 @@ const SYSTEM_TABLES = {
   sa_traces: `CREATE TABLE sa_traces (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, trace TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // What people did: who (a person, or a visitor's cookie) and on which
   // version of the app, so a change can be judged by what people do after it.
+  // What people do in an app, one row per thing done: the kind (open, leave,
+  // action, abandon, insert, update, delete, call, error), where (the browser
+  // tab's session, the screen) and what (the table and row written, the fields
+  // changed, the words searched for and how many rows they found, how long).
   sa_events: `CREATE TABLE sa_events (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, kind KEYWORD, cap KEYWORD,
-    detail TEXT, person KEYWORD, v INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+    detail TEXT, person KEYWORD, v INT, session KEYWORD, screen KEYWORD, tbl KEYWORD, rid KEYWORD, fields KEYWORD,
+    q KEYWORD, results INT, ms INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // A suggestion from use names the pattern of use it answers (signal) and
   // what should change in people's use if it works (measure, JSON).
   sa_suggestions: `CREATE TABLE sa_suggestions (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT,
@@ -58,7 +63,7 @@ const SYSTEM_TABLES = {
 // Columns added to system tables after they were first made: a store made
 // before them gets them on start.
 const ADDED_COLUMNS = {
-  sa_events: ['person KEYWORD', 'v INT'],
+  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT'],
   sa_suggestions: ['signal KEYWORD', 'measure TEXT'],
   // What a piece is and does, embedded, so that pieces are found by meaning
   // as well as by their words (searchCapabilities). A store whose Strata
@@ -662,15 +667,22 @@ export class Store {
     return this.db.query(`SELECT id, text, source, status, comp, summary, error, ms, cost, created FROM sa_requests WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
   }
 
-  async track(app, kind, cap, detail, { person = null, v = null } = {}) {
+  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null } = {}) {
     const doc = { id: newId(12), app, kind, cap: cap || '', detail: detail ? String(detail).slice(0, 500) : '' };
-    if (person) doc.person = String(person).slice(0, 40);
-    if (v) doc.v = Number(v);
+    const word = (x, n) => { const t = String(x ?? '').trim(); return t ? t.slice(0, n) : null; };
+    const num = (x) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x)) ? null : Math.max(0, Math.round(Number(x))));
+    const more = {
+      person: word(person, 40), v: Number(v) || null, session: word(session, 40), screen: word(screen, 80), tbl: word(tbl, 80), rid: word(rid, 80),
+      // The fields changed, sorted: the same change on row after row is the same value.
+      fields: word(Array.isArray(fields) ? [...fields].sort().join(',') : fields, 200),
+      q: word(q === null || q === undefined ? null : String(q).toLowerCase().replace(/\s+/g, ' '), 120), results: num(results), ms: num(ms),
+    };
+    for (const [k, x] of Object.entries(more)) if (x !== null) doc[k] = x;
     await this.db.write([{ op: 'insert', table: 'sa_events', doc }]);
   }
 
   async recentEvents(app, limit = 200) {
-    return this.db.query(`SELECT kind, cap, detail, person, v, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
+    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
   }
 
   async putSuggestions(app, items) {

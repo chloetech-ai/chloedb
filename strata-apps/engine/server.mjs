@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions } from './forge.mjs';
-import { readSqlLibrary, install as installSqlFunctions } from './sqlfns.mjs';
+import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { useTableFunctions } from './sql.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
@@ -66,6 +66,13 @@ if (process.env.STRATA_APPS_SQL_FUNCTIONS !== 'off') {
   useSqlFunctions(engine.sqlFunctions);
   useTableFunctions(engine.sqlFunctions.filter((f) => f.returns === 'TABLE').map((f) => f.name));
   if (engine.sqlFunctions.length) log(`${engine.sqlFunctions.length} SQL functions kept in Strata`);
+}
+// The engine's own functions: the patterns in people's use, counted over
+// sa_events (engine/signals.sql); without them the evolver counts in here.
+{
+  const sig = readSqlFile(path.join(ROOT, 'engine', 'signals.sql'));
+  engine.signalSql = (await installSqlFunctions(engine.db, sig, log)).length === sig.length;
+  if (!engine.signalSql) log('the patterns of use are counted in the engine, not in Strata');
 }
 // Screens expand from the patterns stored in Strata (built in and added by apps).
 await engine.store.usePatterns();
@@ -415,10 +422,10 @@ const routes = [
     return { request: r.id };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return out; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return out; }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
@@ -435,9 +442,15 @@ const routes = [
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
   ['GET', /^\/api\/geocode$/, async (b, m, url) => ({ places: await services.geocode(url.searchParams.get('q')) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/track$/, async (b, [id], url, cx) => {
-    const kind = b.kind === 'open' ? 'open' : 'action';
-    const detail = kind === 'open' ? String(b.detail || '') : `${String(b.action || '').slice(0, 60)}${b.detail ? ` ${String(b.detail).slice(0, 200)}` : ''}`;
-    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n });
+    // open and leave name a screen (leave with the time spent on it); abandon
+    // is a form typed into and closed unsaved; an action is anything else an
+    // app records (a search with the words and how many rows they found).
+    const kind = ['open', 'leave', 'abandon'].includes(b.kind) ? b.kind : 'action';
+    const detail = kind === 'action' ? `${String(b.action || '').slice(0, 60)}${b.detail ? ` ${String(b.detail).slice(0, 200)}` : ''}` : String(b.detail || '');
+    const where = cx.where(b.session);
+    const screen = kind === 'open' || kind === 'leave' ? String(b.detail || '') : where.screen || b.screen;
+    const q = kind === 'action' && /^(search|filter)$/.test(String(b.action || '')) ? (b.q ?? b.detail) : null;
+    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, screen, tbl: b.table, q, results: b.results, ms: b.ms });
     noteActivity(id);
     return { ok: true };
   }],
@@ -567,7 +580,12 @@ const server = http.createServer(async (req, res) => {
       noteActivity(m[1]);
       return send(res, 200, { file: { ...file, url: `/api/apps/${m[1]}/files/${file.id}` } });
     }
-    const cx = { req, res, user: (appId) => userOf(req, appId), who: async (appId) => (await userOf(req, appId))?.id || visitorOf(req) };
+    // Where a request comes from: the studio's tab (its session) and the
+    // screen it was made on, as the studio's headers say (a beacon, which
+    // sends no headers, names its session in the body).
+    const tag = (x) => (typeof x === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(x) ? x : null);
+    const where = (session) => ({ session: tag(req.headers['x-sa-session']) || tag(session), screen: tag(req.headers['x-sa-view']) });
+    const cx = { req, res, where, user: (appId) => userOf(req, appId), who: async (appId) => (await userOf(req, appId))?.id || visitorOf(req) };
     // ?v=N runs a request on version N of the app (a version built to try).
     const v = Number(url.searchParams.get('v')) || null;
     for (const [method, re, fn] of routes) {

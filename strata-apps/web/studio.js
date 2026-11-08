@@ -26,8 +26,14 @@ function h(tag, props, ...children) {
   return el;
 }
 
-async function api(method, url, body) {
-  const res = await fetch(url, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+// One session per tab: what someone does in one sitting (a search, then the
+// row they opened, then the form they gave up on) is told apart from the next.
+const SESSION = (() => { try { const k = 'sa-session'; return sessionStorage.getItem(k) || (sessionStorage.setItem(k, Math.random().toString(36).slice(2, 12)), sessionStorage.getItem(k)); } catch { return Math.random().toString(36).slice(2, 12); } })();
+
+async function api(method, url, body, more) {
+  const headers = { 'x-sa-session': SESSION, ...(more || {}) };
+  if (body) headers['content-type'] = 'application/json';
+  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
   return data;
@@ -185,6 +191,7 @@ function route() {
 }
 
 function leaveApp() {
+  leaveView(false);
   S.designCss = '';
   S.designKey = '';
   S.appId = null;
@@ -647,6 +654,12 @@ function renderApp() {
   }
   const views = st.views;
   if (!views.find((v) => v.slug === S.view)) S.view = views[0]?.slug || null;
+  // The first screen shown is opened too.
+  if (S.view && !S.viewSince) {
+    S.viewSince = Date.now();
+    const first = views.find((v) => v.slug === S.view);
+    if (first) api('POST', `/api/apps/${S.appId}/track${atV()}`, { kind: 'open', detail: S.view, cap: first.id }).catch(() => {});
+  }
   // tabs
   const tabs = $('#tabs');
   tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view ? ' on' : ''}`, onclick: () => switchView(v.slug) }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
@@ -816,8 +829,27 @@ function togglePanel() {
   $('#panel').classList.toggle('closed', !S.panelOpen);
 }
 
+// Leaving a screen records how long it was looked at, and tells its frame,
+// which records the forms typed into and left unsaved.
+function leaveView(beacon) {
+  const at = S.viewSince;
+  const slug = S.view;
+  S.viewSince = 0;
+  if (!S.appId || !slug || !at) return;
+  const prev = S.app?.views.find((x) => x.slug === slug);
+  const body = { kind: 'leave', detail: slug, cap: prev?.id || '', ms: Date.now() - at, session: SESSION };
+  if (beacon) { try { navigator.sendBeacon(`/api/apps/${S.appId}/track${atV()}`, new Blob([JSON.stringify(body)], { type: 'application/json' })); } catch {} }
+  else {
+    api('POST', `/api/apps/${S.appId}/track${atV()}`, body).catch(() => {});
+    S.frames.get(slug)?.iframe.contentWindow?.postMessage({ __sa: 1, kind: 'leaving' }, '*');
+  }
+}
+window.addEventListener('pagehide', () => leaveView(true));
+
 function switchView(slug, params) {
+  if (slug !== S.view) leaveView(false);
   S.view = slug;
+  S.viewSince = Date.now();
   const v = S.app.views.find((x) => x.slug === slug);
   if (v) api('POST', `/api/apps/${S.appId}/track${atV()}`, { kind: 'open', detail: slug, cap: v.id }).catch(() => {});
   if (params) {
@@ -1373,16 +1405,18 @@ window.addEventListener('message', async (e) => {
   }
   const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
   const base = `/api/apps/${S.appId}`;
+  // Writes and calls name the screen they were made on.
+  const on = entry.preview ? {} : { 'x-sa-view': entry.slug };
   try {
     if (m.kind === 'rpc') {
       const [a, b, c] = m.args || [];
       let value;
       switch (m.method) {
         case 'sql': value = (await api('POST', `${base}/sql${atV()}`, { sql: a, params: b })).rows; break;
-        case 'insert': value = (await api('POST', `${base}/insert${atV()}`, { table: a, row: b })).row; break;
-        case 'update': value = (await api('POST', `${base}/update${atV()}`, { table: a, id: b, fields: c })).row; break;
-        case 'remove': value = await api('POST', `${base}/remove${atV()}`, { table: a, id: b }); break;
-        case 'call': value = (await api('POST', `${base}/call${atV()}`, { name: a, input: b })).result; break;
+        case 'insert': value = (await api('POST', `${base}/insert${atV()}`, { table: a, row: b }, on)).row; break;
+        case 'update': value = (await api('POST', `${base}/update${atV()}`, { table: a, id: b, fields: c }, on)).row; break;
+        case 'remove': value = await api('POST', `${base}/remove${atV()}`, { table: a, id: b }, on); break;
+        case 'call': value = (await api('POST', `${base}/call${atV()}`, { name: a, input: b }, on)).result; break;
         case 'me': value = (await api('GET', `${base}/me`)).user; break;
         case 'signIn': value = (await api('POST', `${base}/signin`, a)).user; authChanged(); break;
         case 'signUp': value = (await api('POST', `${base}/signup`, a)).user; authChanged(); break;
@@ -1396,7 +1430,8 @@ window.addEventListener('message', async (e) => {
       }
       reply(value);
     } else if (m.kind === 'track') {
-      api('POST', `${base}/track${atV()}`, { kind: 'action', action: m.action, detail: m.detail, cap: entry.capId }).catch(() => {});
+      const kind = m.action === 'abandon' ? 'abandon' : 'action';
+      api('POST', `${base}/track${atV()}`, { kind, action: m.action, detail: m.detail, cap: entry.capId, q: m.q, results: m.results, table: m.table, ms: m.ms }, on).catch(() => {});
     } else if (m.kind === 'open') {
       if (S.app.views.find((v) => v.slug === m.slug)) switchView(m.slug, m.params);
     } else if (m.kind === 'error') {

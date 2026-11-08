@@ -21,12 +21,46 @@
     let again = false;
     const forms = new Map();
     const reported = new Set();
-    // A search is recorded once typing stops, as the words someone looked for.
+    // How many rows a search or a filter on state[key] found: the first list
+    // that depends on it (a LET over the key, else the data it is a parameter
+    // of). Nothing when no list depends on it.
+    const exprIds = (v, out = []) => {
+      if (isExpr(v)) out.push(v.$e);
+      else if (Array.isArray(v)) v.forEach((x) => exprIds(x, out));
+      else if (v && typeof v === 'object') Object.values(v).forEach((x) => exprIds(x, out));
+      return out;
+    };
+    const mentions = (v, res) => exprIds(v).some((i) => res.some((re) => re.test(String(SRC[i] || ''))));
+    const resultsFor = (key) => {
+      const k = String(key).replace(/[^A-Za-z0-9_$]/g, '');
+      if (!k) return undefined;
+      const byKey = [new RegExp(`state\\.${k}\\b|state\\[['"]${k}['"]\\]`)];
+      const dataDeps = Object.entries(spec.data || {}).filter(([, q]) => mentions(q, byKey)).map(([n]) => n);
+      const byData = dataDeps.map((n) => new RegExp(`\\b${n.replace(/[^A-Za-z0-9_$]/g, '')}\\b`));
+      const direct = Object.entries(spec.let || {}).filter(([, v]) => mentions(v, byKey)).map(([n]) => lets[n]);
+      const over = Object.entries(spec.let || {}).filter(([, v]) => byData.length && mentions(v, byData)).map(([n]) => lets[n]);
+      const list = [...direct, ...dataDeps.map((n) => data[n]), ...over].find(Array.isArray);
+      return list ? list.length : undefined;
+    };
+    // The data in hand once the queries a change started have run.
+    let loading = Promise.resolve();
+    const settled = () => loading.then(() => new Promise((r) => setTimeout(r, 0)));
+    // A search is recorded once typing stops, as the words someone looked for
+    // and how many rows they found.
     const typing = new Map();
     const trackSearch = (key, v) => {
       clearTimeout(typing.get(key));
-      typing.set(key, setTimeout(() => { const q = String(v ?? '').trim(); if (q) app.track('search', q); }, 1200));
+      typing.set(key, setTimeout(() => { const q = String(v ?? '').trim(); if (q) settled().then(() => app.track('search', q, { results: resultsFor(key) })); }, 1200));
     };
+    const trackFilter = (key, value) => settled().then(() => app.track('filter', `${key}=${value}`, { results: resultsFor(key) }));
+    // A form typed into and then closed unsaved (Cancel, another screen, or
+    // a redraw that no longer shows it) is recorded as given up.
+    const abandon = (f) => {
+      if (!f || !f.touched) return;
+      app.track('abandon', `${f.table} ${f.editing ? 'edit' : 'new'}`, { table: f.table, ms: Date.now() - f.touched });
+      f.touched = 0;
+    };
+    if (window.__sa_onLeave) window.__sa_onLeave(() => { for (const f of forms.values()) if (f.el && f.el.isConnected) abandon(f); });
 
     const fail = (where, e) => {
       const err = new Error(`${where}: ${e && e.message ? e.message : e}`);
@@ -109,7 +143,7 @@
       state = { ...state, ...(next || {}) };
       if (hasParams) refresh(); else { compute(); draw(); }
     }
-    async function refresh() { await load(); compute(); draw(); }
+    async function refresh() { const p = load(); loading = p.catch(() => {}); await p; compute(); draw(); }
     const hasParams = Object.values(spec.data || {}).some((q) => q && typeof q === 'object' && (isExpr(q) || q.params || isExpr(q.sql)));
 
     // ---- blocks
@@ -167,7 +201,7 @@
     function chips(b, s, path) {
       const key = b.chips;
       return h('div', { class: 'chips' }, (val(b.options, s, path) || []).map(OPT).map((o) =>
-        h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { const off = state[key] === o.value && b.toggle; if (!off && state[key] !== o.value) app.track('filter', `${key}=${o.value}`); set({ [key]: off ? null : o.value }); } }, o.label)));
+        h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { const off = state[key] === o.value && b.toggle; const changed = !off && state[key] !== o.value; set({ [key]: off ? null : o.value }); if (changed) trackFilter(key, o.value); } }, o.label)));
     }
 
     function input(b, s, path) {
@@ -176,7 +210,7 @@
       const label = b.label ? T(b.label, s, path) : null;
       let el;
       if (type === 'select') {
-        el = h('select', { onchange: (e) => { set({ [key]: e.target.value }); if (e.target.value) app.track('filter', `${key}=${e.target.value}`); } }, (val(b.options, s, path) || []).map(OPT).map((o) => h('option', { value: o.value, selected: String(state[key] ?? '') === String(o.value) }, o.label)));
+        el = h('select', { onchange: (e) => { set({ [key]: e.target.value }); if (e.target.value) trackFilter(key, e.target.value); } }, (val(b.options, s, path) || []).map(OPT).map((o) => h('option', { value: o.value, selected: String(state[key] ?? '') === String(o.value) }, o.label)));
       } else if (type === 'checkbox') {
         el = h('input', { type: 'checkbox', checked: !!state[key], onchange: (e) => set({ [key]: e.target.checked }) });
       } else {
@@ -207,7 +241,8 @@
       const sig = `${editing && editing.id ? editing.id : ''}|${JSON.stringify(b.fields)}`;
       const kept = forms.get(path);
       if (kept && kept.sig === sig) { kept.s = s; kept.refresh(s); return kept.el; }
-      const entry = { sig, s, el: null };
+      if (kept) abandon(kept);
+      const entry = { sig, s, el: null, table: tableName, editing: !!(editing && editing.id), touched: 0 };
       // A field may be a heading for the fields after it: {"section": "Payment"}.
       const all = (b.fields || []).map((f) => (typeof f === 'string' ? { name: f } : f));
       const fields = all.filter((f) => f && f.name);
@@ -289,6 +324,7 @@
         saveBtn.disabled = true;
         try {
           const stored = editing && editing.id ? await app.update(tableName, editing.id, row) : await app.insert(tableName, row);
+          entry.touched = 0;
           if (!editing) { el.reset(); for (const c of controls.values()) c.__fileId = null; }
           forms.delete(path);
           const after = b.after !== undefined ? val(b.after, cur, `${path}.after`) : null;
@@ -319,9 +355,10 @@
       }
       // Cancel shows while a row is edited, or always on a form that opens
       // and closes ("closes": true, as a pattern's New form does).
-      const cancelBtn = (editing || b.closes) && b.cancel !== undefined ? h('button', { class: 'ghost', type: 'button', onclick: () => { forms.delete(path); const c = val(b.cancel, entry.s, `${path}.cancel`); run(c, [], `${path}.cancel`); } }, 'Cancel') : null;
+      const cancelBtn = (editing || b.closes) && b.cancel !== undefined ? h('button', { class: 'ghost', type: 'button', onclick: () => { abandon(entry); forms.delete(path); const c = val(b.cancel, entry.s, `${path}.cancel`); run(c, [], `${path}.cancel`); } }, 'Cancel') : null;
       if (wide) el.append(h('div', { class: 'actions' }, cancelBtn, saveBtn));
       else el.append(...[saveBtn, cancelBtn].filter(Boolean));
+      el.addEventListener('input', () => { if (!entry.touched) entry.touched = Date.now(); });
       entry.el = el;
       forms.set(path, entry);
       return el;
@@ -416,6 +453,8 @@
           restore(f);
         } while (again);
       } finally { drawing = false; }
+      // A form this draw no longer shows was closed.
+      for (const [p, f] of forms) if (!f.el || !f.el.isConnected) { abandon(f); forms.delete(p); }
     }
 
     state = { ...(val(spec.state || {}, scope(), 'state') || {}) };

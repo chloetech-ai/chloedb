@@ -19,7 +19,7 @@ const MAX_WAITING = 2;
 const DAY = 86400000;
 
 // How often a pattern must show before it counts.
-export const THRESHOLDS = { search: 3, filter: 4, edits: 5, adds: 6, deletes: 5, path: 4, call: 5 };
+export const THRESHOLDS = { search: 3, filter: 4, edits: 5, adds: 6, deletes: 5, path: 4, call: 5, nothing: 2, undo: 3, abandon: 3 };
 const SITTING = 10 * 60 * 1000; // a gap longer than this starts a new sitting
 const TYPING = 20 * 1000;       // searches closer than this, one extending the other, are one search being typed
 const NEXT = 30 * 1000;         // a view opened within this of another follows it
@@ -123,17 +123,72 @@ export function signals(events, { views = [] } = {}) {
     .slice(0, 10);
 }
 
+// The same patterns, counted by Strata where the events are: the table
+// functions of engine/signals.sql over sa_events, one query each. They read
+// the events' columns (the tab's session, the table and row written, the
+// fields changed, the words searched for and how many rows they found), so
+// they also see what the counting above cannot: searches that find nothing,
+// rows deleted right after they were added, and forms given up.
+export async function signalsFromSql(db, appId, { views = [] } = {}) {
+  const T = THRESHOLDS;
+  const title = (slug) => views.find((v) => v.slug === slug)?.title || slug;
+  const run = (call) => db.query(`SELECT * FROM ${call}`, { a: appId });
+  const [searches, filters, nothing, edits, adds, deletes, undone, abandoned, paths, calls] = await Promise.all([
+    run(`sa_sig_searches(:a, ${T.search})`), run(`sa_sig_filters(:a, ${T.filter})`), run(`sa_sig_nothing(:a, ${T.nothing})`),
+    run(`sa_sig_repeats(:a, 'update', ${T.edits})`), run(`sa_sig_repeats(:a, 'insert', ${T.adds})`), run(`sa_sig_repeats(:a, 'delete', ${T.deletes})`),
+    run(`sa_sig_undone(:a, ${T.undo})`), run(`sa_sig_abandoned(:a, ${T.abandon})`), run(`sa_sig_paths(:a, ${T.path})`), run(`sa_sig_calls(:a, ${T.call})`),
+  ]);
+  const out = [];
+  const people = (r) => (Number(r.people) > 1 ? ` (${r.people} people)` : '');
+  const sat = (r) => (Number(r.sittings) > 1 ? ` over ${r.sittings} sittings, up to ${r.most} in one` : ' in one sitting');
+  const push = (kind, key, r, text) => out.push({ key: `${kind}:${key}`.slice(0, 200), kind, text, count: Number(r.n), people: Number(r.people) || 1, last: r.last ? new Date(String(r.last).replace(' ', 'T')).toISOString() : null });
+  // A search that is repeated and mostly finds nothing is one pattern, of
+  // finding nothing; one that mostly finds something is a search.
+  const looked = new Map([...searches.map((r) => [`search:${r.q}`, r]), ...filters.map((r) => [`filter:${r.q}`, r])]);
+  const empty = new Set(nothing.filter((r) => { const l = looked.get(`${r.what}:${r.q}`); return !l || Number(l.empty) * 2 >= Number(l.n); }).map((r) => `${r.what}:${r.q}`));
+  for (const r of searches) if (!empty.has(`search:${r.q}`)) push('search', r.q, r, `searched for "${r.q}" ${r.n} times${people(r)}${Number(r.empty) ? `, ${r.empty} of them finding nothing` : ''}`);
+  for (const r of filters) if (!empty.has(`filter:${r.q}`)) push('filter', r.q, r, `set the filter ${r.q} ${r.n} times${people(r)}`);
+  for (const r of nothing) if (empty.has(`${r.what}:${r.q}`)) push('nothing', `${r.what}:${r.q}`, r, `${r.what === 'search' ? `searched for "${r.q}"` : `set the filter ${r.q}`} and found nothing, ${r.n} times${people(r)}`);
+  const fieldList = (f) => String(f || '').split(',').filter(Boolean).join(', ');
+  for (const r of edits) push('edits', `${r.tbl}: ${r.fields}`, r, `changed ${fieldList(r.fields) || 'rows'} of ${r.tbl} by hand, row after row: ${r.n} times${sat(r)}${people(r)}`);
+  for (const r of adds) push('adds', r.tbl, r, `added rows to ${r.tbl} one by one: ${r.n} times${sat(r)}${people(r)}`);
+  for (const r of deletes) push('deletes', r.tbl, r, `deleted rows of ${r.tbl} one by one: ${r.n} times${sat(r)}${people(r)}`);
+  for (const r of undone) push('undo', r.tbl, r, `deleted rows of ${r.tbl} within minutes of adding them, ${r.n} times${people(r)}`);
+  for (const r of abandoned) {
+    const [, how] = String(r.form || '').split(' ');
+    push('abandon', `${r.screen}/${r.form}`, r, `typed into the ${how === 'edit' ? 'edit' : 'new'} ${r.tbl || 'row'} form${r.screen ? ` on ${title(r.screen)}` : ''} and closed it unsaved, ${r.n} times${people(r)} (${Math.round(Number(r.ms || 0) / 1000)} s of typing on average)`);
+  }
+  for (const r of paths) push('path', `${r.a}>${r.b}`, r, `went from ${title(r.a)} straight to ${title(r.b)} ${r.n} times${people(r)}`);
+  for (const r of calls) push('call', r.fn, r, `ran the function ${r.fn} by hand ${r.n} times${people(r)}`);
+  return out
+    .map((s) => ({ ...s, strength: s.count / T[s.kind] * (1 + 0.5 * (s.people - 1)) }))
+    .sort((a, b) => b.strength - a.strength)
+    .slice(0, 10);
+}
+
 // What should change in people's use if a feature answers the pattern: the
 // events to count, and which way they should go.
 export function measureFor(signal) {
   const [kind, ...rest] = String(signal.key || signal).split(':');
   const what = rest.join(':');
   switch (kind) {
-    case 'search': return { event: 'action', match: `search ${what}`, goal: 'fewer', says: `searches for "${what}"` };
-    case 'filter': return { event: 'action', match: `filter ${what}`, goal: 'fewer', says: `times the filter ${what} is set by hand` };
-    case 'edits': return { event: 'update', match: what, goal: 'fewer', says: `changes of ${what} made one row at a time` };
-    case 'adds': return { event: 'insert', match: what, goal: 'fewer', says: `rows added to ${what} one at a time` };
-    case 'deletes': return { event: 'delete', match: what, goal: 'fewer', says: `rows of ${what} deleted one at a time` };
+    case 'search': return { event: 'action', match: `search ${what}`, q: what, goal: 'fewer', says: `searches for "${what}"` };
+    case 'filter': return { event: 'action', match: `filter ${what}`, q: what, goal: 'fewer', says: `times the filter ${what} is set by hand` };
+    case 'nothing': {
+      const [how, ...q] = what.split(':');
+      return { event: 'action', match: `${how} ${q.join(':')}`, q: q.join(':'), empty: true, goal: 'fewer', says: `${how === 'search' ? 'searches' : 'filters'} for ${q.join(':')} that find nothing` };
+    }
+    case 'edits': {
+      const [tbl, fields] = what.split(': ');
+      return { event: 'update', match: what, tbl, fields: String(fields || '').split(/,\s*/).filter(Boolean).sort().join(','), goal: 'fewer', says: `changes of ${what} made one row at a time` };
+    }
+    case 'adds': return { event: 'insert', match: what, tbl: what, goal: 'fewer', says: `rows added to ${what} one at a time` };
+    case 'deletes': return { event: 'delete', match: what, tbl: what, goal: 'fewer', says: `rows of ${what} deleted one at a time` };
+    case 'undo': return { event: 'delete', match: what, tbl: what, goal: 'fewer', says: `rows of ${what} deleted soon after they were added` };
+    case 'abandon': {
+      const [screen, form] = [what.slice(0, what.indexOf('/')), what.slice(what.indexOf('/') + 1)];
+      return { event: 'abandon', match: form, screen, goal: 'fewer', says: `${form} forms given up${screen ? ` on ${screen}` : ''}` };
+    }
     case 'path': return { event: 'open', match: what.split('>')[1], goal: 'fewer', says: `times ${what.split('>')[1]} is opened` };
     case 'call': return { event: 'call', match: what, goal: 'fewer', says: `runs of ${what} by hand` };
     default: return null;
@@ -151,10 +206,19 @@ export function measureEffect(events, measure, since) {
   let after = 0;
   let first = t0;
   let last = t0;
+  // An event names its table, fields and words in columns; one recorded
+  // before they existed is matched by its text.
+  const fits = (e) => {
+    if (measure.empty && Number(e.results) !== 0) return false;
+    if (measure.tbl && e.tbl) return e.tbl === measure.tbl && (!measure.fields || e.fields === measure.fields);
+    if (measure.q && e.q) return e.q === measure.q && String(e.detail || '').toLowerCase().startsWith(match.split(' ')[0]);
+    if (measure.screen && e.screen && e.screen !== measure.screen) return false;
+    return !match || String(e.detail || '').toLowerCase().includes(match);
+  };
   events.forEach((e, i) => {
     const t = when(e, -i);
     if (e.kind !== measure.event) return;
-    if (match && !String(e.detail || '').toLowerCase().includes(match)) return;
+    if (!fits(e)) return;
     if (t < t0) { before++; first = Math.min(first, t); } else { after++; last = Math.max(last, t); }
   });
   const days = (ms) => Math.max(ms / DAY, 1 / 24);
@@ -192,6 +256,15 @@ export class Evolver {
     this.busy = new Set();
   }
 
+  // The patterns in an app's use: counted by Strata when it keeps the
+  // signal functions, else here from the events.
+  async signalsOf(appId, view, events) {
+    if (this.engine.signalSql) {
+      try { return await signalsFromSql(this.engine.db, appId, view); } catch (e) { this.log(`[${appId}] signals in SQL: ${e.message}; counting them here`); }
+    }
+    return signals(events, view);
+  }
+
   async mode(appId) {
     const m = await this.store.setting(appId, 'evolve').catch(() => null);
     return MODES[m] ? m : DEFAULT_MODE;
@@ -211,7 +284,7 @@ export class Evolver {
     const answered = new Set(cands.map((c) => c.signal));
     return {
       mode,
-      signals: signals(events, view).map((s) => ({ ...s, answered: answered.has(s.key) })),
+      signals: (await this.signalsOf(appId, view, events)).map((s) => ({ ...s, answered: answered.has(s.key) })),
       candidates: cands.map((c) => {
         const measure = parse(c.measure);
         return { id: c.id, text: c.text, why: c.why, signal: c.signal, status: c.status, n: Number(c.n) || null, base: Number(c.base) || null, kept: Number(c.kept) || null,
@@ -233,7 +306,7 @@ export class Evolver {
       const view = await this.store.resolve(appId);
       if (!view.comp.n) return { suggestions: [], building: null };
       const [events, cands, history] = await Promise.all([this.store.recentEvents(appId, 1500), this.store.candidates(appId, 50), this.store.suggestionHistory(appId, 80)]);
-      const sigs = signals(events, view);
+      const sigs = await this.signalsOf(appId, view, events);
       const answered = new Set([...cands.map((c) => c.signal), ...history.map((h) => h.signal)].filter(Boolean));
       const fresh = sigs.filter((s) => !answered.has(s.key));
       if (!fresh.length && !force) return { suggestions: [], building: null, signals: sigs };

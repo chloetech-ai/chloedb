@@ -240,7 +240,7 @@ export class Engine extends EventEmitter {
       if (batch && !ctx.batch) out = await this.exclusive(appId, async () => { const r = await rule(); await batch.commit(); return r; });
       else if (fn.spec.rule) out = await rule();
       else out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
-      if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n }).catch(() => {});
+      if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, ms: out.ms }).catch(() => {});
       return out;
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
@@ -322,7 +322,7 @@ export class Engine extends EventEmitter {
     const view = await this.view(appId);
     if (!ctx.depth) {
       const detail = event === 'update' && ctx.changed ? `${table}: ${ctx.changed.join(', ')}` : table;
-      this.store.track(appId, event, '', detail, { person: ctx.who || ctx.user?.id, v: view.comp.n }).catch(() => {});
+      this.store.track(appId, event, '', detail, { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null }).catch(() => {});
     }
     if ((ctx.depth || 0) >= MAX_DEPTH) return;
     for (const fn of view.functions) {

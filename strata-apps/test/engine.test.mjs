@@ -836,7 +836,10 @@ test('patterns in use: searches as typed once, filters, edits row after row, vie
 });
 
 test('a pattern names what should change if a feature answers it, counted before and after', () => {
-  assert.deepEqual(measureFor({ key: 'search:overdue' }), { event: 'action', match: 'search overdue', goal: 'fewer', says: 'searches for "overdue"' });
+  assert.deepEqual(measureFor({ key: 'search:overdue' }), { event: 'action', match: 'search overdue', q: 'overdue', goal: 'fewer', says: 'searches for "overdue"' });
+  assert.deepEqual(measureFor('edits:guests: rsvp, table').fields, 'rsvp,table');
+  assert.equal(measureFor('nothing:search:caterer').empty, true);
+  assert.equal(measureFor('abandon:guests/guests new').screen, 'guests');
   assert.equal(measureFor('path:guests>budget').match, 'budget');
   const list = [];
   for (let d = 1; d <= 10; d++) list.push([new Date(Date.UTC(2026, 10, d, 12)).toISOString(), 'action', 'search overdue']);
@@ -1457,6 +1460,76 @@ test('the library SQL functions run in Strata', async (t) => {
     assert.equal(sched.at(-1).balance, 0);
     const days = await client.query("SELECT * FROM days_from('2026-11-28', 3)");
     assert.deepEqual(days.map((d) => d.day), ['2026-11-28', '2026-11-29', '2026-11-30']);
+  } finally {
+    child.kill();
+  }
+});
+
+// Against a real strata-server: what people do is stored with its columns
+// (session, screen, table, row, fields, words, results, time), and Strata
+// counts the patterns in it with the engine's table functions.
+test('the patterns of use are counted in Strata', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const { readSqlFile, install } = await import('../engine/sqlfns.mjs');
+  const { signalsFromSql } = await import('../engine/evolve.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return t.skip('no strata-server binary');
+  const dir = mkdtempSync(join(tmpdir(), 'sa-sig-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    const store = new Store(client, () => {});
+    await store.init();
+    const fns = readSqlFile(join(import.meta.dirname, '..', 'engine', 'signals.sql'));
+    const logs = [];
+    const ok = await install(client, fns, (m) => logs.push(m));
+    if (!ok.length && logs.some((m) => /no stored functions/.test(m))) return t.skip('this strata-server keeps no stored functions');
+    assert.equal(ok.length, fns.length, logs.join('\n'));
+    // The store keeps each column, words in lower case and fields sorted.
+    await store.track('a1', 'update', '', 'guests: table, rsvp', { person: 'p1', session: 's9', screen: 'guests', tbl: 'guests', rid: 'g1', fields: ['table', 'rsvp'] });
+    await store.track('a1', 'action', '', 'search Big  Party', { session: 's9', q: 'Big  Party', results: 0 });
+    const [kept] = (await store.recentEvents('a1', 5)).filter((e) => e.kind === 'update');
+    assert.equal(kept.fields, 'rsvp,table');
+    assert.equal(kept.screen, 'guests');
+    assert.equal(kept.rid, 'g1');
+    assert.equal((await store.recentEvents('a1', 5)).find((e) => e.kind === 'action').q, 'big party');
+    // Then a day of use, with times, written as the engine writes events.
+    const docs = [];
+    const ev = (min, sec, o) => docs.push({ op: 'insert', table: 'sa_events', doc: { id: `e${docs.length}`, app: 'a2', ts: at(min, sec), ...o } });
+    // "overdue" typed in pauses, three times by two people: three searches.
+    for (const [m, who] of [[0, 'p1'], [5, 'p2'], [9, 'p1']]) for (const [i, q] of ['ov', 'over', 'overdue'].entries()) ev(m, i * 2, { kind: 'action', detail: `search ${q}`, q, results: 2, person: who, session: `${who}-${m}` });
+    // A caterer looked for twice and never found.
+    for (const m of [12, 13]) ev(m, 0, { kind: 'action', detail: 'search caterer', q: 'caterer', results: 0, person: 'p1', session: 's1' });
+    for (let i = 0; i < 4; i++) ev(14 + i, 0, { kind: 'action', detail: 'filter status=waiting', q: 'status=waiting', results: 3, person: 'p1', session: 's1' });
+    for (let i = 0; i < 6; i++) ev(20, i * 5, { kind: 'update', detail: 'guests: rsvp', tbl: 'guests', rid: `g${i}`, fields: 'rsvp', person: 'p1', session: 's1' });
+    for (let i = 0; i < 4; i++) { ev(30 + i * 2, 0, { kind: 'open', detail: 'guests', person: 'p1', session: 's1' }); ev(30 + i * 2, 10, { kind: 'open', detail: 'budget', person: 'p1', session: 's1' }); }
+    for (let i = 0; i < 5; i++) ev(45 + i, 0, { kind: 'call', detail: 'send-reminders', person: 'p1', session: 's1' });
+    // Three guests added and deleted again a minute later.
+    for (let i = 0; i < 3; i++) { ev(50 + i, 0, { kind: 'insert', detail: 'guests', tbl: 'guests', rid: `x${i}`, person: 'p1', session: 's1' }); ev(51 + i, 0, { kind: 'delete', detail: 'guests', tbl: 'guests', rid: `x${i}`, person: 'p1', session: 's1' }); }
+    // The new guest form typed into and closed unsaved, three times.
+    for (let i = 0; i < 3; i++) ev(55 + i, 0, { kind: 'abandon', detail: 'guests new', screen: 'guests', tbl: 'guests', ms: 8000, person: `p${i}`, session: `t${i}` });
+    await client.write(docs);
+    const sigs = await signalsFromSql(client, 'a2', { views: [{ slug: 'guests', title: 'Guests' }, { slug: 'budget', title: 'Budget' }] });
+    const by = Object.fromEntries(sigs.map((x) => [x.key, x]));
+    assert.equal(by['search:overdue']?.count, 3, Object.keys(by).join(', '));
+    assert.equal(by['search:overdue'].people, 2);
+    assert.ok(!by['search:over'] && !by['search:ov'], 'pauses while typing are not searches');
+    assert.match(by['nothing:search:caterer'].text, /searched for "caterer" and found nothing, 2 times/);
+    assert.ok(by['filter:status=waiting']);
+    assert.match(by['edits:guests: rsvp'].text, /changed rsvp of guests by hand, row after row: 6 times in one sitting/);
+    assert.match(by['path:guests>budget'].text, /went from Guests straight to Budget 4 times/);
+    assert.ok(by['call:send-reminders']);
+    assert.match(by['undo:guests'].text, /deleted rows of guests within minutes of adding them, 3 times/);
+    assert.match(by['abandon:guests/guests new'].text, /typed into the new guests form on Guests and closed it unsaved, 3 times \(3 people\) \(8 s of typing on average\)/);
+    // A kept change is measured by the same columns.
+    const events = await store.recentEvents('a2', 500);
+    const e = measureEffect(events, measureFor('edits:guests: rsvp'), at(25));
+    assert.equal(e.before, 6);
+    assert.equal(measureEffect(events, measureFor('nothing:search:caterer'), at(0)).after, 2);
+    assert.equal(measureEffect(events, measureFor('abandon:guests/guests new'), at(0)).after, 3);
+    const screens = await client.query('SELECT * FROM sa_use_screens(:a)', { a: 'a2' });
+    assert.deepEqual(screens, []);
   } finally {
     child.kill();
   }
