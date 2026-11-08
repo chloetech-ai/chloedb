@@ -299,16 +299,53 @@ def test_server_answers_arrow(tmp_path, serve):
     assert f.to_dicts() == want and f.to_arrow().schema == pa.table(local[sqls[0]]).select(["id", "amount", "ts"]).schema
 
 
-def test_server_result_window(tmp_path, serve):
-    """A frame that reads more rows than a server's result window says
-    which flag lets it."""
+def test_server_scrolls_past_the_window(tmp_path, serve):
+    """A frame from a server reads past its --max-result-window, a page of
+    a scroll at a time, every page from one version; Client.scroll and
+    Database.scroll page the same rows."""
     path = tmp_path / "shop.strata"
     s = strata.connect(path)
     s.create_table("orders", orders_arrow(), key="id")
+    s.create_table("users", USERS)
+    local = {
+        "all": s["orders"].select("id", "amount", "ts").to_dicts(),
+        "sorted": s["orders"].select("id", "amount").sort("amount", descending=True).to_dicts(),
+        "joined": s["orders"].join(s["users"], left_on="user", right_on="id").select("id", "plan").sort("id").to_dicts(),
+    }
+    pages = list(s.scroll("SELECT id FROM orders", page_size=250))
+    assert [len(p) for p in pages] == [250, 250, 100] and [r["id"] for p in pages for r in p] == [r["id"] for r in local["all"]]
+    assert [t.num_rows for t in s.scroll("SELECT id FROM orders WHERE amount < 0", arrow=True)] == [0]
     s.close()
     c = strata.connect(serve(path, "--max-result-window", "100"))
-    assert c["orders"].head(100).count() == 100 and len(c["orders"].head(100).to_dicts()) == 100
-    with pytest.raises(strata.StrataError, match="max-result-window"):
-        c["orders"].to_arrow()
-    with pytest.raises(strata.StrataError, match="max-result-window"):
-        c["orders"].head(500).to_arrow()
+    with pytest.raises(strata.StrataError, match="more than 100 rows"):
+        c.query("SELECT id FROM orders")
+    assert c["orders"].select("id", "amount", "ts").to_dicts() == local["all"]
+    assert c["orders"].select("id", "amount").sort("amount", descending=True).to_dicts() == local["sorted"]
+    assert c["orders"].join(c["users"], left_on="user", right_on="id").select("id", "plan").sort("id").to_dicts() == local["joined"]
+    batches = list(c["orders"].select("id").iter_batches(batch_size=64))
+    assert all(b.num_rows <= 64 for b in batches) and sum(b.num_rows for b in batches) == N
+    pages = list(c.scroll("SELECT id, amount FROM orders WHERE amount >= 50", page_size=250))
+    assert [len(p) for p in pages[:-1]] == [100] * (len(pages) - 1) and 0 < len(pages[-1]) <= 100
+    assert [r["id"] for p in pages for r in p] == [r["id"] for r in local["all"] if r["amount"] >= 50]
+    tables = list(c.scroll("SELECT id, ts FROM orders", page_size=150, arrow=True))
+    assert [t.num_rows for t in tables] == [100] * 6 and pa.concat_tables(tables).column("id").to_pylist() == [r["id"] for r in local["all"]]
+
+    def scrolls_open():
+        lines = c._call("GET", "/metrics", text=True).splitlines()
+        return next(float(l.split()[1]) for l in lines if l.startswith("strata_scrolls_open "))
+
+    # Leaving early closes the scroll.
+    g = c.scroll("SELECT id FROM orders ORDER BY amount")
+    next(g)
+    assert scrolls_open() == 1
+    g.close()
+    assert scrolls_open() == 0
+    # A sorted read holds its rows' places, at most --max-scroll-rows.
+    other = tmp_path / "small.strata"
+    s = strata.connect(other)
+    s.create_table("orders", orders_arrow(), key="id")
+    s.close()
+    small = strata.connect(serve(other, "--max-result-window", "100", "--max-scroll-rows", "50"))
+    assert len(small["orders"].select("id").to_dicts()) == N
+    with pytest.raises(strata.StrataError, match="max-scroll-rows"):
+        small["orders"].sort("amount").to_arrow()

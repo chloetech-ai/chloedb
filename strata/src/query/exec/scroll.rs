@@ -210,7 +210,7 @@ impl<'a> Executor<'a> {
                 Some((seg, doc)) if seg == s.ord => doc.saturating_add(1),
                 _ => 0,
             };
-            for d in set.iter_from(from) {
+            for d in members_from(&set, from) {
                 tick.tick()?;
                 if out.len() >= want {
                     break;
@@ -250,5 +250,46 @@ impl<'a> Executor<'a> {
         let keys = hits.iter().map(|h| self.key(h)).collect();
         let scores = hits.iter().map(|h| h.score).collect();
         Ok(ResultSet { columns: columns.to_vec(), rows, keys, scores, parts: None, stats: std::mem::take(&mut self.stats) })
+    }
+}
+
+/// The members of `set` from `from` on, in increasing order: where a scan
+/// resumes in a segment.
+fn members_from(set: &DocSet, from: DocId) -> Box<dyn Iterator<Item = DocId> + '_> {
+    match set {
+        DocSet::Sorted { docs, .. } => Box::new(docs[docs.partition_point(|&d| d < from)..].iter().copied()),
+        DocSet::Bits { words, .. } => {
+            let first = from as usize / 64;
+            Box::new(words.iter().enumerate().skip(first).flat_map(move |(i, &w)| {
+                let mut w = if i == first { w & (!0u64 << (from % 64)) } else { w };
+                std::iter::from_fn(move || {
+                    (w != 0).then(|| {
+                        let t = w.trailing_zeros();
+                        w &= w - 1;
+                        i as DocId * 64 + t
+                    })
+                })
+            }))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn members_from_resumes_where_asked() {
+        let n = 1000;
+        let dense: Vec<u32> = (0..n).filter(|x| x % 3 == 0).collect();
+        let sparse: Vec<u32> = (0..n).filter(|x| x % 70 == 1).collect();
+        for docs in [dense, sparse] {
+            let set = DocSet::from_sorted(docs.clone(), n);
+            for from in [0, 1, 63, 64, 65, 127, 128, 500, 998, 999, 1000, 5000] {
+                let want: Vec<u32> = docs.iter().copied().filter(|&d| d >= from).collect();
+                assert_eq!(members_from(&set, from).collect::<Vec<_>>(), want, "from {from}");
+            }
+        }
+        assert!(matches!(DocSet::from_sorted((0..n).filter(|x| x % 3 == 0).collect(), n), DocSet::Bits { .. }));
     }
 }

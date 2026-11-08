@@ -33,7 +33,7 @@ from __future__ import annotations
 import builtins
 import json
 import os
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from . import ngrams, train
 from ._native import _strata
@@ -300,6 +300,23 @@ class Database(Search, FrameStore):
         if not hasattr(self._db, "query_arrow"):
             raise StrataError("this build of strata has no Arrow: build it with the feature datafusion (the default)")
         return ArrowResult(self._db.query_arrow(sql, _params(params, kw)))
+
+    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, **kw: Any) -> Iterator[Any]:
+        """Runs a SELECT and yields its answer a page at a time, as
+        `Client.scroll` does: `Result`s, or with `arrow=True` pyarrow
+        Tables, of at most `page_size` rows. A database in this process
+        answers every row at once, so its pages are slices of one answer."""
+        n = max(int(page_size), 1)
+        if arrow:
+            import pyarrow
+
+            t = pyarrow.table(self.query_arrow(sql, params, **kw))
+            for i in range(0, max(t.num_rows, 1), n):
+                yield t.slice(i, n)
+            return
+        r = self.query(sql, params, **kw)
+        for i in range(0, max(len(r.rows), 1), n):
+            yield Result(r.columns, r.rows[i : i + n], r.keys[i : i + n], r.scores[i : i + n], r._stats if i == 0 else None, r.took_ms if i == 0 else None)
 
     def sql(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an

@@ -2408,7 +2408,14 @@ impl Service {
                         let _held = (permit, running);
                         let started = Instant::now();
                         let r = match (scroll, columns) {
-                            (Some((page, hold)), _) => db.scroll(&view, &select, &opts, page, hold).map(|(rs, s)| (rs, Vec::new(), Some(s))),
+                            (Some((page, hold)), _) => db
+                                .scroll(&view, &select, &opts, page, hold)
+                                .map(|(rs, s)| (rs, Vec::new(), Some(s)))
+                                // What a scroll may hold is this server's flag.
+                                .map_err(|e| match e {
+                                    strata::Error::Query(m) if m.contains("a scroll of") => strata::Error::Query(format!("{m} (--max-scroll-rows)")),
+                                    e => e,
+                                }),
                             (None, Some(over)) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf).map(|(rs, ipc)| (rs, ipc, None)),
                             (None, None) => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new(), None)),
                         };
@@ -2506,6 +2513,13 @@ impl Service {
             (Ok((rs, _)), Some(m)) if rs.rows.len() > m => Err(ApiError::bad(format!("query error: the query matches more than {m} rows, the most a query returns; add a LIMIT"))),
             (r, _) => r,
         };
+        // Past the window, a server's client can scroll.
+        if let Err(e) = &mut res {
+            let window = e.message.contains("a query returns at most") || e.message.contains("the most a query returns");
+            if window && !shard && matches!(self.backend, Backend::Local(_)) {
+                e.message.push_str(" (or read every row a page at a time: a scroll, page_size)");
+            }
+        }
         // The steps count from the request's start, as its trace does: a
         // shard's, from the start of the call the coordinator made.
         if let Ok((rs, _)) = &mut res {

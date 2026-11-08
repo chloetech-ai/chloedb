@@ -312,6 +312,13 @@ client.upsert({"id": "b3", "title": "Star letters", "year": 2024})
 client.search("letters", limit=3).dicts()
 ```
 
+A server answers at most `--max-result-window` rows a query (10,000 by default). `scroll(sql, params, page_size=10_000, arrow=False, keep_alive_ms=None)` reads past it: it yields the answer a page at a time, `Result`s or with `arrow=True` pyarrow Tables, each page at most `page_size` rows and at most the window, every page from the version of the database the first read ([scrolls](server.md#reading-past-the-window-scrolls)). Leaving the loop early ends the scroll on the server. A `Database` has `scroll` too, whose pages are slices of one answer, since a database in your process has no window.
+
+```python
+for page in client.scroll("SELECT id, title FROM books WHERE year >= :y", y=1950, page_size=5000):
+    handle(page.dicts())
+```
+
 The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
