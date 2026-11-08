@@ -638,7 +638,7 @@ fn shaped(mut j: Json, shape: Shape) -> Json {
 
 /// A request to this server's own routes, with the caller's credential:
 /// its JSON answer, or why it failed (`<status>: <error>`).
-async fn forward(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<Json>) -> Result<Json, String> {
+pub(crate) async fn forward(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<Json>) -> Result<Json, String> {
     use tower::ServiceExt;
     let mut b = Request::builder().method(method).uri(path);
     for h in [header::AUTHORIZATION, header::HOST, header::USER_AGENT, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH), header::HeaderName::from_static("x-forwarded-for"), header::HeaderName::from_static("x-strata-reason")] {
@@ -671,7 +671,11 @@ async fn forward(router: &Router, caller: &Caller<'_>, method: Method, path: &st
     let bytes = axum::body::to_bytes(res.into_body(), MAX_BODY).await.map_err(|e| format!("{status}: reading the answer: {e}"))?;
     let j: Json = serde_json::from_slice(&bytes).unwrap_or_else(|_| Json::String(String::from_utf8_lossy(&bytes).into_owned()));
     if !status.is_success() {
-        let why = j.get("error").and_then(|e| e.as_str()).map(str::to_string).unwrap_or_else(|| j.to_string());
+        let why = match j.get("error").and_then(|e| e.as_str()) {
+            Some(e) => e.to_string(),
+            None if bytes.is_empty() => status.canonical_reason().unwrap_or("no answer").to_string(),
+            None => j.to_string(),
+        };
         return Err(format!("{}: {why}", status.as_u16()));
     }
     Ok(j)
