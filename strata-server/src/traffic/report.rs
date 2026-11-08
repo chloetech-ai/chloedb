@@ -331,6 +331,32 @@ pub fn build(i: Inputs) -> Json {
         let at = main_p.at.as_ref().map(|a| a.busy.writer).unwrap_or(0.0);
         checks.push(check("writes", if at > 0.7 { "warn" } else { "ok" }, "Writes", format!("{} of requests were writes; their p99 was {} at the busiest step that held. Each shard's writer is {} busy at {}/s.", pct(set.write_share), ms(wp99), pct(at), rate(at_rate))));
     }
+    // The rebuilds after writes.
+    if fit.stall_ms > 0.0 && set.write_share > 0.0 {
+        let st = main_p.at.as_ref().map(|a| a.stall).unwrap_or_default();
+        let mut quiet = fit.clone();
+        quiet.stall_ms = 0.0;
+        let without = quiet.capacity(&main_shape, slo);
+        let with = main_p.capacity_qps;
+        let kind = i.write.after_kind.clone().unwrap_or_default();
+        let after = i.write.after_insert.map_or(0.0, |q| q.p50);
+        let alone = i.stats.iter().find(|k| k.kind == kind).map_or(0.0, |k| k.lat.p50);
+        let lost = if with > 0.0 && without.is_finite() { without / with - 1.0 } else { 0.0 };
+        let state = if fit.stall_ms >= 0.25 * slo || lost >= 0.15 { "warn" } else { "ok" };
+        checks.push(check(
+            "stall",
+            state,
+            "Searches after writes",
+            format!(
+                "A row added makes the next search on each copy of its shard rebuild the part of the memtable it changed first: {kind} took {} right after an insert, against {} alone. At {}/s, {} of searches wait for one, by the model{}. More copies do not cut it (each copy rebuilds for itself); fewer commits do: rows written in batches.",
+                ms(after),
+                ms(alone),
+                rate(at_rate),
+                pct(st.search_waits),
+                if lost >= 0.01 { format!("; without it, the cluster would hold {}/s, {} more", rate(without), pct(lost)) } else { String::new() }
+            ),
+        ));
+    }
     // A kind that costs far more than its share.
     let cpu_total: f64 = fit.kinds.iter().map(|k| k.share * k.cpu_ref * if k.fanout { tested.shards as f64 } else { 1.0 }).sum();
     if cpu_total > 0.0 {
@@ -481,7 +507,7 @@ pub fn advise(fit: &Fit, base: &Shape, m: &Machine, machines: &[Json], slo: f64,
     let bcap = b["capacity_qps"].as_f64().unwrap_or(0.0);
     let bp99 = b["p99_ms"].as_f64();
     let bcost = b["cost_month"].as_f64();
-    let delta = |id: &str, title: String, s: Shape, mm: &Machine| -> Json {
+    let delta_on = |fit: &Fit, id: &str, title: String, s: Shape, mm: &Machine| -> Json {
         let c = cell(fit, &s, mm, slo, at_rate);
         let cap = c["capacity_qps"].as_f64().unwrap_or(0.0);
         let p99 = c["p99_ms"].as_f64();
@@ -503,6 +529,7 @@ pub fn advise(fit: &Fit, base: &Shape, m: &Machine, machines: &[Json], slo: f64,
             "holds_target": target.map(|t| cap >= t && p99.is_some_and(|x| x <= slo)), "cell": c,
         })
     };
+    let delta = |id: &str, title: String, s: Shape, mm: &Machine| delta_on(fit, id, title, s, mm);
     let mut out = Vec::new();
     out.push(delta("copy_more", format!("A copy more a shard ({} → {})", base.copies, base.copies + 1), Shape { copies: base.copies + 1, ..*base }, m));
     if base.coordinators > 0 {
@@ -527,6 +554,20 @@ pub fn advise(fit: &Fit, base: &Shape, m: &Machine, machines: &[Json], slo: f64,
     }
     if let Some(down) = list.iter().filter(|x| x.vcpu < m.vcpu).max_by(|a, b| a.vcpu.total_cmp(&b.vcpu).then(b.usd_month.unwrap_or(f64::MAX).total_cmp(&a.usd_month.unwrap_or(f64::MAX)))) {
         out.push(delta("machine_down", format!("Smaller machines ({} → {})", m.name, down.name), on(*base, down), down));
+    }
+    // The same rows written ten a request: a tenth of the commits, so of
+    // the rebuilds after them.
+    if fit.stall_ms > 0.0 && fit.write_share > 0.0 && fit.insert_share > 0.0 {
+        let mut batched = fit.clone();
+        batched.rows_per_commit = 10.0 * fit.rows_per_commit.max(1.0);
+        let mut a = delta_on(&batched, "batch_writes", "Writes in batches of 10 rows".into(), *base, m);
+        let gain = a["capacity_delta"].as_f64().unwrap_or(0.0);
+        let faster = a["p99_delta_ms"].as_f64().zip(bp99).is_some_and(|(d, b)| d <= -0.1 * b);
+        if gain >= 0.05 || faster {
+            a["shape"] = Json::Null;
+            a["text"] = json!(format!("the same rows a tenth of the commits, so a tenth of the rebuilds: {}", a["text"].as_str().unwrap_or("")));
+            out.insert(0, a);
+        }
     }
     // The cheapest shape that holds the target with a quarter to spare,
     // two copies a shard at least when the cluster has them.
