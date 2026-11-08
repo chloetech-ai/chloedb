@@ -31,7 +31,7 @@
     <h1>Search, data and recommendations in one engine</h1>
     <p class="lede">Every table is indexed four ways over the same rows: full text, columns, vectors and graph edges. One SQL statement can use them all.</p>
     <nav class="toc" aria-label="Feature families">
-      <a href="#text">Full text</a><a href="#columns">Columns and JSON</a><a href="#vectors">Vectors</a><a href="#graph">Graphs</a><a href="#ranking">Ranking</a><a href="#recs">Recommendations</a><a href="#sql">SQL and storage</a><a href="#server">Server and clients</a><a href="#cluster">Cluster</a>
+      <a href="#text">Full text</a><a href="#columns">Columns and JSON</a><a href="#vectors">Vectors</a><a href="#graph">Graphs</a><a href="#ranking">Ranking</a><a href="#recs">Recommendations</a><a href="#sql">SQL and storage</a><a href="#server">Server and clients</a><a href="#data-in">Data in</a><a href="#device">On the device</a><a href="#cluster">Cluster</a><a href="#ops">Operations</a>
     </nav>
   </div></div>
 
@@ -56,6 +56,8 @@
       <li><b>Text inside JSON</b><span>Every string in an object searchable and ranked.</span></li>
       <li><b>Schema changes while serving</b><span><code>ALTER TABLE</code> on a database, its replicas and a cluster.</span></li>
       <li><b>Rows that expire</b><span>A time to live per row, for caches and sessions.</span></li>
+        <li><b>Percentiles and dates</b><span><code>MEDIAN</code>, <code>PERCENTILE_CONT</code>, <code>date_trunc</code>, <code>EXTRACT</code> and <code>strftime</code>.</span></li>
+        <li><b>Fields a model writes</b><span>A summary, a category or a product name, written by Claude or your own model when the row is.</span></li>
     </ul>
   </div></section>
 
@@ -64,6 +66,7 @@
     <ul class="flist">
       <li><b>HNSW, IVF or exact</b><span>With 8-bit, binary or RaBitQ codes.</span></li>
       <li><b>Filtered search, planned</b><span>The planner picks a strategy per segment from exact counts.</span></li>
+        <li><b>Partitioned graphs</b><span>A graph per value or range of a column, so a filtered search walks only its own.</span></li>
       <li><b>Hybrid fusion</b><span><code>rrf()</code> or weighted sums over text, vectors, graphs and columns.</span></li>
       <li><b>Multi-vector MaxSim</b><span>Late interaction, as ColBERT and ColPali score it.</span></li>
       <li><b>Sparse vectors</b><span>Learned weights such as SPLADE.</span></li>
@@ -113,7 +116,11 @@
       <li><b>ACID transactions</b><span>Snapshot isolation and shadow-paged commits.</span></li>
       <li><b>Key-value reads</b><span>Get, put and delete by key without SQL.</span></li>
       <li><b>One file, many tables</b><span>Copy it, back it up, open it anywhere.</span></li>
-      <li><b>SQLite and Parquet</b><span>In and out; Parquet from local files or S3.</span></li>
+      <li><b>Stored functions</b><span><code>CREATE FUNCTION</code> keeps a score or a query in the database, for any query to call.</span></li>
+        <li><b>Samples and splits</b><span>The same sample, train/test split or shuffle every time, with <code>hash()</code>.</span></li>
+        <li><b>Scrolls</b><span>Read a large answer a page at a time, on one server or across shards.</span></li>
+        <li><b>Many writers, many readers</b><span>Concurrent writes share commits; other processes read while one writes.</span></li>
+        <li><b>Older segments on S3</b><span>Kept on object storage and read through a local cache.</span></li>
     </ul>
   </div></section>
 
@@ -122,10 +129,33 @@
     <ul class="flist">
       <li><b>HTTP JSON and gRPC</b><span>API keys, TLS, an audit log and limits.</span></li>
       <li><b>Python</b><span>In-process or a client, with Arrow, pandas and polars.</span></li>
+        <li><b>DataFrames</b><span>Frames written as Polars writes them, run as one SQL query, answered in Arrow.</span></li>
       <li><b>JavaScript</b><span>Node, Bun and Deno, prebuilt for four platforms.</span></li>
       <li><b>Java and JDBC</b><span>A JNI library and a <code>jdbc:strata:</code> driver.</span></li>
       <li><b>Rust and the shell</b><span>The engine as a crate, and a command line.</span></li>
-      <li><b>An agent</b><span>Ask in English, get an answer in SQL.</span></li>
+      <li><b>The OpenSearch API</b><span>Apps and clients written for OpenSearch or Elasticsearch, unchanged.</span></li>
+        <li><b>Agents over MCP</b><span>Claude Code and other agents list tables, query and write.</span></li>
+        <li><b>An agent</b><span>Ask in English, get an answer in SQL.</span></li>
+    </ul>
+  </div></section>
+
+  <section class="gutter" id="data-in"><div class="wrap block fam-sec">
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></svg></span><h2>Data in</h2><p>Bring the rows from where they already live, and keep them in step.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/postgres.md">Following Postgres</a></div>
+    <ul class="flist">
+      <li><b>Follows Postgres</b><span>Tables kept in step by logical replication, each change applied once.</span></li>
+      <li><b>SQLite and Parquet</b><span>In and out; Parquet from local files or S3, as Spark writes it.</span></li>
+      <li><b>OpenTelemetry logs</b><span>Collectors and SDKs send their logs in over OTLP.</span></li>
+      <li><b>A crawler</b><span>Give it a site: it makes a table, fills it and adds shards as it grows.</span></li>
+    </ul>
+  </div></section>
+
+  <section class="gutter" id="device"><div class="wrap block fam-sec">
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></span><h2>On the device</h2><p>A slice of a table near the user, searched on the phone, with the server as fallback.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/slices.md">Slices</a></div>
+    <ul class="flist">
+      <li><b>Geo slices</b><span>The places near a user, in tiles, scored as the server would score them.</span></li>
+      <li><b>Vector slices</b><span>"More like this" and recommendations from the rows nearest in meaning.</span></li>
+      <li><b>Proved, or asked</b><span>The device answers when it can prove the server's answer, and asks the server otherwise.</span></li>
+      <li><b>Python and JavaScript</b><span>Helpers that fetch tiles as the user moves, and report what they answered.</span></li>
     </ul>
   </div></section>
 
@@ -135,8 +165,20 @@
       <li><b>Shards and a coordinator</b><span>One database to clients, many machines behind it.</span></li>
       <li><b>Data moves while serving</b><span>Slots move between shards without downtime.</span></li>
       <li><b>Replicas and failover</b><span>A new primary is elected when one dies.</span></li>
+      <li><b>Writes applied once</b><span>Retried writes and stream events apply once, through failovers and slot moves.</span></li>
+      <li><b>Follow another cluster</b><span>A second cluster a moment behind, and a planned switch-over that loses no write.</span></li>
       <li><b>Kubernetes operator</b><span>Upgrades one copy at a time, autoscaling, a published image.</span></li>
+    </ul>
+  </div></section>
+
+  <section class="gutter" id="ops"><div class="wrap block fam-sec">
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5 19.5 6.5v5.5c0 4.4-3.2 7.6-7.5 8.6-4.3-1-7.5-4.2-7.5-8.6V6.5z"/><path d="m8.8 12.2 2.2 2.2 4.4-4.6"/></svg></span><h2>Operations</h2><p>Broken on purpose before it breaks in production, and an agent on call.</p><a class="arrow-link" href="command-center.html">The command center</a></div>
+    <ul class="flist">
       <li><b>A deterministic simulator</b><span>Failover and slot moves replayed from a seed under crashes.</span></li>
+      <li><b>A chaos monkey</b><span>Crashes, stalls, partitions and full disks on a real cluster, every night.</span></li>
+      <li><b>Damaged data caught</b><span>Every segment read against its checksum while serving, and an alert when one fails.</span></li>
+      <li><b>An on-call agent</b><span>Claude looks into an alert and proposes a fix; an admin approves it.</span></li>
+      <li><b>A Simulator in the console</b><span>Test-runs the cluster, grades it, and predicts what other shapes would hold and cost.</span></li>
       <li><b>A command center</b><span>Every server ships a console. <a href="command-center.html">Tour it</a></span></li>
     </ul>
   </div></section>
