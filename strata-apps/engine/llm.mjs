@@ -16,13 +16,13 @@ export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
 
 // onWrite(progress) is called as the answer streams in, with
 // {chars, thinking}: characters of answer and of thinking so far.
-export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite }) {
+export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE }) {
   return new Promise((resolve, reject) => {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
       '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
     if (effort) args.push('--effort', effort);
     const env = { ...process.env, ENGRAM_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
-    const child = spawn(CLAUDE, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
+    const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
     let buf = '';
     let err = '';
     let result = null;
@@ -56,7 +56,7 @@ export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA
       while ((i = buf.indexOf('\n')) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); }
     });
     child.stderr.on('data', (d) => { err += d; });
-    child.on('error', (e) => fail(new Error(`could not run ${CLAUDE}: ${e.message}. Install Claude Code and sign in, or set STRATA_APPS_CLAUDE`)));
+    child.on('error', (e) => fail(new Error(`could not run ${bin}: ${e.message}. Install Claude Code and sign in, or set STRATA_APPS_CLAUDE`)));
     child.on('close', (code) => {
       line(buf);
       if (settled) return;

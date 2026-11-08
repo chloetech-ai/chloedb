@@ -4,7 +4,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rewriteSql } from '../engine/sql.mjs';
-import { parseAnswer } from '../engine/llm.mjs';
+import { parseAnswer, ask } from '../engine/llm.mjs';
+import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { validate, uiRefs, pinShared, checkShared, sharedRefs } from '../engine/forge.mjs';
 import { readLibrary, parsePiece } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
@@ -234,4 +237,47 @@ test('email goes out over SMTP: AUTH PLAIN, one recipient line each, dot-stuffed
     assert.match(seen.data, /\r\nSubject: Hi\r\n/);
     assert.match(seen.data, /Hello\r\n\.\.dot$/);
   } finally { server.close(); }
+});
+
+// A stand-in for `claude -p --output-format stream-json`: it streams the
+// answer in pieces (after `pause` ms of silence), then the result line.
+function fakeClaude(answer, pause = 0) {
+  const dir = mkdtempSync(join(tmpdir(), 'sa-fake-'));
+  const bin = join(dir, 'claude');
+  writeFileSync(bin, `#!/usr/bin/env node
+const answer = ${JSON.stringify(answer)};
+const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+process.stdin.resume();
+process.stdin.on('end', async () => {
+  out({ type: 'system', subtype: 'init' });
+  await new Promise((r) => setTimeout(r, ${pause}));
+  out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '' } } });
+  for (let i = 0; i < answer.length; i += 7) out({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: answer.slice(i, i + 7) } } });
+  out({ type: 'result', subtype: 'success', is_error: false, result: answer, total_cost_usd: 0.01, duration_ms: 5, usage: { output_tokens: 3 } });
+});
+`);
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+test('the model\'s answer streams in: progress as it is written, and a stop only when it goes quiet', async () => {
+  const answer = '<plan>{"views":[]}</plan>\n<code slug="a">\nlet x = 1;\n</code>';
+  const seen = [];
+  const res = await ask({ system: 's', prompt: 'p', bin: fakeClaude(answer), onWrite: (w) => seen.push({ ...w }) });
+  assert.equal(res.text, answer);
+  assert.equal(res.cost, 0.01);
+  assert.ok(seen.length > 3, 'onWrite runs as text arrives');
+  assert.equal(seen.at(-1).chars, answer.length);
+  // Quiet longer than the idle limit: stopped, with what was written.
+  await assert.rejects(ask({ system: 's', prompt: 'p', bin: fakeClaude(answer, 1500), idleMs: 300 }), /wrote nothing for 0 s|wrote nothing for/);
+  // A slow start within the idle limit is fine, however long the whole answer takes.
+  const slow = await ask({ system: 's', prompt: 'p', bin: fakeClaude(answer, 200), idleMs: 1000, timeoutMs: 5000 });
+  assert.equal(slow.text, answer);
+});
+
+test('the word import in a lesson is fine; loading code is not', () => {
+  const lesson = "function component(props) { const pre = h('pre', {}, 'import random\\nfrom typing import Optional'); return pre; }";
+  assert.deepEqual(checkShared('component', lesson).filter((p) => /import/.test(p)), []);
+  assert.ok(checkShared('component', "function component(props) { const m = require('fs'); return h('div'); }").some((p) => /import or require/.test(p)));
+  assert.ok(checkShared('component', "function component(props) { import('x'); return h('div'); }").some((p) => /import or require/.test(p)));
 });

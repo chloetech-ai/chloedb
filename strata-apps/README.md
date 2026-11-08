@@ -8,10 +8,13 @@ shared components and helpers that every app uses from one library, linked to
 each other in a graph that Strata walks.
 
 - **Start from a description.** "A reading list: I paste a link with a title
-  and a note, tag it, and mark it read." The forge asks the model for the
-  first version: tables, the views (screens) and any server functions, with
-  their code. The engine checks the code, creates the tables, stores every
-  capability as a row in Strata and puts the app live.
+  and a note, tag it, and mark it read." The forge asks the model to plan the
+  first version: tables, the views (screens), any server functions and new
+  shared pieces, each with a spec. Then it has the model write every piece at
+  once, one call each, so a big app takes the time of its biggest piece. The
+  engine checks the code (a piece that fails is written again alone), creates
+  the tables, stores every capability as a row in Strata and puts the app
+  live.
 - **Ask for changes.** "Let me star a link", "add a Stats tab with a weekly
   chart". Each change is a new version of the app: the changed capabilities
   are new rows, and a version is a row listing the capabilities it is made
@@ -96,13 +99,14 @@ cd strata-apps
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
+| `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
 | `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 180), or after this many in all (default 1200) |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
 | `SMTP_URL`, `SMTP_FROM` | a mail server (`smtps://user:pass@host:465`, or `smtp://` with STARTTLS when offered) and the From address; without them email waits in the outbox, marked held |
 | `STRATA_APPS_GEOCODER` | the address search (default OpenStreetMap's Nominatim, at most one request a second, cached; `off` turns it off) |
 | `STRATA_APPS_TILES` | the map tile URL template (default OpenStreetMap's, fetched by the engine with a user agent and kept under `DATA/tiles`; `off` turns maps off) |
 
-A first version of a small app takes the model 45 seconds to 1.5 minutes; a bigger one, such as a course with lessons, a playground and a quiz, takes up to 8 minutes (most of it thinking, and the rest writing 50,000 characters of code). The studio shows how far the model has got while it writes. A change takes 25 to 50 seconds.
+A first version of a small app takes 50 seconds to a minute; a bigger one takes 2 to 4 minutes (a CRM with a pipeline board 110 s, a course on linked lists with lessons, a playground and a quiz 216 s; written in one answer, that course took 7.5 to 9 minutes). The studio shows how far the model has got while it writes. A change takes 20 seconds to 2 minutes.
 
 ## What is where
 
