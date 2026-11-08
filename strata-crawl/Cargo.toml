@@ -23,6 +23,8 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 encoding_rs = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+# Retry-After as an HTTP date.
+httpdate = "1"
 # URL and content hashes (the seen set, duplicate pages), stable across runs.
 twox-hash = { version = "2", default-features = false, features = ["xxhash3_64"] }
 

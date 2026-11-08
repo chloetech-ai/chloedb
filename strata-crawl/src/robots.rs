@@ -10,6 +10,9 @@ pub struct Robots {
     /// Seconds between requests the site asks for.
     pub crawl_delay: Option<f64>,
     pub sitemaps: Vec<String>,
+    /// Why it could not be read, when the site did not answer it (5xx,
+    /// 429, no answer): nothing is fetched from the site until it is read.
+    pub unreachable: Option<String>,
 }
 
 impl Robots {
@@ -19,10 +22,16 @@ impl Robots {
         Robots::default()
     }
 
-    /// Everything refused: what RFC 9309 asks of a site whose robots.txt
-    /// answers 5xx (the site is down, not open).
+    /// Everything refused.
     pub fn deny_all() -> Robots {
         Robots { rules: vec![(false, "/".into())], ..Default::default() }
+    }
+
+    /// Everything refused for now: what RFC 9309 asks of a site whose
+    /// robots.txt is unreachable (5xx, or no answer; 429 too, as a site
+    /// that is busy), until it is read again.
+    pub fn unreachable(why: String) -> Robots {
+        Robots { unreachable: Some(why), ..Robots::deny_all() }
     }
 
     /// The rules for `agent` (the product token, as `strata-crawl`) in a
@@ -79,9 +88,9 @@ impl Robots {
             }
         }
         if matched_mine {
-            Robots { rules: mine, crawl_delay: mine_delay, sitemaps }
+            Robots { rules: mine, crawl_delay: mine_delay, sitemaps, unreachable: None }
         } else {
-            Robots { rules: star, crawl_delay: star_delay, sitemaps }
+            Robots { rules: star, crawl_delay: star_delay, sitemaps, unreachable: None }
         }
     }
 

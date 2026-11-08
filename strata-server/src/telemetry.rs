@@ -1258,17 +1258,25 @@ impl Statements {
         self.since_ms.load(Ordering::Relaxed)
     }
 
-    /// Each key's calls in the minutes of `[from, to)` and how many failed
-    /// (any way: its own errors and deadlines included); the key `-` is
-    /// calls without one (alerts agent).
-    pub fn key_calls(&self, from: u64, to: u64) -> Vec<(String, u64, u64)> {
+    /// Each key's calls in the minutes of `[from, to)`, how many failed
+    /// (any way: its own errors and deadlines included) and the
+    /// milliseconds they ran within `[from, to)`: of the minute that began
+    /// before `from`, the share of its time after `from` (as if its calls
+    /// were spread over it), so that a burst stops counting as the window
+    /// leaves it rather than a minute later. The key `-` is calls without
+    /// one (alerts agent).
+    pub fn key_calls(&self, from: u64, to: u64) -> Vec<(String, u64, u64, f64)> {
         let s = lock(&self.inner);
-        let mut out: Vec<(String, u64, u64)> = Vec::new();
-        for (_, a) in Self::sum(&s, from, to, None) {
-            for k in &a.keys {
-                match out.iter_mut().find(|x| x.0 == k.key) {
-                    Some(x) => (x.1, x.2) = (x.1 + k.calls, x.2 + k.errors),
-                    None => out.push((k.key.clone(), k.calls, k.errors)),
+        let mut out: Vec<(String, u64, u64, f64)> = Vec::new();
+        let lo = from / 60_000 * 60_000;
+        for m in s.minutes.iter().filter(|m| m.t >= lo && m.t < to) {
+            let part = if m.t < from { (m.t + 60_000 - from) as f64 / 60_000.0 } else { 1.0 };
+            for a in m.by.values() {
+                for k in &a.keys {
+                    match out.iter_mut().find(|x| x.0 == k.key) {
+                        Some(x) => (x.1, x.2, x.3) = (x.1 + k.calls, x.2 + k.errors, x.3 + k.total_ms * part),
+                        None => out.push((k.key.clone(), k.calls, k.errors, k.total_ms * part)),
+                    }
                 }
             }
         }
@@ -1862,6 +1870,24 @@ mod tests {
         static ID: AtomicU64 = AtomicU64::new(0);
         let caller = Caller { key: Some(key.into()), ..Default::default() };
         Arc::new(Finished { id: ID.fetch_add(1, Ordering::Relaxed), ts_ms, sql: fp.to_lowercase(), fingerprint: fp.into(), kind: "bm25", outcome, ms, rows: 2, caller, ..Default::default() })
+    }
+
+    /// A key's time in a window counts, of the minute that began before
+    /// it, only the part inside it; its calls count whole.
+    #[test]
+    fn a_keys_time_counts_the_part_of_its_first_minute_inside_the_window() {
+        let s = Statements::default();
+        let m = now_ms() / 60_000 * 60_000 - 120_000;
+        s.add(&finished("A", m + 10_000, 6_000.0, "ok", "report"));
+        s.add(&finished("A", m + 70_000, 600.0, "error", "report"));
+        s.add(&finished("B", m + 70_000, 60.0, "ok", "app"));
+        // 15 s of the first minute are inside: a quarter of its 6 s.
+        let mut k = s.key_calls(m + 45_000, m + 120_000);
+        k.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(k, [("app".to_string(), 1, 0, 60.0), ("report".to_string(), 2, 1, 1_500.0 + 600.0)]);
+        // The whole of both minutes.
+        let k = s.key_calls(m, m + 120_000);
+        assert!(k.iter().any(|x| x.0 == "report" && x.3 == 6_600.0), "{k:?}");
     }
 
     #[test]

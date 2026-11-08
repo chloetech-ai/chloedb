@@ -162,6 +162,7 @@ function homePage(root, ctx) {
     sample: h("input", { class: "input", type: "number", min: 1 }),
     promote_at: h("input", { class: "input", type: "number", min: 0, max: 1, step: 0.05 }),
     embed: h("input", { class: "input", placeholder: "none (as potion-base-8M)" }),
+    contact: h("input", { class: "input", placeholder: "an email or a URL", spellcheck: "false" }),
     include: h("textarea", { class: "input", placeholder: "/catalogue/", spellcheck: "false" }),
     exclude: h("textarea", { class: "input", placeholder: "\\?sort=", spellcheck: "false" }),
     keep: h("textarea", { class: "input", placeholder: "/catalogue/[^/]+_\\d+/", spellcheck: "false" }),
@@ -190,13 +191,14 @@ function homePage(root, ctx) {
         field("Pages the table is made from", f.sample),
         field("A column once this share of pages has the field", f.promote_at),
         field("Vectors of title and body, by the model", f.embed),
+        field("Contact for site owners", f.contact, "", "Sent in the user agent, so that a site's owner can reach whoever runs this crawl"),
         h("div", { class: "stack wide", style: { gap: "8px", justifyContent: "flex-end" } }, toggles.robots, toggles.sitemaps, toggles.learn),
         field("Only links matching (one regex a line)", f.include, "wide"),
         field("Never links matching", f.exclude, "wide"),
         field("Rows only for pages matching (others only followed)", f.keep, "wide"),
         field("Fields from CSS selectors (name=selector, @attr, name[]= for all)", f.rules, "wide"))),
     h("div", { class: "cr-steps" },
-      h("span", {}, h("b", {}, "1"), "fetches politely: robots.txt, sitemaps, a queue per host"),
+      h("span", {}, h("b", {}, "1"), "fetches politely: robots.txt, a request at a time per host, waits when a site is busy"),
       h("span", {}, h("b", {}, "2"), "reads each page's fields: JSON-LD, Open Graph, microdata, spec tables, the site's template"),
       h("span", {}, h("b", {}, "3"), "makes the table from the first pages"),
       h("span", {}, h("b", {}, "4"), "writes rows in batches, adding columns as fields become common"),
@@ -206,6 +208,7 @@ function homePage(root, ctx) {
 
   const fill = (d) => {
     for (const k of ["max_pages", "max_depth", "concurrency", "per_host", "delay_ms", "sample", "promote_at"]) if (d[k] != null && !f[k].value) f[k].value = d[k];
+    if (d.contact) f.contact.placeholder = d.contact;
   };
   const lines = (t) => t.value.split("\n").map((x) => x.trim()).filter(Boolean);
   const num = (inp) => (inp.value === "" ? undefined : Number(inp.value));
@@ -219,6 +222,7 @@ function homePage(root, ctx) {
     };
     if (f.table.value.trim()) s.table = f.table.value.trim();
     if (f.embed.value.trim()) s.embed = f.embed.value.trim();
+    if (f.contact.value.trim()) s.contact = f.contact.value.trim();
     for (const k of ["max_pages", "max_depth", "concurrency", "per_host", "delay_ms", "sample", "promote_at"]) { const v = num(f[k]); if (v != null && !Number.isNaN(v)) s[k] = v; }
     return s;
   }

@@ -2098,6 +2098,10 @@ impl<'a> Lower<'a, '_> {
                 };
                 ScalarUDF::new_from_impl(StrataCall::new(func, ret)).call(xs)
             }
+            // The evaluator's own hash, so the values agree to the bit.
+            Func::Hash if ts.iter().all(|t| !matches!(t, DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..))) => {
+                ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Int64)).call(xs)
+            }
             f => return no(format!("{}({ts:?}) above a leaf", f.name())),
         })
     }

@@ -105,6 +105,7 @@ const METRICS = {
   http_5xx_ratio: ["HTTP 5xx answers, share of requests", "pct", "both"],
   disk_hours_to_full: ["Hours until the disk is full, at the window's rate", "h", "copy"],
   key_error_ratio: ["The worst key's share of failed calls (keys with 30 calls or more)", "pct", "both"],
+  key_busy_ratio: ["The busiest key's queries at once, per core (a key with over half the query time, while others query)", "n", "both"],
   // The rest of what the points hold, named.
   http_s: ["HTTP requests a second", "/s", "both"],
   rows_s: ["Rows written a second", "/s", "both"],
@@ -246,7 +247,8 @@ function whereText(r, x) {
   const pend = firing.length ? all.filter((c) => stateName(c.state) === "pending").length : 0;
   const names = w.map(whereName);
   const more = pend ? ` (+${pend} pending)` : "";
-  // A key's calls (key_error_ratio): the key, its share and its owner.
+  // A key's calls: the key, its share of the query time or of failed calls, and its owner.
+  if (w.length && w[0].key != null && w[0].running != null) return w.map((c) => `key ${c.key}: ${fmt.pct(c.share)} of the query time, ${c.running.toFixed(1)} queries at once on ${fmt.plural(c.cores, "core")}${c.owner ? `, owner ${c.owner}` : ""}`).join("; ");
   if (w.length && w[0].key != null) return w.map((c) => `key ${c.key}: ${fmt.pct(c.value)} of ${fmt.n(c.calls)} calls failed${c.owner ? `, owner ${c.owner}` : ""}`).slice(0, 2).join("; ") + (w.length > 2 ? ` +${w.length - 2}` : "");
   if (w.length === 1) { const c = copyOf(w[0].copy || w[0].short); return `${names[0]}${c ? ` · shard ${c.shard}` : ""}${more}`; }
   if (r.scope === "each_copy") {
@@ -878,11 +880,12 @@ function alertHub(page, id, r) {
     const w = (x.where || []).filter((c) => c.state === "firing");
     const cause = x.held_by ? m.rules.find((y) => y.id === x.held_by) : null;
     const pg = pagerOf(m), dt = differsText(x);
-    clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, rule.metric === "key_error_ratio" && w.length ? whereText(rule, x) : firesOn(x) ? `on coordinator ${firesOn(x)}` : scopeText(rule)[0]),
+    clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, (rule.metric === "key_error_ratio" || rule.metric === "key_busy_ratio") && w.length ? whereText(rule, x) : firesOn(x) ? `on coordinator ${firesOn(x)}` : scopeText(rule)[0]),
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fvr(rule, x.value)}`, h("span", { class: "al-peak" }),
       x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: the ${dur(((rule.window_s || 0) + (rule.for_s || 0)) * 1000)} it judges still include the outage.`)
       : x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
       dt ? h("div", { class: "small al-warn" }, dt) : null,
+      rule.metric === "key_busy_ratio" && w[0]?.key ? h("div", { class: "small" }, h("a", { href: link("queries", { tab: "live", group: "key", q: w[0].key }) }, `Key ${w[0].key}'s queries in Running now`, icon("right"))) : null,
       firesOn(x) ? h("div", { class: "small al-heldwhy" }, `It ${st === "pending" ? "waits to fire" : "fires"} on coordinator ${firesOn(x)}, on the traffic sent through it; on this coordinator it is ${stateName(x.here) === "ok" ? "fine" : stateName(x.here).replace("_", " ")}. `,
         ...(x.elsewhere || []).filter((e) => e.url).slice(0, 2).map((e) => h("a", { href: e.url.replace(/\/$/, "") + "/#/alert/" + encodeURIComponent(rule.id), target: "_blank", rel: "noopener" }, `Open it on ${e.name || hostOf(e.url)}`, icon("ext")))) : null,
       pg && st === "firing" ? h("div", { class: "small muted" }, x.paged ? `${pagedText(x)[0].toUpperCase()}${pagedText(x).slice(1)}.` : `Not paged yet. Messages are sent by ${pg.me ? "this coordinator" : hostOf(pg.sends)}.`) : null);

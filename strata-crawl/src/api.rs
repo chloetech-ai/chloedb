@@ -31,11 +31,18 @@ pub struct Service {
     next: AtomicU64,
     /// Whether the crawler started the cluster it writes to (`--local`).
     pub local: bool,
+    /// The contact of crawls that give none (`--contact`): whom a site's
+    /// owner reaches, in the user agent.
+    pub contact: Option<String>,
 }
 
 impl Service {
     pub fn new(strata: Strata, grower: Arc<Grower>, token: Option<String>, local: bool) -> Arc<Service> {
-        Arc::new(Service { strata, grower, jobs: Mutex::new(Vec::new()), token: token.filter(|t| !t.is_empty()), next: AtomicU64::new(1), local })
+        Service::with_contact(strata, grower, token, local, None)
+    }
+
+    pub fn with_contact(strata: Strata, grower: Arc<Grower>, token: Option<String>, local: bool, contact: Option<String>) -> Arc<Service> {
+        Arc::new(Service { strata, grower, jobs: Mutex::new(Vec::new()), token: token.filter(|t| !t.is_empty()), next: AtomicU64::new(1), local, contact: contact.filter(|c| !c.trim().is_empty()) })
     }
 
     fn jobs(&self) -> std::sync::MutexGuard<'_, Vec<Arc<Job>>> {
@@ -47,7 +54,10 @@ impl Service {
     }
 
     /// Starts a crawl. Two crawls may not fill one table at once.
-    pub fn start(&self, spec: Spec) -> Result<Arc<Job>, String> {
+    pub fn start(&self, mut spec: Spec) -> Result<Arc<Job>, String> {
+        if spec.contact.is_none() {
+            spec.contact = self.contact.clone();
+        }
         let id = format!("c{}", self.next.fetch_add(1, Ordering::Relaxed));
         let job = Job::new(id, spec)?;
         {
@@ -154,7 +164,7 @@ async fn info(State(svc): State<Shared>) -> Json<Value> {
         "strata": {"url": svc.strata.url, "role": health.as_ref().ok().and_then(|h| h["role"].as_str().map(str::to_string)), "error": health.err().map(|e| e.to_string())},
         "local": svc.local,
         "grow": svc.grower.status(),
-        "defaults": serde_json::to_value(default_spec()).unwrap_or(Value::Null),
+        "defaults": serde_json::to_value(Spec { contact: svc.contact.clone(), ..default_spec() }).unwrap_or(Value::Null),
     }))
 }
 
@@ -199,11 +209,16 @@ async fn act(State(svc): State<Shared>, Path((id, action)): Path<(String, String
     Ok(Json(json!({"id": id, "phase": job.phase()})))
 }
 
-async fn preview(headers: HeaderMap, Json(mut b): Json<Value>) -> Result<Json<Value>, ApiError> {
+async fn preview(State(svc): State<Shared>, headers: HeaderMap, Json(mut b): Json<Value>) -> Result<Json<Value>, ApiError> {
     let _ = headers;
     let n = b.get("pages").and_then(Value::as_u64).unwrap_or(6).clamp(1, 20) as usize;
     if let Some(o) = b.as_object_mut() {
         o.remove("pages");
+        if o.get("contact").is_none_or(Value::is_null) {
+            if let Some(c) = &svc.contact {
+                o.insert("contact".into(), Value::String(c.clone()));
+            }
+        }
     }
     let spec: Spec = serde_json::from_value(b).map_err(|e| bad(e.to_string()))?;
     let j = crate::job::preview(&spec, n).await.map_err(bad)?;

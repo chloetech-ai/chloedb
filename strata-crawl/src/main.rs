@@ -115,8 +115,12 @@ struct SpecArgs {
     /// Embed the title and body into a vector field emb with this model (as potion-base-8M).
     #[arg(long)]
     embed: Option<String>,
+    /// The crawl's own user agent (the crawler's name and version are added after it).
     #[arg(long)]
     user_agent: Option<String>,
+    /// Whom a site's owner reaches about this crawl: an email address or a URL, sent in the user agent.
+    #[arg(long, env = "STRATA_CRAWL_CONTACT")]
+    contact: Option<String>,
 }
 
 impl SpecArgs {
@@ -142,6 +146,7 @@ impl SpecArgs {
         spec.learn = !self.no_learn;
         spec.embed = self.embed.clone();
         spec.user_agent = self.user_agent.clone();
+        spec.contact = self.contact.clone();
         spec.check()?;
         Ok(spec)
     }
@@ -155,6 +160,9 @@ struct ServeArgs {
     /// A token every request must carry (Authorization: Bearer); strata-server sends its STRATA_APP_TOKEN. With --local and no token, one is made for the coordinator.
     #[arg(long, env = "STRATA_CRAWL_TOKEN", hide_env_values = true)]
     token: Option<String>,
+    /// The contact of crawls that give none: whom a site's owner reaches (an email address or a URL), sent in the user agent.
+    #[arg(long, env = "STRATA_CRAWL_CONTACT")]
+    contact: Option<String>,
     #[command(flatten)]
     target: Target,
 }
@@ -278,7 +286,10 @@ async fn main() {
             let listener = tokio::net::TcpListener::bind(&a.listen).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.listen)));
             let me = format!("http://{}", listener.local_addr().map(|x| x.to_string()).unwrap_or(a.listen.clone()));
             let (strata, local, grower) = connect(&a.target, Some((me.clone(), token.clone()))).await;
-            let svc = Service::new(strata.clone(), grower, token.clone(), local.is_some());
+            if let Some(c) = a.contact.as_deref().filter(|c| !strata_crawl::fetch::header_text(c)) {
+                fail(format!("--contact {c:?}: printable ASCII, at most 300 characters"));
+            }
+            let svc = Service::with_contact(strata.clone(), grower, token.clone(), local.is_some(), a.contact.clone());
             eprintln!("strata-crawl: the API answers at {me}{}", if token.is_some() && a.token.is_none() { " (token made for the coordinator)" } else { "" });
             if local.is_none() {
                 eprintln!("strata-crawl: to see it in the command center, start the coordinator with --app crawler={me}{}", if token.is_some() { " and STRATA_APP_TOKEN set to the crawler's token" } else { "" });
