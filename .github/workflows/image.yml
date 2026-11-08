@@ -20,6 +20,7 @@ on:
     paths:
       - "strata/**"
       - "strata-server/**"
+      - "strata-crawl/**"
       - ".github/workflows/image.yml"
   pull_request:
     paths:
