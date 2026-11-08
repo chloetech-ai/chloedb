@@ -14,6 +14,8 @@
 //! * [`live`]: delete sets as live-document filters.
 //! * [`updates`]: in-place updates of numeric fields.
 //! * [`pk`]: the primary-key index section.
+//! * [`share`]: the locks and pins that let other processes read a
+//!   database while one writes it (`reader`: such a reader).
 //! * [`merge`]: the tiered merge policy, and what the background merger
 //!   needs (memory estimates and limits, a write throttle, the record of
 //!   interrupted merges).
@@ -29,7 +31,9 @@ pub mod manifest;
 pub mod merge;
 pub mod pager;
 pub mod pk;
+mod reader;
 pub mod rowseq;
+pub mod share;
 pub mod ship;
 mod snapshot;
 mod state;

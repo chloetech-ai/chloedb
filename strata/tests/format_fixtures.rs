@@ -572,8 +572,9 @@ fn this_version_writes_the_fixtures_byte_for_byte() {
         let (old, new) = (fixtures().join("fieldids").join(set), dir.path().join(set));
         same_bytes(&old.join("db.strata"), &new.join("db.strata"));
         same_bytes(&old.join("db.strata-wal"), &new.join("db.strata-wal"));
+        // The writer's lock (`WRITER`) is no part of the format.
         let names = |d: &Path| {
-            let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+            let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n != "WRITER").collect();
             v.sort();
             v
         };
