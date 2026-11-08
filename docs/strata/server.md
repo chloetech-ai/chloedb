@@ -92,6 +92,11 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--copy-from PATH` | | fill the new database (`--db` with `--schema`) with this database's rows, re-embedding the vector fields whose embedding changed |
 | `--synonyms FILE` | | the synonym list for `synonyms => 1` searches ([format](query-language.md#typos-and-synonyms)): read at start if it exists, written by `PUT /v1/synonyms` |
 | `--backup-dir DIR` | | where `POST /v1/admin/checkpoint` writes checkpoints ([backups](#backups)); created if missing |
+| `--cold-store URL` | | keep segments [cold](#cold-segments) on object storage: an `s3://bucket/prefix/` URL, or a directory; the database must be a directory (`--directory`) |
+| `--cold-cache-gb N` | `8` | the cold tier's cache of fetched parts, segments' headers and keys apart |
+| `--cold-keep-local-gb N` | | keep the newest segments local up to this many GiB and make the older ones cold; without it, none goes cold by itself |
+| `--cold-min-segment-mb N` | `16` | segments smaller than this stay local |
+| `--cold-cache-dir DIR` | `cold` in the database's directory | the cold tier's cache |
 | `--media-fetch LIST` | nothing | what writes to [`media` fields](#media-fields) may fetch, comma-separated: `file:/srv/images` (a directory), `cdn.example.com` (HTTPS), `*.example.com`, `http://host:port` |
 | `--media-store DIR` | | where files written as bytes are kept, by hash (`media:<sha256>`); created if missing |
 | `--media-max-bytes N` | 52428800 (50 MiB) | the largest file a `media` value may name |
@@ -663,6 +668,16 @@ aws s3 cp /backups/shop-2026-10-29/CURRENT s3://bucket/shop/CURRENT
 A database opened from a copy of that place deletes the files its version does not name. A database restored from a checkpoint numbers its next commits as the original did after that checkpoint, so sync its own checkpoints into a new place. A name is letters, digits, `.`, `_` and `-`; an existing name is not overwritten. A coordinator has no database of its own: ask each shard server. The `strata` shell does the same offline with `.checkpoint DEST [file|dir] [EARLIER]`, `.check` and `.vacuum`.
 
 Not yet: point-in-time recovery between checkpoints, which needs the write-ahead log archived instead of truncated at each flush.
+
+### Cold segments
+
+With `--cold-store`, a database in the directory layout keeps its older segments on object storage and reads them through a local cache ([how](index.md#cold-segments-on-object-storage)). `--cold-keep-local-gb` says how much stays local: the newest segments up to that size; every 30 s, the older ones of at least `--cold-min-segment-mb` are uploaded, oldest first, and their local files go. Their headers and keys stay in the cache, so writes and deletes by key never wait on the store; a query fetches the parts it reads, checks each against its checksum and keeps it in the cache, up to `--cold-cache-gb`, past which the least recently read segments lose theirs.
+
+```sh
+AWS_REGION=us-east-1 strata-server --db logs.db --directory --cold-store s3://my-bucket/strata/ --cold-keep-local-gb 50
+```
+
+The store is configured as [imports from S3](parquet.md#s3-and-s3-compatible-stores) are, by environment (`AWS_ACCESS_KEY_ID`, `AWS_ENDPOINT_URL` for another S3-compatible store, ...). Once a segment is cold, the database opens only with its store. `/metrics` counts the cold segments and their bytes, the cache's bytes and limit, fetches, fetched bytes, evictions and offloads (`strata_cold_*`). A [checkpoint](#backups) fetches the cold segments whole: it is a database of local files that opens without the store.
 
 ## Security
 

@@ -29,7 +29,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, TryLockError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -41,6 +41,7 @@ use crate::schema::{Alter, FieldType, Schema};
 use crate::sid::{Codebook, Ties};
 use crate::segment::build::{build_segment, build_threads, BuildOptions, GraphStart, SegmentBuild};
 use crate::segment::{DocId, SegmentFile, SegmentWriter, Spill};
+use crate::storage::cold::{Cold, ColdOptions, ColdStats};
 use crate::storage::freelist::FreeList;
 use crate::storage::io;
 use crate::storage::dir::{self, Current};
@@ -160,6 +161,10 @@ pub struct DbOptions {
     /// however long this is. 0: a write fails at once, as strata-server
     /// wants (its writer retries until each request's deadline).
     pub write_wait: Duration,
+    /// Keep segments on object storage, read through a local cache
+    /// ([`crate::storage::cold`]; directory layout only). A database with
+    /// cold segments opens only with it.
+    pub cold: Option<ColdOptions>,
 }
 
 /// How a database is laid out on disk.
@@ -206,6 +211,7 @@ impl Default for DbOptions {
             open_old: false,
             merge_spill_bytes: 64 << 20,
             write_wait: Duration::from_secs(5),
+            cold: None,
         }
     }
 }
@@ -264,6 +270,8 @@ pub struct SegmentStats {
     pub n_deleted: u32,
     pub bytes: u64,
     pub delete_set_bytes: u64,
+    /// Kept on object storage ([`crate::storage::cold`]).
+    pub cold: bool,
 }
 
 /// An open database. `Send + Sync`: share it (e.g. in an `Arc`) between a
@@ -325,6 +333,16 @@ pub struct Database {
     commit_hook: RwLock<Option<CommitHook>>,
     /// The codebooks of semantic-ID fields ([`Database::set_codebook`]).
     codebooks: RwLock<Vec<Coded>>,
+    /// The cold tier, with [`DbOptions::cold`].
+    cold: Option<Arc<Cold>>,
+    /// Segments being made cold, which merges leave alone meanwhile.
+    offloading: Mutex<HashSet<u64>>,
+    /// Set by [`Database::spawn_cold`].
+    cold_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Counts the times a segment's image was swapped for another (made
+    /// cold, or a cold one evicted), for the readers caches above that
+    /// hold them ([`Database::image_generation`]).
+    images_swapped: AtomicU64,
 }
 
 /// The codebook of semantic-ID field `field` of the table with id `table`,
@@ -719,8 +737,12 @@ impl Drop for Database {
         if let Some(m) = self.merger.get() {
             m.close();
         }
+        if let Some(c) = &self.cold {
+            c.signal.close();
+        }
         let mut threads: Vec<JoinHandle<()>> = self.flusher.get_mut().unwrap_or_else(|e| e.into_inner()).take().into_iter().collect();
         threads.append(self.merger_threads.get_mut().unwrap_or_else(|e| e.into_inner()));
+        threads.extend(self.cold_thread.get_mut().unwrap_or_else(|e| e.into_inner()).take());
         for h in threads {
             // The flusher and the mergers hold a reference only while they
             // work; when one held the last one, the database closes on its
@@ -927,13 +949,21 @@ impl Database {
         for (f, _) in dir::orphans(path, &dir::referenced(&cur, &manifest))? {
             io::remove_file(&f)?;
         }
+        let cold = match &opts.cold {
+            Some(c) => {
+                let cold = Cold::new(c.clone(), path, cur.db_id)?;
+                cold.recover(&manifest)?;
+                Some(cold)
+            }
+            None => None,
+        };
         let handles = manifest
             .tables
             .iter()
-            .map(|t| t.segments.iter().map(|m| SegHandle::open_in(path, m, &t.schema, opts.read_ahead, opts.read_ahead && opts.random_hints, opts.check_at_open()).map(Arc::new)).collect())
+            .map(|t| t.segments.iter().map(|m| SegHandle::open_in(path, m, &t.schema, opts.read_ahead, opts.read_ahead && opts.random_hints, opts.check_at_open(), cold.as_ref()).map(Arc::new)).collect())
             .collect::<Result<_>>()?;
         let meta = dir_meta(&cur);
-        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles)
+        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles, cold)
     }
 
     /// Opens the newest version named by a valid meta slot, or, when that
@@ -944,12 +974,15 @@ impl Database {
     /// leave the newest slot naming pages that never reached the disk;
     /// that loses the newest commits, not the database.
     fn load(path: &Path, file: File, opts: DbOptions) -> Result<Database> {
+        if opts.cold.is_some() {
+            return Err(Error::Schema(format!("{}: cold segments need the directory layout (Layout::Directory)", path.display())));
+        }
         let metas = pager::read_metas(&file)?;
         let mut damaged = None;
         for (i, &(meta, slot)) in metas.iter().enumerate() {
             match Database::load_version(&file, &opts, meta, i > 0) {
                 Ok((manifest, freelist, map, handles)) => {
-                    let mut db = Database::assemble(path, wal_path(path), None, file, opts, manifest, meta, slot, freelist, map, handles)?;
+                    let mut db = Database::assemble(path, wal_path(path), None, file, opts, manifest, meta, slot, freelist, map, handles, None)?;
                     db.damaged = match (damaged, db.damaged.take()) {
                         (Some(a), Some(b)) => Some(format!("{a}; {b}")),
                         (a, b) => a.or(b),
@@ -1008,6 +1041,7 @@ impl Database {
         freelist: FreeList,
         map: OwnedBytes,
         handles: Vec<Vec<Arc<SegHandle>>>,
+        cold: Option<Arc<Cold>>,
     ) -> Result<Database> {
         if manifest.is_legacy() && !opts.open_old {
             return Err(Error::Schema(format!(
@@ -1140,6 +1174,10 @@ impl Database {
             background_holding: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
             codebooks: RwLock::new(Vec::new()),
+            cold,
+            offloading: Mutex::new(HashSet::new()),
+            cold_thread: Mutex::new(None),
+            images_swapped: AtomicU64::new(0),
         };
         db.republish();
         Ok(db)
@@ -1824,7 +1862,7 @@ impl Database {
         }
         for (to, (segs, profiles)) in into {
             for (n_docs, h) in segs {
-                vw.add_segment(to, None, h.file.image(), *n_docs, h.base.as_deref(), h.updates.as_deref())?;
+                vw.add_segment(to, None, &h.whole_image()?, *n_docs, h.base.as_deref(), h.updates.as_deref())?;
             }
             vw.table_mut(to).profiles = profiles;
         }
@@ -2458,7 +2496,7 @@ impl Database {
         if h.meta.n_deleted > 0 || h.updates.is_some() || pending > 0 {
             return Err(Error::Schema(format!("segment {id} has deleted or updated documents; merge it first")));
         }
-        let image = if self.dir.is_some() { h.map.clone() } else { h.map.slice(h.meta.extent.range()) };
+        let image = h.whole_image()?;
         let f = OpenOptions::new().write(true).create_new(true).open(dest)?;
         io::write_at(&f, &image, 0)?;
         io::sync(&f)?;
@@ -2674,7 +2712,15 @@ impl Database {
         };
         let threads = build_threads(&self.opts.build).unwrap_or(1);
         let spill = self.opts.merge_spill_bytes;
-        let (group, cut) = policy.select_within(&infos, |id| m.claimed(id), cap, threads, spill);
+        // Cold segments are not merged (their rows would be fetched), unless
+        // nothing of them is left to keep; nor segments being made cold.
+        let frozen: HashSet<u64> = {
+            let cold: HashSet<u64> = lock(&self.state).handles().filter(|h| h.is_cold()).map(|h| h.meta.id).collect();
+            let mut f: HashSet<u64> = infos.iter().filter(|s| s.n_live > 0 && cold.contains(&s.id)).map(|s| s.id).collect();
+            f.extend(lock(&self.offloading).iter().copied());
+            f
+        };
+        let (group, cut) = policy.select_within(&infos, |id| m.claimed(id) || frozen.contains(&id), cap, threads, spill);
         let mut group = group?;
         let memory = merge_memory(&infos.iter().filter(|s| group.contains(&s.id)).copied().collect::<Vec<_>>(), threads, spill);
         // It fits the budget alone: it waits for running merges to finish.
@@ -3214,7 +3260,7 @@ impl Database {
                 for m in &t.segments {
                     let h = handles.iter().find(|h| h.meta.id == m.id).ok_or_else(|| corrupt(format!("segment {} is in the manifest but not open", m.id)))?;
                     vw.manifest.next_segment_id = m.id;
-                    vw.add_segment(to, None, h.file.image(), m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
+                    vw.add_segment(to, None, &h.whole_image()?, m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
                     stats.segments += 1;
                     stats.live_docs += (m.n_docs - m.n_deleted) as u64;
                 }
@@ -3351,6 +3397,224 @@ impl Database {
         }
     }
 
+    /// What the cold tier holds and has done; `None` without one
+    /// ([`DbOptions::cold`]).
+    pub fn cold_stats(&self) -> Option<ColdStats> {
+        self.cold.as_ref().map(|c| c.stats())
+    }
+
+    /// Changes each time a segment's image is swapped for another: one
+    /// made cold ([`Database::offload_segment`]) or a cold one's cache
+    /// evicted ([`Database::evict_cold`]). What caches readers of a
+    /// segment's image drops those of images no snapshot holds once it
+    /// changes, so that their space returns.
+    pub fn image_generation(&self) -> u64 {
+        self.images_swapped.load(Ordering::Acquire)
+    }
+
+    /// Makes cold what [`ColdOptions::keep_local_bytes`] does not keep
+    /// local: the newest segments are kept up to that many bytes, and the
+    /// older ones of at least [`ColdOptions::min_segment_bytes`] are made
+    /// cold, oldest first ([`Database::offload_segment`]). Returns how many
+    /// went. Does nothing without a cold tier or a `keep_local_bytes`.
+    pub fn offload(&self) -> Result<usize> {
+        let Some(cold) = &self.cold else { return Ok(0) };
+        let Some(keep) = cold.opts.keep_local_bytes else { return Ok(0) };
+        let mut local: Vec<(u64, u64, u64)> = lock(&self.state).handles().filter(|h| !h.is_cold()).map(|h| (h.meta.txn, h.meta.id, h.meta.extent.len)).collect();
+        // Newest first: what fits in `keep` stays.
+        local.sort_by(|a, b| b.cmp(a));
+        let mut kept = 0u64;
+        let mut over = Vec::new();
+        for (_, id, len) in local {
+            if over.is_empty() && kept + len <= keep {
+                kept += len;
+            } else if len >= cold.opts.min_segment_bytes {
+                over.push(id);
+            }
+        }
+        let mut n = 0;
+        for id in over.into_iter().rev() {
+            n += self.offload_segment(id)? as usize;
+        }
+        Ok(n)
+    }
+
+    /// Makes segment `id` cold ([`crate::storage::cold`]): uploads its image
+    /// and part table to the cold tier's store, copies its header and keys
+    /// into a cache file, and commits a version that names the object
+    /// instead of the local file, which goes once no snapshot reads it.
+    /// Returns false, having done nothing, if the segment is not there, is
+    /// cold already, or is being merged or made cold. Merges leave it alone
+    /// meanwhile. Takes the writer lock only to commit, and waits for it, so
+    /// it must not be called from a thread that holds a [`WriteTxn`].
+    pub fn offload_segment(&self, id: u64) -> Result<bool> {
+        let cold = self.cold.clone().ok_or_else(|| Error::Schema("the database has no cold tier (DbOptions::cold)".into()))?;
+        let d = self.dir.clone().ok_or_else(|| Error::Schema("cold segments need the directory layout".into()))?;
+        self.check_poisoned()?;
+        {
+            // The merges' lock first, as a merge claims under it.
+            let m = lock(&self.merging);
+            if m.claimed(id) || !lock(&self.offloading).insert(id) {
+                return Ok(false);
+            }
+        }
+        struct Unclaim<'a>(&'a Mutex<HashSet<u64>>, u64);
+        impl Drop for Unclaim<'_> {
+            fn drop(&mut self) {
+                lock(self.0).remove(&self.1);
+            }
+        }
+        let _unclaim = Unclaim(&self.offloading, id);
+        let Some(h) = lock(&self.state).handle(id).cloned().filter(|h| !h.is_cold()) else { return Ok(false) };
+        let name = h.meta.file.clone().ok_or_else(|| corrupt(format!("segment {id} has no file")))?;
+        let image: &[u8] = &h.map;
+        // A damaged image is not made the only copy.
+        if image.len() as u64 != h.meta.extent.len || crc32fast::hash(image) != h.meta.crc {
+            return Err(corrupt(format!("{name} fails its checksum")));
+        }
+        let header = crate::segment::header_len_from(image)?;
+        let (cref, object) = cold.upload(id, &d.join(&name), image)?;
+        let key = cref.key.clone();
+        let pinned = crate::storage::cold::pinned_of(&image[..header.min(image.len())], &object.table)?;
+        // A commit that may have reached the disk poisons the database: then
+        // the object stays, and opening sorts it out. Otherwise it goes, with
+        // the cache file, once the image (dropped after this) and the object
+        // are dropped.
+        let given_up = || {
+            if !self.is_poisoned() {
+                object.retire();
+                cold.uploaded(&key);
+            }
+        };
+        // Its handle opens over this image when the version is published.
+        let fresh = match cold.fresh_image(&object, &pinned, Some(image), None) {
+            Ok(f) => f,
+            Err(e) => {
+                given_up();
+                return Err(e);
+            }
+        };
+        let mut wal = self.background_writer();
+        let committed = (|| -> Result<bool> {
+            self.check_poisoned()?;
+            // Still there, as it was uploaded (its deletes may have changed).
+            if lock(&self.state).handle(id).is_none_or(|now| now.meta.file.as_deref() != Some(name.as_str())) {
+                return Ok(false);
+            }
+            let mut vw = VersionWriter::begin(self);
+            let s = vw.manifest.tables.iter_mut().flat_map(|t| t.segments.iter_mut()).find(|s| s.id == id).expect("segment in manifest");
+            s.cold = Some(cref);
+            vw.obsolete.extend(s.file.take());
+            let c = vw.commit(&mut wal)?;
+            self.publish(c, |_| {})?;
+            Ok(true)
+        })();
+        drop(wal);
+        if !matches!(committed, Ok(true)) {
+            given_up();
+            drop(fresh);
+            return committed;
+        }
+        cold.uploaded(&key);
+        cold.offloaded.fetch_add(1, Ordering::Relaxed);
+        self.images_swapped.fetch_add(1, Ordering::AcqRel);
+        tracing::info!(segment = id, key = %key, bytes = h.meta.extent.len, "made a segment cold");
+        Ok(true)
+    }
+
+    /// Brings the cold tier's cache back under [`ColdOptions::cache_bytes`],
+    /// to nine tenths of it: drops the fetched parts of the least recently
+    /// read cold segments, each opened again over a new cache file that
+    /// holds its header and keys only. Snapshots taken before keep reading
+    /// the old file, whose space returns when the last of them ends.
+    /// Returns the bytes dropped. Takes the writer lock.
+    pub fn evict_cold(&self) -> Result<u64> {
+        let Some(cold) = &self.cold else { return Ok(0) };
+        let limit = cold.opts.cache_bytes;
+        if cold.used() <= limit {
+            return Ok(0);
+        }
+        let target = limit / 10 * 9;
+        let d = self.dir.clone().expect("a cold tier has the directory layout");
+        let _wal = self.background_writer();
+        self.check_poisoned()?;
+        let hints = self.opts.read_ahead && self.opts.random_hints;
+        let check = if self.opts.check_sections { Check::Read } else { Check::Never };
+        let mut freed = 0;
+        for old in cold.images_by_age() {
+            if cold.used() <= target {
+                break;
+            }
+            if old.held() == 0 {
+                continue;
+            }
+            let id = old.object.id;
+            let (h, schema) = {
+                let st = lock(&self.state);
+                let Some((t, h)) = st.tables.iter().find_map(|t| Some((t, t.handles.iter().find(|h| h.meta.id == id)?))) else { continue };
+                (h.clone(), t.schema.clone())
+            };
+            if !h.cold.as_ref().is_some_and(|c| Arc::ptr_eq(c, &old)) {
+                continue;
+            }
+            let pinned = old.pinned_ranges()?;
+            let fresh = cold.fresh_image(&old.object, &pinned, None, Some(&old))?;
+            let nh = Arc::new(SegHandle::open_in(&d, &h.meta, &schema, self.opts.read_ahead, hints, check, Some(cold))?);
+            debug_assert!(nh.cold.as_ref().is_some_and(|c| Arc::ptr_eq(c, &fresh)));
+            {
+                let mut st = lock(&self.state);
+                for x in st.tables.iter_mut().flat_map(|t| t.handles.iter_mut()) {
+                    if Arc::ptr_eq(x, &h) {
+                        *x = nh.clone();
+                    }
+                }
+                st.changed();
+            }
+            freed += old.held();
+            old.retire();
+            cold.evictions.fetch_add(1, Ordering::Relaxed);
+            self.images_swapped.fetch_add(1, Ordering::AcqRel);
+        }
+        self.republish();
+        Ok(freed)
+    }
+
+    /// Starts a thread that runs [`Database::offload`] every `every` and
+    /// [`Database::evict_cold`] whenever the cache outgrows its limit. It
+    /// ends with the database; without a cold tier, or called again, this
+    /// does nothing.
+    pub fn spawn_cold(self: &Arc<Self>, every: Duration) {
+        let Some(cold) = self.cold.clone() else { return };
+        let mut slot = lock(&self.cold_thread);
+        if slot.is_some() {
+            return;
+        }
+        let db = Arc::downgrade(self);
+        let thread = std::thread::Builder::new().name("strata-cold".into()).spawn(move || {
+            let mut last: Option<String> = None;
+            let mut next_offload = Instant::now();
+            while cold.signal.wait(every.min(Duration::from_secs(1))) {
+                let Some(db) = db.upgrade() else { return };
+                if db.is_poisoned() {
+                    continue;
+                }
+                let mut r = db.evict_cold().map(|_| ());
+                if r.is_ok() && Instant::now() >= next_offload {
+                    next_offload = Instant::now() + every;
+                    r = db.offload().map(|_| ());
+                }
+                let now = r.err().map(|e| e.to_string());
+                match (&now, &last) {
+                    (None, Some(_)) => tracing::info!("the cold tier works again"),
+                    (Some(e), l) if l.as_ref() != Some(e) => tracing::warn!(error = %e, "the cold tier failed to offload or evict; it tries again"),
+                    _ => {}
+                }
+                last = now;
+            }
+        });
+        *slot = Some(thread.expect("spawn the cold tier's thread"));
+    }
+
     /// Verifies the file: the meta slot and manifest on disk match the open
     /// version, every segment and delete set matches its checksum, every
     /// key is found by its segment's index, and every page is used exactly
@@ -3454,9 +3718,28 @@ impl Database {
         }
         check_field_lists(&manifest, &handles)?;
         for (s, h) in manifest.segments().zip(&handles) {
-            let name = s.file.as_deref().ok_or_else(|| corrupt(format!("segment {} has no file", s.id)))?;
-            if crc32fast::hash(&std::fs::read(d.join(name))?) != s.crc {
-                return Err(corrupt(format!("{name} fails its checksum")));
+            match (&s.cold, &h.cold) {
+                // A cold image is checked as far as the cache holds it (a
+                // damaged part is fetched again), and its object must be
+                // there and whole; it is not fetched to be checked.
+                (Some(c), Some(img)) => {
+                    img.verify_present()?;
+                    let store = &self.cold.as_ref().expect("a cold segment opens only with the cold tier").opts.store;
+                    let n = s.extent.len.div_ceil(c.chunk.max(1) as u64);
+                    if crc32fast::hash(&store.get_range(&format!("{}.crc", c.key), 0..24 + 4 * n)?) != c.table_crc {
+                        return Err(corrupt(format!("cold segment {}: {}.crc fails its checksum", s.id, c.key)));
+                    }
+                    if s.extent.len > 0 {
+                        store.get_range(&c.key, s.extent.len - 1..s.extent.len)?;
+                    }
+                }
+                (Some(_), None) | (None, Some(_)) => return Err(corrupt(format!("segment {} is cold in the manifest and not in the open version, or the other way", s.id))),
+                (None, None) => {
+                    let name = s.file.as_deref().ok_or_else(|| corrupt(format!("segment {} has no file", s.id)))?;
+                    if crc32fast::hash(&std::fs::read(d.join(name))?) != s.crc {
+                        return Err(corrupt(format!("{name} fails its checksum")));
+                    }
+                }
             }
             if let Some(df) = &s.deletes_file {
                 if crc32fast::hash(&std::fs::read(d.join(df))?) != s.deletes_crc {
@@ -3553,13 +3836,23 @@ impl Database {
                     .iter()
                     .map(|m| match (old.iter().find(|h| h.meta == *m).filter(|_| !altered.contains(&t.id)), &self.dir) {
                         (Some(h), _) => Ok(h.clone()),
-                        (None, Some(d)) => SegHandle::open_in(d, m, &t.schema, self.opts.read_ahead, hints, check).map(Arc::new),
+                        (None, Some(d)) => SegHandle::open_in(d, m, &t.schema, self.opts.read_ahead, hints, check, self.cold.as_ref()).map(Arc::new),
                         (None, None) => SegHandle::open(&map, m, &t.schema, self.opts.read_ahead, hints, check).map(Arc::new),
                     })
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<Vec<_>>>()
             .map_err(|e| self.poison(e))?;
+        // Cold segments the new version no longer names: their objects go
+        // once no snapshot reads them.
+        let named: HashSet<&str> = c.manifest.segments().filter_map(|s| s.cold.as_ref().map(|c| c.key.as_str())).collect();
+        for h in &old {
+            if let Some(img) = h.cold.as_ref().filter(|i| !named.contains(i.object.key.as_str())) {
+                img.object.retire();
+                // Readers cached above let go of it.
+                self.images_swapped.fetch_add(1, Ordering::AcqRel);
+            }
+        }
         let obsolete = c.obsolete;
         {
             let mut st = lock(&self.state);
@@ -4717,6 +5010,7 @@ impl<'a> VersionWriter<'a> {
             updates: upd,
             updates_file,
             updates_crc,
+            cold: None,
         };
         let segs = &mut self.table_mut(table).segments;
         segs.insert(pos.unwrap_or(segs.len()), meta);
@@ -5004,6 +5298,7 @@ fn segment_stats(m: &Manifest) -> Vec<SegmentStats> {
                 n_deleted: s.n_deleted,
                 bytes: s.extent.len,
                 delete_set_bytes: s.deletes.map_or(0, |e| e.len),
+                cold: s.cold.is_some(),
             })
         })
         .collect()

@@ -116,6 +116,8 @@ pub struct Options {
     pub synonyms: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     pub backup_dir: Option<PathBuf>,
+    /// Keep segments cold on object storage ([`strata::storage::cold`]).
+    pub cold: Option<ColdFlags>,
     /// What writes may fetch for MEDIA fields: `file:` roots and hosts
     /// ([`strata::media::Allowlist::parse`]).
     pub media_fetch: Vec<String>,
@@ -203,6 +205,33 @@ fn media_resolver(o: &Options) -> Result<strata::media::Resolver, String> {
     Ok(strata::media::Resolver { allow, max_bytes, store: o.media_store.clone(), http: Some(std::sync::Arc::new(http)) })
 }
 
+/// The cold tier's flags ([`strata::storage::ColdOptions`]).
+#[derive(Clone, Debug)]
+pub struct ColdFlags {
+    /// An `s3://` URL or a directory ([`strata::storage::open_store`]).
+    pub store: String,
+    pub cache_bytes: u64,
+    pub keep_local_bytes: Option<u64>,
+    pub min_segment_bytes: u64,
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl ColdFlags {
+    fn options(&self) -> Result<strata::storage::ColdOptions, String> {
+        let store = strata::storage::open_store(&self.store).map_err(|e| format!("--cold-store {}: {e}", self.store))?;
+        Ok(strata::storage::ColdOptions {
+            cache_dir: self.cache_dir.clone(),
+            cache_bytes: self.cache_bytes,
+            keep_local_bytes: self.keep_local_bytes,
+            min_segment_bytes: self.min_segment_bytes,
+            ..strata::storage::ColdOptions::new(store)
+        })
+    }
+}
+
+/// How often the cold tier looks for segments to make cold.
+const COLD_EVERY: Duration = Duration::from_secs(30);
+
 /// Segment builds (flushes, merges, imports): vector indexes on every core.
 fn build_options() -> BuildOptions {
     BuildOptions::default().set("vector.threads", std::thread::available_parallelism().map_or(1, |n| n.get()))
@@ -289,6 +318,14 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         if o.copy_from.is_some() && (path.exists() || o.schema.is_none()) {
             return Err("--copy-from fills a new database: pass a --db that does not exist and its --schema".into());
         }
+        let cold = match &o.cold {
+            Some(c) if path.is_file() || (!path.exists() && !o.directory) => {
+                return Err(format!("--cold-store {}: cold segments need a database in the directory layout (--directory)", c.store));
+            }
+            Some(c) => Some(c.options()?),
+            None => None,
+        };
+        let db_options = |directory: bool| DbOptions { cold: cold.clone(), ..db_options(directory) };
         let db = if path.exists() {
             let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
                 .map_err(|e| format!("open {}: {e}", path.display()))?;
@@ -328,6 +365,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         // segments are merged.
         db.spawn_flusher();
         db.spawn_merger(o.merger.clone());
+        if let Some(c) = &o.cold {
+            db.spawn_cold(COLD_EVERY);
+            tracing::info!(store = %c.store, cache_mib = c.cache_bytes >> 20, keep_local_mib = ?c.keep_local_bytes.map(|b| b >> 20), "cold segments: kept on object storage, read through a local cache");
+        }
         if let Some(b) = db.storage().merge_status().memory_budget {
             tracing::info!(threads = o.merger.threads.max(1), memory_mib = b >> 20, "merging in the background");
         }

@@ -29,7 +29,7 @@ use crate::postings::bytes::{ByteReader, ByteWriter, OwnedBytes, Slice};
 use crate::error::{corrupt, Error, Result};
 use crate::schema::{FieldType, Schema};
 use crate::segment::build::BuildOptions;
-use crate::segment::{DocId, SegmentFile, SegmentWriter, Spill, SpillStream};
+use crate::segment::{DocId, SectionFetch, SegmentFile, SegmentWriter, Spill, SpillStream};
 use crate::value::{Document, Value};
 
 /// Default uncompressed block size (`forward.store_block`).
@@ -326,6 +326,8 @@ pub struct DocStore {
     /// (`data` is then not checked as a whole).
     crcs: Option<Slice<u32>>,
     data: OwnedBytes,
+    /// A cold segment's: fetches a block's bytes before it is read.
+    fetch: Option<SectionFetch>,
 }
 
 impl DocStore {
@@ -359,9 +361,12 @@ impl DocStore {
         } else {
             None
         };
-        let data = match crcs {
-            Some(_) => seg.section_unchecked("store.data").ok_or_else(|| corrupt("missing section store.data"))?,
-            None => seg.require("store.data")?,
+        // A cold segment's blocks are fetched one at a time, as they are
+        // read, and checked as they arrive.
+        let (data, fetch) = match (seg.section_parts("store.data"), crcs.is_some()) {
+            (Some((data, fetch)), _) => (data, Some(fetch)),
+            (None, true) => (seg.section_unchecked("store.data")?.ok_or_else(|| corrupt("missing section store.data"))?, None),
+            (None, false) => (seg.require("store.data")?, None),
         };
         let mismatch = || Error::Schema("doc store fields do not match the schema".into());
         if idx.len() != kinds.len() {
@@ -401,7 +406,7 @@ impl DocStore {
         {
             return Err(corrupt("bad doc store index"));
         }
-        Ok(DocStore { n, n_fields: schema.fields.len(), fields, fills, first, offs, raw_len, crcs, data })
+        Ok(DocStore { n, n_fields: schema.fields.len(), fields, fills, first, offs, raw_len, crcs, data, fetch })
     }
 
     /// Number of documents.
@@ -518,6 +523,12 @@ impl DocStore {
     /// store has one.
     fn decompress(&self, b: usize) -> Result<Vec<u8>> {
         let (a, z) = (self.offs[b] as usize, self.offs[b + 1] as usize);
+        if z > self.data.len() || a > z {
+            return Err(bad_block(b));
+        }
+        if let Some(f) = &self.fetch {
+            f.ensure(a..z)?;
+        }
         let src = self.data.get(a..z).ok_or_else(|| bad_block(b))?;
         if let Some(crcs) = &self.crcs {
             if crc32fast::hash(src) != crcs[b] {

@@ -91,10 +91,23 @@ fn object(store: Option<&DocStore>, field: usize, d: DocId, cache: &mut forward:
     })
 }
 
-fn opened<'r, T>(cell: &'r OnceLock<Opened<T>>, open: impl FnOnce() -> Result<Option<T>>) -> Result<Option<&'r T>> {
-    match cell.get_or_init(|| open().map_err(|e| e.to_string())) {
+/// The reader in `cell`, opened by `open` the first time. A failure to
+/// open a cold segment's reader (`fetched`, [`SegmentFile::is_fetched`]) is
+/// not kept: it may be the store's, which may answer the next query.
+fn opened<'r, T>(cell: &'r OnceLock<Opened<T>>, fetched: bool, open: impl FnOnce() -> Result<Option<T>>) -> Result<Option<&'r T>> {
+    let r = match cell.get() {
+        Some(r) => r,
+        None => match open() {
+            Err(e) if fetched => return Err(e),
+            r => {
+                let _ = cell.set(r.map_err(|e| e.to_string()));
+                cell.get().expect("set")
+            }
+        },
+    };
+    match r {
         Ok(r) => Ok(r.as_ref()),
-        Err(e) => Err(crate::error::corrupt(e)),
+        Err(e) => Err(crate::error::corrupt(e.clone())),
     }
 }
 
@@ -117,7 +130,7 @@ impl SegmentReaders {
     /// The graph index of an indexed EDGES field.
     pub fn graph(&self, field: usize) -> Result<Option<&GraphReader>> {
         let f = &self.schema.fields[field];
-        opened(&self.graph[field], || {
+        opened(&self.graph[field], self.seg.is_fetched(), || {
             Ok(match f.ty {
                 FieldType::Edges if f.indexed => GraphReader::open(&self.seg, &f.key())?,
                 _ => None,
@@ -127,7 +140,7 @@ impl SegmentReaders {
 
     pub fn text(&self, field: usize) -> Result<Option<&TextFieldReader>> {
         let f = &self.schema.fields[field];
-        opened(&self.text[field], || {
+        opened(&self.text[field], self.seg.is_fetched(), || {
             Ok(match f.ty {
                 // A JSON field with text has one beside its terms.
                 FieldType::Text { .. } | FieldType::Sparse if f.indexed => Some(TextFieldReader::open(&self.seg, &f.key())?),
@@ -139,7 +152,7 @@ impl SegmentReaders {
 
     fn numeric(&self, field: usize) -> Result<Option<&Numeric>> {
         let f = &self.schema.fields[field];
-        opened(&self.numeric[field], || {
+        opened(&self.numeric[field], self.seg.is_fetched(), || {
             Ok(match f.ty {
                 FieldType::Int | FieldType::Float if f.indexed && !f.multi => Some(match RangeIndex::open_if_present(&self.seg, &f.key())? {
                     Some(idx) => Numeric::Indexed(idx),
@@ -152,7 +165,7 @@ impl SegmentReaders {
 
     pub fn keyword(&self, field: usize) -> Result<Option<&KeywordColumn>> {
         let f = &self.schema.fields[field];
-        opened(&self.keyword[field], || {
+        opened(&self.keyword[field], self.seg.is_fetched(), || {
             // Multi-valued INT fields are keyword columns of int_key strings,
             // JSON fields of their objects' terms (crate::json).
             if !(f.indexed && (matches!(f.ty, FieldType::Keyword | FieldType::Json) || matches!(f.ty, FieldType::Int) && f.multi)) {
@@ -176,7 +189,7 @@ impl SegmentReaders {
 
     pub fn vector(&self, field: usize) -> Result<Option<&VectorReader>> {
         let f = &self.schema.fields[field];
-        opened(&self.vector[field], || {
+        opened(&self.vector[field], self.seg.is_fetched(), || {
             Ok(match f.ty {
                 FieldType::Vector { .. } => Some(VectorReader::open(&self.seg, &f.key())?),
                 _ => None,
@@ -192,7 +205,7 @@ impl SegmentReaders {
     }
 
     pub fn store(&self) -> Result<Option<&DocStore>> {
-        opened(&self.store, || {
+        opened(&self.store, self.seg.is_fetched(), || {
             let any = self.schema.fields.iter().any(|f| f.stored && !matches!(f.ty, FieldType::Vector { .. }));
             Ok(if any { Some(DocStore::open(&self.seg, &self.schema)?) } else { None })
         })

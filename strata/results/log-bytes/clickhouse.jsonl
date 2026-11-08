@@ -1,0 +1,4 @@
+{"input":"android","lines":1555005,"clickhouse_otel_bytes_per_line":6.2,"clickhouse_otel_no_body_bloom_bytes_per_line":5.8,"clickhouse_parts":2}
+{"input":"bgl","lines":4747963,"clickhouse_otel_bytes_per_line":8.9,"clickhouse_otel_no_body_bloom_bytes_per_line":8.2,"clickhouse_parts":215}
+{"input":"hdfs","lines":11175629,"clickhouse_otel_bytes_per_line":12.8,"clickhouse_otel_no_body_bloom_bytes_per_line":12.3,"clickhouse_parts":3}
+{"input":"ssh","lines":655147,"clickhouse_otel_bytes_per_line":7.2,"clickhouse_otel_no_body_bloom_bytes_per_line":6.3,"clickhouse_parts":25}
