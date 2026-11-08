@@ -4665,10 +4665,10 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
     let sql: Vec<&PreparedWrite> = group.iter().filter_map(|q| q.sql()).collect();
     if !sql.is_empty() {
         let keys: Vec<Option<(&str, u64)>> = group.iter().map(Queued::key).collect();
-        // Each key in its write's transaction ([`idem::record`]).
+        // Each key in its write's transaction, if it wrote a row ([`idem::record`]).
         let run = |ps: &[&PreparedWrite], keys: &[Option<(&str, u64)>], deadline: Instant| {
             let now = strata::timestamp::now();
-            let record = |t: &mut WriteTxn<'_>, rows: &[u64]| keys.iter().zip(rows).try_for_each(|(k, &rows)| k.map_or(Ok(()), |(k, hash)| idem::record(t, k, hash, rows, now)));
+            let record = |t: &mut WriteTxn<'_>, rows: &[u64]| keys.iter().zip(rows).filter(|(_, &rows)| rows > 0).try_for_each(|(k, &rows)| k.map_or(Ok(()), |(k, hash)| idem::record(t, k, hash, rows, now)));
             wait_for_writer(deadline, || {
                 // Made outside the transaction, which holds the writer.
                 if keys.iter().any(Option::is_some) {
@@ -4821,7 +4821,8 @@ fn apply_requests(db: &Db, requests: &[(&[Json], u64)], mark: Option<(&str, i64)
 
 /// [`apply_requests`], recording in the transaction the idempotency key
 /// (and the hash of what it names) of each request that has one, by the
-/// request's place in `keys` ([`idem::record`]).
+/// request's place in `keys` ([`idem::record`]), if it wrote a row: one
+/// that wrote none leaves no transaction behind it, as before.
 fn apply_keyed(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
     let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
@@ -4834,7 +4835,7 @@ fn apply_keyed(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>
     let now = strata::timestamp::now();
     for (i, (ops, epoch)) in requests.iter().enumerate() {
         let a = apply_into(&catalog, &mut t, ops, *epoch, &mut arrived)?;
-        if let Some(Some((k, hash))) = keys.get(i) {
+        if let Some(Some((k, hash))) = keys.get(i).filter(|_| a.rows > 0) {
             idem::record(&mut t, k, *hash, a.rows, now)?;
         }
         applied.push(a);

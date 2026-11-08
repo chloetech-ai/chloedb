@@ -10,9 +10,10 @@
 //!
 //! - in memory ([`Keys`]), for [`TTL`], the most recent [`CAPACITY`] of
 //!   them, with the whole answer;
-//! - in the database, as a row of `_sources` written in the request's own
-//!   transaction ([`record`]): named [`ROW`] and the key, its offset the
-//!   hash of the request and the rows it wrote ([`pack`]). It reaches the
+//! - in the database, for a request that wrote a row, as a row of
+//!   `_sources` written in the request's own transaction ([`record`]):
+//!   named [`ROW`] and the key, its offset the hash of the request and the
+//!   rows it wrote ([`pack`]). It reaches the
 //!   copies with the write, so the copy promoted when a primary fails
 //!   before answering knows the key, and so does a server restarted. A
 //!   key its memory does not hold is looked up there ([`recorded`]), and

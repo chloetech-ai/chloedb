@@ -277,10 +277,12 @@ async fn feeds_written_again_give_the_rows_while_slots_move() {
     assert!(ids(&marks[0], "arrived").is_empty() && ids(&marks[1], "left").is_empty());
     assert!(marks[0].iter().all(|m| m["to"] == 1 && m["slots"] == 512), "{marks:?}");
 
-    // The marks are not stream sources.
+    // The marks are not stream sources, and `_sources` keeps none of them:
+    // only the records of idempotency keys (`idem::record`).
     for s in [&s0, &s1] {
         assert!(s.sources().await.unwrap().is_empty());
-        assert!(s.local_db().unwrap().sources().unwrap().is_empty());
+        let kept = s.local_db().unwrap().sources().unwrap();
+        assert!(kept.iter().all(|k| k.name.starts_with(strata_server::idem::ROW)), "{:?}", kept.iter().map(|k| &k.name).collect::<Vec<_>>());
     }
     let e = s0.write_ops_as(vec![json!({"op": "source", "source": {"name": "_strata/mine", "offset": 1}})], None, Moved::No).await.unwrap_err();
     assert!(e.message.contains("_strata/"), "{}", e.message);
