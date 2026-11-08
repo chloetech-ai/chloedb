@@ -9,6 +9,8 @@ import { validate, uiRefs, pinShared, checkShared, sharedRefs } from '../engine/
 import { readLibrary, parsePiece } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
 import { checkFunction, runFunction } from '../engine/sandbox.mjs';
+import { Services, buildMessage, smtpSend } from '../engine/services.mjs';
+import net from 'node:net';
 
 const P = (t) => `app_abc123_${t}`;
 const T = ['tasks', 'tags', 'people'];
@@ -159,4 +161,77 @@ test('the graph links what code calls: shared pieces, tables, functions and view
   assert.deepEqual(docs.map((d) => d.id), ['app/a1', 'a1/view/home', 'a1/table/habits']);
   assert.deepEqual(docs[0].links, [['has', 'a1/view/home'], ['has', 'a1/table/habits']]);
   assert.deepEqual(parseLinks('[["uses","x"],"y",{"to":"z","label":"has"}]'), [{ label: 'uses', to: 'x' }, { to: 'y' }, { label: 'has', to: 'z' }]);
+});
+
+test('a function sees who is signed in, reaches the services through the host, and uses the new helpers', async () => {
+  const pieces = await readLibrary(new URL('../library', import.meta.url).pathname);
+  const helpers = pieces.filter((p) => p.kind === 'helper').map((p) => ({ name: p.name, code: p.code }));
+  const calls = [];
+  const host = async (method, args) => { calls.push(method); return method === 'people' ? [{ id: 'p1' }, { id: 'p2' }] : method === 'email' ? { id: 'm1', status: 'held' } : null; };
+  const code = `function run(input, app) {
+    const row = { id: 'r1', author: 'p1' };
+    return {
+      me: app.user && app.user.name, same: app.me() === app.user,
+      mayEdit: lib.access.can(app.user, 'edit', row), mayEditOther: lib.access.can(app.user, 'edit', { author: 'p9' }),
+      people: app.people().length, mail: app.email({ to: 'a@example.com', subject: 'hi' }).status,
+      km: Math.round(lib.geo.distance({ lat: 52.52, lng: 13.405 }, { lat: 48.8566, lng: 2.3522 })),
+      mins: lib.duration.minutes('1h 30m'), lb: Math.round(lib.units.convert(10, 'kg', 'lb') * 10) / 10,
+      ok: lib.validate.check({ email: 'x' }, { email: 'required|email' }).ok, tasks: lib.markdown.tasks('- [ ] a\\n- [x] b').length,
+      ink: lib.color.readable('#1d4ed8'),
+    };
+  }`;
+  const out = await runFunction(code, null, host, { helpers, user: { id: 'p1', name: 'Ana', email: 'ana@example.com', role: 'member' } });
+  assert.deepEqual(out.result, { me: 'Ana', same: true, mayEdit: true, mayEditOther: false, people: 2, mail: 'held', km: 877, mins: 90, lb: 22, ok: false, tasks: 2, ink: '#ffffff' });
+  assert.deepEqual(calls, ['people', 'email']);
+  const nobody = await runFunction('function run(input, app) { return [app.user, lib.access.why(app.user, "add")] }', null, host, { helpers });
+  assert.deepEqual(nobody.result, [null, 'Sign in to add this']);
+});
+
+test('helpers get no app at all; components may call services but not data', () => {
+  assert.match(checkShared('helper', 'function helper() { return { who: () => app.me() } }').join(' '), /a helper gets no app/);
+  assert.deepEqual(checkShared('component', 'function component(props) { return h("img", { src: app.fileUrl(props.file) }) }'), []);
+  assert.match(checkShared('component', 'function component(props) { app.sql("SELECT 1"); return h("div") }').join(' '), /uses app.sql/);
+});
+
+test('passwords are hashed with scrypt and checked in constant time', async () => {
+  const stored = await Services.hashPassword('correct horse');
+  assert.match(stored, /^scrypt\$[0-9a-f]{32}\$[0-9a-f]{64}$/);
+  assert.equal(await Services.checkPassword('correct horse', stored), true);
+  assert.equal(await Services.checkPassword('wrong horse', stored), false);
+  assert.equal(await Services.checkPassword('x', 'plain'), false);
+});
+
+test('email goes out over SMTP: AUTH PLAIN, one recipient line each, dot-stuffed body, encoded headers', async () => {
+  const msg = buildMessage({ from: 'apps@example.test', fromName: 'Café list', to: ['a@example.com'], subject: 'Grüße', text: 'line one\n.starts with a dot' });
+  assert.match(msg, /^From: =\?UTF-8\?B\?[A-Za-z0-9+/=]+\?= <apps@example.test>\r\n/);
+  assert.match(msg, /\r\nSubject: =\?UTF-8\?B\?/);
+  assert.match(msg, /\r\n\r\nline one\r\n\.\.starts with a dot$/);
+  const seen = { lines: [], data: '' };
+  const server = net.createServer((sock) => {
+    let buf = ''; let inData = false;
+    sock.write('220 test ESMTP\r\n');
+    sock.on('data', (d) => {
+      buf += d.toString();
+      for (;;) {
+        if (inData) { const end = buf.indexOf('\r\n.\r\n'); if (end < 0) return; seen.data = buf.slice(0, end); buf = buf.slice(end + 5); inData = false; sock.write('250 queued\r\n'); continue; }
+        const i = buf.indexOf('\r\n'); if (i < 0) return;
+        const line = buf.slice(0, i); buf = buf.slice(i + 2); seen.lines.push(line);
+        const cmd = line.split(' ')[0];
+        if (cmd === 'EHLO') sock.write('250-test\r\n250 AUTH PLAIN\r\n');
+        else if (cmd === 'AUTH') sock.write('235 ok\r\n');
+        else if (cmd === 'DATA') { inData = true; sock.write('354 go\r\n'); }
+        else if (cmd === 'QUIT') { sock.end('221 bye\r\n'); }
+        else sock.write('250 ok\r\n');
+      }
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    await smtpSend(`smtp://me%40x:p%40ss@127.0.0.1:${port}`, { from: 'apps@example.test', to: ['a@example.com', 'b@example.com'], subject: 'Hi', text: 'Hello\n.dot' });
+    assert.equal(seen.lines.find((l) => l.startsWith('AUTH')), `AUTH PLAIN ${Buffer.from('\0me@x\0p@ss').toString('base64')}`);
+    assert.deepEqual(seen.lines.filter((l) => l.startsWith('RCPT')), ['RCPT TO:<a@example.com>', 'RCPT TO:<b@example.com>']);
+    assert.match(seen.data, /\r\nSubject: Hi\r\n/);
+    assert.match(seen.data, /Hello\r\n\.\.dot$/);
+  } finally { server.close(); }
 });

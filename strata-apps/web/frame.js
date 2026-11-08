@@ -81,9 +81,27 @@
     money(n, currency = 'USD') { return n === null || n === undefined ? '' : Number(n).toLocaleString(undefined, { style: 'currency', currency }); },
   };
 
+  // Files and map tiles come from the engine itself, by URL: the frame's
+  // stylesheet policy lets images load from there and nothing else.
+  const origin = SA.origin || '';
+  const files = `${origin}/api/apps/${SA.app || ''}/files/`;
+  const one = (f) => rpc('upload', [f]);
   const app = Object.freeze({
     params: Object.freeze({ ...(SA.params || {}) }),
     view: SA.slug,
+    // people: one account for every app on this engine
+    me: () => rpc('me', []),
+    signIn: (email, password) => rpc('signIn', [typeof email === 'object' && email ? email : { email, password }]),
+    signUp: (fields) => rpc('signUp', [fields || {}]),
+    signOut: () => rpc('signOut', []),
+    people: () => rpc('people', []),
+    // files: upload(File | FileList | File[]) -> {id, name, type, size, url}
+    upload: (f) => (f && typeof f.length === 'number' && !(f instanceof Blob) ? Promise.all(Array.from(f).map(one)) : one(f)),
+    fileUrl: (id, opts) => (!id ? '' : /^(https?:|data:|blob:)/.test(String(id)) ? String(id) : `${files}${encodeURIComponent(id)}${opts && opts.download ? '?download' : ''}`),
+    files: (ids) => rpc('files', [[].concat(ids || [])]),
+    email: (msg) => rpc('email', [msg || {}]),
+    geocode: (q) => rpc('geocode', [String(q || '')]),
+    tiles: `${origin}/api/tiles/{z}/{x}/{y}.png`,
     sql: (sql, params) => rpc('sql', [sql, params || {}]),
     insert: (table, row) => rpc('insert', [table, row || {}]),
     update: (table, id, fields) => rpc('update', [table, id, fields || {}]),

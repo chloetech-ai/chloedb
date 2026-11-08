@@ -68,7 +68,7 @@ app in a view (every call returns a Promise):
 - app.fmt.ago(iso) ("3 h ago"), app.fmt.date(iso) ("8 Nov 2026"), app.fmt.time(iso), app.fmt.datetime(iso), app.fmt.number(n), app.fmt.money(n, currency='USD')
 - app.today(): today's date as "YYYY-MM-DD"; app.now(): the time as ISO text
 
-The frame has no network: fetch, imports, external scripts, fonts and stylesheets are blocked, and so are localStorage and cookies (keep state in a table, or in variables while the view is open). confirm() and prompt() work. Images may load from https URLs the data holds.
+The frame has no network: fetch, imports, external scripts, fonts and stylesheets are blocked, and so are localStorage and cookies (keep state in a table, or in variables while the view is open). confirm() and prompt() work. Images may load from https URLs the data holds, and from files the app stores (app.fileUrl(id), below).
 
 Styling: a stylesheet is already there, and plain elements look good without classes: h1 to h3, p, a, button, input, select, textarea, table (with thead), label, details, progress, hr, small, code. A <form> lays out its children in a row. Classes:
 - layout: .row (flex row, gap, wraps), .col (flex column, gap), .grow (takes the free space), .grid (responsive grid of cards), .split (two columns that stack on phones), .right (pushes to the end of a row), .center
@@ -106,6 +106,15 @@ A helper is a set of plain functions in the library, called as lib.NAME.fn(...) 
 
 returning an object of functions. Helpers get no app and no page (no app.*, document, window, ui, h): plain values in, plain values out, synchronous, so they run in the browser and in the server sandbox alike. Write a new helper (in "helpers") for logic that is not about one app's data and that another app could use; a new version may add functions and optional arguments, never change what an existing function returns.
 
+# Services: people, files, email, places
+
+Every app gets these from the runtime. In views and components each call returns a Promise; the ones marked (functions too) also work in functions, where they return directly.
+- People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker) and lib.access for who may do what. An app that only one person uses needs none of it.
+- Files. app.upload(file) takes a File from <input type="file"> or a drop (a FileList or an array uploads each) and returns {id, name, type, size, url}; files are at most 15 MB. Keep the id in a keyword column, or a keyword[] for several. app.fileUrl(id) is the URL to show it (an img's src, a link); app.fileUrl(id, {download: true}) downloads it. app.files(ids) -> [{id, name, type, size, url}] (functions too). The shared ui.uploader, ui.image, ui.gallery, ui.imageViewer and ui.fileList do the rest.
+- Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
+- Places. app.geocode(address) -> up to 5 matches [{label, lat, lng}] (functions too). app.tiles is the URL template of map tiles; ui.map and ui.locationPicker use it, with lib.geo for distances.
+Components may call these services (ui.signIn, ui.uploader and ui.map do), but still never the app's tables. Helpers call none of them.
+
 # Functions
 
 A function's code defines
@@ -115,6 +124,7 @@ A function's code defines
 a plain synchronous function: app calls return their results directly (no async, no await, no Promises). app in a function:
 - app.sql(sql, params) -> rows; app.insert(table, row) -> row; app.update(table, id, fields) -> row; app.remove(table, id)
 - app.call(slug, input); app.now() -> ISO time; app.log(...)
+- app.user (the signed-in person or null), app.people(), app.files(ids), app.email(msg), app.geocode(address): the services above
 It returns any JSON value. It runs in QuickJS with a 10 s limit, no network, no files, no require or import. Date, Math, JSON, RegExp, Array and the rest of standard JavaScript work.
 
 A function may declare a trigger, "on": {"table": "tasks", "event": "insert"} (or "update" or "delete"): it then runs after each such write with input {row, table, event}, where row is the row as stored (the old row for delete). Writes a trigger makes run their own triggers, at most 3 deep. Use a trigger when something must happen whenever rows change (keep a counter, log history, fill a derived column); use a plain function that views call for work on demand.
@@ -294,6 +304,8 @@ export function checkShared(kind, code) {
   if (kind === 'helper') {
     const page = code.match(/\b(document|window|localStorage)\b|(?<![\w$.])(ui|h|svg|css)\s*[.(]/);
     if (page) problems.push(`uses ${page[1] || page[2]}: helpers also run on the server, where there is no page`);
+    const svc = !data && code.match(/(?<![\w$.])app\s*\.\s*(\w+)/);
+    if (svc) problems.push(`uses app.${svc[1]}: a helper gets no app; take what it needs as arguments`);
     if (/\bawait\b|\basync\b/.test(code)) problems.push('a helper is synchronous: no async or await');
   }
   if (/\bimport\s+[\w{*]|\brequire\s*\(/.test(code)) problems.push('no import or require');

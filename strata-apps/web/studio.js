@@ -55,6 +55,10 @@ const EXAMPLES = [
   'A shared grocery list for our home, grouped by aisle, where ticking an item moves it to the bottom.',
 ];
 
+// An app on its own, at /a/<id>: its views, without the studio around them.
+const BARE = (location.pathname.match(/^\/a\/([a-z0-9]+)/) || [])[1] || null;
+if (BARE) document.body.classList.add('bare');
+
 const S = {
   status: null,
   appId: null,
@@ -131,6 +135,7 @@ function connect() {
 
 function route() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  if (BARE) return openApp(BARE, parts[0] ? decodeURIComponent(parts[0]) : null);
   $('#nav-library').classList.toggle('on', parts[0] === 'library');
   if (parts[0] === 'app' && parts[1]) return openApp(parts[1], parts[2] ? decodeURIComponent(parts[2]) : null);
   leaveApp();
@@ -344,7 +349,13 @@ async function refreshApp() {
 
 function renderApp() {
   const st = S.app;
-  $('#crumbs').replaceChildren(h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, `v${st.version.n}`) : null);
+  if (BARE) {
+    document.title = st.app.name;
+    $('.brand').replaceChildren(h('span', { class: 'mark' }), st.app.name);
+  } else {
+    $('#crumbs').replaceChildren(h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, `v${st.version.n}`) : null,
+      st.views.length ? h('a', { class: 'navlink small', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null);
+  }
   const views = st.views;
   if (!views.find((v) => v.slug === S.view)) S.view = views[0]?.slug || null;
   // tabs
@@ -370,7 +381,7 @@ function switchView(slug, params) {
     if (f) { f.iframe.remove(); S.frames.delete(slug); }
     S.params = { ...(S.params || {}), [slug]: params };
   }
-  history.replaceState(null, '', `#/app/${S.appId}/${encodeURIComponent(slug)}`);
+  history.replaceState(null, '', BARE ? `#/${encodeURIComponent(slug)}` : `#/app/${S.appId}/${encodeURIComponent(slug)}`);
   renderApp();
 }
 
@@ -378,7 +389,7 @@ const noClose = (code) => String(code).replace(/<\/(script)/gi, '<\\/$1');
 
 function srcdoc(view, params, components, helpers) {
   const code = noClose(view.code);
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, params: params || {} }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {} }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -387,7 +398,7 @@ ${noClose(c.code)}
 ${noClose(c.code)}
 ;return helper(); });</script>`).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data: blob:; media-src https: data: blob:; font-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data: blob: ${location.origin}; media-src https: data: blob: ${location.origin}; font-src data:">
 <style>${KIT}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
@@ -422,7 +433,7 @@ function renderFrames() {
   const v = st.views.find((x) => x.slug === S.view);
   if (v && !S.frames.has(v.slug)) {
     const params = S.params?.[v.slug] || {};
-    const iframe = h('iframe', { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox', title: v.title });
+    const iframe = h('iframe', { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads', title: v.title });
     iframe.srcdoc = srcdoc(v, params, st.components, st.helpers);
     box.append(iframe);
     S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
@@ -564,10 +575,50 @@ function insideTab() {
     h('h2', { class: 'label' }, 'Tables'), h('div', { class: 'caps' }, st.tables.map((t) => h('div', null,
       h('div', { class: 'cap', onclick: () => showCode(t.id) }, h('span', { class: 'pill table' }, 'table'), h('span', { class: 't' }, t.name), h('span', { class: 'v' }, `${t.rows} rows`)),
       h('div', { class: 'cols' }, (t.columns || []).map((c) => `${c.name} ${c.type}`).join(' · '))))),
+    h('h2', { class: 'label' }, `People (${(st.people || []).length})`), h('div', { class: 'caps' }, (st.people || []).length
+      ? st.people.map((p) => h('div', { class: 'cap' }, h('span', { class: 'pill person' }, p.role), h('span', { class: 't' }, p.name), h('span', { class: 'v' }, p.email)))
+      : h('div', { class: 'hint' }, 'Nobody has signed in yet. People join an app by signing in from one of its views (ui.signIn); the first becomes its owner. Rows of sa_people and sa_members.')),
+    h('h2', { class: 'label' }, 'Outbox'), h('div', { class: 'caps' }, (st.outbox || []).length
+      ? st.outbox.map((o) => h('div', { class: 'cap', onclick: () => showEmail(o) }, h('span', { class: `pill mail-${o.status}` }, o.status), h('span', { class: 't' }, o.subject || '(no subject)'), h('span', { class: 'v' }, `to ${(o.recipients || []).join(', ')} · ${ago(o.created)}`)))
+      : h('div', { class: 'hint' }, 'No email yet. Email the app sends is a row of sa_outbox; it is held here until the engine is given a mail server (SMTP_URL and SMTP_FROM).')),
   ];
 }
 
+function showEmail(o) {
+  const modal = $('#modal');
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  modal.replaceChildren(h('div', { class: 'sheet' },
+    h('header', h('span', { class: `pill mail-${o.status}` }, o.status), h('span', { class: 't' }, o.subject || '(no subject)'), h('button', { class: 'btn small ghost', onclick: close }, 'Close')),
+    h('div', { class: 'info' }, h('div', `To ${(o.recipients || []).join(', ')} · ${ago(o.created)}`),
+      o.status === 'held' ? h('div', 'Held: this engine has no mail server, so the message stays here.') : null,
+      o.error ? h('div', { class: 'err' }, o.error) : null),
+    h('pre', o.body || '')));
+  modal.hidden = false;
+}
+
 // ---- bridge between view frames and the engine
+
+// A file from a frame goes to the engine as the request's body.
+async function upload(base, file) {
+  if (!(file instanceof Blob)) throw new Error('app.upload takes a File (from an <input type="file"> or a drop)');
+  const q = new URLSearchParams({ name: file.name || 'file', type: file.type || 'application/octet-stream' });
+  const res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return { ...data.file, url: location.origin + data.file.url };
+}
+
+// After someone signs in or out every view starts again, so that each one
+// sees who is there now.
+function authChanged() {
+  setTimeout(() => {
+    for (const f of S.frames.values()) f.iframe.remove();
+    S.frames.clear();
+    S.errors.clear();
+    refreshApp();
+  }, 400);
+}
 
 window.addEventListener('message', async (e) => {
   const m = e.data;
@@ -587,6 +638,15 @@ window.addEventListener('message', async (e) => {
         case 'update': value = (await api('POST', `${base}/update`, { table: a, id: b, fields: c })).row; break;
         case 'remove': value = await api('POST', `${base}/remove`, { table: a, id: b }); break;
         case 'call': value = (await api('POST', `${base}/call`, { name: a, input: b })).result; break;
+        case 'me': value = (await api('GET', `${base}/me`)).user; break;
+        case 'signIn': value = (await api('POST', `${base}/signin`, a)).user; authChanged(); break;
+        case 'signUp': value = (await api('POST', `${base}/signup`, a)).user; authChanged(); break;
+        case 'signOut': value = await api('POST', '/api/signout'); authChanged(); break;
+        case 'people': value = (await api('GET', `${base}/people`)).people; break;
+        case 'files': value = (await api('POST', `${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: location.origin + f.url })); break;
+        case 'email': value = (await api('POST', `${base}/email`, a)).email; break;
+        case 'geocode': value = (await api('GET', `/api/geocode?q=${encodeURIComponent(a || '')}`)).places; break;
+        case 'upload': value = await upload(base, a); break;
         default: throw new Error(`no app.${m.method}`);
       }
       reply(value);

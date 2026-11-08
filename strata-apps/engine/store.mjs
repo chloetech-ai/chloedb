@@ -31,6 +31,15 @@ const SYSTEM_TABLES = {
     source KEYWORD, cap KEYWORD, status KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // Apps, their pieces and the shared library as a graph (graph.mjs).
   sa_graph: GRAPH_SQL,
+  // What every app gets (services.mjs): people and their sessions, who
+  // belongs to which app, uploaded files (their bytes sit next to the
+  // database) and the email apps send.
+  sa_people: `CREATE TABLE sa_people (id KEYWORD PRIMARY KEY, email KEYWORD, name TEXT, hash KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  sa_members: `CREATE TABLE sa_members (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, person KEYWORD NOT NULL, role KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  sa_sessions: `CREATE TABLE sa_sessions (id KEYWORD PRIMARY KEY, person KEYWORD NOT NULL, expires TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  sa_files: `CREATE TABLE sa_files (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, type KEYWORD, size INT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  sa_outbox: `CREATE TABLE sa_outbox (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, recipients KEYWORD[], subject TEXT, body TEXT,
+    status KEYWORD, error TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
 };
 
 export const newId = (n = 8) => randomBytes(n).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, n).toLowerCase().padEnd(n, '0');

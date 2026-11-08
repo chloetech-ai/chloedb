@@ -52,6 +52,7 @@ export class Engine extends EventEmitter {
     this.store = new Store(strata, log);
     this.log = log;
     this.feed = false;
+    this.services = null; // set by the server: people, files, email, places
   }
 
   async init() {
@@ -182,7 +183,14 @@ export class Engine extends EventEmitter {
     }
     const depth = (ctx.depth || 0) + 1;
     if (depth > MAX_DEPTH + 1) throw new Error(`functions called each other more than ${MAX_DEPTH} deep`);
-    const inner = { depth, by: fn.id };
+    // The person whose action led here (a view's call, or a write that fired
+    // a trigger) stays the user all the way down.
+    const user = ctx.user || null;
+    const inner = { depth, by: fn.id, user };
+    const services = () => {
+      if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
+      return this.services;
+    };
     const host = async (method, args) => {
       switch (method) {
         case 'sql': return this.sql(appId, args[0], args[1]);
@@ -190,11 +198,15 @@ export class Engine extends EventEmitter {
         case 'update': return this.update(appId, args[0], args[1], args[2], inner);
         case 'remove': return this.remove(appId, args[0], args[1], inner);
         case 'call': return this.call(appId, args[0], args[1], inner);
+        case 'people': return services().people(appId);
+        case 'email': return services().email(appId, args[0], fn.id);
+        case 'geocode': return services().geocode(args[0]);
+        case 'files': return services().fileInfo(appId, args[0]);
         default: throw new Error(`no app.${method}`);
       }
     };
     try {
-      const out = await runFunction(fn.code, input, host, { helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
+      const out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
       if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug).catch(() => {});
       return out;
     } catch (e) {
@@ -216,7 +228,7 @@ export class Engine extends EventEmitter {
       if (!on || on.table !== table || (on.event || 'insert') !== event) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
-      this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}` })
+      this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null })
         .catch((e) => this.log(`trigger ${fn.id}: ${e.message}`));
     }
   }

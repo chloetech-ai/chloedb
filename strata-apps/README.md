@@ -33,13 +33,25 @@ each other in a graph that Strata walks.
   takes a fraction of a second and no model call. Plain logic shared the same
   way is a **helper**, called as `lib.dates.addDays(day, 1)` in views,
   components and server functions alike.
-- **It starts with a library.** 25 pieces written by hand ship in `library/`
-  and are stored in Strata at start-up like any other: components for a
+- **It starts with a library.** 50 pieces written by hand ship in `library/`
+  and are stored in Strata at start-up like any other. Components: a
   calendar, a day strip, an activity heatmap, bar, line and donut charts, a
   sparkline, stat tiles, a progress ring, a data table, a kanban board, a
-  timeline, a checklist, a form, a tag input, filter chips, rating stars and a
-  timer; helpers for dates, streaks, repeating schedules, statistics, money,
-  CSV and text. A changed file is stored as a new version at the next start.
+  timeline, a checklist, a form, a tag input, filter chips, rating stars, a
+  timer, sign-in, an account menu, avatars, a people picker, an uploader,
+  images, a gallery, a full-screen image viewer, a file list, an email
+  composer, a map, a location picker, Markdown (shown and edited), comments,
+  reactions, a drawing and signature pad, booking slots and a dialog.
+  Helpers: dates, streaks, repeating schedules, statistics, money, CSV, text,
+  geo, validation, colour, Markdown, durations, units and access rules. A
+  changed file is stored as a new version at the next start.
+- **Every app gets services.** People sign in (one account for every app on
+  the engine; the first person in an app is its owner), upload files, send
+  email and find places, through `app.me()`, `app.signIn()`, `app.upload()`,
+  `app.email()`, `app.geocode()` and the rest, in views and in server
+  functions (where `app.user` is the person whose action led to the call).
+  Each app also has a page of its own at `/a/<id>`, without the studio
+  around it, for a phone or to hand to someone.
 - **It knows what goes with what.** Every app, view, function, table and
   shared piece is a node of `sa_graph`, and what each one uses, reads, calls
   or opens is its `EDGES` field. The forge ranks the library for a request by
@@ -84,6 +96,9 @@ cd strata-apps
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
+| `SMTP_URL`, `SMTP_FROM` | a mail server (`smtps://user:pass@host:465`, or `smtp://` with STARTTLS when offered) and the From address; without them email waits in the outbox, marked held |
+| `STRATA_APPS_GEOCODER` | the address search (default OpenStreetMap's Nominatim, at most one request a second, cached; `off` turns it off) |
+| `STRATA_APPS_TILES` | the map tile URL template (default OpenStreetMap's, fetched by the engine with a user agent and kept under `DATA/tiles`; `off` turns maps off) |
 
 A first version takes the model 40 seconds to 2.5 minutes (longer when it writes new shared components, which later apps then reuse); a change takes 25 to 50 seconds.
 
@@ -98,6 +113,7 @@ A first version takes the model 40 seconds to 2.5 minutes (longer when it writes
 | `engine/graph.mjs` | what each capability links to, read from its code, and the rows of `sa_graph` |
 | `engine/library.mjs`, `library/` | the built-in components and helpers, one file each, seeded into Strata at start-up |
 | `engine/sql.mjs` | rewrites `FROM tasks` to the app's physical table and refuses anything but one `SELECT` over the app's own tables |
+| `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
 | `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
@@ -113,6 +129,9 @@ In Strata:
 | `sa_requests` | requests to the forge, with their progress log, cost and errors |
 | `sa_events` | what people did in each app |
 | `sa_suggestions` | suggestions, from builds and from use |
+| `sa_people`, `sa_members`, `sa_sessions` | accounts (one per email, for every app), who belongs to which app and with what role, and sessions (by the hash of their token) |
+| `sa_files` | each uploaded file's name, type, size and who uploaded it; the bytes sit in `DATA/files/<app>/<id>` |
+| `sa_outbox` | every email an app sent, with its status: held, sending, sent or failed |
 | `app_<app>_<table>` | each app's data |
 
 ## How views and functions run
@@ -123,7 +142,11 @@ origin and a content security policy that blocks the network, so a view can
 reach data only through `app`, whose calls go to the studio as messages and
 from there to the engine: `app.sql` (one `SELECT`, over the app's own tables),
 `app.insert`, `app.update`, `app.remove`, `app.call`, `app.onChange`,
-`app.open`, `app.track`.
+`app.open`, `app.track`, and the services: `app.me`, `app.signIn`,
+`app.signUp`, `app.signOut`, `app.people`, `app.upload`, `app.files`,
+`app.email`, `app.geocode`. Files and map tiles load from the engine by URL
+(`app.fileUrl(id)`, `app.tiles`), the one origin the frame's policy allows
+images from.
 
 A **component** is JavaScript that defines `function component(props)` and
 returns an element. Every frame gets the components its app pins, each in its
@@ -144,20 +167,24 @@ runs after each insert, update or delete of a table.
 The forge's checks: the plan's shape, names and types; types of existing
 columns never change; every view parses and defines `render`, uses no
 `fetch`, `import` or `localStorage`; every component defines `component`
-and uses no `app.sql`, `app.insert` or other data call; every `ui.name` a
+and uses no `app.sql`, `app.insert` or other data call (services are
+allowed); every helper uses no `app` at all; every `ui.name` a
 view or component calls exists; every function compiles in QuickJS,
 defines `run` and uses no `async`; triggers name tables that exist. An answer
 that fails gets one more try with the problems listed.
 
 ## What it is not (yet)
 
-A prototype for one person on one machine: no accounts, no sharing of apps
-between people, no limit on what a request costs, and a capability that
+A prototype on one machine: people can sign in to apps, but the studio
+itself has no sign-in (anyone who can reach it can change any app), app data
+is not yet limited by row rules on the server (`lib.access` checks in views
+and functions only), there is no limit on what a request costs, and a capability that
 passes the checks can still be wrong (the repair loop and going back are the
 safety net). The doc lists what a real version needs.
 
 ## Tests
 
 ```bash
-npm test     # the SQL rewrite, the answer parser, the plan checks, the sandbox, pinning, the built-in library, the graph's edges
+npm test     # the SQL rewrite, the answer parser, the plan checks, the sandbox, pinning, the built-in library, the graph's edges,
+             # functions seeing the signed-in person and the services, passwords, and SMTP against a fake mail server
 ```

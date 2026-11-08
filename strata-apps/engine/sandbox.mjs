@@ -16,6 +16,12 @@ const app = Object.freeze({
   update: (table, id, fields) => __call('update', [table, id, fields || {}]),
   remove: (table, id) => __call('remove', [table, id]),
   call: (name, input) => __call('call', [name, input === undefined ? null : input]),
+  user: __user,
+  me: () => __user,
+  people: () => __call('people', []),
+  email: (msg) => __call('email', [msg || {}]),
+  geocode: (q) => __call('geocode', [String(q || '')]),
+  files: (ids) => __call('files', [[].concat(ids || [])]),
   now: () => new Date().toISOString(),
   log: (...a) => __log(__fmt(a)),
 });
@@ -53,7 +59,8 @@ export async function checkFunction(code) {
 
 // Runs `code`'s run(input, app). `host(method, args)` answers app calls.
 // `helpers` are the shared helpers the app pins, available as lib.<name>.
-export async function runFunction(code, input, host, { timeoutMs = 10000, memoryBytes = 64 * 1024 * 1024, helpers = [] } = {}) {
+// `user` is the signed-in person whose action led to the call, or null.
+export async function runFunction(code, input, host, { timeoutMs = 10000, memoryBytes = 64 * 1024 * 1024, helpers = [], user = null } = {}) {
   const vm = await newAsyncContext();
   const logs = [];
   const started = Date.now();
@@ -79,7 +86,8 @@ export async function runFunction(code, input, host, { timeoutMs = 10000, memory
     logFn.dispose();
     const arg = JSON.stringify(input === undefined ? null : input);
     const libs = helpers.map((x) => `lib[${JSON.stringify(x.name)}] = (function () {\n${x.code}\n;return helper();\n})();`).join('\n');
-    const program = `${PRELUDE}\nconst lib = {};\n${libs}\n${code}\n;globalThis.__last = run(${arg}, app);\nJSON.stringify({ result: globalThis.__last === undefined ? null : globalThis.__last });`;
+    const who = user ? JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role }) : 'null';
+    const program = `const __user = Object.freeze(${who});\n${PRELUDE}\nconst lib = {};\n${libs}\n${code}\n;globalThis.__last = run(${arg}, app);\nJSON.stringify({ result: globalThis.__last === undefined ? null : globalThis.__last });`;
     const res = await vm.evalCodeAsync(program, 'capability.js');
     if (res.error) {
       const text = errorText(vm.dump(res.error));

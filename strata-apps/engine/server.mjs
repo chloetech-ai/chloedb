@@ -5,7 +5,7 @@
 // Without --strata it starts its own strata-server on DIR/apps.strata.
 
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
@@ -14,6 +14,7 @@ import { forge, suggestFromUse, useSharedVersion } from './forge.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
+import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -49,6 +50,78 @@ const db = new Strata(strataUrl, process.env.STRATA_TOKEN);
 const engine = new Engine(db, { log });
 await engine.init();
 await seedLibrary(engine.store, path.join(ROOT, 'library'), log);
+const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
+engine.services = services;
+log(services.smtpUrl && services.smtpFrom ? `email goes out through ${new URL(services.smtpUrl).host}` : 'email is held in the outbox (set SMTP_URL and SMTP_FROM to send it)');
+
+// ---- who is asking: a session cookie, the same for every app here
+
+const COOKIE = 'sa_session';
+function tokenOf(req) {
+  const m = String(req.headers.cookie || '').match(/(?:^|;\s*)sa_session=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function setSession(res, token) {
+  res.setHeader('set-cookie', `${COOKIE}=${token ? encodeURIComponent(token) : ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${token ? SESSION_DAYS * 86400 : 0}`);
+}
+// The person as this app sees them, or null.
+async function userOf(req, appId) {
+  const person = await services.personOf(tokenOf(req)).catch(() => null);
+  return person ? services.user(appId, person) : null;
+}
+
+// ---- map tiles, fetched once and kept on disk (OpenStreetMap's policy:
+// a real user agent, caching, and no heavy use)
+
+const TILES = process.env.STRATA_APPS_TILES === 'off' ? null : process.env.STRATA_APPS_TILES || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const tileQueue = [];
+let tileBusy = 0;
+async function tile(z, x, y) {
+  const file = path.join(DATA, 'tiles', String(z), String(x), `${y}.png`);
+  try { return await readFile(file); } catch { /* not cached yet */ }
+  if (!TILES) throw Object.assign(new Error('map tiles are switched off here (STRATA_APPS_TILES=off)'), { status: 503 });
+  if (tileBusy >= 2) await new Promise((r) => tileQueue.push(r));
+  tileBusy++;
+  try {
+    const url = TILES.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+    const res = await fetch(url, { headers: { 'user-agent': 'strata-apps/0.1 (prototype app engine on Strata)' }, signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw Object.assign(new Error(`tile server answered ${res.status}`), { status: 502 });
+    const bytes = Buffer.from(await res.arrayBuffer());
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, bytes);
+    return bytes;
+  } finally {
+    tileBusy--;
+    tileQueue.shift()?.();
+  }
+}
+
+// File types shown in place; anything else (HTML and SVG included) is a download.
+const INLINE = /^(image\/(png|jpeg|gif|webp|avif)|audio\/[a-z0-9.+-]+|video\/[a-z0-9.+-]+|application\/pdf|text\/plain)$/;
+function sendFile(res, meta, bytes, download) {
+  const inline = !download && INLINE.test(meta.type);
+  const name = encodeURIComponent(meta.name).replace(/['()]/g, escape);
+  res.writeHead(200, {
+    'content-type': inline ? meta.type : 'application/octet-stream',
+    'content-length': bytes.length,
+    'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${name}`,
+    'content-security-policy': "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'",
+    'x-content-type-options': 'nosniff',
+    'cache-control': 'private, max-age=86400, immutable',
+  });
+  res.end(bytes);
+}
+
+async function rawBody(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > limit) throw Object.assign(new Error(`files are at most ${limit / 1024 / 1024} MB`), { status: 413 });
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks);
+}
 
 // ---- live updates: one stream per open studio page
 
@@ -188,6 +261,8 @@ async function appState(appId) {
       return { components: view.components.map(one), helpers: view.helpers.map(one) };
     })()),
     tables,
+    people: await services.people(appId).catch(() => []),
+    outbox: await services.outbox(appId, 20).catch(() => []),
     suggestions: await store.suggestions(appId),
     versions: await store.compositions(appId),
     requests: await store.requests(appId, 30),
@@ -218,10 +293,25 @@ const routes = [
     return { request: r.id };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id]) => { const row = await engine.insert(id, b.table, b.row || {}); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id]) => { const row = await engine.update(id, b.table, b.id, b.fields || {}); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id]) => { const out = await engine.remove(id, b.table, b.id); noteActivity(id); return out; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id]) => { const out = await engine.call(id, b.name, b.input); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id) }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id) }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id) }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id) }); noteActivity(id); return out; }],
+  // People: one account for every app here; joining an app on first use.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
+  ['POST', /^\/api\/signout$/, async (b, m, url, cx) => { await services.signOut(tokenOf(cx.req)); setSession(cx.res, null); return { ok: true }; }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/people$/, async (b, [id]) => ({ people: await services.people(id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/files\/info$/, async (b, [id]) => ({ files: (await services.fileInfo(id, b.ids)).map((f) => ({ ...f, url: `/api/apps/${id}/files/${f.id}` })) })],
+  // Email from a view needs someone signed in; functions send as the app.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/email$/, async (b, [id], url, cx) => {
+    const user = await cx.user(id);
+    if (!user) throw Object.assign(new Error('email: sign in to send email from this app'), { status: 401 });
+    return { email: await services.email(id, b, user.id) };
+  }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
+  ['GET', /^\/api\/geocode$/, async (b, m, url) => ({ places: await services.geocode(url.searchParams.get('q')) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/track$/, async (b, [id]) => {
     const kind = b.kind === 'open' ? 'open' : 'action';
     const detail = kind === 'open' ? String(b.detail || '') : `${String(b.action || '').slice(0, 60)}${b.detail ? ` ${String(b.detail).slice(0, 200)}` : ''}`;
@@ -279,11 +369,25 @@ const routes = [
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
-    if (req.method === 'GET' && STATIC[url.pathname]) {
-      const [file, type] = STATIC[url.pathname];
+    // An app on its own, without the studio around it (for phones and sharing).
+    const page = req.method === 'GET' && /^\/a\/[a-z0-9]+\/?$/.test(url.pathname) ? STATIC['/'] : STATIC[url.pathname];
+    if (req.method === 'GET' && page) {
+      const [file, type] = page;
       const data = await readFile(path.join(ROOT, file));
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' });
       return res.end(data);
+    }
+    let m;
+    if (req.method === 'GET' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files\/([a-z0-9]{6,20})$/))) {
+      const { meta, bytes } = await services.readFile(m[1], m[2]);
+      return sendFile(res, meta, bytes, url.searchParams.has('download'));
+    }
+    if (req.method === 'GET' && (m = url.pathname.match(/^\/api\/tiles\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})\.png$/))) {
+      const [z, x, y] = m.slice(1).map(Number);
+      if (z > 19 || x >= 2 ** z || y >= 2 ** z) return send(res, 404, { error: 'no such tile' });
+      const bytes = await tile(z, x, y);
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': bytes.length, 'cache-control': 'public, max-age=604800' });
+      return res.end(bytes);
     }
     if (req.method === 'GET' && url.pathname === '/api/stream') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
@@ -299,16 +403,26 @@ const server = http.createServer(async (req, res) => {
       const origin = req.headers.origin;
       if (origin && origin !== `http://${req.headers.host}`) return send(res, 403, { error: 'cross-origin request refused' });
     }
+    // An upload is the file's bytes as the body; its name and type in the query.
+    if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
+      const bytes = await rawBody(req, MAX_FILE);
+      const user = await userOf(req, m[1]);
+      const file = await services.saveFile(m[1], bytes, { name: url.searchParams.get('name'), type: url.searchParams.get('type') || req.headers['content-type'] }, user?.id);
+      noteActivity(m[1]);
+      return send(res, 200, { file: { ...file, url: `/api/apps/${m[1]}/files/${file.id}` } });
+    }
+    const cx = { req, res, user: (appId) => userOf(req, appId) };
     for (const [method, re, fn] of routes) {
       if (req.method !== method) continue;
-      const m = url.pathname.match(re);
-      if (!m) continue;
+      const mm = url.pathname.match(re);
+      if (!mm) continue;
       const b = method === 'POST' ? await body(req) : {};
-      return send(res, 200, await fn(b, m.slice(1), url));
+      return send(res, 200, await fn(b, mm.slice(1), url, cx));
     }
     send(res, 404, { error: 'not found' });
   } catch (e) {
-    const status = e.status && e.status < 500 ? e.status : (/^(no |table |app\.sql|one statement|empty SQL|.* takes )/.test(e.message) ? 400 : (e.message.startsWith('strata') ? 400 : 500));
+    const passOn = e.status && (e.status < 500 || ((e.status === 502 || e.status === 503) && !e.message.startsWith('strata')));
+    const status = passOn ? e.status : (/^(no |table |app\.sql|one statement|empty SQL|.* takes )/.test(e.message) ? 400 : (e.message.startsWith('strata') ? 400 : 500));
     if (status >= 500) log(`${req.method} ${url.pathname}: ${e.stack || e.message}`);
     send(res, status, { error: e.message });
   }
