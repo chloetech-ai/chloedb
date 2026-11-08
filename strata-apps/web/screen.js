@@ -198,7 +198,7 @@
       const editing = b.edit !== undefined ? val(b.edit, s, `${path}.edit`) : null;
       const sig = `${editing && editing.id ? editing.id : ''}|${JSON.stringify(b.fields)}`;
       const kept = forms.get(path);
-      if (kept && kept.sig === sig) { kept.s = s; return kept.el; }
+      if (kept && kept.sig === sig) { kept.s = s; kept.refresh(s); return kept.el; }
       const entry = { sig, s, el: null };
       const fields = (b.fields || []).map((f) => (typeof f === 'string' ? { name: f } : f));
       const controls = new Map();
@@ -211,13 +211,26 @@
         if (t === 'file') return el.__fileId || (editing ? editing[f.name] : null) || null;
         return el.value === '' ? null : el.value;
       };
+      // A select's options can come from data ("=kids.map(k => k.name)"): they
+      // are filled again on every draw, since the form itself is kept while
+      // its rows load and change (a kid added elsewhere shows up at once).
+      const fillSelect = (el, f, s, v) => {
+        const opts = (val(f.options, s, path) || []).map(OPT);
+        const key = JSON.stringify(opts);
+        if (el.__opts === key) return;
+        const had = el.__opts !== undefined ? el.value : v;
+        el.__opts = key;
+        el.replaceChildren(...(f.required ? [] : [h('option', { value: '' }, f.placeholder || '—')]), ...opts.map((o) => h('option', { value: o.value }, o.label)));
+        if (had != null && opts.some((o) => String(o.value) === String(had))) el.value = String(had);
+      };
+      entry.refresh = (s2) => { for (const f of fields) if ((f.type || 'text') === 'select' && isExpr(f.options)) fillSelect(controls.get(f.name), f, s2, null); };
       const make = (f) => {
         const t = f.type || 'text';
         const v = editing ? editing[f.name] : val(f.value, s, `${path}.${f.name}`);
         const ph = f.placeholder ? T(f.placeholder, s, path) : f.label ? null : human(f.name);
         let el;
         if (t === 'textarea') el = h('textarea', { name: f.name, placeholder: ph, required: !!f.required, rows: f.rows || 3 }, v ?? '');
-        else if (t === 'select') el = h('select', { name: f.name, required: !!f.required }, f.required ? null : h('option', { value: '' }, f.placeholder || '—'), (val(f.options, s, path) || []).map(OPT).map((o) => h('option', { value: o.value, selected: v != null && String(v) === String(o.value) }, o.label)));
+        else if (t === 'select') { el = h('select', { name: f.name, required: !!f.required }); fillSelect(el, f, s, v); }
         else if (t === 'checkbox') el = h('input', { type: 'checkbox', name: f.name, checked: !!v });
         else if (t === 'tags') el = h('input', { name: f.name, placeholder: ph || 'tags, comma separated', value: Array.isArray(v) ? v.join(', ') : v ?? '' });
         else if (t === 'rating') el = h('select', { name: f.name }, h('option', { value: '' }, '—'), [1, 2, 3, 4, 5].map((n) => h('option', { value: n, selected: Number(v) === n }, '★'.repeat(n))));

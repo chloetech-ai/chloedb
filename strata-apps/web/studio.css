@@ -249,3 +249,7 @@ svg.graph .k-component circle { fill: #d9480f; } svg.graph .k-helper circle { fi
 .preview .chip { border: 1px solid var(--line, #ddd); background: transparent; border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer; }
 .preview .chip.on { background: var(--fg); color: var(--bg); }
 .frames .preview iframe { position: static; flex: 1; height: auto; opacity: .92; }
+
+textarea.statement { width: 100%; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg); resize: vertical; outline: none; white-space: pre; overflow: auto; }
+.statement-error { color: #b42318; font-size: 13px; margin-top: 6px; white-space: pre-wrap; }
+.statement-error:empty { display: none; }

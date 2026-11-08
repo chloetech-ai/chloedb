@@ -267,7 +267,7 @@ export const SYSTEM = withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
 // to the screens the app has, patterns expanded, and each screen put in the
 // code of its view (as JSON). Returns problems.
 export function prepareScreens(plan, code, view) {
-  const problems = [...compileStatements(plan, code), ...(SCREENS ? editCode(plan, code, view) : []), ...patchScreens(plan, view), ...expandPlan(plan)];
+  const problems = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan)];
   screensToCode(plan, code);
   rulesToCode(plan, code);
   return problems;
@@ -368,11 +368,11 @@ export function editCode(plan, code, view) {
       if (!item || item.edits === undefined) continue;
       const cur = have.find((x) => x.slug === item.slug);
       const where = `${kind} ${item.slug}`;
-      if (!cur || (kind === 'view' && cur.spec?.screen) || (kind === 'function' && cur.spec?.rule)) problems.push(`${where}: "edits" change the code of a ${kind} the app has in JavaScript${kind === 'view' ? '; a screen takes "patch"' : '; a rule is given whole'}`);
+      if (!cur || (kind === 'view' && cur.spec?.screen && !cur.spec?.statement) || (kind === 'function' && cur.spec?.rule)) problems.push(`${where}: "edits" change the code of a ${kind} the app has in JavaScript, or a screen's CREATE SCREEN statement${kind === 'view' ? '; a screen shown as JSON takes "patch"' : '; a rule is given whole'}`);
       else if (code[item.slug] !== undefined) problems.push(`${where}: give "edits" or a code block, not both`);
       else if (!Array.isArray(item.edits) || !item.edits.length) problems.push(`${where}: "edits" is a list of {"old": "...", "new": "..."}`);
       else {
-        let src = cur.code;
+        let src = kind === 'view' && cur.spec?.statement ? cur.spec.statement : cur.code;
         for (const [i, e] of item.edits.entries()) {
           const old = e && typeof e.old === 'string' ? e.old : '';
           const n = old ? src.split(old).length - 1 : 0;
@@ -401,6 +401,7 @@ export function patchScreens(plan, view) {
     if (!v || v.patch === undefined) continue;
     const cur = view.views.find((x) => x.slug === v.slug);
     if (!cur || !cur.spec?.screen) problems.push(`view ${v.slug}: "patch" changes a screen the app has; give a whole "screen" (or a code block)`);
+    else if (cur.spec.statement) problems.push(`view ${v.slug}: this screen is a CREATE SCREEN statement; change it with "edits" on the statement, or a new statement in its code block, not "patch"`);
     else if (v.screen) problems.push(`view ${v.slug}: give "patch" or "screen", not both`);
     else {
       try {
@@ -646,8 +647,8 @@ export async function buildContext(engine, appId, request) {
     }
     parts.push(`## Tables\n${tables.join('\n') || '(none)'}`);
     const views = view.views.slice().sort((a, b) => (a.spec.order ?? 99) - (b.spec.order ?? 99))
-      .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.screen ? ' format="screen"' : ''}>\n${v.spec.screen ? screenLines(v.code) : v.code}\n</view>`);
-    parts.push(`## Views\n${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${SCREENS && view.views.some((v) => !v.spec.screen) ? 'To change a view or function written in JavaScript a little (a color, a label, a line of logic), give "edits" in its plan entry instead of a code block: [{"old": "text copied exactly from its code, occurring once", "new": "its replacement"}]. Give a whole code block only when most of it changes.\n\n' : ''}${views.join('\n\n') || '(none)'}`);
+      .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.statement ? ' format="statement"' : v.spec.screen ? ' format="screen"' : ''}>\n${v.spec.statement || (v.spec.screen ? screenLines(v.code) : v.code)}\n</view>`);
+    parts.push(`## Views\n${views.some((v) => v.includes('format="statement"')) ? 'A view with format="statement" is a screen written as a CREATE SCREEN statement, its source. To change it, give "edits" in its plan entry ([{"old": "text copied exactly from the statement, occurring once", "new": "..."}]), or a new statement in its code block when most of it changes.\n\n' : ''}${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${SCREENS && view.views.some((v) => !v.spec.screen) ? 'To change a view or function written in JavaScript a little (a color, a label, a line of logic), give "edits" in its plan entry instead of a code block: [{"old": "text copied exactly from its code, occurring once", "new": "its replacement"}]. Give a whole code block only when most of it changes.\n\n' : ''}${views.join('\n\n') || '(none)'}`);
     const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}"${f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
     parts.push(`## Functions\n${view.functions.some((f) => f.spec.rule) ? 'A function with format="rule" is a rule (JSON). To change it, give its whole "rule" in its plan entry; to turn it into JavaScript, give a code block and no "rule".\n\n' : ''}${fns.join('\n\n') || '(none)'}`);
     // Code only for the pieces this app wrote: the others (built-in, or from
@@ -1179,7 +1180,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   }
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true } : {}) };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
@@ -1365,25 +1366,37 @@ export async function suggestFromUse(engine, appId) {
 // the app has it (or a whole screen), expanded, checked and its queries run,
 // then stored as the view's next version in a new version of the app. A
 // screen that fails a check is not stored; the problems come back.
-export async function editScreen(engine, appId, slug, { patch, screen, note } = {}) {
+export async function editScreen(engine, appId, slug, { patch, screen, statement, note } = {}) {
   const store = engine.store;
   const view = await store.resolve(appId);
   const cur = view.views.find((v) => v.slug === slug);
   if (!cur || !cur.spec?.screen) throw Object.assign(new Error(`the app has no screen ${slug}`), { status: 404 });
+  // A screen written as a statement is edited as its statement (its source).
+  if (cur.spec.statement && statement === undefined && !(screen && typeof screen === 'object')) throw Object.assign(new Error(`${slug} is a CREATE SCREEN statement: edit its statement`), { status: 400 });
   let next;
-  try { next = screen && typeof screen === 'object' ? screen : applyPatch(JSON.parse(cur.code), Array.isArray(patch) ? patch : []); } catch (e) { throw Object.assign(new Error(e.message), { status: 400 }); }
+  let source = null;
+  try {
+    if (typeof statement === 'string') {
+      const out = compileStatement(statement);
+      if (out.slug !== slug) throw new Error(`the statement creates ${out.slug}; this screen is ${slug}`);
+      next = out.screen;
+      source = statement.trim();
+    } else next = screen && typeof screen === 'object' ? screen : applyPatch(JSON.parse(cur.code), Array.isArray(patch) ? patch : []);
+  } catch (e) { throw Object.assign(new Error(e.message), { status: 400 }); }
   const ex = expandScreen(next);
   const problems = [...ex.problems, ...checkScreen(ex.screen, columnsFor(view, {}))];
   if (!problems.length) problems.push(...await dryRunScreens(engine.db, appId, view.tables.map((t) => t.spec.name), { views: [{ slug, screen: ex.screen }] }));
   if (problems.length) throw Object.assign(new Error(problems.slice(0, 4).join('; ')), { status: 400, problems });
   const code = JSON.stringify(ex.screen, null, 1);
-  if (code === cur.code) return { n: view.comp.n, unchanged: true };
+  if (code === cur.code && (source || null) === (cur.spec.statement || null)) return { n: view.comp.n, unchanged: true };
+  const spec = { ...cur.spec };
+  if (source) spec.statement = source; else delete spec.statement;
   // Shared components the screen names must exist; the app pins the ones it
   // did not use before (a pattern may bring the kanban, the bar chart...).
   const shared = await store.shared();
   const missing = [...sharedRefs(code)].filter((k) => !shared.has(k));
   if (missing.length) throw Object.assign(new Error(`the library has no ${missing.map((k) => k.replace('component/', 'ui.').replace('helper/', 'lib.')).join(', ')}`), { status: 400 });
-  const id = await store.putCapability({ app: appId, slug, kind: 'view', title: cur.title, description: cur.description, code, spec: cur.spec, author: 'person' });
+  const id = await store.putCapability({ app: appId, slug, kind: 'view', title: cur.title, description: cur.description, code, spec, author: 'person' });
   const own = view.comp.caps.filter((c) => !view.shared.some((x) => x.id === c)).map((c) => (c === cur.id ? id : c));
   const roots = own.filter((c) => /\/(view|function)\//.test(c));
   const pinned = await pinShared(store, roots, { had: new Map(view.shared.map((c) => [`${c.kind}/${c.slug}`, c.id])), shared });

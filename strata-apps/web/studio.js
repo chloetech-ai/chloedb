@@ -799,10 +799,37 @@ function versionsTab() {
   ].filter(Boolean);
 }
 
+// A screen written as a CREATE SCREEN statement is edited as its statement:
+// the engine compiles it, checks it, runs its queries and stores it.
+function statementTab(view) {
+  const box = h('textarea', { class: 'statement', spellcheck: 'false', rows: Math.min(30, view.spec.statement.split('\n').length + 2) });
+  const err = h('div', { class: 'statement-error' });
+  box.value = view.spec.statement;
+  const save = h('button', { class: 'btn primary', onclick: async () => {
+    if (S.app.running) { toast('A change is being built: edit once it is live'); return; }
+    S.editing = true;
+    save.disabled = true;
+    err.textContent = '';
+    try {
+      const r = await api('POST', `/api/apps/${S.appId}/screens/${view.slug}`, { statement: box.value, note: `Edited the statement of ${view.title} by hand` });
+      if (r.unchanged) toast('Nothing changed');
+    } catch (e) { err.textContent = e.message; }
+    save.disabled = false;
+    S.editing = false;
+  } }, 'Save');
+  return [
+    h('div', { class: 'where' }, 'This screen is a CREATE SCREEN statement. Edit it and save: no model, compiled, checked and stored at once as a new version (Versions goes back).'),
+    box,
+    err,
+    h('div', { style: 'display:flex; gap:8px; margin-top:8px' }, save, h('button', { class: 'btn ghost', onclick: () => { box.value = view.spec.statement; } }, 'Undo my edits')),
+  ];
+}
+
 // Edits of a screen by hand: move, hide or rename its parts, and reorder,
 // rename or hide a table's columns and a form's fields. Each edit is a JSON
 // Patch the engine checks, runs and stores as a new version, with no model.
 function editTab(view) {
+  if (view.spec?.statement) return statementTab(view);
   let screen;
   try { screen = JSON.parse(view.code); } catch { return [h('div', { class: 'hint' }, 'This screen cannot be read.')]; }
   const send = async (patch, note) => {

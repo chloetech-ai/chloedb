@@ -17,7 +17,23 @@
 // Parts: LIST, BOARD, DETAIL, SUMMARY (the patterns), HEADING, TEXT, DATA,
 // STATE, LET and BLOCKS (screen JSON, for what the rest cannot say).
 
-const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS'];
+// The newer patterns: a part names its table, then each clause sets one of
+// the pattern's parameters: [parameter, kind of value].
+const MORE = {
+  WEEK: { use: 'week', need: { items: 'ITEMS <table of the things to tick>', item: "ITEM <column holding the thing's id>" },
+    clauses: { ITEMS: ['items', 'name'], ITEM: ['item', 'name'], DAY: ['day', 'name'], NAME: ['name', 'name'], SUB: ['sub', 'name'], LABEL: ['label', 'str'], EXTRA: ['extra', 'js'], TITLE: ['title', 'str'] } },
+  CALENDAR: { use: 'calendar', need: { fields: 'FORM (...)' },
+    clauses: { DATE: ['date', 'name'], NAME: ['name', 'name'], TIME: ['time', 'name'], PLACE: ['place', 'name'], COLOR: ['color', 'name'], FORM: ['fields', 'fields'], WHERE: ['where', 'sql'], TITLE: ['title', 'str'], NOUN: ['noun', 'str'] } },
+  FLASHCARDS: { use: 'flashcards',
+    clauses: { FRONT: ['front', 'name'], BACK: ['back', 'name'], DUE: ['due', 'name'], INTERVAL: ['interval', 'name'], MASTERED: ['mastered', 'num'], WHERE: ['where', 'sql'], PARAM: ['params', 'param'], TITLE: ['title', 'str'] } },
+  QUIZ: { use: 'quiz',
+    clauses: { QUESTION: ['question', 'name'], CHOICES: ['choices', 'name'], ANSWER: ['answer', 'name'], EXPLANATION: ['explanation', 'name'], COUNT: ['count', 'num'], RESULTS: ['results', 'name'], EXTRA: ['resultExtra', 'js'], WHERE: ['where', 'sql'], PARAM: ['params', 'param'], TITLE: ['title', 'str'] } },
+  FIND: { use: 'search', need: { text: 'TEXT <text column>' },
+    clauses: { TEXT: ['text', 'name'], MEANING: ['meaning', 'name'], NAME: ['name', 'name'], SUB: ['sub', 'names'], SHOW: ['show', 'cols'], LIMIT: ['limit', 'num'], PLACEHOLDER: ['placeholder', 'str'], WHERE: ['where', 'sql'], PARAM: ['params', 'param'], TITLE: ['title', 'str'] } },
+  DASHBOARD: { use: 'dashboard',
+    clauses: { DATE: ['date', 'name'], DAY: ['date', 'day'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], FORMAT: ['format', 'word'], DAYS: ['days', 'num'], BY: ['group', 'name'], 'GROUP BY': ['group', 'name'], WHERE: ['where', 'sql'], RECENT: ['recent', 'cols'], TITLE: ['title', 'str'] } },
+};
+const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS'];
 const FIELD_TYPES = ['TEXT', 'TEXTAREA', 'NUMBER', 'DATE', 'TIME', 'DATETIME', 'SELECT', 'CHECKBOX', 'TAGS', 'EMAIL', 'URL', 'COLOR', 'FILE', 'RATING'];
 const COLUMN_FORMATS = ['DATE', 'DATETIME', 'AGO', 'MONEY', 'NUMBER', 'PERCENT', 'STARS', 'BOOL'];
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -163,17 +179,22 @@ export function compileStatement(text) {
     if (!part) return;
     const p = part;
     part = null;
+    if (p.more) {
+      for (const [param, hint] of Object.entries(p.more.need || {})) if (p.use[param] === undefined) fail(p.n, `${p.kind} ${p.use.table}: needs ${hint}`);
+      screen.body.push(p.use);
+      return;
+    }
     if (p.kind === 'LIST' || p.kind === 'BOARD' || p.kind === 'DETAIL' || p.kind === 'SUMMARY') {
       for (const need of p.needs || []) if (p.use[need] === undefined) fail(p.n, `${p.kind} ${p.use.table}: needs ${{ fields: 'FORM (...)', status: "BY <column> ('a', 'b')", group: 'GROUP BY <column>' }[need]}`);
       screen.body.push(p.use);
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
-  const OWN = /^(KPI|ACTION|RELATED|DATA|LET|STATE|BLOCKS|QUERY)\b/i;
+  const OWN = /^(KPI|ACTION|RELATED|DATA|LET|STATE|BLOCKS|QUERY|PARAM|EXTRA)\b/i;
   const split = [];
   for (const ln of lines.slice(1)) {
     const pieces = OWN.test(ln.text) ? [ln.text] : ln.text.split(new RegExp(`\\s{2,}(?=${CLAUSE})`, 'i'));
@@ -190,7 +211,7 @@ export function compileStatement(text) {
   for (const { n, text: l } of split) {
     const kw = (l.match(/^([A-Za-z]+(?:\s+BY)?)\b/) || [])[1]?.toUpperCase().replace(/\s+/g, ' ');
     const rest = l.slice((l.match(/^[A-Za-z]+(?:\s+BY)?\b/) || [''])[0].length).trim();
-    if (PARTS.includes(kw)) {
+    if (PARTS.includes(kw) && !(part && part.more && part.more.clauses[kw])) {
       finish();
       if (kw === 'HEADING') { screen.body.push({ h: literal(rest) }); continue; }
       if (kw === 'TEXT') { screen.body.push({ text: literal(rest), muted: true }); continue; }
@@ -217,11 +238,12 @@ export function compileStatement(text) {
       }
       const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+AS\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/i);
       if (!m) fail(n, `${kw} <table> [AS <key>]`);
-      const use = { use: { LIST: 'crud', BOARD: 'board', DETAIL: 'detail', SUMMARY: 'summary' }[kw], table: m[1] };
+      const use = { use: MORE[kw] ? MORE[kw].use : { LIST: 'crud', BOARD: 'board', DETAIL: 'detail', SUMMARY: 'summary' }[kw], table: m[1] };
       if (m[2]) use.key = m[2];
-      part = { kind: kw, n, use, needs: { LIST: ['fields'], BOARD: ['status'], DETAIL: ['fields'], SUMMARY: ['group'] }[kw], kpis: [] };
+      part = { kind: kw, n, use, more: MORE[kw] || null, needs: { LIST: ['fields'], BOARD: ['status'], DETAIL: ['fields'], SUMMARY: ['group'] }[kw], kpis: [] };
       continue;
     }
+    if (part && part.more) { moreClause(part, kw, rest, l, n); continue; }
     if (!part) fail(n, `${JSON.stringify(l.slice(0, 40))} does not start a part (${PARTS.join(', ')})`);
     const u = part.use;
     const key = u.key || (part.kind === 'SUMMARY' ? `${u.table}_by` : u.table);
@@ -317,6 +339,32 @@ export function compileStatement(text) {
   return { slug: head[1], title, screen };
 }
 
+// A clause of one of the newer parts: sets one parameter of its pattern.
+function moreClause(part, kw, rest, l, n) {
+  const c = part.more.clauses[kw];
+  if (!c) fail(n, `${part.kind} takes ${Object.keys(part.more.clauses).join(', ')}, not ${JSON.stringify(l.slice(0, 30))}`);
+  const [param, kind] = c;
+  const u = part.use;
+  switch (kind) {
+    case 'name': if (!NAME.test(rest)) fail(n, `${kw} <column>`); u[param] = rest; break;
+    case 'day': if (!NAME.test(rest)) fail(n, `${kw} <column holding 'YYYY-MM-DD'>`); u[param] = rest; u.day = true; break;
+    case 'names': u[param] = names(rest, n, kw); break;
+    case 'str': u[param] = literal(rest); break;
+    case 'word': u[param] = rest.toLowerCase(); break;
+    case 'num': if (!/^\d+$/.test(rest)) fail(n, `${kw} <a whole number>`); u[param] = Number(rest); break;
+    case 'sql': case 'js': if (!rest) fail(n, `${kw} needs a value`); u[param] = rest; break;
+    case 'fields': u[param] = splitTop(parens(rest, n, kw).inside).map((f) => fieldSpec(f, n)); break;
+    case 'cols': u[param] = splitTop(parens(rest, n, kw).inside).map((x) => columnSpec(x, n)); break;
+    case 'param': {
+      const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+)$/);
+      if (!m) fail(n, 'PARAM <name> = <JavaScript expression> (its value for :name in WHERE)');
+      u[param] = { ...(u[param] || {}), [m[1]]: `=${m[2].trim()}` };
+      break;
+    }
+    default: fail(n, `${kw}: unknown`);
+  }
+}
+
 // The plan's views whose code is a CREATE SCREEN statement become screens.
 // Returns problems.
 export function compileStatements(plan, code) {
@@ -326,7 +374,7 @@ export function compileStatements(plan, code) {
     try {
       const out = compileStatement(code[v.slug]);
       v.screen = out.screen;
-      v.statement = true;
+      v.statement = code[v.slug].trim(); // the screen's source, kept with it
       if (!v.title && out.title) v.title = out.title;
       delete code[v.slug];
     } catch (e) {
@@ -361,6 +409,18 @@ DETAIL <table> [AS key]        -- the detail pattern: one row (opened with app.o
   RELATED <table> BY <its column holding the id> [TITLE 'Title'] [COLUMNS (...)] [ORDER BY ...]   (one line each)
 SUMMARY <table> [AS key]       -- the summary pattern: a total and a bar (or donut) per group
   GROUP BY <SQL>  VALUE SUM(col)  LABEL 'Spent'  WHERE <SQL>  MONEY  DONUT  LIMIT 20  TITLE 'Heading'
+WEEK <table of marks> [AS key] -- the week pattern: a row per thing with its 7 days to tick (habits, chores); a mark is a row
+  ITEMS <table of the things>  ITEM <marks column holding the thing's id>  DAY <marks column, 'YYYY-MM-DD'>  NAME <things column>  SUB <things column>  LABEL 'Done'  EXTRA {points: it.points}  TITLE
+CALENDAR <table> [AS key]      -- the calendar pattern: a month, the picked day's rows, a form to add one
+  DATE <'YYYY-MM-DD' column>  NAME <col>  TIME <col>  PLACE <col>  COLOR <col>  FORM (...)  WHERE  TITLE  NOUN
+FLASHCARDS <table> [AS key]    -- spaced repetition: a card, its answer, then Again/Hard/Good/Easy; due and new/learning/mastered counts
+  FRONT <col>  BACK <col>  DUE <keyword col>  INTERVAL <int col>  MASTERED 21  WHERE deck = :deck  PARAM deck = state.deck  TITLE
+QUIZ <table> [AS key]          -- multiple choice, one question after another, with a score (saved per try with RESULTS)
+  QUESTION <col>  CHOICES <col: a list, or one choice per line>  ANSWER <col: the right choice or its index>  EXPLANATION <col>  COUNT 10  RESULTS <table>  EXTRA {deck: state.deck}  WHERE  PARAM  TITLE
+FIND <table> [AS key]          -- the search pattern: words and meaning ranked together, the picked row, rows like it
+  TEXT <text col>  MEANING <meaning col>  NAME <col>  SUB col, col  SHOW (columns)  LIMIT 20  PLACEHOLDER 'Search notes'  WHERE  PARAM  TITLE
+DASHBOARD <table> [AS key]     -- a value over the last N days against the N before: per day, by a group, newest rows
+  DATE <timestamp col> | DAY <'YYYY-MM-DD' col>  VALUE SUM(col)  LABEL 'Hours'  FORMAT number | money | hours  DAYS 30  BY <group col>  RECENT (columns)  WHERE  TITLE
 HEADING 'text'   TEXT 'text'
 DATA <name> AS SELECT ...      -- more data for BLOCKS and LET, by name
 STATE <name> = <JSON>          LET <name> = <JavaScript expression>
@@ -380,4 +440,6 @@ LIST guests
 SUMMARY guests AS meals
   TITLE 'Meals'  GROUP BY meal  WHERE rsvp = 'yes'
 
-A screen that is mostly custom (a game, a chart of its own) may be a CREATE SCREEN with a BLOCKS part, or a JSON "screen" in the plan as described above. To change a screen the app has, use a "patch" as described above (the app shows screens as JSON).`;
+A screen that is mostly custom (a game, a chart of its own) may be a CREATE SCREEN with a BLOCKS part, or a JSON "screen" in the plan as described above.
+
+The statement is the screen's source: the app keeps it and shows it to you (format="statement"). To change such a screen, give "edits" in its plan entry, [{"old": "text copied exactly from the statement, occurring once", "new": "its replacement"}], or a new statement in its code block when most of it changes. A screen shown as JSON (format="screen") takes a "patch" as described above.`;

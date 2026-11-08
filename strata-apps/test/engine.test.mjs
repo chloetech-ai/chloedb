@@ -522,6 +522,79 @@ BLOCKS [{"text": "=guests.length + ' guests'"}]`;
   assert.ok(code.bad.startsWith('CREATE SCREEN'));
 });
 
+test('CREATE SCREEN says the week, calendar, flashcards, quiz, search and dashboard patterns too', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const { expandScreen } = await import('../engine/patterns.mjs');
+  const src = `CREATE SCREEN home TITLE 'Home'
+STATE deck = "Spanish"
+WEEK chore_done AS chart
+  ITEMS chores  ITEM chore  DAY day  NAME title  SUB kid  LABEL 'Done'  EXTRA {points: it.points, kid: it.kid}
+CALENDAR events
+  DATE day  NAME title  TIME at  COLOR who  NOUN 'event'
+  FORM (title REQUIRED, day DATE, at 'Time', who)
+FLASHCARDS cards
+  FRONT question  BACK answer  INTERVAL interval_days  MASTERED 21
+  WHERE deck = :deck  PARAM deck = state.deck
+QUIZ questions
+  QUESTION question  CHOICES options  ANSWER correct  EXPLANATION explanation  COUNT 5
+  RESULTS quiz_results  EXTRA {deck: state.deck}
+FIND notes
+  TEXT body  MEANING meaning  NAME title  SUB paper, year  SHOW (paper, authors 'By', tags)
+  PLACEHOLDER 'Search notes'  LIMIT 10
+DASHBOARD hours
+  DAY day  VALUE SUM(hours)  LABEL 'Hours'  FORMAT hours  DAYS 30  BY client  RECENT (day, client, hours)`;
+  const c = compileStatement(src);
+  assert.deepEqual(c.screen.body.map((b) => b.use), ['week', 'calendar', 'flashcards', 'quiz', 'search', 'dashboard']);
+  const [week, cal, cards, quiz, find, dash] = c.screen.body;
+  assert.deepEqual({ table: week.table, key: week.key, items: week.items, item: week.item, name: week.name, sub: week.sub, label: week.label, extra: week.extra }, { table: 'chore_done', key: 'chart', items: 'chores', item: 'chore', name: 'title', sub: 'kid', label: 'Done', extra: '{points: it.points, kid: it.kid}' });
+  assert.equal(cal.fields.length, 4);
+  assert.deepEqual(cal.fields[1], { name: 'day', type: 'date' });
+  assert.equal(cards.where, 'deck = :deck');
+  assert.deepEqual(cards.params, { deck: '=state.deck' });
+  assert.equal(cards.mastered, 21);
+  assert.equal(quiz.count, 5);
+  assert.equal(quiz.resultExtra, '{deck: state.deck}');
+  assert.deepEqual(find.sub, ['paper', 'year']);
+  assert.deepEqual(find.show.map((x) => x.key || x), ['paper', 'authors', 'tags']);
+  assert.equal(find.limit, 10);
+  assert.deepEqual({ date: dash.date, day: dash.day, value: dash.value, format: dash.format, days: dash.days, group: dash.group }, { date: 'day', day: true, value: 'SUM(hours)', format: 'hours', days: 30, group: 'client' });
+  const e = expandScreen(c.screen);
+  assert.deepEqual(e.problems, []);
+  const cols = { chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'] };
+  assert.deepEqual(checkScreen(e.screen, (t) => (cols[t] ? new Set(['id', 'created', ...cols[t]]) : null)), []);
+  // what a part needs, and a clause it does not take, name the line
+  assert.throws(() => compileStatement('CREATE SCREEN x\nWEEK marks\n  ITEMS things'), /ITEM/);
+  assert.throws(() => compileStatement('CREATE SCREEN x\nFIND notes\n  NAME title'), /TEXT/);
+  assert.throws(() => compileStatement('CREATE SCREEN x\nQUIZ q\n  COUNT many'), /line 3/);
+});
+
+test('a screen written as a statement keeps it as its source: changes edit the statement, patches are refused', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const statement = "CREATE SCREEN guests TITLE 'Guests'\nLIST guests\n  FORM (name REQUIRED, rsvp SELECT ('yes', 'no'))\n  COLUMNS (name, rsvp BADGE)";
+  const screen = compileStatement(statement).screen;
+  const view = { ...empty, views: [{ slug: 'guests', title: 'Guests', description: 'd', spec: { order: 1, screen: true, statement }, code: JSON.stringify(screen) }] };
+  // edits change the statement; it is compiled again into the screen
+  const plan = { views: [{ slug: 'guests', edits: [{ old: "rsvp SELECT ('yes', 'no')", new: "rsvp SELECT ('yes', 'no', 'maybe')" }] }] };
+  const code = {};
+  assert.deepEqual(prepareScreens(plan, code, view), []);
+  assert.ok(plan.views[0].screen && code.guests.startsWith('{'), 'the view\'s code is the compiled screen');
+  assert.match(plan.views[0].statement, /'maybe'/);
+  assert.ok(code.guests.includes('"maybe"'), 'the compiled screen has the new option');
+  // a new statement as the view's code replaces it the same way
+  const plan2 = { views: [{ slug: 'guests', title: 'Guests' }] };
+  const code2 = { guests: statement.replace("COLUMNS (name, rsvp BADGE)", "COLUMNS (name)") };
+  assert.deepEqual(prepareScreens(plan2, code2, view), []);
+  assert.ok(plan2.views[0].statement.endsWith('COLUMNS (name)') && !code2.guests.includes('"badge"'));
+  // a JSON patch would leave the statement behind: refused, with what to give
+  const plan3 = { views: [{ slug: 'guests', patch: [{ op: 'replace', path: '/body/0/title', value: 'x' }] }] };
+  const problems = prepareScreens(plan3, {}, view);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /CREATE SCREEN statement/);
+  // a statement that does not compile stays a problem naming its line
+  const bad = prepareScreens({ views: [{ slug: 'guests', edits: [{ old: 'COLUMNS', new: 'COLUMNZ' }] }] }, {}, view);
+  assert.match(bad[0], /line 4/);
+});
+
 test('a rule is a function as data: queries return rows, steps write, and :row.col reads the trigger row', async () => {
   const calls = [];
   const votes = { f1: 3 };
@@ -601,7 +674,7 @@ test('edits change a JavaScript view or function by find and replace, and refuse
   editCode({ views: [{ slug: 'notes', edits: [{ old: 'color: #1d4ed8', new: "content: '$&'" }] }] }, c2, view);
   assert.ok(c2.notes.includes("content: '$&'"));
   // screens take patches, rules are given whole, and a code block with edits is one too many
-  assert.match(editCode({ views: [{ slug: 'board', edits: [{ old: '{}', new: '[]' }] }] }, {}, view)[0], /a screen takes "patch"/);
+  assert.match(editCode({ views: [{ slug: 'board', edits: [{ old: '{}', new: '[]' }] }] }, {}, view)[0], /a screen shown as JSON takes "patch"/);
   assert.match(editCode({ functions: [{ slug: 'total', edits: [{ old: '1', new: '2' }] }] }, {}, view)[0], /a rule is given whole/);
   assert.match(editCode({ views: [{ slug: 'notes', edits: [{ old: 'Notes', new: 'x' }] }] }, { notes: 'x' }, view)[0], /not both/);
 });
