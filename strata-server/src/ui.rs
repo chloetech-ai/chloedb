@@ -68,6 +68,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/media.js", JS, include_str!("../ui/app/views/media.js")),
     ("views/graph.js", JS, include_str!("../ui/app/views/graph.js")),
     ("views/classic.js", JS, include_str!("../ui/app/views/classic.js")),
+    ("views/apps.js", JS, include_str!("../ui/app/views/apps.js")),
 ];
 
 /// A file from `STRATA_UI_DIR`, when it is set: `rel` under it.

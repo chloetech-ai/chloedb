@@ -429,6 +429,19 @@ fn host_name() -> String {
         .unwrap_or_else(|| "this-machine".into())
 }
 
+/// The name of the key a hub makes on a cluster it reaches through its
+/// Kubernetes API: "hub <device>", cut to the 64 bytes a key's name may
+/// have (a machine's name can be long: CI's macOS runner's is).
+fn key_name(device: &str) -> String {
+    let mut name = format!("hub {device}");
+    let mut end = name.len().min(64);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
+    name
+}
+
 /// Who a hub on this machine is, by default.
 pub fn default_device() -> String {
     let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "someone".into());
@@ -683,7 +696,7 @@ impl Hub {
         };
         let key = match &root {
             Some(root) => {
-                let body = json!({"name": format!("hub {}", self.device), "scope": "admin", "owner": by, "note": format!("the command center of {} reaches this cluster with it, through its Kubernetes API", self.device)});
+                let body = json!({"name": key_name(&self.device), "scope": "admin", "owner": by, "note": format!("the command center of {} reaches this cluster with it, through its Kubernetes API", self.device)});
                 let r = k
                     .request(reqwest::Method::POST, &format!("{}/v1/admin/keys", via.proxy()), CHECK_TIMEOUT)
                     .header(VIA_PROXY_AUTH, format!("Bearer {root}"))
@@ -953,6 +966,11 @@ mod tests {
         assert!(check_name("").is_err() && check_name("-a").is_err() && check_name("Prod").is_err() && check_name("a b").is_err() && check_name(&"a".repeat(41)).is_err());
         assert_eq!(Hub::keys_file_of(Path::new("/x/my.strata.hub.json")), PathBuf::from("/x/my.strata.hub-keys.json"));
         assert_eq!(fingerprint(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(key_name("ana@laptop"), "hub ana@laptop");
+        // "é" takes bytes 64 and 65 of the name: the cut goes before it.
+        let long = format!("runner@{}éxyz", "m".repeat(52));
+        assert_eq!(key_name(&long), format!("hub runner@{}", "m".repeat(52)));
+        assert_eq!(key_name(&format!("runner@{}", "m".repeat(80))).len(), 64);
     }
 
     #[test]

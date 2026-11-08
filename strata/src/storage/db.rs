@@ -21,9 +21,9 @@
 //! * Readers never take the writer lock; the state lock is held only to
 //!   copy pointers, never across I/O or index builds.
 //! * With [`DbOptions::publish_snapshots`] the writer also builds each new
-//!   version's snapshot before its commit returns, and readers only clone
-//!   the published one: they never build a memtable segment or wait for
-//!   one to be built.
+//!   version's snapshot before its commit returns, while readers take
+//!   snapshots, and readers only clone the published one: they never build
+//!   a memtable segment or wait for one to be built.
 //! * Other processes can read the database while one writes it: they open
 //!   it with [`DbOptions::read_only`], and see its commits as they are made
 //!   ([`crate::storage::share`] has the locks and pins that make it safe).
@@ -108,9 +108,12 @@ pub struct DbOptions {
     pub random_hints: bool,
     /// Build each version's snapshot when it is made, in the writer (a
     /// commit, flush, bulk load, merge or vacuum returns once readers can
-    /// see it), and give readers that one. A reader then never builds a
-    /// memtable segment or waits for another reader's build; each write
-    /// pays for the build instead of the first query after it.
+    /// see it), and give readers that one. While queries keep coming, a
+    /// reader then never builds a memtable segment or waits for another
+    /// reader's build; each write pays for the build instead of the first
+    /// query after it. A write that follows no read since the last
+    /// published version publishes none (nobody is waiting for it), and
+    /// the first reader after it builds the version, as without this.
     pub publish_snapshots: bool,
     /// How a database created with these options is laid out on disk (an
     /// existing one opens in the layout it has).
@@ -319,6 +322,9 @@ pub struct Database {
     build_lock: Mutex<()>,
     /// The snapshot readers get, with `DbOptions::publish_snapshots`.
     published: RwLock<Option<Snapshot>>,
+    /// Whether a snapshot was taken since the writer last published one:
+    /// it publishes the next version only then ([`Database::republish`]).
+    read: AtomicBool,
     /// The merges running, with what a crash interrupted ([`Merging`]).
     merging: Mutex<Merging>,
     /// Expired rows per segment ([`Database::expired_in`]): the segment's
@@ -984,6 +990,7 @@ impl Database {
             reader: Some(reader.clone()),
             build_lock: Mutex::new(()),
             published: RwLock::new(None),
+            read: AtomicBool::new(true),
             merging: Mutex::new(Merging::default()),
             expired: Mutex::new(HashMap::new()),
             merge_record_path,
@@ -1249,6 +1256,7 @@ impl Database {
             reader: None,
             build_lock: Mutex::new(()),
             published: RwLock::new(None),
+            read: AtomicBool::new(true),
             merging: Mutex::new(Merging { record, ..Merging::default() }),
             expired: Mutex::new(HashMap::new()),
             merge_record_path,
@@ -2120,6 +2128,9 @@ impl Database {
     /// `DbOptions::publish_snapshots` has the writer build it.
     pub fn snapshot(&self) -> Snapshot {
         self.follow();
+        if !self.read.load(Ordering::Relaxed) {
+            self.read.store(true, Ordering::Relaxed);
+        }
         if let Some(s) = &*self.published.read().unwrap_or_else(|e| e.into_inner()) {
             return s.clone();
         }
@@ -2155,12 +2166,16 @@ impl Database {
     }
 
     /// With `publish_snapshots`, builds the current version's snapshot and
-    /// hands it to readers from now on. Callers hold the writer lock (or
-    /// are opening the database), so versions are published in order.
+    /// hands it to readers from now on, if a snapshot was taken since the
+    /// last one was published; if none was, readers build the version
+    /// themselves ([`Self::snapshot_inner`]) until one is published again,
+    /// so writes nobody reads (a bulk import) do not index memtable chunks
+    /// the flush indexes again. Callers hold the writer lock (or are
+    /// opening the database), so versions are published in order.
     fn republish(&self) {
         if self.opts.publish_snapshots {
-            let s = self.snapshot_inner(true);
-            *self.published.write().unwrap_or_else(|e| e.into_inner()) = Some(s);
+            let s = self.read.swap(false, Ordering::Relaxed).then(|| self.snapshot_inner(true));
+            *self.published.write().unwrap_or_else(|e| e.into_inner()) = s;
         }
     }
 
@@ -2760,8 +2775,16 @@ impl Database {
         }
         let mut threads = lock(&self.merger_threads);
         for i in 0..opts.threads.max(1) {
-            let (db, m) = (Arc::downgrade(self), m.clone());
-            threads.push(std::thread::Builder::new().name(format!("strata-merger-{i}")).spawn(move || merger(db, m)).expect("spawn a merger thread"));
+            let (db, m, nice) = (Arc::downgrade(self), m.clone(), opts.nice);
+            threads.push(
+                std::thread::Builder::new()
+                    .name(format!("strata-merger-{i}"))
+                    .spawn(move || {
+                        lower_priority(nice);
+                        merger(db, m)
+                    })
+                    .expect("spawn a merger thread"),
+            );
         }
     }
 
@@ -5472,4 +5495,26 @@ pub use crate::storage::share::LOCK_WAIT;
 /// What a write to a read-only database fails with.
 fn read_only(path: &Path) -> Error {
     Error::Query(format!("{} is open read-only", path.display()))
+}
+
+/// Lowers the calling thread's CPU priority to nice value `nice` (at most
+/// 19) unless it is lower already ([`MergerOptions::nice`]). On Linux a
+/// thread's nice value is its own, and the threads it starts inherit it;
+/// elsewhere this does nothing, since `setpriority` there sets the whole
+/// process's.
+pub(crate) fn lower_priority(nice: i32) {
+    #[cfg(target_os = "linux")]
+    if nice > 0 {
+        // SAFETY: gettid and get/setpriority on the calling thread take no
+        // pointers.
+        unsafe {
+            let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+            let now = libc::getpriority(libc::PRIO_PROCESS, tid);
+            if now < nice.min(19) {
+                libc::setpriority(libc::PRIO_PROCESS, tid, nice.min(19));
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = nice;
 }

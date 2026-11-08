@@ -74,9 +74,11 @@ from .build import (
     sigmoid,
     similarity,
     sqrt,
+    when,
 )
 from ._native import StrataError
 from .client import Client
+from .frame import Frame, FrameStore, GroupBy, concat, len_, _arrow_table
 from .ngrams import next_items
 from .result import ArrowResult, Result
 
@@ -131,7 +133,20 @@ __all__ = [
     "ngrams",
     "next_items",
     "upgrade",
+    "Frame",
+    "GroupBy",
+    "concat",
+    "when",
+    "len",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    # `strata.len()`, as Polars' `pl.len()`, without hiding the builtin
+    # `len` inside this module.
+    if name == "len":
+        return len_
+    raise AttributeError(f"module 'strata' has no attribute {name!r}")
 
 
 def upgrade(path: str | os.PathLike) -> tuple[str, int, int] | None:
@@ -179,13 +194,31 @@ def _names(tables: str | Iterable[str] | None) -> list[str] | None:
     return [tables] if isinstance(tables, str) else list(tables)
 
 
-class Database(Search):
+class _Pending:
+    """A database `connect` was given the path of, not made yet: its
+    first `create_table` makes it."""
+
+    def __init__(self, path: str, directory: bool, models: Any, threads: int | None):
+        self.path, self.directory, self.models, self.threads = path, directory, models, threads
+
+    def __getattr__(self, name: str) -> Any:
+        raise StrataError(f"{self.path} has no tables yet: make one with create_table(name, data)")
+
+    def closed(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        pass
+
+
+class Database(Search, FrameStore):
     """A Strata database opened in this process.
 
     Create one with `Database.create` (or `strata.open` with a schema), open
-    an existing one with `Database.open`. Only one process may have a
-    database open: to share one, serve it with `strata-server` and use
-    `Client`. Calls release the GIL, so threads can query at once.
+    an existing one with `Database.open`, or `strata.connect(path)` for
+    either. Only one process may have a database open: to share one, serve
+    it with `strata-server` and use `Client`. Calls release the GIL, so
+    threads can query at once. `db["table"]` is a lazy `Frame` of a table.
     """
 
     def __init__(self, inner: Any):
@@ -231,7 +264,10 @@ class Database(Search):
         return ordered_schema(json.loads(self._db.schema_json()))
 
     def tables(self) -> list[dict]:
-        """Every table's schema in its short form, the first first."""
+        """Every table's schema in its short form, the first first (none
+        before `connect`'s new file has its first table)."""
+        if isinstance(self._db, _Pending):
+            return []
         return [ordered_schema(json.loads(t)) for t in self._db.tables_json()]
 
     def add_column(self, name: str, type: str, *, table: str | None = None, **options: Any) -> None:
@@ -472,9 +508,34 @@ class Database(Search):
         self.close()
 
     def __repr__(self) -> str:
+        if isinstance(self._db, _Pending):
+            return f"<strata.Database {self._db.path} (no tables yet)>"
         if self.closed:
             return "<strata.Database (closed)>"
         return f"<strata.Database {self.schema['table']}: {len(self)} rows>"
+
+    # What frames need of a store (FrameStore).
+
+    def _frame_arrow(self, sql: str, params: Mapping[str, Any], types: Mapping[str, dict]) -> ArrowResult:
+        return self.query_arrow(sql, params)
+
+    def _explain(self, sql: str, params: Mapping[str, Any]) -> list[str]:
+        return [str(row[0]) for row in self.sql("EXPLAIN " + sql, params).rows]
+
+    def _plan_parquet_file(self, path: str, table: str, key: str | None) -> dict:
+        return plan_parquet(path, table=table, key=key, db=None if isinstance(self._db, _Pending) else self)
+
+    def _create(self, schema: Mapping[str, Any]) -> None:
+        if isinstance(self._db, _Pending):
+            p = self._db
+            self._db = _strata.Database.create(p.path, json.dumps(schema), p.directory, None if p.models is None else os.fspath(p.models), p.threads)
+        else:
+            self._db.sql(_strata.create_sql(json.dumps(schema)), None)
+
+    def _load(self, table: str, data: Any) -> dict:
+        if not hasattr(data, "__arrow_c_stream__") and not type(data).__module__.startswith("pandas"):
+            data = _arrow_table(data)
+        return self.import_arrow(data, table=table)
 
 
 def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False) -> Database:
@@ -529,7 +590,20 @@ def plan_parquet(parquet_path: str | os.PathLike, *, table: str | None = None, s
     return json.loads(_strata.Database.plan_parquet(os.fspath(parquet_path), table, None if schema is None else _schema_json(schema), key, blobs_base64, None if db is None else db._db))
 
 
-def connect(url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0) -> Client:
-    """A `Client` of the strata-server at `url`."""
-    return Client(url, token=token, timeout=timeout, retry_for=retry_for)
+def connect(url: str | os.PathLike = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0, models: str | os.PathLike | None = None, threads: int | None = None, directory: bool = False) -> Client | Database:
+    """A store, for frames and queries alike: a `Client` of the
+    strata-server (or coordinator) at an `http://` or `https://` URL, or
+    the `Database` at a path, in this process. A path that does not exist
+    yet makes a database at its first `create_table`. The code after it is
+    the same either way: `connect(...)["orders"]` is a frame of a table."""
+    target = os.fspath(url)
+    if target.startswith(("http://", "https://")):
+        return Client(target, token=token, timeout=timeout, retry_for=retry_for)
+    if "://" in target:
+        raise StrataError(f"connect takes a path or an http(s):// URL, not {target!r}")
+    if target.startswith("file:"):
+        target = target[len("file:"):]
+    if os.path.exists(target):
+        return Database.open(target, models=models, threads=threads)
+    return Database(_Pending(target, directory, models, threads))
 
