@@ -996,6 +996,9 @@ impl Schema {
         if let Some(e) = edges {
             s = s.with_edges(&e.src, &e.dst, e.weight.as_deref())?;
         }
+        // The doc store's compression: an altered table keeps writing its
+        // segments as it did.
+        s.compression = self.compression;
         Ok(s)
     }
 

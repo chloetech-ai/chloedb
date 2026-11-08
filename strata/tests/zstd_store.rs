@@ -1,8 +1,8 @@
 //! A table whose doc store is compressed with zstd (`OPTIONS(compression
-//! = 'zstd')`): its rows read back through the memtable, flushes, merges
-//! and reopening, in both layouts, next to a table that keeps LZ4; its
-//! segments take fewer bytes; and the database needs feature `zstd` while
-//! it has such a table, and only then.
+//! = 'zstd')`): its rows read back through the memtable, flushes, merges,
+//! ALTER TABLE and reopening, in both layouts, next to a table that keeps
+//! LZ4; its segments take fewer bytes; and the database needs feature
+//! `zstd` while it has such a table, and only then.
 
 use std::path::Path;
 
@@ -96,6 +96,12 @@ fn through_sql(path: &Path, layout: Layout) {
         run(&db, &format!("UPDATE {t} SET body = 'Verification changed' WHERE id = 7"));
         run(&db, &format!("DELETE FROM {t} WHERE id = 11999"));
     }
+    // An altered table keeps its compression.
+    for t in ["logs", "plain"] {
+        run(&db, &format!("ALTER TABLE {t} ADD COLUMN level KEYWORD"));
+    }
+    assert_eq!(db.storage().table("logs").unwrap().compression, Compression::Zstd);
+    assert_eq!(required(path), ["added_fields", "compact_keys", "field_ids", "zstd"]);
     db.optimize().unwrap();
     same(&db, 11_999);
     // The same rows and indexes, the doc store smaller.
@@ -107,7 +113,7 @@ fn through_sql(path: &Path, layout: Layout) {
     same(&db, 11_999);
     assert_eq!(rows(&db, "SELECT body FROM logs WHERE id = 7"), vec![vec![Value::Str("Verification changed".into())]]);
     run(&db, "DROP TABLE logs");
-    assert_eq!(required(path), ["compact_keys", "field_ids"]);
+    assert_eq!(required(path), ["added_fields", "compact_keys", "field_ids"]);
 }
 
 #[test]
