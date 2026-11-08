@@ -378,3 +378,223 @@
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
+
+/* Motion: a moving strata field behind the page heads, sections that rise
+ * in as they scroll into view, numbers that count up, bars that grow, a
+ * reading-progress line and a light that follows the pointer on cards.
+ * Everything is decoration over a page that is complete without it: with
+ * prefers-reduced-motion, or without IntersectionObserver, nothing moves
+ * and nothing is hidden. */
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var mq = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  var REDUCED = !!(mq && mq.matches);
+  var IO = "IntersectionObserver" in window;
+  if (!REDUCED && IO) root.classList.add("motion");
+  var $$ = function (sel, r) { return Array.prototype.slice.call((r || document).querySelectorAll(sel)); };
+
+  /* ---------- the strata field: four layers in the family hues, drifting,
+     with a few points that sink from one layer to the next (a query going
+     through the indexes). One canvas per head band, paused off screen. */
+  var HUES = ["#3987e5", "#d95926", "#199e70", "#c98500"];
+  function field(band) {
+    var c = document.createElement("canvas");
+    c.className = "field";
+    c.setAttribute("aria-hidden", "true");
+    band.insertBefore(c, band.firstChild);
+    var ctx = c.getContext("2d");
+    if (!ctx) return;
+    var hero = band.classList.contains("hero-band");
+    var W = 0, H = 0, dpr = 1, t0 = performance.now(), running = false, raf = 0;
+    var dots = [];
+    function size() {
+      var r = band.getBoundingClientRect();
+      dpr = Math.min(2, window.devicePixelRatio || 1);
+      W = Math.max(1, r.width); H = Math.max(1, r.height);
+      c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var n = Math.round(Math.min(46, W / (hero ? 30 : 46)));
+      dots = [];
+      for (var i = 0; i < n; i++) dots.push({ x: Math.random() * W, l: i % 4, v: 0.25 + Math.random() * 0.6, fall: Math.random() < 0.18 ? Math.random() : -1, s: 1 + Math.random() * 1.6 });
+    }
+    // the y of layer l at x and time t: a gentle swell, layered top to bottom
+    function y(l, x, t) {
+      var base = H * (hero ? 0.3 : 0.34) + l * H * (hero ? 0.15 : 0.15);
+      return base + Math.sin(x / (230 + l * 40) + t * (0.22 + l * 0.05) + l * 1.7) * (14 + l * 3) + Math.sin(x / 97 - t * 0.31 + l) * 5;
+    }
+    function draw(now) {
+      var t = (now - t0) / 1000;
+      ctx.clearRect(0, 0, W, H);
+      for (var l = 0; l < 4; l++) {
+        // a band under the line, faint, then the line
+        ctx.beginPath();
+        for (var x = 0; x <= W + 8; x += 8) { var yy = y(l, x, t); if (x === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy); }
+        ctx.strokeStyle = HUES[l]; ctx.globalAlpha = hero ? 0.55 : 0.4; ctx.lineWidth = 1.4; ctx.stroke();
+        ctx.lineTo(W, y(l, W, t) + 36); ctx.lineTo(0, y(l, 0, t) + 36); ctx.closePath();
+        ctx.globalAlpha = hero ? 0.07 : 0.05; ctx.fillStyle = HUES[l]; ctx.fill();
+      }
+      for (var i = 0; i < dots.length; i++) {
+        var d = dots[i];
+        d.x += d.v * (REDUCED ? 0 : 1);
+        if (d.x > W + 10) { d.x = -10; d.l = Math.floor(Math.random() * 4); d.fall = Math.random() < 0.18 ? 0 : -1; }
+        var yy0 = y(d.l, d.x, t), yy = yy0;
+        if (d.fall >= 0 && d.l < 3) {
+          // sinking to the next layer
+          d.fall += 0.006;
+          var y1 = y(d.l + 1, d.x, t);
+          var k = Math.min(1, d.fall); k = k * k * (3 - 2 * k);
+          yy = yy0 + (y1 - yy0) * k;
+          if (d.fall >= 1) { d.l += 1; d.fall = d.l < 3 && Math.random() < 0.5 ? 0 : -1; }
+        }
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = HUES[d.l];
+        ctx.beginPath(); ctx.arc(d.x, yy, d.s, 0, 6.283); ctx.fill();
+        ctx.globalAlpha = 0.18;
+        ctx.beginPath(); ctx.arc(d.x, yy, d.s * 3.2, 0, 6.283); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      if (running) raf = requestAnimationFrame(draw);
+    }
+    function start() { if (running || REDUCED) return; running = true; raf = requestAnimationFrame(draw); }
+    function stop() { running = false; cancelAnimationFrame(raf); }
+    size();
+    draw(performance.now());
+    var rt = 0;
+    window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(function () { size(); draw(performance.now()); }, 120); });
+    if (IO) new IntersectionObserver(function (es) { es[0].isIntersecting ? start() : stop(); }).observe(band); else start();
+    document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); else if (band.getBoundingClientRect().bottom > 0) start(); });
+  }
+
+  /* ---------- rise in as they come into view, a sibling at a time */
+  var RISE = [".block-head", ".cap", ".dcard", ".lang", ".tiles > *", ".proofstrip > *", ".fact", ".pipe", ".feat", ".principles > div",
+    ".split2 > *", ".uc2 > *", ".flist li", ".fam-intro", ".chart", ".showcase", ".try", ".cta > *", ".rung", ".stage", ".sim", ".filemap", ".deploy-art"].join(",");
+  function rise() {
+    var els = $$(RISE).filter(function (el) { return !el.closest(".hero-band, .head-band, .top, .foot, [data-panel][hidden]") && el.getBoundingClientRect().top > window.innerHeight * 0.92; });
+    els.forEach(function (el) {
+      el.classList.add("rv");
+      var sib = 0, p = el.previousElementSibling;
+      while (p && sib < 8) { if (p.classList.contains("rv")) sib++; p = p.previousElementSibling; }
+      el.style.setProperty("--rv-d", sib * 70 + "ms");
+    });
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { rootMargin: "0px 0px -6% 0px", threshold: 0.05 });
+    els.forEach(function (el) { io.observe(el); });
+    // never leave anything hidden: a jump to an anchor, a print, a resize
+    window.addEventListener("beforeprint", function () { els.forEach(function (el) { el.classList.add("in"); }); });
+  }
+
+  /* ---------- numbers count up to their printed value */
+  var NUM = /(\d[\d,]*(?:\.\d+)?)(?!\d|st|nd|rd|th)/g;
+  function countUp(el) {
+    var nodes = [], w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), n;
+    while ((n = w.nextNode())) if (NUM.test(n.nodeValue)) nodes.push({ n: n, text: n.nodeValue });
+    NUM.lastIndex = 0;
+    if (!nodes.length) return;
+    var t0 = performance.now(), dur = 1100;
+    function frame(now) {
+      var k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      nodes.forEach(function (o) {
+        o.n.nodeValue = k >= 1 ? o.text : o.text.replace(NUM, function (s) {
+          var dec = (s.split(".")[1] || "").length, v = parseFloat(s.replace(/,/g, "")) * e;
+          return s.indexOf(",") >= 0 ? Math.round(v).toLocaleString("en-US") : v.toFixed(dec);
+        });
+      });
+      if (k < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+  function counts() {
+    var els = $$(".tiles .v, .proofstrip .v, .stat .v, [data-count]");
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { io.unobserve(e.target); countUp(e.target); } });
+    }, { threshold: 0.6 });
+    els.forEach(function (el) { io.observe(el); });
+  }
+
+  /* ---------- bars grow from zero when their chart comes into view */
+  function bars() {
+    var els = $$(".cell .bar, .rb-bar > i, [data-rank-mini] .bar > i");
+    els.forEach(function (el) { el.classList.add("gw"); });
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("grown"); io.unobserve(e.target); } });
+    }, { threshold: 0 });
+    els.forEach(function (el) { io.observe(el); });
+  }
+
+  /* ---------- a reading line across the top, in the four hues */
+  function progress() {
+    var bar = document.createElement("div");
+    bar.className = "readline"; bar.setAttribute("aria-hidden", "true");
+    document.body.appendChild(bar);
+    var tick = false;
+    function set() { tick = false; var h = document.documentElement.scrollHeight - window.innerHeight; bar.style.transform = "scaleX(" + (h > 0 ? Math.min(1, window.scrollY / h) : 0) + ")"; }
+    window.addEventListener("scroll", function () { if (!tick) { tick = true; requestAnimationFrame(set); } }, { passive: true });
+    set();
+  }
+
+  /* ---------- a light that follows the pointer over a card */
+  function spotlight() {
+    if (!window.matchMedia || !window.matchMedia("(hover: hover)").matches) return;
+    document.addEventListener("pointermove", function (e) {
+      var el = e.target.closest && e.target.closest(".cap, .dcard, .lang, .fact, .tiles > a, .proofstrip > a, .latest");
+      if (!el) return;
+      var r = el.getBoundingClientRect();
+      el.style.setProperty("--mx", (e.clientX - r.left) + "px");
+      el.style.setProperty("--my", (e.clientY - r.top) + "px");
+    }, { passive: true });
+  }
+
+  /* ---------- the statement on the home page: its four parts lit in turn,
+     or the one under the pointer */
+  function statement() {
+    var list = document.querySelector(".checks");
+    var code = list && list.closest(".split2") && list.closest(".split2").querySelector(".code");
+    if (!code) return;
+    var fams = ["text", "cols", "vec", "graph"], i = 0, timer = 0, held = false;
+    function light(f) {
+      fams.forEach(function (g) {
+        code.classList.toggle("hl-" + g, g === f);
+        var li = list.querySelector("li." + g); if (li) li.classList.toggle("on", g === f);
+      });
+    }
+    function step() { if (!held) { light(fams[i % 4]); i++; } }
+    $$("li", list).forEach(function (li) {
+      var f = fams.filter(function (g) { return li.classList.contains(g); })[0];
+      li.tabIndex = 0;
+      li.addEventListener("pointerenter", function () { held = true; light(f); });
+      li.addEventListener("focus", function () { held = true; light(f); });
+      li.addEventListener("pointerleave", function () { held = false; });
+      li.addEventListener("blur", function () { held = false; });
+    });
+    if (REDUCED || !IO) return;
+    new IntersectionObserver(function (es) {
+      if (es[0].isIntersecting) { if (!timer) { step(); timer = setInterval(step, 2200); } }
+      else { clearInterval(timer); timer = 0; light(null); }
+    }, { threshold: 0.4 }).observe(code);
+  }
+
+  /* ---------- a query's six steps (Under the hood): a pulse runs through them */
+  function pipe() {
+    var p = document.querySelector("ol.pipe");
+    if (!p || REDUCED || !IO) return;
+    var li = $$("li", p), i = 0, timer = 0;
+    function step() { li.forEach(function (x, j) { x.classList.toggle("on", j === i % li.length); x.classList.toggle("done", j < i % li.length); }); i++; }
+    new IntersectionObserver(function (es) {
+      if (es[0].isIntersecting) { if (!timer) { p.classList.add("live"); step(); timer = setInterval(step, 1100); } }
+      else { clearInterval(timer); timer = 0; }
+    }, { threshold: 0.3 }).observe(p);
+  }
+
+  function boot() {
+    $$(".hero-band, .head-band").forEach(field);
+    statement();
+    if (REDUCED || !IO) return;
+    // after the other scripts have drawn their charts
+    requestAnimationFrame(function () { rise(); counts(); bars(); pipe(); });
+    progress();
+    spotlight();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
+})();

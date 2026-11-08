@@ -68,6 +68,16 @@ kubectl -n strata patch strata demo --type merge \
     </div>
   </div></section>
 
+  <section class="gutter" id="watch"><div class="wrap block">
+    <div class="block-head center">
+      <span class="eyebrow">Watch it work</span>
+      <h2>A search, a write, a failover and a new shard</h2>
+      <p>Press a button, or let it play. Searches ask every shard and merge; a write goes to the one shard its key hashes to; a stopped primary is replaced by a vote; a new shard takes slots while the cluster serves.</p>
+    </div>
+    <div class="sim cluster" data-sim="cluster"></div>
+    <p class="sim-note">An animation of what the coordinator and the copies do, slowed down to be seen; it is not connected to a cluster. The flags it names are strata-server's own.</p>
+  </div></section>
+
   <section class="gutter" id="same"><div class="wrap block">
     <div class="block-head center">
       <h2>What stays the same at every step</h2>
@@ -147,6 +157,7 @@ curl -s -X POST 'localhost:7700/v1/import?format=sqlite' \
 </div></footer>
 <script src="assets/bench-data.js"></script>
 <script src="assets/site.js"></script>
+<script src="assets/sims.js"></script>
 <script src="assets/bench.js"></script>
 </body>
 </html>
