@@ -333,7 +333,9 @@ pub fn build(i: Inputs) -> Json {
     }
     // The rebuilds after writes.
     if fit.stall_ms > 0.0 && set.write_share > 0.0 {
-        let st = main_p.at.as_ref().map(|a| a.stall).unwrap_or_default();
+        // At the rate asked, or the most the cluster holds when that is past it.
+        let at = if main_p.capacity_qps.is_finite() && main_p.capacity_qps > 0.0 { at_rate.min(main_p.capacity_qps) } else { at_rate };
+        let st = fit.stall(&main_shape, at);
         let mut quiet = fit.clone();
         quiet.stall_ms = 0.0;
         let without = quiet.capacity(&main_shape, slo);
@@ -351,8 +353,8 @@ pub fn build(i: Inputs) -> Json {
                 "A row added makes the next search on each copy of its shard rebuild the part of the memtable it changed first: {kind} took {} right after an insert, against {} alone. At {}/s, {} of searches wait for one, by the model{}. More copies do not cut it (each copy rebuilds for itself); fewer commits do: rows written in batches.",
                 ms(after),
                 ms(alone),
-                rate(at_rate),
-                pct(st.search_waits),
+                rate(at),
+                if st.search_waits < 0.1 { format!("{:.1}%", st.search_waits * 100.0) } else { pct(st.search_waits) },
                 if lost >= 0.01 { format!("; without it, the cluster would hold {}/s, {} more", rate(without), pct(lost)) } else { String::new() }
             ),
         ));
