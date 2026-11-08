@@ -1860,11 +1860,12 @@ impl Service {
     }
 
     /// The stored functions queries call ([`strata::query::function`]): a
-    /// local database's as they are now. A coordinator calls none yet.
+    /// local database's as they are now, a coordinator's as its replicas
+    /// held them alike when last asked ([`Coordinator::functions`]).
     pub fn functions(&self) -> Arc<FunctionSet> {
         match &self.backend {
             Backend::Local(db) => db.functions().unwrap_or_default(),
-            Backend::Cluster(_) => Arc::default(),
+            Backend::Cluster(c) => c.functions(),
         }
     }
 
@@ -3182,7 +3183,10 @@ impl Service {
                     e => e,
                 }
             }
-            Backend::Cluster(c) => c.ddl(sql, params).await,
+            Backend::Cluster(c) => match strata::query::function::parse_statement(sql)? {
+                Some(f) => c.define_function(&f, author).await,
+                None => c.ddl(sql, params).await,
+            },
         };
         // The models of the tables it made.
         self.refresh_models();
