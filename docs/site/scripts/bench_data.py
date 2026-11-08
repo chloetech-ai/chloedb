@@ -778,6 +778,11 @@ def main():
           "window.STRATA_BENCH = " + json.dumps(data, ensure_ascii=False, separators=(",", ":")) + ";\n")
     OUT.write_text(js)
     print(f"wrote {OUT.relative_to(ROOT)} ({len(js):,} bytes); missing: {', '.join(missing) or 'none'}", file=sys.stderr)
+    # the pages link bench-data.js by its hash, so a browser fetches the new one
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.dont_write_bytecode = True
+    import stamp_assets
+    stamp_assets.main()
 
 
 if __name__ == "__main__":
