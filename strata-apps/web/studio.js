@@ -281,6 +281,168 @@ async function showMap(appId, name) {
   await libraryGraph(body, { app: appId });
 }
 
+// ---- a build's timeline: what took the time, and what was decided for each piece
+
+const KIND_LABEL = { strata: 'Strata', plan: 'Model planning', model: 'Model planning and writing in one answer', write: 'Model writing pieces', fix: 'Model fixing', check: 'Checks' };
+const DECISION = {
+  use: ['Used', 'as it is'], copy: ['Copied', 'as it is'], keep: ['Kept', 'as it was'], new: ['New', 'written from scratch'],
+  change: ['Rewrote', 'changed'], fork: ['Forked', 'started from another'], version: ['New version', 'of a shared piece'],
+  upgrade: ['Newer', 'moved to a newer version'], remove: ['Removed', ''],
+};
+const secs = (ms) => ms < 1000 ? `${(ms / 1000).toFixed(1)} s` : ms < 100000 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`;
+const money = (c) => `$${(c || 0).toFixed(2)}`;
+const kTok = (n) => n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n || 0);
+const pieceName = (d) => `${d.kind === 'component' ? 'ui.' : d.kind === 'helper' ? 'lib.' : d.kind === 'table' ? 'table ' : `${d.kind} `}${d.name}`;
+
+function whereFrom(d) {
+  const f = d.from || {};
+  if (d.decision === 'use') return f.builtin ? 'built-in, used as it is' : 'from the library (another app wrote it), used as it is';
+  if (d.decision === 'copy') return f.starter ? 'built-in starter, copied as it is' : `copied from another app: ${f.title}`;
+  if (d.decision === 'fork') return `forked from ${f.starter ? 'the built-in starter ' : ''}${f.title}`;
+  if (d.decision === 'version') return `new version of the shared ${d.kind} (${f.author === 'builtin' ? 'built-in' : 'from another app'})`;
+  if (d.decision === 'change') return d.kind === 'table' ? d.detail : 'rewritten';
+  if (d.decision === 'new') return d.kind === 'table' ? d.detail : 'written from scratch';
+  if (d.decision === 'upgrade') return 'moved to a newer version';
+  return DECISION[d.decision]?.[1] || '';
+}
+
+// Where a build's time went, by kind of work: the wall time each kind held
+// (pieces written at once count once), and the model time in all.
+function timeSplit(trace) {
+  const by = {};
+  const model = { ms: 0, calls: 0, cost: 0, in: 0, out: 0, cached: 0 };
+  for (const s of trace.spans) {
+    const k = s.kind;
+    (by[k] ||= []).push([s.start, s.end]);
+    if (s.tokens) { model.ms += s.end - s.start; model.calls++; model.cost += s.cost || 0; model.in += (s.tokens.in || 0) + (s.tokens.cacheWrite || 0) + (s.tokens.cached || 0); model.cached += s.tokens.cached || 0; model.out += s.tokens.out || 0; }
+  }
+  const wall = {};
+  for (const [k, list] of Object.entries(by)) {
+    list.sort((a, b) => a[0] - b[0]);
+    let total = 0, cs = -1, ce = -1;
+    for (const [a, b] of list) { if (a > ce) { if (ce > cs) total += ce - cs; cs = a; ce = b; } else ce = Math.max(ce, b); }
+    if (ce > cs) total += ce - cs;
+    wall[k] = total;
+  }
+  return { wall, model };
+}
+
+function ganttRows(trace) {
+  const total = Math.max(trace.ms, 1);
+  const pct = (t) => `${Math.min(100, (t / total) * 100).toFixed(2)}%`;
+  const step = [1, 2, 5, 10, 15, 20, 30, 60, 120, 300].find((s) => total / 1000 / s <= 6) || 600;
+  const ticks = [];
+  for (let t = 0; t <= total / 1000; t += step) ticks.push(t);
+  const grid = () => ticks.slice(1).map((t) => h('span', { class: 'grid', style: `left:${pct(t * 1000)}` }));
+  const decided = new Map(trace.decisions.filter((d) => d.piece).map((d) => [d.piece, d]));
+  const rows = [h('div'), h('div', { class: 'axis' }, ticks.map((t) => h('span', { style: `left:${pct(t * 1000)}` }, `${t} s`)))];
+  const at = trace.decisions.find((d) => d.t)?.t;
+  for (const s of trace.spans) {
+    const d = s.piece ? decided.get(s.piece) : null;
+    const len = s.end - s.start;
+    const tip = [s.label, `${secs(s.start)} to ${secs(s.end)} (${secs(len)})`,
+      s.cost ? `${money(s.cost)}, ${kTok((s.tokens?.in || 0) + (s.tokens?.cacheWrite || 0) + (s.tokens?.cached || 0))} tokens in (${kTok(s.tokens?.cached)} cached), ${kTok(s.tokens?.out)} out` : null,
+      s.chars ? `${s.chars.toLocaleString('en-US')} characters answered` : null,
+      s.problems?.length ? `problems: ${s.problems.join('; ')}` : null].filter(Boolean).join('\n');
+    // The bar's numbers go inside a long bar, else beside it, on the side with room.
+    const place = len / total > 0.3 ? ' in' : s.end / total > 0.75 ? ' right' : '';
+    rows.push(h('div', { class: 'lab', title: s.label }, d ? h('span', { class: `badge d-${d.decision}` }, DECISION[d.decision][0]) : null, h('span', { class: 'nm' }, s.label)),
+      h('div', { class: 'track' }, grid(), h('span', { class: `bar k-${s.kind}${place}`, title: tip, style: `left:${pct(s.start)};width:${pct(len)}` },
+        h('em', `${secs(len)}${s.cost ? ` · ${money(s.cost)}` : ''}${s.problems?.length ? ` · ${s.problems.length} problem${s.problems.length === 1 ? '' : 's'}` : ''}`))));
+    if (at && (s.kind === 'plan' || s.kind === 'model') && Math.abs(s.end - at) < 2) {
+      const n = trace.decisions.length;
+      rows.push(h('div', { class: 'lab' }, h('b', 'Decided')), h('div', { class: 'track', style: 'background:none' }, grid(),
+        h('span', { class: 'mark', style: `left:${pct(at)}`, title: `${n} decisions, made when the plan was ready` }),
+        h('span', { class: `bar${at / total > 0.45 ? ' right' : ''}`, style: `left:${pct(at)};width:0;background:none` }, h('em', `${n} decisions at ${secs(at)}`))));
+    }
+  }
+  return h('div', { class: 'gantt' }, rows);
+}
+
+function decisionList(trace) {
+  const order = ['new', 'change', 'fork', 'version', 'copy', 'use', 'upgrade', 'remove', 'keep'];
+  const writers = new Map();
+  for (const s of trace.spans) if (s.piece) { const w = writers.get(s.piece) || { ms: 0, cost: 0 }; w.ms += s.end - s.start; w.cost += s.cost || 0; writers.set(s.piece, w); }
+  const list = trace.decisions.slice().sort((a, b) => order.indexOf(a.decision) - order.indexOf(b.decision));
+  const kept = list.filter((d) => d.decision === 'keep');
+  const shown = list.filter((d) => d.decision !== 'keep');
+  const items = shown.flatMap((d) => {
+    const w = d.piece ? writers.get(d.piece) : null;
+    const cost = w ? `${secs(w.ms)} · ${money(w.cost)}` : d.chars ? `${d.chars.toLocaleString('en-US')} chars, in the one answer` : ['use', 'copy', 'upgrade'].includes(d.decision) ? 'no model time' : '';
+    return [h('span', { class: `badge d-${d.decision}` }, DECISION[d.decision]?.[0] || d.decision),
+      h('div', { class: 'what' }, h('span', { class: 'nm mono' }, pieceName(d)), d.title && d.title !== d.name ? ` ${d.title}` : '', h('span', { class: 'muted' }, ` · ${whereFrom(d)}`),
+        d.detail && !['table'].includes(d.kind) ? h('div', { class: 'why' }, String(d.detail)) : null),
+      h('span', { class: 'cost' }, cost)];
+  });
+  if (kept.length) items.push(h('span', { class: 'badge d-keep' }, 'Kept'), h('div', { class: 'what muted' }, kept.map(pieceName).join(', ')), h('span', { class: 'cost' }, 'no model time'));
+  return h('div', { class: 'dec' }, items);
+}
+
+function decisionCounts(decisions) {
+  const n = {};
+  for (const d of decisions) if (d.kind !== 'table') n[d.decision] = (n[d.decision] || 0) + 1;
+  return h('div', { class: 'tl-sum' }, Object.entries(DECISION).filter(([k]) => n[k]).map(([k, [label]]) => h('span', { class: `badge d-${k}` }, `${label} ${n[k]}`)));
+}
+
+function timelineBody(trace) {
+  const { wall, model } = timeSplit(trace);
+  const kinds = ['strata', 'plan', 'model', 'write', 'check', 'fix'].filter((k) => wall[k]);
+  const sumWall = kinds.reduce((a, k) => a + wall[k], 0) || 1;
+  const writes = trace.spans.filter((s) => s.kind === 'write' || s.kind === 'fix');
+  const facts = [
+    h('span', h('b', secs(trace.ms)), ' in all'),
+    h('span', h('b', money(trace.cost ?? model.cost)), ` for ${model.calls} model call${model.calls === 1 ? '' : 's'}`),
+    h('span', h('b', `${kTok(model.in)}`), ` tokens in (${kTok(model.cached)} cached), `, h('b', kTok(model.out)), ' out'),
+    writes.length > 1 ? h('span', h('b', secs(writes.reduce((a, s) => a + s.end - s.start, 0))), ` of model time writing ${writes.length} pieces at once in ${secs((wall.write || 0) + (wall.fix || 0))}`) : null,
+    trace.status === 'failed' ? h('span', { class: 'err' }, `Failed: ${trace.error}`) : null,
+  ];
+  return [
+    h('div', h('div', { class: 'tl-req' }, `“${trace.text}”`), h('div', { class: 'tl-facts', style: 'margin-top:6px' }, facts)),
+    h('div', h('h3', 'Where the time went'),
+      h('div', { class: 'tl-split' }, kinds.map((k) => h('span', { class: `k-${k}`, style: `flex:${wall[k]}`, title: `${KIND_LABEL[k]}: ${secs(wall[k])}` }))),
+      h('div', { class: 'tl-key' }, kinds.map((k) => h('span', h('i', { class: `k-${k}` }), `${KIND_LABEL[k]} ${secs(wall[k])} (${Math.round((wall[k] / sumWall) * 100)}%)`)))),
+    h('div', h('h3', 'Timeline'), ganttRows(trace)),
+    trace.decisions.length ? h('div', h('h3', 'What was decided for each piece'), decisionCounts(trace.decisions), h('div', { style: 'height:10px' }), decisionList(trace)) : null,
+    trace.log?.length ? h('details', h('summary', { class: 'small muted', style: 'cursor:pointer' }, `What the build said (${trace.log.length} lines)`),
+      h('div', { class: 'tl-log', style: 'margin-top:8px' }, trace.log.map((l) => [h('span', { class: 't' }, secs(l.t)), h('span', l.line)]))) : null,
+  ].filter(Boolean);
+}
+
+async function showTimeline(requestId, heading) {
+  const modal = $('#modal');
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  const body = h('div', { class: 'tl' }, h('div', { class: 'hint' }, 'Loading...'));
+  modal.replaceChildren(h('div', { class: 'sheet wide' }, h('header', h('span', { class: 't' }, heading), h('button', { class: 'btn small ghost', onclick: close }, 'Close')), body));
+  modal.hidden = false;
+  try {
+    const { trace } = await api('GET', `/api/apps/${S.appId}/traces/${encodeURIComponent(requestId)}`);
+    body.replaceChildren(...timelineBody(trace));
+  } catch (e) { body.replaceChildren(h('div', { class: 'hint' }, e.message)); }
+}
+
+// Every build of the app with a timeline, summed up.
+async function buildStats(box) {
+  let traces;
+  try { ({ traces } = await api('GET', `/api/apps/${S.appId}/traces`)); } catch { return; }
+  if (!traces.length) { box.remove(); return; }
+  let ms = 0, cost = 0, model = 0;
+  const wall = {};
+  for (const t of traces) {
+    ms += t.ms; cost += t.cost || 0;
+    const sp = timeSplit(t);
+    model += sp.model.ms;
+    for (const [k, v] of Object.entries(sp.wall)) wall[k] = (wall[k] || 0) + v;
+  }
+  const kinds = ['strata', 'plan', 'model', 'write', 'check', 'fix'].filter((k) => wall[k]);
+  const sum = kinds.reduce((a, k) => a + wall[k], 0) || 1;
+  box.replaceChildren(h('h2', { class: 'label' }, `Building it: ${traces.length} build${traces.length === 1 ? '' : 's'}`),
+    h('div', { class: 'tl-facts' }, h('span', h('b', secs(ms)), ' in all'), h('span', h('b', money(cost))), h('span', h('b', secs(model)), ' of model time')),
+    h('div', { class: 'tl-split', style: 'height:14px' }, kinds.map((k) => h('span', { class: `k-${k}`, style: `flex:${wall[k]}`, title: `${KIND_LABEL[k]}: ${secs(wall[k])}` }))),
+    h('div', { class: 'tl-key' }, kinds.map((k) => h('span', h('i', { class: `k-${k}` }), `${KIND_LABEL[k]} ${Math.round((wall[k] / sum) * 100)}%`))),
+    decisionCounts(traces.flatMap((t) => t.decisions || [])));
+}
+
 // ---- code
 
 async function showCode(id, newer) {
@@ -541,19 +703,26 @@ function changeTab(draft) {
 function versionsTab() {
   const st = S.app;
   const head = st.app.head;
+  // The request that made each version: its timeline is kept by request.
+  const builtBy = new Map(st.requests.filter((r) => r.status === 'done' && Number(r.comp)).map((r) => [Number(r.comp), r]));
   const items = st.versions.map((c) => h('div', { class: `ver${Number(c.n) === Number(head) ? ' on' : ''}` },
     h('div', { class: 'n' }, `v${c.n}`),
     h('div', { class: 'body' },
       h('div', c.summary || '(no summary)'),
       c.request ? h('div', { class: 'req' }, `“${c.request}”`) : null,
       h('div', { class: 'meta' }, h('span', ago(c.created)), h('span', `${(c.caps || []).length} capabilities`),
+        builtBy.get(Number(c.n)) ? h('button', { class: 'btn small ghost', title: 'what took the time, and what was used, rewritten or written new', onclick: () => showTimeline(builtBy.get(Number(c.n)).id, `How version ${c.n} was built`) }, 'Timeline') : null,
         Number(c.n) === Number(head) ? h('span', { class: 'pill' }, 'live') : h('button', { class: 'btn small', onclick: async () => { await api('POST', `/api/apps/${S.appId}/restore`, { n: c.n }); toast(`Back to version ${c.n}`); refreshApp(); } }, 'Go back to this')))));
   const failed = st.requests.filter((r) => r.status === 'failed').slice(0, 3);
+  const stats = h('div', { class: 'tl-stats' });
+  buildStats(stats);
   return [
     h('div', { class: 'where' }, 'Each version is a row of sa_compositions in Strata naming the capabilities it is made of. Going back moves the app to that row; data stays as it is (tables only grow).'),
+    stats,
     h('div', { class: 'versions' }, items.length ? items : h('div', { class: 'hint' }, 'No version yet.')),
     failed.length ? h('div', { class: 'col', style: 'display:flex;flex-direction:column;gap:6px' }, h('h2', { class: 'label' }, 'Requests that failed'),
-      failed.map((r) => h('div', { class: 'sugg' }, h('div', { class: 'why' }, `“${r.text}”`), h('div', { class: 'small err' }, r.error)))) : null,
+      failed.map((r) => h('div', { class: 'sugg' }, h('div', { class: 'why' }, `“${r.text}”`), h('div', { class: 'small err' }, r.error),
+        h('div', null, h('button', { class: 'btn small ghost', onclick: () => showTimeline(r.id, 'How this build failed') }, 'Timeline'))))) : null,
   ].filter(Boolean);
 }
 

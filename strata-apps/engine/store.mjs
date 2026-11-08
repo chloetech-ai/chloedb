@@ -25,6 +25,8 @@ const SYSTEM_TABLES = {
     caps KEYWORD[], request TEXT, summary TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_requests: `CREATE TABLE sa_requests (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, source KEYWORD,
     status KEYWORD, comp INT, summary TEXT, log TEXT, error TEXT, ms INT, cost FLOAT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Each build's timeline (trace.mjs), by request id.
+  sa_traces: `CREATE TABLE sa_traces (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, trace TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_events: `CREATE TABLE sa_events (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, kind KEYWORD, cap KEYWORD,
     detail TEXT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_suggestions: `CREATE TABLE sa_suggestions (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT,
@@ -421,6 +423,22 @@ export class Store {
 
   async putRequest(doc) {
     await this.db.write([{ op: 'upsert', table: 'sa_requests', doc }]);
+  }
+
+  async putTrace(id, app, trace) {
+    await this.db.write([{ op: 'upsert', table: 'sa_traces', doc: { id, app, trace: JSON.stringify(trace) } }]);
+  }
+
+  async trace(id) {
+    const [row] = await this.db.get('sa_traces', [id]);
+    if (!row) return null;
+    try { return JSON.parse(row.trace); } catch { return null; }
+  }
+
+  // Every timeline of an app, for its build statistics.
+  async traces(app, limit = 100) {
+    const rows = await this.db.query(`SELECT id, trace FROM sa_traces WHERE app = :a LIMIT ${limit}`, { a: app });
+    return rows.map((r) => { try { return { id: r.id, ...JSON.parse(r.trace) }; } catch { return null; } }).filter(Boolean);
   }
 
   async requests(app, limit = 50) {

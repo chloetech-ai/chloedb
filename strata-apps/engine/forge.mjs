@@ -7,6 +7,7 @@ import { ask, parseAnswer, MODEL } from './llm.mjs';
 import { checkFunction } from './sandbox.mjs';
 import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical } from './store.mjs';
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
+import { Trace, planDecisions } from './trace.mjs';
 
 export const SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
@@ -201,6 +202,9 @@ export function summarizeEvents(events) {
 // How much library code a change request carries: the code of the best few
 // pieces, within a budget of characters.
 const CODE_PIECES = 4;
+// Library pieces listed in full (description and props) in a prompt; the
+// others are listed by name and title.
+const FULL_ENTRIES = 30;
 const CODE_BUDGET = 15000;
 
 export async function buildContext(engine, appId, request) {
@@ -256,35 +260,43 @@ export async function buildContext(engine, appId, request) {
   if (others.length) {
     const users = await store.sharedUsers();
     const key = (c) => `${c.kind}/${c.slug}`;
-    const hits = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { kinds: SHARED_KINDS, limit: 14 });
-    const near = await store.related([appNode(appId), ...hits.slice(0, 3).map((h) => `${LIB}/${key(h)}`)], { limit: 14 });
+    const hits = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { kinds: SHARED_KINDS, limit: FULL_ENTRIES });
+    const near = await store.related([appNode(appId), ...hits.slice(0, 3).map((h) => `${LIB}/${key(h)}`)], { limit: FULL_ENTRIES });
     const fused = new Map();
     const vote = (k, i) => fused.set(k, (fused.get(k) || 0) + 1 / (60 + i));
     hits.forEach((h, i) => vote(key(h), i));
     near.forEach((r, i) => vote(key(r), i));
-    const top = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, 14);
+    const top = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, FULL_ENTRIES);
     const rank = new Map(top.map(([k], i) => [k, i]));
     others.sort((a, b) => (rank.get(key(a)) ?? 99) - (rank.get(key(b)) ?? 99) || (a.kind === b.kind ? 0 : a.kind === 'helper' ? 1 : -1));
     let budget = view.comp.n ? CODE_BUDGET : 0;
     const entries = [];
     libIndex = parts.length;
-    for (const c of others.slice(0, 80)) {
+    const brief = [];
+    for (const [i, c] of others.entries()) {
       const used = (users.get(key(c)) || []).map((u) => `${u.name} (v${u.version})`).join(', ') || 'no app yet';
       let body = '';
       if (budget > 0 && (rank.get(key(c)) ?? 99) < CODE_PIECES) {
         const [full] = await store.getCapabilities([c.id]);
         if (full?.code && full.code.length < budget) { body = `\n${full.code}`; budget -= full.code.length; }
       }
-      entries.push(`<${c.kind} name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}${body}\n</${c.kind}>`);
-      libEntries.set(key(c), entries.at(-1));
+      const entry = `<${c.kind} name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}${body}\n</${c.kind}>`;
+      libEntries.set(key(c), entry);
+      // The best fits in full; the rest by name and title, enough to ask for
+      // one in "uses" (its writer then gets the whole entry).
+      if (i < FULL_ENTRIES) entries.push(entry);
+      else brief.push(`${c.kind === 'helper' ? 'lib' : 'ui'}:${c.slug} (${c.title})`);
     }
-    parts.push(`# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) in the library\n\nThe first ones fit best: by the request's words, and by what goes with the pieces this app and the request's best matches use (other views use them together, or they call each other).${budget === 0 && !view.comp.n ? ' Their code is left out: use them by their props and api.' : ''}\n\n${entries.join('\n\n')}`);
+    const more = brief.length ? `\n\nAlso in the library, by name: ${brief.join(', ')}. To use one, name it in "uses"; its writer gets its props or api.` : '';
+    parts.push(`# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) in the library\n\nThe first ones fit best: by the request's words, and by what goes with the pieces this app and the request's best matches use (other views use them together, or they call each other).${budget === 0 && !view.comp.n ? ' Their code is left out: use them by their props and api.' : ''}\n\n${entries.join('\n\n')}${more}`);
   } else if (!own.size) {
     parts.push('# Shared components and helpers in the library\n\nNone yet: the ones you write now start it.');
   }
   // The library: whole views and functions other apps built that may fit this request.
   const lib = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { excludeApp: appId, kinds: ['view', 'function'], limit: 3 });
   const libCaps = await store.getCapabilities(lib.map((c) => c.id));
+  let capIndex = -1;
+  const capEntries = new Map();
   if (libCaps.length) {
     const entries = [];
     for (const c of libCaps) {
@@ -295,21 +307,33 @@ export async function buildContext(engine, appId, request) {
       const about = starter
         ? (c.kind === 'view' ? `// a built-in starter screen; reusing it adds its tables to the app when missing: ${tables || 'none'}` : `// a built-in starter function, for any table; input: ${c.spec?.input || ''}`)
         : `// its app's tables: ${tables}`;
-      entries.push(`<capability id="${c.id}" kind="${c.kind}" title="${c.title}" app="${starter ? 'built-in starter' : src?.app?.name || c.app}">\n// ${c.description}\n${about}\n${clip(c.code, 5000)}\n</capability>`);
+      const head = `<capability id="${c.id}" kind="${c.kind}" title="${c.title}" app="${starter ? 'built-in starter' : src?.app?.name || c.app}">\n// ${c.description}\n${about}`;
+      // A starter is reused as it is, so its header says enough to choose it;
+      // its code goes to the writer of a version forked from it.
+      entries.push(starter ? `${head}\n</capability>` : `${head}\n${clip(c.code, 5000)}\n</capability>`);
+      capEntries.set(c.id, `${head}\n${clip(c.code, 5000)}\n</capability>`);
     }
+    capIndex = parts.length;
     parts.push(`# Library: capabilities other apps have that may fit\n\n${entries.join('\n\n')}`);
   }
   const source = { user: 'the person asked for this', suggestion: 'the person accepted this suggestion', repair: 'the runtime reported this error; fix its cause', library: 'the person asked to bring this in from the library' }[request.source] || 'the person asked for this';
   parts.push(`# The request (${source})\n\n${request.text}`);
   // The same context for one piece's writer: of the library's shared pieces,
   // only the ones the plan says it calls.
-  const forPiece = (uses = []) => {
-    if (libIndex < 0) return parts.join('\n\n');
-    const keys = uses.map((u) => String(u).replace(/^ui[:.]/, 'component/').replace(/^lib[:.]/, 'helper/'));
-    const picked = keys.map((k) => libEntries.get(k)).filter(Boolean);
+  // Of the library's whole views and functions, only the one it is forked
+  // from, if any.
+  const forPiece = (uses = [], forkedFrom = null) => {
     const copy = parts.slice();
-    copy[libIndex] = `# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) from the library that this piece calls\n\n${picked.join('\n\n') || '(none)'}`;
-    return copy.join('\n\n');
+    if (libIndex >= 0) {
+      const keys = uses.map((u) => String(u).replace(/^ui[:.]/, 'component/').replace(/^lib[:.]/, 'helper/'));
+      const picked = keys.map((k) => libEntries.get(k)).filter(Boolean);
+      copy[libIndex] = `# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) from the library that this piece calls\n\n${picked.join('\n\n') || '(none)'}`;
+    }
+    if (capIndex >= 0) {
+      const src = forkedFrom && capEntries.get(forkedFrom);
+      copy[capIndex] = src ? `# Library: the capability this piece is forked from\n\n${src}` : '';
+    }
+    return copy.filter(Boolean).join('\n\n');
   };
   return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps, shared };
 }
@@ -520,24 +544,30 @@ async function pool(items, n, fn) {
   return out;
 }
 
-async function buildSplit({ prompt, forPiece, view, library, shared }, progress) {
+async function buildSplit({ prompt, forPiece, view, library, shared }, progress, tr = new Trace()) {
   let cost = 0;
   let plan;
   let problems = [];
+  let decidedAt = 0;
   let planPrompt = `${prompt}\n\n${PLAN_STEP}`;
   for (let attempt = 1; attempt <= 2; attempt++) {
     progress(attempt === 1 ? `Asking the model (${MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`);
+    const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
     const answer = await ask({ system: SYSTEM, prompt: planPrompt, onWrite: writing(progress, 'The model') });
+    tr.call(span, answer, SYSTEM.length + planPrompt.length);
     cost += answer.cost || 0;
-    try {
-      ({ plan } = parseAnswer(answer.text));
-      completePlan(plan, view, library);
-      problems = (await validate(plan, {}, view, library, shared)).filter((p) => !/has no <code slug=/.test(p));
-    } catch (e) { problems = [e.message]; }
-    if (!problems.length) { progress(`The model planned it in ${Math.round(answer.ms / 1000)} s`); break; }
+    await tr.span('check', 'Check the plan', async (c) => {
+      try {
+        ({ plan } = parseAnswer(answer.text));
+        completePlan(plan, view, library);
+        problems = (await validate(plan, {}, view, library, shared)).filter((p) => !/has no <code slug=/.test(p));
+      } catch (e) { problems = [e.message]; }
+      c.problems = problems.slice(0, 8);
+    });
+    if (!problems.length) { decidedAt = span.end; progress(`The model planned it in ${Math.round(answer.ms / 1000)} s`); break; }
     planPrompt = `${prompt}\n\n${PLAN_STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`;
   }
-  if (problems.length) return { plan, code: {}, cost, problems };
+  if (problems.length) return { plan, code: {}, cost, problems, decidedAt };
   const pieces = planPieces(plan);
   const code = {};
   const planText = `# The plan, decided\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>`;
@@ -549,10 +579,12 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress)
     progress(`Writing ${pieces.length === 1 ? pieces[0].label : `${pieces.length} pieces at once: ${pieces.map((p) => p.label).join(', ')}`}`);
     await pool(pieces, 6, async (pc) => {
       const fix = notes.get(pc.slug);
+      const span = tr.start(fix ? 'fix' : 'write', fix ? `${pc.label}, again` : pc.label, { piece: pc.slug, ...(fix ? { problems: fix.problems.slice(0, 4) } : {}) });
       const extra = fix ? `\n\n# Your previous code for it\n\n<code slug="${pc.slug}">\n${fix.code}\n</code>\n\n# Its problems\n\n${fix.problems.map((p) => `- ${p}`).join('\n')}\n\nWrite it again, whole, with these fixed.` : '';
+      const piecePrompt = `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pieceStep(pc.what, pc.slug)}${extra}`;
       const answer = await ask({
         system: SYSTEM,
-        prompt: `${forPiece(pc.item.uses)}\n\n${planText}\n\n${pieceStep(pc.what, pc.slug)}${extra}`,
+        prompt: piecePrompt,
         onWrite: ({ chars }) => {
           seen.set(pc.slug, chars);
           const now = Date.now();
@@ -562,6 +594,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress)
           progress(`The model is writing ${pieces.length - done.length} of ${pieces.length}: ${total.toLocaleString('en-US')} characters so far (${Math.round((now - t0) / 1000)} s)${done.length ? `; done: ${done.join(', ')}` : ''}`, { replace: true });
         },
       });
+      tr.call(span, answer, SYSTEM.length + piecePrompt.length);
       cost += answer.cost || 0;
       const blocks = parseAnswer(`<plan>{}</plan>\n${answer.text}`).code;
       code[pc.slug] = blocks[pc.slug] ?? Object.values(blocks)[0] ?? '';
@@ -570,7 +603,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress)
     });
   };
   await write(pieces);
-  problems = await validate(plan, code, view, library, shared);
+  problems = await tr.span('check', 'Check the code', async (c) => { const p = await validate(plan, code, view, library, shared); c.problems = p.slice(0, 8); return p; });
   if (problems.length) {
     const notes = new Map();
     for (const pc of pieces) {
@@ -581,18 +614,28 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress)
     progress(`Checking the code: ${problems.length} problem${problems.length === 1 ? '' : 's'} (${problems.slice(0, 3).join('; ').slice(0, 400)})${again.length ? `; writing ${again.map((p) => p.label).join(', ')} again` : ''}`);
     if (again.length) {
       await write(again, notes);
-      problems = await validate(plan, code, view, library, shared);
+      problems = await tr.span('check', 'Check the code again', async (c) => { const p = await validate(plan, code, view, library, shared); c.problems = p.slice(0, 8); return p; });
     }
   }
-  return { plan, code, cost, problems };
+  return { plan, code, cost, problems, decidedAt };
 }
 
 // Runs a request through the model and applies its answer as the next version.
 export async function forge(engine, appId, request, progress = () => {}) {
+  const tr = new Trace();
+  try {
+    return await forgeTraced(engine, appId, request, progress, tr);
+  } catch (e) {
+    e.trace = tr.toJSON();
+    throw e;
+  }
+}
+
+async function forgeTraced(engine, appId, request, progress, tr) {
   const { store } = engine;
   const started = Date.now();
   progress('Reading the app and its history from Strata');
-  const context = await buildContext(engine, appId, request);
+  const context = await tr.span('strata', 'Read the app, its data and the library from Strata', () => buildContext(engine, appId, request));
   const { prompt, view, library, shared } = context;
   if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => c.title).join(', ')}`);
   let answer;
@@ -601,21 +644,27 @@ export async function forge(engine, appId, request, progress = () => {}) {
   let cost = 0;
   let problems = [];
   let attemptPrompt = prompt;
+  let decidedAt = 0;
   const split = SPLIT === 'always' || (SPLIT === 'first' && !view.comp.n);
-  if (split) ({ plan, code, cost, problems } = await buildSplit(context, progress));
+  if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit(context, progress, tr));
   for (let attempt = 1; attempt <= 2 && !split; attempt++) {
     progress(attempt === 1 ? `Asking the model (${MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`);
+    const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems');
     answer = await ask({ system: SYSTEM, prompt: attemptPrompt, onWrite: writing(progress) });
+    tr.call(span, answer, SYSTEM.length + attemptPrompt.length);
     cost += answer.cost || 0;
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
-    try {
-      ({ plan, code } = parseAnswer(answer.text));
-      completePlan(plan, view, library);
-      problems = await validate(plan, code, view, library, shared);
-    } catch (e) {
-      problems = [e.message];
-    }
-    if (!problems.length) break;
+    await tr.span('check', 'Check the code', async (c) => {
+      try {
+        ({ plan, code } = parseAnswer(answer.text));
+        completePlan(plan, view, library);
+        problems = await validate(plan, code, view, library, shared);
+      } catch (e) {
+        problems = [e.message];
+      }
+      c.problems = problems.slice(0, 8);
+    });
+    if (!problems.length) { decidedAt = span.end; break; }
     progress(`Checking the code: ${problems.length} problem${problems.length === 1 ? '' : 's'}`);
     attemptPrompt = `${prompt}\n\n# Your previous answer\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again, in full, with these fixed.`;
   }
@@ -625,6 +674,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
     throw err;
   }
   progress('The code passed the checks; storing it in Strata');
+  const storing = tr.start('strata', 'Store the code and the new version in Strata');
 
   // Tables first: data the new code reads must exist when it goes live.
   const caps = new Map(view.comp.caps.map((id) => {
@@ -696,9 +746,12 @@ export async function forge(engine, appId, request, progress = () => {}) {
     if (!writtenShared.has(key) && had.get(key) !== id) progress(`Uses the shared ${kind} ${name} (version ${id.split('@').pop()})`);
   }
   const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '');
+  tr.end(storing, { written: written.length });
+  tr.decisions.push(...planDecisions({ plan, view, library, shared, pinned, written: writtenShared, code, at: decidedAt }));
   progress(`Version ${n} is live: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written`);
   // Example rows go in once the tables are part of the live version.
   if (!view.comp.n && plan.seed) {
+    const seeding = tr.start('strata', 'Add example rows');
     let added = 0;
     for (const [table, rows] of Object.entries(plan.seed)) {
       for (const row of (rows || []).slice(0, 20)) {
@@ -706,6 +759,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
       }
     }
     if (added) progress(`Added ${added} example rows`);
+    tr.end(seeding, { rows: added });
   }
   await offerNewVersions(engine, appId, newVersions, progress);
   const suggestions = (plan.suggestions || []).filter((s) => s && s.text).slice(0, 3)
@@ -714,7 +768,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
     await retireSuggestions(engine, appId);
     await store.putSuggestions(appId, suggestions);
   }
-  return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started };
+  return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started, trace: tr.toJSON() };
 }
 
 // A new version of a shared component or helper is offered to every other

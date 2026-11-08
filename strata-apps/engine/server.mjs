@@ -174,14 +174,23 @@ async function runRequest(req, extra = {}) {
   try {
     const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress) : await forge(engine, req.app, req, progress);
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
+    if (out.trace) await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost });
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary });
   } catch (e) {
     progress(`Failed: ${e.message}`);
     await engine.store.putRequest({ ...req, status: 'failed', error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
+    if (e.trace) await saveTrace(req, e.trace, lines, { status: 'failed', error: e.message.slice(0, 500), cost: e.cost || 0 });
     broadcast('failed', { app: req.app, request: req.id, error: e.message });
   } finally {
     running.delete(req.app);
   }
+}
+
+// A build's timeline, with the progress lines it showed (their times from the
+// build's start), kept next to the request.
+async function saveTrace(req, trace, lines, extra) {
+  const shown = lines.map((l) => ({ t: Math.max(0, l.t - trace.t0), line: l.line }));
+  await engine.store.putTrace(req.id, req.app, { ...trace, ...extra, text: req.text, source: req.source, log: shown }).catch((e) => log(`trace ${req.id}: ${e.message}`));
 }
 
 // A capability that fails at run time gets one repair, by the forge.
@@ -284,6 +293,12 @@ const routes = [
     return { app, request: request.id };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id]) => appState(id)],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/traces\/([A-Za-z0-9_-]+)$/, async (b, [id, rid]) => {
+    const trace = await engine.store.trace(rid);
+    if (!trace) throw Object.assign(new Error('no timeline for this build (it ran before timelines were recorded)'), { status: 404 });
+    return { trace };
+  }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/traces$/, async (b, [id]) => ({ traces: (await engine.store.traces(id)).map(({ log, ...t }) => t) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/requests$/, async (b, [id]) => {
     const text = String(b.text || '').trim();
     if (!text) throw Object.assign(new Error('say what to change'), { status: 400 });

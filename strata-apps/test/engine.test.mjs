@@ -13,6 +13,7 @@ import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
 import { checkFunction, runFunction } from '../engine/sandbox.mjs';
 import { Services, buildMessage, smtpSend } from '../engine/services.mjs';
+import { Trace, planDecisions } from '../engine/trace.mjs';
 import net from 'node:net';
 
 const P = (t) => `app_abc123_${t}`;
@@ -340,4 +341,54 @@ test('the built-in helpers give the results their examples promise, in the brows
     res.result.forEach((got, i) => assert.ok(near(JSON.parse(JSON.stringify(got)), cases[i].expect ?? null), `in QuickJS, ${name}.${cases[i].call}(${JSON.stringify(cases[i].args)}) -> ${JSON.stringify(got)}`));
   }
   assert.ok(n >= 150, `${n} cases`);
+});
+
+test('a build\'s timeline names what was used, copied, forked, rewritten, written new and kept', async () => {
+  const tr = new Trace();
+  const plan = tr.start('plan', 'The model plans');
+  tr.call(plan, { text: 'x'.repeat(10), cost: 0.2, usage: { input_tokens: 5, cache_read_input_tokens: 100, output_tokens: 7 } }, 1234);
+  await tr.span('write', 'view board', async () => {}, { piece: 'board' });
+  const json = tr.toJSON();
+  assert.equal(json.spans.length, 2);
+  assert.deepEqual(json.spans[0].tokens, { in: 5, cached: 100, cacheWrite: 0, out: 7 });
+  assert.ok(json.spans.every((s) => s.end >= s.start));
+
+  const view = {
+    views: [{ kind: 'view', slug: 'list', id: 'a1/view/list@1', title: 'List' }, { kind: 'view', slug: 'old', id: 'a1/view/old@1', title: 'Old' }],
+    functions: [], tables: [{ spec: { name: 'tasks', columns: [{ name: 'title', type: 'text' }] } }],
+    shared: [{ kind: 'component', slug: 'dialog', id: 'lib/component/dialog@1', title: 'Dialog' }],
+  };
+  const shared = new Map([
+    ['component/dialog', { id: 'lib/component/dialog@1', title: 'Dialog', author: 'builtin' }],
+    ['component/calendar', { id: 'lib/component/calendar@2', title: 'Calendar', author: 'builtin' }],
+    ['helper/dates', { id: 'lib/helper/dates@1', title: 'Dates', author: 'builtin' }],
+  ]);
+  const library = [{ id: 'lib/view/notes@1', app: 'lib', kind: 'view', slug: 'notes', title: 'Notes' }, { id: 'zz/view/plan@3', app: 'zz', kind: 'view', slug: 'plan', title: 'Plan' }];
+  const decisions = planDecisions({
+    plan: {
+      tables: [{ name: 'tasks', columns: [{ name: 'title', type: 'text' }, { name: 'due', type: 'keyword' }] }, { name: 'notes', columns: [{ name: 'body', type: 'text' }] }],
+      views: [{ slug: 'list', title: 'List' }, { slug: 'board', title: 'Board' }, { slug: 'week', title: 'Week', forked_from: 'zz/view/plan@3' }],
+      reuse: [{ id: 'lib/view/notes@1', slug: 'notes' }],
+      components: [{ name: 'calendar', title: 'Calendar', change: 'adds week starts' }, { name: 'kanban', title: 'Kanban' }],
+      remove: ['old'],
+    },
+    view, library, shared,
+    pinned: new Map([['component/dialog', 'lib/component/dialog@1'], ['component/calendar', 'lib/component/calendar@3'], ['component/kanban', 'lib/component/kanban@1'], ['helper/dates', 'lib/helper/dates@1']]),
+    written: new Map([['component/calendar', 'lib/component/calendar@3'], ['component/kanban', 'lib/component/kanban@1']]),
+    code: { board: 'abc', 'ui:kanban': 'abcdef' },
+    at: 42,
+  });
+  const by = (d, name) => decisions.find((x) => x.decision === d && x.name === name);
+  assert.ok(by('change', 'tasks'), 'a table gains a column');
+  assert.ok(by('new', 'notes') && by('new', 'notes').kind === 'table');
+  assert.ok(by('change', 'list'), 'a view the app had is rewritten');
+  assert.equal(by('new', 'board').chars, 3, 'a new view, with its size');
+  assert.equal(by('fork', 'week').from.title, 'Plan');
+  assert.ok(by('copy', 'notes').from.starter, 'a starter copied as it is');
+  assert.ok(by('version', 'calendar'), 'a new version of a shared piece');
+  assert.equal(by('new', 'kanban').chars, 6);
+  assert.ok(by('use', 'dates').from.builtin, 'a built-in helper used as it is');
+  assert.ok(by('remove', 'old'));
+  assert.ok(by('keep', 'dialog'), 'a shared piece the app had, kept');
+  assert.ok(decisions.every((d) => d.t === 42));
 });

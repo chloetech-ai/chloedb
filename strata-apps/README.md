@@ -134,6 +134,8 @@ cd strata-apps
 
 A first version of a small app takes 50 seconds to a minute; a bigger one takes 2 to 4 minutes (a CRM with a pipeline board 110 s, a course on linked lists with lessons, a playground and a quiz 216 s; written in one answer, that course took 7.5 to 9 minutes). The studio shows how far the model has got while it writes. A change takes 20 seconds to 2 minutes.
 
+Each build keeps its timeline. Under Versions, **Timeline** on a version shows what took the time (reading Strata, the model planning, each piece's writer, the checks, a second try, storing), what each model call cost and read, and what was decided for every piece of the app and when: used from the library as it is, copied from a starter, forked, rewritten, written from scratch, a new version of a shared piece, or kept. The top of the tab sums up every build of the app.
+
 ## What is where
 
 | | |
@@ -159,6 +161,7 @@ In Strata:
 | `sa_compositions` | each version of each app: the capability ids it is made of (the versions of shared pieces it pins included), the request and a summary |
 | `sa_graph` | one row per app, per live table, view and function, and per shared piece (by name, `live` naming its version); `links` (an `EDGES` field) holds labelled edges: `has`, `uses`, `data`, `on`, `calls`, `opens`, `forked` |
 | `sa_requests` | requests to the forge, with their progress log, cost and errors |
+| `sa_traces` | each build's timeline, by request: its steps and model calls with their times, tokens and cost, and the decision for each piece (`engine/trace.mjs`) |
 | `sa_events` | what people did in each app |
 | `sa_suggestions` | suggestions, from builds and from use |
 | `sa_people`, `sa_members`, `sa_sessions` | accounts (one per email, for every app), who belongs to which app and with what role, and sessions (by the hash of their token) |
