@@ -264,7 +264,7 @@
       <h2>Where Strata is behind</h2>
     </div>
     <ul class="gaps">
-      <li><b>Key lookups through a coordinator.</b> <span>0.99 ms at 10M, where Postgres, Weaviate, ParadeDB and Qdrant read a row in 0.37 to 0.47 ms (<a href="bench-10m.html#behind">10M</a>). Most of it is the hop from a coordinator to the shard, not the read. At 16 clients Strata serves 11,993 a second with #299 (in review), which answers a pod's own shard in process, and OpenSearch 12,620.</span></li>
+      <li><b>Key lookups through a coordinator.</b> <span>0.99 ms at 10M, where Postgres, Weaviate, ParadeDB and Qdrant read a row in 0.37 to 0.47 ms (<a href="bench-10m.html#behind">10M</a>). Most of it is the hop from a coordinator to the shard, not the read. At 16 clients Strata serves 11,993 a second with #299, which answers a pod's own shard in process, and OpenSearch 12,620.</span></li>
       <li><b>Typo search.</b> <span>The typo walk (#242, then #266's in-memory term table) took the cloud medians from 120 to 11.9 ms at 1M and from 824 to 45.8 ms at 10M. Typesense and Meilisearch take about 6 ms at 1M, and Elasticsearch 34.6 at 10M (<a href="bench-10m.html#behind">10M</a>).</span></li>
       <li><b>BM25 under load.</b> <span>At 10M and 16 clients Strata serves 625 queries a second, Elasticsearch 683 and OpenSearch 720 (on other nodes of the same type). Moving the coordinators into the shard pods (#287) added 3%: what waits is the shards' own scoring.</span></li>
       <li><b>Builds.</b> <span>The HNSW graph is 146 s of Quora's 153.1 s load on an M2.</span></li>
