@@ -20,10 +20,14 @@ each other in a graph that Strata walks.
   are new rows, and a version is a row listing the capabilities it is made
   of, so going back is one click. Tables only grow, so data survives every
   change and every step back.
-- **It suggests, from what you do.** Each build proposes three next steps,
-  and the engine records what you do (views opened, rows added and changed,
-  actions the views report). After 25 actions, or when you ask, it reads that
-  use and suggests changes that it points to.
+- **It evolves, from what people do.** Each build proposes three next steps,
+  and the engine records what people do (views opened, searches, filters,
+  rows added and changed, functions run), who did it and on which version. It
+  counts patterns in that record (a search typed again and again, a filter set
+  every visit, the same field changed row after row, two views always opened
+  together, a function run by hand) and, for a new one, builds a change that
+  answers it beside the live version. The owner tries it on the real data,
+  then keeps or drops it (see "Evolving from use" below).
 - **It shares.** Pieces of interface that are not about one app's data (a
   month calendar, a chart, a day strip, a checklist) are written as shared
   components: one copy in Strata that views call as `ui.calendar(props)`.
@@ -153,6 +157,8 @@ A first version of a small app takes 50 seconds to a minute; a bigger one takes 
 
 **Edits by hand.** The studio's Edit tab (on a screen view) renames, moves and hides parts of the screen, and reorders, renames or hides a table's columns and a form's fields. Each edit is a JSON Patch sent to `POST /api/apps/:id/screens/:slug`, which checks the screen, runs its queries and stores it as a new version without the model (about 0.2 s).
 
+**Evolving from use.** After every 25 actions (at most every 3 minutes), or when the owner asks, the engine counts patterns in an app's events (`engine/evolve.mjs`): searches as the words someone stopped typing at (3 or more), filters set (4), the same change, add or delete one row at a time in one sitting (5 to 6), two views opened within 30 s of each other (4), a function run by hand (5). A new pattern costs one model call: the suggestions it gets name the pattern they answer. In the "build" mode (the default, `STRATA_APPS_EVOLVE` or per app in the studio: build, suggest, off) the strongest answered one is built at once as a *candidate*: a version beside the live one (`sa_candidates`), checked like any build, that the studio's **Built from use** lists with **Try it**, **Keep** and **Drop**. Trying runs the app on that version (`?v=N` on every request, the app's own page included) on the real data while everyone else stays on the live one. Keeping makes it live: as built when nothing changed since, merged over the live version when the two changed different pieces, and built again on the live version when both changed the same piece. At most 2 candidates wait at a time and 2 are built a day per app (`STRATA_APPS_EVOLVE_PER_DAY`). Each candidate names what should change in people's use if it works (fewer searches for "vegetarian"); once kept, the studio shows that count before and since. Events carry the version they happened on, so the same measure can later compare two versions served side by side.
+
 Each build keeps its timeline. Under Versions, **Timeline** on a version shows what took the time (reading Strata, the model planning, each piece's writer, the checks, a second try, storing), what each model call cost and read, and what was decided for every piece of the app and when: used from the library as it is, copied from a starter, forked, rewritten, written from scratch, a new version of a shared piece, or kept. The top of the tab sums up every build of the app.
 
 ## What is where
@@ -169,6 +175,8 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
 | `engine/rules.mjs` | functions and triggers written as data: their checks and their runtime |
+| `engine/evolve.mjs` | evolving from use: patterns in events, candidates built beside the live version, keep (merge) and drop, and each candidate's measure |
+| `engine/designs.mjs`, `web/design.js` | each app's three designs: one small model call, design tokens, CSS variables |
 | `engine/checks.mjs` | a build's tests, run on its new tables, and opening each view in a headless browser |
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
 | `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
@@ -183,8 +191,10 @@ In Strata:
 | `sa_graph` | one row per app, per live table, view and function, and per shared piece (by name, `live` naming its version); `links` (an `EDGES` field) holds labelled edges: `has`, `uses`, `data`, `on`, `calls`, `opens`, `forked` |
 | `sa_requests` | requests to the forge, with their progress log, cost and errors |
 | `sa_traces` | each build's timeline, by request: its steps and model calls with their times, tokens and cost, and the decision for each piece (`engine/trace.mjs`) |
-| `sa_events` | what people did in each app |
-| `sa_suggestions` | suggestions, from builds and from use |
+| `sa_events` | what people did in each app: who (a person, or a visitor's cookie) and on which version |
+| `sa_suggestions` | suggestions, from builds and from use (with the pattern they answer) |
+| `sa_candidates` | changes built from use beside the live version: the pattern, the version built, its measure, and whether it was kept |
+| `sa_designs`, `sa_settings` | each app's three designs and the one in use; per-app settings (the evolve mode) |
 | `sa_people`, `sa_members`, `sa_sessions` | accounts (one per email, for every app), who belongs to which app and with what role, and sessions (by the hash of their token) |
 | `sa_files` | each uploaded file's name, type, size and who uploaded it; the bytes sit in `DATA/files/<app>/<id>` |
 | `sa_outbox` | every email an app sent, with its status: held, sending, sent or failed |

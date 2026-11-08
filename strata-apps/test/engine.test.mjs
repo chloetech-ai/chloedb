@@ -781,3 +781,146 @@ test('an app gets three designs from one model call, presets when the model fail
   assert.deepEqual(fresh.designs.map((x) => x.name), ['N2a', 'N1b', 'N2b']);
   assert.equal(fresh.chosen, 1);
 });
+
+// ---- evolving from use
+
+import { signals, measureFor, measureEffect, mergeCaps, Evolver } from '../engine/evolve.mjs';
+
+// Events as the store gives them: newest first.
+const at = (min, sec = 0) => new Date(Date.UTC(2026, 10, 8, 9, min, sec)).toISOString();
+const evs = (list) => list.map(([t, kind, detail, person = 'p1']) => ({ kind, detail, person, ts: t, cap: '' })).reverse();
+
+test('patterns in use: searches as typed once, filters, edits row after row, views opened together, functions run by hand', () => {
+  const list = [];
+  // "overdue" typed letter by letter, three times, by two people; a one-off search too.
+  for (const [m, who] of [[0, 'p1'], [5, 'p2'], [9, 'p1']]) for (const [i, q] of ['o', 'ov', 'ove', 'overdue'].entries()) list.push([at(m, i), 'action', `search ${q}`, who]);
+  list.push([at(12), 'action', 'search invoices from march']);
+  // A filter set four times; "all" is no filter.
+  for (let i = 0; i < 4; i++) list.push([at(14 + i), 'action', 'filter status=waiting']);
+  for (let i = 0; i < 6; i++) list.push([at(19, i), 'action', 'filter status=']);
+  // The same field changed on six rows in one sitting.
+  for (let i = 0; i < 6; i++) list.push([at(20, i * 5), 'update', 'guests: rsvp']);
+  // Guests then Budget, within seconds, four times.
+  for (let i = 0; i < 4; i++) { list.push([at(30 + i * 2), 'open', 'guests']); list.push([at(30 + i * 2, 10), 'open', 'budget']); }
+  for (let i = 0; i < 5; i++) list.push([at(45 + i), 'call', 'send-reminders']);
+  const sigs = signals(evs(list), { views: [{ slug: 'guests', title: 'Guests' }, { slug: 'budget', title: 'Budget' }] });
+  const keys = sigs.map((s) => s.key);
+  assert.ok(keys.includes('search:overdue'), keys.join(', '));
+  assert.ok(!keys.some((k) => k === 'search:o' || k === 'search:ov'), 'letters typed are not searches');
+  assert.ok(!keys.includes('search:invoices from march'), 'one search is no pattern');
+  const s = sigs.find((x) => x.key === 'search:overdue');
+  assert.equal(s.count, 3);
+  assert.equal(s.people, 2);
+  assert.match(s.text, /searched for "overdue" 3 times \(2 people\)/);
+  assert.ok(keys.includes('filter:status=waiting'));
+  assert.ok(!keys.some((k) => k === 'filter:status='));
+  assert.ok(keys.includes('edits:guests: rsvp'));
+  assert.match(sigs.find((x) => x.key === "edits:guests: rsvp").text, /changed rsvp of guests by hand, row after row: 6 times in one sitting/);
+  assert.ok(keys.includes('path:guests>budget'));
+  assert.match(sigs.find((x) => x.key === 'path:guests>budget').text, /went from Guests straight to Budget 4 times/);
+  assert.ok(keys.includes('call:send-reminders'));
+  // Edits spread over sittings an hour apart are not one pattern.
+  const spread = evs([0, 61, 122, 183, 244].map((m) => [new Date(Date.UTC(2026, 10, 8, 0, m)).toISOString(), 'update', 'guests: rsvp']));
+  assert.deepEqual(signals(spread).map((x) => x.key), []);
+});
+
+test('a pattern names what should change if a feature answers it, counted before and after', () => {
+  assert.deepEqual(measureFor({ key: 'search:overdue' }), { event: 'action', match: 'search overdue', goal: 'fewer', says: 'searches for "overdue"' });
+  assert.equal(measureFor('path:guests>budget').match, 'budget');
+  const list = [];
+  for (let d = 1; d <= 10; d++) list.push([new Date(Date.UTC(2026, 10, d, 12)).toISOString(), 'action', 'search overdue']);
+  list.push([new Date(Date.UTC(2026, 10, 11, 12)).toISOString(), 'action', 'search overdue']);
+  list.push([new Date(Date.UTC(2026, 10, 11, 13)).toISOString(), 'action', 'search other']);
+  const e = measureEffect(evs(list), measureFor('search:overdue'), new Date(Date.UTC(2026, 10, 10, 18)).toISOString());
+  assert.equal(e.before, 10);
+  assert.equal(e.after, 1);
+  assert.ok(e.perDayBefore > e.perDayAfter || e.afterDays < 1);
+});
+
+test('keeping a candidate merges its own changes over a live version that moved on, unless both changed a piece', () => {
+  const base = ['a/view/home@1', 'a/view/list@1', 'a/table/t@1', 'lib/component/card@2'];
+  const cand = ['a/view/home@2', 'a/view/list@1', 'a/table/t@2', 'a/function/bulk@1', 'lib/component/card@2'];
+  const head = ['a/view/home@1', 'a/view/list@2', 'a/table/t@1', 'lib/component/card@3'];
+  const m = mergeCaps(base, cand, head);
+  assert.deepEqual(m.caps.sort(), ['a/function/bulk@1', 'a/table/t@2', 'a/view/home@2', 'a/view/list@2', 'lib/component/card@3']);
+  const clash = mergeCaps(base, cand, ['a/view/home@3', 'a/view/list@1', 'a/table/t@1', 'lib/component/card@2']);
+  assert.deepEqual(clash.conflicts, ['a/view/home']);
+  // A piece the candidate removed is removed from the live version too.
+  assert.deepEqual(mergeCaps(['a/view/x@1', 'a/view/y@1'], ['a/view/x@1'], ['a/view/x@2', 'a/view/y@1']).caps, ['a/view/x@2']);
+});
+
+class FakeStore {
+  constructor() {
+    this.app = { id: 'a', name: 'Wedding', head: 3 };
+    this.comps = new Map([[3, { n: 3, caps: ['a/view/guests@1'] }]]);
+    this.events = [];
+    this.cands = new Map();
+    this.sugs = new Map();
+    this.settings = new Map();
+  }
+  async getApp() { return { ...this.app }; }
+  async resolve() { return { app: this.app, comp: this.comps.get(this.app.head), views: [{ slug: 'guests', title: 'Guests' }] }; }
+  async recentEvents() { return this.events; }
+  async candidates() { return [...this.cands.values()].reverse(); }
+  async candidate(id) { return this.cands.get(id) || null; }
+  async putCandidate(d) { this.cands.set(d.id, { created: new Date().toISOString(), ...this.cands.get(d.id), ...d }); return d; }
+  async suggestionHistory() { return [...this.sugs.values()]; }
+  async setSuggestion(id, status) { const s = this.sugs.get(id); if (s) s.status = status; return s; }
+  async setting(app, name) { return this.settings.get(name) || null; }
+  async putSetting(app, name, v) { this.settings.set(name, v); }
+  async composition(app, n) { return this.comps.get(n) || { n: 0, caps: [] }; }
+  async setHead(app, n) { this.app.head = n; }
+  async writeComposition(app, caps) { const n = Math.max(...this.comps.keys()) + 1; this.comps.set(n, { n, caps }); this.app.head = n; return n; }
+}
+
+test('the engine builds the strongest new pattern beside the live version, once, then keeps or drops it', async () => {
+  const store = new FakeStore();
+  for (let i = 0; i < 4; i++) store.events.unshift({ kind: 'action', detail: 'search overdue', person: 'p1', ts: at(i) });
+  const submitted = [];
+  let asked = 0;
+  const propose = async (engine, appId, { signals: sigs, fresh }) => {
+    asked++;
+    assert.deepEqual(fresh.map((f) => f.key), ['search:overdue']);
+    const docs = [{ id: 's1', text: 'Add an Overdue filter', why: 'You searched "overdue" 4 times', signal: 'search:overdue', status: 'open' }, { id: 's2', text: 'Something else', signal: null, status: 'open' }];
+    for (const d of docs) store.sugs.set(d.id, d);
+    return docs;
+  };
+  const ev = new Evolver({ engine: { store }, submit: async (app, text, source, extra) => { submitted.push({ text, source, extra }); return { id: `r${submitted.length}` }; }, propose });
+  const out = await ev.tick('a');
+  assert.equal(asked, 1);
+  assert.equal(submitted.length, 1);
+  assert.deepEqual([submitted[0].text, submitted[0].source], ['Add an Overdue filter', 'evolve']);
+  const cid = submitted[0].extra.candidate;
+  assert.equal(out.building.id, cid);
+  assert.equal(store.cands.get(cid).status, 'building');
+  assert.equal(store.cands.get(cid).base, 3);
+  assert.equal(store.sugs.get('s1').status, 'building');
+  // The same pattern again: no model call, nothing built.
+  await ev.tick('a');
+  assert.equal(asked, 1);
+  assert.equal(submitted.length, 1);
+  // Built as version 4 beside the live version 3; kept as built.
+  store.comps.set(4, { n: 4, caps: ['a/view/guests@2'] });
+  await ev.built(cid, { n: 4, base: 3, summary: 'An Overdue filter', problems: [] });
+  assert.equal(store.cands.get(cid).status, 'ready');
+  assert.equal(store.app.head, 3);
+  const kept = await ev.keep('a', cid);
+  assert.deepEqual(kept, { how: 'as built', head: 4 });
+  assert.equal(store.cands.get(cid).status, 'kept');
+  assert.equal(store.sugs.get('s1').status, 'taken');
+  await assert.rejects(ev.drop('a', cid), /live already/);
+  // Off: nothing is looked at.
+  await ev.setMode('a', 'off');
+  for (let i = 0; i < 5; i++) store.events.unshift({ kind: 'action', detail: 'filter rsvp=no', person: 'p1', ts: at(30 + i) });
+  assert.deepEqual((await ev.tick('a')).suggestions, []);
+  assert.equal(asked, 1);
+  // Suggest only: the model answers the new pattern; nothing is built.
+  await ev.setMode('a', 'suggest');
+  const propose2 = async () => { asked++; return [{ id: 's3', text: 'Make "no" a tab', signal: 'filter:rsvp=no' }]; };
+  ev.propose = propose2;
+  const out2 = await ev.tick('a');
+  assert.equal(out2.suggestions.length, 1);
+  assert.equal(out2.building, null);
+  assert.equal(submitted.length, 1);
+  await assert.rejects(ev.setMode('a', 'sometimes'), /evolve is one of/);
+});

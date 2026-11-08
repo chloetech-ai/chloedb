@@ -35,10 +35,21 @@ const SYSTEM_TABLES = {
     status KEYWORD, comp INT, summary TEXT, log TEXT, error TEXT, ms INT, cost FLOAT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // Each build's timeline (trace.mjs), by request id.
   sa_traces: `CREATE TABLE sa_traces (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, trace TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // What people did: who (a person, or a visitor's cookie) and on which
+  // version of the app, so a change can be judged by what people do after it.
   sa_events: `CREATE TABLE sa_events (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, kind KEYWORD, cap KEYWORD,
-    detail TEXT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+    detail TEXT, person KEYWORD, v INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // A suggestion from use names the pattern of use it answers (signal) and
+  // what should change in people's use if it works (measure, JSON).
   sa_suggestions: `CREATE TABLE sa_suggestions (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT,
-    source KEYWORD, cap KEYWORD, status KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+    source KEYWORD, cap KEYWORD, status KEYWORD, signal KEYWORD, measure TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Changes the engine built on its own from how people use an app
+  // (evolve.mjs): a version beside the live one, to try, keep or drop.
+  sa_candidates: `CREATE TABLE sa_candidates (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT, signal KEYWORD,
+    measure TEXT, suggestion KEYWORD, request KEYWORD, base INT, n INT, kept INT, status KEYWORD, summary TEXT, problems TEXT,
+    cost FLOAT, ms INT, decided TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Per-app settings, by "<app>:<name>".
+  sa_settings: `CREATE TABLE sa_settings (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name KEYWORD, value TEXT)`,
   // Apps, their pieces and the shared library as a graph (graph.mjs).
   sa_graph: GRAPH_SQL,
   // What every app gets (services.mjs): people and their sessions, who
@@ -54,6 +65,13 @@ const SYSTEM_TABLES = {
     status KEYWORD, error TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
 };
 
+// Columns added to system tables after they were first made: a store made
+// before them gets them on start.
+const ADDED_COLUMNS = {
+  sa_events: ['person KEYWORD', 'v INT'],
+  sa_suggestions: ['signal KEYWORD', 'measure TEXT'],
+};
+
 export const newId = (n = 8) => randomBytes(n).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, n).toLowerCase().padEnd(n, '0');
 export const physical = (app, table) => `app_${app}_${table}`;
 export const NAME_RE = /^[a-z][a-z0-9_]{0,30}$/;
@@ -66,6 +84,15 @@ export const COMPONENT_RE = /^[a-z][a-zA-Z0-9]{1,40}$/;
 export const SHARED_KINDS = ['component', 'helper'];
 
 const tableName = (t) => t.table || t.schema?.table || t.name;
+const viewOf = (app, comp, caps) => ({
+  app, comp, caps,
+  tables: caps.filter((c) => c.kind === 'table'),
+  views: caps.filter((c) => c.kind === 'view'),
+  functions: caps.filter((c) => c.kind === 'function'),
+  components: caps.filter((c) => c.kind === 'component'),
+  helpers: caps.filter((c) => c.kind === 'helper'),
+  shared: caps.filter((c) => SHARED_KINDS.includes(c.kind)),
+});
 const parseSpec = (s) => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 
 export class Store {
@@ -73,6 +100,7 @@ export class Store {
     this.db = strata;
     this.log = log;
     this.resolved = new Map(); // app -> {head, view}
+    this.resolvedAt = new Map(); // "app#n" -> view of a version that is not the head (versions never change)
     this.capCache = new Map();  // capability id -> row (capabilities never change once written)
   }
 
@@ -82,6 +110,16 @@ export class Store {
       if (!have.has(name)) {
         await this.db.sql(sql);
         this.log(`created ${name}`);
+      }
+    }
+    const tables = await this.db.tables();
+    for (const [name, cols] of Object.entries(ADDED_COLUMNS)) {
+      if (!have.has(name)) continue;
+      const fields = new Set((tables.find((t) => tableName(t) === name)?.schema?.fields || []).map((f) => f.name));
+      for (const c of cols) {
+        if (fields.has(c.split(' ')[0])) continue;
+        await this.db.sql(`ALTER TABLE ${name} ADD COLUMN ${c}`);
+        this.log(`added ${c.split(' ')[0]} to ${name}`);
       }
     }
     await this.rebuildGraph();
@@ -242,13 +280,15 @@ export class Store {
     return row ? { ...row, caps: row.caps || [] } : { n: 0, caps: [] };
   }
 
-  async writeComposition(app, caps, request, summary) {
+  // A new version of the app; it goes live unless {head: false} (a version
+  // to try beside the live one).
+  async writeComposition(app, caps, request, summary, { head = true } = {}) {
     const rows = await this.db.query('SELECT n FROM sa_compositions WHERE app = :a ORDER BY n DESC LIMIT 1', { a: app });
     const n = rows.length ? Number(rows[0].n) + 1 : 1;
     await this.db.write([
       { op: 'insert', table: 'sa_compositions', doc: { id: `${app}#${n}`, app, n, caps, request: request || '', summary: summary || '' } },
     ]);
-    await this.updateApp(app, { head: n });
+    if (head) await this.updateApp(app, { head: n });
     return n;
   }
 
@@ -257,25 +297,31 @@ export class Store {
     await this.updateApp(app, { head: n });
   }
 
-  // The app as it runs now: its head composition, with every capability.
-  async resolve(appId) {
+  // The app as it runs now: its head composition, with every capability. With
+  // n, another version of it (one to try, or an older one).
+  async resolve(appId, n = null) {
     const app = await this.getApp(appId);
     if (!app) throw new Error(`no app ${appId}`);
+    if (n && Number(n) !== Number(app.head)) return this.resolveAt(app, Number(n));
     const cached = this.resolved.get(appId);
     if (cached && cached.head === app.head) return cached.view;
     const comp = await this.composition(appId, app.head);
-    const caps = await this.getCapabilities(comp.caps);
-    const view = {
-      app, comp, caps,
-      tables: caps.filter((c) => c.kind === 'table'),
-      views: caps.filter((c) => c.kind === 'view'),
-      functions: caps.filter((c) => c.kind === 'function'),
-      components: caps.filter((c) => c.kind === 'component'),
-      helpers: caps.filter((c) => c.kind === 'helper'),
-      shared: caps.filter((c) => SHARED_KINDS.includes(c.kind)),
-    };
+    const view = viewOf(app, comp, await this.getCapabilities(comp.caps));
     this.resolved.set(appId, { head: app.head, view });
     return view;
+  }
+
+  async resolveAt(app, n) {
+    const key = `${app.id}#${n}`;
+    let view = this.resolvedAt.get(key);
+    if (!view) {
+      const comp = await this.composition(app.id, n);
+      if (!comp.n) throw Object.assign(new Error(`no version ${n} of this app`), { status: 404 });
+      view = viewOf(app, comp, await this.getCapabilities(comp.caps));
+      if (this.resolvedAt.size > 200) this.resolvedAt.clear();
+      this.resolvedAt.set(key, view);
+    }
+    return { ...view, app };
   }
 
   forget(appId) { this.resolved.delete(appId); }
@@ -473,26 +519,59 @@ export class Store {
     return this.db.query(`SELECT id, text, source, status, comp, summary, error, ms, cost, created FROM sa_requests WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
   }
 
-  async track(app, kind, cap, detail) {
-    await this.db.write([{ op: 'insert', table: 'sa_events', doc: { id: newId(12), app, kind, cap: cap || '', detail: detail ? String(detail).slice(0, 500) : '' } }]);
+  async track(app, kind, cap, detail, { person = null, v = null } = {}) {
+    const doc = { id: newId(12), app, kind, cap: cap || '', detail: detail ? String(detail).slice(0, 500) : '' };
+    if (person) doc.person = String(person).slice(0, 40);
+    if (v) doc.v = Number(v);
+    await this.db.write([{ op: 'insert', table: 'sa_events', doc }]);
   }
 
   async recentEvents(app, limit = 200) {
-    return this.db.query(`SELECT kind, cap, detail, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
+    return this.db.query(`SELECT kind, cap, detail, person, v, ts FROM sa_events WHERE app = :a ORDER BY ts DESC LIMIT ${limit}`, { a: app });
   }
 
   async putSuggestions(app, items) {
-    if (!items.length) return;
-    await this.db.write(items.map((s) => ({ op: 'insert', table: 'sa_suggestions', doc: { id: newId(10), app, status: 'open', ...s } })));
+    if (!items.length) return [];
+    const docs = items.map((s) => ({ id: newId(10), app, status: 'open', ...s }));
+    for (const d of docs) for (const k of Object.keys(d)) if (d[k] === null || d[k] === undefined) delete d[k];
+    await this.db.write(docs.map((doc) => ({ op: 'insert', table: 'sa_suggestions', doc })));
+    return docs;
   }
 
   async suggestions(app) {
-    return this.db.query(`SELECT id, text, why, source, cap, status, created FROM sa_suggestions WHERE app = :a AND status = 'open' ORDER BY created DESC LIMIT 12`, { a: app });
+    return this.db.query(`SELECT id, text, why, source, cap, status, signal, created FROM sa_suggestions WHERE app = :a AND status = 'open' ORDER BY created DESC LIMIT 12`, { a: app });
   }
 
   // Every suggestion made to an app, with what became of it.
   async suggestionHistory(app, limit = 40) {
-    return this.db.query(`SELECT text, source, status, created FROM sa_suggestions WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
+    return this.db.query(`SELECT text, source, status, signal, created FROM sa_suggestions WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
+  }
+
+  // ---- candidates: versions the engine built from use, beside the live one
+
+  async putCandidate(doc) {
+    const d = { ...doc };
+    for (const k of Object.keys(d)) if (d[k] === null || d[k] === undefined) delete d[k];
+    await this.db.write([{ op: 'upsert', table: 'sa_candidates', doc: d }]);
+    return d;
+  }
+
+  async candidate(id) {
+    const [row] = await this.db.get('sa_candidates', [id]);
+    return row || null;
+  }
+
+  async candidates(app, limit = 20) {
+    return this.db.query(`SELECT * FROM sa_candidates WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
+  }
+
+  async setting(app, name) {
+    const [row] = await this.db.get('sa_settings', [`${app}:${name}`]);
+    return row ? row.value : null;
+  }
+
+  async putSetting(app, name, value) {
+    await this.db.write([{ op: 'upsert', table: 'sa_settings', doc: { id: `${app}:${name}`, app, name, value: String(value) } }]);
   }
 
   async setSuggestion(id, status) {

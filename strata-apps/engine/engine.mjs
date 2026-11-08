@@ -3,6 +3,7 @@
 // the announcements that keep every open window live.
 
 import { EventEmitter } from 'node:events';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Store, physical, newId } from './store.mjs';
 import { rewriteSql } from './sql.mjs';
 import { runFunction } from './sandbox.mjs';
@@ -55,6 +56,10 @@ export class Engine extends EventEmitter {
     this.feed = false;
     this.pending = new Set();
     this.locks = new Map(); // app -> the end of its queue of rules that write
+    // The version a request runs on, when it is not the live one (someone
+    // trying a version the engine built): everything the request starts,
+    // triggers included, runs on that version.
+    this.at = new AsyncLocalStorage();
     this.services = null; // set by the server: people, files, email, places
   }
 
@@ -92,8 +97,19 @@ export class Engine extends EventEmitter {
     if (!this.feed) this.emit(kind, payload);
   }
 
+  // Runs fn on version v of the app (the live one when v is empty).
+  atVersion(appId, v, fn) {
+    return v ? this.at.run({ app: appId, v: Number(v) }, fn) : fn();
+  }
+
+  // The app as the running request sees it.
+  view(appId) {
+    const s = this.at.getStore();
+    return this.store.resolve(appId, s && s.app === appId ? s.v : null);
+  }
+
   async tableSpec(appId, table) {
-    const view = await this.store.resolve(appId);
+    const view = await this.view(appId);
     const cap = view.tables.find((t) => t.spec.name === table);
     if (!cap) {
       const names = view.tables.map((t) => t.spec.name).join(', ') || 'none yet';
@@ -119,7 +135,7 @@ export class Engine extends EventEmitter {
   // ---- what views and functions call
 
   async sql(appId, sql, params) {
-    const view = await this.store.resolve(appId);
+    const view = await this.view(appId);
     const names = view.tables.map((t) => t.spec.name);
     const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
     let rows = await this.db.query(phys, params || {});
@@ -178,7 +194,7 @@ export class Engine extends EventEmitter {
   }
 
   async call(appId, slug, input, ctx = {}) {
-    const view = await this.store.resolve(appId);
+    const view = await this.view(appId);
     const fn = view.functions.find((f) => f.slug === slug);
     if (!fn) {
       const names = view.functions.map((f) => f.slug).join(', ') || 'none';
@@ -224,7 +240,7 @@ export class Engine extends EventEmitter {
       if (batch && !ctx.batch) out = await this.exclusive(appId, async () => { const r = await rule(); await batch.commit(); return r; });
       else if (fn.spec.rule) out = await rule();
       else out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
-      if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug).catch(() => {});
+      if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n }).catch(() => {});
       return out;
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
@@ -303,12 +319,12 @@ export class Engine extends EventEmitter {
 
   // Tracks the write and runs the functions that wait for it.
   async after(appId, table, event, row, ctx) {
+    const view = await this.view(appId);
     if (!ctx.depth) {
       const detail = event === 'update' && ctx.changed ? `${table}: ${ctx.changed.join(', ')}` : table;
-      this.store.track(appId, event, '', detail).catch(() => {});
+      this.store.track(appId, event, '', detail, { person: ctx.who || ctx.user?.id, v: view.comp.n }).catch(() => {});
     }
     if ((ctx.depth || 0) >= MAX_DEPTH) return;
-    const view = await this.store.resolve(appId);
     for (const fn of view.functions) {
       const on = fn.spec.on;
       if (!on || on.table !== table || (on.event || 'insert') !== event) continue;

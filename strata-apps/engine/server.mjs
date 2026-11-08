@@ -16,6 +16,7 @@ import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { ensureDesigns } from './designs.mjs';
+import { Evolver, MODES } from './evolve.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -66,6 +67,13 @@ function tokenOf(req) {
 }
 function setSession(res, token) {
   res.setHeader('set-cookie', `${COOKIE}=${token ? encodeURIComponent(token) : ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${token ? SESSION_DAYS * 86400 : 0}`);
+}
+// Someone not signed in is told apart by a cookie of their own, so what
+// people do can be counted per person.
+const VISITOR = 'sa_visitor';
+function visitorOf(req) {
+  const m = String(req.headers.cookie || '').match(/(?:^|;\s*)sa_visitor=([a-z0-9]{8,20})/);
+  return m ? m[1] : null;
 }
 // The person as this app sees them, or null.
 async function userOf(req, appId) {
@@ -176,15 +184,18 @@ async function runRequest(req, extra = {}) {
   };
   await engine.store.putRequest({ ...req, status: 'running' });
   try {
-    const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress) : await forge(engine, req.app, req, progress);
+    const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress)
+      : await forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress);
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     if (out.trace) await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost });
-    broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary });
+    if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
+    broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
   } catch (e) {
     progress(`Failed: ${e.message}`);
     await engine.store.putRequest({ ...req, status: 'failed', error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
     if (e.trace) await saveTrace(req, e.trace, lines, { status: 'failed', error: e.message.slice(0, 500), cost: e.cost || 0 });
-    broadcast('failed', { app: req.app, request: req.id, error: e.message });
+    if (extra.candidate) await evolver.failed(extra.candidate, e.message).catch(() => {});
+    broadcast('failed', { app: req.app, request: req.id, error: e.message, candidate: extra.candidate || null });
   } finally {
     running.delete(req.app);
   }
@@ -209,7 +220,11 @@ async function repair(appId, capId, message, where) {
 }
 engine.on('error', ({ app, cap, message, where }) => { repair(app, cap, message, where).catch((e) => log(`repair: ${e.message}`)); });
 
-// What people do feeds suggestions: after every 25 actions, at most every 3 minutes.
+// What people do makes the app evolve (evolve.mjs): the engine counts
+// patterns in it, suggests what would answer a new one, and builds the
+// strongest as a version to try. It looks after every 25 actions, at most
+// every 3 minutes, and calls the model only when a new pattern shows.
+const evolver = new Evolver({ engine, submit, broadcast, log, propose: suggestFromUse });
 const activity = new Map();
 async function noteActivity(appId) {
   const a = activity.get(appId) || { n: 0, last: 0, busy: false };
@@ -220,10 +235,9 @@ async function noteActivity(appId) {
   a.busy = true;
   a.last = Date.now();
   try {
-    const items = await suggestFromUse(engine, appId);
-    log(`[${appId}] ${items.length} suggestions from use`);
-    if (!engine.feed) broadcast('suggestions', { app: appId });
-  } catch (e) { log(`suggest: ${e.message}`); } finally { a.busy = false; }
+    const out = await evolver.tick(appId);
+    if (out.suggestions?.length && !engine.feed) broadcast('suggestions', { app: appId });
+  } catch (e) { log(`evolve: ${e.message}`); } finally { a.busy = false; }
 }
 
 // ---- HTTP
@@ -266,7 +280,11 @@ function designsOf(appId, fresh = false) {
 
 async function appState(appId) {
   const { store } = engine;
-  const view = await store.resolve(appId);
+  const view = await engine.view(appId);
+  const head = Number(view.app.head);
+  const evolve = await evolver.state(appId, view).catch((e) => ({ mode: 'off', signals: [], candidates: [], error: e.message }));
+  // A candidate's own version is listed only when it went live as built.
+  const unkept = new Set(evolve.candidates.filter((c) => c.n && c.kept !== c.n).map((c) => c.n));
   const tables = [];
   for (const t of view.tables) {
     tables.push({ id: t.id, name: t.spec.name, description: t.spec.description, columns: t.spec.columns, rows: await store.countRows(`app_${appId}_${t.spec.name}`) });
@@ -276,7 +294,8 @@ async function appState(appId) {
   return {
     app: view.app,
     design: await store.designs(appId),
-    version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '' },
+    version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
+    evolve,
     views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map(cap),
     ...(await (async () => {
@@ -289,7 +308,8 @@ async function appState(appId) {
     people: await services.people(appId).catch(() => []),
     outbox: await services.outbox(appId, 20).catch(() => []),
     suggestions: await store.suggestions(appId),
-    versions: await store.compositions(appId),
+    // (versions built to try and not kept are listed with their candidates)
+    versions: (await store.compositions(appId)).filter((c) => !unkept.has(Number(c.n)) || Number(c.n) === head),
     requests: await store.requests(appId, 30),
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line) } : null,
   };
@@ -338,10 +358,10 @@ const routes = [
     return { request: r.id };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id) }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id) }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id) }); noteActivity(id); return out; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id) }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id) }); noteActivity(id); return out; }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
@@ -357,10 +377,10 @@ const routes = [
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
   ['GET', /^\/api\/geocode$/, async (b, m, url) => ({ places: await services.geocode(url.searchParams.get('q')) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/track$/, async (b, [id]) => {
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/track$/, async (b, [id], url, cx) => {
     const kind = b.kind === 'open' ? 'open' : 'action';
     const detail = kind === 'open' ? String(b.detail || '') : `${String(b.action || '').slice(0, 60)}${b.detail ? ` ${String(b.detail).slice(0, 200)}` : ''}`;
-    await engine.store.track(id, kind, String(b.cap || ''), detail);
+    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n });
     noteActivity(id);
     return { ok: true };
   }],
@@ -374,7 +394,20 @@ const routes = [
     engine.reportError(id, cap, String(b.message || '').slice(0, 1500), 'in the browser');
     return { ok: true, repairing };
   }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/suggest$/, async (b, [id]) => ({ suggestions: await suggestFromUse(engine, id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/suggest$/, async (b, [id]) => {
+    const out = await evolver.tick(id, { force: true });
+    if (out.busy) throw Object.assign(new Error('the engine is already reading this app\'s use'), { status: 409 });
+    if (!engine.feed) broadcast('suggestions', { app: id });
+    return { suggestions: out.suggestions, building: out.building };
+  }],
+  // Evolving from use: the mode (off, suggest, build), and the candidates.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/evolve$/, async (b, [id]) => evolver.state(id, await engine.store.resolve(id))],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/evolve$/, async (b, [id]) => ({ mode: await evolver.setMode(id, String(b.mode || '')), modes: MODES })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/candidates\/([a-z0-9]+)$/, async (b, [id, cid]) => {
+    if (b.action === 'keep') return evolver.keep(id, cid);
+    if (b.action === 'drop') return evolver.drop(id, cid);
+    throw Object.assign(new Error('action is keep or drop'), { status: 400 });
+  }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/suggestions\/([a-z0-9]+)$/, async (b, [id, sid]) => {
     await engine.store.setSuggestion(sid, b.status === 'taken' ? 'taken' : 'dismissed');
     if (!engine.feed) broadcast('suggestions', { app: id });
@@ -432,7 +465,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && page) {
       const [file, type] = page;
       const data = await readFile(path.join(ROOT, file));
-      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' });
+      const headers = { 'content-type': type, 'cache-control': 'no-cache' };
+      if (page === STATIC['/'] && !visitorOf(req)) headers['set-cookie'] = `${VISITOR}=${newId(12)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`;
+      res.writeHead(200, headers);
       return res.end(data);
     }
     let m;
@@ -469,13 +504,16 @@ const server = http.createServer(async (req, res) => {
       noteActivity(m[1]);
       return send(res, 200, { file: { ...file, url: `/api/apps/${m[1]}/files/${file.id}` } });
     }
-    const cx = { req, res, user: (appId) => userOf(req, appId) };
+    const cx = { req, res, user: (appId) => userOf(req, appId), who: async (appId) => (await userOf(req, appId))?.id || visitorOf(req) };
+    // ?v=N runs a request on version N of the app (a version built to try).
+    const v = Number(url.searchParams.get('v')) || null;
     for (const [method, re, fn] of routes) {
       if (req.method !== method) continue;
       const mm = url.pathname.match(re);
       if (!mm) continue;
       const b = method === 'POST' ? await body(req) : {};
-      return send(res, 200, await fn(b, mm.slice(1), url, cx));
+      const run = () => fn(b, mm.slice(1), url, cx);
+      return send(res, 200, await (v && url.pathname.startsWith('/api/apps/') ? engine.atVersion(mm[1], v, run) : run()));
     }
     send(res, 404, { error: 'not found' });
   } catch (e) {

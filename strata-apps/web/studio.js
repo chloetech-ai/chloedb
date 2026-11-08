@@ -75,7 +75,11 @@ const S = {
   failed: null,
   suggesting: false,
   panelOpen: false,
+  // A version the engine built from use, being tried (?v=N on the app's own
+  // page): its views, functions and tables, on the app's real data.
+  tryV: Number(new URLSearchParams(location.search).get('v')) || null,
 };
+const atV = () => (S.tryV ? `?v=${S.tryV}` : '');
 
 let KIT = '';
 let FRAME = '';
@@ -105,6 +109,7 @@ function connect() {
   es.addEventListener('app', (e) => { if (mine(e)) refreshApp(); else if (!S.appId) route(); });
   es.addEventListener('suggestions', (e) => { if (mine(e)) refreshApp(); });
   es.addEventListener('design', (e) => { if (mine(e)) refreshApp(); });
+  es.addEventListener('candidates', (e) => { if (mine(e)) refreshApp(); });
   es.addEventListener('progress', (e) => {
     const d = mine(e);
     if (!d) return;
@@ -129,7 +134,7 @@ function connect() {
     S.previewView = null;
     S.lines = [];
     S.runningText = '';
-    toast(`Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
+    toast(d.candidate ? `Built from your use, ready to try (version ${d.n})${d.summary ? `: ${d.summary}` : ''}` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
     refreshApp();
   });
   es.addEventListener('failed', (e) => {
@@ -138,7 +143,8 @@ function connect() {
     S.previews.clear();
     S.previewView = null;
     renderFrames();
-    S.failed = { text: S.runningText, error: d.error, lines: S.lines.slice() };
+    if (d.candidate) toast(`A change built from your use did not go through: ${d.error}`);
+    else S.failed = { text: S.runningText, error: d.error, lines: S.lines.slice() };
     S.lines = [];
     S.runningText = '';
     refreshApp();
@@ -514,7 +520,7 @@ async function refreshApp() {
   if (refreshing) { again = true; return refreshing; }
   refreshing = (async () => {
     try {
-      const state = await api('GET', `/api/apps/${S.appId}`);
+      const state = await api('GET', `/api/apps/${S.appId}${atV()}`);
       if (state.app.id !== S.appId) return;
       S.app = state;
       if (state.running && !S.lines.length) { S.runningText = state.running.text; S.lines = state.running.lines; }
@@ -538,7 +544,7 @@ function renderApp() {
     $('.brand').replaceChildren(h('span', { class: 'mark' }), st.app.name);
     renderLook();
   } else {
-    $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, `v${st.version.n}`) : null,
+    $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, st.version.trying ? `trying v${st.version.trying} (live v${st.version.live})` : `v${st.version.n}`) : null,
       st.views.length ? h('a', { class: 'navlink small', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null].filter(Boolean));
   }
   const views = st.views;
@@ -548,8 +554,46 @@ function renderApp() {
   tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view ? ' on' : ''}`, onclick: () => switchView(v.slug) }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
   if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
+  renderTryBar();
   renderFrames();
   renderPanel();
+}
+
+// ---- trying a version the engine built from use
+
+function tryVersion(n) {
+  S.tryV = n || null;
+  if (BARE) {
+    const u = new URL(location.href);
+    if (S.tryV) u.searchParams.set('v', String(S.tryV)); else u.searchParams.delete('v');
+    history.replaceState(null, '', u);
+  }
+  refreshApp();
+}
+async function decide(c, action) {
+  try {
+    const out = await api('POST', `/api/apps/${S.appId}/candidates/${c.id}`, { action });
+    if (S.tryV === c.n) S.tryV = null;
+    toast(action === 'drop' ? 'Dropped: the app stays as it is' : out.how === 'rebuilt' ? 'The live version changed the same pieces: building it again on the live version' : `Kept: version ${out.head} is live (${out.how})`);
+  } catch (e) { toast(e.message); }
+  refreshApp();
+}
+function renderTryBar() {
+  const stage = $('.stage');
+  if (!stage) return;
+  $('#trybar')?.remove();
+  const st = S.app;
+  if (!st.version.trying) return;
+  const c = (st.evolve?.candidates || []).find((x) => x.n === st.version.trying);
+  const bar = h('div', { id: 'trybar', class: 'trybar' },
+    h('span', { class: 'tryicon' }, '✦'),
+    h('div', { class: 'grow' },
+      h('b', c ? c.text : `Version ${st.version.trying}`),
+      h('div', { class: 'hint', title: c?.why || '' }, c ? `Built from your use. You are trying version ${st.version.trying} on the app's real data; everyone else sees version ${st.version.live}.` : `An earlier or unpublished version; the live one is ${st.version.live}.`)),
+    c && c.status === 'ready' && !BARE ? h('button', { class: 'btn small primary', onclick: () => decide(c, 'keep') }, 'Keep') : null,
+    c && c.status === 'ready' && !BARE ? h('button', { class: 'btn small', onclick: () => decide(c, 'drop') }, 'Drop') : null,
+    h('button', { class: 'btn small ghost', onclick: () => tryVersion(null) }, 'Back to live'));
+  stage.prepend(bar);
 }
 
 // ---- designs: a block of CSS variables, posted to every frame and set on the
@@ -677,7 +721,7 @@ function togglePanel() {
 function switchView(slug, params) {
   S.view = slug;
   const v = S.app.views.find((x) => x.slug === slug);
-  if (v) api('POST', `/api/apps/${S.appId}/track`, { kind: 'open', detail: slug, cap: v.id }).catch(() => {});
+  if (v) api('POST', `/api/apps/${S.appId}/track${atV()}`, { kind: 'open', detail: slug, cap: v.id }).catch(() => {});
   if (params) {
     const f = S.frames.get(slug);
     if (f) { f.iframe.remove(); S.frames.delete(slug); }
@@ -882,13 +926,18 @@ function changeTab(draft) {
   else if (S.failed) {
     out.push(h('div', { class: 'log' }, h('div', { class: 'req' }, 'This change did not go through'), h('div', { class: 'line bad' }, S.failed.error),
       h('div', { class: 'row', style: 'display:flex;gap:6px;margin-top:6px' }, h('button', { class: 'btn small', onclick: () => ask(S.failed.text) }, 'Try again'), h('button', { class: 'btn small ghost', onclick: () => { S.failed = null; renderPanel(); } }, 'Dismiss'))));
-  } else if (st.version.n && st.version.summary) {
+  } else if (st.version.n && st.version.summary && !st.version.trying) {
     out.push(h('div', { class: 'where' }, h('b', `Version ${st.version.n}: `), st.version.summary));
   }
+  if (st.version.n && st.evolve) out.push(evolveBox(st));
   if (st.version.n) {
     const sugBtn = h('button', { class: 'btn small ghost', disabled: S.suggesting, onclick: async () => {
       S.suggesting = true; renderPanel();
-      try { const r = await api('POST', `/api/apps/${S.appId}/suggest`); if (!r.suggestions.length) toast('Nothing in your use points anywhere yet: use the app a little more'); } catch (e) { toast(e.message); }
+      try {
+        const r = await api('POST', `/api/apps/${S.appId}/suggest`);
+        if (r.building) toast(`Building "${r.building.text}" to try, from your use`);
+        else if (!r.suggestions.length) toast('Nothing in your use points anywhere yet: use the app a little more');
+      } catch (e) { toast(e.message); }
       S.suggesting = false; refreshApp();
     } }, S.suggesting ? h('span', null, h('span', { class: 'spin' }), ' Reading your use...') : 'Suggest from my use');
     out.push(h('div', { class: 'col', style: 'display:flex;flex-direction:column;gap:8px' },
@@ -899,10 +948,47 @@ function changeTab(draft) {
         h('div', { class: 'bar' },
           h('button', { class: 'btn small primary', onclick: async (e) => { e.target.disabled = true; await ask(s.text, { source: 'suggestion', suggestion: s.id }); refreshApp(); } }, 'Do it'),
           h('button', { class: 'btn small ghost', onclick: async () => { await api('POST', `/api/apps/${S.appId}/suggestions/${s.id}`, { status: 'dismissed' }); refreshApp(); } }, 'Not now'),
-          h('span', { class: 'src' }, s.source === 'use' ? 'from your use' : s.source === 'component' ? 'newer shared piece' : 'from the last build'))))
+          h('span', { class: 'src' }, s.source === 'use' ? (s.signal ? 'from a pattern in your use' : 'from your use') : s.source === 'component' ? 'newer shared piece' : 'from the last build'))))
         : h('div', { class: 'hint' }, 'No suggestions open.')));
   }
   return out;
+}
+
+// Built from use: the changes the engine made on its own from patterns in
+// what people do, to try, keep or drop; and the patterns it sees.
+function evolveBox(st) {
+  const ev = st.evolve;
+  const STATUS = { building: 'building', ready: 'ready to try', failed: 'did not build', kept: 'kept', dropped: 'dropped' };
+  const effect = (c) => {
+    const e = c.effect;
+    if (!e || !c.measure) return null;
+    const span = (d) => (d < 1 ? `${Math.max(1, Math.round(d * 24))} h` : `${Math.round(d)} day${Math.round(d) === 1 ? '' : 's'}`);
+    return h('div', { class: 'effect' }, h('b', 'Since kept: '), `${c.measure.says || 'measure'}: ${e.before} in the ${span(e.beforeDays)} before, ${e.after} in the ${span(e.afterDays)} since`);
+  };
+  const cards = (ev.candidates || []).filter((c) => c.status !== 'dropped').slice(0, 4).map((c) => h('div', { class: `sugg cand ${c.status}` },
+    h('div', { class: 't' }, c.text),
+    c.why ? h('div', { class: 'why' }, c.why) : null,
+    c.status === 'ready' && c.summary ? h('div', { class: 'why' }, h('b', `Version ${c.n}: `), c.summary) : null,
+    c.problems?.length ? h('div', { class: 'why bad' }, c.problems.slice(0, 2).join('; ')) : null,
+    c.status === 'kept' ? effect(c) : null,
+    h('div', { class: 'bar' },
+      c.status === 'ready' ? h('button', { class: `btn small${st.version.trying === c.n ? '' : ' primary'}`, onclick: () => tryVersion(st.version.trying === c.n ? null : c.n) }, st.version.trying === c.n ? 'Back to live' : 'Try it') : null,
+      c.status === 'ready' ? h('button', { class: 'btn small', onclick: () => decide(c, 'keep') }, 'Keep') : null,
+      c.status === 'ready' || c.status === 'failed' ? h('button', { class: 'btn small ghost', onclick: () => decide(c, 'drop') }, c.status === 'failed' ? 'Dismiss' : 'Drop') : null,
+      c.status === 'building' ? h('span', { class: 'hint' }, h('span', { class: 'spin' }), ' Building beside the live version...') : null,
+      h('span', { class: `src st-${c.status}` }, STATUS[c.status] || c.status))));
+  const mode = h('select', { class: 'evmode', title: 'What the engine does with patterns in how people use this app', onchange: async (e) => {
+    try { await api('POST', `/api/apps/${S.appId}/evolve`, { mode: e.target.value }); toast(e.target.value === 'build' ? 'The engine will build changes from use for you to try' : e.target.value === 'suggest' ? 'The engine will only suggest' : 'The engine will not look at use'); } catch (err) { toast(err.message); }
+    refreshApp();
+  } }, [['build', 'Build to try'], ['suggest', 'Suggest only'], ['off', 'Off']].map(([v, l]) => h('option', { value: v, selected: ev.mode === v }, l)));
+  const sigs = (ev.signals || []).slice(0, 6);
+  return h('div', { class: 'col evolve', style: 'display:flex;flex-direction:column;gap:8px' },
+    h('div', { style: 'display:flex;align-items:center;gap:8px' }, h('h2', { class: 'label' }, 'Built from use'), h('span', { style: 'margin-left:auto' }, mode)),
+    cards.length ? cards : h('div', { class: 'hint' }, ev.mode === 'build'
+      ? 'When a pattern shows in how people use the app (a search typed again and again, a filter set every visit, the same field changed row after row), the engine builds a change that answers it, beside the live version, for you to try.'
+      : ev.mode === 'suggest' ? 'Patterns in use become suggestions below; nothing is built on its own.' : 'Off: the engine does not look at how the app is used.'),
+    sigs.length ? h('details', { class: 'signals' }, h('summary', null, `Patterns in use (${sigs.length})`),
+      sigs.map((x) => h('div', { class: 'signal' }, h('span', { class: 'grow' }, x.text), x.answered ? h('span', { class: 'pill' }, 'answered') : null))) : null);
 }
 
 function versionsTab() {
@@ -1103,11 +1189,11 @@ window.addEventListener('message', async (e) => {
       const [a, b, c] = m.args || [];
       let value;
       switch (m.method) {
-        case 'sql': value = (await api('POST', `${base}/sql`, { sql: a, params: b })).rows; break;
-        case 'insert': value = (await api('POST', `${base}/insert`, { table: a, row: b })).row; break;
-        case 'update': value = (await api('POST', `${base}/update`, { table: a, id: b, fields: c })).row; break;
-        case 'remove': value = await api('POST', `${base}/remove`, { table: a, id: b }); break;
-        case 'call': value = (await api('POST', `${base}/call`, { name: a, input: b })).result; break;
+        case 'sql': value = (await api('POST', `${base}/sql${atV()}`, { sql: a, params: b })).rows; break;
+        case 'insert': value = (await api('POST', `${base}/insert${atV()}`, { table: a, row: b })).row; break;
+        case 'update': value = (await api('POST', `${base}/update${atV()}`, { table: a, id: b, fields: c })).row; break;
+        case 'remove': value = await api('POST', `${base}/remove${atV()}`, { table: a, id: b }); break;
+        case 'call': value = (await api('POST', `${base}/call${atV()}`, { name: a, input: b })).result; break;
         case 'me': value = (await api('GET', `${base}/me`)).user; break;
         case 'signIn': value = (await api('POST', `${base}/signin`, a)).user; authChanged(); break;
         case 'signUp': value = (await api('POST', `${base}/signup`, a)).user; authChanged(); break;
@@ -1121,7 +1207,7 @@ window.addEventListener('message', async (e) => {
       }
       reply(value);
     } else if (m.kind === 'track') {
-      api('POST', `${base}/track`, { kind: 'action', action: m.action, detail: m.detail, cap: entry.capId }).catch(() => {});
+      api('POST', `${base}/track${atV()}`, { kind: 'action', action: m.action, detail: m.detail, cap: entry.capId }).catch(() => {});
     } else if (m.kind === 'open') {
       if (S.app.views.find((v) => v.slug === m.slug)) switchView(m.slug, m.params);
     } else if (m.kind === 'error') {

@@ -21,6 +21,12 @@
     let again = false;
     const forms = new Map();
     const reported = new Set();
+    // A search is recorded once typing stops, as the words someone looked for.
+    const typing = new Map();
+    const trackSearch = (key, v) => {
+      clearTimeout(typing.get(key));
+      typing.set(key, setTimeout(() => { const q = String(v ?? '').trim(); if (q) app.track('search', q); }, 1200));
+    };
 
     const fail = (where, e) => {
       const err = new Error(`${where}: ${e && e.message ? e.message : e}`);
@@ -159,7 +165,7 @@
     function chips(b, s, path) {
       const key = b.chips;
       return h('div', { class: 'chips' }, (val(b.options, s, path) || []).map(OPT).map((o) =>
-        h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { app.track('filter', `${key}=${o.value}`); set({ [key]: state[key] === o.value && b.toggle ? null : o.value }); } }, o.label)));
+        h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { const off = state[key] === o.value && b.toggle; if (!off && state[key] !== o.value) app.track('filter', `${key}=${o.value}`); set({ [key]: off ? null : o.value }); } }, o.label)));
     }
 
     function input(b, s, path) {
@@ -168,12 +174,12 @@
       const label = b.label ? T(b.label, s, path) : null;
       let el;
       if (type === 'select') {
-        el = h('select', { onchange: (e) => set({ [key]: e.target.value }) }, (val(b.options, s, path) || []).map(OPT).map((o) => h('option', { value: o.value, selected: String(state[key] ?? '') === String(o.value) }, o.label)));
+        el = h('select', { onchange: (e) => { set({ [key]: e.target.value }); if (e.target.value) app.track('filter', `${key}=${e.target.value}`); } }, (val(b.options, s, path) || []).map(OPT).map((o) => h('option', { value: o.value, selected: String(state[key] ?? '') === String(o.value) }, o.label)));
       } else if (type === 'checkbox') {
         el = h('input', { type: 'checkbox', checked: !!state[key], onchange: (e) => set({ [key]: e.target.checked }) });
       } else {
         el = h('input', { type: type === 'search' ? 'search' : type, placeholder: b.placeholder ? T(b.placeholder, s, path) : null, value: state[key] ?? '',
-          oninput: (e) => { const v = type === 'number' ? (e.target.value === '' ? null : Number(e.target.value)) : e.target.value; set({ [key]: v }); if (type === 'search') app.track('search', String(v)); } });
+          oninput: (e) => { const v = type === 'number' ? (e.target.value === '' ? null : Number(e.target.value)) : e.target.value; set({ [key]: v }); if (type === 'search') trackSearch(key, v); } });
       }
       el.dataset.bind = `${path}`;
       return label ? h('label', { class: 'col', style: 'gap:4px' }, h('span', { class: 'small muted' }, label), el) : el;

@@ -126,7 +126,7 @@ function loadPlaywright() {
 // Opens the app and each of its views in a headless browser and returns the
 // errors seen, per view: {ran, views: [{tab, errors}]}. The page itself
 // reports its errors to the engine, which repairs them.
-export async function openViews(baseUrl, appId, { wait = 1500 } = {}) {
+export async function openViews(baseUrl, appId, { wait = 1500, v = null } = {}) {
   const pw = process.env.STRATA_APPS_OPEN_VIEWS === 'off' ? null : loadPlaywright();
   if (!pw || !baseUrl) return { ran: false, views: [] };
   const browser = await pw.chromium.launch();
@@ -137,7 +137,7 @@ export async function openViews(baseUrl, appId, { wait = 1500 } = {}) {
     page.on('pageerror', (e) => errors.push(e.message.split('\n')[0].slice(0, 300)));
     page.on('console', (m) => { if (m.type() === 'error' && !/favicon/.test(m.text())) errors.push(m.text().split('\n')[0].slice(0, 300)); });
     page.on('dialog', (d) => d.dismiss());
-    await page.goto(`${baseUrl}/a/${appId}`, { waitUntil: 'load', timeout: 15000 });
+    await page.goto(`${baseUrl}/a/${appId}${v ? `?v=${v}` : ''}`, { waitUntil: 'load', timeout: 15000 });
     await page.waitForTimeout(wait);
     const tabs = page.locator('#tabs button:visible');
     const n = Math.max(await tabs.count(), 1);

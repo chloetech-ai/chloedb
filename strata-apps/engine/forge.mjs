@@ -731,7 +731,7 @@ export async function buildContext(engine, appId, request) {
     capIndex = parts.length;
     parts.push(`# Library: capabilities other apps have that may fit\n\n${entries.join('\n\n')}`);
   }
-  const source = { user: 'the person asked for this', suggestion: 'the person accepted this suggestion', repair: 'the runtime reported this error; fix its cause', library: 'the person asked to bring this in from the library' }[request.source] || 'the person asked for this';
+  const source = { user: 'the person asked for this', suggestion: 'the person accepted this suggestion', repair: 'the runtime reported this error; fix its cause', library: 'the person asked to bring this in from the library', evolve: 'nobody asked: the engine saw this in how people use the app, and builds it as a version they can try beside the live one and keep or drop. Make it small, in the app\'s own style, and change nothing it does not need' }[request.source] || 'the person asked for this';
   parts.push(`# The request (${source})\n\n${request.text}`);
   // The same context for one piece's writer: of the library's shared pieces,
   // only the ones the plan says it calls.
@@ -1226,10 +1226,15 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     const [kind, name] = key.split('/');
     if (!writtenShared.has(key) && had.get(key) !== id) progress(`Uses the shared ${kind} ${name} (version ${id.split('@').pop()})`);
   }
-  const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '');
+  // A candidate (built from use, to try) is a version beside the live one.
+  const candidate = !!request.candidate;
+  const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '', { head: !candidate });
   tr.end(storing, { written: written.length });
   tr.decisions.push(...planDecisions({ plan, view, library, shared, pinned, written: writtenShared, code, at: decidedAt }));
-  progress(`Version ${n} is live: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written`);
+  progress(candidate
+    ? `Version ${n} is ready to try: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written; the app stays on version ${view.comp.n} until it is kept`
+    : `Version ${n} is live: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written`);
+  const problemsLeft = [];
   // The app's tests run on the tables this version creates, while they are
   // empty; a failure goes to the repair like an error a person saw.
   const fresh = new Set((plan.tables || []).map((t) => t.name).filter((n) => !view.tables.some((t) => t.spec.name === n)));
@@ -1240,7 +1245,11 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     const failed = results.filter((r) => r.ok === false);
     progress(failed.length ? `Tests: ${ran.length - failed.length} of ${ran.length} pass; ${failed.map((r) => `"${r.name}": ${r.problem}`).join('; ').slice(0, 400)}` : `Tests: ${ran.length} of ${ran.length} pass${ran.length < results.length ? ` (${results.length - ran.length} skipped)` : ''}`);
     tr.end(testing, { tests: results });
-    for (const r of failed) if (r.cap) engine.reportError(appId, r.cap, `test "${r.name}" fails: ${r.problem}`, 'in a test the build ran');
+    // A candidate's failing test is the candidate's (shown with it), not the live app's to repair.
+    for (const r of failed) {
+      if (candidate) problemsLeft.push(`test "${r.name}" fails: ${r.problem}`);
+      else if (r.cap) engine.reportError(appId, r.cap, `test "${r.name}" fails: ${r.problem}`, 'in a test the build ran');
+    }
   }
   // Example rows go in once the tables are part of the live version.
   if (!view.comp.n && plan.seed) {
@@ -1256,10 +1265,16 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   }
   // Every view is opened in a headless browser, when one is installed; an
   // error there reaches the engine as a person's would, and is repaired.
-  openViews(engine.baseUrl, appId).then((r) => {
+  // (A candidate's views are opened before it is offered: its errors are its own.)
+  const opening = openViews(engine.baseUrl, appId, { v: candidate ? n : null }).then((r) => {
     const bad = r.views.filter((v) => v.errors.length);
     if (r.ran) engine.log(`[${appId}] opened ${r.views.length} view${r.views.length === 1 ? '' : 's'} after version ${n}${bad.length ? `: errors in ${bad.map((v) => `${v.tab || 'the app'} (${v.errors[0]})`).join('; ')}` : ', no errors'}`);
-  }).catch((e) => engine.log(`[${appId}] opening the views: ${e.message}`));
+    return bad;
+  }).catch((e) => { engine.log(`[${appId}] opening the views: ${e.message}`); return []; });
+  if (candidate) {
+    for (const b of await opening) problemsLeft.push(`${b.tab || 'the app'}: ${b.errors[0]}`);
+    return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started, trace: tr.toJSON(), candidate: true, base: view.comp.n, problems: problemsLeft };
+  }
   await offerNewVersions(engine, appId, newVersions, progress);
   const suggestions = (plan.suggestions || []).filter((s) => s && s.text).slice(0, 3)
     .map((s) => ({ text: String(s.text).slice(0, 300), why: String(s.why || '').slice(0, 300), source: 'forge' }));
@@ -1326,9 +1341,21 @@ async function retireSuggestions(engine, appId) {
 
 // ---- suggestions from use
 
-const SUGGEST_SYSTEM = `You watch how one person uses a small app and suggest what to add or change next. You get the app (its tables, views and functions), what the person did with it lately, and capabilities other apps have in a shared library. Suggest up to 3 changes that the person's behaviour shows they would want: a step they repeat by hand, a filter they keep setting, a view they open to look for one thing, a field they keep writing into notes, something another app does that fits theirs. Each must be small enough to build in one step, new (not what the app does already: read the versions, which say what each change added), specific, and not one of the suggestions made before. The why names what in the record points to it; never claim a habit the record does not show. Errors listed come from the code that runs now. Answer with JSON only: {"suggestions": [{"text": "the change, as the person would ask for it", "why": "what in their use points to it, in plain words", "library": "the id of a library capability it would reuse, or null"}]}. When nothing in the use points anywhere, answer {"suggestions": []}.`;
+// At most n characters, ending at a word, with an ellipsis when cut.
+export const clipWords = (text, n) => {
+  const t = String(text || '').trim();
+  if (t.length <= n) return t;
+  const cut = t.slice(0, n - 1);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), n / 2)).replace(/[\s,;:.]+$/, '')}…`;
+};
 
-export async function suggestFromUse(engine, appId) {
+const SUGGEST_SYSTEM = `You watch how one person uses a small app and suggest what to add or change next. You get the app (its tables, views and functions), what the person did with it lately, and capabilities other apps have in a shared library. Suggest up to 3 changes that the person's behaviour shows they would want: a step they repeat by hand, a filter they keep setting, a view they open to look for one thing, a field they keep writing into notes, something another app does that fits theirs. Each must be small enough to build in one step, new (not what the app does already: read the versions, which say what each change added), specific, and not one of the suggestions made before. The why names what in the record points to it; never claim a habit the record does not show. Errors listed come from the code that runs now.
+
+The engine counts patterns in the record and lists them under "Patterns", each with a key in brackets; the ones marked NEW have no suggestion yet. Answer the NEW patterns first, the strongest first, at most one suggestion per pattern, and give that pattern's key as "signal" (null for a suggestion no pattern backs). A good answer to a pattern removes the repetition: a search typed again and again becomes a filter, a saved view or a section; a filter set every visit becomes the default or a tab; the same field changed row after row becomes a bulk action or a rule that does it; two views always opened together get a link or a summary of one on the other; a function run by hand becomes a trigger or a button where it is needed.
+
+Answer with JSON only: {"suggestions": [{"text": "the change, as the person would ask for it, in one sentence", "why": "what in their use points to it: one plain sentence under 25 words", "signal": "a pattern's key, or null", "library": "the id of a library capability it would reuse, or null"}]}. When nothing in the use points anywhere, answer {"suggestions": []}.`;
+
+export async function suggestFromUse(engine, appId, { signals = [], fresh = [] } = {}) {
   const { store } = engine;
   const view = await store.resolve(appId);
   if (!view.comp.n) return [];
@@ -1346,6 +1373,7 @@ export async function suggestFromUse(engine, appId) {
     `## Functions\n${view.functions.map((f) => `- ${f.slug}: ${f.description}${f.spec.on ? ` (runs on ${f.spec.on.event} ${f.spec.on.table})` : ''}`).join('\n') || '(none)'}`,
     `## Versions, oldest first (what each change added)\n${versions.slice().reverse().map((c) => `- v${c.n}: ${c.summary || c.request}`).join('\n')}`,
     `## Suggestions made before\n${history.map((h) => `- [${h.status}] ${h.text}`).join('\n') || '(none)'}`,
+    `## Patterns (counted by the engine)\n${signals.map((s) => `- [${s.key}]${fresh.some((f) => f.key === s.key) ? ' NEW' : ''} ${s.text}`).join('\n') || '(none yet)'}`,
     `## What the person did\n${summarizeEvents(events)}`,
     `## Recent actions in order (newest first)\n${events.slice(0, 60).map((e) => `- ${e.ts} ${e.kind} ${e.detail}`).join('\n')}`,
     `## Library\n${lib.map((c) => `- ${c.id} (${c.kind}): ${c.title}. ${c.description}`).join('\n') || '(empty)'}`,
@@ -1356,10 +1384,10 @@ export async function suggestFromUse(engine, appId) {
     const m = answer.text.match(/\{[\s\S]*\}/);
     out = JSON.parse(m ? m[0] : answer.text);
   } catch { return []; }
+  const keys = new Set(signals.map((s) => s.key));
   const items = (out.suggestions || []).filter((s) => s && s.text).slice(0, 3)
-    .map((s) => ({ text: String(s.text).slice(0, 300), why: String(s.why || '').slice(0, 300), source: 'use', cap: s.library || '' }));
-  if (items.length) await store.putSuggestions(appId, items);
-  return items;
+    .map((s) => ({ text: clipWords(s.text, 300), why: clipWords(s.why, 240), source: 'use', cap: s.library || '', signal: keys.has(s.signal) ? s.signal : null }));
+  return items.length ? store.putSuggestions(appId, items) : [];
 }
 
 // A person's own change to a screen, with no model: a patch on the screen as
