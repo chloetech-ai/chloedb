@@ -310,6 +310,10 @@ pub(crate) struct Cold {
     pub(crate) evictions: AtomicU64,
     pub(crate) offloaded: AtomicU64,
     deleted: Arc<AtomicU64>,
+    /// Keys [`Cold::delete_later`] has yet to delete: an upload under one
+    /// of them waits until it is gone, so that a delete of a failed upload's
+    /// objects never takes the next one's.
+    deleting_now: Arc<(Mutex<std::collections::HashSet<String>>, Condvar)>,
     /// Wakes the cold tier's thread ([`crate::storage::Database::spawn_cold`]).
     pub(crate) signal: Signal,
 }
@@ -384,6 +388,7 @@ impl Cold {
             evictions: AtomicU64::new(0),
             offloaded: AtomicU64::new(0),
             deleted: Arc::new(AtomicU64::new(0)),
+            deleting_now: Arc::default(),
             signal: Signal::default(),
         }))
     }
@@ -431,7 +436,10 @@ impl Cold {
     }
 
     fn store_pending(&self) -> Result<()> {
-        let p = lock(&self.pending).clone();
+        // Held while the file is written: threads writing it at once would
+        // share `PENDING.tmp` (one's rename then finds no file), and an
+        // older record could replace a newer one.
+        let p = lock(&self.pending);
         let path = self.dir.join(PENDING);
         if p.uploading.is_empty() && p.deleting.is_empty() {
             return match std::fs::remove_file(&path) {
@@ -440,7 +448,7 @@ impl Cold {
             };
         }
         let tmp = self.dir.join("PENDING.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&p).expect("pending serialises"))?;
+        std::fs::write(&tmp, serde_json::to_vec(&*p).expect("pending serialises"))?;
         File::open(&tmp)?.sync_all()?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
@@ -482,23 +490,49 @@ impl Cold {
             return;
         }
         self.owe_delete(&keys);
+        lock(&self.deleting_now.0).extend(keys.iter().cloned());
         let cold = Arc::downgrade(self);
         let store = self.opts.store.clone();
         let deleted = self.deleted.clone();
-        let _ = std::thread::Builder::new().name("strata-cold-delete".into()).spawn(move || {
-            for k in keys {
-                match store.delete(&k) {
-                    Ok(()) => {
-                        deleted.fetch_add(1, Ordering::Relaxed);
-                        if let Some(c) = cold.upgrade() {
-                            lock(&c.pending).deleting.retain(|x| *x != k);
-                            let _ = c.store_pending();
+        let now = self.deleting_now.clone();
+        let done = move |k: &str| {
+            lock(&now.0).remove(k);
+            now.1.notify_all();
+        };
+        let spawned = std::thread::Builder::new().name("strata-cold-delete".into()).spawn({
+            let keys = keys.clone();
+            let done = done.clone();
+            move || {
+                for k in keys {
+                    match store.delete(&k) {
+                        Ok(()) => {
+                            deleted.fetch_add(1, Ordering::Relaxed);
+                            if let Some(c) = cold.upgrade() {
+                                lock(&c.pending).deleting.retain(|x| *x != k);
+                                let _ = c.store_pending();
+                            }
                         }
+                        Err(e) => tracing::warn!(key = %k, error = %e, "could not delete a cold segment's object; the next open tries again"),
                     }
-                    Err(e) => tracing::warn!(key = %k, error = %e, "could not delete a cold segment's object; the next open tries again"),
+                    done(&k);
                 }
             }
         });
+        if spawned.is_err() {
+            // Left to the next open, as a failed delete is.
+            keys.iter().for_each(|k| done(k));
+        }
+    }
+
+    /// Waits until no delete of `key` or its part table is left to run
+    /// ([`Cold::deleting_now`]).
+    fn wait_for_deletes(&self, key: &str) {
+        let (set, cv) = &*self.deleting_now;
+        let crc = format!("{key}.crc");
+        let mut s = lock(set);
+        while s.contains(key) || s.contains(&crc) {
+            s = cv.wait(s).unwrap_or_else(|e| e.into_inner());
+        }
     }
 
     /// Uploads segment `id`'s image, the file at `path` whose bytes are
@@ -511,6 +545,7 @@ impl Cold {
         let key = self.key_of(id);
         let table = ChunkTable::of(image, CHUNK);
         let bytes = table.encode();
+        self.wait_for_deletes(&key);
         self.uploading(&key)?;
         let object = Arc::new(ColdObject { cold: self.clone(), id, key: key.clone(), table, obsolete: AtomicBool::new(false) });
         let sent = (|| -> Result<()> {
@@ -1016,6 +1051,88 @@ mod tests {
         assert_eq!(parse_cache_name(&table_name(42)), Some((42, None)));
         assert_eq!(parse_cache_name("PENDING"), None);
         assert_eq!(parse_cache_name("seg-x.cache"), None);
+    }
+
+    /// Threads that record uploads and deletes at once (an offload, and the
+    /// thread deleting a failed upload's objects) each write the record
+    /// whole, and the last one written holds every change.
+    #[test]
+    fn the_pending_record_takes_writes_from_threads_at_once() {
+        let d = std::env::temp_dir().join(format!("strata-pending-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let store: Arc<dyn ObjectStore> = Arc::new(DirStore::new(d.join("store")).unwrap());
+        let cold = Cold::new(ColdOptions::new(store), &d, 7).unwrap();
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let cold = &cold;
+                s.spawn(move || {
+                    for i in 0..200 {
+                        let key = format!("t{t}-{i}");
+                        cold.uploading(&key).unwrap();
+                        if i % 2 == 0 {
+                            cold.uploaded(&key);
+                        }
+                    }
+                });
+            }
+        });
+        let on_disk: Pending = serde_json::from_slice(&std::fs::read(cold.dir.join(PENDING)).unwrap()).unwrap();
+        assert_eq!(on_disk.uploading.len(), 8 * 100 * 2);
+        assert_eq!(on_disk.uploading, lock(&cold.pending).uploading);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A directory store whose first part table upload fails, and whose
+    /// deletes take a while, as a store's requests can.
+    #[derive(Debug)]
+    struct SlowDeletes {
+        inner: DirStore,
+        fail_next_table: AtomicBool,
+    }
+
+    impl ObjectStore for SlowDeletes {
+        fn put_file(&self, key: &str, path: &Path) -> Result<()> {
+            self.inner.put_file(key, path)
+        }
+        fn put(&self, key: &str, bytes: &[u8]) -> Result<()> {
+            if key.ends_with(".crc") && self.fail_next_table.swap(false, Ordering::AcqRel) {
+                return Err(Error::Io(std::io::Error::other("the store refused the table")));
+            }
+            self.inner.put(key, bytes)
+        }
+        fn get_range(&self, key: &str, range: Range<u64>) -> Result<Vec<u8>> {
+            self.inner.get_range(key, range)
+        }
+        fn delete(&self, key: &str) -> Result<()> {
+            std::thread::sleep(Duration::from_millis(100));
+            self.inner.delete(key)
+        }
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+    }
+
+    /// An upload that fails leaves its objects to be deleted; one of the
+    /// same segment right after it, under the same keys, keeps its own.
+    #[test]
+    fn a_failed_uploads_deletes_leave_the_next_uploads_objects() {
+        let d = std::env::temp_dir().join(format!("strata-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let store = Arc::new(SlowDeletes { inner: DirStore::new(d.join("store")).unwrap(), fail_next_table: AtomicBool::new(true) });
+        let cold = Cold::new(ColdOptions::new(store.clone()), &d, 7).unwrap();
+        let image: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let path = d.join("seg-0000000003.strata");
+        std::fs::write(&path, &image).unwrap();
+        assert!(cold.upload(3, &path, &image).is_err());
+        let (cref, object) = cold.upload(3, &path, &image).unwrap();
+        // Long after the failed upload's deletes would have run.
+        std::thread::sleep(Duration::from_millis(500));
+        for key in [cref.key.clone(), format!("{}.crc", cref.key)] {
+            assert!(store.get_range(&key, 0..1).is_ok(), "{key} was deleted");
+        }
+        drop(object);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
