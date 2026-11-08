@@ -19,7 +19,7 @@ use crate::error::{Error, Result};
 use crate::forward::{DocStore, KeywordColumn, NumericColumn};
 use crate::media::{Media, Resolver};
 use crate::query::agg::Part;
-use crate::query::exec::{ExecOptions, ExecStats, Executor, Leaf, ResultSet, SegmentReaders};
+use crate::query::exec::{ExecOptions, ExecStats, Executor, Leaf, ResultSet, Scroll, SegmentReaders};
 use crate::query::ir::eval::{self, Ref};
 use crate::query::ir::Plan;
 use crate::query::model::Models;
@@ -1816,6 +1816,44 @@ impl Db {
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
         let mut rs = Executor::new(snap, &readers, opts).execute(select)?;
+        opened_step(&mut rs.stats, t0, opened, readers.len());
+        Ok(rs)
+    }
+
+    /// Starts a scroll of `select` on `snap` ([`Scroll`]): its first page,
+    /// of at most `page` rows, and the scroll that reads the rest a page at
+    /// a time ([`Db::scroll_next`]) from the same snapshot, which the
+    /// caller keeps until the last. [`ExecOptions::max_rows`] does not
+    /// apply: `page` caps each page, and a query other than a plain scan
+    /// (no ORDER BY, groups or counts) holds at most `hold` rows' places,
+    /// or rows, between pages.
+    pub fn scroll(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions, page: usize, hold: usize) -> Result<(ResultSet, Scroll)> {
+        let opts = ExecOptions { max_rows: None, ..opts.clone() };
+        if let Some(rs) = self.by_key(snap, select, &opts, usize::MAX)? {
+            return Ok(Scroll::of_rows(rs, page));
+        }
+        crate::query::steps::epoch();
+        let t0 = std::time::Instant::now();
+        let readers = self.readers(snap)?;
+        let opened = t0.elapsed();
+        let (mut rs, s) = Executor::new(snap, &readers, &opts).scroll(select, page, hold)?;
+        opened_step(&mut rs.stats, t0, opened, readers.len());
+        Ok((rs, s))
+    }
+
+    /// The next page of `scroll`, of at most `page` rows, from `snap`, the
+    /// snapshot it started on: empty once every row has been read
+    /// ([`Scroll::done`]). A page that fails leaves the scroll where it was.
+    pub fn scroll_next(&self, snap: &Snapshot, scroll: &mut Scroll, opts: &ExecOptions, page: usize) -> Result<ResultSet> {
+        if !scroll.reads() {
+            return Ok(scroll.next_rows(page));
+        }
+        let opts = ExecOptions { max_rows: None, ..opts.clone() };
+        crate::query::steps::epoch();
+        let t0 = std::time::Instant::now();
+        let readers = self.readers(snap)?;
+        let opened = t0.elapsed();
+        let mut rs = Executor::new(snap, &readers, &opts).scroll_next(scroll, page)?;
         opened_step(&mut rs.stats, t0, opened, readers.len());
         Ok(rs)
     }

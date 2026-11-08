@@ -1090,8 +1090,16 @@ class Frame:
 
     def iter_batches(self, batch_size: int = 65_536) -> Iterator[Any]:
         """Runs the frame and yields its answer as pyarrow RecordBatches of
-        at most `batch_size` rows."""
-        yield from self.to_arrow().to_batches(max_chunksize=batch_size)
+        at most `batch_size` rows. From a server, as it reads them: a page
+        of its scroll at a time, each page's columns typed by its values."""
+        pages = getattr(self._store, "_frame_batches", None)
+        if pages is None:
+            yield from self.to_arrow().to_batches(max_chunksize=batch_size)
+            return
+        _pyarrow()
+        sql, params, b = self._compile()
+        for t in pages(sql, params, b.types):
+            yield from t.to_batches(max_chunksize=batch_size)
 
     def count(self) -> int:
         """The number of rows the frame has (`COUNT(*)`, run where the data is)."""

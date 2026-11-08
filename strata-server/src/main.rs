@@ -233,6 +233,12 @@ struct Args {
     /// (0: no limit).
     #[arg(long, default_value_t = 10_000)]
     max_result_window: usize,
+    /// The rows the open scrolls (`page_size`) of ordered queries, groups
+    /// and joins hold between them, or their places: a scroll that would
+    /// hold more is refused (0: only scrolls without ORDER BY, groups or
+    /// joins, which hold none).
+    #[arg(long, default_value_t = strata_server::service::MAX_SCROLL_ROWS)]
+    max_scroll_rows: usize,
     /// The most groups a GROUP BY may make before the query fails (0: no
     /// limit).
     #[arg(long, default_value_t = 65_536)]
@@ -1019,6 +1025,7 @@ async fn main() {
         max_timeout_ms: a.max_timeout_ms,
         max_concurrent: a.max_concurrent,
         max_result_window: a.max_result_window,
+        max_scroll_rows: Some(a.max_scroll_rows),
         max_groups: a.max_groups,
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
