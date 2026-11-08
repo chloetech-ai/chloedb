@@ -2,14 +2,14 @@
 // fallback: `openNearby(url, table, dir)`.
 //
 // The server builds a table's slice (`POST /v1/admin/slices`, or the
-// command center's Slices view): a manifest and the rows of each map tile.
-// `Nearby` fetches the manifest, then the tiles around its user as the user
-// moves, into a local database (`dir`). A search runs there with the
-// server's statistics, so every place held scores exactly as on the
-// server. When the k-th local score beats the most a place not held could
-// score, the local answer is the server's and no request is made;
-// otherwise the same query goes to the server (`POST /v1/query`). Each
-// answer says which, and why.
+// command center's Slices view): a manifest and the rows of each map tile,
+// or of each vector cluster. `Nearby` fetches the manifest, then the tiles
+// around its user as the user moves (`moveTo`), or the clusters nearest
+// the user's taste (`focus`), into a local database (`dir`). A search runs
+// there and scores every row held exactly as the server would. When the
+// k-th local score beats the most a row not held could score, the local
+// answer is the server's and no request is made; otherwise the same query
+// goes to the server (`POST /v1/query`). Each answer says which, and why.
 //
 // Before it trusts its slice it asks the server whether the slice is the
 // current one (`GET /v1/slices/<table>/status`, every `statusEvery` ms): it
@@ -26,6 +26,15 @@
 //   r.where, r.why;            // "device" or "server", and why
 //   for (const row of r) console.log(row.name);
 //   await near.close();
+//
+//   const tracks = await openNearby("http://127.0.0.1:7700", "tracks", "./tracks");
+//   await tracks.focus(taste, { rows: 20000 });   // the user's taste, a vector
+//   const s = await tracks.similar(taste, { k: 10 });
+//
+// A vector slice's device also fetches every row's codes (`codes.bin.gz`,
+// one byte a dimension), which bound the rows it lacks tightly; when they
+// leave its answer in doubt it fetches the few clusters they name, up to
+// `refine` bytes, and proves it on the device.
 
 import { Buffer } from "node:buffer";
 import process from "node:process";
@@ -42,10 +51,10 @@ function empty() {
 /** A search's answer, the device's or the server's, and where it was
  * answered: `where` is "device" or "server"; `why` is "proved" or
  * "no_match" (answered on the device), or "short" (the device held fewer
- * than k matching places), "bound" (a place beyond the tiles held could
- * have scored higher) or "stale" (the table changed since the slice was
- * built). `ask` is the body of the request (`POST /v1/query`) that asks
- * the server for it. */
+ * than k matching rows), "bound" (a row beyond the tiles or clusters held
+ * could have scored higher) or "stale" (the table changed since the slice
+ * was built). `ask` is the body of the request (`POST /v1/query`) that
+ * asks the server for it. */
 export class NearbyResult extends Result {
   get onDevice() {
     return this.where === "device";
@@ -60,7 +69,7 @@ export class Nearby {
   #pending = empty();
   #statusAt = 0;
 
-  constructor(native, url, table, dir, { token, reach = 2, timeout = 30_000, statusEvery = 30_000, maxLag = 0, reportEvery = 20, device, fetch: f } = {}) {
+  constructor(native, url, table, dir, { token, reach = 2, timeout = 30_000, statusEvery = 30_000, maxLag = 0, reportEvery = 20, device, codes = true, fetch: f } = {}) {
     this.#native = native;
     this.url = url.replace(/\/+$/, "");
     this.table = table;
@@ -71,9 +80,11 @@ export class Nearby {
     this.statusEvery = statusEvery;
     this.maxLag = maxLag;
     this.reportEvery = reportEvery;
+    this.codes = codes;
     this.device = device ?? `js-${randomUUID().slice(0, 12)}`;
     this.fetch = f ?? globalThis.fetch;
     this.position = null;
+    this.taste = null;
     this.info = null;
     this.stats = { searches: 0, onDevice: 0, fetchedTiles: 0, fetchedBytes: 0 };
   }
@@ -114,8 +125,14 @@ export class Nearby {
     this.#dev?.close();
     this.#dev = await this.#native.NativeSlice.create(this.dir, text);
     this.info = JSON.parse(this.#dev.info());
+    if (this.codes && this.info.codes_bytes) {
+      const data = await this.#slice("codes.bin.gz");
+      await this.#dev.addCodes(data);
+      this.stats.fetchedBytes += data.length;
+    }
     this.#statusAt = Date.now();
     if (this.position) await this.moveTo(...this.position);
+    if (this.taste) await this.focus(...this.taste);
     return this;
   }
 
@@ -141,7 +158,21 @@ export class Nearby {
   async moveTo(lat, lon, { reach } = {}) {
     if (reach !== undefined) this.reach = reach;
     this.position = [lat, lon];
-    const plan = JSON.parse(this.#d.plan(lat, lon, this.reach));
+    return this.#apply(JSON.parse(this.#d.plan(lat, lon, this.reach)));
+  }
+
+  /** For a vector slice: holds the clusters whose rows could score highest
+   * for `taste` (a vector, such as the user's history summed), as many as
+   * fit in `rows` rows, fetching those it lacks (best first) and dropping
+   * those that fell well behind. Answers what it did: {fetched, dropped,
+   * bytes}. */
+  async focus(taste, { rows = 20_000 } = {}) {
+    taste = Array.from(taste, Number);
+    this.taste = [taste, { rows }];
+    return this.#apply(JSON.parse(this.#d.planVector(taste, rows)));
+  }
+
+  async #apply(plan) {
     for (const [x, y] of plan.drop) await this.#d.dropTile(x, y);
     let bytes = 0;
     for (const [x, y, path] of plan.fetch) {
@@ -170,10 +201,34 @@ export class Nearby {
       if (!this.position) throw new StrataError("moveTo(lat, lon) first, or pass lat and lon");
       [lat, lon] = this.position;
     }
+    return this.#answer(() => this.#d.search(q, lat, lon, k, d0));
+  }
+
+  /** For a vector slice: the `k` rows most similar to `vector` (by dot
+   * product, as `similarity` ranks them): the device's answer when it can
+   * prove it is the server's, else the server's, which re-scores every row
+   * (an exact search). When the device's codes name clusters that could
+   * still beat its k-th, it fetches them if they come to at most `refine`
+   * bytes (0: never), and then proves its answer. */
+  async similar(vector, { k = 10, refine = 2_000_000 } = {}) {
+    vector = Array.from(vector, Number);
+    return this.#answer(() => this.#d.searchVector(vector, k), refine);
+  }
+
+  async #answer(local, refine = 0) {
     if (this.statusEvery && Date.now() - this.#statusAt >= this.statusEvery) await this.check();
     let t0 = performance.now();
-    const a = decode(await this.#d.search(q, lat, lon, k, d0));
-    const deviceMs = performance.now() - t0;
+    let a = decode(await local());
+    let deviceMs = performance.now() - t0;
+    const need = a.need ?? [];
+    let fetched = 0;
+    if (!a.on_device && a.why === "bound" && need.length && need.reduce((n, t) => n + t[2], 0) <= refine) {
+      await this.#apply({ fetch: need.map(([x, y, b]) => [x, y, `tiles/${x}_${y}.jsonl.gz`, b]), drop: [] });
+      fetched = need.length;
+      t0 = performance.now();
+      a = decode(await local());
+      deviceMs += performance.now() - t0;
+    }
     let r;
     let serverMs = null;
     if (a.on_device) {
@@ -186,7 +241,7 @@ export class Nearby {
       serverMs = performance.now() - t0;
       r.where = "server";
     }
-    Object.assign(r, { why: a.why, ask: a.ask, proved: a.proved, stale: a.stale, bound: a.bound, edgeM: a.edge_m, deviceMs, serverMs });
+    Object.assign(r, { why: a.why, ask: a.ask, proved: a.proved, stale: a.stale, bound: a.bound, edgeM: a.edge_m, deviceMs, serverMs, fetched });
     this.#note(r);
     return r;
   }

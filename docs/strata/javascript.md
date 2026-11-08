@@ -139,7 +139,7 @@ In a browser, the client works from pages of the server's own origin (a page it 
 
 ## Search on the device
 
-`openNearby(url, table, dir)` holds a [slice](slices.md) of a strata-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `moveTo(lat, lon)` fetches the tiles it lacks, and `search(q, { k, d0 })` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason.
+`openNearby(url, table, dir)` holds a [slice](slices.md) of a strata-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `moveTo(lat, lon)` fetches the tiles it lacks, and `search(q, { k, d0 })` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason. For a [vector slice](slices.md#vector-slices-more-like-this-on-the-device), `focus(taste, { rows })` holds the clusters nearest a taste vector and `similar(vector, { k })` answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.
 
 ```js
 import { openNearby } from "strata-db";

@@ -2792,7 +2792,7 @@ async fn admin_routes_checkpoint_check_and_vacuum() {
 #[tokio::test]
 async fn slices_are_built_served_and_searched_on_a_device() {
     use strata::schema::{Field, FieldType, Schema};
-    use strata::slice::{Device, Manifest, Search};
+    use strata::slice::{Device, Manifest, Search, SliceQuery};
     let dir = tempfile::tempdir().unwrap();
     let schema = Schema::new(
         "places",
@@ -2910,6 +2910,91 @@ async fn slices_are_built_served_and_searched_on_a_device() {
     let base = http(service(db, "http://127.0.0.1:9"), None).await;
     let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"text": "name", "lat": "price", "lon": "price", "lat0": 0, "lon0": 0})).await;
     assert_eq!(status, 400, "{r}");
+}
+
+/// A vector slice built over HTTP: k-means clusters of a VECTOR field, read
+/// by a device whose proved answers are the server's own, and the command
+/// center's view of it; a rebuild with the table alone keeps it a vector
+/// slice.
+#[tokio::test]
+async fn vector_slices_are_built_and_searched_on_a_device() {
+    use strata::schema::{Field, FieldType, Schema, VectorIndexKind};
+    use strata::slice::{Device, Manifest, SliceQuery, VectorSearch};
+    let dir = tempfile::tempdir().unwrap();
+    let schema = Schema::new("tracks", vec![Field::new("id", FieldType::Int), Field::new("emb", FieldType::Vector { dim: 8, index: VectorIndexKind::Flat })], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("tracks.strata"), schema.clone(), DbOptions::default()).unwrap();
+    let unit = |v: Vec<f32>| {
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.into_iter().map(|x| x / n).collect::<Vec<f32>>()
+    };
+    let vec_of = |i: usize| unit((0..8).map(|d| (((i % 6) * 7 + d * 3) % 11) as f32 + ((i * 31 + d * 17) % 13) as f32 * 0.03).collect());
+    db.load((0..1200).map(|i| vec![Value::Int(i as i64), Value::Vector(vec_of(i).into())])).unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://127.0.0.1:9"), 16, Duration::from_secs(10));
+    svc.set_slices_dir(&dir.path().join("slices")).unwrap();
+    let base = http(Arc::new(svc), None).await;
+    let c = strata_server::http_client().build().unwrap();
+
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"vector": "emb", "clusters": 12})).await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!((r["kind"].as_str(), r["rows"].as_u64(), r["clusters"].as_u64()), (Some("vector"), Some(1200), Some(12)), "{r}");
+    let get = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.bytes().await.unwrap().to_vec())
+        }
+    };
+    let (status, text) = get(format!("{base}/v1/slices/tracks/manifest.json")).await;
+    assert_eq!(status, 200);
+    let m = Manifest::from_json(std::str::from_utf8(&text).unwrap()).unwrap();
+    let mut dev = Device::create(&dir.path().join("device"), m.clone()).unwrap();
+    let taste = vec_of(5);
+    for (t, _) in dev.plan_vector(&taste, 400).unwrap().fetch {
+        let (status, gz) = get(format!("{base}/v1/slices/tracks/{}", t.path())).await;
+        assert_eq!(status, 200, "{}", t.path());
+        dev.add_tile(t, &gz).unwrap();
+    }
+    // Every row's codes, which the device bounds the clusters it lacks by.
+    let codes_bytes = r["codes_bytes"].as_u64().unwrap();
+    let (status, gz) = get(format!("{base}/v1/slices/tracks/codes.bin.gz")).await;
+    assert_eq!((status, gz.len() as u64), (200, codes_bytes));
+    dev.add_codes(&gz).unwrap();
+    let mut proved = 0;
+    for (i, k) in [(5, 1), (11, 3), (17, 10), (23, 1000)] {
+        let s = VectorSearch::new(vec_of(i), k).unwrap();
+        let a = dev.search_vector(&s).unwrap();
+        let body: Json = serde_json::from_str(&s.ask_body(&m)).unwrap();
+        let (status, r) = post(&c, &format!("{base}/v1/query"), body).await;
+        assert_eq!(status, 200, "{r}");
+        let cloud: Vec<f64> = r["scores"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        if a.proved {
+            proved += 1;
+            assert_eq!(a.rows.scores, cloud, "k {k}");
+        } else {
+            assert!(a.rows.scores.len() < k || a.rows.scores[k - 1] < a.bound, "k {k}: not proved, so a cluster not held could beat the k-th");
+        }
+    }
+    assert!(proved >= 1, "proved {proved}");
+    let get_json = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+    let (status, detail) = get_json(format!("{base}/v1/admin/slices/tracks")).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!((detail["kind"].as_str(), detail["field"].as_str(), detail["clusters"].as_u64(), detail["dim"].as_u64()), (Some("vector"), Some("emb"), Some(12), Some(8)), "{detail}");
+    assert_eq!((detail["codes_bytes"].as_u64(), detail["usage"]["codes"].as_u64(), detail["usage"]["codes_bytes"].as_u64()), (Some(codes_bytes), Some(1), Some(codes_bytes)), "{detail}");
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"table": "tracks"})).await;
+    assert_eq!((status, r["kind"].as_str(), r["clusters"].as_u64()), (200, Some("vector"), Some(12)), "{r}");
+    let (status, _) = post(&c, &format!("{base}/v1/admin/slices"), json!({"vector": "id"})).await;
+    assert_eq!(status, 400);
+    // Without codes: none in the manifest, and none to fetch.
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"vector": "emb", "codes": false})).await;
+    assert_eq!((status, r["codes_bytes"].is_null()), (200, true), "{r}");
+    let (status, _) = get(format!("{base}/v1/slices/tracks/codes.bin.gz")).await;
+    assert_eq!(status, 404);
 }
 
 /// BOOL and TIMESTAMP fields answer as JSON booleans and ISO 8601 text,

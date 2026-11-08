@@ -101,3 +101,69 @@ describe("openNearby", { skip: serverBinary() ? false : "strata-server is not bu
     await assert.rejects(near.search("pizza"), StrataError);
   });
 });
+
+const TRACKS = {
+  table: "tracks",
+  key: "id",
+  fields: [
+    { name: "id", type: "int" },
+    { name: "emb", type: "vector", dim: 8, index: "flat" },
+  ],
+};
+// Unit vectors around 12 topics, each a few dimensions.
+const track = (i) => {
+  const t = i % 12;
+  const v = Array.from({ length: 8 }, (_, j) => (0.05 * (((i * 31 + j * 17) % 11) - 5)) / 5);
+  v[t % 8] += 1.0;
+  v[(t * 3 + 1) % 8] += 0.5 * (Math.floor(t / 8) + 1);
+  const n = Math.hypot(...v);
+  return { id: i, emb: v.map((x) => x / n) };
+};
+
+describe("openNearby on a vector slice", { skip: serverBinary() ? false : "strata-server is not built" }, () => {
+  let server;
+  let dir;
+
+  before(async () => {
+    dir = tempDir();
+    const path = join(dir, "tracks.strata");
+    const db = await Database.create(path, TRACKS);
+    await db.insert(Array.from({ length: 1200 }, (_, i) => track(i)));
+    await db.close();
+    server = await serve(path, "--slices", join(dir, "slices"));
+    const built = await call(server.url, "/v1/admin/slices", { table: "tracks", vector: "emb", clusters: 12 });
+    assert.deepEqual([built.kind, built.rows, built.clusters], ["vector", 1200, 12]);
+  });
+
+  after(async () => {
+    await server?.stop();
+  });
+
+  test("answers on the device what the server would", async () => {
+    const near = await openNearby(server.url, "tracks", join(dir, "device-v"), { reportEvery: 0 });
+    assert.deepEqual([near.info.kind, near.info.dim], ["vector", 8]);
+    const taste = track(5).emb;
+    const got = await near.focus(taste, { rows: 300 });
+    const held = near.held().reduce((n, t) => n + t[2], 0);
+    assert.ok(got.fetched >= 1 && held > 0 && held <= 450, `${JSON.stringify(got)}, ${held} rows`);
+    let r = await near.similar(taste, { k: 5 });
+    assert.deepEqual([r.where, r.why, r.edgeM], ["device", "proved", null]);
+    const cloud = await call(server.url, "/v1/query", r.ask);
+    assert.deepEqual([r.keys, r.scores], [cloud.keys, cloud.scores]);
+    // More rows than it holds: the server answers, exactly.
+    r = await near.similar(taste, { k: 1000 });
+    assert.deepEqual([r.where, r.why, r.length], ["server", "short", 1000]);
+    // Away from the taste: the codes name the clusters to fetch, and the
+    // device proves its answer once it holds them.
+    const far = track(7).emb;
+    r = await near.similar(far, { k: 5, refine: 0 });
+    assert.deepEqual([r.where, r.why, r.fetched], ["server", "bound", 0]);
+    r = await near.similar(far, { k: 5 });
+    assert.deepEqual([r.where, r.why], ["device", "proved"]);
+    assert.ok(r.fetched >= 1);
+    const again = await call(server.url, "/v1/query", r.ask);
+    assert.deepEqual([r.keys, r.scores], [again.keys, again.scores]);
+    await assert.rejects(near.search("pizza", { lat: 40.7, lon: -74.0 }), /search it with a vector/);
+    await near.close();
+  });
+});

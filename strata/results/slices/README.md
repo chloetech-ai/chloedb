@@ -822,6 +822,119 @@ The packs nearest a taste change as the taste moves; how many bytes a day
 that costs a user was not measured. ORCAS has no timestamps, so search
 slices' daily patches could not be measured either.
 
+## Vector slices on Yambda: proving similarity search on the device
+
+Built after Phase 0 (`strata::slice`, `Key::Vector`): a slice of a VECTOR
+field cuts the table into k-means clusters, each a file of rows, and a
+device holds the clusters nearest its user's taste. [`vectors.py`](vectors.py)
+(its docstring has the details) replays it on the 629,298 tracks above,
+with the same 64-dimension SVD vectors (unit length) and the 4,599 test
+users' tastes (decay 1 hour). Each user makes two searches, each for the
+top 10 and the top 100 by dot product over the whole catalogue:
+"recommend for me" (the taste itself) and "more like the last track"
+(the vector of the last track they played). The device holds the
+clusters with the highest bound for the taste, as many as fit in the
+budget of tracks (`Device::plan_vector`). A search is proved when its
+k-th score reaches every bound of a cluster not held.
+
+Two bounds of a cluster not held. **Centres**: the manifest's centre,
+radius, angular radius and longest and shortest vector of each cluster
+(the lesser of a ball and a cone bound). **Codes**: also every row's
+vector as one byte a dimension (`codes.bin.gz`), each row bounded within
+half a step a dimension. When a search is not proved with codes, the
+clusters whose bound beats its k-th are what the device fetches
+(`Answer::need`); then it is proved. "Device's top k right" is how often
+the device's top k is the exact one whether or not it can prove it, the
+most any bound could prove.
+
+The slices, built by `strata-slice` from `tracks.strata` (one flat VECTOR
+field and an INT key), at the default number of clusters (the square root
+of the rows) and at 4,096:
+
+<!-- report:vector-files -->
+| clusters | rows a cluster: median | largest | manifest MB | tiles MB | tile bytes / row | codes MB | codes bytes / row | build s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 793 (default) | 621 | 4,917 | 0.70 | 260.9 | 415 | 19.3 | 30.6 | 50 |
+| 4,096 | 93 | 2,724 | 3.59 | 231.9 | 369 | 19.0 | 30.1 | 68 |
+<!-- /report -->
+
+With 793 clusters (the default):
+
+<!-- report:vectors-793 -->
+| search | tracks held | k | device's top k right | proved: centres | proved: codes | proved after fetching | searches that fetch | clusters fetched (mean) | KB fetched (mean) | KB when fetching: median | 90th pct | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| recommend for me | 5,000 | 10 | 25.2% | 0.2% | 20.2% | 100.0% | 79.8% | 4.3 | 1.7 MB | 1.4 MB | 4.9 MB | 0 |
+| recommend for me | 5,000 | 100 | 5.5% | 0.0% | 4.4% | 100.0% | 95.6% | 18.5 | 6.6 MB | 5.6 MB | 14.2 MB | 0 |
+| recommend for me | 20,000 | 10 | 87.8% | 2.4% | 83.8% | 100.0% | 16.2% | 0.3 | 96 | 435 | 1.2 MB | 0 |
+| recommend for me | 20,000 | 100 | 46.7% | 1.2% | 41.6% | 100.0% | 58.4% | 3.7 | 1.3 MB | 1.5 MB | 5.1 MB | 0 |
+| recommend for me | 50,000 | 10 | 97.6% | 4.9% | 96.4% | 100.0% | 3.6% | 0.0 | 13 | 291 | 690 | 0 |
+| recommend for me | 50,000 | 100 | 74.6% | 2.4% | 69.8% | 100.0% | 30.2% | 0.9 | 321 | 702 | 2.4 MB | 0 |
+| more like the last track | 5,000 | 10 | 15.0% | 0.3% | 12.8% | 100.0% | 87.2% | 53.3 | 19.0 MB | 4.4 MB | 66.8 MB | 0 |
+| more like the last track | 5,000 | 100 | 4.7% | 0.1% | 3.9% | 100.0% | 96.1% | 115.5 | 40.5 MB | 11.0 MB | 154.7 MB | 0 |
+| more like the last track | 20,000 | 10 | 50.1% | 2.9% | 45.9% | 100.0% | 54.1% | 9.9 | 3.6 MB | 1.7 MB | 13.8 MB | 0 |
+| more like the last track | 20,000 | 100 | 23.9% | 1.3% | 21.6% | 100.0% | 78.4% | 28.0 | 9.9 MB | 3.7 MB | 28.9 MB | 0 |
+| more like the last track | 50,000 | 10 | 68.9% | 5.7% | 64.9% | 100.0% | 35.1% | 2.4 | 926 | 963 | 5.7 MB | 0 |
+| more like the last track | 50,000 | 100 | 40.5% | 2.7% | 37.3% | 100.0% | 62.7% | 8.9 | 3.2 MB | 2.1 MB | 10.5 MB | 0 |
+<!-- /report -->
+
+With 4,096 clusters:
+
+<!-- report:vectors-4096 -->
+| search | tracks held | k | device's top k right | proved: centres | proved: codes | proved after fetching | searches that fetch | clusters fetched (mean) | KB fetched (mean) | KB when fetching: median | 90th pct | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| recommend for me | 5,000 | 10 | 67.7% | 0.5% | 60.3% | 100.0% | 39.7% | 1.3 | 142 | 176 | 857 | 0 |
+| recommend for me | 5,000 | 100 | 17.2% | 0.1% | 13.2% | 100.0% | 86.8% | 9.5 | 810 | 647 | 2.1 MB | 0 |
+| recommend for me | 20,000 | 10 | 96.5% | 4.5% | 94.9% | 100.0% | 5.1% | 0.1 | 4 | 64 | 171 | 0 |
+| recommend for me | 20,000 | 100 | 67.1% | 2.1% | 61.3% | 100.0% | 38.7% | 1.4 | 101 | 157 | 617 | 0 |
+| recommend for me | 50,000 | 10 | 99.6% | 10.6% | 99.2% | 100.0% | 0.8% | 0.0 | 0 | 33 | 89 | 0 |
+| recommend for me | 50,000 | 100 | 87.5% | 4.7% | 84.0% | 100.0% | 16.0% | 0.3 | 20 | 74 | 290 | 0 |
+| more like the last track | 5,000 | 10 | 29.9% | 1.2% | 26.3% | 100.0% | 73.7% | 49.4 | 3.8 MB | 748 | 11.6 MB | 0 |
+| more like the last track | 5,000 | 100 | 7.6% | 0.4% | 5.7% | 100.0% | 94.3% | 152.9 | 11.4 MB | 2.1 MB | 31.5 MB | 0 |
+| more like the last track | 20,000 | 10 | 58.3% | 4.6% | 54.6% | 100.0% | 45.4% | 9.1 | 740 | 340 | 3.3 MB | 0 |
+| more like the last track | 20,000 | 100 | 29.0% | 2.2% | 25.9% | 100.0% | 74.1% | 35.0 | 2.7 MB | 859 | 7.4 MB | 0 |
+| more like the last track | 50,000 | 10 | 74.5% | 7.3% | 70.8% | 100.0% | 29.2% | 2.1 | 191 | 223 | 1.5 MB | 0 |
+| more like the last track | 50,000 | 100 | 45.0% | 3.6% | 42.0% | 100.0% | 58.0% | 9.9 | 796 | 493 | 3.1 MB | 0 |
+<!-- /report -->
+
+What the clusters' centres prove alone is small: from 0.1% to 10.6% of
+searches, though the device's top k is the exact one up to 99.6% of the
+time. In 64 dimensions a cluster's rows point every way from its centre,
+so `q . (x - c)` stays far below `|q| r` for every row and the bound sits
+well above the best row. A split of each cluster's vectors at its top 8
+or 16 principal directions, and 8 sub-balls a cluster, proved no more on
+a sample of 400 users (not kept). Every row's codes, 30 bytes a track
+gzipped (19 MB for the catalogue), bring the proofs within a few points
+of the most any bound could prove, and fetching what they name proves
+every search. For "recommend for me" that fetch is small: with 4,096
+clusters and 20,000 tracks held, 94.9% of top 10s are proved at once and
+the rest after a median 64 KB. "More like the last track" leaves the
+taste behind more often, so it fetches more (a median 340 KB for the top
+10, but a 90th percentile of 3.3 MB); smaller clusters keep each fetch
+smaller. 4-bit codes (half the size) proved 16% of those top 10s against
+95% on a sample of 400 users (not kept): their half step a dimension adds
+about 0.19 to a unit query's bound, against 0.011 for 8 bits. No proved
+answer was wrong, before or after a fetch, in 110,376 searches.
+
+Strata's own device (`strata.SliceDevice`, the slice's files, 20,000
+tracks held for each of 200 users drawn at random, both searches and both
+k), each proved answer against the cloud's exact search
+(`Database.query` of the SQL the device would send), after fetching what
+it named when it was not proved:
+
+<!-- report:vector-verify -->
+| clusters | searches | proved | fetched what it named | then proved | proved and the cloud's answer | proved, not the cloud's | proof as the replay's | device ms, median / 99th | cloud ms (exact scan), median / 99th |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 793 | 800 | 387 | 413 | 413 | 800 | 0 | 800 of 800 | 16.0 / 40.8 | 93 / 403 |
+| 4,096 | 800 | 447 | 353 | 353 | 800 | 0 | 800 of 800 | 15.4 / 28.1 | 87 / 349 |
+<!-- /report -->
+
+"Proof as the replay's" counts the searches where the device proved what
+this replay's bound says it can prove, no more and no fewer. The times
+were taken on the cloud container's 4 cores (Intel Xeon @ 2.30GHz) while
+builds ran beside them, so they are upper bounds: the device's is a
+search of the 20,000 tracks it holds plus the codes' bounds of the
+clusters it lacks, the cloud's an exact scan of all 629,298 tracks.
+
 ## Reproduce
 
 Data (ORCAS is under a non-commercial research licence):
@@ -866,6 +979,8 @@ curl -L -o ~/data/geo/dataset_TIST2015.zip https://huggingface.co/datasets/David
 H="--city houston --work $HOME/data/geo/houston --checkins $HOME/data/geo/houston/checkins.txt --tist $HOME/data/geo/dataset_TIST2015.zip"
 python geo.py $H tist && python geo.py $H prep && python geo.py $H searches && python geo.py $H eval && python geo.py $H bytes
 cp ~/data/geo/houston/{prep,searches,eval,bytes,maxima}.json geo-houston/
+python vectors.py $W --data ~/data/yambda prep && python vectors.py $W slices   # strata-slice from strata/target/ci
+python vectors.py $W eval && python vectors.py $W verify --users 200 --budget 20000
 python report.py
 ```
 

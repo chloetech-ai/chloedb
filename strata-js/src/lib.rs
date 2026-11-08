@@ -1035,17 +1035,13 @@ impl NativeSlice {
         AsyncTask::new(SliceJob { dir, manifest })
     }
 
-    /// What the manifest says, without its words: table, version,
-    /// built_ms, grid, text, lat, lon, tiles (count), rows.
+    /// What the manifest says, without its words or centres
+    /// (`strata::slice::summary`): kind, table, version, built_ms, tiles,
+    /// rows, and a geo slice's grid, text, lat and lon or a vector slice's
+    /// field, dim and clusters.
     #[napi]
     pub fn info(&self) -> napi::Result<String> {
-        self.now(|d| {
-            let m = d.manifest();
-            Ok(json!({
-                "table": m.schema.table, "version": m.version, "built_ms": m.built_ms, "grid": m.grid,
-                "text": m.text, "lat": m.lat, "lon": m.lon, "tiles": m.tiles.len(), "rows": m.tiles.iter().map(|t| t.rows).sum::<u64>(),
-            }))
-        })
+        self.now(|d| Ok(strata::slice::summary(d.manifest())))
     }
 
     /// The tiles to fetch for a user at (`lat`, `lon`), nearest first, and
@@ -1061,11 +1057,46 @@ impl NativeSlice {
         })
     }
 
+    /// A vector slice's clusters to fetch so that the device holds those
+    /// whose rows could score highest for `taste`, best first, as many as
+    /// fit in `rows` rows, and those to drop: {fetch: [[x, y, path,
+    /// bytes]], drop: [[x, y]]}.
+    #[napi]
+    pub fn plan_vector(&self, taste: Vec<f64>, rows: u32) -> napi::Result<String> {
+        let taste: Vec<f32> = taste.into_iter().map(|x| x as f32).collect();
+        self.now(|d| {
+            let p = d.plan_vector(&taste, rows as u64)?;
+            Ok(json!({
+                "fetch": p.fetch.iter().map(|(t, b)| json!([t.x, t.y, t.path(), b])).collect::<Vec<_>>(),
+                "drop": p.drop.iter().map(|t| json!([t.x, t.y])).collect::<Vec<_>>(),
+            }))
+        })
+    }
+
     /// Adds a tile from its file's bytes; answers the rows it held.
     #[napi(ts_return_type = "Promise<string>")]
     pub fn add_tile(&self, x: i32, y: i32, data: napi::bindgen_prelude::Buffer) -> AsyncTask<Job> {
         let data = data.to_vec();
         on_device(&self.dev, move |d| Ok(json!(d.add_tile(strata::slice::Tile { x, y }, &data)?)))
+    }
+
+    /// Adds a vector slice's codes of every row from the bytes of its
+    /// `codes.bin.gz`: searches then bound the clusters not held far more
+    /// tightly, and name the clusters that would prove an answer.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn add_codes(&self, data: napi::bindgen_prelude::Buffer) -> AsyncTask<Job> {
+        let data = data.to_vec();
+        on_device(&self.dev, move |d| {
+            d.add_codes(&data)?;
+            Ok(Json::Null)
+        })
+    }
+
+    #[napi]
+    pub fn has_codes(&self) -> napi::Result<bool> {
+        let mut g = self.dev.lock().unwrap_or_else(|e| e.into_inner());
+        let d = g.as_mut().ok_or_else(|| napi::Error::from_reason("the slice is closed"))?;
+        Ok(d.has_codes())
     }
 
     #[napi(ts_return_type = "Promise<string>")]
@@ -1109,6 +1140,17 @@ impl NativeSlice {
         on_device(&self.dev, move |d| {
             let s = strata::slice::Search::new(&q, lat, lon, k as usize, d0_m)?;
             Ok(d.search(&s)?.to_json(&s, d.manifest()))
+        })
+    }
+
+    /// Searches a vector slice's clusters held (`Device::search_vector`):
+    /// the `k` rows most similar to `vector`, answered as `search` answers.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn search_vector(&self, vector: Vec<f64>, k: u32) -> AsyncTask<Job> {
+        let vector: Vec<f32> = vector.into_iter().map(|x| x as f32).collect();
+        on_device(&self.dev, move |d| {
+            let s = strata::slice::VectorSearch::new(vector, k as usize)?;
+            Ok(d.search_vector(&s)?.to_json(&s, d.manifest()))
         })
     }
 

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value as Json};
 use strata::db::Db;
-use strata::slice::{Grid, Manifest, TileEntry, Why};
+use strata::slice::{BuildKey, Key, Manifest, TileEntry, Why};
 
 use crate::ApiError;
 
@@ -23,40 +23,49 @@ const MAX_DEVICES: usize = 10_000;
 /// One-minute buckets of usage kept: the last hour.
 const MINUTES: usize = 60;
 
-/// What a slice holds: its manifest without the words.
+/// What a slice holds: its manifest without the words or centres.
 #[derive(Clone, Debug)]
 pub struct Info {
     pub table: String,
     pub version: u64,
     pub built_ms: u64,
-    pub text: String,
-    pub lat: String,
-    pub lon: String,
-    pub grid: Grid,
-    pub k1: f32,
-    pub b: f32,
-    pub n_docs: u64,
-    pub words: usize,
+    /// How it was cut, as a rebuild takes it (a vector slice's seed is
+    /// not kept: a rebuild draws with the default).
+    pub key: BuildKey,
+    /// What the command center shows of the key: a geo slice's fields,
+    /// grid, BM25 parameters and words; a vector slice's field, dimension
+    /// and clusters.
+    pub detail: Json,
     pub tiles: Vec<TileEntry>,
     pub rows: u64,
     pub manifest_bytes: u64,
     pub tile_bytes: u64,
 }
 
+/// A vector slice's k-means seed when a rebuild does not say.
+pub const SEED: u64 = 7;
+
 impl Info {
     pub fn of(m: &Manifest, manifest_bytes: u64) -> Info {
+        let (key, detail) = match &m.key {
+            Key::Geo(g) => (
+                BuildKey::Geo { text: g.text.clone(), lat: g.lat.clone(), lon: g.lon.clone(), grid: g.grid, bm25: strata::text::Bm25Params { k1: g.k1, b: g.b } },
+                json!({
+                    "kind": "geo", "text": g.text, "lat": g.lat, "lon": g.lon, "grid": g.grid, "kx": g.grid.kx(), "ky": strata::slice::KY,
+                    "k1": g.k1, "b": g.b, "n_docs": g.n_docs, "words": g.words.terms.len(),
+                }),
+            ),
+            Key::Vector(v) => (
+                BuildKey::Vector { field: v.field.clone(), clusters: v.centroids.len(), seed: SEED, codes: v.codes.is_some() },
+                json!({"kind": "vector", "field": v.field, "dim": v.dim, "clusters": v.centroids.len(), "codes_bytes": v.codes.as_ref().map(|c| c.bytes)}),
+            ),
+        };
         Info {
             table: m.schema.table.clone(),
             version: m.version,
             built_ms: m.built_ms,
-            text: m.text.clone(),
-            lat: m.lat.clone(),
-            lon: m.lon.clone(),
-            grid: m.grid,
-            k1: m.k1,
-            b: m.b,
-            n_docs: m.n_docs,
-            words: m.words.terms.len(),
+            key,
+            detail,
             rows: m.tiles.iter().map(|t| t.rows).sum(),
             tile_bytes: m.tiles.iter().map(|t| t.bytes).sum(),
             tiles: m.tiles.clone(),
@@ -80,6 +89,9 @@ struct Minute {
 struct Usage {
     manifests: u64,
     manifest_bytes: u64,
+    /// Downloads of a vector slice's codes, and their bytes.
+    codes: u64,
+    codes_bytes: u64,
     /// Downloads of each tile.
     tiles: HashMap<(i32, i32), u64>,
     tile_bytes: u64,
@@ -120,7 +132,7 @@ impl Usage {
         let why: serde_json::Map<String, Json> = Why::ALL.iter().zip(self.why).map(|(w, n)| (w.as_str().to_string(), json!(n))).collect();
         let asked = self.searches - self.on_device().min(self.searches);
         json!({
-            "manifests": self.manifests, "manifest_bytes": self.manifest_bytes,
+            "manifests": self.manifests, "manifest_bytes": self.manifest_bytes, "codes": self.codes, "codes_bytes": self.codes_bytes,
             "tile_downloads": self.tiles.values().sum::<u64>(), "tiles_downloaded": self.tiles.len(), "tile_bytes": self.tile_bytes,
             "statuses": self.statuses, "reports": self.reports, "devices": self.devices.len(),
             "searches": self.searches, "on_device": self.on_device(), "asked": asked, "why": why,
@@ -234,6 +246,15 @@ impl Slices {
         u.manifest_bytes += bytes;
     }
 
+    pub fn note_codes(&self, table: &str, bytes: u64) {
+        let now = now_ms();
+        let mut es = self.entries.lock().unwrap();
+        let u = &mut es.entry(table.to_string()).or_default().usage;
+        u.minute(now).bytes += bytes;
+        u.codes += 1;
+        u.codes_bytes += bytes;
+    }
+
     pub fn note_tile(&self, table: &str, x: i32, y: i32, bytes: u64) {
         let now = now_ms();
         let mut es = self.entries.lock().unwrap();
@@ -341,11 +362,13 @@ impl Slices {
         let u = es.get(table).map_or(&empty, |e| &e.usage);
         let mut out = json!({
             "table": i.table, "version": i.version, "built_ms": i.built_ms, "fresh": fresh, "changed_ms": changed,
-            "text": i.text, "lat": i.lat, "lon": i.lon, "grid": i.grid, "kx": i.grid.kx(), "ky": strata::slice::KY, "k1": i.k1, "b": i.b,
-            "rows": i.rows, "n_docs": i.n_docs, "words": i.words, "tiles": i.tiles.len(), "manifest_bytes": i.manifest_bytes, "tile_bytes": i.tile_bytes,
+            "rows": i.rows, "tiles": i.tiles.len(), "manifest_bytes": i.manifest_bytes, "tile_bytes": i.tile_bytes,
             "largest_tile_bytes": i.tiles.iter().map(|t| t.bytes).max().unwrap_or(0),
             "usage": u.summary(),
         });
+        if let (Json::Object(o), Json::Object(d)) = (&mut out, &i.detail) {
+            o.extend(d.clone());
+        }
         if tiles {
             out["tile_list"] = Json::Array(i.tiles.iter().map(|t| json!([t.x, t.y, t.rows, t.bytes, u.tiles.get(&(t.x, t.y)).copied().unwrap_or(0)])).collect());
             out["minutes"] = Json::Array(u.minutes.iter().map(|m| json!({"at_ms": m.at_ms, "searches": m.searches, "on_device": m.on_device, "tiles": m.tiles, "bytes": m.bytes})).collect());
@@ -380,15 +403,17 @@ mod tests {
             version: 3,
             built_ms: 1,
             schema,
-            text: "body".into(),
-            lat: "lat".into(),
-            lon: "lon".into(),
-            grid: Grid::new(40.7, -74.0, 1000.0).unwrap(),
-            k1: 1.2,
-            b: 0.75,
-            n_docs: 2,
-            total_len: 4,
-            words: Default::default(),
+            key: Key::Geo(strata::slice::Geo {
+                text: "body".into(),
+                lat: "lat".into(),
+                lon: "lon".into(),
+                grid: strata::slice::Grid::new(40.7, -74.0, 1000.0).unwrap(),
+                k1: 1.2,
+                b: 0.75,
+                n_docs: 2,
+                total_len: 4,
+                words: Default::default(),
+            }),
             tiles: vec![TileEntry { x: 0, y: 0, rows: 2, bytes: 90 }],
         };
         std::fs::write(dir.path().join("places/manifest.json"), m.to_json()).unwrap();

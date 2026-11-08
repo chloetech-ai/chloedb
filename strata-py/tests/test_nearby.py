@@ -90,3 +90,60 @@ def test_nearby_asks_the_server_while_the_table_has_changed(cloud, tmp_path):
     near.close()
     with pytest.raises(strata.StrataError, match="closed"):
         near.held()
+
+
+TRACKS = {
+    "table": "tracks",
+    "key": "id",
+    "fields": [
+        {"name": "id", "type": "int"},
+        {"name": "emb", "type": "vector", "dim": 8, "index": "flat"},
+    ],
+}
+
+
+def track(i):
+    """Unit vectors around 12 topics, each a few dimensions."""
+    t = i % 12
+    v = [0.05 * (((i * 31 + j * 17) % 11) - 5) / 5 for j in range(8)]
+    v[t % 8] += 1.0
+    v[(t * 3 + 1) % 8] += 0.5 * (t // 8 + 1)
+    n = sum(x * x for x in v) ** 0.5
+    return {"id": i, "emb": [x / n for x in v]}
+
+
+def test_a_vector_slice_answers_on_the_device_what_the_server_would(tmp_path, serve):
+    path = tmp_path / "tracks.strata"
+    with strata.Database.create(path, TRACKS) as db:
+        db.insert([track(i) for i in range(1200)])
+    url = serve(path, "--slices", str(tmp_path / "slices"))
+    built = call(url, "/v1/admin/slices", {"table": "tracks", "vector": "emb", "clusters": 12})
+    assert (built["kind"], built["rows"], built["clusters"]) == ("vector", 1200, 12) and built["codes_bytes"] > 0
+    with strata.nearby(url, "tracks", tmp_path / "device", report_every=0) as near:
+        assert near.info["kind"] == "vector" and near.info["dim"] == 8
+        taste = track(5)["emb"]
+        got = near.focus(taste, rows=300)
+        held = sum(n for _, _, n in near.held())
+        assert got["fetched"] >= 1 and 0 < held <= 450
+        r = near.similar(taste, k=5)
+        assert (r.where, r.why) == ("device", "proved") and r.edge_m is None
+        cloud_r = call(url, "/v1/query", json.loads(r.ask))
+        assert r.keys == cloud_r["keys"] and r.scores == cloud_r["scores"]
+        # More rows than it holds: the server answers, exactly.
+        r = near.similar(taste, k=1000)
+        assert (r.where, r.why) == ("server", "short") and len(r) == 1000
+        # Away from the taste: the codes name the clusters to fetch, and
+        # the device proves its answer once it holds them.
+        far = track(7)["emb"]
+        r = near.similar(far, k=5, refine=0)
+        assert (r.where, r.why, r.fetched) == ("server", "bound", 0)
+        r = near.similar(far, k=5)
+        assert (r.where, r.why) == ("device", "proved") and r.fetched >= 1
+        cloud_r = call(url, "/v1/query", json.loads(r.ask))
+        assert r.keys == cloud_r["keys"] and r.scores == cloud_r["scores"]
+        assert near.stats["fetched_bytes"] >= built["codes_bytes"]
+        # A geo search of a vector slice is refused.
+        with pytest.raises(strata.StrataError, match="search it with a vector"):
+            near.search("pizza", lat=40.7, lon=-74.0)
+    usage = call(url, "/v1/admin/slices")["slices"][0]["usage"]
+    assert usage["codes"] == 1 and usage["codes_bytes"] == built["codes_bytes"]

@@ -1118,17 +1118,12 @@ impl SliceDevice {
         Ok(SliceDevice { dev: std::sync::Mutex::new(Some(dev)) })
     }
 
-    /// What the manifest says, without its words, as JSON text: table,
-    /// version, built_ms, grid, text, lat, lon, tiles (count), rows.
+    /// What the manifest says, without its words or centres, as JSON text:
+    /// kind ("geo" or "vector"), table, version, built_ms, tiles (count),
+    /// rows; a geo slice's grid, text, lat and lon; a vector slice's field
+    /// and dim.
     fn info(&self) -> PyResult<String> {
-        self.with(|d| {
-            let m = d.manifest();
-            Ok(serde_json::json!({
-                "table": m.schema.table, "version": m.version, "built_ms": m.built_ms, "grid": m.grid,
-                "text": m.text, "lat": m.lat, "lon": m.lon, "tiles": m.tiles.len(), "rows": m.tiles.iter().map(|t| t.rows).sum::<u64>(),
-            })
-            .to_string())
-        })
+        self.with(|d| Ok(strata::slice::summary(d.manifest()).to_string()))
     }
 
     /// The tiles to fetch for a user at (`lat`, `lon`), nearest first, as
@@ -1140,10 +1135,33 @@ impl SliceDevice {
         })
     }
 
+    /// A vector slice's clusters to fetch so that the device holds those
+    /// whose rows could score highest for `taste`, best first, as many as
+    /// fit in `rows` rows, as (x, y, path, bytes), and those to drop, as
+    /// (x, y).
+    fn plan_vector(&self, taste: Vec<f32>, rows: u64) -> PyResult<(Vec<(i32, i32, String, u64)>, Vec<(i32, i32)>)> {
+        self.with(|d| {
+            let p = d.plan_vector(&taste, rows)?;
+            Ok((p.fetch.iter().map(|(t, b)| (t.x, t.y, t.path(), *b)).collect(), p.drop.iter().map(|t| (t.x, t.y)).collect()))
+        })
+    }
+
     /// Adds a tile from its file's bytes; the rows it held.
     fn add_tile(&self, py: Python<'_>, x: i32, y: i32, data: &[u8]) -> PyResult<usize> {
         let data = data.to_vec();
         py.detach(|| self.with(|d| d.add_tile(strata::slice::Tile { x, y }, &data)))
+    }
+
+    /// Adds a vector slice's codes of every row from the bytes of its
+    /// `codes.bin.gz`: searches then bound the clusters not held far more
+    /// tightly, and name the clusters that would prove an answer.
+    fn add_codes(&self, py: Python<'_>, data: &[u8]) -> PyResult<()> {
+        let data = data.to_vec();
+        py.detach(|| self.with(|d| d.add_codes(&data)))
+    }
+
+    fn has_codes(&self) -> PyResult<bool> {
+        self.with(|d| Ok(d.has_codes()))
     }
 
     fn drop_tile(&self, py: Python<'_>, x: i32, y: i32) -> PyResult<()> {
@@ -1178,6 +1196,19 @@ impl SliceDevice {
             self.with(|d| {
                 let s = strata::slice::Search::new(q, lat, lon, k, d0_m)?;
                 Ok(d.search(&s)?.to_json(&s, d.manifest()).to_string())
+            })
+        })
+    }
+
+    /// Searches a vector slice's clusters held
+    /// ([`strata::slice::Device::search_vector`]): the `k` rows most similar
+    /// to `vector`, as JSON text like [`SliceDevice::search`]'s.
+    #[pyo3(signature = (vector, k = 10))]
+    fn search_vector(&self, py: Python<'_>, vector: Vec<f32>, k: usize) -> PyResult<String> {
+        py.detach(|| {
+            self.with(|d| {
+                let s = strata::slice::VectorSearch::new(vector, k)?;
+                Ok(d.search_vector(&s)?.to_json(&s, d.manifest()).to_string())
             })
         })
     }

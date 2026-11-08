@@ -38,7 +38,7 @@ use axum::{Json as AxJson, Router};
 use clap::Parser;
 use serde_json::{json, Value as Json};
 use strata::query::sql::Params;
-use strata::slice::{Device, Manifest, Search, Why};
+use strata::slice::{Device, Manifest, Search, SliceQuery, Why};
 use strata::Value;
 
 const PAGE: &str = include_str!("page.html");
@@ -212,16 +212,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cloud = Cloud { url: a.cloud.trim_end_matches('/').to_string(), table: a.table.clone(), key: a.key.clone(), http: strata_server::http_client().build()? };
     let text = String::from_utf8(cloud.bytes("manifest.json").await?)?;
     let m = Manifest::from_json(&text)?;
+    let geo = m.geo().map_err(|_| "strata-nearby shows a geo slice; this one is of vectors")?.clone();
     let tmp = tempfile::tempdir()?;
     let dir = a.dir.clone().unwrap_or_else(|| tmp.path().to_path_buf());
-    let (lat, lon) = (a.lat.unwrap_or(m.grid.lat0), a.lon.unwrap_or(m.grid.lon0));
+    let (lat, lon) = (a.lat.unwrap_or(geo.grid.lat0), a.lon.unwrap_or(geo.grid.lon0));
     eprintln!(
         "slice of {} (version {}): {} tiles, {} rows, {} words; manifest {:.1} MB",
         m.schema.table,
         m.version,
         m.tiles.len(),
         m.tiles.iter().map(|t| t.rows).sum::<u64>(),
-        m.words.terms.len(),
+        geo.words.terms.len(),
         text.len() as f64 / 1e6
     );
     let dev = Device::create(&dir, m)?;
@@ -282,9 +283,10 @@ async fn move_to(app: &App, lat: f64, lon: f64, reach: i32) -> Result<Json, Fail
 
 fn state_of(p: &Phone) -> Json {
     let m = p.dev.manifest();
+    let g = m.geo().expect("a geo slice");
     let held: Vec<Json> = p.dev.held().map(|(t, n)| json!([t.x, t.y, n])).collect();
     json!({
-        "table": m.schema.table, "version": m.version, "grid": m.grid, "kx": m.grid.kx(), "ky": strata::slice::KY, "lat_field": m.lat, "lon_field": m.lon,
+        "table": m.schema.table, "version": m.version, "grid": g.grid, "kx": g.grid.kx(), "ky": strata::slice::KY, "lat_field": g.lat, "lon_field": g.lon,
         "tiles": m.tiles.iter().map(|t| json!([t.x, t.y, t.rows, t.bytes])).collect::<Vec<_>>(),
         "held": held, "user": {"lat": p.lat, "lon": p.lon}, "reach": p.reach,
         "held_rows": p.dev.held().map(|(_, n)| n as u64).sum::<u64>(),
@@ -310,7 +312,8 @@ async fn state(State(app): State<App>) -> AxJson<Json> {
 async fn places(State(app): State<App>) -> Result<AxJson<Json>, Failure> {
     let p = app.phone.lock().unwrap();
     let m = p.dev.manifest();
-    let sql = format!("SELECT {}, {} FROM {} LIMIT 200000", m.lat, m.lon, m.schema.table);
+    let g = m.geo().map_err(fail)?;
+    let sql = format!("SELECT {}, {} FROM {} LIMIT 200000", g.lat, g.lon, m.schema.table);
     let rs = p.dev.db().query(&sql, &Params::new()).map_err(fail)?;
     let pts: Vec<Json> = rs.rows.iter().map(|r| json!([r[0].as_f64(), r[1].as_f64()])).collect();
     Ok(AxJson(json!({"places": pts})))
@@ -408,13 +411,14 @@ async fn search(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJso
             }
         });
     }
-    let g = m.grid;
+    let geo = m.geo().map_err(fail)?;
+    let g = geo.grid;
     let (ux, uy) = g.xy(s.lat, s.lon);
     let out: Vec<Json> = rows
         .into_iter()
         .zip(&scores)
         .map(|(mut r, sc)| {
-            let (la, lo) = (r[&m.lat].as_f64().unwrap_or(f64::NAN), r[&m.lon].as_f64().unwrap_or(f64::NAN));
+            let (la, lo) = (r[&geo.lat].as_f64().unwrap_or(f64::NAN), r[&geo.lon].as_f64().unwrap_or(f64::NAN));
             let (x, y) = g.xy(la, lo);
             r["_score"] = json!(sc);
             r["_m"] = json!((x - ux).hypot(y - uy));

@@ -134,6 +134,9 @@ export interface NearbyOptions {
   reportEvery?: number;
   /** This device's name in the server's counts (default a random one). */
   device?: string;
+  /** A vector slice: fetch every row's codes (default true), which prove
+   * far more answers on the device. */
+  codes?: boolean;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -150,12 +153,15 @@ export declare class NearbyResult extends Result {
   readonly onDevice: boolean;
   proved: boolean;
   stale: boolean;
-  /** The most a place not held could score. */
-  bound: number;
-  /** Metres to the nearest tile with rows not held (null when all held). */
+  /** The most a row not held could score (null when all are held). */
+  bound: number | null;
+  /** Metres to the nearest tile with rows not held (null when all are
+   * held, and for a vector slice). */
   edgeM: number | null;
   deviceMs: number;
   serverMs: number | null;
+  /** Clusters a vector search fetched to prove its answer. */
+  fetched: number;
 }
 
 /** A device's slice of a table on a strata-server. */
@@ -166,8 +172,11 @@ export declare class Nearby {
   readonly device: string;
   reach: number;
   position: [number, number] | null;
-  /** The manifest's summary: table, version, built_ms, grid, text, lat,
-   * lon, tiles, rows. */
+  /** The taste last focused on, and the rows held for it. */
+  taste: [number[], { rows: number }] | null;
+  /** The manifest's summary: kind ("geo" or "vector"), table, version,
+   * built_ms, tiles, rows; a geo slice's grid, text, lat and lon; a vector
+   * slice's field and dim. */
   info: Record<string, unknown>;
   stats: { searches: number; onDevice: number; fetchedTiles: number; fetchedBytes: number };
   load(): Promise<this>;
@@ -175,11 +184,17 @@ export declare class Nearby {
   check(): Promise<{ table: string; version: number; built_ms: number; fresh: boolean; changed_ms?: number }>;
   /** Moves the user: fetches the tiles around it, drops those far behind. */
   moveTo(lat: number, lon: number, options?: { reach?: number }): Promise<{ fetched: number; dropped: number; bytes: number }>;
-  /** The tiles held, as [x, y, rows]. */
+  /** A vector slice: holds the clusters whose rows could score highest
+   * for taste, as many as fit in rows rows (default 20,000). */
+  focus(taste: ArrayLike<number>, options?: { rows?: number }): Promise<{ fetched: number; dropped: number; bytes: number }>;
+  /** The tiles held, as [x, y, rows] (a vector slice's cluster is x). */
   held(): [number, number, number][];
   /** The k best places for q near the user: on the device when it can
    * prove the answer is the server's, else the server's. */
   search(q: string, options?: { k?: number; d0?: number; lat?: number; lon?: number }): Promise<NearbyResult>;
+  /** A vector slice: the k rows most similar to vector, on the device when
+   * it can prove the answer is the server's, else the server's (exact). */
+  similar(vector: ArrayLike<number>, options?: { k?: number; refine?: number }): Promise<NearbyResult>;
   /** Sends the counts since the last report to the server. */
   report(): Promise<void>;
   close(): Promise<void>;

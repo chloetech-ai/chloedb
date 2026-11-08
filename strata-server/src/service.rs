@@ -1687,14 +1687,7 @@ impl Service {
     /// a rebuild (`POST /v1/admin/slices` with the table alone) takes.
     pub fn slice_options(&self, table: &str) -> Result<strata::slice::BuildOptions, ApiError> {
         let i = self.slices()?.info(table)?;
-        Ok(strata::slice::BuildOptions {
-            table: Some(i.table.clone()),
-            text: i.text.clone(),
-            lat: i.lat.clone(),
-            lon: i.lon.clone(),
-            grid: i.grid,
-            bm25: strata::text::Bm25Params { k1: i.k1, b: i.b },
-        })
+        Ok(strata::slice::BuildOptions { table: Some(i.table.clone()), key: i.key.clone() })
     }
 
     /// Builds the slice of a table ([`strata::slice::build`]) into its

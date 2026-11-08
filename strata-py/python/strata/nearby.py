@@ -2,13 +2,14 @@
 fallback: `strata.nearby(url, table, dir)`.
 
 The server builds a table's slice (`POST /v1/admin/slices`, or the command
-center's Slices view): a manifest and the rows of each map tile. `Nearby`
-fetches the manifest, then the tiles around its user as the user moves,
-into a local database (`dir`). A search runs there with the server's
-statistics, so every place held scores exactly as on the server. When the
-k-th local score beats the most a place not held could score, the local
-answer is the server's and no request is made; otherwise the same query
-goes to the server (`POST /v1/query`). Each answer says which, and why.
+center's Slices view): a manifest and the rows of each map tile, or of each
+vector cluster. `Nearby` fetches the manifest, then the tiles around its
+user as the user moves (`move_to`), or the clusters nearest the user's
+taste (`focus`), into a local database (`dir`). A search runs there and
+scores every row held exactly as the server would. When the k-th local
+score beats the most a row not held could score, the local answer is the
+server's and no request is made; otherwise the same query goes to the
+server (`POST /v1/query`). Each answer says which, and why.
 
 Before it trusts its slice it asks the server whether the slice is the
 current one (`GET /v1/slices/<table>/status`, every `status_every`
@@ -23,6 +24,15 @@ command center shows.
     r = near.search("pizza", k=10)
     r.where, r.why          # "device" or "server", and why
     for row in r: print(row["name"])
+
+    tracks = strata.nearby("http://127.0.0.1:7700", "tracks", "./tracks")
+    tracks.focus(taste, rows=20_000)    # the user's taste, a vector
+    r = tracks.similar(taste, k=10)     # or any vector near it
+
+A vector slice's device also fetches every row's codes (`codes.bin.gz`,
+one byte a dimension), which bound the rows it lacks tightly; when they
+leave its answer in doubt it fetches the few clusters they name, up to
+`refine` bytes, and proves it on the device.
 
 It needs the compiled extension (the device's database); the server is
 reached with the standard library.
@@ -49,13 +59,15 @@ class NearbyResult(Result):
     """A search's answer, the device's or the server's, and where it was
     answered: `where` is "device" or "server"; `why` is "proved" or
     "no_match" (answered on the device), or "short" (the device held fewer
-    than k matching places), "bound" (a place beyond the tiles held could
-    have scored higher) or "stale" (the table changed since the slice was
-    built). `bound` is the most a place not held could score, `edge_m` the
-    distance to the nearest tile not held, `ask` the body of the request
-    (`POST /v1/query`) that asks the server for it."""
+    than k matching rows), "bound" (a row beyond the tiles or clusters held
+    could have scored higher) or "stale" (the table changed since the slice
+    was built). `bound` is the most a row not held could score, `edge_m`
+    the distance to the nearest tile not held (None for a vector slice),
+    `ask` the body of the request (`POST /v1/query`) that asks the server
+    for it, `fetched` the clusters a vector search fetched to prove its
+    answer."""
 
-    __slots__ = ("where", "why", "ask", "proved", "stale", "bound", "edge_m", "device_ms", "server_ms")
+    __slots__ = ("where", "why", "ask", "proved", "stale", "bound", "edge_m", "device_ms", "server_ms", "fetched")
 
     @property
     def on_device(self) -> bool:
@@ -69,7 +81,7 @@ class Nearby:
     """A device's slice of a table on a strata-server; see the module."""
 
     def __init__(self, url: str, table: str, dir: str | os.PathLike, *, token: str | None = None, reach: int = 2, timeout: float = 30.0,
-                 status_every: float = 30.0, max_lag: float = 0.0, report_every: int = 20, device: str | None = None):
+                 status_every: float = 30.0, max_lag: float = 0.0, report_every: int = 20, device: str | None = None, codes: bool = True):
         self.url = url.rstrip("/")
         self.table = table
         self.dir = os.fspath(dir)
@@ -79,8 +91,10 @@ class Nearby:
         self.status_every = status_every
         self.max_lag = max_lag
         self.report_every = report_every
+        self.codes = codes
         self.device = device or f"py-{uuid.uuid4().hex[:12]}"
         self.position: tuple[float, float] | None = None
+        self.taste: tuple[list[float], int] | None = None
         self.stats = {"searches": 0, "on_device": 0, "fetched_tiles": 0, "fetched_bytes": 0}
         self._pending = self._empty()
         self._status_at = 0.0
@@ -124,9 +138,15 @@ class Nearby:
             self._dev.close()
         self._dev = _strata.SliceDevice.create(self.dir, text)
         self.info = json.loads(self._dev.info())
+        if self.codes and self.info.get("codes_bytes"):
+            data = self._slice("codes.bin.gz")
+            self._dev.add_codes(data)
+            self.stats["fetched_bytes"] += len(data)
         self._status_at = time.monotonic()
         if self.position is not None:
             self.move_to(*self.position)
+        if self.taste is not None:
+            self.focus(*self.taste)
 
     def check(self) -> dict:
         """Asks the server whether the slice is the current one: fetches a
@@ -149,7 +169,19 @@ class Nearby:
         if reach is not None:
             self.reach = reach
         self.position = (lat, lon)
-        fetch, drop = self._d.plan(lat, lon, self.reach)
+        return self._apply(*self._d.plan(lat, lon, self.reach))
+
+    def focus(self, taste: Any, *, rows: int = 20_000) -> dict:
+        """For a vector slice: holds the clusters whose rows could score
+        highest for `taste` (a vector, such as the user's history summed),
+        as many as fit in `rows` rows, fetching those it lacks (best first)
+        and dropping those that fell well behind. Returns what it did:
+        {fetched, dropped, bytes}."""
+        taste = [float(x) for x in taste]
+        self.taste = (taste, rows)
+        return self._apply(*self._d.plan_vector(taste, rows))
+
+    def _apply(self, fetch: list, drop: list) -> dict:
         for x, y in drop:
             self._d.drop_tile(x, y)
         got = 0
@@ -162,7 +194,8 @@ class Nearby:
         return {"fetched": len(fetch), "dropped": len(drop), "bytes": got}
 
     def held(self) -> list[tuple[int, int, int]]:
-        """The tiles held, as (x, y, rows)."""
+        """The tiles held, as (x, y, rows) (a vector slice's cluster x is
+        its number, y 0)."""
         return self._d.held()
 
     # ---------------------------------------------------------------- searching
@@ -176,11 +209,31 @@ class Nearby:
             if self.position is None:
                 raise StrataError("move_to(lat, lon) first, or pass lat and lon")
             lat, lon = self.position
+        return self._answer(lambda: self._d.search(q, lat, lon, k, float(d0)))
+
+    def similar(self, vector: Any, *, k: int = 10, refine: int = 2_000_000) -> NearbyResult:
+        """For a vector slice: the `k` rows most similar to `vector` (by
+        dot product, as `similarity` ranks them): the device's answer when
+        it can prove it is the server's, else the server's, which re-scores
+        every row (an exact search). When the device's codes name clusters
+        that could still beat its k-th, it fetches them if they come to at
+        most `refine` bytes (0: never), and then proves its answer."""
+        vector = [float(x) for x in vector]
+        return self._answer(lambda: self._d.search_vector(vector, k), refine)
+
+    def _answer(self, local: Any, refine: int = 0) -> NearbyResult:
         if self.status_every and time.monotonic() - self._status_at >= self.status_every:
             self.check()
         t0 = time.perf_counter()
-        a = json.loads(self._d.search(q, lat, lon, k, float(d0)))
+        a = json.loads(local())
         device_ms = (time.perf_counter() - t0) * 1e3
+        need, fetched = a.get("need") or [], 0
+        if not a["on_device"] and a["why"] == "bound" and need and sum(b for _, _, b in need) <= refine:
+            self._apply([(x, y, f"tiles/{x}_{y}.jsonl.gz", b) for x, y, b in need], [])
+            fetched = len(need)
+            t0 = time.perf_counter()
+            a = json.loads(local())
+            device_ms += (time.perf_counter() - t0) * 1e3
         server_ms = None
         if a["on_device"]:
             r = NearbyResult(a["columns"], a["rows"], a["keys"], a["scores"])
@@ -192,7 +245,7 @@ class Nearby:
             r = NearbyResult._of(d)
             r.where = "server"
         r.why, r.ask, r.proved, r.stale, r.bound, r.edge_m = a["why"], a["ask"], a["proved"], a["stale"], a["bound"], a["edge_m"]
-        r.device_ms, r.server_ms = device_ms, server_ms
+        r.device_ms, r.server_ms, r.fetched = device_ms, server_ms, fetched
         self._note(r)
         return r
 
