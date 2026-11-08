@@ -125,7 +125,8 @@ export async function runRule(rule, input, host) {
     return null;
   };
   if ((await steps(rule.steps, 'steps')) === RETURN) return result;
-  return { done, lets };
+  // (names starting with "_" are the ones CREATE RULE made up)
+  return { done, lets: Object.fromEntries(Object.entries(lets).filter(([k]) => !k.startsWith('_'))) };
 }
 
 const KINDS = ['update', 'insert', 'upsert', 'remove', 'call', 'let', 'each', 'require', 'return'];

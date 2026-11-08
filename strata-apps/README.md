@@ -134,6 +134,7 @@ cd strata-apps
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
 | `STRATA_APPS_SCREEN_MODEL` | the model for the plan step and for changes, which write the screens and rules (default `claude-sonnet-5-5`; set it to `claude-opus-5-5` for Opus everywhere); code views, functions and repairs keep `STRATA_APPS_MODEL` |
 | `STRATA_APPS_RULES=off`, `STRATA_APPS_TESTS=off` | functions and triggers only as JavaScript; no tests in plans |
+| `STRATA_APPS_RULE_SQL=off` | rules written as JSON steps rather than CREATE RULE statements |
 | `STRATA_APPS_OPEN_VIEWS=off` | do not open each view in a headless browser after a build |
 | `SMTP_URL`, `SMTP_FROM` | a mail server (`smtps://user:pass@host:465`, or `smtp://` with STARTTLS when offered) and the From address; without them email waits in the outbox, marked held |
 | `STRATA_APPS_GEOCODER` | the address search (default OpenStreetMap's Nominatim, at most one request a second, cached; `off` turns it off) |
@@ -155,7 +156,25 @@ A first version of a small app takes 50 seconds to a minute; a bigger one takes 
 
 **CREATE SCREEN.** With `STRATA_APPS_STATEMENTS=on`, the model writes each screen as an SQL-shaped statement in its code block (`CREATE SCREEN guests TITLE 'Guests'`, then `LIST guests`, `SEARCH name`, `FILTER rsvp IN (...)`, `FORM (...)`, `KPI 'Coming' = COUNT(*) WHERE rsvp = 'yes'`, `SUMMARY guests AS meals`, `GROUP BY meal`...). `engine/statement.mjs` compiles it into pattern blocks; the statement is about half the characters of the pattern JSON and a quarter of the screen's. Every pattern has a part: `LIST`, `BOARD`, `DETAIL`, `SUMMARY`, `WEEK`, `CALENDAR`, `FLASHCARDS`, `QUIZ`, `FIND` (search) and `DASHBOARD`, with `BLOCKS [...]` for anything else. The statement is kept with the screen as its source: the model sees it when asked for a change and answers with `edits` to it (or a new statement), and the studio's Edit tab shows it in a text box that saves through `POST /api/apps/:id/screens/:slug {"statement"}` (compiled, checked and dry-run before it is stored; a JSON patch on such a screen is refused).
 
-**Rules.** A function that is a query, or a trigger that keeps a count, a total or a stock level right, is written as data in the plan (`engine/rules.mjs`): `{"query": "SELECT ... :from"}`, or `{"steps": [...]}` of update, insert, remove, call and let steps, each with an optional `if` (a SELECT). The engine runs it directly: no writer, no QuickJS. A query rule has the shape of a SQL function with named parameters, so it can become one when Strata has them.
+**Rules.** A function that is a query, or does a few writes (a checkout, a stock move), or a trigger that keeps a count, a total or a stock level right, is a rule (`engine/rules.mjs`): the engine runs it directly, as one transaction, with no writer and no QuickJS. The model writes it as SQL, a CREATE RULE statement that `engine/rulesql.mjs` compiles into the rule's steps:
+
+```sql
+CREATE RULE checkout AS
+  REQUIRE (SELECT COUNT(*) FROM cart WHERE owner = :user.id) > 0 ELSE 'Your cart is empty';
+  INSERT INTO orders (customer, status) VALUES (:user.id, 'new') AS order;
+  FOR line IN (SELECT c.id, c.product, c.qty, p.stock, p.name FROM cart c JOIN products p ON p.id = c.product WHERE c.owner = :user.id) DO
+    REQUIRE :line.stock >= :line.qty ELSE 'Only :line.stock left of :line.name';
+    INSERT INTO order_lines (order_id, product, qty) VALUES (:order.id, :line.product, :line.qty);
+    UPDATE products SET stock = stock - :line.qty WHERE id = :line.product;
+    DELETE FROM cart WHERE id = :line.id;
+  END;
+  RETURN :order.id;
+
+CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS
+  UPDATE features SET votes = (SELECT COUNT(*) FROM votes WHERE feature = :row.feature) WHERE id = :row.feature;
+```
+
+Statements: `REQUIRE cond ELSE 'message'` (stops the rule, writes nothing, shows the message), `LET`, `INSERT ... [ON CONFLICT (cols) DO UPDATE SET ... | DO NOTHING] [AS name]`, `UPDATE` and `DELETE` (`WHERE id = ...` for one row, any other condition for each row it selects), `CALL fn(name => value)`, `FOR row IN (SELECT ...) DO ... END`, `IF ... THEN ... [ELSE ...] END` and `RETURN`; a rule that is one SELECT is a query (`RETURNS ROW | VALUE`). The statement is kept as the rule's source: the model sees it and changes it with edits, and the studio shows it. A test's `"do"` is written the same way. `STRATA_APPS_RULE_SQL=off` has the model write the JSON steps instead (`{"query": ...}` or `{"steps": [...]}`). A query rule has the shape of a SQL function with named parameters, so it can become one when Strata has them.
 
 **Tests as data.** A plan may carry `"tests"`: steps as in rules, then SELECTs and the value or row count each must give (`engine/checks.mjs`). They run once the version is live, on the tables it creates while they are still empty, and those tables are emptied again before the example rows go in. A failing test goes to repair like an error a person saw. After each build, every view is also opened in a headless browser (when Playwright is installed), and errors there are reported the same way.
 
@@ -181,6 +200,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
 | `engine/rules.mjs` | functions and triggers written as data: their checks and their runtime |
+| `engine/rulesql.mjs` | CREATE RULE: rules written as SQL, compiled into those steps |
 | `engine/evolve.mjs` | evolving from use: patterns in events, candidates built beside the live version, keep (merge) and drop, and each candidate's measure |
 | `engine/designs.mjs`, `web/design.js` | each app's three designs: one small model call, design tokens, CSS variables |
 | `web/front.js`, `web/front.css` | front pages: their blocks, motion and photos |

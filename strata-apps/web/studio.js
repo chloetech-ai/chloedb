@@ -486,8 +486,8 @@ async function showCode(id, newer) {
   const prev = v > 1 ? id.replace(/@\d+$/, `@${v - 1}`) : null;
   const body = cap.kind === 'table'
     ? ['id keyword (primary key)', 'created timestamp', ...(cap.spec.columns || []).map((c) => `${c.name} ${c.type}`)].join('\n')
-    : cap.code;
-  const trigger = cap.spec?.on ? `runs after each ${cap.spec.on.event || 'insert'} on ${cap.spec.on.table}` : null;
+    : cap.spec?.statement || cap.code; // a statement is the source of its screen or rule
+  const trigger = cap.spec?.on ? `runs after each ${[].concat(cap.spec.on.event || 'insert').join(' or ')} on ${cap.spec.on.table}` : null;
   modal.replaceChildren(h('div', { class: 'sheet' },
     h('header', h('span', { class: `pill ${cap.kind}` }, cap.kind), h('span', { class: 't' }, `${cap.title} · v${v}`),
       prev ? h('button', { class: 'btn small', title: 'the version before', onclick: () => showCode(prev, id) }, `← v${v - 1}`) : null,
@@ -1131,7 +1131,7 @@ function insideTab() {
       [c.users > 1 ? `used by ${c.users} apps` : 'only this app so far', c.latest > c.version ? `v${c.latest} available` : null].filter(Boolean).join(' · '))) : h('div', { class: 'hint' }, 'None')),
     h('h2', { class: 'label' }, 'Helpers (shared with other apps)'), h('div', { class: 'caps' }, (st.helpers || []).length ? st.helpers.map((c) => cap(c,
       [c.users > 1 ? `used by ${c.users} apps` : 'only this app so far', c.latest > c.version ? `v${c.latest} available` : null].filter(Boolean).join(' · '))) : h('div', { class: 'hint' }, 'None')),
-    h('h2', { class: 'label' }, 'Functions'), h('div', { class: 'caps' }, st.functions.length ? st.functions.map((c) => cap(c, c.spec?.on ? `on ${c.spec.on.event || 'insert'} ${c.spec.on.table}` : null)) : h('div', { class: 'hint' }, 'None')),
+    h('h2', { class: 'label' }, 'Functions'), h('div', { class: 'caps' }, st.functions.length ? st.functions.map((c) => cap(c, c.spec?.on ? `on ${[].concat(c.spec.on.event || 'insert').join(' or ')} ${c.spec.on.table}` : null)) : h('div', { class: 'hint' }, 'None')),
     h('h2', { class: 'label' }, 'Tables'), h('div', { class: 'caps' }, st.tables.map((t) => h('div', null,
       h('div', { class: 'cap', onclick: () => showCode(t.id) }, h('span', { class: 'pill table' }, 'table'), h('span', { class: 't' }, t.name), h('span', { class: 'v' }, `${t.rows} rows`)),
       h('div', { class: 'cols' }, (t.columns || []).map((c) => `${c.name} ${c.type}`).join(' · '))))),

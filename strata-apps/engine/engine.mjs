@@ -327,7 +327,7 @@ export class Engine extends EventEmitter {
     if ((ctx.depth || 0) >= MAX_DEPTH) return;
     for (const fn of view.functions) {
       const on = fn.spec.on;
-      if (!on || on.table !== table || (on.event || 'insert') !== event) continue;
+      if (!on || on.table !== table || ![].concat(on.event || 'insert').includes(event)) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
       const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null })

@@ -12,8 +12,9 @@ import { rewriteSql } from './sql.mjs';
 import { expandPlan, expandScreen, patternsDoc } from './patterns.mjs';
 import { placePhotos, placeScreenPhotos, photoIds } from './photos.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
+import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.mjs';
 import { checkRule, RULES_DOC } from './rules.mjs';
-import { TESTS_DOC, checkTests, runTests, openViews } from './checks.mjs';
+import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
 
 const BASE_SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
@@ -273,6 +274,9 @@ const STATEMENT_PLAN = `
 // plan, run by the engine with no writer and no sandbox. Off with
 // STRATA_APPS_RULES=off.
 export const RULES = SCREENS && process.env.STRATA_APPS_RULES !== 'off';
+// Rules are written as CREATE RULE statements (engine/rulesql.mjs), compiled
+// into the same steps; STRATA_APPS_RULE_SQL=off has the model write the JSON.
+export const RULE_SQL = RULES && process.env.STRATA_APPS_RULE_SQL !== 'off';
 // The model for plans, screens and changes (idea 8: screens are tightly
 // constrained, so a faster model may write them as well); the writers of code
 // views, functions, components and helpers keep MODEL.
@@ -285,7 +289,7 @@ const KEEP_LOGIC = 'Keep logic in views when it is simple and only one view need
 // Tests as data (engine/checks.mjs), run when a version is built. Off with
 // STRATA_APPS_TESTS=off.
 export const TESTS = SCREENS && process.env.STRATA_APPS_TESTS !== 'off';
-const withRules = (s) => (RULES || TESTS ? s.replace(KEEP_LOGIC, [KEEP_LOGIC, RULES ? RULES_DOC : '', TESTS ? TESTS_DOC : ''].filter(Boolean).join('\n\n')) : s);
+const withRules = (s) => (RULES || TESTS ? s.replace(KEEP_LOGIC, [KEEP_LOGIC, RULES ? (RULE_SQL ? RULE_SQL_DOC : RULES_DOC) : '', TESTS ? (RULE_SQL ? TESTS_SQL_DOC : TESTS_DOC) : ''].filter(Boolean).join('\n\n')) : s);
 
 export const SYSTEM = withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
   ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${STATEMENT_DOC}\n\n# Components (shared by every app)`)
@@ -300,7 +304,7 @@ export const SYSTEM = withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
 // to the screens the app has, patterns expanded, and each screen put in the
 // code of its view (as JSON). Returns problems.
 export function prepareScreens(plan, code, view) {
-  const problems = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan)];
+  const problems = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...compileRuleStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan)];
   screensToCode(plan, code);
   rulesToCode(plan, code);
   return problems;
@@ -401,11 +405,11 @@ export function editCode(plan, code, view) {
       if (!item || item.edits === undefined) continue;
       const cur = have.find((x) => x.slug === item.slug);
       const where = `${kind} ${item.slug}`;
-      if (!cur || (kind === 'view' && cur.spec?.screen && !cur.spec?.statement) || (kind === 'function' && cur.spec?.rule)) problems.push(`${where}: "edits" change the code of a ${kind} the app has in JavaScript, or a screen's CREATE SCREEN statement${kind === 'view' ? '; a screen shown as JSON takes "patch"' : '; a rule is given whole'}`);
+      if (!cur || (kind === 'view' && cur.spec?.screen && !cur.spec?.statement) || (kind === 'function' && cur.spec?.rule && !cur.spec?.statement)) problems.push(`${where}: "edits" change the code of a ${kind} the app has in JavaScript, or a screen's CREATE SCREEN or a rule's CREATE RULE statement${kind === 'view' ? '; a screen shown as JSON takes "patch"' : '; a rule shown as JSON is given whole'}`);
       else if (code[item.slug] !== undefined) problems.push(`${where}: give "edits" or a code block, not both`);
       else if (!Array.isArray(item.edits) || !item.edits.length) problems.push(`${where}: "edits" is a list of {"old": "...", "new": "..."}`);
       else {
-        let src = kind === 'view' && cur.spec?.statement ? cur.spec.statement : cur.code;
+        let src = cur.spec?.statement ? cur.spec.statement : cur.code;
         for (const [i, e] of item.edits.entries()) {
           const old = e && typeof e.old === 'string' ? e.old : '';
           const n = old ? src.split(old).length - 1 : 0;
@@ -685,8 +689,8 @@ export async function buildContext(engine, appId, request) {
     const views = view.views.slice().sort((a, b) => (a.spec.order ?? 99) - (b.spec.order ?? 99))
       .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.statement ? ' format="statement"' : v.spec.screen ? ' format="screen"' : ''}>\n${v.spec.statement || (v.spec.screen ? screenLines(v.code) : v.code)}\n</view>`);
     parts.push(`## Views\n${views.some((v) => v.includes('format="statement"')) ? 'A view with format="statement" is a screen written as a CREATE SCREEN statement, its source. To change it, give "edits" in its plan entry ([{"old": "text copied exactly from the statement, occurring once", "new": "..."}]), or a new statement in its code block when most of it changes.\n\n' : ''}${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${SCREENS && view.views.some((v) => !v.spec.screen) ? 'To change a view or function written in JavaScript a little (a color, a label, a line of logic), give "edits" in its plan entry instead of a code block: [{"old": "text copied exactly from its code, occurring once", "new": "its replacement"}]. Give a whole code block only when most of it changes.\n\n' : ''}${views.join('\n\n') || '(none)'}`);
-    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}"${f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
-    parts.push(`## Functions\n${view.functions.some((f) => f.spec.rule) ? 'A function with format="rule" is a rule (JSON). To change it, give its whole "rule" in its plan entry; to turn it into JavaScript, give a code block and no "rule".\n\n' : ''}${fns.join('\n\n') || '(none)'}`);
+    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}"${f.spec.statement ? ' format="rule-statement"' : f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.spec.statement || f.code}\n</function>`);
+    parts.push(`## Functions\n${view.functions.some((f) => f.spec.statement) ? 'A function with format="rule-statement" is a rule written as a CREATE RULE statement, its source. To change it, give "edits" in its plan entry ([{"old": "text copied exactly from the statement, occurring once", "new": "..."}]), or a new statement in its code block.\n\n' : ''}${view.functions.some((f) => f.spec.rule && !f.spec.statement) ? `A function with format="rule" is a rule (JSON). To change it, ${RULE_SQL ? 'give a CREATE RULE statement in its code block' : 'give its whole "rule" in its plan entry'}; to turn it into JavaScript, give a code block and no "rule".\n\n` : ''}${fns.join('\n\n') || '(none)'}`);
     // Code only for the pieces this app wrote: the others (built-in, or from
     // another app) are used by their props, and their code is long.
     const mine = view.shared.map((c) => {
@@ -900,13 +904,14 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       const src = code[item.slug];
       if (!src || !src.trim()) { problems.push(`${kind} ${item.slug} has no <code slug="${item.slug}"> block`); continue; }
       if (kind === 'view' && /^\s*CREATE\s+SCREEN\b/i.test(src)) continue; // its problems came from compiling it
+      if (kind === 'function' && !item.rule && isRuleStatement(src)) continue; // likewise
       const p = kind === 'view' ? checkView(src) : item.rule ? checkRule(item.rule, columnsFor(view, plan)) : await checkFunction(src);
       for (const x of p) problems.push(`${kind} ${item.slug}: ${x}`);
       if (kind === 'function' && item.on) {
         const on = item.on;
         const known = tables.has(on.table) || (plan.tables || []).some((t) => t.name === on.table);
         if (!known) problems.push(`function ${item.slug}: its trigger names table ${on.table}, which the app does not have`);
-        if (!['insert', 'update', 'delete'].includes(on.event || 'insert')) problems.push(`function ${item.slug}: trigger event is insert, update or delete`);
+        if (![].concat(on.event || 'insert').every((e) => ['insert', 'update', 'delete'].includes(e))) problems.push(`function ${item.slug}: trigger event is insert, update or delete (or a list of them)`);
       }
     }
   }
@@ -990,12 +995,12 @@ export const SPLIT = process.env.STRATA_APPS_SPLIT || 'first';
 
 const PLAN_STEP = `# This step: the plan alone
 
-Answer with the <plan> alone this time, and no code blocks${STATEMENTS ? ' (but for the screens\' CREATE SCREEN statements)' : ''}. Each view, function, component and helper in it is then written by its own writer, all at once, and each writer sees this plan and the request but nothing the others write. So the plan is the contract between them:
+Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_SQL ? ` (but for the ${[STATEMENTS ? 'screens\' CREATE SCREEN' : '', RULE_SQL ? 'rules\' CREATE RULE' : ''].filter(Boolean).join(' and ')} statements)` : ''}. Each view, function, component and helper in it is then written by its own writer, all at once, and each writer sees this plan and the request but nothing the others write. So the plan is the contract between them:
 - Give every view, function, component and helper a "spec": what it shows or computes, in enough detail to be written alone. For a view: the tables and columns it reads and writes, the functions it calls with their input and output, and the components and helpers it calls with the props or arguments it passes. For a function: its input and what it returns. For content (lessons, explanations, questions, texts), an outline of it; the writer writes it out in full.
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary", "seed" and "suggestions" as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
+- Keep "summary", "seed" and "suggestions" as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
 
 const pieceStep = (what, slug) => `# This step: write ${what}
 
@@ -1039,7 +1044,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
         const parsed = parseAnswer(answer.text);
         plan = parsed.plan;
         // The plan's CREATE SCREEN statements come with it; other code waits for the writers.
-        const statements = Object.fromEntries(Object.entries(parsed.code || {}).filter(([, c]) => /^\s*CREATE\s+SCREEN\b/i.test(c)));
+        const statements = Object.fromEntries(Object.entries(parsed.code || {}).filter(([, c]) => /^\s*CREATE\s+SCREEN\b/i.test(c) || isRuleStatement(c)));
         const preparing = prepareScreens(plan, statements, view);
         completePlan(plan, view, library);
         problems = [...preparing, ...(await validate(plan, {}, view, library, shared)).filter((p) => !/has no <code slug=/.test(p))];
@@ -1219,7 +1224,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   if (photos.count) progress(`Found ${photos.count} photo${photos.count === 1 ? '' : 's'}: ${photos.sources}`);
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true } : {}) };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);

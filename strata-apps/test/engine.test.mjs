@@ -675,7 +675,7 @@ test('edits change a JavaScript view or function by find and replace, and refuse
   assert.ok(c2.notes.includes("content: '$&'"));
   // screens take patches, rules are given whole, and a code block with edits is one too many
   assert.match(editCode({ views: [{ slug: 'board', edits: [{ old: '{}', new: '[]' }] }] }, {}, view)[0], /a screen shown as JSON takes "patch"/);
-  assert.match(editCode({ functions: [{ slug: 'total', edits: [{ old: '1', new: '2' }] }] }, {}, view)[0], /a rule is given whole/);
+  assert.match(editCode({ functions: [{ slug: 'total', edits: [{ old: '1', new: '2' }] }] }, {}, view)[0], /a rule shown as JSON is given whole/);
   assert.match(editCode({ views: [{ slug: 'notes', edits: [{ old: 'Notes', new: 'x' }] }] }, { notes: 'x' }, view)[0], /not both/);
 });
 
@@ -1001,4 +1001,77 @@ test('front-page blocks pass the screen checks, their nested blocks checked like
   assert.ok(p.some((x) => /body\[0\]\.band\[0\]: unknown block/.test(x)), p.join('\n'));
   assert.ok(p.some((x) => /body\[1\]\.media\[0\]/.test(x) && /does not parse/.test(x)), p.join('\n'));
   assert.ok(p.some((x) => /body\[2\]\.carousel/.test(x) && /does not parse/.test(x)), p.join('\n'));
+});
+
+test('CREATE RULE compiles SQL into the steps the engine runs: checkout, upsert, IF, set-wide writes and triggers on several events', async () => {
+  const { compileRule, compileRuleStatements } = await import('../engine/rulesql.mjs');
+  const { rule } = compileRule(`CREATE RULE checkout AS
+    REQUIRE (SELECT COUNT(*) FROM cart WHERE owner = :user.id) > 0 ELSE 'Your cart is empty';
+    INSERT INTO orders (status) VALUES ('new') AS order; -- the order; its lines next
+    FOR line IN (SELECT product, qty FROM cart WHERE owner = :user.id) DO
+      LET stock = (SELECT stock FROM products WHERE id = :line.product);
+      REQUIRE :stock >= :line.qty ELSE 'Only :stock left of :line.product';
+      INSERT INTO order_lines (order, product, qty) VALUES (:order.id, :line.product, :line.qty);
+      UPDATE products SET stock = stock - :line.qty WHERE id = :line.product;
+    END;
+    RETURN :order.id;`);
+  assert.deepEqual(rule.steps.map((s) => Object.keys(s)[0]), ['require', 'insert', 'each', 'return']);
+  assert.equal(rule.steps[0].require, 'SELECT (SELECT COUNT(*) FROM cart WHERE owner = :user.id) > 0');
+  assert.deepEqual(rule.steps[2].do[3], { update: 'products', id: ':line.product', set: { stock: 'SELECT stock - :line.qty FROM products WHERE id = :line.product' } });
+  // It runs like the JSON rule it compiles to.
+  const writes = [];
+  const stock = { p1: 5, p2: 1 };
+  const host = async (method, args) => {
+    if (method === 'sql') {
+      const [q, p] = args;
+      if (/COUNT\(\*\) FROM cart/.test(q)) return [{ ok: true }];
+      if (/SELECT product, qty FROM cart/.test(q)) return [{ product: 'p1', qty: 2 }, { product: 'p2', qty: 1 }];
+      if (/^SELECT stock FROM products/.test(q)) return [{ stock: stock[p.line_product] }];
+      if (/^SELECT :stock >= :line_qty$/.test(q)) return [{ ok: p.stock >= p.line_qty }];
+      if (/SELECT stock - :line_qty/.test(q)) return [{ s: stock[p.line_product] - p.line_qty }];
+      return [];
+    }
+    writes.push([method, ...args]);
+    return method === 'insert' ? { id: `new-${writes.length}`, ...args[1] } : { id: args[1], ...args[2] };
+  };
+  assert.equal(await runRule(rule, { user: { id: 'u1' } }, host), 'new-1');
+  assert.deepEqual(writes.map((w) => `${w[0]} ${w[1]}`), ['insert orders', 'insert order_lines', 'update products', 'insert order_lines', 'update products']);
+  const cols = (t) => ({ orders: new Set(['id', 'status']), order_lines: new Set(['id', 'order', 'product', 'qty']), products: new Set(['id', 'stock']), cart: new Set(['id', 'owner', 'product', 'qty']) })[t] || null;
+  assert.deepEqual(checkRule(rule, cols), []);
+
+  // ON CONFLICT: find the row, add it or update it (excluded.col is the new value).
+  const up = compileRule("CREATE RULE add AS INSERT INTO cart (owner, product, qty) VALUES (:user.id, :product, 1) ON CONFLICT (owner, product) DO UPDATE SET qty = qty + excluded.qty AS line; RETURN :line.id").rule.steps;
+  assert.deepEqual(up.map((s) => Object.keys(s)[0]), ['let', 'insert', 'update', 'return']);
+  assert.equal(up[0].value, 'SELECT id FROM cart WHERE owner = :user.id AND product = :product');
+  assert.equal(up[2].set.qty, `SELECT qty + 1 FROM cart WHERE id = :${up[0].let}`);
+  assert.deepEqual(checkRule({ steps: up }, cols), []);
+  // IF / ELSE: each statement runs when its condition holds.
+  const branch = compileRule("CREATE RULE b AS IF :total > 100 THEN UPDATE orders SET status = 'review' WHERE id = :order; ELSE DELETE FROM cart WHERE owner = :user.id; END IF;").rule.steps;
+  assert.equal(branch[0].if, 'SELECT :total > 100');
+  assert.equal(branch[1].if, 'SELECT NOT ((SELECT :total > 100))');
+  assert.deepEqual(branch[1].each && [branch[1].each, branch[1].do[0].remove], ['SELECT id FROM cart WHERE owner = :user.id', 'cart'], 'WHERE other than id = goes through each row it selects');
+  // A query rule, and a trigger on two events.
+  assert.deepEqual(compileRule('CREATE RULE spent RETURNS VALUE AS SELECT SUM(amount) FROM expenses WHERE day >= :from;').rule, { query: 'SELECT SUM(amount) FROM expenses WHERE day >= :from', value: true });
+  const t = compileRule('CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS UPDATE features SET votes = (SELECT COUNT(*) FROM votes WHERE feature = :row.feature) WHERE id = :row.feature');
+  assert.deepEqual(t.on, { table: 'votes', event: ['insert', 'delete'] });
+  assert.equal(t.rule.steps[0].set.votes, 'SELECT COUNT(*) FROM votes WHERE feature = :row.feature');
+  // Mistakes say what to write.
+  for (const [bad, want] of [
+    ['CREATE RULE x AS SELECT 1; DELETE FROM a WHERE id = 1', /a SELECT among other statements/],
+    ['CREATE RULE x AS FOR r IN (SELECT id FROM a) DO DELETE FROM a WHERE id = :r.id;', /has no END/],
+    ['CREATE RULE x AS INSERT INTO a (b, c) VALUES (1)', /2 columns but 1 values/],
+    ['CREATE RULE x AS UPDATE a SET b = 1', /give WHERE/],
+    ["CREATE RULE x AS REQUIRE :n > 0 ELSE oops", /single quotes/],
+    ['CREATE RULE x AS MERGE INTO a', /a rule's statements are/],
+    ['CREATE RULE x BEFORE INSERT ON a AS DELETE FROM a WHERE id = 1', /is not understood/],
+  ]) assert.throws(() => compileRule(bad), want, bad);
+  // In a plan: the statement is compiled, keeps its trigger, and a test's "do" may be statements too.
+  const plan = { functions: [{ slug: 'count-votes' }, { slug: 'broken' }], tests: [{ name: 'v', do: "INSERT INTO features (title) VALUES ('A') AS f; INSERT INTO votes (feature) VALUES (:f.id)", expect: [] }] };
+  const code = { 'count-votes': 'CREATE RULE count_votes AFTER INSERT ON votes AS UPDATE features SET votes = 1 WHERE id = :row.feature;', broken: 'CREATE RULE broken AS UPDATE a SET b = 1' };
+  const problems = compileRuleStatements(plan, code);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /^function broken: CREATE RULE: UPDATE a: give WHERE/);
+  assert.deepEqual(plan.functions[0].on, { table: 'votes', event: 'insert' });
+  assert.match(plan.functions[0].statement, /^CREATE RULE count_votes/);
+  assert.deepEqual(plan.tests[0].do, [{ insert: 'features', values: { title: 'A' }, as: 'f' }, { insert: 'votes', values: { feature: ':f.id' } }]);
 });

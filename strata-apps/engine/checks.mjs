@@ -21,6 +21,16 @@ A new app, or a change that adds tables, may give "tests" in its plan: 1 to 3 ch
 - "expect": a SELECT and the value its first column of its first row must be ("is": a literal, or ":f.id" for a value a step named), or how many rows it returns ("rows"). Names are ":name", never "=expressions".
 - A test writes only to tables this version creates. A failing test is reported and repaired like an error. A screen that only lists and edits rows needs no test.`;
 
+// The same, with the steps written as statements of a CREATE RULE body.
+export const TESTS_SQL_DOC = `# Tests
+A new app, or a change that adds tables, may give "tests" in its plan: 1 to 3 checks of the logic most likely to go wrong (a total, a count a trigger keeps right, what a function returns). Each runs when the version is built, on the new tables while they are still empty (before the seed rows), and the tables are emptied after:
+  "tests": [{"name": "a vote raises the feature's count",
+    "do": "INSERT INTO features (title) VALUES ('Dark mode') AS f; INSERT INTO votes (feature) VALUES (:f.id)",
+    "expect": [{"query": "SELECT votes FROM features WHERE id = :f.id", "is": 1}]}]
+- "do": statements as in a rule's body (INSERT, UPDATE, DELETE, CALL fn(...) AS name, LET), each ending with ";"; AS names an inserted row or a call's result for later statements and for "expect" (:f.id).
+- "expect": a SELECT and the value its first column of its first row must be ("is": a literal, or ":f.id" for a value a statement named), or how many rows it returns ("rows"). Names are ":name", never "=expressions".
+- A test writes only to tables this version creates. A failing test is reported and repaired like an error. A screen that only lists and edits rows needs no test.`;
+
 // Checks the tests' shape. columnsOf(table) -> Set | null.
 export function checkTests(tests, columnsOf) {
   if (tests === undefined) return [];
