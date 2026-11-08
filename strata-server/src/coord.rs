@@ -979,7 +979,10 @@ fn refuses_reads(s: &tonic::Status) -> bool {
 
 /// Whether another replica may answer where this one failed: not when the
 /// request itself is wrong, nor when the replica is overloaded
-/// (`ResourceExhausted`), which would only load the next one more.
+/// (`ResourceExhausted`), which would only load the next one more. A
+/// replica that refuses the cluster's token (`Unauthenticated`) was
+/// started with another `--cluster-token`: the coordinator sends every
+/// replica the same one, and the others take it.
 fn try_elsewhere(s: &tonic::Status) -> bool {
     !matches!(
         s.code(),
@@ -987,12 +990,21 @@ fn try_elsewhere(s: &tonic::Status) -> bool {
             | Code::NotFound
             | Code::AlreadyExists
             | Code::PermissionDenied
-            | Code::Unauthenticated
             | Code::FailedPrecondition
             | Code::OutOfRange
             | Code::Unimplemented
             | Code::ResourceExhausted
     )
+}
+
+/// A copy's entry `j` in the cluster's view, which failed with `e`: one
+/// that refuses the cluster's token answers, but counts as down to the
+/// coordinators, and says so (`refuses_token`).
+fn token_refused(mut j: Json, e: &tonic::Status) -> Json {
+    if e.code() == Code::Unauthenticated {
+        j["refuses_token"] = json!(true);
+    }
+    j
 }
 
 /// What one shard answered a write ([`Coordinator::write`]): the rows it
@@ -3085,7 +3097,7 @@ impl Coordinator {
                             let detail: Json = serde_json::from_str(&h.detail).unwrap_or(Json::Null);
                             json!({"url": r.url, "status": h.status, "docs": h.docs, "segments": h.segments, "txn": h.txn, "rtt_ms": ms, "detail": detail})
                         }
-                        Ok(Err(e)) => json!({"url": r.url, "status": "down", "error": e.message(), "rtt_ms": ms}),
+                        Ok(Err(e)) => token_refused(json!({"url": r.url, "status": "down", "error": e.message(), "rtt_ms": ms}), &e),
                         Err(_) => json!({"url": r.url, "status": "down", "error": "no answer within 2 s", "rtt_ms": ms}),
                     };
                     let up = j["status"] != "down";
@@ -3223,7 +3235,7 @@ impl Coordinator {
                         answering.get_or_insert((h.docs, h.segments));
                         json!({"url": r.url, "status": h.status, "docs": h.docs, "segments": h.segments, "txn": h.txn})
                     }
-                    Ok(Err(e)) => json!({"url": r.url, "status": "down", "error": e.message()}),
+                    Ok(Err(e)) => token_refused(json!({"url": r.url, "status": "down", "error": e.message()}), &e),
                     Err(_) => json!({"url": r.url, "status": "down", "error": "no answer within 2 s"}),
                 };
                 all_up &= j["status"] == "ok";
@@ -3700,6 +3712,9 @@ mod tests {
         assert!(!try_elsewhere(&tonic::Status::resource_exhausted("too many queries running")));
         assert!(try_elsewhere(&tonic::Status::unavailable("connection refused")));
         assert!(!try_elsewhere(&tonic::Status::invalid_argument("bad SQL")));
+        // A replica started with another cluster token: the others take it.
+        assert!(try_elsewhere(&tonic::Status::unauthenticated("missing or wrong token")));
+        assert!(!try_elsewhere(&tonic::Status::permission_denied("this key may not write")));
         // The server answers too many queries with 429, which crosses gRPC
         // as ResourceExhausted and back.
         let s = tonic::Status::from(ApiError { status: 429, message: "too many queries running".into() });
