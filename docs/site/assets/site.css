@@ -1219,3 +1219,18 @@ canvas.field { position: absolute; inset: 0; width: 100%; height: 100%; z-index:
   .hl-shot { padding-top: 24px; } .hl-pop { left: 8px; top: 2px; }
 }
 @media (max-width: 560px) { .bento { grid-template-columns: minmax(0, 1fr); } .says { padding: 14px 14px 10px; } }
+
+/* the home headline's second line: fast and scalable, lit like something hot */
+.hero h1 .h1-kick { display: block; margin-top: 0.22em; font-size: 0.5em; line-height: 1.12; letter-spacing: -0.025em; max-width: 24ch;
+  color: var(--cfam-graph); background: linear-gradient(90deg, var(--cfam-graph), var(--cfam-cols) 30%, #ff7a8a 50%, var(--cfam-cols) 70%, var(--cfam-graph));
+  background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.motion .hero h1 .h1-kick { animation: kickshine 5s ease-in-out infinite alternate; }
+@keyframes kickshine { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+
+/* the hero: the headline on the left; the benchmark and the statements stacked on the right
+   (on a narrow screen the statements come before the benchmark) */
+.hero { grid-template-areas: "copy card" "copy says"; row-gap: 20px; }
+.hero > .hero-copy { grid-area: copy; }
+.hero > .latest { grid-area: card; align-self: end; }
+.hero > .says { grid-area: says; align-self: start; max-width: none; }
+@media (max-width: 960px) { .hero { grid-template-areas: "copy" "says" "card"; row-gap: 28px; } .hero > .latest, .hero > .says { align-self: auto; } }
