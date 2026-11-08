@@ -57,7 +57,15 @@ window.STRATA_COMPARE = {
           qdrant: "p?:A Helm chart; an operator in the commercial offering", weaviate: "p:A Helm chart", milvus: "y:Milvus Operator" }],
         ["The same API from a laptop file to a cluster", {
           strata: "y:The same SQL, schema and file format at every size", sqlite: "n:One machine", postgres: "p:The same SQL; no embedded mode", lancedb: "p?:The open-source library, then LanceDB Cloud",
-          qdrant: "p:Local mode, then the server, with one client", weaviate: "p?", milvus: "p:Milvus Lite, then Milvus" }]
+          qdrant: "p:Local mode, then the server, with one client", weaviate: "p?", milvus: "p:Milvus Lite, then Milvus" }],
+        ["Older data kept on object storage (S3) and queried there", {
+          strata: "y:Cold segments on S3 or a compatible store, read through a local cache", lancedb: "y:Tables on S3 and other object stores",
+          elastic: "$:Searchable snapshots, Enterprise licence", opensearch: "y:Searchable snapshots and remote-backed storage",
+          weaviate: "p:Inactive tenants offloaded to S3", milvus: "y:Segments are kept on object storage" }],
+        ["Another cluster kept a moment behind, to switch over to", {
+          strata: "y:strata-server follow; a planned switch-over loses no write", postgres: "y:A standby by streaming replication, promoted by hand",
+          elastic: "$:Cross-cluster replication, Platinum licence", opensearch: "y:The cross-cluster replication plugin", solr: "n:CDCR was removed in Solr 9",
+          milvus: "p?:Milvus CDC, a separate tool" }]
       ]
     },
     {
@@ -161,6 +169,22 @@ window.STRATA_COMPARE = {
           elastic: "p:Add fields; other changes reindex", opensearch: "p", solr: "p", vespa: "p:Some changes need a reindex", qdrant: "y:The payload has no schema", weaviate: "p?", milvus: "p?" }],
         ["Import from and export to SQLite", {
           strata: "y:strata-server import and export, or one call from Python", sqlite: "y", postgres: "p:pgloader" }],
+        ["Functions kept in the database (CREATE FUNCTION)", {
+          strata: "y:SQL bodies that return a value or rows, called from any query, on one server or a cluster", postgres: "y",
+          sqlite: "p:Functions are registered by the program that opens the file, not kept in it",
+          elastic: "p:Stored scripts in Painless", opensearch: "p:Stored scripts in Painless", solr: "p:Function queries; new functions are Java plugins",
+          vespa: "p:Functions inside rank profiles" }],
+        ["A large answer read page by page (cursors, scroll)", {
+          strata: "y:A scroll from one version of the database, on one server or across shards", sqlite: "y:A statement steps through its rows", postgres: "y:DECLARE CURSOR",
+          lancedb: "y?:Results as a stream of Arrow batches",
+          elastic: "y:search_after with a point in time, and scroll", opensearch: "y:scroll, search_after and point in time", solr: "y:cursorMark", vespa: "y:Visiting",
+          qdrant: "y:The scroll API", weaviate: "y:The cursor API", milvus: "y:Query and search iterators" }],
+        ["Follows a PostgreSQL database by logical replication", {
+          strata: "y:strata-server follow-postgres: pgoutput, each change applied once across restarts", postgres: "y:Logical replication between servers",
+          elastic: "p:A PostgreSQL connector that syncs on a schedule, or Debezium and Kafka", opensearch: "p?:Through Debezium or a pipeline" }],
+        ["Answers OpenSearch's REST API, for existing apps and clients", {
+          strata: "p:Indexes, documents, _bulk and _search: bool, match, phrases, multi_match, query_string, aggregations, scrolls and a part of Painless",
+          elastic: "y:The API OpenSearch began from", opensearch: "y" }],
         ["Images and sound by reference, embedded on write", {
           strata: "y:MEDIA fields; SigLIP and CLAP models; captions made into text", lancedb: "y:Multimodal tables",
           elastic: "p?", opensearch: "p?:A multimodal ingest processor", vespa: "p?:Embedders over images", qdrant: "p?", weaviate: "y:multi2vec modules", milvus: "p?" }]
@@ -208,6 +232,10 @@ window.STRATA_COMPARE = {
         ["The database's own logs, searched with SQL", {
           strata: "y:Every server's lines and queries kept in Strata, across the cluster", elastic: "p:Its logs once shipped into it", opensearch: "p:Its logs once shipped into it",
           solr: "p:The latest lines in the admin UI" }],
+        ["An agent that investigates alerts and proposes fixes to approve", {
+          strata: "y:The on-call agent: read-only tools, and proposals an admin approves within the hour", elastic: "$?:AI Assistant for Observability, in paid tiers" }],
+        ["A rehearsal of the cluster under load, and other shapes predicted", {
+          strata: "y:The Simulator: a test mix at a rising rate, graded against the SLO, with what more copies, shards or other machines would hold and cost" }],
         ["Licence", {
           strata: "t:Apache-2.0, console included", sqlite: "t:Public domain", postgres: "t:PostgreSQL", lancedb: "t:Apache-2.0",
           elastic: "t:AGPLv3, SSPL or ELv2; Kibana likewise", opensearch: "t:Apache-2.0", solr: "t:Apache-2.0", vespa: "t:Apache-2.0",
