@@ -15,26 +15,27 @@ nav_order: 8.5
 
 ## Run it
 
-Build both programs, then crawl into a cluster the crawler starts on this machine:
+Build both programs, then start the crawler with a cluster of its own on this machine:
 
 ```bash
 (cd strata-server && cargo build --release)
 cd strata-crawl && cargo build --release
-target/release/strata-crawl crawl https://books.toscrape.com/ --local ./books-cluster \
+target/release/strata-crawl serve --local ./crawl-cluster --server-bin ../strata-server/target/release/strata-server
+```
+
+Open `http://127.0.0.1:7700` and go to **Apps → Crawler**. Type the site's address under **New crawl** and press **Crawl**, or **Preview** first to see the table it would make; **Options** holds the rest of the settings below. Each crawl gets its own page, where you watch it fill the table and grow the cluster, and pause or stop it.
+
+![The Crawler in the command center: the New crawl form, the crawls, and the cluster's shards](../assets/img/strata-crawler-new-crawl.png)
+
+`--local DIR` starts one shard server and a coordinator on `127.0.0.1:7700` with their databases and logs in `DIR`, and adds a shard each time one holds more than `--split-rows` rows of a crawl's table (100,000 by default, at most `--max-shards`, 8). The same `DIR` again serves the same cluster, with the shards it grew.
+
+### From the command line
+
+The same crawl runs without the command center too. `crawl` takes the address, prints its progress every two seconds, then what it did (the table it made and why, the columns it added, the shards it added) and the `CREATE TABLE` it ran; add `--stay` to keep the cluster serving after the crawl. `preview` prints what the form's **Preview** shows, without Strata:
+
+```bash
+target/release/strata-crawl crawl https://books.toscrape.com/ --local ./crawl-cluster \
   --server-bin ../strata-server/target/release/strata-server --max-pages 600
-```
-
-It prints its progress every two seconds, then what it did (the table it made and why, the columns it added, the shards it added) and the `CREATE TABLE` it ran. `--local DIR` starts one shard server and a coordinator on `127.0.0.1:7700` with their databases and logs in `DIR`, and adds a shard each time one holds more than `--split-rows` rows of the crawl's table (100,000 by default, at most `--max-shards`, 8). The same `DIR` again serves the same cluster, with the shards it grew. Add `--stay` to keep the cluster serving after the crawl.
-
-To see it in the command center instead, serve the crawler's API:
-
-```bash
-target/release/strata-crawl serve --local ./books-cluster --server-bin ../strata-server/target/release/strata-server
-```
-
-and open `http://127.0.0.1:7700`: **Apps → Crawler** has a new crawl's form, its preview, and each crawl's page. `preview` prints what the form's **Preview** shows, without Strata:
-
-```bash
 target/release/strata-crawl preview https://books.toscrape.com/ --pages 10
 ```
 
