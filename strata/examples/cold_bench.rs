@@ -117,7 +117,7 @@ fn main() {
         _ => unreachable!(),
     };
     let span = (hi - lo) / 10;
-    let queries: Vec<(&str, String)> = QUERIES.iter().map(|(n, q)| (*n, q.replace("{lo}", &(lo + 4 * span).to_string()).replace("{hi}", &(lo + 5 * span).to_string()))).collect();
+    let queries: Vec<(&str, String)> = QUERIES.iter().map(|(n, q)| (*n, q.replace("{lo}", &format!("'{}'", strata::timestamp::format(lo + 4 * span))).replace("{hi}", &format!("'{}'", strata::timestamp::format(lo + 5 * span))))).collect();
     // Local: the OS's page cache warm (a run first), then five runs.
     let local: Vec<f64> = queries
         .iter()
