@@ -310,7 +310,8 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/cluster", get(cluster))
         // Apps: their list, and requests forwarded to them (crate::apps).
         .route("/v1/apps", get(apps_list))
-        .route("/v1/apps/:name/*rest", axum::routing::any(app_forward))
+        // An app may take files (a spreadsheet's import): rows' size, as /v1/import.
+        .route("/v1/apps/:name/*rest", axum::routing::any(app_forward).layer(rows.clone()))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
