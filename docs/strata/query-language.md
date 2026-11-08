@@ -1148,6 +1148,38 @@ DROP FUNCTION boosted VERSION 2;                               -- deletes an old
 - **On strata-server**, `CREATE` and `DROP FUNCTION` need an admin key, whose name is the version's `created_by`; any key that may read calls them. `GET /v1/functions` lists each function with its current version and every version's definition.
 - **Through a coordinator**, a version has one number and one body on every shard: `CREATE` and `DROP FUNCTION` ask every replica which versions it holds, number the new one past all of them, and write it on each shard, so they wait for every replica to answer. A coordinator calls the versions every replica holds alike (a new version once every shard has it) and stops calling a dropped function as soon as any replica holds the drop. A shard added to the cluster gets every version under its number. Each shard records the coordinator's credential as `created_by`.
 
+## Language models: `llm()`
+
+`llm(model, instructions, input, ...)` is a language model's answer to the instructions about the inputs, for each row a query returns. A stored function keeps the prompt and the model under a name, versioned as any function is: a new prompt or model is a new version, `"summarize@1"(body)` still asks the old one, and `FROM VERSION n` rolls back.
+
+```sql
+CREATE FUNCTION summarize(t TEXT) RETURNS TEXT
+AS llm('anthropic/claude-haiku-5-5', 'Summarize this review in one sentence.', :t);
+
+CREATE FUNCTION mood(t TEXT) RETURNS KEYWORD
+AS llm('anthropic/claude-haiku-5-5', 'How does this review feel?', :t, choices => 'positive,negative,mixed');
+
+SELECT id, title, summarize(body), mood(body) AS mood
+FROM reviews WHERE MATCH(body, :q) ORDER BY bm25(body, :q) DESC LIMIT 10;
+
+-- the stored summary where there is one, else the model's
+SELECT id, coalesce(summary, summarize(body)) FROM reviews ORDER BY rating DESC LIMIT 20;
+
+-- BM25's top 50, ranked by a grade the model gives each
+WITH top AS (SELECT * FROM reviews WHERE MATCH(body, :q) ORDER BY bm25(body, :q) DESC LIMIT 50)
+SELECT id, title, score() FROM top
+ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the review answers the question.',
+             'Question: ' || :q, body, returns => 'number') DESC LIMIT 10;
+```
+
+- **Where it runs.** A query that calls `llm()` runs in two steps: the query without the calls finds its rows (its `WHERE`, `ORDER BY` and `LIMIT` as written), computing what the calls read of each row, and then the model is asked about those rows, eight at once, and the columns are computed of the answers. A call may be part of a column, in arithmetic, `||`, comparisons, `CASE` and functions of values; a `CASE` asks only for the branch it takes, and `coalesce` only where the values before the call are `NULL`. `llm()` is a column of `SELECT` or part of `ORDER BY`; anywhere else (`WHERE`, `GROUP BY`, `HAVING`, a join, a `WITH`, a subquery, `UNION`) it is refused, as it would run for rows the query reads rather than returns.
+- **In `ORDER BY`** the calls rank the rows the query finds without that `ORDER BY` and its `LIMIT`: the top rows of a first ranking, as a [rerank phase](#rerank-phases) ranks them. Rows that tie keep the first ranking's order, a `NULL` ranks last, `LIMIT` and `OFFSET` cut the ranked rows, and `score()` is the first key's value.
+- **Arguments.** `model` is a string: `anthropic/<model>` (a Claude model, its key in `ANTHROPIC_API_KEY`), `openai/<chat model>`, or the name of a model directory whose `endpoint.json` names a chat server (`"api": "chat"` for OpenAI's `/chat/completions`, as vLLM, Ollama and LiteLLM serve it, or `"api": "anthropic"`), as for [text made of text](server.md#text-from-text). A query or a row cannot choose the model. The instructions are the system prompt, a string or a parameter; each input is a part of the user's message, apart by a blank line, and a `NULL` input is left out. A call with no input is `NULL`, and asks nothing.
+- **Answers** are text, trimmed. `choices => 'a,b,c'` asks for one of them and gives it as written there (the answer in any case, or the one choice an answer that says more names), else `NULL`. `returns => 'number'` gives the first number of the answer as a `FLOAT`, and `returns => 'bool'` its yes or no as a `BOOL`, else `NULL`. `max_tokens => n` bounds the answer (1024 for text, 64 otherwise). The model answers at temperature 0 (a chat server at its own default).
+- **Cost.** Each distinct question (model, prompt and input) is asked once, and its answer kept in memory (10,000 of them), so the same query again asks nothing. A query asks about 100 rows at most, and a process makes 600 requests a minute at most for `llm()`: past either, the query fails before asking (strata-server's `--llm-rows` and `--llm-per-minute`, `strata::query::llm::set_limits` from Rust). A failed request fails the query (503), after the endpoint's retries. The answer's plan lines end with one that says how many rows were asked about, how many requests were made, and how many answers came from memory; `EXPLAIN` shows the plan of the rows.
+- **Inputs are data.** A row's text is the user's message and the instructions the system prompt, and the model has no tools, so a row's text can change that row's answer and nothing else.
+- **A coordinator** asks the model about the merged rows, on the coordinator, so no shard asks about a row the merge cuts, and its shards need no key. A body that calls `llm()` is a function that returns a value: `CREATE` refuses one in a `RETURNS TABLE` body, and checks each call's model and options. strata-server counts the requests in `strata_llm_requests_total`, `strata_llm_cached_total` and `strata_llm_failures_total`.
+
 ## Running SQL
 
 The `strata` shell runs one statement, or reads statements from standard input:
