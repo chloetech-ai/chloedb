@@ -605,3 +605,16 @@ test('edits change a JavaScript view or function by find and replace, and refuse
   assert.match(editCode({ functions: [{ slug: 'total', edits: [{ old: '1', new: '2' }] }] }, {}, view)[0], /a rule is given whole/);
   assert.match(editCode({ views: [{ slug: 'notes', edits: [{ old: 'Notes', new: 'x' }] }] }, { notes: 'x' }, view)[0], /not both/);
 });
+
+test('tests and rules name values as :name, and an =expression is refused at build time', async () => {
+  const { checkTests } = await import('../engine/checks.mjs');
+  const cols = (t) => ({ hours: new Set(['id', 'client', 'project']), projects: new Set(['id', 'client']) })[t] || null;
+  const good = [{ name: 'fills the client', do: [{ insert: 'projects', values: { client: 'c1' }, as: 'p' }, { insert: 'hours', values: { project: ':p.id' }, as: 'h' }], expect: [{ query: 'SELECT client FROM hours WHERE id = :h.id', is: ':p.client' }] }];
+  assert.deepEqual(checkTests(good, cols), []);
+  const bad = [{ name: 'x', do: [{ insert: 'hours', values: { project: '=p.id' } }], expect: [{ query: 'SELECT client FROM hours', is: '=c.id' }] }];
+  const problems = checkTests(bad, cols);
+  assert.equal(problems.length, 2);
+  assert.match(problems.join('\n'), /expect\[0\]\.is: a value, or ":name.col"/);
+  assert.match(problems.join('\n'), /project: a value here is a SELECT, ":name" or a literal; not an =expression/);
+  assert.match(checkRule({ steps: [{ update: 'hours', id: '=row.id', set: { client: 'x' } }] }, cols)[0], /steps\[0\]\.id: .* not an =expression/);
+});

@@ -18,7 +18,7 @@ A new app, or a change that adds tables, may give "tests" in its plan: 1 to 3 ch
     "do": [{"insert": "features", "values": {"title": "Dark mode"}, "as": "f"}, {"insert": "votes", "values": {"feature": ":f.id"}}],
     "expect": [{"query": "SELECT votes FROM features WHERE id = :f.id", "is": 1}]}]
 - "do": steps as in rules (insert, update, remove, call, let); "as" names an inserted row or a call's result for later steps and for "expect" (:f.id).
-- "expect": a SELECT and the value its first column of its first row must be ("is"), or how many rows it returns ("rows").
+- "expect": a SELECT and the value its first column of its first row must be ("is": a literal, or ":f.id" for a value a step named), or how many rows it returns ("rows"). Names are ":name", never "=expressions".
 - A test writes only to tables this version creates. A failing test is reported and repaired like an error. A screen that only lists and edits rows needs no test.`;
 
 // Checks the tests' shape. columnsOf(table) -> Set | null.
@@ -33,11 +33,15 @@ export function checkTests(tests, columnsOf) {
     for (const [j, e] of (t.expect || []).entries()) {
       if (!e || typeof e.query !== 'string' || !/^\s*(select|with)\b/i.test(e.query)) problems.push(`${where}.expect[${j}]: give "query", a SELECT`);
       else if (e.is === undefined && e.rows === undefined) problems.push(`${where}.expect[${j}]: give "is" (the first value) or "rows" (how many)`);
+      else if (typeof e.is === 'string' && e.is.startsWith('=')) problems.push(`${where}.expect[${j}].is: a value, or ":name.col" for something a step named with "as"; not an =expression`);
     }
     if (t.do !== undefined) for (const p of checkRule({ steps: t.do }, columnsOf)) problems.push(`${where}.do: ${p.replace(/^steps/, '')}`);
   });
   return problems;
 }
+
+// ":f.id" in "is": a value a step named with "as".
+const expected = (v, lets) => (typeof v === 'string' && /^:[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(v) ? paramsOf({}, lets)[v.slice(1).replace('.', '_')] ?? null : v);
 
 const same = (a, b) => {
   if (a === b) return true;
@@ -84,7 +88,8 @@ export async function runTests(engine, appId, tests, fresh) {
         const rows = await engine.sql(appId, q, used(q, paramsOf({}, lets)));
         if (e.rows !== undefined) { if (rows.length !== Number(e.rows)) bad.push(`${e.query} gave ${rows.length} rows, not ${e.rows}`); continue; }
         const got = rows[0] ? Object.values(rows[0])[0] ?? null : null;
-        if (!same(got, e.is)) bad.push(`${e.query} gave ${JSON.stringify(got)}, not ${JSON.stringify(e.is)}`);
+        const want = expected(e.is, lets);
+        if (!same(got, want)) bad.push(`${e.query} gave ${JSON.stringify(got)}, not ${JSON.stringify(want)}${want !== e.is ? ` (${e.is})` : ''}`);
       }
       out.push(bad.length ? { name, ok: false, problem: bad.join('; '), cap: cap?.id } : { name, ok: true });
     } catch (e) {

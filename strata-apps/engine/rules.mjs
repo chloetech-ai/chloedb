@@ -88,7 +88,10 @@ export async function runRule(rule, input, host) {
 export function checkRule(rule, columnsOf = () => null) {
   const problems = [];
   if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return ['a rule is an object: {"query": ...} or {"steps": [...]}'];
-  const sql = (v, where) => { if (typeof v === 'string' && /^\s*(insert|update|delete|create|drop|alter)\b/i.test(v)) problems.push(`${where}: only SELECT here; write with update, insert and remove steps`); };
+  const sql = (v, where) => {
+    if (typeof v === 'string' && /^\s*(insert|update|delete|create|drop|alter)\b/i.test(v)) problems.push(`${where}: only SELECT here; write with update, insert and remove steps`);
+    if (typeof v === 'string' && v.startsWith('=')) problems.push(`${where}: a value here is a SELECT, ":name" or a literal; not an =expression`);
+  };
   if (rule.query !== undefined) {
     if (typeof rule.query !== 'string' || !SELECT_RE.test(rule.query)) problems.push('query: give a SELECT');
     return problems;
@@ -104,6 +107,7 @@ export function checkRule(rule, columnsOf = () => null) {
     if (kind === 'call') { for (const [k, v] of Object.entries(s.input || {})) sql(v, `${where}.input.${k}`); return; }
     const cols = columnsOf(s[kind]);
     if (!cols) { problems.push(`${where}: no table ${JSON.stringify(s[kind])} in the app`); return; }
+    sql(s.id, `${where}.id`);
     if ((kind === 'update' || kind === 'remove') && s.id === undefined) problems.push(`${where}: give "id", the row to ${kind} (such as ":row.feature")`);
     const vals = kind === 'update' ? s.set : kind === 'insert' ? s.values : null;
     if (kind !== 'remove' && (!vals || typeof vals !== 'object')) problems.push(`${where}: give "${kind === 'update' ? 'set' : 'values'}": {column: value}`);

@@ -128,7 +128,7 @@ cd strata-apps
 | `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
 | `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 180), or after this many in all (default 1200) |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
-| `STRATA_APPS_SCREEN_MODEL` | the model for the plan step and for changes, which write the screens and rules (default: `STRATA_APPS_MODEL`); code views, functions and repairs keep `STRATA_APPS_MODEL` |
+| `STRATA_APPS_SCREEN_MODEL` | the model for the plan step and for changes, which write the screens and rules (default `claude-sonnet-5-5`; set it to `claude-opus-5-5` for Opus everywhere); code views, functions and repairs keep `STRATA_APPS_MODEL` |
 | `STRATA_APPS_RULES=off`, `STRATA_APPS_TESTS=off` | functions and triggers only as JavaScript; no tests in plans |
 | `STRATA_APPS_OPEN_VIEWS=off` | do not open each view in a headless browser after a build |
 | `SMTP_URL`, `SMTP_FROM` | a mail server (`smtps://user:pass@host:465`, or `smtp://` with STARTTLS when offered) and the From address; without them email waits in the outbox, marked held |
