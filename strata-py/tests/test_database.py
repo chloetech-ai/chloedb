@@ -694,3 +694,49 @@ def test_rows_by_key(db, tmp_path):
     assert db.sql("SELECT COUNT(*) FROM sessions").scalar() == 2
     assert db.expire() == 1
     assert db.expire() == 0
+
+
+def test_read_only_follows_another_process(tmp_path):
+    path = tmp_path / "shared.strata"
+    with strata.open(path, schema=BOOKS) as w:
+        w.insert([book(i) for i in range(10)])
+        # The other workers of a server, in another process: a script that
+        # opens the database read-only and counts its rows as they come.
+        script = (
+            "import sys, time, strata\n"
+            "db = strata.open(sys.argv[1], read_only=True)\n"
+            "assert db.read_only\n"
+            "print(len(db), flush=True)\n"
+            "for line in sys.stdin:\n"
+            "    print(db.sql('SELECT COUNT(*) FROM books').scalar(), flush=True)\n"
+            "try:\n"
+            "    db.insert({'id': 'x'})\n"
+            "except strata.StrataError as e:\n"
+            "    print('refused', 'read-only' in str(e), flush=True)\n"
+        )
+        import subprocess
+        import sys
+
+        p = subprocess.Popen([sys.executable, "-c", script, str(path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert p.stdout.readline().strip() == "10"
+        w.insert([book(i) for i in range(10, 30)])
+        p.stdin.write("count\n")
+        p.stdin.flush()
+        assert p.stdout.readline().strip() == "30"
+        w.optimize()
+        w.delete(["b0001"])
+        p.stdin.write("count\n")
+        p.stdin.close()
+        assert p.stdout.readline().strip() == "29"
+        assert p.stdout.readline().strip() == "refused True"
+        assert p.wait(timeout=30) == 0
+    # A second writer is refused, a reader in this process is not.
+    with strata.open(path) as w:
+        r = strata.open(path, read_only=True)
+        with pytest.raises(strata.StrataError, match="busy"):
+            strata.open(path)
+        w.insert(book(100))
+        assert r.refresh() in (True, False)
+        assert len(r) == 30
+        assert not w.read_only and not w.refresh()
+        r.close()

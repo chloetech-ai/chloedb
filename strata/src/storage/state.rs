@@ -528,6 +528,10 @@ pub(crate) struct State {
     /// id alone, and a feed read from before it names the table it drops
     /// ([`crate::storage::feed`]).
     pub dropped: Vec<(u32, Arc<Schema>)>,
+    /// Snapshots pin the on-disk version they read (`meta.txn`) rather than
+    /// the last transaction: in a reader of another process's database,
+    /// whose pin is the oldest version it reads ([`crate::storage::share`]).
+    pub pin_versions: bool,
 }
 
 /// How many dropped tables' schemas [`State::dropped`] keeps.

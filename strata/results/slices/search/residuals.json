@@ -1,0 +1,66 @@
+{
+ "cov": {
+  "10000": {
+   "words_known": 14076,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.9931088377379937,
+   "bound_equals_max": 0.9775504404660414
+  },
+  "30000": {
+   "words_known": 17829,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.9817712715239217,
+   "bound_equals_max": 0.9490156486622918
+  },
+  "100000": {
+   "words_known": 21191,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.968288424331084,
+   "bound_equals_max": 0.9015619838610731
+  },
+  "200000": {
+   "words_known": 22912,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.9550017458100558,
+   "bound_equals_max": 0.8543994413407822
+  },
+  "400000": {
+   "words_known": 24591,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.9322516367776829,
+   "bound_equals_max": 0.762230084177138
+  }
+ },
+ "pop": {
+  "10000": {
+   "words_known": 14524,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.9922197741668962,
+   "bound_equals_max": 0.8712475901955384
+  },
+  "30000": {
+   "words_known": 18775,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.9839147802929428,
+   "bound_equals_max": 0.7791744340878828
+  },
+  "100000": {
+   "words_known": 22757,
+   "median_bound_over_max": 1.0,
+   "bound_at_least_0.9_of_max": 0.9613745221250605,
+   "bound_equals_max": 0.6044733488596915
+  },
+  "200000": {
+   "words_known": 24417,
+   "median_bound_over_max": 0.9954313419818116,
+   "bound_at_least_0.9_of_max": 0.9375844698365893,
+   "bound_equals_max": 0.4788876602367203
+  },
+  "400000": {
+   "words_known": 25637,
+   "median_bound_over_max": 0.9760835937080806,
+   "bound_at_least_0.9_of_max": 0.9016655614931545,
+   "bound_equals_max": 0.35218629324803996
+  }
+ }
+}

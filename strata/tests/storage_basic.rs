@@ -688,9 +688,9 @@ fn readers_during_writes_and_merges(publish_snapshots: bool) {
     db.check().unwrap();
 }
 
-/// With published snapshots, every write returns with its version built
-/// and handed to readers: a reader gets that one (the same one each time)
-/// and does not wait for a transaction in progress.
+/// With published snapshots, every write that follows a read returns with
+/// its version built and handed to readers: a reader gets that one (the
+/// same one each time) and does not wait for a transaction in progress.
 #[test]
 fn published_snapshots_follow_every_write() {
     let dir = tempfile::tempdir().unwrap();
@@ -753,6 +753,89 @@ fn published_snapshots_follow_every_write() {
     drop(db);
     let db = Database::open(&path, o).unwrap();
     assert_keys(&db.snapshot(), &want);
+}
+
+/// A write that follows no read since the last published version publishes
+/// none: the first reader after it builds the version, and sees every
+/// write, and the write after that reader publishes again, keeping the
+/// chunks the reader built.
+#[test]
+fn published_snapshots_wait_for_a_reader() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = Arc::new(MapSource::default());
+    let o = DbOptions { publish_snapshots: true, memtable_chunk_docs: 64, ..opts(&src) };
+    let db = Database::create(&dir.path().join("db.strata"), schema(), o).unwrap();
+    let ids = |s: &Snapshot| s.segments().iter().map(|v| v.id).collect::<Vec<_>>();
+    let insert = |r: std::ops::Range<u64>| {
+        let mut tx = db.begin().unwrap();
+        for i in r {
+            src.put(&doc(i, 0));
+            tx.insert(doc(i, 0)).unwrap();
+        }
+        tx.commit().unwrap();
+    };
+    // Nobody reads between these.
+    for t in 0..4 {
+        insert(t * 50..t * 50 + 50);
+    }
+    let s1 = db.snapshot();
+    assert_keys(&s1, &keys(0..200));
+    insert(200..210);
+    let s2 = db.snapshot();
+    assert_keys(&s2, &keys(0..210));
+    assert_eq!(ids(&s1)[..3], ids(&s2)[..3], "the full chunks are not rebuilt");
+    assert_eq!(ids(&db.snapshot()), ids(&s2));
+    // Writes nobody reads, then a flush nobody reads: a reader still sees
+    // them all.
+    insert(210..300);
+    insert(300..301);
+    assert_keys(&db.snapshot(), &keys(0..301));
+    insert(301..400);
+    db.flush().unwrap();
+    let s3 = db.snapshot();
+    assert_keys(&s3, &keys(0..400));
+    assert!(s3.segments().iter().all(|v| !v.in_memory));
+    assert_keys(&s1, &keys(0..200));
+}
+
+/// Readers that read now and then, beside a stream of one-row writes, so
+/// that writes alternate between publishing a version and publishing none:
+/// the version a reader sees never goes back. A reader that found none
+/// published and built the current one could see a write the writer had
+/// not published yet, then the older published version on its next read
+/// (dozens of times a run before the fix).
+#[test]
+fn published_snapshots_never_go_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = Arc::new(MapSource::default());
+    let o = DbOptions { publish_snapshots: true, memtable_max_docs: 1 << 20, ..opts(&src) };
+    let db = Database::create(&dir.path().join("db.strata"), schema(), o).unwrap();
+    let done = AtomicBool::new(false);
+    std::thread::scope(|sc| {
+        sc.spawn(|| {
+            for i in 0..10_000 {
+                let mut tx = db.begin().unwrap();
+                tx.insert(doc(i, 0)).unwrap();
+                tx.commit().unwrap();
+            }
+            done.store(true, Ordering::Release);
+        });
+        for r in 0..3u64 {
+            let (db, done) = (&db, &done);
+            sc.spawn(move || {
+                let (mut last, mut rng) = ((0, 0), rand::rngs::StdRng::seed_from_u64(r));
+                while !done.load(Ordering::Acquire) {
+                    let s = db.snapshot();
+                    let now = (s.txn(), s.n_live_docs());
+                    assert!(now.0 >= last.0 && now.1 >= last.1, "{now:?} after {last:?}");
+                    last = now;
+                    for _ in 0..rng.gen_range(0..4096) {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// Random transactions, flushes, merges and reopens against a model.

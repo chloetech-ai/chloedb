@@ -372,7 +372,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     let bad = |m: String| err(format!("column {name}: {m}"));
     let (ty, multi, dim) = column_type(ty).map_err(bad)?;
     let allowed: &[&str] = match ty {
-        "text" => &["positions", "stored", "indexed", "from", "analyzer", "derive", "model"],
+        "text" => &["positions", "stored", "indexed", "from", "analyzer", "derive", "model", "prompt"],
         "vector" if multi => &["indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "embed", "model"],
         "vector" => &["stored", "indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "embed", "model", "partition_by", "partition_bounds"],
         "media" => &["stored", "indexed", "kind"],
@@ -384,7 +384,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
         return Err(bad("semantic_id and codebook are options of a KEYWORD[] column".into()));
     }
     if let Some(k) = opts.keys().find(|k| !allowed.contains(&k.as_str())) {
-        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive", "text", "partition_by", "partition_bounds"];
+        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive", "prompt", "text", "partition_by", "partition_bounds"];
         return Err(bad(if known.contains(&k.as_str()) {
             format!("{k} is not an option of a {} column (its options: {})", ty.to_uppercase(), allowed.join(", "))
         } else {
@@ -432,15 +432,20 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     if nlist.is_some() && kind.as_deref() != Some("ivf") {
         return Err(bad("nlist is an option of index = 'ivf'".into()));
     }
+    let prompt = opts.remove("prompt");
     match (opts.remove("embed"), opts.remove("derive"), opts.remove("model")) {
-        (None, None, None) => {}
-        (Some(from), None, Some(model)) if model.is_string() => {
+        (None, None, None) if prompt.is_none() => {}
+        (Some(from), None, Some(model)) if model.is_string() && prompt.is_none() => {
             f.insert("embed".into(), json!({"from": names(&from).map_err(|m| bad(format!("embed {m}")))?, "model": model}));
         }
-        (None, Some(J::String(from)), Some(model)) if model.is_string() => {
-            f.insert("derive".into(), json!({"from": from, "model": model}));
+        (None, Some(J::String(from)), Some(model)) if model.is_string() && prompt.as_ref().is_none_or(J::is_string) => {
+            let mut d = json!({"from": from, "model": model});
+            if let Some(p) = prompt {
+                d["prompt"] = p;
+            }
+            f.insert("derive".into(), d);
         }
-        _ if ty == "text" => return Err(bad("a derived text takes derive = 'media column' and model = 'name'".into())),
+        _ if ty == "text" => return Err(bad("a derived text takes derive = 'media column' and model = 'name', or derive = 'text column', a language model and prompt = 'what to make of it'".into())),
         _ => return Err(bad("an embedded vector takes embed = 'fields' and model = 'name'".into())),
     }
     if let Some(from) = opts.remove("from") {
@@ -686,6 +691,9 @@ fn column_sql(f: &J, key: Option<&str>) -> String {
             ("embed" | "derive", J::Object(o)) => {
                 opts.push(format!("{k} = {}", list_sql(&o["from"])));
                 opts.push(format!("model = {}", value_sql(&o["model"])));
+                if let Some(p) = o.get("prompt").filter(|p| p.as_str().is_some_and(|p| !p.is_empty())) {
+                    opts.push(format!("prompt = {}", value_sql(p)));
+                }
             }
             ("semantic_id", J::Object(o)) => {
                 opts.push(format!("semantic_id = {}", value_sql(&o["from"])));
@@ -903,7 +911,7 @@ mod tests {
     fn derived_text_names_its_file_and_model() {
         let (s, _) = create("CREATE TABLE photos (id KEYWORD PRIMARY KEY, image MEDIA OPTIONS(kind = 'image'), caption TEXT OPTIONS(derive = 'image', model = 'blip-image-captioning-base'), emb VECTOR(8) OPTIONS(embed = 'caption', model = 'hash:8'))", &[]).unwrap();
         let f = s.field("caption").unwrap();
-        assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into() }));
+        assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into(), prompt: String::new() }));
         assert!(f.stored && matches!(f.ty, FieldType::Text { .. }));
         assert_eq!(s.derives_from(2), Some(1));
         assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys"]);

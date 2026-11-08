@@ -37,6 +37,17 @@ struct Memory {
     not_ok: Option<u64>,
     problems: HashMap<String, u64>,
     disk: HashMap<String, VecDeque<(u64, f64)>>,
+    /// Copies down here that another coordinator reaches: since when that
+    /// was first seen (ms), by URL. Said cut off once a survey of this
+    /// coordinator begun since failed again, not before: a copy coming
+    /// back answers another coordinator's survey a few seconds before
+    /// this one's.
+    cut_seen: HashMap<String, u64>,
+    /// When this coordinator's survey last found each copy down (ms), by
+    /// URL: another coordinator's report that it cannot reach a copy counts
+    /// only from a survey begun since, as one begun before may have asked
+    /// while the copy was down for all.
+    down_seen: HashMap<String, u64>,
 }
 
 /// The window the headline judges searches by now: the last minute (the
@@ -56,7 +67,17 @@ pub struct PeerWindow {
     pub window: Window,
     pub recent: Window,
     pub error: Option<String>,
+    /// The copies that did not answer its last survey of the cluster, by
+    /// URL, and when that survey began (ms); `None` from a coordinator
+    /// that does not say.
+    pub unreached: Option<Vec<String>>,
+    pub surveyed_ms: u64,
 }
+
+/// How much later than a copy stopped answering this coordinator another
+/// coordinator's survey begins, at least, for its answer to show that the
+/// copy answers it still: a survey waits 2 s for each copy.
+const CUT_MARGIN_MS: u64 = 3000;
 
 /// What a judgement reads.
 pub struct Inputs<'a> {
@@ -297,6 +318,38 @@ fn fills_in(days: f64) -> String {
     }
 }
 
+/// What to do about a shard whose primary answers but cannot write until
+/// it restarts (`failing`: a write failed partway, a full disk): hand the
+/// primary over to a replica in sync, so that writes go on at once, then
+/// fix the old primary (finding chaos-4: a restart alone, which the advice
+/// said, fails again while the disk is full, and loses the shard's writes
+/// meanwhile). None when the primary is not failing.
+fn hand_over(copies: &[Json], primary: &Json, failover: bool) -> Option<String> {
+    let p = copies.iter().find(|r| &r["url"] == primary && !down(r))?;
+    if p["detail"]["health"]["status"] != "failing" {
+        return None;
+    }
+    let name = short(p);
+    let full = p["detail"]["load"]["disk_used_ratio"].as_f64().filter(|&d| d >= 0.95);
+    let fix = match full {
+        Some(d) => format!("free {name}'s volume ({:.0}% full) and restart it", d * 100.0),
+        None => format!("fix the cause on {name} (its logs say what failed) and restart it"),
+    };
+    let in_sync = p["detail"]["health"]["replication"]["replicas"].as_array().into_iter().flatten().filter(|f| f["in_sync"] == true && f["copying"] != true).find_map(|f| copies.iter().find(|r| r["url"] == f["url"] && !down(r)));
+    Some(match in_sync {
+        Some(r) => format!(
+            "Make {} the primary (its menu in Cluster: Make it the primary): it is in sync, so writes go on at once{}. Then {fix}",
+            short(r),
+            if failover { "; with failover on, the primary hands itself over within seconds" } else { "" }
+        ),
+        None => {
+            let mut t = fix;
+            t[..1].make_ascii_uppercase();
+            format!("{t}: no replica is in sync to take over")
+        }
+    })
+}
+
 /// A copy's short name (`s1-0`), else its url.
 fn short(r: &Json) -> String {
     r["short"].as_str().or(r["url"].as_str()).unwrap_or("?").to_string()
@@ -315,8 +368,40 @@ impl Fleet {
         let mut checks = Vec::new();
         let mut problems: Vec<Problem> = Vec::new();
 
+        // ----- what the other coordinators reach (Home over every
+        // coordinator): a copy that does not answer this coordinator, but
+        // answered another's survey begun since, is cut off from this one,
+        // not down.
+        let me = i.coordinator.as_ref().map(|c| c["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("this coordinator").to_string());
+        let said: Vec<&PeerWindow> = if me.is_some() { i.peers.iter().filter(|p| p.error.is_none() && p.unreached.is_some()).collect() } else { Vec::new() };
+        // When this coordinator's own survey began (a judgement without one
+        // takes what it is given as of now).
+        let surveyed = i.cluster["at_ms"].as_u64().unwrap_or(u64::MAX);
+        let all_copies = || shards.iter().flat_map(|s| s["replicas"].as_array().into_iter().flatten());
+        let mut cut_here: HashMap<String, Vec<String>> = HashMap::new();
+        let mut seen = std::mem::take(&mut m.cut_seen);
+        for r in all_copies().filter(|r| down(r)) {
+            let url = r["url"].as_str().unwrap_or_default();
+            let since = r["down_since_ms"].as_u64().unwrap_or(u64::MAX - CUT_MARGIN_MS);
+            let by: Vec<String> = said.iter().filter(|p| p.surveyed_ms > since + CUT_MARGIN_MS && !p.unreached.iter().flatten().any(|u| u == url)).map(|p| p.name.clone()).collect();
+            if by.is_empty() {
+                continue;
+            }
+            let first = *seen.entry(url.to_string()).or_insert(now);
+            m.cut_seen.insert(url.to_string(), first);
+            if surveyed > first || surveyed == u64::MAX {
+                cut_here.insert(url.to_string(), by);
+            }
+        }
+        drop(seen);
+        for r in all_copies().filter(|r| down(r)) {
+            m.down_seen.insert(r["url"].as_str().unwrap_or_default().to_string(), surveyed.min(now));
+        }
+        m.down_seen.retain(|_, t| *t + 600_000 > now);
+        let reached_by = |r: &Json| -> Vec<String> { cut_here.get(r["url"].as_str().unwrap_or_default()).cloned().unwrap_or_default() };
+
         // ----- shards
-        let (mut no_reads, mut no_writes, mut degraded, mut downs) = (0, 0, 0, 0);
+        let (mut no_reads, mut no_writes, mut degraded, mut downs, mut cut_off) = (0, 0, 0, 0, 0);
         let mut where_shards = Vec::new();
         for s in &shards {
             let n = s["shard"].as_u64().unwrap_or(0);
@@ -324,6 +409,9 @@ impl Fleet {
             let copies = s["replicas"].as_array().cloned().unwrap_or_default();
             let gone: Vec<String> = copies.iter().filter(|r| down(r)).map(short).collect();
             let up: Vec<String> = copies.iter().filter(|r| !down(r)).map(short).collect();
+            // Down to the coordinators, but answering: started with another
+            // --cluster-token.
+            let refusing: Vec<String> = copies.iter().filter(|r| r["refuses_token"] == true).map(short).collect();
             let since = copies.iter().filter_map(|r| r["down_since_ms"].as_u64()).min();
             let why = s["why"].as_str().unwrap_or("").to_string();
             let name = format!("shard {n}");
@@ -361,10 +449,23 @@ impl Fleet {
                         let mut t = crate::coord::elect_by_hand(&gone, &up);
                         t[..1].make_ascii_uppercase();
                         t
-                    } else if s["primary"].is_null() && s["failover"] == true {
-                        "An election should choose a primary within seconds. If none does, bring a copy back or hand the primary over by hand".to_string()
                     } else if s["primary"].is_null() {
-                        "Hand the primary over to an up-to-date copy".to_string()
+                        // A majority answers: the votes of those that do make
+                        // the most up-to-date one the primary; the server
+                        // removes a dead primary only once another is
+                        // (finding chaos-2).
+                        let best = copies.iter().filter(|r| !down(r)).max_by_key(|r| (r["term"].as_u64().unwrap_or(0), r["txn"].as_u64().unwrap_or(0))).map(short);
+                        let make = best.map_or("make an up-to-date copy the primary".to_string(), |b| format!("make {b} the primary (its menu in Cluster: Make it the primary)"));
+                        let then = if gone.is_empty() { String::new() } else { format!(", then replace {}", both(&gone)) };
+                        if s["failover"] == true {
+                            format!("An election should choose a primary within seconds. If none does, {make}{then}")
+                        } else {
+                            let mut t = format!("{make}{then}");
+                            t[..1].make_ascii_uppercase();
+                            t
+                        }
+                    } else if let Some(t) = hand_over(&copies, &s["primary"], s["failover"] == true) {
+                        t
                     } else {
                         format!("Find out why on its primary: {why}")
                     };
@@ -377,6 +478,19 @@ impl Fleet {
                         format!("Shard {n} takes no writes")
                     };
                     Some((2, true, head, title, format!("Writes to {name}'s rows fail; searches still answer"), next(todo)))
+                }
+                _ if !refusing.is_empty() && refusing.len() == gone.len() => {
+                    degraded += 1;
+                    let (who, them, refuses) = (both(&refusing), if refusing.len() == 1 { "it" } else { "them" }, if refusing.len() == 1 { "refuses" } else { "refuse" });
+                    let more = if why.contains("one more copy down") { "; one more copy down stops its reads and writes" } else { "" };
+                    Some((
+                        10,
+                        false,
+                        format!("{who} {refuses} the cluster's token; {name} still serves reads and takes writes"),
+                        format!("Shard {n}'s {who} {} up but {refuses} the cluster's token", if refusing.len() == 1 { "is" } else { "are" }),
+                        format!("None yet: the coordinators read from its other copies{more}"),
+                        next(format!("Start {who} again with the cluster's --cluster-token, as its other copies have it, or replace {them}")),
+                    ))
                 }
                 _ => {
                     degraded += 1;
@@ -392,24 +506,70 @@ impl Fleet {
                     ))
                 }
             };
+            let p = p.map(|(rank, critical, headline, title, impact, mut next)| {
+                if !refusing.is_empty() && !headline.contains("cluster's token") {
+                    let todo = next["text"].as_str().unwrap_or_default().to_string();
+                    let refuses = if refusing.len() == 1 { "answers but refuses" } else { "answer but refuse" };
+                    next["text"] = json!(format!("{todo}. {} {refuses} the cluster's token: start it again with the cluster's --cluster-token", both(&refusing)));
+                }
+                (rank, critical, headline, title, impact, next)
+            });
+            // Every copy down here answers another coordinator: this
+            // coordinator is cut off from them, and the shard serves the
+            // other coordinators' clients.
+            let mut by: Vec<String> = copies.iter().filter(|r| down(r)).flat_map(reached_by).collect();
+            by.sort();
+            by.dedup();
+            let only_here = !gone.is_empty() && copies.iter().filter(|r| down(r)).all(|r| !reached_by(r).is_empty());
+            let mut id = format!("shard-{n}-{state}");
+            let p = match p {
+                Some(p) if only_here => {
+                    let me = me.as_deref().unwrap_or("this coordinator");
+                    let (them, reach) = (if gone.len() == 1 { "it" } else { "them" }, if by.len() == 1 { "reaches" } else { "reach" });
+                    let look = format!("Look at the network between {me} and {} (a firewall, a network policy, DNS): {} {reach} {them}", both(&gone), both(&by));
+                    // A shard that fails here stays critical: this
+                    // coordinator's clients fail.
+                    if !p.1 {
+                        degraded -= 1;
+                        cut_off += 1;
+                    }
+                    id = format!("shard-{n}-cut-off");
+                    if p.1 {
+                        // Its clients fail for real: critical still, said as it is.
+                        let what = if state == "no_writes" { "Writes" } else { "Searches" };
+                        let lower = |t: &str| t.get(..1).map_or(String::new(), |c| c.to_lowercase() + &t[1..]);
+                        Some((
+                            p.0,
+                            true,
+                            format!("{what} through this coordinator are failing: it cannot reach {}, which {} {reach}", both(&gone), both(&by)),
+                            format!("From {me}, {}; {} {reach} {}", lower(&p.3), both(&by), both(&gone)),
+                            format!("Clients of {me}: {}. Clients of {} are served", lower(&p.4), both(&by)),
+                            next(format!("{look}; meanwhile its clients can use {}", either(&by))),
+                        ))
+                    } else {
+                        Some((13, false, format!("This coordinator cannot reach {}, which {} {reach}", both(&gone), both(&by)), format!("{me} cannot reach {} of {name}, which {} {reach}", both(&gone), both(&by)), format!("None: {name} serves reads and takes writes, and searches through {me} go to its other copies"), next(look)))
+                    }
+                }
+                p => p,
+            };
             if let Some((rank, critical, headline, title, impact, next)) = p {
                 where_shards.push(name.clone());
                 problems.push(Problem {
                     rank,
                     critical,
                     headline,
-                    j: json!({"id": format!("shard-{n}-{state}"), "severity": severity(critical), "title": title, "where": where_, "since_ms": since, "impact": impact, "next": next, "why": why}),
+                    j: json!({"id": id, "severity": severity(critical), "title": title, "where": where_, "since_ms": since, "impact": impact, "next": next, "why": why}),
                 });
             }
         }
         let shards_status = if downs + no_reads + no_writes > 0 {
             "critical"
-        } else if degraded > 0 {
+        } else if degraded + cut_off > 0 {
             "warning"
         } else {
             "ok"
         };
-        checks.push(json!({"id": "shards", "status": shards_status, "value": {"down": downs, "no_reads": no_reads, "no_writes": no_writes, "degraded": degraded, "total": shards.len()}, "where": where_shards}));
+        checks.push(json!({"id": "shards", "status": shards_status, "value": {"down": downs, "no_reads": no_reads, "no_writes": no_writes, "degraded": degraded, "cut_off": cut_off, "total": shards.len()}, "where": where_shards}));
 
         // ----- the clients' searches over the window: every coordinator's
         // (fleet); the headline judges the last minute, the SLO checks the
@@ -467,7 +627,7 @@ impl Fleet {
             problems.push(Problem {
                 rank: if critical { 3 } else { 12 },
                 critical,
-                headline: format!("Searches are failing: {} failed over {over} (SLO {})", pct(x), pct(slo)),
+                headline: format!("Searches are failing: more than the SLO's {} fail", pct(slo)),
                 j: json!({"id": "error_ratio", "severity": severity(critical), "title": format!("{} of searches failed over {over} (SLO {})", pct(x), pct(slo)), "where": ["searches"], "since_ms": er_since,
                     "impact": format!("{} of searches fail", pct(x)), "next": {"text": "See which statements fail, and on which shards", "view": "queries", "params": {"outcome": "error"}}}),
             });
@@ -500,7 +660,7 @@ impl Fleet {
             problems.push(Problem {
                 rank: if critical { 4 } else { 13 },
                 critical,
-                headline: format!("Searches are slow: p99 {v:.0} ms over {over} (SLO {slo_ms:.0} ms)"),
+                headline: format!("Searches are slow: p99 is over the SLO's {slo_ms:.0} ms"),
                 j: json!({"id": "p99", "severity": severity(critical), "title": format!("Searches are slow: p99 {v:.0} ms over {over} (SLO {slo_ms:.0} ms)"), "where": ["searches"], "since_ms": null,
                     "impact": format!("1 search in 100 takes over {v:.0} ms"), "next": {"text": "See the slowest statements and where their time goes", "view": "performance", "params": {}}}),
             });
@@ -509,7 +669,7 @@ impl Fleet {
             problems.push(Problem {
                 rank: 17,
                 critical: false,
-                headline: title.clone(),
+                headline: "Searches were slow and are fast again".into(),
                 j: json!({"id": "p99_recovered", "severity": "warning", "title": title, "where": ["searches"], "since_ms": null,
                     "impact": format!("p99 {n:.0} ms now (SLO {slo_ms:.0} ms)"), "next": {"text": "See where the time went", "view": "performance", "params": {}}}),
             });
@@ -518,7 +678,46 @@ impl Fleet {
         // ----- copies
         let copies: Vec<(usize, Json)> = shards.iter().enumerate().flat_map(|(k, s)| s["replicas"].as_array().cloned().unwrap_or_default().into_iter().map(move |r| (k, r))).collect();
         let gone: Vec<String> = copies.iter().filter(|(_, r)| down(r)).map(|(_, r)| short(r)).collect();
-        checks.push(json!({"id": "copies", "status": if gone.is_empty() { "ok" } else { "warning" }, "down": gone.len(), "total": copies.len(), "where": gone}));
+        let cut: Vec<String> = copies.iter().filter(|(_, r)| down(r) && !reached_by(r).is_empty()).map(|(_, r)| short(r)).collect();
+        // Copies another coordinator cannot reach which answer this one,
+        // by coordinator: from its surveys begun since this one last found
+        // the copy down.
+        let peer_cuts: Vec<(&PeerWindow, Vec<(String, u64)>)> = said
+            .iter()
+            .map(|p| {
+                let theirs = p
+                    .unreached
+                    .iter()
+                    .flatten()
+                    .filter(|u| m.down_seen.get(u.as_str()).is_none_or(|t| p.surveyed_ms > t + CUT_MARGIN_MS))
+                    .filter_map(|u| copies.iter().find(|(_, r)| r["url"].as_str() == Some(u.as_str()) && !down(r)))
+                    .map(|(k, r)| (short(r), shards[*k]["shard"].as_u64().unwrap_or(*k as u64)))
+                    .collect::<Vec<_>>();
+                (*p, theirs)
+            })
+            .filter(|(_, t)| !t.is_empty())
+            .collect();
+        let elsewhere: Vec<String> = peer_cuts.iter().flat_map(|(p, t)| t.iter().map(|c| format!("{} from {}", c.0, p.name))).collect();
+        let status = if gone.is_empty() && elsewhere.is_empty() { "ok" } else { "warning" };
+        checks.push(json!({"id": "copies", "status": status, "down": gone.len(), "total": copies.len(), "where": gone, "unreached_here": cut, "unreached_elsewhere": elsewhere}));
+
+        // ----- copies another coordinator cannot reach which answer this
+        // one: that coordinator's clients are served by fewer copies, or
+        // fail, and its own Home says why.
+        for (p, theirs) in &peer_cuts {
+            let names: Vec<String> = theirs.iter().map(|t| t.0.clone()).collect();
+            let mut w = vec![p.name.clone()];
+            w.extend(names.iter().cloned());
+            let title = format!("Coordinator {} cannot reach {}, which this coordinator reaches", p.name, both(&names));
+            problems.push(Problem {
+                rank: 13,
+                critical: false,
+                headline: title.clone(),
+                j: json!({"id": format!("coordinator-{}-cut-off", p.name), "severity": "warning", "title": title, "where": w, "since_ms": null,
+                    "impact": format!("Searches through {} go to the shards' other copies, and fail on a shard none of whose copies it reaches", p.name),
+                    "next": {"text": format!("Look at the network between {} and {} (a firewall, a network policy, DNS), or its logs", p.name, both(&names)), "view": "cluster", "params": {"shard": theirs[0].1}}}),
+            });
+        }
 
         // ----- lag: what each primary says its replicas lack
         let mut lag: Option<(u64, Option<f64>, String, usize, bool)> = None;
@@ -558,9 +757,32 @@ impl Fleet {
             problems.push(Problem {
                 rank: 14,
                 critical: false,
-                headline: title.clone(),
+                headline: if out_of_sync.is_empty() { format!("{name} is behind its primary") } else { title.clone() },
                 j: json!({"id": "lag", "severity": "warning", "title": title, "where": [format!("shard {shard}"), name], "since_ms": null,
                     "impact": format!("Searches {name} serves may miss recent writes; it may not count toward a write majority"), "next": {"text": format!("Look at {name}'s replication"), "view": "cluster", "params": {"shard": shard, "copy": name}}}),
+            });
+        }
+
+        // ----- data damaged on disk: what each copy's last scrub found
+        // (finding chaos-6: bit rot on a replica showed nowhere).
+        let damaged: Vec<(String, usize, usize)> = copies
+            .iter()
+            .filter(|(_, r)| !down(r))
+            .filter_map(|(k, r)| {
+                let n = r["detail"]["health"]["damaged"].as_array().map_or(0, Vec::len);
+                (n > 0).then(|| (short(r), shards[*k]["shard"].as_u64().unwrap_or(*k as u64) as usize, n))
+            })
+            .collect();
+        checks.push(json!({"id": "damaged", "status": if damaged.is_empty() { "ok" } else { "critical" }, "where": damaged.iter().map(|d| &d.0).collect::<Vec<_>>()}));
+        for (name, shard, n) in &damaged {
+            let title = format!("{name}'s data is damaged on disk: {n} {} {} {}", if *n == 1 { "segment" } else { "segments" }, if *n == 1 { "fails" } else { "fail" }, if *n == 1 { "its checksum" } else { "their checksums" });
+            problems.push(Problem {
+                rank: 4,
+                critical: true,
+                headline: title.clone(),
+                j: json!({"id": format!("damaged-{name}"), "severity": "critical", "title": title, "where": [format!("shard {shard}"), name], "since_ms": null,
+                    "impact": format!("Searches that read the damaged segments fail on {name} (a coordinator tries another copy), and a primary elected from it would serve the damage"),
+                    "next": {"text": format!("Replace {name} with a new copy (Cluster: Plan the repair), then remove it; or restore it from a checkpoint"), "view": "cluster", "params": {"shard": shard, "copy": name}}}),
             });
         }
 
@@ -626,10 +848,18 @@ impl Fleet {
                     (format!("{name}'s disk is {} full{fills}", pct(max)), vec![format!("shard {shard}"), name.clone()])
                 };
                 let impact = if over.len() > 1 { "Writes to a shard stop when its primary's disk is full".to_string() } else { format!("Writes to shard {shard} stop when its disk is full") };
+                // The headline says the line crossed, not the share now
+                // and when it fills, which change every look.
+                let line = if critical { "95%" } else { "85%" };
+                let headline = match over.len() {
+                    0 => format!("{name}'s disk fills within 3 days at the last hour's rate"),
+                    1 => format!("{name}'s disk is over {line} full"),
+                    n => format!("{n} copies' disks are over {} full", if over.iter().all(|d| d.0 >= 0.95) { "95%" } else { "85%" }),
+                };
                 problems.push(Problem {
                     rank: if critical { 5 } else { 15 },
                     critical,
-                    headline: title.clone(),
+                    headline,
                     j: json!({"id": "disk", "severity": severity(critical), "title": title, "where": where_, "since_ms": null, "copies": over.len(),
                         "impact": impact, "next": {"text": "See which tables grow, then free space, add disk or add a shard", "view": "tables", "params": {"shard": shard}}}),
                 });
@@ -639,9 +869,13 @@ impl Fleet {
 
         // ----- alerts: the rules firing here that nobody silenced, each once
         // (a coordinator's each_copy rule gathers its copies'), as the bell
-        // counts them.
-        let firing = i.alerts.len() as u64;
-        let critical = i.alerts.iter().filter(|a| a["severity"] == "critical").count() as u64;
+        // counts them. An info alert (a shard's primary changed) tells, but
+        // is no problem of the fleet: it does not turn Home amber.
+        let told: Vec<Json> = i.alerts.iter().filter(|a| a["severity"] != "info").cloned().collect();
+        let info = i.alerts.len() - told.len();
+        let alerts = &told;
+        let firing = alerts.len() as u64;
+        let critical = alerts.iter().filter(|a| a["severity"] == "critical").count() as u64;
         let al_status = if critical > 0 {
             "critical"
         } else if firing > 0 {
@@ -649,15 +883,14 @@ impl Fleet {
         } else {
             "ok"
         };
-        let rules: Vec<Json> = i
-            .alerts
+        let rules: Vec<Json> = alerts
             .iter()
             .map(|a| {
                 let copies: Vec<&str> = a["where"].as_array().map_or_else(Vec::new, |w| w.iter().filter(|c| c["state"].is_null() || c["state"] == "firing").filter_map(|c| c["short"].as_str().or(c["copy"].as_str())).collect());
                 json!({"rule": a["rule"], "name": a["name"], "severity": a["severity"], "since_ms": a["since_ms"], "copies": copies.len(), "where": copies})
             })
             .collect();
-        checks.push(json!({"id": "alerts", "status": al_status, "firing": firing, "critical": critical, "rules": rules}));
+        checks.push(json!({"id": "alerts", "status": al_status, "firing": firing, "critical": critical, "info": info, "rules": rules}));
         if firing > 0 {
             let on = |a: &Json| match a["copies"].as_u64().unwrap_or(0) {
                 0 => String::new(),
@@ -667,7 +900,7 @@ impl Fleet {
             let named: Vec<String> = rules.iter().take(2).map(|a| format!("{}{}", a["name"].as_str().unwrap_or("?"), on(a))).collect();
             let more = if rules.len() > 2 { format!(" and {} more", rules.len() - 2) } else { String::new() };
             let title = format!("{firing} {} firing{}: {}{more}", if firing == 1 { "alert is" } else { "alerts are" }, if critical > 0 { format!(", {critical} critical") } else { String::new() }, named.join("; "));
-            let since = i.alerts.iter().filter_map(|a| a["since_ms"].as_u64()).min();
+            let since = alerts.iter().filter_map(|a| a["since_ms"].as_u64()).min();
             // NEW-workload-4: each rule with its severity and where, not "see each alert".
             let each = |a: &Json| {
                 let at = match a["copies"].as_u64().unwrap_or(0) {
@@ -685,7 +918,7 @@ impl Fleet {
                 rank: if critical > 0 { 6 } else { 16 },
                 critical: critical > 0,
                 headline: title.clone(),
-                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": since, "impact": impact, "next": {"text": if firing == 1 { "Open the alert" } else { "Open Alerts" }, "view": if firing == 1 { format!("alert/{}", i.alerts[0]["rule"].as_str().unwrap_or("")) } else { "alerts".to_string() }, "params": {}}}),
+                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": since, "impact": impact, "next": {"text": if firing == 1 { "Open the alert" } else { "Open Alerts" }, "view": if firing == 1 { format!("alert/{}", alerts[0]["rule"].as_str().unwrap_or("")) } else { "alerts".to_string() }, "params": {}}}),
             });
         }
 
@@ -744,8 +977,9 @@ impl Fleet {
                 if shards.len() == 1 && i.coordinator.is_none() {
                     h = "This server serves reads and takes writes".into();
                 }
+                // Steady while nothing changes: the numbers are in the checks.
                 match (ratio, p99) {
-                    (Some(r), Some(v)) => format!("{h}. Over the last 5 min {} of searches failed and p99 was {v:.0} ms", pct(r)),
+                    (Some(_), Some(_)) => format!("{h}. Searches are within their SLOs"),
                     _ => format!("{h}. No search ended in the last 5 min"),
                 }
             }
@@ -852,6 +1086,74 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_another_coordinator_reaches_is_cut_off_from_this_one_not_down() {
+        let c = json!({"shards": [
+            {"shard": 0, "state": "degraded", "failover": true, "majority": true, "why": "1 of 3 copies does not answer", "replicas": [copy("s0-0", true), copy("s0-1", false), copy("s0-2", true)]},
+            {"shard": 1, "state": "no_reads", "failover": true, "majority": false, "why": "1 of 2 copies answers", "replicas": [copy("s1-0", true), copy("s1-1", false)]},
+        ]});
+        let peer = |surveyed_ms: u64, unreached: &[&str]| PeerWindow { url: "http://b".into(), name: "coord-b".into(), unreached: Some(unreached.iter().map(|u| format!("http://{u}")).collect()), surveyed_ms, ..Default::default() };
+        // coord-b's survey began after s0-1 and s1-1 stopped answering here (at 1 s), and reached both.
+        let mut i = inputs(&c, &[]);
+        i.peers = vec![peer(5_000, &["s0-2"])];
+        let j = Fleet::default().judge(i);
+        let ps = j["problems"].as_array().unwrap();
+        let id = |id: &str| ps.iter().find(|p| p["id"] == id).unwrap_or_else(|| panic!("no {id}: {j}")).clone();
+        let s1 = id("shard-1-cut-off");
+        assert_eq!((s1["severity"].as_str(), s1["title"].as_str()), (Some("critical"), Some("From c, shard 1 has no majority, so it serves no reads; coord-b reaches s1-1")), "its clients fail: {s1}");
+        assert_eq!(j["headline"], "Searches through this coordinator are failing: it cannot reach s1-1, which coord-b reaches");
+        assert!(s1["next"]["text"].as_str().unwrap().ends_with("meanwhile its clients can use coord-b"), "{s1}");
+        let s0 = id("shard-0-cut-off");
+        assert_eq!((s0["severity"].as_str(), s0["title"].as_str()), (Some("warning"), Some("c cannot reach s0-1 of shard 0, which coord-b reaches")));
+        let b = id("coordinator-coord-b-cut-off");
+        assert_eq!((b["title"].as_str(), b["where"].clone()), (Some("Coordinator coord-b cannot reach s0-2, which this coordinator reaches"), json!(["coord-b", "s0-2"])));
+        let check = |id: &str| j["checks"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap().clone();
+        assert_eq!((check("shards")["value"]["cut_off"].as_u64(), check("shards")["status"].as_str()), (Some(1), Some("critical")));
+        assert_eq!(check("copies")["unreached_here"], json!(["s0-1", "s1-1"]));
+        // A survey begun before they stopped answering here says nothing of them: down.
+        let mut i = inputs(&c, &[]);
+        i.peers = vec![peer(3_500, &[])];
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["headline"], "Searches are failing: shard 1 has no majority");
+        assert!(j["problems"].as_array().unwrap().iter().any(|p| p["id"] == "shard-0-degraded"), "{j}");
+        // Down for coord-b too: down.
+        let mut i = inputs(&c, &[]);
+        i.peers = vec![peer(5_000, &["s0-1", "s1-1"])];
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["headline"], "Searches are failing: shard 1 has no majority");
+    }
+
+    #[test]
+    fn a_copy_coming_back_is_not_said_cut_off_on_the_way() {
+        let peer = |surveyed_ms: u64, unreached: &[&str]| PeerWindow { url: "http://b".into(), name: "coord-b".into(), unreached: Some(unreached.iter().map(|u| format!("http://{u}")).collect()), surveyed_ms, ..Default::default() };
+        let degraded = |at_ms: u64| json!({"at_ms": at_ms, "shards": [{"shard": 0, "state": "degraded", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", false), copy("s0-2", true)]}]});
+        let whole = |at_ms: u64| json!({"at_ms": at_ms, "shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true), copy("s0-2", true)]}]});
+        let f = Fleet::default();
+        let judge = |c: &Json, now_ms: u64, p: PeerWindow| {
+            let mut i = inputs(c, &[]);
+            (i.now_ms, i.peers) = (now_ms, vec![p]);
+            f.judge(i)
+        };
+        let ids = |j: &Json| j["problems"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        // s0-1 answers coord-b again before this coordinator's next survey: down, as this one last saw it.
+        let c = degraded(9_000);
+        assert_eq!(ids(&judge(&c, 10_000, peer(9_500, &[]))), ["shard-0-degraded"]);
+        // This coordinator's next survey reaches it: all well.
+        assert_eq!(judge(&whole(14_000), 15_000, peer(9_500, &[]))["status"], "ok");
+        // Cut off for real: a survey begun after coord-b reached it fails again.
+        let c = degraded(19_000);
+        assert_eq!(ids(&judge(&c, 20_000, peer(19_500, &[]))), ["shard-0-degraded"]);
+        assert_eq!(ids(&judge(&degraded(24_000), 25_000, peer(24_500, &[]))), ["shard-0-cut-off"]);
+        // Back here, while coord-b's last survey, begun before, did not reach it: said of nobody.
+        let j = judge(&whole(29_000), 30_000, peer(26_000, &["s0-1"]));
+        assert_eq!((j["status"].as_str(), ids(&j).len()), (Some("ok"), 0), "{j}");
+        // coord-b's survey begun after this one found it back still fails: coord-b is cut off from it.
+        let j = judge(&whole(34_000), 35_000, peer(34_500, &["s0-1"]));
+        assert_eq!((j["status"].as_str(), ids(&j)), (Some("warning"), vec!["coordinator-coord-b-cut-off".to_string()]), "{j}");
+        let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
+        assert_eq!(copies["unreached_elsewhere"], json!(["s0-1 from coord-b"]));
+    }
+
+    #[test]
     fn a_shard_without_majority_is_the_headline() {
         let c = json!({"shards": [
             {"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true)]},
@@ -868,13 +1170,48 @@ mod tests {
         assert_eq!(p["next"]["params"]["shard"], 1);
         assert_eq!(p["impact"], "Every search fails: each one needs shard 1");
         let shards = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "shards").unwrap().clone();
-        assert_eq!(shards["value"], json!({"down": 0, "no_reads": 1, "no_writes": 0, "degraded": 0, "total": 2}));
+        assert_eq!(shards["value"], json!({"down": 0, "no_reads": 1, "no_writes": 0, "degraded": 0, "cut_off": 0, "total": 2}));
         let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
         assert_eq!((copies["down"].as_u64(), copies["total"].as_u64()), (Some(1), Some(4)));
     }
 
+    /// A copy whose scrub found segments failing their checksums is a
+    /// critical problem of its own, naming the copy to replace (finding
+    /// chaos-6: bit rot on a replica showed nowhere).
+    #[test]
+    fn a_copy_whose_data_is_damaged_is_to_be_replaced() {
+        let mut bad = copy("s0-1", true);
+        bad["detail"]["health"] = json!({"damaged": ["segment 7 fails its checksum"]});
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), bad, copy("s0-2", true)]}]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        assert_eq!(j["status"], "critical");
+        assert_eq!(j["headline"], "s0-1's data is damaged on disk: 1 segment fails its checksum");
+        let p = &j["problems"][0];
+        assert_eq!((p["id"].as_str(), p["severity"].as_str()), (Some("damaged-s0-1"), Some("critical")));
+        assert!(p["next"]["text"].as_str().unwrap().starts_with("Replace s0-1 with a new copy"), "{p}");
+        let ck = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "damaged").unwrap().clone();
+        assert_eq!(ck["where"], json!(["s0-1"]));
+    }
+
     /// 1 of 2 copies answering is no majority: no election can choose a
     /// primary, so the advice is not to wait for one.
+    /// A copy that answers but refuses the cluster's token is named so,
+    /// not as one to bring back.
+    #[test]
+    fn a_copy_refusing_the_cluster_token_says_so() {
+        let mut bad = copy("s0-0", false);
+        bad["refuses_token"] = json!(true);
+        bad["error"] = json!("missing or wrong token");
+        let c = json!({"shards": [
+            {"shard": 0, "state": "degraded", "failover": true, "majority": true, "primary": "s0-1", "why": "", "replicas": [bad, copy("s0-1", true), copy("s0-2", true)]},
+        ]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let p = &j["problems"][0];
+        assert_eq!(p["title"], "Shard 0's s0-0 is up but refuses the cluster's token");
+        assert!(p["next"]["text"].as_str().unwrap().starts_with("Start s0-0 again with the cluster's --cluster-token"), "{p}");
+        assert!(j["headline"].as_str().unwrap_or_default().contains("refuses the cluster's token") || p["severity"] == "warning", "{j}");
+    }
+
     #[test]
     fn a_shard_of_two_with_one_down_cannot_elect() {
         let c = json!({"shards": [
@@ -891,7 +1228,31 @@ mod tests {
             {"shard": 0, "state": "no_writes", "failover": true, "majority": true, "primary": null, "why": "", "replicas": [copy("s0-0", false), copy("s0-1", true), copy("s0-2", true)]},
         ]});
         let j = Fleet::default().judge(inputs(&c, &[]));
-        assert!(j["problems"][0]["next"]["text"].as_str().unwrap().contains("within seconds"));
+        let next = j["problems"][0]["next"]["text"].as_str().unwrap();
+        assert!(next.contains("within seconds"), "{next}");
+        assert!(next.contains("Make it the primary") && next.ends_with("then replace s0-0"), "{next}");
+        assert_eq!(j["headline"], "Writes are failing: shard 0 has no primary");
+    }
+
+    /// A primary that cannot write until it restarts (a full disk) is fixed
+    /// by handing it over to a replica in sync, not by a restart, which
+    /// fails again while its disk is full (finding chaos-4).
+    #[test]
+    fn a_primary_that_cannot_write_is_handed_over() {
+        let mut p = copy("s0-0", true);
+        p["detail"] = json!({"load": {"disk_used_ratio": 1.0}, "health": {"status": "failing", "replication": {"replicas": [
+            {"url": "http://s0-1", "in_sync": false}, {"url": "http://s0-2", "in_sync": true}]}}});
+        let c = json!({"shards": [{"shard": 0, "state": "no_writes", "failover": true, "majority": true, "primary": "http://s0-0",
+            "why": "3 of 3 copies answer: the primary takes no writes: a write failed partway", "replicas": [p, copy("s0-1", true), copy("s0-2", true)]}]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let next = j["problems"][0]["next"]["text"].as_str().unwrap();
+        assert!(next.starts_with("Make s0-2 the primary"), "{next}");
+        assert!(next.contains("free s0-0's volume (100% full) and restart it") && !next.contains("restart the server"), "{next}");
+        // No replica in sync: fix it in place.
+        let mut c = c;
+        c["shards"][0]["replicas"][0]["detail"]["health"]["replication"]["replicas"][1]["in_sync"] = json!(false);
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        assert_eq!(j["problems"][0]["next"]["text"], "Free s0-0's volume (100% full) and restart it: no replica is in sync to take over");
     }
 
     #[test]
@@ -903,7 +1264,9 @@ mod tests {
         assert_eq!(er["value"], 0.025);
         assert_eq!(er["status"], "critical");
         assert_eq!(er["since_ms"], 10_000, "since the first point of the run over half the SLO");
-        assert_eq!(j["headline"], "Searches are failing: 2.5% failed over the last minute (SLO 1%)");
+        // The headline holds while the share moves; the problem says it.
+        assert_eq!(j["headline"], "Searches are failing: more than the SLO's 1% fail");
+        assert_eq!(j["problems"][0]["title"], "2.5% of searches failed over the last minute (SLO 1%)");
         assert!(j["coordinators"][0]["qps"].as_f64().unwrap() == 50.0);
         let p99 = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "p99").unwrap().clone();
         assert!(p99["value_ms"].as_f64().unwrap() <= 50.0 && p99["status"] == "ok", "{p99}");
@@ -938,7 +1301,7 @@ mod tests {
         i.now_ms = 300_000;
         let j = Fleet::default().judge(i);
         assert_eq!(j["status"], "critical");
-        assert_eq!(j["headline"], "Searches are failing: 3.3% failed over the last minute (SLO 1%)");
+        assert_eq!(j["problems"][0]["title"], "3.3% of searches failed over the last minute (SLO 1%)");
         assert_eq!(j["problems"][0]["since_ms"], 260_000);
         // Two failures in the last minute are not an outage.
         let p = pts(0, 300, |t| if t == 298_000 { 2 } else { 0 });
@@ -974,11 +1337,11 @@ mod tests {
         let theirs = Window { queries: 1000.0, failures: 50.0, hist: vec![0, 0, 0, 0, 0, 1000], secs: 20.0, cpu_s: 2.0, ratios: Vec::new() };
         let mut i = inputs(&c, &p);
         i.peers = vec![
-            PeerWindow { url: "http://b".into(), name: "coord-b".into(), window: theirs.clone(), recent: theirs, error: None },
+            PeerWindow { url: "http://b".into(), name: "coord-b".into(), window: theirs.clone(), recent: theirs, error: None, ..Default::default() },
             PeerWindow { url: "http://c".into(), name: "coord-c".into(), error: Some("coord-c: cannot connect".into()), ..Default::default() },
         ];
         let j = Fleet::default().judge(i);
-        assert_eq!(j["headline"], "Searches are failing: 2.5% failed over the last minute (SLO 1%)");
+        assert_eq!(j["problems"][0]["title"], "2.5% of searches failed over the last minute (SLO 1%)");
         let er = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
         assert_eq!((er["queries"].as_f64(), er["failures"].as_f64(), er["coordinators"].as_u64()), (Some(2000.0), Some(50.0), Some(2)));
         let cs = j["coordinators"].as_array().unwrap();
@@ -998,8 +1361,9 @@ mod tests {
         let f = Fleet::default();
         let j = f.judge(inputs(&c, &[]));
         assert_eq!(j["status"], "warning");
-        assert_eq!(j["headline"], "3 copies' disks are 88% to 90% full; the fullest is s1-0");
+        assert_eq!(j["headline"], "3 copies' disks are over 85% full");
         let pr = &j["problems"][0];
+        assert_eq!(pr["title"], "3 copies' disks are 88% to 90% full; the fullest is s1-0");
         assert_eq!((pr["id"].as_str(), pr["copies"].as_u64()), (Some("disk"), Some(3)));
         assert_eq!(pr["where"], json!(["shard 0", "shard 1", "s1-0", "s1-1", "s0-0"]));
         let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
@@ -1011,7 +1375,7 @@ mod tests {
         for (a, b) in [(0.92001, 0.91999), (0.91999, 0.92001)] {
             let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [disk("s0-1", a), disk("s0-0", b)]}]});
             let j = Fleet::default().judge(inputs(&c, &[]));
-            assert_eq!(j["headline"], "2 copies' disks are 92% full");
+            assert_eq!(j["problems"][0]["title"], "2 copies' disks are 92% full");
             let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
             assert_eq!((dc["where"].as_str(), dc["over"].clone()), (Some("s0-0"), json!(["s0-0", "s0-1"])));
         }
@@ -1038,6 +1402,19 @@ mod tests {
         let pr = Fleet::default().judge(i)["problems"][0].clone();
         assert_eq!(pr["title"], "1 alert is firing: Slow searches on s0-0");
         assert_eq!((pr["next"]["text"].as_str(), pr["next"]["view"].as_str()), (Some("Open the alert"), Some("alert/p99")));
+    }
+
+    /// An info alert (a shard's primary changed) is told, but Home stays
+    /// green: nothing is wrong.
+    #[test]
+    fn an_info_alert_does_not_turn_home_amber() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [copy("s0-0", true), copy("s0-1", true)]}]});
+        let mut i = inputs(&c, &[]);
+        i.alerts = vec![json!({"rule": "primary-changed", "name": "A shard's primary changed", "severity": "info", "state": "firing", "since_ms": 6000, "where": []})];
+        let j = Fleet::default().judge(i);
+        assert!(j["problems"].as_array().unwrap().iter().all(|p| p["id"] != "alerts"), "{j}");
+        let al = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "alerts").unwrap().clone();
+        assert_eq!((al["status"].as_str(), al["firing"].as_u64(), al["info"].as_u64()), (Some("ok"), Some(0), Some(1)), "{al}");
     }
 
     #[test]

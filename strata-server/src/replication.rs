@@ -371,6 +371,7 @@ impl Drop for Removed {
                 _ => {}
             }
         }
+        strata::storage::share::remove(&self.0, false);
     }
 }
 

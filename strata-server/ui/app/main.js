@@ -7,6 +7,7 @@
 import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
+import { loadApps, listApps, appIcon } from "./views/apps.js";
 
 const app = document.getElementById("app");
 const byId = Object.fromEntries(VIEWS.map((v) => [v.id, v]));
@@ -128,6 +129,11 @@ function drawNav() {
   clear(nav);
   const pins = new Set(store.get(PINS, []));
   for (const [g, list] of NAV) {
+    if (g === "Apps") {
+      const as = listApps();
+      if (as.length) { nav.append(h("h6", {}, "Apps")); for (const a of as) nav.append(appLink(a)); }
+      continue;
+    }
     const es = list.map((e) => ({ ...e, group: g })).filter((e) => viewOf(e));
     if (!es.length) continue;
     if (g !== "Labs") { nav.append(h("h6", {}, g)); for (const e of es) nav.append(navLink(e)); continue; }
@@ -142,6 +148,12 @@ function drawNav() {
     nav.append(box);
   }
   markCurrent();
+}
+/** An app's entry: #/app/<name>, with the app's own icon. */
+function appLink(a) {
+  const el = h("a", { href: "#/app/" + encodeURIComponent(a.name), dataset: { view: "app/" + a.name }, title: a.up ? `${a.title}: ${a.description || "an app"}` : `${a.title}: not answering (${a.error})` }, appIcon(a), h("span", { class: "t" }, a.title));
+  if (!a.up) el.append(h("span", { class: "count warn", title: "not answering" }, "!"));
+  return el;
 }
 function labItem(e, pinned) {
   const a = navLink(e);
@@ -192,6 +204,12 @@ function drawBadges() {
 }
 for (const ev of ["alerts", "fleet", "cluster"]) bus.on(ev, drawBadges);
 bus.on("whoami", () => { drawNav(); drawBadges(); });
+// The server's apps, once it says who is signed in (the list needs a key on a closed server).
+bus.on("whoami", () => loadApps(true));
+bus.on("apps", () => {
+  drawNav(); drawBadges();
+  if (current?.id === "app" && currentEntry?.id?.startsWith("app/")) { const a = listApps().find((x) => "app/" + x.name === currentEntry.id); if (a) currentEntry.title = a.title; drawCrumbs(); markCurrent(); }
+});
 setInterval(drawBadges, 5000);
 
 // ---------------------------------------------------------------- the top bar
@@ -431,6 +449,7 @@ function route() {
   const { v, e, unknown } = resolve(r);
   rangeFromUrl(r.params);
   currentEntry = e || { id: v.id, title: v.title, icon: v.icon, parent: v.parent };
+  if (v.id === "app" && r.rest[0]) { const a = listApps().find((x) => x.name === r.rest[0]); currentEntry = { id: "app/" + r.rest[0], title: a?.title || r.rest[0], icon: "box" }; }
   markCurrent();
   // A view with no time axis (the SQL workbench, Schema, Labs) hides the range and Live.
   top.classList.toggle("no-range", v.range === false);
@@ -441,6 +460,9 @@ function route() {
   moreBtn.querySelector("svg").replaceWith(icon(v.range === false ? "dots" : "clock"));
   if (unknown && unknown !== "home") toast(`There is no view "${unknown}": this is Home`);
   if (current === v && v.onParams) { v.onParams(r); return; }
+  // An app's page: drawn again only when another app opens.
+  if (current === v && v.id === "app" && route.app === r.rest[0]) return;
+  route.app = v.id === "app" ? r.rest[0] : null;
   try { cleanup?.(); } catch (err) { console.error(err); }
   current = v;
   drawCrumbs(v);

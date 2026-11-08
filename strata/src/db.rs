@@ -295,8 +295,12 @@ impl Db {
     /// for a while and stops would leave it in the file. Rows still in
     /// memory stay in the write-ahead log, which the next open reads. The
     /// database still answers and takes writes after it, without merging
-    /// in the background. Returns the bytes the file shrank by.
+    /// in the background. Returns the bytes the file shrank by. A database
+    /// opened read-only ([`DbOptions::read_only`]) is left as it is.
     pub fn close(&self) -> Result<u64> {
+        if self.storage.is_read_only() {
+            return Ok(0);
+        }
         self.storage.stop_merger();
         self.storage.merge(&MergePolicy::default())?;
         let st = self.storage.file_stats();
@@ -526,7 +530,7 @@ impl Db {
         let derivers = self.derivers_of(&schema);
         let media = self.media_resolver();
         let mut docs = docs.into_iter();
-        if models.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
+        if models.iter().all(Option::is_none) && derivers.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
             return self.storage.try_bulk_load_into(table, docs.map(move |d| {
                 d.map(|mut d| {
                     schema.fill_generated(&mut d);
@@ -776,7 +780,16 @@ impl Db {
         let schema = self.table(table)?;
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
         let Some(spec) = &f.derive else { return Err(Error::Schema(format!("field {field} is not a derived TEXT field"))) };
-        let kind = schema.field(&spec.from).and_then(|m| m.media).expect("checked by the schema");
+        let Some(kind) = schema.field(&spec.from).and_then(|m| m.media) else {
+            // Text of text: a language model's.
+            if d.modality() != Modality::Text {
+                return Err(Error::Schema(format!("model {} makes text of {}s, and {} is not a MEDIA field", spec.model, d.modality().as_str(), spec.from)));
+            }
+            let mut all = self.derivers.write().unwrap_or_else(|e| e.into_inner());
+            all.retain(|m| !(m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name)));
+            all.push(Deriving { table: schema.table.clone(), field: f.name.clone(), derive: spec.clone(), model: d });
+            return Ok(());
+        };
         let wants = match d.modality() {
             Modality::Image => crate::media::MediaKind::Image,
             Modality::Audio => crate::media::MediaKind::Audio,
@@ -877,7 +890,7 @@ impl Db {
         for f in schema.fields.iter().filter(|f| which(f)) {
             let opened = match (&f.embed, &f.derive) {
                 (Some(spec), _) => crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models).and_then(|m| self.set_embedder_in(table, &f.name, m)),
-                (_, Some(spec)) => crate::derive::open(&spec.model, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
+                (_, Some(spec)) => crate::derive::open_for(spec, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
                 _ => continue,
             };
             if let Err(e) = opened {
@@ -2235,6 +2248,27 @@ fn derived_of(derivers: &[Option<Arc<dyn Deriver>>], schema: &Schema, docs: &[Do
 /// together (a sound can be an hour long).
 fn derive_sources(d: &dyn Deriver, schema: &Schema, m: usize, values: &[String], files: &Files) -> Result<Vec<String>> {
     let field = &schema.fields[m].name;
+    // A TEXT or KEYWORD field's values are the inputs themselves, each
+    // distinct one given once (a language model's request each).
+    if schema.fields[m].media.is_none() {
+        let mut at: HashMap<&str, usize> = HashMap::new();
+        let mut distinct: Vec<&str> = Vec::new();
+        let slots: Vec<usize> = values
+            .iter()
+            .map(|v| {
+                *at.entry(v.as_str()).or_insert_with(|| {
+                    distinct.push(v.as_str());
+                    distinct.len() - 1
+                })
+            })
+            .collect();
+        let mut made = Vec::with_capacity(distinct.len());
+        for batch in distinct.chunks(32) {
+            let inputs: Vec<Input> = batch.iter().map(|v| Input::Text(v)).collect();
+            made.extend(d.derive(&inputs)?);
+        }
+        return Ok(slots.into_iter().map(|i| made[i].clone()).collect());
+    }
     if d.modality() == Modality::Audio {
         return in_sound_batches(field, values, files, |inputs| d.derive(inputs));
     }
