@@ -1214,13 +1214,16 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
     };
     // A Write message carries rows, as an HTTP write's body does.
     let max_body = svc.max_body;
+    let otlp = crate::otlp::grpc_service(svc.clone(), max_body);
     let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
     let mut builder = tonic::transport::Server::builder();
     if let Some(tls) = &access.tls {
         builder = builder.tls_config(tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(&tls.cert, &tls.key)))?;
     }
     builder
-        .add_service(tonic::service::interceptor::InterceptedService::new(service, check))
+        .add_service(tonic::service::interceptor::InterceptedService::new(service, check.clone()))
+        // otlp: OpenTelemetry's LogsService, behind the same check.
+        .add_service(tonic::service::interceptor::InterceptedService::new(otlp, check))
         .serve_with_incoming_shutdown(incoming, shutdown())
         .await
 }

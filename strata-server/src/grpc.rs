@@ -302,7 +302,8 @@ pub fn code_name(c: tonic::Code) -> &'static str {
 fn method_scope(method: &str) -> Option<Scope> {
     match method {
         "Replicate" | "Restore" | "Verify" | "Vote" | "Slots" | "Configure" | "ExportSlots" | "FreezeSlots" | "CleanupSlots" | "Write (moved)" | "Keys" | "Feed" | "FeedKeys" => None,
-        "Write" | "WriteStream" => Some(Scope::Write),
+        // LogsExport: OpenTelemetry logs in ([`crate::otlp::Logs`]).
+        "Write" | "WriteStream" | "LogsExport" => Some(Scope::Write),
         "Logs" | "Profile" => Some(Scope::Admin),
         "Query" | "TermStats" | "GuardCounts" | "SidNext" | "Sources" | "Schema" | "Hello" | "Release" | "Health" | "Get" => Some(Scope::Read),
         // An unknown method is the root's.
@@ -347,7 +348,7 @@ impl Grpc {
     /// Serves one call: gives it its id (the caller's `x-request-id`, or a
     /// new one, sent back in the answer's metadata), runs it in a span that
     /// names it, counts it and logs it ([`crate::obs`]).
-    async fn serve<T, R, Fut>(&self, method: &'static str, req: Request<T>, f: impl FnOnce(Arc<Service>, Principal, T) -> Fut) -> Result<Response<R>, Status>
+    pub(crate) async fn serve<T, R, Fut>(&self, method: &'static str, req: Request<T>, f: impl FnOnce(Arc<Service>, Principal, T) -> Fut) -> Result<Response<R>, Status>
     where
         Fut: Future<Output = Result<R, ApiError>>,
     {

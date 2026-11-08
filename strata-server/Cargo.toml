@@ -16,7 +16,8 @@ axum = "0.7"
 # Answers gzip-compressed for clients that ask (the command center polls large JSON).
 tower = { version = "0.5", default-features = false, features = ["util"] }
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
-tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
+# gzip: the OpenTelemetry Collector sends OTLP logs gzip-compressed by default.
+tonic = { version = "0.12", features = ["tls", "tls-webpki-roots", "gzip"] }
 prost = "0.13"
 # "stream": request bodies sent as they are made (strata-stream-bench, tests/stream.rs).
 # "rustls-tls-native-roots-no-provider": only for `tls_built_in_native_certs(false)`
