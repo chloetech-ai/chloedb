@@ -740,6 +740,8 @@ fn migrate(path: &Path, embedder: &Arc<dyn Embedder>, opts: &StoreOptions) -> Re
         }
         new.flush()?;
     }
+    // Its writer's lock stays with the name it was written under.
+    strata::storage::share::remove(&tmp, false);
     let bak = path.with_extension("v1");
     std::fs::rename(path, &bak)?;
     let _ = std::fs::rename(side(path, "-wal"), side(&bak, "-wal"));

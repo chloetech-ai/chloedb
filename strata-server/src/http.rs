@@ -9,7 +9,7 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`strata::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `strata::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers) |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`strata::rank_log::export`]) |
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`strata::rank_log::Credit`]) |
@@ -53,6 +53,7 @@
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
+//! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
@@ -233,6 +234,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/snapshot", post(snapshot))
         .route("/v1/admin/checkpoint", post(admin_checkpoint))
         .route("/v1/admin/check", post(admin_check))
+        .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
@@ -356,6 +358,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/index/tables", get(index_tables))
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
+        .route("/v1/admin/copies/scrub", post(copy_scrub))
         // The Simulator: a test run of the traffic simulator's mix against
         // this cluster, graded, with a model of other shapes (src/traffic).
         .route("/v1/admin/simulator", get(sim_view).post(sim_start))
@@ -581,6 +584,23 @@ async fn copy_checkpoint(State(app): State<App>, w: Option<axum::Extension<Princ
     let body = json!({"name": name, "layout": layout, "link_from": b["link_from"], "by": by});
     let j = ask_copy(c, &copy.url, crate::profiling::Kind::Checkpoint, body).await?;
     Ok(audited(j, format!("checkpoint {name} of {}", copy.short)))
+}
+
+/// `POST /v1/admin/copies/scrub {"url"}` on a coordinator: that copy
+/// reads every segment of its database against its checksum (as its
+/// `POST /v1/admin/scrub`), and answers `{scrub}`.
+async fn copy_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = app.svc.coordinator()?;
+    let copy = copy_of(&*c.snapshot().await, body_str(&b, "url")?)?;
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("copy {}", copy.short)), after: Some(json!({"url": copy.url, "scrub": true})), ..Default::default() });
+    let j = ask_copy(c, &copy.url, crate::profiling::Kind::Scrub, json!({"by": by})).await?;
+    let found = j["scrub"]["damaged"].as_array().map_or(0, Vec::len);
+    Ok(audited(j, format!("checked {}'s data against its checksums: {}", copy.short, match found {
+        0 => "no damage".to_string(),
+        1 => "1 damaged segment".to_string(),
+        n => format!("{n} damaged segments"),
+    })))
 }
 
 /// `GET /v1/index/tables` ([`crate::inspect::tables`]).
@@ -1061,7 +1081,13 @@ async fn metrics(State(app): State<App>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], app.svc.prometheus().await)
 }
 
-async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let arrow = match b.get("format") {
+        None | Some(Json::Null) => false,
+        Some(f) if f == "json" => false,
+        Some(f) if f == "arrow" => true,
+        Some(f) => return Err(ApiError::bad(format!("format is \"json\" (the default) or \"arrow\", not {f}"))),
+    };
     let stats = match b.get("stats") {
         None | Some(Json::Null) => None,
         Some(s) => Some(serde_json::from_value(s.clone()).map_err(|e| ApiError::bad(format!("bad stats: {e}")))?),
@@ -1082,16 +1108,62 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
         }
-        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await;
+        if arrow {
+            return Err(ApiError::bad("a logged query answers JSON: leave out format"));
+        }
+        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
+    }
+    if arrow && req.shard {
+        return Err(ApiError::bad("a shard's query answers its coordinator over gRPC: leave out format"));
     }
     let a = app.svc.query(req).await?;
+    if arrow {
+        return arrow_answer(a).await;
+    }
     let mut j = answer_of(&b, &a)?;
     // `"trace": true`: the timed steps the request took; `"profile":
     // true` answers them too, beside its steps' CPU time.
     if b.get("trace").and_then(|v| v.as_bool()) == Some(true) || b.get("profile").and_then(|v| v.as_bool()) == Some(true) {
         j["trace"] = json!(telemetry::trace().map(|t| t.spans()).unwrap_or_default());
     }
-    Ok(AxJson(j))
+    Ok(AxJson(j).into_response())
+}
+
+/// A query's answer as an Arrow IPC stream of one batch, for clients that
+/// want columns (`"format": "arrow"`): no JSON to write or read, and each
+/// column typed as an Arrow answer in a client's own process is
+/// ([`strata::query::arrow::answer_batch`]). How long it took and what the
+/// engine did go in headers; an answer without some shards (`partial`)
+/// names them in `x-strata-missing-shards`.
+#[cfg(feature = "datafusion")]
+async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
+    let took = a.took_ms;
+    let missing = a.missing.join(",");
+    let (bytes, stats) = tokio::task::spawn_blocking(move || {
+        let (batch, stats) = strata::query::arrow::answer_batch(strata::query::exec::Leaf::Rows(a.rs))?;
+        Ok::<_, strata::Error>((strata::query::arrow::ipc_of(&batch)?, stats))
+    })
+    .await
+    .map_err(ApiError::internal)??;
+    let mut r = (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apache.arrow.stream")], bytes).into_response();
+    // A header holds visible ASCII: one that would not is left out rather
+    // than failing the answer.
+    let mut put = |name: &'static str, v: String| {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&v) {
+            r.headers_mut().insert(name, v);
+        }
+    };
+    put("x-strata-took-ms", format!("{took:.3}"));
+    put("x-strata-stats", serde_json::to_string(&stats).unwrap_or_default());
+    if !missing.is_empty() {
+        put("x-strata-missing-shards", missing);
+    }
+    Ok(r)
+}
+
+#[cfg(not(feature = "datafusion"))]
+async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
+    Err(ApiError::bad("this server was built without Arrow answers (feature datafusion): leave out format"))
 }
 
 /// A query run and logged ([`Service::query_logged`]): its answer, with
@@ -2386,6 +2458,13 @@ async fn admin_checkpoint(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     };
     let stats = app.svc.checkpoint(body_str(&b, "name")?, layout, b.get("link_from").and_then(|v| v.as_str())).await?;
     Ok(AxJson(json!({"checkpoint": stats})))
+}
+
+/// `{"rate_mib_s"?}`: reads every segment against its checksum now
+/// ([`Service::scrub`]); unpaced unless asked.
+async fn admin_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Res {
+    let rate = body.as_ref().and_then(|b| b.get("rate_mib_s")).and_then(Json::as_u64).unwrap_or(0) << 20;
+    Ok(AxJson(app.svc.scrub(rate, &keys::audit_name(&who(w))).await?))
 }
 
 async fn admin_check(State(app): State<App>) -> Res {

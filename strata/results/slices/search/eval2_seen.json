@@ -1,0 +1,1337 @@
+{
+ "set": "seen",
+ "queries": 50000,
+ "pairs": 140162,
+ "tiers": {
+  "10000": {
+   "1": {
+    "covered": 0.02178,
+    "proved_single": 0.00146,
+    "proved_pairs": 0.00492,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.009296920395119116,
+      "proved_single": 0.009296920395119116,
+      "proved_pairs": 0.009296920395119116
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.014442832970751752,
+      "proved_single": 0.0020546289581822577,
+      "proved_pairs": 0.00918540004834421
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.026155849793792055,
+      "proved_single": 0.0011938354677664424,
+      "proved_pairs": 0.0030931191664857827
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.02646019694805683,
+      "proved_single": 7.517101405697962e-05,
+      "proved_pairs": 0.0015785912951965721
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.00492,
+      "equal_to_cloud": 0.9959349593495935
+     },
+     "0.9": {
+      "answered_locally": 0.01354,
+      "equal_to_cloud": 0.5406203840472673
+     },
+     "0.8": {
+      "answered_locally": 0.03618,
+      "equal_to_cloud": 0.30127142067440577
+     },
+     "0.7": {
+      "answered_locally": 0.0749,
+      "equal_to_cloud": 0.18264352469959946
+     },
+     "0.6": {
+      "answered_locally": 0.1515,
+      "equal_to_cloud": 0.09491749174917492
+     },
+     "0.5": {
+      "answered_locally": 0.2857,
+      "equal_to_cloud": 0.050682534126706334
+     },
+     "0.4": {
+      "answered_locally": 0.44986,
+      "equal_to_cloud": 0.03218779175743565
+     },
+     "0.3": {
+      "answered_locally": 0.5781,
+      "equal_to_cloud": 0.025047569624632417
+     }
+    }
+   },
+   "3": {
+    "covered": 0.01066,
+    "proved_single": 0.00058,
+    "proved_pairs": 0.00176,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.003486345148169669,
+      "proved_single": 0.003486345148169669,
+      "proved_pairs": 0.003486345148169669
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.0069494802997341065,
+      "proved_single": 0.0013898960599468214,
+      "proved_pairs": 0.0032632342277012327
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.014705882352941176,
+      "proved_single": 0.0,
+      "proved_pairs": 0.0013566312133709573
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.010599112982034128,
+      "proved_single": 0.0,
+      "proved_pairs": 0.00022551304217093888
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.00176,
+      "equal_to_cloud": 0.9886363636363636
+     },
+     "0.9": {
+      "answered_locally": 0.00346,
+      "equal_to_cloud": 0.6473988439306358
+     },
+     "0.8": {
+      "answered_locally": 0.01012,
+      "equal_to_cloud": 0.35177865612648224
+     },
+     "0.7": {
+      "answered_locally": 0.02496,
+      "equal_to_cloud": 0.2107371794871795
+     },
+     "0.6": {
+      "answered_locally": 0.05438,
+      "equal_to_cloud": 0.10555351232070614
+     },
+     "0.5": {
+      "answered_locally": 0.1283,
+      "equal_to_cloud": 0.04536243180046765
+     },
+     "0.4": {
+      "answered_locally": 0.27628,
+      "equal_to_cloud": 0.021065585637758795
+     },
+     "0.3": {
+      "answered_locally": 0.4845,
+      "equal_to_cloud": 0.012012383900928793
+     }
+    }
+   },
+   "5": {
+    "covered": 0.0096,
+    "proved_single": 0.00046,
+    "proved_pairs": 0.00128,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.0011621150493898896,
+      "proved_single": 0.0011621150493898896,
+      "proved_pairs": 0.0011621150493898896
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.005982596084118927,
+      "proved_single": 0.0012690355329949238,
+      "proved_pairs": 0.0025380710659898475
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.013783373127848926,
+      "proved_single": 0.0,
+      "proved_pairs": 0.0010853049706967658
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.009396376757122453,
+      "proved_single": 0.0,
+      "proved_pairs": 0.0
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.00128,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.00226,
+      "equal_to_cloud": 0.7522123893805309
+     },
+     "0.8": {
+      "answered_locally": 0.00594,
+      "equal_to_cloud": 0.43434343434343436
+     },
+     "0.7": {
+      "answered_locally": 0.015,
+      "equal_to_cloud": 0.2826666666666667
+     },
+     "0.6": {
+      "answered_locally": 0.03456,
+      "equal_to_cloud": 0.1412037037037037
+     },
+     "0.5": {
+      "answered_locally": 0.08482,
+      "equal_to_cloud": 0.05871256779061542
+     },
+     "0.4": {
+      "answered_locally": 0.2039,
+      "equal_to_cloud": 0.024423737126042178
+     },
+     "0.3": {
+      "answered_locally": 0.41454,
+      "equal_to_cloud": 0.012013315964683746
+     }
+    }
+   },
+   "10": {
+    "covered": 0.00946,
+    "proved_single": 0.00046,
+    "proved_pairs": 0.00118,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.0011621150493898896,
+      "proved_single": 0.0011621150493898896,
+      "proved_pairs": 0.0011621150493898896
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.005922165820642978,
+      "proved_single": 0.0012690355329949238,
+      "proved_pairs": 0.002477640802513899
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.01367484263077925,
+      "proved_single": 0.0,
+      "proved_pairs": 0.0008682439765574126
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.009095692700894536,
+      "proved_single": 0.0,
+      "proved_pairs": 0.0
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.00118,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.00176,
+      "equal_to_cloud": 0.8181818181818182
+     },
+     "0.8": {
+      "answered_locally": 0.00346,
+      "equal_to_cloud": 0.6242774566473989
+     },
+     "0.7": {
+      "answered_locally": 0.00872,
+      "equal_to_cloud": 0.4151376146788991
+     },
+     "0.6": {
+      "answered_locally": 0.01972,
+      "equal_to_cloud": 0.23732251521298176
+     },
+     "0.5": {
+      "answered_locally": 0.048,
+      "equal_to_cloud": 0.10083333333333333
+     },
+     "0.4": {
+      "answered_locally": 0.12782,
+      "equal_to_cloud": 0.03802221874511031
+     },
+     "0.3": {
+      "answered_locally": 0.3086,
+      "equal_to_cloud": 0.01574854180168503
+     }
+    }
+   }
+  },
+  "30000": {
+   "1": {
+    "covered": 0.06104,
+    "proved_single": 0.00382,
+    "proved_pairs": 0.01598,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.02033701336432307,
+      "proved_single": 0.02033701336432307,
+      "proved_pairs": 0.02033701336432307
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.052090887116267824,
+      "proved_single": 0.0062847474014986705,
+      "proved_pairs": 0.030940294899685764
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.05904059040590406,
+      "proved_single": 0.002387670935532885,
+      "proved_pairs": 0.009930540481875407
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.08020747199879727,
+      "proved_single": 0.000601368112455837,
+      "proved_pairs": 0.005186799969931594
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.01598,
+      "equal_to_cloud": 0.9987484355444305
+     },
+     "0.9": {
+      "answered_locally": 0.03994,
+      "equal_to_cloud": 0.5968953430145217
+     },
+     "0.8": {
+      "answered_locally": 0.08882,
+      "equal_to_cloud": 0.37829317721233957
+     },
+     "0.7": {
+      "answered_locally": 0.16588,
+      "equal_to_cloud": 0.24981914637087052
+     },
+     "0.6": {
+      "answered_locally": 0.29064,
+      "equal_to_cloud": 0.15194054500412882
+     },
+     "0.5": {
+      "answered_locally": 0.46154,
+      "equal_to_cloud": 0.09671967760107467
+     },
+     "0.4": {
+      "answered_locally": 0.6259,
+      "equal_to_cloud": 0.0714171592906215
+     },
+     "0.3": {
+      "answered_locally": 0.71784,
+      "equal_to_cloud": 0.062270143764627216
+     }
+    }
+   },
+   "3": {
+    "covered": 0.03494,
+    "proved_single": 0.00214,
+    "proved_pairs": 0.00606,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.008134805345729227,
+      "proved_single": 0.008134805345729227,
+      "proved_pairs": 0.008134805345729227
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.029429538312787044,
+      "proved_single": 0.004592700024172105,
+      "proved_pairs": 0.012569494802997341
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.03472975906229651,
+      "proved_single": 0.0009225092250922509,
+      "proved_pairs": 0.003744302148903842
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.04555363451852965,
+      "proved_single": 0.0,
+      "proved_pairs": 0.0009020521686837555
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.00606,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.0129,
+      "equal_to_cloud": 0.6558139534883721
+     },
+     "0.8": {
+      "answered_locally": 0.03272,
+      "equal_to_cloud": 0.4095354523227384
+     },
+     "0.7": {
+      "answered_locally": 0.07078,
+      "equal_to_cloud": 0.272393331449562
+     },
+     "0.6": {
+      "answered_locally": 0.14154,
+      "equal_to_cloud": 0.15416136781121945
+     },
+     "0.5": {
+      "answered_locally": 0.27614,
+      "equal_to_cloud": 0.08140798145868038
+     },
+     "0.4": {
+      "answered_locally": 0.46954,
+      "equal_to_cloud": 0.048004429867529924
+     },
+     "0.3": {
+      "answered_locally": 0.65828,
+      "equal_to_cloud": 0.03424074861760953
+     }
+    }
+   },
+   "5": {
+    "covered": 0.03124,
+    "proved_single": 0.00192,
+    "proved_pairs": 0.0044,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.005229517722254503,
+      "proved_single": 0.005229517722254503,
+      "proved_pairs": 0.005229517722254503
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.02622673434856176,
+      "proved_single": 0.0042905487067923615,
+      "proved_pairs": 0.009850132946579647
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.03109398741046234,
+      "proved_single": 0.0008682439765574126,
+      "proved_pairs": 0.0024962014326025614
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.04104337367511088,
+      "proved_single": 0.0,
+      "proved_pairs": 0.00015034202811395924
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.0044,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.00834,
+      "equal_to_cloud": 0.7146282973621103
+     },
+     "0.8": {
+      "answered_locally": 0.02198,
+      "equal_to_cloud": 0.45040946314831665
+     },
+     "0.7": {
+      "answered_locally": 0.048,
+      "equal_to_cloud": 0.3204166666666667
+     },
+     "0.6": {
+      "answered_locally": 0.09882,
+      "equal_to_cloud": 0.18801861971260878
+     },
+     "0.5": {
+      "answered_locally": 0.2088,
+      "equal_to_cloud": 0.09281609195402299
+     },
+     "0.4": {
+      "answered_locally": 0.39064,
+      "equal_to_cloud": 0.04976448904362073
+     },
+     "0.3": {
+      "answered_locally": 0.60852,
+      "equal_to_cloud": 0.031946361664366006
+     }
+    }
+   },
+   "10": {
+    "covered": 0.0306,
+    "proved_single": 0.00178,
+    "proved_pairs": 0.004,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.004067402672864613,
+      "proved_single": 0.004067402672864613,
+      "proved_pairs": 0.004067402672864613
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.02574329224075417,
+      "proved_single": 0.004048827652888567,
+      "proved_pairs": 0.009366690838772057
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.030714130670718473,
+      "proved_single": 0.0008139787280225743,
+      "proved_pairs": 0.002062079444323855
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.039915808464256186,
+      "proved_single": 0.0,
+      "proved_pairs": 0.0
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.004,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.00566,
+      "equal_to_cloud": 0.8409893992932862
+     },
+     "0.8": {
+      "answered_locally": 0.01336,
+      "equal_to_cloud": 0.5598802395209581
+     },
+     "0.7": {
+      "answered_locally": 0.03032,
+      "equal_to_cloud": 0.4241424802110818
+     },
+     "0.6": {
+      "answered_locally": 0.06322,
+      "equal_to_cloud": 0.27238215754508066
+     },
+     "0.5": {
+      "answered_locally": 0.13772,
+      "equal_to_cloud": 0.1360731919837351
+     },
+     "0.4": {
+      "answered_locally": 0.28912,
+      "equal_to_cloud": 0.06516325401217488
+     },
+     "0.3": {
+      "answered_locally": 0.52122,
+      "equal_to_cloud": 0.03614596523540923
+     }
+    }
+   }
+  },
+  "100000": {
+   "1": {
+    "covered": 0.1365,
+    "proved_single": 0.00828,
+    "proved_pairs": 0.04146,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.06624055781522371,
+      "proved_single": 0.06624055781522371,
+      "proved_pairs": 0.06624055781522371
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.0997703649987914,
+      "proved_single": 0.011904761904761904,
+      "proved_pairs": 0.07203287406333092
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.13088777946602995,
+      "proved_single": 0.004612546125461255,
+      "proved_pairs": 0.026861298024744955
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.19905284522288205,
+      "proved_single": 0.0013530782530256334,
+      "proved_pairs": 0.02044651582349846
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.04146,
+      "equal_to_cloud": 0.9975880366618427
+     },
+     "0.9": {
+      "answered_locally": 0.10022,
+      "equal_to_cloud": 0.6525643584114947
+     },
+     "0.8": {
+      "answered_locally": 0.19084,
+      "equal_to_cloud": 0.48396562565499895
+     },
+     "0.7": {
+      "answered_locally": 0.3148,
+      "equal_to_cloud": 0.3508894536213469
+     },
+     "0.6": {
+      "answered_locally": 0.47446,
+      "equal_to_cloud": 0.24372971377987607
+     },
+     "0.5": {
+      "answered_locally": 0.6424,
+      "equal_to_cloud": 0.18156911581569116
+     },
+     "0.4": {
+      "answered_locally": 0.76794,
+      "equal_to_cloud": 0.15201708466807304
+     },
+     "0.3": {
+      "answered_locally": 0.82036,
+      "equal_to_cloud": 0.14230337900433956
+     }
+    }
+   },
+   "3": {
+    "covered": 0.08848,
+    "proved_single": 0.00484,
+    "proved_pairs": 0.01816,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.030796048808832074,
+      "proved_single": 0.030796048808832074,
+      "proved_pairs": 0.030796048808832074
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.05879864636209814,
+      "proved_single": 0.009427121102248005,
+      "proved_pairs": 0.03480783176214648
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.08367701324072065,
+      "proved_single": 0.0017364879531148252,
+      "proved_pairs": 0.01079878445843282
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.1395174020897542,
+      "proved_single": 7.517101405697962e-05,
+      "proved_pairs": 0.0060136811245583704
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.01816,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.04114,
+      "equal_to_cloud": 0.6869227029654837
+     },
+     "0.8": {
+      "answered_locally": 0.09228,
+      "equal_to_cloud": 0.4952319029042046
+     },
+     "0.7": {
+      "answered_locally": 0.17452,
+      "equal_to_cloud": 0.36167774467109787
+     },
+     "0.6": {
+      "answered_locally": 0.30062,
+      "equal_to_cloud": 0.23212028474486063
+     },
+     "0.5": {
+      "answered_locally": 0.47416,
+      "equal_to_cloud": 0.15016028344862495
+     },
+     "0.4": {
+      "answered_locally": 0.65578,
+      "equal_to_cloud": 0.10881698130470585
+     },
+     "0.3": {
+      "answered_locally": 0.78968,
+      "equal_to_cloud": 0.09039104447371087
+     }
+    }
+   },
+   "5": {
+    "covered": 0.0807,
+    "proved_single": 0.00412,
+    "proved_pairs": 0.01352,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.023823358512492735,
+      "proved_single": 0.023823358512492735,
+      "proved_pairs": 0.023823358512492735
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.051607445008460234,
+      "proved_single": 0.008339376359680928,
+      "proved_pairs": 0.028402223833695915
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.07651400043412199,
+      "proved_single": 0.0014651617104406338,
+      "proved_pairs": 0.007325808552203169
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.13004585431857477,
+      "proved_single": 0.0,
+      "proved_pairs": 0.002255130421709389
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.01352,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.02836,
+      "equal_to_cloud": 0.7348377997179125
+     },
+     "0.8": {
+      "answered_locally": 0.06604,
+      "equal_to_cloud": 0.5384615384615384
+     },
+     "0.7": {
+      "answered_locally": 0.13038,
+      "equal_to_cloud": 0.4086516336861482
+     },
+     "0.6": {
+      "answered_locally": 0.23738,
+      "equal_to_cloud": 0.26194287640070774
+     },
+     "0.5": {
+      "answered_locally": 0.39846,
+      "equal_to_cloud": 0.1607187672539276
+     },
+     "0.4": {
+      "answered_locally": 0.59022,
+      "equal_to_cloud": 0.10877299989834299
+     },
+     "0.3": {
+      "answered_locally": 0.76142,
+      "equal_to_cloud": 0.08434241286018229
+     }
+    }
+   },
+   "10": {
+    "covered": 0.0793,
+    "proved_single": 0.00372,
+    "proved_pairs": 0.01178,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.020918070889018012,
+      "proved_single": 0.020918070889018012,
+      "proved_pairs": 0.020918070889018012
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.05051970026589316,
+      "proved_single": 0.007855934251873338,
+      "proved_pairs": 0.027435339618080735
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.0755372259604949,
+      "proved_single": 0.0010853049706967658,
+      "proved_pairs": 0.005100933362274799
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.12786589491092235,
+      "proved_single": 0.0,
+      "proved_pairs": 0.00037585507028489815
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.01178,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.01872,
+      "equal_to_cloud": 0.8354700854700855
+     },
+     "0.8": {
+      "answered_locally": 0.04354,
+      "equal_to_cloud": 0.6150666054203031
+     },
+     "0.7": {
+      "answered_locally": 0.08962,
+      "equal_to_cloud": 0.5063601874581567
+     },
+     "0.6": {
+      "answered_locally": 0.1704,
+      "equal_to_cloud": 0.34518779342723005
+     },
+     "0.5": {
+      "answered_locally": 0.30572,
+      "equal_to_cloud": 0.20417375376161193
+     },
+     "0.4": {
+      "answered_locally": 0.49804,
+      "equal_to_cloud": 0.12613444703236687
+     },
+     "0.3": {
+      "answered_locally": 0.7039,
+      "equal_to_cloud": 0.0893024577354738
+     }
+    }
+   }
+  },
+  "200000": {
+   "1": {
+    "covered": 0.2044,
+    "proved_single": 0.01222,
+    "proved_pairs": 0.06866,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.10865775711795468,
+      "proved_single": 0.10923881464264962,
+      "proved_pairs": 0.10923881464264962
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.15131737974377568,
+      "proved_single": 0.01752477640802514,
+      "proved_pairs": 0.11880589799371526
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.19904493162578685,
+      "proved_single": 0.00602344258736705,
+      "proved_pairs": 0.045202952029520294
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.29023528527399833,
+      "proved_single": 0.0016537623092535518,
+      "proved_pairs": 0.03352627226941291
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.06866,
+      "equal_to_cloud": 0.9982522575007282
+     },
+     "0.9": {
+      "answered_locally": 0.15326,
+      "equal_to_cloud": 0.7002479446691896
+     },
+     "0.8": {
+      "answered_locally": 0.27332,
+      "equal_to_cloud": 0.5420020488804332
+     },
+     "0.7": {
+      "answered_locally": 0.41538,
+      "equal_to_cloud": 0.4176898261832539
+     },
+     "0.6": {
+      "answered_locally": 0.58378,
+      "equal_to_cloud": 0.30997978690602623
+     },
+     "0.5": {
+      "answered_locally": 0.73666,
+      "equal_to_cloud": 0.2472511063448538
+     },
+     "0.4": {
+      "answered_locally": 0.83336,
+      "equal_to_cloud": 0.21870500143995392
+     },
+     "0.3": {
+      "answered_locally": 0.86378,
+      "equal_to_cloud": 0.2110028016393063
+     }
+    }
+   },
+   "3": {
+    "covered": 0.14324,
+    "proved_single": 0.0072,
+    "proved_pairs": 0.03348,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.05520046484601976,
+      "proved_single": 0.0557815223707147,
+      "proved_pairs": 0.0557815223707147
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.09554024655547498,
+      "proved_single": 0.013173797437756828,
+      "proved_pairs": 0.06665458061397148
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.13843064901237248,
+      "proved_single": 0.0023334056869980463,
+      "proved_pairs": 0.018233123507705666
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.2206269262572352,
+      "proved_single": 0.00022551304217093888,
+      "proved_pairs": 0.010448770953920168
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.03348,
+      "equal_to_cloud": 0.998805256869773
+     },
+     "0.9": {
+      "answered_locally": 0.07348,
+      "equal_to_cloud": 0.7182906913445836
+     },
+     "0.8": {
+      "answered_locally": 0.14806,
+      "equal_to_cloud": 0.5607186275834122
+     },
+     "0.7": {
+      "answered_locally": 0.25908,
+      "equal_to_cloud": 0.4292882507333642
+     },
+     "0.6": {
+      "answered_locally": 0.40854,
+      "equal_to_cloud": 0.2971557252655799
+     },
+     "0.5": {
+      "answered_locally": 0.58898,
+      "equal_to_cloud": 0.20948079731060476
+     },
+     "0.4": {
+      "answered_locally": 0.75034,
+      "equal_to_cloud": 0.16464536076978437
+     },
+     "0.3": {
+      "answered_locally": 0.84546,
+      "equal_to_cloud": 0.14616894944763797
+     }
+    }
+   },
+   "5": {
+    "covered": 0.13334,
+    "proved_single": 0.0059,
+    "proved_pairs": 0.02584,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.04299825682742592,
+      "proved_single": 0.04299825682742592,
+      "proved_pairs": 0.04299825682742592
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.08581097413584723,
+      "proved_single": 0.011421319796954314,
+      "proved_pairs": 0.0581339134638627
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.13029086173214674,
+      "proved_single": 0.001682222704579987,
+      "proved_pairs": 0.01112437594964185
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.20837405096594752,
+      "proved_single": 7.517101405697962e-05,
+      "proved_pairs": 0.0038337217169059612
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.02584,
+      "equal_to_cloud": 0.9984520123839009
+     },
+     "0.9": {
+      "answered_locally": 0.05238,
+      "equal_to_cloud": 0.7674684994272624
+     },
+     "0.8": {
+      "answered_locally": 0.11128,
+      "equal_to_cloud": 0.6047807332854062
+     },
+     "0.7": {
+      "answered_locally": 0.20622,
+      "equal_to_cloud": 0.47386286490156143
+     },
+     "0.6": {
+      "answered_locally": 0.33768,
+      "equal_to_cloud": 0.32883203032456765
+     },
+     "0.5": {
+      "answered_locally": 0.51422,
+      "equal_to_cloud": 0.22204503908832796
+     },
+     "0.4": {
+      "answered_locally": 0.69306,
+      "equal_to_cloud": 0.1650650737309901
+     },
+     "0.3": {
+      "answered_locally": 0.82796,
+      "equal_to_cloud": 0.13821923764433064
+     }
+    }
+   },
+   "10": {
+    "covered": 0.1318,
+    "proved_single": 0.00542,
+    "proved_pairs": 0.0229,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.04125508425334108,
+      "proved_single": 0.04125508425334108,
+      "proved_pairs": 0.04125508425334108
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.08436064781242446,
+      "proved_single": 0.010817017162194827,
+      "proved_pairs": 0.05674401740391588
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.1289884957673106,
+      "proved_single": 0.0011395702192316041,
+      "proved_pairs": 0.006891686563924463
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.20641960460046607,
+      "proved_single": 0.0,
+      "proved_pairs": 0.000601368112455837
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.0229,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.03542,
+      "equal_to_cloud": 0.8605307735742518
+     },
+     "0.8": {
+      "answered_locally": 0.07646,
+      "equal_to_cloud": 0.6819251896416427
+     },
+     "0.7": {
+      "answered_locally": 0.14974,
+      "equal_to_cloud": 0.5705890209696808
+     },
+     "0.6": {
+      "answered_locally": 0.25982,
+      "equal_to_cloud": 0.41059194827188056
+     },
+     "0.5": {
+      "answered_locally": 0.41936,
+      "equal_to_cloud": 0.26807516215185045
+     },
+     "0.4": {
+      "answered_locally": 0.61196,
+      "equal_to_cloud": 0.18452186417412902
+     },
+     "0.3": {
+      "answered_locally": 0.78764,
+      "equal_to_cloud": 0.14346655832613883
+     }
+    }
+   }
+  },
+  "400000": {
+   "1": {
+    "covered": 0.31964,
+    "proved_single": 0.0187,
+    "proved_pairs": 0.1168,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.1818710052295177,
+      "proved_single": 0.18245206275421266,
+      "proved_pairs": 0.18245206275421266
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.23634276045443559,
+      "proved_single": 0.027435339618080735,
+      "proved_pairs": 0.1985738457819676
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.3166919904493163,
+      "proved_single": 0.007814195789016714,
+      "proved_pairs": 0.07830475363577165
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.44516274524543337,
+      "proved_single": 0.0017289333233105315,
+      "proved_pairs": 0.05991129820341276
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.1168,
+      "equal_to_cloud": 0.998972602739726
+     },
+     "0.9": {
+      "answered_locally": 0.24318,
+      "equal_to_cloud": 0.748499054198536
+     },
+     "0.8": {
+      "answered_locally": 0.39846,
+      "equal_to_cloud": 0.6166741956532651
+     },
+     "0.7": {
+      "answered_locally": 0.56008,
+      "equal_to_cloud": 0.5063562348235966
+     },
+     "0.6": {
+      "answered_locally": 0.71596,
+      "equal_to_cloud": 0.4099111682216884
+     },
+     "0.5": {
+      "answered_locally": 0.83092,
+      "equal_to_cloud": 0.3549078130265248
+     },
+     "0.4": {
+      "answered_locally": 0.8902,
+      "equal_to_cloud": 0.3314311390698719
+     },
+     "0.3": {
+      "answered_locally": 0.90404,
+      "equal_to_cloud": 0.32635724083005174
+     }
+    }
+   },
+   "3": {
+    "covered": 0.23882,
+    "proved_single": 0.01102,
+    "proved_pairs": 0.06024,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.09819872167344568,
+      "proved_single": 0.09819872167344568,
+      "proved_pairs": 0.09819872167344568
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.15905245346869712,
+      "proved_single": 0.0194585448392555,
+      "proved_pairs": 0.12503021513173798
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.23344909919687432,
+      "proved_single": 0.003038853917950944,
+      "proved_pairs": 0.02979162144562622
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.3636773660076674,
+      "proved_single": 0.0003006840562279185,
+      "proved_pairs": 0.016913478162820416
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.06024,
+      "equal_to_cloud": 0.999003984063745
+     },
+     "0.9": {
+      "answered_locally": 0.12646,
+      "equal_to_cloud": 0.7581844061363276
+     },
+     "0.8": {
+      "answered_locally": 0.24206,
+      "equal_to_cloud": 0.6167892258117822
+     },
+     "0.7": {
+      "answered_locally": 0.39028,
+      "equal_to_cloud": 0.5031259608486215
+     },
+     "0.6": {
+      "answered_locally": 0.5584,
+      "equal_to_cloud": 0.3820916905444126
+     },
+     "0.5": {
+      "answered_locally": 0.72052,
+      "equal_to_cloud": 0.30042191750402486
+     },
+     "0.4": {
+      "answered_locally": 0.84274,
+      "equal_to_cloud": 0.2570662363243705
+     },
+     "0.3": {
+      "answered_locally": 0.89324,
+      "equal_to_cloud": 0.2425775827325243
+     }
+    }
+   },
+   "5": {
+    "covered": 0.22636,
+    "proved_single": 0.00928,
+    "proved_pairs": 0.0485,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.0830912260313771,
+      "proved_single": 0.0830912260313771,
+      "proved_pairs": 0.0830912260313771
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.14672467971960357,
+      "proved_single": 0.017222625090645396,
+      "proved_pairs": 0.11330674401740391
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.22243325374430215,
+      "proved_single": 0.00189928369871934,
+      "proved_pairs": 0.017581940525287606
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.3493948733368413,
+      "proved_single": 7.517101405697962e-05,
+      "proved_pairs": 0.006239194166729309
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.0485,
+      "equal_to_cloud": 0.9995876288659794
+     },
+     "0.9": {
+      "answered_locally": 0.09222,
+      "equal_to_cloud": 0.8004771199306008
+     },
+     "0.8": {
+      "answered_locally": 0.18788,
+      "equal_to_cloud": 0.6550989993612945
+     },
+     "0.7": {
+      "answered_locally": 0.3233,
+      "equal_to_cloud": 0.5472935354160223
+     },
+     "0.6": {
+      "answered_locally": 0.48616,
+      "equal_to_cloud": 0.4109758104327793
+     },
+     "0.5": {
+      "answered_locally": 0.65746,
+      "equal_to_cloud": 0.31095427858729047
+     },
+     "0.4": {
+      "answered_locally": 0.80438,
+      "equal_to_cloud": 0.25455630423431713
+     },
+     "0.3": {
+      "answered_locally": 0.88378,
+      "equal_to_cloud": 0.2317318789744054
+     }
+    }
+   },
+   "10": {
+    "covered": 0.22478,
+    "proved_single": 0.00874,
+    "proved_pairs": 0.04364,
+    "violations_pairs": 0,
+    "by_words": {
+     "1": {
+      "share": 0.03442,
+      "covered": 0.08018593840790238,
+      "proved_single": 0.08018593840790238,
+      "proved_pairs": 0.08018593840790238
+     },
+     "2": {
+      "share": 0.33096,
+      "covered": 0.1451534928692289,
+      "proved_single": 0.016678752719361856,
+      "proved_pairs": 0.1119168479574571
+     },
+     "3": {
+      "share": 0.36856,
+      "covered": 0.22129368352507053,
+      "proved_single": 0.0012481007163012807,
+      "proved_pairs": 0.009387887996527023
+     },
+     "4": {
+      "share": 0.26606,
+      "covered": 0.3473652559573029,
+      "proved_single": 0.0,
+      "proved_pairs": 0.001428249267082613
+     }
+    },
+    "confidence": {
+     "1.0": {
+      "answered_locally": 0.04364,
+      "equal_to_cloud": 1.0
+     },
+     "0.9": {
+      "answered_locally": 0.06484,
+      "equal_to_cloud": 0.879086983343615
+     },
+     "0.8": {
+      "answered_locally": 0.13138,
+      "equal_to_cloud": 0.7272035317399909
+     },
+     "0.7": {
+      "answered_locally": 0.2484,
+      "equal_to_cloud": 0.6275362318840579
+     },
+     "0.6": {
+      "answered_locally": 0.39708,
+      "equal_to_cloud": 0.4861488868741815
+     },
+     "0.5": {
+      "answered_locally": 0.57118,
+      "equal_to_cloud": 0.35456423544241744
+     },
+     "0.4": {
+      "answered_locally": 0.73766,
+      "equal_to_cloud": 0.2755741127348643
+     },
+     "0.3": {
+      "answered_locally": 0.86294,
+      "equal_to_cloud": 0.23565948965165598
+     }
+    }
+   }
+  }
+ }
+}

@@ -452,14 +452,28 @@ impl Database {
         Ok(Database::new(with_threads(db, threads), Some(models)))
     }
 
-    /// Opens the database at `path`.
+    /// Opens the database at `path`; `read_only` to read it while another
+    /// process writes it.
     #[staticmethod]
-    #[pyo3(signature = (path, models = None, threads = None))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
+    #[pyo3(signature = (path, models = None, threads = None, read_only = false))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool) -> PyResult<Self> {
         let threads = threads_or_cores(threads)?;
         // The layout comes from the file; the option only matters to a create.
-        let db = py.detach(|| Db::open(&path, db_options(false, threads))).map_err(err)?;
+        let opts = DbOptions { read_only, ..db_options(false, threads) };
+        let db = py.detach(|| Db::open(&path, opts)).map_err(err)?;
         Ok(Database::new(with_threads(db, threads), models))
+    }
+
+    /// Whether it was opened read-only.
+    fn read_only(&self) -> PyResult<bool> {
+        Ok(self.get()?.storage().is_read_only())
+    }
+
+    /// A read-only database: reads what the writer committed since it
+    /// last looked, now; whether anything changed.
+    fn refresh(&self, py: Python<'_>) -> PyResult<bool> {
+        let db = self.get()?;
+        py.detach(|| db.storage().refresh()).map_err(err)
     }
 
     /// The schema of the first table, or of `table`, in its short JSON form.
@@ -1066,6 +1080,14 @@ fn upgrade(py: Python<'_>, path: PathBuf) -> PyResult<Option<(PathBuf, usize, u6
     Ok(py.detach(|| strata::upgrade::upgrade(&path)).map_err(err)?.map(|u| (u.old, u.tables, u.rows)))
 }
 
+/// The `CREATE TABLE` statement that makes a table of `schema` (JSON
+/// text, either form): how a frame's store adds a table to an open
+/// database.
+#[pyfunction]
+fn create_sql(schema: &str) -> PyResult<String> {
+    Ok(strata::query::ddl::create_sql(&Schema::from_json(schema).map_err(err)?))
+}
+
 #[pymodule]
 fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
@@ -1073,6 +1095,7 @@ fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<arrow::Arrow>()?;
     m.add_function(wrap_pyfunction!(train_codebook, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
+    m.add_function(wrap_pyfunction!(create_sql, m)?)?;
     m.add("StrataError", m.py().get_type::<StrataError>())?;
     Ok(())
 }

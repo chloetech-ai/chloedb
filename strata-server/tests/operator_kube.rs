@@ -315,3 +315,65 @@ async fn the_operator_makes_a_clusters_objects_on_an_api_server() {
     assert!(out.phase == Phase::Failed && out.message.contains("give a schema or demo, not both"), "{out:?}");
     assert_eq!(now().await["status"]["phase"], "Failed");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crawler_runs_beside_a_cluster_on_an_api_server() {
+    let Some(bin) = std::env::var_os("STRATA_ENVTEST_DIR") else {
+        eprintln!("skipped: set STRATA_ENVTEST_DIR to a directory holding etcd and kube-apiserver");
+        return;
+    };
+    let env = Envtest::start(Path::new(&bin)).await;
+    let k = env.kube();
+    let crd = operator::crd();
+    k.apply(&format!("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/{}", crd["metadata"]["name"].as_str().unwrap()), &crd).await.unwrap();
+    k.apply("/api/v1/namespaces/db", &json!({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "db"}})).await.unwrap();
+    let t0 = Instant::now();
+    while !k.get(CLUSTERS).await.is_ok_and(|r| r.is_some()) {
+        assert!(t0.elapsed() < Duration::from_secs(30), "the StrataCluster resource was not served");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // The resource keeps spec.crawler as given, and its definition
+    // refuses what is out of bounds.
+    let shop = json!({"apiVersion": "strata.chloetech.ai/v1alpha1", "kind": "StrataCluster", "metadata": {"name": "shop", "namespace": "db"},
+                      "spec": {"demo": 10, "tokenSecret": "admin", "crawler": {"splitRows": 5000, "maxShards": 3, "args": ["--concurrency", "8"]}}});
+    k.apply(&format!("{CLUSTERS}/shop"), &shop).await.unwrap();
+    let stored = get(&k, &format!("{CLUSTERS}/shop")).await;
+    assert_eq!(stored["spec"]["crawler"], shop["spec"]["crawler"]);
+    let mut bad = shop.clone();
+    bad["spec"]["crawler"]["maxShards"] = json!(0);
+    let e = k.apply(&format!("{CLUSTERS}/shop"), &bad).await.unwrap_err();
+    assert!(e.contains("maxShards"), "{e}");
+
+    // Its Service and Deployment, which the API server takes, applied only
+    // when they change; the coordinators list it; both go without it.
+    let spec: operator::Spec = serde_json::from_value(stored["spec"].clone()).unwrap();
+    let uid = stored["metadata"]["uid"].clone();
+    let c = Cluster { kube: k.clone(), ns: "db".into(), name: "shop".into(), uid: uid.as_str().unwrap().into(), spec: spec.clone() };
+    c.crawler(&spec).await.unwrap();
+    let path = "/apis/apps/v1/namespaces/db/deployments/shop-crawler";
+    let d = get(&k, path).await;
+    let container = &d["spec"]["template"]["spec"]["containers"][0];
+    assert_eq!(container["command"], json!(["strata-crawl"]));
+    assert_eq!(container["args"], json!(["serve", "--listen", "0.0.0.0:7800", "--strata", "http://shop:7700", "--grow", "kube", "--split-rows", "5000", "--max-shards", "3", "--concurrency", "8"]));
+    let env = container["env"].as_array().unwrap();
+    assert!(env.iter().any(|e| e["name"] == "STRATA_CRAWL_TOKEN" && e["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+    assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], uid);
+    let svc = get(&k, "/api/v1/namespaces/db/services/shop-crawler").await;
+    assert_eq!((&svc["spec"]["ports"][0]["port"], &svc["spec"]["selector"]), (&json!(7800), &d["spec"]["selector"]["matchLabels"]));
+    let rv = d["metadata"]["resourceVersion"].clone();
+    c.crawler(&spec).await.unwrap();
+    assert_eq!(get(&k, path).await["metadata"]["resourceVersion"], rv, "applied only when it changes");
+    c.set_coordinator(&[vec!["http://shop-s0-0.shop-servers.db.svc:7701".into()]], 1).await.unwrap();
+    assert_eq!(c.coordinator_config().await.unwrap(), Some(spec.coordinator_config()));
+    let d = get(&k, "/apis/apps/v1/namespaces/db/deployments/shop-coordinator").await;
+    let env = d["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+    assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://shop-crawler:7800"), "{env:?}");
+    assert!(env.iter().any(|e| e["name"] == "STRATA_APP_TOKEN" && e["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+    let without = operator::Spec { crawler: None, ..spec.clone() };
+    c.crawler(&without).await.unwrap();
+    for gone in [path, "/api/v1/namespaces/db/services/shop-crawler"] {
+        let o = k.get(gone).await.unwrap();
+        assert!(o.is_none() || !o.unwrap()["metadata"]["deletionTimestamp"].is_null(), "{gone} is deleted");
+    }
+}

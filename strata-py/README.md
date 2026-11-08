@@ -33,7 +33,21 @@ for row in db.table().where(col("year") >= 1990).order_by(bm25("title", "dragon"
     print(row["title"])
 ```
 
-The guide is [docs/strata/python.md](../docs/strata/python.md). Tests:
+Frames are lazy dataframes over tables, run where the data is (pyarrow
+needed: `pip install "strata-db[frame]"`):
+
+```python
+import strata
+from strata import col
+
+shop = strata.connect("shop.strata")       # or a server: strata.connect("https://...")
+(shop["orders"].filter(col("status") == "paid")
+     .group_by("country").agg(revenue=col("amount").sum(), n=strata.len())
+     .sort("revenue", descending=True).to_polars())
+```
+
+The guide is [docs/strata/python.md](../docs/strata/python.md), and frames
+have [their own page](../docs/strata/frames.md). Tests:
 `maturin develop --release && pytest tests` in a virtualenv (the client
 tests use `../strata-server/target/release/strata-server`, or
 `$STRATA_SERVER`, and are skipped without it; the Kafka consumer's test

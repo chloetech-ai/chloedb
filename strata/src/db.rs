@@ -295,8 +295,12 @@ impl Db {
     /// for a while and stops would leave it in the file. Rows still in
     /// memory stay in the write-ahead log, which the next open reads. The
     /// database still answers and takes writes after it, without merging
-    /// in the background. Returns the bytes the file shrank by.
+    /// in the background. Returns the bytes the file shrank by. A database
+    /// opened read-only ([`DbOptions::read_only`]) is left as it is.
     pub fn close(&self) -> Result<u64> {
+        if self.storage.is_read_only() {
+            return Ok(0);
+        }
         self.storage.stop_merger();
         self.storage.merge(&MergePolicy::default())?;
         let st = self.storage.file_stats();

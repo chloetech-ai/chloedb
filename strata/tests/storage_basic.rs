@@ -798,6 +798,46 @@ fn published_snapshots_wait_for_a_reader() {
     assert_keys(&s1, &keys(0..200));
 }
 
+/// Readers that read now and then, beside a stream of one-row writes, so
+/// that writes alternate between publishing a version and publishing none:
+/// the version a reader sees never goes back. A reader that found none
+/// published and built the current one could see a write the writer had
+/// not published yet, then the older published version on its next read
+/// (dozens of times a run before the fix).
+#[test]
+fn published_snapshots_never_go_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = Arc::new(MapSource::default());
+    let o = DbOptions { publish_snapshots: true, memtable_max_docs: 1 << 20, ..opts(&src) };
+    let db = Database::create(&dir.path().join("db.strata"), schema(), o).unwrap();
+    let done = AtomicBool::new(false);
+    std::thread::scope(|sc| {
+        sc.spawn(|| {
+            for i in 0..10_000 {
+                let mut tx = db.begin().unwrap();
+                tx.insert(doc(i, 0)).unwrap();
+                tx.commit().unwrap();
+            }
+            done.store(true, Ordering::Release);
+        });
+        for r in 0..3u64 {
+            let (db, done) = (&db, &done);
+            sc.spawn(move || {
+                let (mut last, mut rng) = ((0, 0), rand::rngs::StdRng::seed_from_u64(r));
+                while !done.load(Ordering::Acquire) {
+                    let s = db.snapshot();
+                    let now = (s.txn(), s.n_live_docs());
+                    assert!(now.0 >= last.0 && now.1 >= last.1, "{now:?} after {last:?}");
+                    last = now;
+                    for _ in 0..rng.gen_range(0..4096) {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+        }
+    });
+}
+
 /// Random transactions, flushes, merges and reopens against a model.
 #[test]
 fn random_operations_match_model() {
