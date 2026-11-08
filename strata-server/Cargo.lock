@@ -4613,6 +4613,7 @@ dependencies = [
  "crc32fast",
  "csv",
  "datafusion",
+ "flate2",
  "futures",
  "gemm",
  "image",

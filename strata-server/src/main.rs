@@ -278,6 +278,11 @@ struct Args {
     /// taken while it serves) written by `POST /v1/admin/checkpoint`.
     #[arg(long)]
     backup_dir: Option<PathBuf>,
+    /// A directory for slices (a table's rows by map tile, for devices to
+    /// search near their user: `strata::slice`), written by `POST
+    /// /v1/admin/slices` and served at `GET /v1/slices/<table>/...`.
+    #[arg(long)]
+    slices: Option<PathBuf>,
     /// What writes may fetch for MEDIA fields, comma-separated: directories
     /// (`file:/data/media`) and hosts fetched over HTTPS
     /// (`cdn.example.com`, `*.example.com`; `http://host:port` only spelled
@@ -1033,6 +1038,7 @@ async fn main() {
         fetch_models: !a.no_fetch_models,
         synonyms: a.synonyms,
         backup_dir: a.backup_dir,
+        slices: a.slices,
         media_fetch: a.media_fetch,
         // The default needs no resolver of its own: a database's has it.
         media_max_bytes: if a.media_max_bytes == strata::media::DEFAULT_MAX_BYTES { 0 } else { a.media_max_bytes },
@@ -1101,6 +1107,7 @@ async fn main() {
             alerts: None,
             contain: None,
             backup_dir: None,
+            slices: None,
             log_store: None,
             ..o.clone()
         };

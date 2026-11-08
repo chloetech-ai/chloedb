@@ -2785,6 +2785,88 @@ async fn admin_routes_checkpoint_check_and_vacuum() {
     assert_eq!(status, 400, "{r}");
 }
 
+/// A table's slice built into `--slices` and served: the manifest and a
+/// tile over HTTP, read by a device ([`strata::slice::Device`]) whose
+/// proved answers are the server's own; tile names that are not a tile's,
+/// a missing tile, and a server without `--slices` refused.
+#[tokio::test]
+async fn slices_are_built_served_and_searched_on_a_device() {
+    use strata::schema::{Field, FieldType, Schema};
+    use strata::slice::{Device, Manifest, Search};
+    let dir = tempfile::tempdir().unwrap();
+    let schema = Schema::new(
+        "places",
+        vec![Field::new("id", FieldType::Int), Field::new("body", FieldType::Text { positions: false }), Field::new("lat", FieldType::Float), Field::new("lon", FieldType::Float)],
+        Some("id"),
+    )
+    .unwrap();
+    let db = Db::create(&dir.path().join("places.strata"), schema.clone(), DbOptions::default()).unwrap();
+    let words = ["pizza", "coffee", "bagel", "pharmacy", "park", "deli", "sushi", "bar"];
+    db.load((0..2000).map(|i: usize| {
+        let body = format!("{} {}", words[i % words.len()], words[(i * 7 + 3) % words.len()]);
+        let (lat, lon) = (40.7 + ((i * 37) % 200) as f64 * 0.0003 - 0.03, -74.0 + ((i * 53) % 200) as f64 * 0.0004 - 0.04);
+        vec![Value::Int(i as i64), Value::Str(body), Value::Float(lat), Value::Float(lon)]
+    }))
+    .unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://127.0.0.1:9"), 16, Duration::from_secs(10));
+    svc.set_slices_dir(&dir.path().join("slices")).unwrap();
+    let base = http(Arc::new(svc), None).await;
+    let c = strata_server::http_client().build().unwrap();
+
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -74.0})).await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!((r["table"].as_str(), r["rows"].as_u64()), (Some("places"), Some(2000)), "{r}");
+    let get = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.bytes().await.unwrap().to_vec())
+        }
+    };
+    let (status, text) = get(format!("{base}/v1/slices/places/manifest.json")).await;
+    assert_eq!(status, 200);
+    let m = Manifest::from_json(std::str::from_utf8(&text).unwrap()).unwrap();
+    assert_eq!(m.tiles.len() as u64, r["tiles"].as_u64().unwrap());
+
+    let mut dev = Device::create(&dir.path().join("device"), m.clone()).unwrap();
+    let (lat, lon) = (40.7, -74.0);
+    for (t, bytes) in dev.plan(lat, lon, 1).fetch {
+        let (status, gz) = get(format!("{base}/v1/slices/places/{}", t.path())).await;
+        assert_eq!((status, gz.len() as u64), (200, bytes));
+        dev.add_tile(t, &gz).unwrap();
+    }
+    let mut proved = 0;
+    for q in ["pizza", "coffee bar", "sushi deli", "nothing"] {
+        let s = Search::new(q, lat, lon, 5, 300.0).unwrap();
+        let a = dev.search(&s).unwrap();
+        if !a.proved {
+            continue;
+        }
+        proved += 1;
+        let params: serde_json::Map<String, Json> = s.params(&m).0.into_iter().map(|(k, v)| (k, js::to_json(&v))).collect();
+        let (status, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": s.sql(&m), "params": params})).await;
+        assert_eq!(status, 200, "{r}");
+        let cloud: Vec<f64> = r["scores"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        assert_eq!(a.rows.scores, cloud, "{q}");
+    }
+    assert!(proved >= 2, "proved {proved}");
+
+    for bad in ["..%2Fmanifest.json", "1_2.json", "x_1.jsonl.gz", "1_2.jsonl.gz.bak"] {
+        let (status, _) = get(format!("{base}/v1/slices/places/tiles/{bad}")).await;
+        assert!(status == 400 || status == 404, "{bad}: {status}");
+    }
+    let (status, _) = get(format!("{base}/v1/slices/places/tiles/999_999.jsonl.gz")).await;
+    assert_eq!(status, 404);
+    let (status, _) = get(format!("{base}/v1/slices/no-such-table/manifest.json")).await;
+    assert_eq!(status, 400);
+
+    // Without --slices there is nowhere to build or serve them.
+    let db = create(dir.path(), "other.strata", |i| i < 10);
+    let base = http(service(db, "http://127.0.0.1:9"), None).await;
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"text": "name", "lat": "price", "lon": "price", "lat0": 0, "lon0": 0})).await;
+    assert_eq!(status, 400, "{r}");
+}
+
 /// BOOL and TIMESTAMP fields answer as JSON booleans and ISO 8601 text,
 /// take them as parameters and in writes, and come back the same from a
 /// coordinator over shards reached by gRPC.

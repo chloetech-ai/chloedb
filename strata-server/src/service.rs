@@ -580,6 +580,9 @@ pub struct Service {
     synonyms_file: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     backup_dir: Option<PathBuf>,
+    /// Where `POST /v1/admin/slices` writes slices, one directory a table,
+    /// which `GET /v1/slices/...` serves ([`strata::slice`]).
+    slices_dir: Option<PathBuf>,
     /// The slot map a coordinator gave this shard and its place in it
     /// ([`Service::set_slots`]), and the file that keeps them (a new map
     /// is set while its lock is held).
@@ -726,6 +729,7 @@ impl Service {
             synonyms: RwLock::new(None),
             synonyms_file: None,
             backup_dir: None,
+            slices_dir: None,
             slots: RwLock::new(None),
             slots_since: AtomicU64::new(0),
             slots_file: tokio::sync::Mutex::new(None),
@@ -1655,6 +1659,56 @@ impl Service {
         std::fs::create_dir_all(dir).map_err(|e| ApiError::bad(format!("create {}: {e}", dir.display())))?;
         self.backup_dir = Some(dir.to_path_buf());
         Ok(())
+    }
+
+    /// Sets where `POST /v1/admin/slices` writes slices, creating the
+    /// directory if need be.
+    pub fn set_slices_dir(&mut self, dir: &Path) -> Result<(), ApiError> {
+        if let Backend::Cluster(_) = self.backend {
+            return Err(ApiError::bad("--slices goes to a server with a database of its own: a slice is built from one table's rows"));
+        }
+        std::fs::create_dir_all(dir).map_err(|e| ApiError::bad(format!("create {}: {e}", dir.display())))?;
+        self.slices_dir = Some(dir.to_path_buf());
+        Ok(())
+    }
+
+    /// The directory of a table's slice, if the server serves slices and
+    /// the name is one a table may have.
+    pub fn slice_dir(&self, table: &str) -> Result<PathBuf, ApiError> {
+        let dir = self.slices_dir.as_ref().ok_or_else(|| ApiError::bad("slices need the server started with --slices DIR"))?;
+        if table.is_empty() || !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(ApiError::bad(format!("{table:?} is not a table's name")));
+        }
+        Ok(dir.join(table))
+    }
+
+    /// Builds the slice of a table ([`strata::slice::build`]) into its
+    /// directory under `--slices`, replacing the one there only once the
+    /// new one is whole, so that a device never reads half of one.
+    pub async fn build_slice(&self, opts: strata::slice::BuildOptions) -> Result<strata::slice::Built, ApiError> {
+        let db = self.admin_db()?;
+        let table = match &opts.table {
+            Some(t) => t.clone(),
+            None => db.snapshot().schema().table.clone(),
+        };
+        let dest = self.slice_dir(&table)?;
+        let parent = dest.parent().expect("under the slices directory").to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let fresh = parent.join(format!(".building-{table}"));
+            let old = parent.join(format!(".old-{table}"));
+            let _ = std::fs::remove_dir_all(&fresh);
+            let built = strata::slice::build(&db, &opts, &fresh)?;
+            let _ = std::fs::remove_dir_all(&old);
+            if dest.exists() {
+                std::fs::rename(&dest, &old)?;
+            }
+            std::fs::rename(&fresh, &dest)?;
+            let _ = std::fs::remove_dir_all(&old);
+            Ok::<_, strata::Error>(built)
+        })
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(Into::into)
     }
 
     /// Writes a checkpoint of the database ([`strata::storage::Database::checkpoint`])

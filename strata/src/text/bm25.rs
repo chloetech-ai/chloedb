@@ -557,6 +557,16 @@ impl TextFieldReader {
         }
     }
 
+    /// The most `term` adds to the BM25 score of a document of this
+    /// segment, at weight 1, under `stats` and `params`: the bound its
+    /// list's impact frontier gives, which the top-k loops prune with. It
+    /// is exact up to [`BOUND_SLACK`], above the true best, so that a sum
+    /// of them bounds any document's score ([`crate::slice`]). None when
+    /// no document here has the term.
+    pub fn term_bound(&self, term: &str, stats: &CollectionStats, params: Bm25Params) -> Option<f32> {
+        self.query_weighted(&[(term, 1.0)], stats, params).scorers.first().map(|s| s.max)
+    }
+
     fn query<'a>(&'a self, terms: &[String], stats: &CollectionStats, params: Bm25Params) -> Query<'a> {
         let w: Vec<(&str, f32)> = terms.iter().map(|t| (t.as_str(), 1.0)).collect();
         self.query_weighted(&w, stats, params)

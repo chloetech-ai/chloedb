@@ -122,6 +122,8 @@ pub struct Options {
     pub synonyms: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     pub backup_dir: Option<PathBuf>,
+    /// Where `POST /v1/admin/slices` writes slices ([`strata::slice`]).
+    pub slices: Option<PathBuf>,
     /// What writes may fetch for MEDIA fields: `file:` roots and hosts
     /// ([`strata::media::Allowlist::parse`]).
     pub media_fetch: Vec<String>,
@@ -465,6 +467,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.scrubs.every = Duration::from_secs(o.scrub_every_s);
     svc.scrubs.rate = if o.scrub_mib_s == 0 { crate::service::scrub::DEFAULT_RATE } else { o.scrub_mib_s << 20 };
+    if let Some(dir) = &o.slices {
+        svc.set_slices_dir(dir).map_err(|e| e.message)?;
+    }
     if !o.media_fetch.is_empty() || o.media_store.is_some() || o.media_max_bytes > 0 {
         svc.set_media(media_resolver(o)?).map_err(|e| e.message)?;
     }
