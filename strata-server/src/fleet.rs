@@ -37,6 +37,17 @@ struct Memory {
     not_ok: Option<u64>,
     problems: HashMap<String, u64>,
     disk: HashMap<String, VecDeque<(u64, f64)>>,
+    /// Copies down here that another coordinator reaches: since when that
+    /// was first seen (ms), by URL. Said cut off once a survey of this
+    /// coordinator begun since failed again, not before: a copy coming
+    /// back answers another coordinator's survey a few seconds before
+    /// this one's.
+    cut_seen: HashMap<String, u64>,
+    /// When this coordinator's survey last found each copy down (ms), by
+    /// URL: another coordinator's report that it cannot reach a copy counts
+    /// only from a survey begun since, as one begun before may have asked
+    /// while the copy was down for all.
+    down_seen: HashMap<String, u64>,
 }
 
 /// The window the headline judges searches by now: the last minute (the
@@ -331,11 +342,31 @@ impl Fleet {
         // not down.
         let me = i.coordinator.as_ref().map(|c| c["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("this coordinator").to_string());
         let said: Vec<&PeerWindow> = if me.is_some() { i.peers.iter().filter(|p| p.error.is_none() && p.unreached.is_some()).collect() } else { Vec::new() };
-        let reached_by = |r: &Json| -> Vec<String> {
+        // When this coordinator's own survey began (a judgement without one
+        // takes what it is given as of now).
+        let surveyed = i.cluster["at_ms"].as_u64().unwrap_or(u64::MAX);
+        let all_copies = || shards.iter().flat_map(|s| s["replicas"].as_array().into_iter().flatten());
+        let mut cut_here: HashMap<String, Vec<String>> = HashMap::new();
+        let mut seen = std::mem::take(&mut m.cut_seen);
+        for r in all_copies().filter(|r| down(r)) {
             let url = r["url"].as_str().unwrap_or_default();
             let since = r["down_since_ms"].as_u64().unwrap_or(u64::MAX - CUT_MARGIN_MS);
-            said.iter().filter(|p| p.surveyed_ms > since + CUT_MARGIN_MS && !p.unreached.iter().flatten().any(|u| u == url)).map(|p| p.name.clone()).collect()
-        };
+            let by: Vec<String> = said.iter().filter(|p| p.surveyed_ms > since + CUT_MARGIN_MS && !p.unreached.iter().flatten().any(|u| u == url)).map(|p| p.name.clone()).collect();
+            if by.is_empty() {
+                continue;
+            }
+            let first = *seen.entry(url.to_string()).or_insert(now);
+            m.cut_seen.insert(url.to_string(), first);
+            if surveyed > first || surveyed == u64::MAX {
+                cut_here.insert(url.to_string(), by);
+            }
+        }
+        drop(seen);
+        for r in all_copies().filter(|r| down(r)) {
+            m.down_seen.insert(r["url"].as_str().unwrap_or_default().to_string(), surveyed.min(now));
+        }
+        m.down_seen.retain(|_, t| *t + 600_000 > now);
+        let reached_by = |r: &Json| -> Vec<String> { cut_here.get(r["url"].as_str().unwrap_or_default()).cloned().unwrap_or_default() };
 
         // ----- shards
         let (mut no_reads, mut no_writes, mut degraded, mut downs, mut cut_off) = (0, 0, 0, 0, 0);
@@ -579,22 +610,32 @@ impl Fleet {
         let copies: Vec<(usize, Json)> = shards.iter().enumerate().flat_map(|(k, s)| s["replicas"].as_array().cloned().unwrap_or_default().into_iter().map(move |r| (k, r))).collect();
         let gone: Vec<String> = copies.iter().filter(|(_, r)| down(r)).map(|(_, r)| short(r)).collect();
         let cut: Vec<String> = copies.iter().filter(|(_, r)| down(r) && !reached_by(r).is_empty()).map(|(_, r)| short(r)).collect();
-        checks.push(json!({"id": "copies", "status": if gone.is_empty() { "ok" } else { "warning" }, "down": gone.len(), "total": copies.len(), "where": gone, "unreached_here": cut}));
+        // Copies another coordinator cannot reach which answer this one,
+        // by coordinator: from its surveys begun since this one last found
+        // the copy down.
+        let peer_cuts: Vec<(&PeerWindow, Vec<(String, u64)>)> = said
+            .iter()
+            .map(|p| {
+                let theirs = p
+                    .unreached
+                    .iter()
+                    .flatten()
+                    .filter(|u| m.down_seen.get(u.as_str()).is_none_or(|t| p.surveyed_ms > t + CUT_MARGIN_MS))
+                    .filter_map(|u| copies.iter().find(|(_, r)| r["url"].as_str() == Some(u.as_str()) && !down(r)))
+                    .map(|(k, r)| (short(r), shards[*k]["shard"].as_u64().unwrap_or(*k as u64)))
+                    .collect::<Vec<_>>();
+                (*p, theirs)
+            })
+            .filter(|(_, t)| !t.is_empty())
+            .collect();
+        let elsewhere: Vec<String> = peer_cuts.iter().flat_map(|(p, t)| t.iter().map(|c| format!("{} from {}", c.0, p.name))).collect();
+        let status = if gone.is_empty() && elsewhere.is_empty() { "ok" } else { "warning" };
+        checks.push(json!({"id": "copies", "status": status, "down": gone.len(), "total": copies.len(), "where": gone, "unreached_here": cut, "unreached_elsewhere": elsewhere}));
 
         // ----- copies another coordinator cannot reach which answer this
         // one: that coordinator's clients are served by fewer copies, or
         // fail, and its own Home says why.
-        for p in &said {
-            let theirs: Vec<(String, u64)> = p
-                .unreached
-                .iter()
-                .flatten()
-                .filter_map(|u| copies.iter().find(|(_, r)| r["url"].as_str() == Some(u.as_str()) && !down(r)))
-                .map(|(k, r)| (short(r), shards[*k]["shard"].as_u64().unwrap_or(*k as u64)))
-                .collect();
-            if theirs.is_empty() {
-                continue;
-            }
+        for (p, theirs) in &peer_cuts {
             let names: Vec<String> = theirs.iter().map(|t| t.0.clone()).collect();
             let mut w = vec![p.name.clone()];
             w.extend(names.iter().cloned());
@@ -984,6 +1025,37 @@ mod tests {
         i.peers = vec![peer(5_000, &["s0-1", "s1-1"])];
         let j = Fleet::default().judge(i);
         assert_eq!(j["headline"], "Searches are failing: shard 1 has no majority");
+    }
+
+    #[test]
+    fn a_copy_coming_back_is_not_said_cut_off_on_the_way() {
+        let peer = |surveyed_ms: u64, unreached: &[&str]| PeerWindow { url: "http://b".into(), name: "coord-b".into(), unreached: Some(unreached.iter().map(|u| format!("http://{u}")).collect()), surveyed_ms, ..Default::default() };
+        let degraded = |at_ms: u64| json!({"at_ms": at_ms, "shards": [{"shard": 0, "state": "degraded", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", false), copy("s0-2", true)]}]});
+        let whole = |at_ms: u64| json!({"at_ms": at_ms, "shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true), copy("s0-2", true)]}]});
+        let f = Fleet::default();
+        let judge = |c: &Json, now_ms: u64, p: PeerWindow| {
+            let mut i = inputs(c, &[]);
+            (i.now_ms, i.peers) = (now_ms, vec![p]);
+            f.judge(i)
+        };
+        let ids = |j: &Json| j["problems"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        // s0-1 answers coord-b again before this coordinator's next survey: down, as this one last saw it.
+        let c = degraded(9_000);
+        assert_eq!(ids(&judge(&c, 10_000, peer(9_500, &[]))), ["shard-0-degraded"]);
+        // This coordinator's next survey reaches it: all well.
+        assert_eq!(judge(&whole(14_000), 15_000, peer(9_500, &[]))["status"], "ok");
+        // Cut off for real: a survey begun after coord-b reached it fails again.
+        let c = degraded(19_000);
+        assert_eq!(ids(&judge(&c, 20_000, peer(19_500, &[]))), ["shard-0-degraded"]);
+        assert_eq!(ids(&judge(&degraded(24_000), 25_000, peer(24_500, &[]))), ["shard-0-cut-off"]);
+        // Back here, while coord-b's last survey, begun before, did not reach it: said of nobody.
+        let j = judge(&whole(29_000), 30_000, peer(26_000, &["s0-1"]));
+        assert_eq!((j["status"].as_str(), ids(&j).len()), (Some("ok"), 0), "{j}");
+        // coord-b's survey begun after this one found it back still fails: coord-b is cut off from it.
+        let j = judge(&whole(34_000), 35_000, peer(34_500, &["s0-1"]));
+        assert_eq!((j["status"].as_str(), ids(&j)), (Some("warning"), vec!["coordinator-coord-b-cut-off".to_string()]), "{j}");
+        let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
+        assert_eq!(copies["unreached_elsewhere"], json!(["s0-1 from coord-b"]));
     }
 
     #[test]
