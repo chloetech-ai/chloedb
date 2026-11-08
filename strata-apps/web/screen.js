@@ -31,14 +31,17 @@
     let again = false;
     const forms = new Map();
     const reported = new Set();
-    // The design's look (frame.js sets it from the design): bold draws the
-    // first big numbers as a band and, on a phone, each row as a card.
-    const bold = () => document.documentElement.dataset.look === 'bold';
+    // The design's look (frame.js sets it from the design). Native (the
+    // default) says the first big numbers in a sentence and, on a phone,
+    // draws a table's rows as list cells grouped by their state; bold draws
+    // the numbers as a band and each row as a card; plain as they come.
+    const lookIs = () => document.documentElement.dataset.look || 'plain';
+    const bold = () => lookIs() === 'bold';
     const phone = window.matchMedia('(max-width: 560px)');
     let heroAt = null;
-    // A word straight from the data ("out", "in progress") reads as a label
-    // in the bold look: "Out", "In progress".
-    const cap = (t) => (bold() && typeof t === 'string' && /^[a-z]/.test(t) && t === t.toLowerCase() ? t[0].toUpperCase() + t.slice(1) : t);
+    // A word straight from the data ("out", "in progress") reads as a label:
+    // "Out", "In progress".
+    const cap = (t) => (lookIs() === 'plain' || typeof t !== 'string' ? t : /^ok$/i.test(t) ? 'OK' : /^[a-z]/.test(t) && t === t.toLowerCase() ? t[0].toUpperCase() + t.slice(1) : t);
     // How many rows a search or a filter on state[key] found: the first list
     // that depends on it (a LET over the key, else the data it is a parameter
     // of). Nothing when no list depends on it.
@@ -196,7 +199,7 @@
             if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
             return { ...k, raw, shown: v == null ? '–' : String(v) };
           });
-          if (bold() && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return hero(ks, s, path); }
+          if (lookIs() !== 'plain' && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return bold() ? hero(ks, s, path) : summary(ks); }
           return h('div', { class: 'kpis' }, ks.map((k) => h('div', { class: 'kpi' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null)));
         }
         if (b.chips !== undefined) return chips(b, s, path);
@@ -474,7 +477,7 @@
       };
       // More than three columns is a list of cards on a phone (kit.css).
       const heads = cols.map((c) => c.label ?? human(c.key || ''));
-      if (bold() && phone.matches) return rowCards(rows, cols, fns, acts, onRow, heads, cell, s, path);
+      if (phone.matches && lookIs() !== 'plain') return (bold() ? rowCards : rowCells)(rows, cols, fns, acts, onRow, heads, cell, s, path);
       return h('div', { style: 'overflow-x:auto' }, h('table', { class: cols.length > 3 ? 'stack' : null },
         h('thead', null, h('tr', null, heads.map((x) => h('th', null, x)), acts.length ? h('th') : null)),
         h('tbody', null, rows.map((r) => h('tr', { style: onRow ? 'cursor:pointer' : null, onclick: onRow ? (e) => { if (!e.target.closest('button')) run(onRow, [r], `${path}.onRow`); } : null },
@@ -501,8 +504,19 @@
     const ATTN = /\b(overdue|late|owed|owing|unpaid|due|out|low|reorder|to order|open|to do|todo|pending|waiting|new|missing|urgent|left|behind|needs?|unanswered|unread|expiring|expired|failed)\b/i;
     const zero = (k) => k.raw == null || k.raw === '' || Number(k.raw) === 0 || /^[^0-9]*0([.,]0+)?[^0-9]*$/.test(k.shown);
     const lower = (t) => (/^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t);
+    const mainOf = (ks) => ks.find((k) => URGENT.test(String(k.label || '')) && !zero(k)) || ks.find((k) => ATTN.test(String(k.label || '')) && !zero(k)) || ks.find((k) => !zero(k)) || ks[0];
+    // Native: the numbers as one sentence under the title, the one that needs
+    // doing first and strong ("1 out · 2 low · 5 items").
+    function summary(ks) {
+      const main = mainOf(ks);
+      const rest = ks.filter((k) => k !== main);
+      const said = (k) => `${k.shown}${k.label ? ` ${lower(String(k.label))}` : ''}`;
+      return h('div', { class: 'say' },
+        h('p', null, h('b', { class: URGENT.test(String(main.label || '')) && !zero(main) ? 'attn' : null }, said(main)), rest.map((k) => h('span', { class: zero(k) ? 'zero' : null }, ` · ${said(k)}`))),
+        main.hint ? h('p', { class: 'muted' }, main.hint) : null);
+    }
     function hero(ks, s, path) {
-      const main = ks.find((k) => URGENT.test(String(k.label || '')) && !zero(k)) || ks.find((k) => ATTN.test(String(k.label || '')) && !zero(k)) || ks.find((k) => !zero(k)) || ks[0];
+      const main = mainOf(ks);
       const rest = ks.filter((k) => k !== main);
       const tone = ATTN.test(String(main.label || '')) && !zero(main) ? ' attn' : '';
       return h('section', { class: `hero-band${tone}`, 'aria-label': `${main.shown} ${main.label || ''}`.trim() },
@@ -521,10 +535,12 @@
     const SOFT = /^(edit|open|view|details?|change|more)\b/i;
     const NOT_FIGURE = /(^id$|_id$|year|phone|zip|postcode|sku|code|number$|^no$|#)/i;
     const isNum = (v) => (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) && !/^0\d/.test(v.trim()));
-    function rowCards(rows, cols, fns, acts, onRow, heads, cell, s, path) {
+    // What each column of a table is, from all its rows: the tick, the
+    // state (its badge column), the name, the number that matters and the
+    // level it is measured against.
+    function roles(rows, cols, fns, heads) {
       const raw = (c, i, r) => { const fn = fns[i]; const v = typeof fn === 'function' ? fn(r) : fn !== null ? fn : r[c.key]; return v; };
       const name = (c, i) => `${c.key || ''} ${heads[i] || ''}`;
-      // What each column is, from all the rows.
       const tick = cols.findIndex((c, i) => raw(c, i, rows[0]) instanceof HTMLInputElement);
       const badge = cols.findIndex((c) => c.badge);
       const numeric = cols.map((c, i) => {
@@ -537,19 +553,103 @@
       const ref = cols.findIndex((c, i) => numeric[i] && (HALF.test(name(c, i)) || FULL.test(name(c, i))));
       const fig = cols.findIndex((c, i) => numeric[i] && i !== ref);
       const half = ref >= 0 && HALF.test(name(cols[ref], ref));
+      return { raw, tick, badge, numeric, title, ref, fig, half };
+    }
+    // One row's parts as text: its state and tone, and its other words,
+    // short: names as they are, numbers and dates with their column's name
+    // ("Reorder at 200").
+    function rowParts(R, r, cols, fns, heads, cell) {
+      const text = (i) => { const v = cell(cols[i], fns[i], r); return v instanceof Node ? v.textContent : String(v ?? ''); };
+      const state = R.badge >= 0 ? cell(cols[R.badge], fns[R.badge], r) : null;
+      const tone = state instanceof Node ? (state.className.match(/\b(ok|warn|bad|info)\b/) || [])[1] || '' : '';
+      const sub = cols.map((c, i) => {
+        if (i === R.tick || i === R.badge || i === R.title || i === R.fig) return null;
+        const t = text(i).trim();
+        if (!t) return null;
+        return R.numeric[i] || c.format ? `${heads[i]} ${t}` : t;
+      }).filter(Boolean).slice(0, 4);
+      return { text, state, tone, sub };
+    }
+    // A row's actions: the next step (the first action that does not
+    // remove) as a button, the others in a menu behind "More".
+    function rowActions(acts, r, who, s, path, mainClass) {
+      const label = (a) => T(a.label, s, path);
+      const doIt = (a) => () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); };
+      const first = acts.find((a) => /\bprimary\b/.test(a.class || '')) || acts.find((a) => !DESTROY.test(label(a)));
+      const others = acts.filter((a) => a !== first);
+      const main = first ? h('button', { class: mainClass(label(first)), type: 'button', 'aria-label': who ? `${label(first)}: ${who}` : null, onclick: doIt(first) }, label(first)) : null;
+      const more = others.length ? h('details', { class: 'rc-more' },
+        h('summary', { 'aria-label': `More${who ? `: ${who}` : ''}`, title: 'More' }, h('span', { 'aria-hidden': 'true' }, '•••')),
+        h('div', { class: 'rc-menu' }, others.map((a) => h('button', { class: `ghost${DESTROY.test(label(a)) ? ' danger' : ''}`, type: 'button', 'aria-label': who ? `${label(a)}: ${who}` : null, onclick: doIt(a) }, label(a))))) : null;
+      return { main, more };
+    }
+    const tickOf = (R, r, cols, fns, heads, cell, who) => {
+      const el = R.tick >= 0 ? cell(cols[R.tick], fns[R.tick], r) : null;
+      if (el instanceof HTMLInputElement && !el.getAttribute('aria-label')) el.setAttribute('aria-label', `${heads[R.tick] || 'Done'}: ${who || ''}`.replace(/: $/, ''));
+      return el instanceof HTMLInputElement ? el : null;
+    };
+
+    // Native, on a phone: a table's rows as cells of grouped lists, a group
+    // per state (the worst first: out, then low, then the rest), each cell
+    // an icon in the state's color (or the row's initials), its name, one
+    // line of detail led by its number when its state needs doing, and on
+    // the right its next step, or its number.
+    const TONE_ORDER = ['bad', 'warn', 'info', '', 'ok'];
+    const GLYPH = { bad: '✕', warn: '!', ok: '✓', info: '•' };
+    function rowCells(rows, cols, fns, acts, onRow, heads, cell, s, path) {
+      const R = roles(rows, cols, fns, heads);
+      const items = rows.map((r) => ({ r, ...rowParts(R, r, cols, fns, heads, cell) }));
+      const groups = [];
+      for (const it of items) {
+        const key = R.badge >= 0 ? it.text(R.badge).trim() : '';
+        let g = groups.find((x) => x.key === key);
+        if (!g) groups.push((g = { key, tone: it.tone, items: [] }));
+        g.items.push(it);
+      }
+      groups.sort((a, b) => TONE_ORDER.indexOf(a.tone) - TONE_ORDER.indexOf(b.tone));
+      const initials = (t) => t.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+      // a row named by its day ("Nov 8, 2026", "2026-11-08") gets a calendar
+      // leaf, the month over the day, rather than initials like "N8"
+      const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const dayOf = (t) => {
+        let m = /^(\d{4})-(\d{2})-(\d{2})\b/.exec(t);
+        if (m && +m[2] >= 1 && +m[2] <= 12) return { mon: MONTHS[+m[2] - 1], day: +m[3] };
+        m = /^(?:[A-Z][a-z]{2},? )?([A-Z][a-z]{2})[a-z]*\.? (\d{1,2})\b/.exec(t);
+        return m && MONTHS.includes(m[1]) ? { mon: m[1], day: +m[2] } : null;
+      };
+      return h('div', { class: 'rgroups' }, groups.map((g) => h('section', { class: 'rgroup' },
+        g.key ? h('h3', { class: 'rgroup-t' }, cap(g.key)) : null,
+        h('div', { class: 'rgroup-list' }, g.items.map(({ r, text, tone, sub }) => {
+          const who = rowName(r);
+          const name = (R.title >= 0 ? text(R.title) : '') || who || 'Untitled';
+          const figText = R.fig >= 0 ? text(R.fig).trim() : '';
+          const needs = tone === 'bad' || tone === 'warn';
+          // "None left", "4 left" for a count of things; "$650 owed" for the rest.
+          const figName = String(heads[R.fig] || '').toLowerCase();
+          const counted = /(stock|qty|quantity|on hand|left|remaining|units|count|in store)/.test(figName);
+          const leadText = !figText ? '' : counted ? (Number(R.raw(cols[R.fig], R.fig, r)) === 0 ? 'None left' : `${figText} left`) : `${figText} ${figName}`.trim();
+          const lead = needs && leadText ? h('span', { class: 'lead' }, leadText) : null;
+          const { main, more } = rowActions(acts, r, who, s, path, (l) => `rc-pill${SOFT.test(l) ? ' soft' : ''}`);
+          const tickEl = tickOf(R, r, cols, fns, heads, cell, who);
+          const day = needs ? null : dayOf(name);
+          const icon = tickEl ? h('label', { class: 'tap rc-tick' }, tickEl)
+            : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
+            : h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•');
+          const end = main || (figText && !lead ? h('span', { class: 'rc-val' }, figText) : null);
+          return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${onRow ? ' tappable' : ''}`,
+            onclick: onRow ? (e) => { if (!e.target.closest('button, summary, input, label, a')) run(onRow, [r], `${path}.onRow`); } : null },
+            icon,
+            h('div', { class: 'rc-name' }, h('div', { class: 'rc-title' }, name), lead || sub.length ? h('div', { class: 'rc-sub' }, lead, lead && sub.length ? ' · ' : null, sub.join(' · ')) : null),
+            end || more || onRow ? h('div', { class: 'rc-end' }, end, more, onRow && !main ? h('span', { class: 'chev', 'aria-hidden': 'true' }) : null) : null);
+        })))));
+    }
+
+    function rowCards(rows, cols, fns, acts, onRow, heads, cell, s, path) {
+      const R = roles(rows, cols, fns, heads);
+      const { raw, title, ref, fig, half } = R;
       return h('div', { class: 'rcards' }, rows.map((r) => {
         const who = rowName(r);
-        const text = (i) => { const v = cell(cols[i], fns[i], r); return v instanceof Node ? v.textContent : String(v ?? ''); };
-        const state = badge >= 0 ? cell(cols[badge], fns[badge], r) : null;
-        const tone = state instanceof Node ? (state.className.match(/\b(ok|warn|bad|info)\b/) || [])[1] || '' : '';
-        // The other words, short: names as they are, numbers and dates with
-        // their column's name ("Reorder at 200").
-        const sub = cols.map((c, i) => {
-          if (i === tick || i === badge || i === title || i === fig) return null;
-          const t = text(i).trim();
-          if (!t) return null;
-          return numeric[i] || c.format ? `${heads[i]} ${t}` : t;
-        }).filter(Boolean).slice(0, 4);
+        const { text, state, tone, sub } = rowParts(R, r, cols, fns, heads, cell);
         let level = null;
         if (fig >= 0 && ref >= 0) {
           const a = Number(raw(cols[fig], fig, r)); const b = Number(raw(cols[ref], ref, r));
@@ -559,17 +659,8 @@
               h('i', { style: `width:${Math.max(pct, 1.5)}%` }), half ? h('u', { style: 'left:50%' }) : null);
           }
         }
-        // The next step: the first action that does not remove; the rest in a menu.
-        const label = (a) => T(a.label, s, path);
-        const doIt = (a) => () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); };
-        const first = acts.find((a) => /\bprimary\b/.test(a.class || '')) || acts.find((a) => !DESTROY.test(label(a)));
-        const others = acts.filter((a) => a !== first);
-        const main = first ? h('button', { class: SOFT.test(label(first)) ? 'rc-soft' : 'primary', type: 'button', 'aria-label': who ? `${label(first)}: ${who}` : null, onclick: doIt(first) }, label(first)) : null;
-        const more = others.length ? h('details', { class: 'rc-more' },
-          h('summary', { 'aria-label': `More${who ? `: ${who}` : ''}`, title: 'More' }, h('span', { 'aria-hidden': 'true' }, '•••')),
-          h('div', { class: 'rc-menu' }, others.map((a) => h('button', { class: `ghost${DESTROY.test(label(a)) ? ' danger' : ''}`, type: 'button', 'aria-label': who ? `${label(a)}: ${who}` : null, onclick: doIt(a) }, label(a))))) : null;
-        const tickEl = tick >= 0 ? cell(cols[tick], fns[tick], r) : null;
-        if (tickEl instanceof HTMLInputElement && !tickEl.getAttribute('aria-label')) tickEl.setAttribute('aria-label', `${heads[tick] || 'Done'}: ${who || ''}`.replace(/: $/, ''));
+        const { main, more } = rowActions(acts, r, who, s, path, (l) => (SOFT.test(l) ? 'rc-soft' : 'primary'));
+        const tickEl = tickOf(R, r, cols, fns, heads, cell, who);
         return h('article', { class: `rcard${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}`, style: onRow ? 'cursor:pointer' : null,
           onclick: onRow ? (e) => { if (!e.target.closest('button, summary, input, label, a')) run(onRow, [r], `${path}.onRow`); } : null },
           h('div', { class: 'rc-head' },
@@ -717,7 +808,7 @@
     }
 
     window.__sa_relook = () => draw();
-    phone.addEventListener('change', () => { if (bold()) draw(); });
+    phone.addEventListener('change', () => { if (lookIs() !== 'plain') draw(); });
     state = { ...(val(spec.state || {}, scope(), 'state') || {}) };
     await load();
     compute();

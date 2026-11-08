@@ -447,3 +447,88 @@ tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; 
    the first words of each in the title's weight */
 :root[data-look="bold"] .list:has(> .card) { background: transparent; box-shadow: none; overflow: visible; gap: 12px; }
 :root[data-look="bold"] :is(.list, .grid) > :is(.card, .item, .col) p:not(.muted):not(.small):first-of-type { font-size: calc(var(--text) * 1.15); font-weight: 750; letter-spacing: -.01em; }
+
+/* ---- the native look (the default: design token look "native"). Like a
+   good phone app: the phone's grouped page, white cells in rounded groups
+   with no borders, a large title, the numbers in one sentence under it
+   (screen.js summary), filters as a segmented control, tinted capsule
+   buttons, and on a phone a table's rows as list cells grouped by state
+   (screen.js rowCells). An app is told apart by its tint. */
+:root[data-look="native"] { --radius: 12px; --radius-control: 999px; --radius-field: 10px; --card-border: transparent; --card-shadow: none; --line: color-mix(in srgb, var(--fg) 12%, transparent); }
+:root[data-look="native"] h1 { font-size: calc(var(--text) * 2.4); font-weight: 700; letter-spacing: -.025em; line-height: 1.1; }
+:root[data-look="native"] h2 { font-size: calc(var(--text) * 1.45); font-weight: 700; letter-spacing: -.02em; line-height: 1.2; }
+/* a screen's own title, first on it, is large */
+:root[data-look="native"] .screen > :is(h1, h2):first-child, :root[data-look="native"] .screen > .row:first-child > :is(h1, h2) { font-size: calc(var(--text) * 2.1); letter-spacing: -.025em; line-height: 1.1; }
+:root[data-look="native"] h3 { font-weight: 600; }
+:root[data-look="native"] :is(.section, .screen) > h3 { font-size: calc(var(--text) * .9); font-weight: 500; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); padding: 0 16px; }
+:root[data-look="native"] button { border: 0; box-shadow: none; font-weight: 600; background: color-mix(in srgb, var(--accent) 12%, var(--card)); color: var(--accent); padding: 0 14px; }
+:root[data-look="native"] button:hover { background: color-mix(in srgb, var(--accent) 18%, var(--card)); }
+:root[data-look="native"] button.primary { background: var(--accent); color: var(--accent-fg); }
+:root[data-look="native"] button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--fg)); }
+:root[data-look="native"] button.ghost { background: transparent; color: var(--accent); }
+:root[data-look="native"] button.ghost:hover { background: var(--soft); }
+:root[data-look="native"] button.danger:not(.primary) { color: var(--bad); }
+:root[data-look="native"] button.link { background: transparent; padding: 0; color: var(--fg); }
+:root[data-look="native"] :is(.card, .list, table, .kpi, .checks-row) { border-color: transparent; box-shadow: none; }
+:root[data-look="native"] th { background: transparent; }
+:root[data-look="native"] .badge { background: transparent; padding: 0; font-size: calc(var(--text) * .9); font-weight: 600; }
+:root[data-look="native"] .badge.plain { color: var(--muted); }
+:root[data-look="native"] input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file])), :root[data-look="native"] select, :root[data-look="native"] textarea { border-color: transparent; background-color: color-mix(in srgb, var(--fg) 7%, var(--card)); }
+:root[data-look="native"] input:focus, :root[data-look="native"] select:focus, :root[data-look="native"] textarea:focus { border-color: transparent; box-shadow: 0 0 0 3px var(--accent-soft); }
+:root[data-look="native"] .chips { background: color-mix(in srgb, var(--fg) 8%, var(--bg)); border: 0; border-radius: 10px; padding: 2px; }
+:root[data-look="native"] .chip { border-radius: 8px; color: var(--fg); background: transparent; }
+:root[data-look="native"] .chip.on { background: var(--card); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
+@media (max-width: 560px) {
+  :root[data-look="native"] .chips { align-self: stretch; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  :root[data-look="native"] .chips:not(:has(> :nth-child(5))) { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  :root[data-look="native"] .chip { flex: none; }
+}
+/* rows the screen draws itself (each): one grouped list, hairlines between */
+:root[data-look="native"] .list > .card { border-radius: 0; background: transparent; position: relative; gap: 8px; }
+/* lines of text in a row sit together; a row's buttons are tinted, filled
+   is for the one main action of a screen */
+:root[data-look="native"] .list > .card > :is(p, small, .muted, .small) + :is(p, small, .muted, .small) { margin-top: -5px; }
+:root[data-look="native"] .list > .item > .col { gap: 3px; }
+/* a row's name as a link stays a finger tall (44 px) on a phone but takes
+   no more room than its words; a tap on the lines under it reaches it */
+@media (pointer: coarse) {
+  :root[data-look="native"] .list > .item > .col > button.link:first-child { margin-block: -10px; }
+  :root[data-look="native"] .list > .item > .col > button.link:first-child ~ :is(p, small) { pointer-events: none; }
+}
+:root[data-look="native"] .list > .card button.primary { background: color-mix(in srgb, var(--accent) 12%, var(--card)); color: var(--accent); }
+:root[data-look="native"] .list > .card + .card::before { content: ""; position: absolute; top: 0; left: var(--pad); right: 0; border-top: 1px solid var(--line); }
+:root[data-look="native"] :is(.list, .grid) > :is(.card, .item, .col) p:not(.muted):not(.small):first-of-type { font-size: calc(var(--text) * 1.08); font-weight: 600; }
+
+/* the numbers in a sentence */
+.say { display: flex; flex-direction: column; gap: 2px; font-size: calc(var(--text) * 1.1); color: var(--muted); }
+.say b { color: var(--fg); font-weight: 650; }
+.say b.attn { color: var(--bad); }
+.say .zero { opacity: .8; }
+
+/* a table's rows as list cells, grouped by state (native, on a phone) */
+.rgroups { display: flex; flex-direction: column; gap: 18px; }
+.rgroup { display: flex; flex-direction: column; gap: 6px; }
+.rgroup-t { font-size: calc(var(--text) * .9); font-weight: 500; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); padding: 0 16px; }
+.rgroup-list { background: var(--card); border-radius: var(--radius); overflow: hidden; }
+.rcell { --c: var(--muted); position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 14px; min-height: 64px; }
+.rcell.t-bad { --c: var(--bad); } .rcell.t-warn { --c: var(--warn); } .rcell.t-ok { --c: var(--ok); } .rcell.t-info { --c: var(--info); }
+.rcell + .rcell::before { content: ""; position: absolute; top: 0; left: 66px; right: 0; border-top: 1px solid var(--line); }
+.rcell.tappable { cursor: pointer; } .rcell.tappable:active { background: var(--soft); }
+.rc-icon { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; background: var(--c); color: #fff; font-weight: 700; font-size: calc(var(--text) * 1.05); }
+.rcell:not([class*=" t-"]) .rc-icon { background: color-mix(in srgb, var(--accent) 16%, var(--card)); color: var(--accent); }
+.rcell .rc-icon.rc-day { display: flex; flex-direction: column; justify-content: center; gap: 0; background: var(--card); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); line-height: 1; }
+.rc-day small { font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.rc-day b { font-size: calc(var(--text) * 1.15); font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.rcell .rc-tick { margin: -2px 0; justify-self: center; }
+.rcell .rc-name { gap: 1px; }
+.rcell .rc-title { font-size: calc(var(--text) * 1.15); font-weight: 600; letter-spacing: -.01em; }
+.rcell .rc-sub { font-size: calc(var(--text) * .95); }
+.rcell .rc-sub .lead { color: var(--c); font-weight: 600; }
+.rcell.done .rc-title { text-decoration: line-through; color: var(--muted); }
+.rc-end { display: flex; align-items: center; gap: 6px; }
+.rc-val { font-size: calc(var(--text) * 1.15); font-weight: 600; font-variant-numeric: tabular-nums; }
+.rc-end > button.rc-pill { min-height: 36px; padding: 0 14px; border-radius: 999px; font-weight: 700; }
+@media (pointer: coarse) { .rc-end > button.rc-pill { min-height: 44px; } }
+.rc-end .rc-more > summary { width: 36px; height: 36px; font-size: 9px; background: transparent; color: var(--muted); }
+@media (pointer: coarse) { .rc-end .rc-more > summary { width: 44px; height: 44px; } }
+.rc-end .chev { width: 8px; height: 8px; border-right: 2px solid color-mix(in srgb, var(--fg) 30%, transparent); border-top: 2px solid color-mix(in srgb, var(--fg) 30%, transparent); transform: rotate(45deg); margin: 0 4px 0 2px; }

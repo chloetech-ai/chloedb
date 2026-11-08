@@ -688,10 +688,13 @@ function renderApp() {
 // An icon for a screen, from the words of its title (the bold look shows
 // them in a tab bar at the bottom of a phone).
 const ICONS = [
+  [/^(add|new)\b/i, 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 8v8M8 12h8'],
+  [/^edit\b|editor/i, 'M4 20h4L19 9l-4-4L4 16v4ZM13.5 6.5l4 4'],
+  [/cart|basket|checkout/i, 'M3 4h2l2.5 11h11L21 7H6.5M9 20a1 1 0 1 0 0 .01M18 20a1 1 0 1 0 0 .01'],
   [/stock|inventor|item|product|pantry|supplies|shop|store/i, 'M21 8 12 3 3 8v8l9 5 9-5V8ZM3 8l9 5 9-5M12 13v8'],
   [/order|deliver|ship|purchase|supplier|vendor/i, 'M3 6h11v10H3zM14 9h4l3 3v4h-7M7 18a2 2 0 1 0 0 .01M17 18a2 2 0 1 0 0 .01'],
   [/rent|pay|money|budget|expense|bill|invoice|sale|income|cost|price|fund/i, 'M3 7h18v12H3zM3 11h18M7 15h3'],
-  [/tenant|people|member|client|customer|guest|contact|team|staff|student|patient|famil|kid|friend/i, 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0'],
+  [/tenant|people|member|client|customer|guest|contact|team|staff|student|patient|famil|kid|friend|roster|player/i, 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0'],
   [/calendar|schedule|week|month|day|event|booking|appointment|shift|plan/i, 'M3 5h18v16H3zM3 10h18M8 3v4M16 3v4'],
   [/repair|fix|maint|issue|ticket|bug/i, 'M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4Z'],
   [/request|idea|feature|feedback|suggest/i, 'M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3Z'],
@@ -700,6 +703,17 @@ const ICONS = [
   [/setting|admin|config|option/i, 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z'],
   [/home|overview|today|dashboard|start/i, 'm3 11 9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z'],
   [/task|todo|to do|chore|check|habit|list/i, 'M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11'],
+  [/note|book|read|paper|article|librar|study|learn|lesson/i, 'M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4ZM5 17a3 3 0 0 1 3-3h11M9 8h6'],
+  [/link|source|bookmark/i, 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1'],
+  [/quiz|question|test|exam|ask/i, 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17v.01'],
+  [/card|deck|flash/i, 'M8 4h11v14H8zM5 7v13h11'],
+  [/menu|dish|food|recipe|meal|kitchen/i, 'M7 3v18M4 3v5a3 3 0 0 0 6 0V3M17 21V3c-2 1-3 3-3 6v5h3'],
+  [/flat|unit|room|house|propert|building|apartment/i, 'M4 21V5l8-3v19M12 9h8v12M3 21h18M8 7v.01M8 11v.01M8 15v.01M16 13v.01M16 17v.01'],
+  [/adjust|count|move|transfer/i, 'M4 7h10M18 7h2M4 17h2M10 17h10M16 4v6M8 14v6'],
+  [/run|workout|training|exercise|activity|fitness/i, 'M3 12h4l3-8 4 16 3-8h4'],
+  [/race|goal|milestone|target/i, 'M5 21V4M5 4h11l-2 4 2 4H5'],
+  [/zone|area|region|map|route|road|place|location/i, 'M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2ZM9 4v14M15 6v14'],
+  [/loan|debt|allowance|wallet|point|reward/i, 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .8-3 2s1.3 1.7 3 2 3 .8 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6v2M12 16v2'],
 ];
 function tabIcon(title) {
   const d = (ICONS.find(([re]) => re.test(title)) || [null, 'M4 6h16M4 12h16M4 18h10'])[1];
@@ -765,7 +779,8 @@ const LOOK_PARAM = new URLSearchParams(location.search).get('look');
 function currentDesign() {
   const d = S.app?.design;
   const chosen = !d ? checkDesign(PRESETS[0]) : (() => { const own = ownLook(); return d.designs[own !== null && d.designs[own] ? own : d.chosen] || d.designs[0]; })();
-  return LOOK_PARAM ? checkDesign({ ...chosen, look: LOOK_PARAM }, chosen) : chosen;
+  // a design stored before looks existed has none: checking it gives the default
+  return checkDesign(LOOK_PARAM ? { ...chosen, look: LOOK_PARAM } : chosen, chosen);
 }
 function applyDesign() {
   const d = currentDesign();

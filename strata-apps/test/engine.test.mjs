@@ -836,7 +836,7 @@ test('rule steps loop over rows, refuse with a message, insert or update, and re
 
 test('a design is a few tokens made readable, drawn as CSS variables for light and dark', async () => {
   const { checkDesign, designCss, presetDesigns, contrast, PRESETS } = await import('../web/design.js');
-  const d = checkDesign({ name: 'Pale', light: { bg: '#ffffff', card: '#ffffff', fg: '#bbbbbb', accent: '#ffee00' }, font: 'comic', nav: 'sidebar' });
+  const d = checkDesign({ name: 'Pale', light: { bg: '#ffffff', card: '#ffffff', fg: '#bbbbbb', accent: '#ffee00' }, font: 'comic', nav: 'sidebar', look: 'plain' });
   assert.ok(contrast(d.light.fg, d.light.bg) >= 7, 'text reads on the page');
   assert.ok(contrast(d.light.accent, d.light.card) >= 4.5, 'the accent reads on cards');
   assert.equal(d.font, PRESETS[0].font, 'an unknown token falls back');
@@ -851,10 +851,10 @@ test('a design is a few tokens made readable, drawn as CSS variables for light a
   assert.notDeepEqual(presetDesigns('abc123').map((x) => x.name), presetDesigns('zz9').map((x) => x.name).reverse());
 });
 
-test('the bold look: a deep color white text reads on, a light one that reads on it, a page tinted by the accent', async () => {
+test('looks: native by default (the grouped page, the tint readable on it), bold with a deep color and a light one that read', async () => {
   const { checkDesign, designVars, boldColors, contrast, PRESETS } = await import('../web/design.js');
-  assert.equal(checkDesign(PRESETS[0]).look, 'plain', 'plain unless a design says otherwise');
-  assert.equal(checkDesign({ look: 'loud' }).look, 'plain', 'an unknown look falls back');
+  assert.equal(checkDesign(PRESETS[0]).look, 'native', 'native unless a design says otherwise');
+  assert.equal(checkDesign({ look: 'loud' }).look, 'native', 'an unknown look falls back');
   for (const p of PRESETS) {
     const d = checkDesign({ ...p, look: 'bold' });
     for (const [which, dark] of [['light', false], ['dark', true]]) {
@@ -865,7 +865,14 @@ test('the bold look: a deep color white text reads on, a light one that reads on
     const v = designVars(d, 'light');
     assert.equal(v['--look'], 'bold');
     assert.equal(v['--bg'], v['--wash'], 'the page is the wash');
-    assert.equal(designVars(p, 'light')['--bg'], checkDesign(p).light.bg, 'a plain design keeps its page');
+    assert.equal(designVars({ ...p, look: 'plain' }, 'light')['--bg'], checkDesign(p).light.bg, 'a plain design keeps its page');
+    for (const which of ['light', 'dark']) {
+      const n = designVars(p, which);
+      assert.ok(['#f2f2f7', '#000000'].includes(n['--bg']), `${p.name} ${which}: native is the phone's grouped page`);
+      assert.ok(contrast(n['--accent'], n['--card']) >= 4.5 && contrast(n['--accent'], n['--bg']) >= 4.5, `${p.name} ${which}: the tint reads on cells and page`);
+      assert.ok(contrast(n['--fg'], n['--card']) >= 7, `${p.name} ${which}: text reads on cells`);
+      assert.ok(contrast(n['--muted'], n['--bg']) >= 4.5, `${p.name} ${which}: secondary text reads`);
+    }
   }
 });
 

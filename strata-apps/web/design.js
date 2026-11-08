@@ -24,7 +24,7 @@ export const CHOICES = {
   nav: { segmented: 'a centered segmented control', tabs: 'underlined tabs, left aligned', sidebar: 'a list on the left (for apps with many views)' },
   width: { narrow: '760px: reading', regular: '1040px', wide: '1280px: tables, forms and boards' },
   motion: { calm: 'slow, quiet movement on front pages', lively: 'quicker, more movement', still: 'nothing moves by itself' },
-  look: { plain: 'rows as tables and label-value cards, numbers in tiles', bold: 'a color band with the one number that matters, each row a card with its number large, its state as a pill and its next step as a button' },
+  look: { native: 'like a good phone app: grouped white lists on a grey page, a sentence for the numbers, each row a cell with an icon, one line of detail and one action', plain: 'rows as tables and label-value cards, numbers in tiles', bold: 'a color band with the one number that matters, each row a card with its number large, its state as a pill and its next step as a button' },
 };
 
 const C = (light, dark) => ({ light, dark });
@@ -140,7 +140,7 @@ export function checkDesign(d, base = PRESETS[0]) {
     nav: pick(d?.nav, 'nav', base.nav),
     width: pick(d?.width, 'width', base.width),
     motion: pick(d?.motion, 'motion', base.motion || 'calm'),
-    look: pick(d?.look, 'look', base.look || 'plain'),
+    look: pick(d?.look, 'look', base.look || 'native'),
     gradient: gradientOf(d?.gradient ? d : base.gradient && !d?.light && !d?.dark ? base : { gradient: null }, (d?.light || base.light)?.accent || base.light.accent),
   };
 }
@@ -175,11 +175,24 @@ export function boldColors(p, isDark) {
   return { deep, deepFg: onColor(deep), pop, wash };
 }
 
+// A design's colors on the native look's page and cells.
+export function nativePalette(p, isDark) {
+  const bg = isDark ? '#000000' : '#f2f2f7';
+  const card = isDark ? '#1c1c1e' : '#ffffff';
+  const ink = isDark ? '#ffffff' : '#000000';
+  const fg = contrast(p.fg, bg) >= 7 && contrast(p.fg, card) >= 7 ? p.fg : readable(p.fg, isDark ? card : bg, 7, ink);
+  const accent = contrast(p.accent, card) >= 4.5 && contrast(p.accent, bg) >= 4.5 ? p.accent : readable(p.accent, isDark ? card : bg, 4.5, fg);
+  return { bg, card, fg, accent };
+}
+
 // The variables of a design in one scheme.
 export function designVars(input, which = 'light') {
   const d = checkDesign(input);
-  const p = d[which];
-  const isDark = lum(p.bg) < 0.2;
+  const isDark = lum(d[which].bg) < 0.2;
+  // The native look: the phone's own grouped page and white (or dark grey)
+  // cells; an app is told apart by its tint, the accent, kept readable on them.
+  const native = d.look === 'native';
+  const p = native ? nativePalette(d[which], isDark) : d[which];
   const k = CORNERS[d.corners];
   const n = DENSITY[d.density];
   // Cards that would vanish on their page (same color, grouped) get a hairline.

@@ -580,7 +580,9 @@ body.bare.designed { background: var(--bg); }
 @container (max-width: 420px) { .act-spark { display: none; } .act-head { padding-top: 18px; } }
 @media (max-width: 700px) { .act { padding: 0 14px 40px; } .act-head { margin: 0 -14px 14px; padding-left: 14px; padding-right: 14px; } }
 
-/* the bold look around an app: the bar in the deep color, and on a phone the
+/* the native and bold looks around an app: on a phone the screens are a
+   tab bar at the bottom, each with an icon; bold also paints the bar.
+   The bold look around an app: the bar in the deep color, and on a phone the
    screens as a tab bar at the bottom, each with an icon */
 .ticon { display: none; width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .bare.designed.look-bold .top { background: var(--deep); color: var(--deep-fg); border-bottom: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
@@ -588,13 +590,17 @@ body.bare.designed { background: var(--bg); }
 .bare.designed.look-bold .mark { background: var(--pop); }
 .bare.designed.look-bold .top .look { background: color-mix(in srgb, var(--deep-fg) 16%, transparent); color: var(--deep-fg); }
 @media (max-width: 560px) {
-  .bare.designed.look-bold .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
-  .bare.designed.look-bold #tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; margin: 0; width: auto; max-width: none; border-radius: 0;
+  .bare.designed:is(.look-bold, .look-native) .stage { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+  .bare.designed:is(.look-bold, .look-native) #tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; margin: 0; width: auto; max-width: none; border-radius: 0;
     display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; align-self: stretch;
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); background: var(--card); border: 0; border-top: 1px solid var(--line); box-shadow: none; }
-  .bare.designed.look-bold #tabs .tab { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; min-height: 50px; padding: 5px 2px 4px; border: 0; border-radius: 10px;
+  .bare.designed:is(.look-bold, .look-native) #tabs .tab { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; min-height: 50px; padding: 5px 2px 4px; border: 0; border-radius: 10px;
     background: transparent; box-shadow: none; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0; }
-  .bare.designed.look-bold #tabs .tab.on { color: var(--accent); background: transparent; box-shadow: none; font-weight: 750; }
-  .bare.designed.look-bold #tabs .tlabel { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bare.designed.look-bold #tabs .ticon { display: block; }
+  .bare.designed:is(.look-bold, .look-native) #tabs .tab.on { color: var(--accent); background: transparent; box-shadow: none; font-weight: 750; }
+  .bare.designed:is(.look-bold, .look-native) #tabs .tlabel { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bare.designed:is(.look-bold, .look-native) #tabs .ticon { display: block; }
+}
+@media (max-width: 560px) {
+  .bare.designed.look-native #tabs { background: color-mix(in srgb, var(--card) 88%, transparent); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); }
+  .bare.designed.look-native #tabs .tab.on { font-weight: 650; }
 }

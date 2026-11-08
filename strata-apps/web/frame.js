@@ -30,7 +30,7 @@
   window.addEventListener('error', (e) => report(e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => report(e.reason));
 
-  // The design's look (--look: plain, bold) as an attribute the stylesheet
+  // The design's look (--look: native, plain, bold) as an attribute the stylesheet
   // and the screen renderer read; a screen draws again when it changes.
   const syncLook = () => {
     const look = getComputedStyle(document.documentElement).getPropertyValue('--look').trim() || 'plain';
