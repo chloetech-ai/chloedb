@@ -14,7 +14,8 @@ once, and a database someone wrote with that version looks the same.
 | `profiles/` | 3, with `rank_profiles`: rank profiles in the manifest, and profile records in a WAL that names the feature (`STRWAL02`) | b43bfb2 | `tests/format_fixtures.rs` |
 | `fieldids-13d5bc5/` | 3, with `field_ids`: the writes of `format2/`, `format3/`, `seqno/` and `profiles/`, in subdirectories of those names, as the first version with field ids writes them | 13d5bc5 | `tests/format_fixtures.rs` |
 | `fieldids-bce183f/` | 3, with `field_ids`, the same writes as `fieldids-13d5bc5/`, and each segment's doc store with `store.crc`, a crc32 per block | bce183f | `tests/format_fixtures.rs` |
-| `fieldids/` | 3, with `field_ids` and `compact_keys`, the same writes as `fieldids-bce183f/`, and each segment's key index (`pk`) with 32-bit fingerprints, reading table `t`'s KEYWORD keys from their keyword column | the commit that adds this row | `tests/format_fixtures.rs` |
+| `fieldids-1bd956a/` | 3, with `field_ids` and `compact_keys`, the same writes as `fieldids-bce183f/`, and each segment's key index (`pk`) with 32-bit fingerprints, reading table `t`'s KEYWORD keys from their keyword column | 1bd956a | `tests/format_fixtures.rs` |
+| `fieldids/` | 3, with `field_ids`, `compact_keys` and `packed_positions`, the same writes as `fieldids-1bd956a/`, and each TEXT field with positions in the packed layout (section `text.<field>.ppos`, bit-packed by block); `seqno/`'s table has no positions, so it does not need the feature | the commit that adds this row | `tests/format_fixtures.rs` |
 
 All but `format1/` were written by [`writer.rs`](writer.rs). The sets from
 before field ids (`format1/` to `profiles/`), which named fields by position

@@ -76,9 +76,9 @@ fn through_sql(path: &Path, layout: Layout) {
     let first = Schema::new("first", vec![Field::new("id", FieldType::Int)], Some("id")).unwrap();
     let db = Db::create(path, first, opts()).unwrap();
     run(&db, "CREATE TABLE plain (id INT PRIMARY KEY, service KEYWORD, body TEXT)");
-    assert_eq!(required(path), ["compact_keys", "field_ids"]);
+    assert_eq!(required(path), ["compact_keys", "field_ids", "packed_positions"]);
     run(&db, "CREATE TABLE logs (id INT PRIMARY KEY, service KEYWORD, body TEXT) OPTIONS(compression = 'zstd')");
-    assert_eq!(required(path), ["compact_keys", "field_ids", "zstd"]);
+    assert_eq!(required(path), ["compact_keys", "field_ids", "packed_positions", "zstd"]);
     assert_eq!(db.storage().table("logs").unwrap().compression, Compression::Zstd);
 
     // In the memtable, then in segments, then merged, then with updates
@@ -101,7 +101,7 @@ fn through_sql(path: &Path, layout: Layout) {
         run(&db, &format!("ALTER TABLE {t} ADD COLUMN level KEYWORD"));
     }
     assert_eq!(db.storage().table("logs").unwrap().compression, Compression::Zstd);
-    assert_eq!(required(path), ["added_fields", "compact_keys", "field_ids", "zstd"]);
+    assert_eq!(required(path), ["added_fields", "compact_keys", "field_ids", "packed_positions", "zstd"]);
     db.optimize().unwrap();
     same(&db, 11_999);
     // The same rows and indexes, the doc store smaller.
@@ -113,7 +113,7 @@ fn through_sql(path: &Path, layout: Layout) {
     same(&db, 11_999);
     assert_eq!(rows(&db, "SELECT body FROM logs WHERE id = 7"), vec![vec![Value::Str("Verification changed".into())]]);
     run(&db, "DROP TABLE logs");
-    assert_eq!(required(path), ["added_fields", "compact_keys", "field_ids"]);
+    assert_eq!(required(path), ["added_fields", "compact_keys", "field_ids", "packed_positions"]);
 }
 
 #[test]

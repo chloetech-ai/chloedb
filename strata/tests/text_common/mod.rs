@@ -63,7 +63,13 @@ pub fn scifact(limit: usize) -> Option<Vec<String>> {
 
 /// A segment holding one text field `body`.
 pub fn build(texts: &[String], format: PostingsFormat, loom_min_df: u32, positions: bool) -> SegmentFile {
-    let mut b = TextFieldBuilder::new("body", positions, format, loom_min_df);
+    build_with(texts, format, loom_min_df, positions, false)
+}
+
+/// [`build`], with its positions in the packed layout if `packed`.
+#[allow(dead_code)]
+pub fn build_with(texts: &[String], format: PostingsFormat, loom_min_df: u32, positions: bool, packed: bool) -> SegmentFile {
+    let mut b = TextFieldBuilder::new("body", positions, format, loom_min_df).with_packed_positions(packed);
     for t in texts {
         b.add_text(t);
     }

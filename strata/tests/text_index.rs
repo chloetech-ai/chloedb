@@ -15,9 +15,16 @@ use text_common::*;
 
 /// Every check of this file on one corpus and configuration.
 fn check_corpus(texts: &[String], format: PostingsFormat, min_df: u32, seed: u64) {
-    let what = format!("{format:?}/{min_df}");
+    for packed in [false, true] {
+        check_layout(texts, format, min_df, seed, packed);
+    }
+}
+
+/// [`check_corpus`] with positions as varints or packed.
+fn check_layout(texts: &[String], format: PostingsFormat, min_df: u32, seed: u64, packed: bool) {
+    let what = format!("{format:?}/{min_df}/{}", if packed { "packed" } else { "varint" });
     let naive = Naive::new(texts);
-    let seg = build(texts, format, min_df, true);
+    let seg = build_with(texts, format, min_df, true, packed);
     let r = TextFieldReader::open(&seg, "body").unwrap();
     assert_eq!(r.n_docs() as usize, texts.len());
     assert_eq!(r.n_terms() as usize, naive.index.len());
@@ -145,6 +152,8 @@ fn small_and_degenerate_corpora() {
         vec!["alpha beta alpha".into(), "beta".into(), "gamma alpha".into()],
         (0..129).map(|i| format!("common r{i}")).collect(),
         (0..256).map(|i| if i % 2 == 0 { "x".to_string() } else { "y x".into() }).collect(),
+        // Positions far apart: deltas of 17 bits in a block with small ones.
+        (0..300).map(|i| if i == 150 { format!("{} far x", "filler ".repeat(70_000)) } else { format!("x far y{}", i % 3) }).collect(),
     ];
     for texts in &cases {
         for (format, min_df) in configs() {

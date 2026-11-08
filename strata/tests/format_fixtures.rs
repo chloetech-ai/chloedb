@@ -253,7 +253,7 @@ fn recorded_features(dir: &Path) -> Vec<String> {
 #[test]
 fn key_indexes_of_every_set_find_their_keys() {
     for (set, _) in sets("format2").into_iter().filter(|s| s.1 == Era::Ids) {
-        let compact = set.parent().unwrap().file_name().unwrap() == "fieldids";
+        let compact = recorded_features(&set.join("db.dir")).contains(&"compact_keys".to_string());
         let dir = tempfile::tempdir().unwrap();
         for path in copies(&set, dir.path()) {
             let what = path.display().to_string();
@@ -487,7 +487,13 @@ fn profile_fixtures_rank_as_written() {
             assert_eq!(format_on_disk(&path), 3, "{what}");
             if path.is_dir() {
                 let (_, m) = strata::storage::dir::read_current(&path).unwrap();
-                let features: &[&str] = if era == Era::Old { &["rank_profiles"] } else { &["compact_keys", "field_ids", "rank_profiles"] };
+                // The sets from before packed positions keep their varints.
+                let packed = recorded_features(&path).contains(&"packed_positions".to_string());
+                let features: &[&str] = match (era, packed) {
+                    (Era::Old, _) => &["rank_profiles"],
+                    (Era::Ids, false) => &["compact_keys", "field_ids", "rank_profiles"],
+                    (Era::Ids, true) => &["compact_keys", "field_ids", "packed_positions", "rank_profiles"],
+                };
                 assert_eq!(m.features(), features, "{what}");
                 let names: Vec<&str> = m.tables[0].profiles.iter().map(|p| p.name.as_str()).collect();
                 assert_eq!(names, ["by_n", "phased"], "{what}: flushed with the deletes");

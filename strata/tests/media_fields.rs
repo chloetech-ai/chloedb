@@ -140,7 +140,7 @@ fn files_are_given_by_bytes_by_path_or_by_value() {
     assert_eq!(std::fs::read(store.join(&hb)).unwrap(), b);
     let in_db: Vec<u8> = walk(&path).into_iter().flat_map(|p| std::fs::read(p).unwrap()).collect();
     assert!(!in_db.windows(b.len()).any(|w| w == b), "the bytes of b are in the database");
-    assert_eq!(required_features(&path), json!(["compact_keys", "field_ids", "media"]));
+    assert_eq!(required_features(&path), json!(["compact_keys", "field_ids", "media", "packed_positions"]));
 
     // Merged, and opened again: the same values and lookups.
     db.storage().flush().unwrap();
