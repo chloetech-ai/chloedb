@@ -63,6 +63,7 @@ pub mod service;
 pub mod sim;
 pub mod slots;
 pub mod telemetry;
+pub mod traffic;
 pub mod ui;
 
 /// A builder of the HTTP clients the server makes. They trust the roots

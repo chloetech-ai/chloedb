@@ -49,6 +49,7 @@ use strata::storage::{DbOptions, MergePolicy};
 use strata::{Document, Value, VectorCodes, VectorIndexKind};
 use strata_server::server;
 use strata_server::service::shard_of;
+use strata_server::traffic::KINDS;
 
 mod more;
 mod recsys;
@@ -1040,31 +1041,8 @@ async fn load(collection: &str, engine: Engine, urls: &[String], shards: usize, 
 
 // --- Query kinds ---------------------------------------------------------
 
-/// The kinds of `strata-server-bench`, then five more (phrase, typo,
-/// prefix, similar items, SQL aggregate), as Strata SQL. `:seen`, `:y` and
-/// the filters' values (`:fy`, `:fc`, `:fr`, `:fs`, see `Knobs`) are written
-/// into the statement as literals (lists, and numbers that vary by query).
-const KINDS: &[(&str, &str)] = &[
-    ("bm25", "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"),
-    ("bm25 + filter", "SELECT id, score() FROM docs WHERE year >= :fy AND category IN (:fc) ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"),
-    ("vector", "SELECT id, score() FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 10"),
-    ("vector + filter", "SELECT id, score() FROM docs WHERE rating >= :fr ORDER BY similarity(emb, :v) DESC LIMIT 10"),
-    ("hybrid (RRF)", "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t, syntax => 'plain'), similarity(emb, :v)) DESC LIMIT 10"),
-    ("hybrid (weighted)", "SELECT id, score() FROM docs ORDER BY 0.2 * minmax(bm25(body, :t, syntax => 'plain')) + 0.8 * minmax(similarity(emb, :v)) DESC LIMIT 10"),
-    ("boosted (bm25 × decay)", "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') * decay(year, 2024, 5) DESC LIMIT 10"),
-    ("facet", "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, :w) GROUP BY category ORDER BY 2 DESC LIMIT 5"),
-    ("key lookup", "SELECT id, title, year, rating FROM docs WHERE id = :k"),
-    // The rows with two neighbouring words of the query as a phrase, ranked by all of its words.
-    ("phrase", "SELECT id, score() FROM docs ORDER BY bm25(body, :p) DESC LIMIT 10"),
-    // The query with two letters of its longest word swapped, each word matching terms an edit or two away.
-    ("typo", "SELECT id, score() FROM docs ORDER BY bm25(body, :x, syntax => 'plain', fuzzy => 'auto') DESC LIMIT 10"),
-    // Search as you type: the rows with a word starting with the last word's first letters, ranked by the words before it.
-    ("prefix", "SELECT id, score() FROM docs WHERE MATCH(body, :pre) ORDER BY bm25(body, :before, syntax => 'plain') DESC LIMIT 10"),
-    // A recommender's request: the items nearest an item, rated 3 or more, minus the 20 the user has seen.
-    ("similar items", "SELECT id, score() FROM docs WHERE rating >= :fs AND id NOT IN (:seen) ORDER BY similarity(emb, :i) DESC LIMIT 10"),
-    // Analytics over the structured fields alone.
-    ("sql aggregate", "SELECT category, COUNT(*), AVG(rating) FROM docs WHERE year >= :y GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10"),
-];
+// The kinds (`KINDS`) are the library's (`strata_server::traffic::KINDS`),
+// which the command center's simulator sends too.
 
 /// HNSW candidates for the vector kinds: Strata searches with ef 64 and
 /// re-scores the best 40 with the full vectors; Elasticsearch and
