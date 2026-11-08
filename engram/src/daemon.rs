@@ -779,6 +779,20 @@ impl Daemon {
         if q.is_empty() {
             return Err(err("question is empty"));
         }
+        // By search alone unless a model is asked to plan and pick.
+        let deep = req.get("deep").and_then(|v| v.as_bool()).unwrap_or(false) || req.get("model").and_then(|v| v.as_str()).is_some_and(|m| !m.is_empty());
+        if !deep {
+            let (active, w) = self.active_session();
+            let mut filter = Filter::default();
+            if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
+                filter.exclude_window = Some((active.clone(), w));
+            }
+            let built = crate::context::build(&self.store, &q, &filter, &crate::context::ContextParams::default())?;
+            let text = if built.text.is_empty() { "Engram found nothing relevant in memory.".to_string() } else { built.text };
+            let ids: Vec<String> = built.records.iter().map(|r| r.id.clone()).collect();
+            self.log(&json!({"ts": now(), "event": "ask", "mode": "search", "question": q, "records": ids.len(), "ms": built.ms}));
+            return Ok(json!({"text": text, "ids": ids, "ms": built.ms}));
+        }
         let mut cfg = self.deep_cfg();
         if let Some(m) = req.get("model").and_then(|v| v.as_str()).filter(|m| !m.is_empty()) {
             cfg.planner_model = m.to_string();
@@ -1116,17 +1130,23 @@ impl Daemon {
         let (sid, _) = self.active_session();
         let sid = if sid.is_empty() { "manual".to_string() } else { sid };
         let turn = self.with_session(&sid, |s| s.turn);
+        let mut replaced = None;
         if let Some(old) = req.get("supersedes").and_then(|v| v.as_str()) {
             if let Some(mut r) = self.store.get(&[old.to_string()])?.pop() {
                 r.tag = "superseded".into();
                 r.importance *= 0.3;
                 self.store.insert(&[r])?;
+                replaced = Some(old.to_string());
             }
         }
         let a = anchor::make(Path::new(&self.project), &text, &files, &[]);
         let mut d = Draft::new(kind, text).files(files).tag("remembered");
         if !a.is_empty() {
             d = d.ctx(a.to_line());
+        }
+        // What it replaced, as a distilled replacement links it.
+        if let Some(old) = replaced {
+            d = d.link("supersedes", old);
         }
         let recs = self.store.append(&sid, turn, now(), vec![d])?;
         Ok(json!({"id": recs[0].id, "text": format!("Stored {} as {}.", kind.as_str(), recs[0].id)}))

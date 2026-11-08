@@ -1,7 +1,7 @@
 //! `engram mcp`: a Model Context Protocol server over stdio (newline-
 //! delimited JSON-RPC 2.0) exposing the memory tools. Each call is forwarded
 //! to the project's daemon, on its own thread: a quick search is answered
-//! while a slow `memory_ask` is still running.
+//! while a slow `memory_ask` (with `deep`) is still running.
 
 use std::io::{BufRead, Write};
 use std::sync::Mutex;
@@ -13,7 +13,7 @@ use crate::{daemon, paths};
 
 const INSTRUCTIONS: &str = "Engram is this project's long-term memory: every earlier prompt, answer, tool call, error and compaction summary, across sessions. \
 Relevant records are injected automatically when a prompt clearly matches them; these tools are for everything else. \
-memory_ask is the way to answer a question about earlier work (what was decided, why, where something happens and why, which error, which numbers): it plans several searches, runs them and picks the records that answer it. \
+memory_ask is the way to answer a question about earlier work (what was decided, why, what was recommended, which error, which numbers): it searches notes, rules, replies and messages at once and returns them packed for the question, in milliseconds. \
 memory_search is one quick hybrid search. \
 memory_timeline shows what happened around a record id. memory_sql answers structured questions (counts, by file, by kind, by time). \
 memory_remember stores a decision, preference, fact or open task worth keeping beyond this session, ideally one sentence that will make sense later.";
@@ -22,10 +22,11 @@ fn tools() -> Json {
     json!([
         {
             "name": "memory_ask",
-            "description": "Answer a question about this project's earlier work from memory. A model rewrites the question into several searches (keyword, semantic, notes, entity graph, file, SQL), all of them run, and a second model call picks the records that bear on it and says why, with a short answer that cites record ids. Use it for questions with several parts or that need reasoning (\"where does X happen and why is Y responsible for it?\", \"what constrains how we build Z?\") and before design decisions. Takes several seconds.",
+            "description": "Answer a question about this project's earlier work from memory. Several searches run at once and their results come back packed for the question, with no model call: the rules that bear on it, notes in their current versions with what they replaced (oldest first), what the assistant replied in the exchanges closest to it, and excerpts of the messages. Answer from them; prefer the latest of two values. Use it before design decisions and for anything earlier work may have settled. With deep, a model plans the searches and picks the records instead (several seconds).",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The question or task, in natural language."},
-                "model": {"type": "string", "description": "Model for planning and ranking (default: the configured one, usually haiku); a stronger model for hard questions, e.g. sonnet."},
+                "deep": {"type": "boolean", "default": false, "description": "Let a model rewrite the question into searches and pick the records, with a short answer citing record ids."},
+                "model": {"type": "string", "description": "With deep: model for planning and ranking (default: the configured one, usually haiku)."},
                 "include_current": {"type": "boolean", "default": false}
             }, "required": ["question"]}
         },

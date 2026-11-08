@@ -11,6 +11,7 @@ pub mod anchor;
 pub mod benchdata;
 pub mod capture;
 pub mod consolidate;
+pub mod context;
 pub mod daemon;
 pub mod deep;
 pub mod distill;

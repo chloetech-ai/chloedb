@@ -70,6 +70,13 @@ fn sessions_tools_compaction_and_memory_tools() {
     let new_id = r["id"].as_str().unwrap().to_string();
     let r = call(&d, json!({"op": "sql", "sql": format!("SELECT tag FROM memory WHERE id = '{id}' LIMIT 1")}));
     assert!(r["text"].as_str().unwrap().contains("superseded"), "{r}");
+    // memory_ask answers by search alone: the note in its current version,
+    // with what it replaced, and no model call.
+    let r = call(&d, json!({"op": "ask", "question": "What type are balances stored as?", "include_current": true}));
+    let text = r["text"].as_str().unwrap();
+    assert!(text.contains("decision: Balances are i128 cents."), "{r}");
+    assert!(text.contains("was: Balances are i64 cents."), "{r}");
+    assert!(r.get("cost_usd").is_none() && r["ms"].as_f64().is_some(), "{r}");
     let t = call(&d, json!({"op": "timeline", "id": "s1:3", "before": 1, "after": 1}));
     assert!(t["text"].as_str().unwrap().contains(">> [s1:3]"), "{t}");
     assert!(call(&d, json!({"op": "sql", "sql": "DELETE FROM memory"})).get("error").is_some());
