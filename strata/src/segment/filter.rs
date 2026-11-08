@@ -97,6 +97,21 @@ impl DocSet {
         }
     }
 
+    /// Members from `from` on, in increasing order: where a scroll of a
+    /// scan resumes in a segment ([`crate::query::exec::Scroll`]).
+    pub fn iter_from(&self, from: DocId) -> Box<dyn Iterator<Item = DocId> + '_> {
+        match self {
+            DocSet::Sorted { docs, .. } => Box::new(docs[docs.partition_point(|&d| d < from)..].iter().copied()),
+            DocSet::Bits { words, .. } => {
+                let first = from as usize / 64;
+                Box::new(words.iter().enumerate().skip(first).flat_map(move |(i, &w)| {
+                    let w = if i == first { w & (!0u64 << (from % 64)) } else { w };
+                    BitIter { w, base: i as u32 * 64 }
+                }))
+            }
+        }
+    }
+
     pub fn to_sorted(&self) -> Vec<DocId> {
         match self {
             DocSet::Sorted { docs, .. } => docs.clone(),
@@ -394,6 +409,20 @@ mod tests {
         assert_eq!(sa.complement().len(), n as usize - a.len());
         assert_eq!(DocSet::all(n).len(), n as usize);
         assert!(sa.contains(999) && !sa.contains(998));
+    }
+
+    #[test]
+    fn iter_from_resumes_where_asked() {
+        let n = 1000;
+        let dense: Vec<u32> = (0..n).filter(|x| x % 3 == 0).collect();
+        let sparse: Vec<u32> = (0..n).filter(|x| x % 70 == 1).collect();
+        for docs in [dense, sparse] {
+            let set = DocSet::from_sorted(docs.clone(), n);
+            for from in [0, 1, 63, 64, 65, 127, 128, 500, 998, 999, 1000, 5000] {
+                let want: Vec<u32> = docs.iter().copied().filter(|&d| d >= from).collect();
+                assert_eq!(set.iter_from(from).collect::<Vec<_>>(), want, "from {from}");
+            }
+        }
     }
 
     #[test]

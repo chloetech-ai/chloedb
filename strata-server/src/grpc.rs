@@ -240,6 +240,8 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         reads: false,
         stats_version: r.stats_version,
         boosts_alone: r.shard && r.protocol >= BOOSTS_PROTOCOL,
+        // Scrolls are HTTP's, on one server.
+        scroll: None,
     })
 }
 

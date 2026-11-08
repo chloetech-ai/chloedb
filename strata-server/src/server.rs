@@ -85,6 +85,10 @@ pub struct Options {
     pub max_concurrent: usize,
     /// The most rows a query may reach, OFFSET included (0: no limit).
     pub max_result_window: usize,
+    /// The rows the open scrolls may hold between them
+    /// ([`crate::service::Service::max_scroll_rows`]; `None`:
+    /// [`crate::service::MAX_SCROLL_ROWS`]).
+    pub max_scroll_rows: Option<usize>,
     /// The most groups a query may make (0: no limit).
     pub max_groups: usize,
     /// The most rows a cross-encoder's rerank phase may score (0: no
@@ -376,6 +380,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.slow = (o.slow_ms > 0).then(|| Duration::from_millis(o.slow_ms));
     svc.max_rows = (o.max_result_window > 0).then_some(o.max_result_window);
+    svc.max_scroll_rows = o.max_scroll_rows.unwrap_or(crate::service::MAX_SCROLL_ROWS);
     svc.max_groups = (o.max_groups > 0).then_some(o.max_groups);
     svc.max_rerank = (o.max_rerank > 0).then_some(o.max_rerank);
     let query_memory = match o.query_memory_mb {
@@ -988,6 +993,7 @@ pub fn spawn_maintenance(svc: &Arc<Service>) {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let Some(svc) = svc.upgrade() else { return };
+            svc.sweep_scrolls();
             svc.sweep_leases();
             let why = svc.failing().map(|w| format!("{w}; merges stop until then")).or_else(|| db.storage().merge_status().error.map(|e| format!("merge failed: {e}")));
             if why.is_some() && why != reported {

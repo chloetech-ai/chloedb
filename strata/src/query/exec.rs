@@ -5,8 +5,10 @@
 mod agg_columns;
 mod graph;
 mod filter_cache;
+mod scroll;
 
 pub use filter_cache::{FilterCache, FILTER_CACHE_BYTES};
+pub use scroll::Scroll;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1262,6 +1264,20 @@ impl<'a> Executor<'a> {
         self.project(q, &hits)
     }
 
+    /// Refuses a query its models or cross-encoders cannot run as given.
+    fn refuse(&self, q: &Select) -> Result<()> {
+        if let Some(m) = q.unopened_model(self.opts.shard) {
+            return Err(err(format!("ranking model {m} is not open: Db::query and Db::run open the models of a query's plan (Db::open_ranking_models)")));
+        }
+        if matches!(&q.order, Some(OrderBy::Score { score, .. }) if score.has_cross_encoder()) {
+            return Err(err(CROSS_ENCODER_FIRST));
+        }
+        if q.projection.iter().any(|(_, p)| matches!(p, Projection::Feature(s) if s.has_cross_encoder())) {
+            return Err(err("a cross-encoder ranks in a rerank phase, not in a column: rank by it and select score()"));
+        }
+        Ok(())
+    }
+
     pub fn execute(self, q: &Select) -> Result<ResultSet> {
         match self.answer(q, None)? {
             Leaf::Rows(rs) => Ok(rs),
@@ -1289,15 +1305,7 @@ impl<'a> Executor<'a> {
             self.step(m, "guard", String::new(), None);
         }
         let q = settled.as_ref().unwrap_or(q);
-        if let Some(m) = q.unopened_model(self.opts.shard) {
-            return Err(err(format!("ranking model {m} is not open: Db::query and Db::run open the models of a query's plan (Db::open_ranking_models)")));
-        }
-        if matches!(&q.order, Some(OrderBy::Score { score, .. }) if score.has_cross_encoder()) {
-            return Err(err(CROSS_ENCODER_FIRST));
-        }
-        if q.projection.iter().any(|(_, p)| matches!(p, Projection::Feature(s) if s.has_cross_encoder())) {
-            return Err(err("a cross-encoder ranks in a rerank phase, not in a column: rank by it and select score()"));
-        }
+        self.refuse(q)?;
         let columns: Vec<String> = q.projection.iter().map(|(n, _)| n.clone()).collect();
         if self.opts.shard && has_graphs(q) {
             return Err(err("graph queries (REACHABLE, PATH, hops(), ppr) run on one database, not split across shards: a row's edges point at rows other shards hold"));
