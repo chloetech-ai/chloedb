@@ -30,6 +30,16 @@
   window.addEventListener('error', (e) => report(e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => report(e.reason));
 
+  // The design's look (--look: plain, bold) as an attribute the stylesheet
+  // and the screen renderer read; a screen draws again when it changes.
+  const syncLook = () => {
+    const look = getComputedStyle(document.documentElement).getPropertyValue('--look').trim() || 'plain';
+    if (document.documentElement.dataset.look === look) return;
+    document.documentElement.dataset.look = look;
+    if (window.__sa_relook) { try { window.__sa_relook(); } catch (err) { report(err); } }
+  };
+  syncLook();
+
   const listeners = [];
   const leaving = [];
   window.__sa_onLeave = (fn) => { leaving.push(fn); };
@@ -48,6 +58,7 @@
       let el = document.getElementById('__design');
       if (!el) { el = document.createElement('style'); el.id = '__design'; document.head.append(el); }
       el.textContent = m.css || '';
+      syncLook();
     } else if (m.kind === 'leaving') {
       // The person moves to another screen: what this one left undone.
       for (const fn of leaving) { try { fn(); } catch (err) { report(err); } }

@@ -31,6 +31,14 @@
     let again = false;
     const forms = new Map();
     const reported = new Set();
+    // The design's look (frame.js sets it from the design): bold draws the
+    // first big numbers as a band and, on a phone, each row as a card.
+    const bold = () => document.documentElement.dataset.look === 'bold';
+    const phone = window.matchMedia('(max-width: 560px)');
+    let heroAt = null;
+    // A word straight from the data ("out", "in progress") reads as a label
+    // in the bold look: "Out", "In progress".
+    const cap = (t) => (bold() && typeof t === 'string' && /^[a-z]/.test(t) && t === t.toLowerCase() ? t[0].toUpperCase() + t.slice(1) : t);
     // How many rows a search or a filter on state[key] found: the first list
     // that depends on it (a LET over the key, else the data it is a parameter
     // of). Nothing when no list depends on it.
@@ -179,13 +187,18 @@
         if (b.card !== undefined) return h('div', { class: ['card', b.class].filter(Boolean).join(' ') }, b.title ? h('h3', null, T(b.title, s, path)) : null, h('div', { class: 'col' }, blocks(b.card, s, `${path}.card`)));
         if (b.section !== undefined) return h('section', { class: 'section col' }, b.title ? h('h3', null, T(b.title, s, path)) : null, blocks(b.section, s, `${path}.section`));
         if (b.each !== undefined) return each(b, s, path);
-        if (b.kpis !== undefined) return h('div', { class: 'kpis' }, (val(b.kpis, s, path) || []).map((k) => {
-          // A KPI of a query ("of": its data) is the first value of its first row.
-          let v = k.of !== undefined ? (() => { const r = (data[k.of] || [])[0]; return r ? (r.v !== undefined ? r.v : Object.values(r)[0]) : null; })() : k.value;
-          if (k.of !== undefined && v == null) v = 0;
-          if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
-          return h('div', { class: 'kpi' }, h('div', { class: 'value' }, v == null ? '–' : String(v)), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null);
-        }));
+        if (b.kpis !== undefined) {
+          const ks = (val(b.kpis, s, path) || []).map((k) => {
+            // A KPI of a query ("of": its data) is the first value of its first row.
+            let v = k.of !== undefined ? (() => { const r = (data[k.of] || [])[0]; return r ? (r.v !== undefined ? r.v : Object.values(r)[0]) : null; })() : k.value;
+            if (k.of !== undefined && v == null) v = 0;
+            const raw = v;
+            if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
+            return { ...k, raw, shown: v == null ? '–' : String(v) };
+          });
+          if (bold() && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return hero(ks, s, path); }
+          return h('div', { class: 'kpis' }, ks.map((k) => h('div', { class: 'kpi' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null)));
+        }
         if (b.chips !== undefined) return chips(b, s, path);
         if (b.input !== undefined) return input(b, s, path);
         if (b.button !== undefined) return button(b, s, path);
@@ -218,7 +231,7 @@
     function chips(b, s, path) {
       const key = b.chips;
       return h('div', { class: 'chips' }, (val(b.options, s, path) || []).map(OPT).map((o) =>
-        h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { const off = state[key] === o.value && b.toggle; const changed = !off && state[key] !== o.value; set({ [key]: off ? null : o.value }); if (changed) trackFilter(key, o.value); } }, o.label)));
+        h('button', { class: `chip${state[key] === o.value ? ' on' : ''}`, type: 'button', onclick: () => { const off = state[key] === o.value && b.toggle; const changed = !off && state[key] !== o.value; set({ [key]: off ? null : o.value }); if (changed) trackFilter(key, o.value); } }, cap(o.label))));
     }
 
     function input(b, s, path) {
@@ -457,10 +470,11 @@
         if (v instanceof Node) return v;
         if (c.format && FORMAT[c.format]) v = FORMAT[c.format](v);
         if (Array.isArray(v)) v = v.join(', ');
-        return c.badge && v != null && v !== '' ? h('span', { class: `badge ${toneOf(v, c.badge)}` }, String(v)) : v == null ? '' : String(v);
+        return c.badge && v != null && v !== '' ? h('span', { class: `badge ${toneOf(v, c.badge)}` }, cap(String(v))) : v == null ? '' : String(v);
       };
       // More than three columns is a list of cards on a phone (kit.css).
       const heads = cols.map((c) => c.label ?? human(c.key || ''));
+      if (bold() && phone.matches) return rowCards(rows, cols, fns, acts, onRow, heads, cell, s, path);
       return h('div', { style: 'overflow-x:auto' }, h('table', { class: cols.length > 3 ? 'stack' : null },
         h('thead', null, h('tr', null, heads.map((x) => h('th', null, x)), acts.length ? h('th') : null)),
         h('tbody', null, rows.map((r) => h('tr', { style: onRow ? 'cursor:pointer' : null, onclick: onRow ? (e) => { if (!e.target.closest('button')) run(onRow, [r], `${path}.onRow`); } : null },
@@ -478,6 +492,93 @@
             const who = rowName(r);
             return h('button', { class: a.class || 'small ghost', type: 'button', 'aria-label': who ? `${label}: ${who}` : null, onclick: () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); } }, label);
           })) : null)))));
+    }
+
+    // ---- the bold look
+    // The first big numbers of a screen as a band: the one that needs doing
+    // (overdue, low, open... and not zero) large, the others beside it small.
+    const URGENT = /\b(overdue|late|owed|owing|unpaid|out|missing|urgent|expired|failed|behind)\b/i;
+    const ATTN = /\b(overdue|late|owed|owing|unpaid|due|out|low|reorder|to order|open|to do|todo|pending|waiting|new|missing|urgent|left|behind|needs?|unanswered|unread|expiring|expired|failed)\b/i;
+    const zero = (k) => k.raw == null || k.raw === '' || Number(k.raw) === 0 || /^[^0-9]*0([.,]0+)?[^0-9]*$/.test(k.shown);
+    const lower = (t) => (/^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t);
+    function hero(ks, s, path) {
+      const main = ks.find((k) => URGENT.test(String(k.label || '')) && !zero(k)) || ks.find((k) => ATTN.test(String(k.label || '')) && !zero(k)) || ks.find((k) => !zero(k)) || ks[0];
+      const rest = ks.filter((k) => k !== main);
+      const tone = ATTN.test(String(main.label || '')) && !zero(main) ? ' attn' : '';
+      return h('section', { class: `hero-band${tone}`, 'aria-label': `${main.shown} ${main.label || ''}`.trim() },
+        h('div', { class: 'hero-big' }, h('b', null, main.shown), main.label ? h('span', null, lower(String(main.label))) : null),
+        main.hint ? h('p', { class: 'hero-line' }, main.hint) : null,
+        rest.length ? h('div', { class: 'hero-legend' }, rest.map((k) => h('span', { class: zero(k) ? 'zero' : null }, h('b', null, k.shown), ' ', lower(String(k.label || ''))))) : null);
+    }
+
+    // A row as a card: its name and its other words, the number that matters
+    // large (with a level bar when another column is its level: stock and
+    // its reorder point, spent and its budget), its state as a pill, and its
+    // next step as a button, the other actions behind "More".
+    const HALF = /(reorder|minimum|\bmin\b|\bpar\b|threshold|safety|alert)/i;
+    const FULL = /(target|goal|budget|capacity|limit|\bmax|quota|total|planned|of\b)/i;
+    const DESTROY = /^(delete|remove|archive|discard|trash|cancel)\b/i;
+    const SOFT = /^(edit|open|view|details?|change|more)\b/i;
+    const NOT_FIGURE = /(^id$|_id$|year|phone|zip|postcode|sku|code|number$|^no$|#)/i;
+    const isNum = (v) => (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) && !/^0\d/.test(v.trim()));
+    function rowCards(rows, cols, fns, acts, onRow, heads, cell, s, path) {
+      const raw = (c, i, r) => { const fn = fns[i]; const v = typeof fn === 'function' ? fn(r) : fn !== null ? fn : r[c.key]; return v; };
+      const name = (c, i) => `${c.key || ''} ${heads[i] || ''}`;
+      // What each column is, from all the rows.
+      const tick = cols.findIndex((c, i) => raw(c, i, rows[0]) instanceof HTMLInputElement);
+      const badge = cols.findIndex((c) => c.badge);
+      const numeric = cols.map((c, i) => {
+        if (i === tick || i === badge || NOT_FIGURE.test(name(c, i))) return false;
+        if (['money', 'number', 'percent', 'pct', 'hours', 'duration'].includes(c.format)) return true;
+        const vs = rows.map((r) => raw(c, i, r)).filter((v) => v != null && v !== '');
+        return vs.length > 0 && vs.filter(isNum).length >= vs.length * 0.8;
+      });
+      const title = cols.findIndex((c, i) => i !== tick && i !== badge && !numeric[i]);
+      const ref = cols.findIndex((c, i) => numeric[i] && (HALF.test(name(c, i)) || FULL.test(name(c, i))));
+      const fig = cols.findIndex((c, i) => numeric[i] && i !== ref);
+      const half = ref >= 0 && HALF.test(name(cols[ref], ref));
+      return h('div', { class: 'rcards' }, rows.map((r) => {
+        const who = rowName(r);
+        const text = (i) => { const v = cell(cols[i], fns[i], r); return v instanceof Node ? v.textContent : String(v ?? ''); };
+        const state = badge >= 0 ? cell(cols[badge], fns[badge], r) : null;
+        const tone = state instanceof Node ? (state.className.match(/\b(ok|warn|bad|info)\b/) || [])[1] || '' : '';
+        // The other words, short: names as they are, numbers and dates with
+        // their column's name ("Reorder at 200").
+        const sub = cols.map((c, i) => {
+          if (i === tick || i === badge || i === title || i === fig) return null;
+          const t = text(i).trim();
+          if (!t) return null;
+          return numeric[i] || c.format ? `${heads[i]} ${t}` : t;
+        }).filter(Boolean).slice(0, 4);
+        let level = null;
+        if (fig >= 0 && ref >= 0) {
+          const a = Number(raw(cols[fig], fig, r)); const b = Number(raw(cols[ref], ref, r));
+          if (Number.isFinite(a) && Number.isFinite(b) && b > 0) {
+            const pct = Math.max(0, Math.min(1, half ? a / (2 * b) : a / b)) * 100;
+            level = h('div', { class: 'rc-level', role: 'img', 'aria-label': `${heads[fig]} ${text(fig)}, ${heads[ref]} ${text(ref)}` },
+              h('i', { style: `width:${Math.max(pct, 1.5)}%` }), half ? h('u', { style: 'left:50%' }) : null);
+          }
+        }
+        // The next step: the first action that does not remove; the rest in a menu.
+        const label = (a) => T(a.label, s, path);
+        const doIt = (a) => () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); };
+        const first = acts.find((a) => /\bprimary\b/.test(a.class || '')) || acts.find((a) => !DESTROY.test(label(a)));
+        const others = acts.filter((a) => a !== first);
+        const main = first ? h('button', { class: SOFT.test(label(first)) ? 'rc-soft' : 'primary', type: 'button', 'aria-label': who ? `${label(first)}: ${who}` : null, onclick: doIt(first) }, label(first)) : null;
+        const more = others.length ? h('details', { class: 'rc-more' },
+          h('summary', { 'aria-label': `More${who ? `: ${who}` : ''}`, title: 'More' }, h('span', { 'aria-hidden': 'true' }, '•••')),
+          h('div', { class: 'rc-menu' }, others.map((a) => h('button', { class: `ghost${DESTROY.test(label(a)) ? ' danger' : ''}`, type: 'button', 'aria-label': who ? `${label(a)}: ${who}` : null, onclick: doIt(a) }, label(a))))) : null;
+        const tickEl = tick >= 0 ? cell(cols[tick], fns[tick], r) : null;
+        if (tickEl instanceof HTMLInputElement && !tickEl.getAttribute('aria-label')) tickEl.setAttribute('aria-label', `${heads[tick] || 'Done'}: ${who || ''}`.replace(/: $/, ''));
+        return h('article', { class: `rcard${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}`, style: onRow ? 'cursor:pointer' : null,
+          onclick: onRow ? (e) => { if (!e.target.closest('button, summary, input, label, a')) run(onRow, [r], `${path}.onRow`); } : null },
+          h('div', { class: 'rc-head' },
+            tickEl ? h('label', { class: 'tap rc-tick' }, tickEl) : null,
+            h('div', { class: 'rc-name' }, h('div', { class: 'rc-title' }, title >= 0 ? text(title) || who || 'Untitled' : who || 'Untitled'), sub.length ? h('div', { class: 'rc-sub' }, sub.join(' · ')) : null),
+            fig >= 0 && text(fig) ? h('div', { class: 'rc-fig' }, h('b', null, text(fig)), h('small', null, String(heads[fig] || '').toLowerCase())) : null),
+          level,
+          state || main || more ? h('div', { class: 'rc-foot' }, state || h('span'), h('div', { class: 'rc-acts' }, main, more)) : null);
+      }));
     }
 
     // A check per item per day (habits, chores, medication, plants watered):
@@ -603,6 +704,7 @@
         do {
           again = false;
           const f = focusPath();
+          heroAt = null;
           if (isFront) {
             root.replaceChildren(h('div', { class: 'screen front' }, front.page(spec.body, scope())));
           } else root.replaceChildren(h('div', { class: 'col screen' }, blocks(spec.body, scope(), 'body')));
@@ -614,6 +716,8 @@
       for (const [p, f] of forms) if (!f.el || !f.el.isConnected) { abandon(f); forms.delete(p); }
     }
 
+    window.__sa_relook = () => draw();
+    phone.addEventListener('change', () => { if (bold()) draw(); });
     state = { ...(val(spec.state || {}, scope(), 'state') || {}) };
     await load();
     compute();

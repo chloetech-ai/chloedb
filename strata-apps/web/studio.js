@@ -677,12 +677,41 @@ function renderApp() {
   }
   // tabs
   const tabs = $('#tabs');
-  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
+  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(v.title), h('span', { class: 'tlabel' }, v.title), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
   if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderTryBar();
   renderFrames();
   renderPanel();
+}
+
+// An icon for a screen, from the words of its title (the bold look shows
+// them in a tab bar at the bottom of a phone).
+const ICONS = [
+  [/stock|inventor|item|product|pantry|supplies|shop|store/i, 'M21 8 12 3 3 8v8l9 5 9-5V8ZM3 8l9 5 9-5M12 13v8'],
+  [/order|deliver|ship|purchase|supplier|vendor/i, 'M3 6h11v10H3zM14 9h4l3 3v4h-7M7 18a2 2 0 1 0 0 .01M17 18a2 2 0 1 0 0 .01'],
+  [/rent|pay|money|budget|expense|bill|invoice|sale|income|cost|price|fund/i, 'M3 7h18v12H3zM3 11h18M7 15h3'],
+  [/tenant|people|member|client|customer|guest|contact|team|staff|student|patient|famil|kid|friend/i, 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0'],
+  [/calendar|schedule|week|month|day|event|booking|appointment|shift|plan/i, 'M3 5h18v16H3zM3 10h18M8 3v4M16 3v4'],
+  [/repair|fix|maint|issue|ticket|bug/i, 'M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4Z'],
+  [/request|idea|feature|feedback|suggest/i, 'M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3Z'],
+  [/report|stat|chart|insight|summary|dashboard|trend|analytics|vote/i, 'M4 20V10M10 20V4M16 20v-7M22 20H2'],
+  [/history|log|activity|record|journal|diary/i, 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM12 7v5l3 2'],
+  [/setting|admin|config|option/i, 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z'],
+  [/home|overview|today|dashboard|start/i, 'm3 11 9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z'],
+  [/task|todo|to do|chore|check|habit|list/i, 'M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11'],
+];
+function tabIcon(title) {
+  const d = (ICONS.find(([re]) => re.test(title)) || [null, 'M4 6h16M4 12h16M4 18h10'])[1];
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'ticon');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', d);
+  svg.append(path);
+  return svg;
 }
 
 // ---- trying a version the engine built from use
@@ -730,21 +759,24 @@ function ownLook() {
   if (!BARE) return null;
   try { const v = localStorage.getItem(lookKey()); return v === null ? null : Number(v); } catch { return null; }
 }
+// ?look=bold (or plain) shows any app in that look, to compare looks on the
+// same app; the app's own design is unchanged.
+const LOOK_PARAM = new URLSearchParams(location.search).get('look');
 function currentDesign() {
   const d = S.app?.design;
-  if (!d) return checkDesign(PRESETS[0]);
-  const own = ownLook();
-  return d.designs[own !== null && d.designs[own] ? own : d.chosen] || d.designs[0];
+  const chosen = !d ? checkDesign(PRESETS[0]) : (() => { const own = ownLook(); return d.designs[own !== null && d.designs[own] ? own : d.chosen] || d.designs[0]; })();
+  return LOOK_PARAM ? checkDesign({ ...chosen, look: LOOK_PARAM }, chosen) : chosen;
 }
 function applyDesign() {
   const d = currentDesign();
   const css = designCss(d);
   const nav = `nav-${d.nav}`;
+  const look = `look-${d.look}`;
   const stage = $('.stage');
   for (const el of [stage, BARE ? document.body : null].filter(Boolean)) {
     el.classList.add('designed');
-    for (const c of [...el.classList]) if (c.startsWith('nav-') && c !== nav) el.classList.remove(c);
-    el.classList.add(nav);
+    for (const c of [...el.classList]) if ((c.startsWith('nav-') && c !== nav) || (c.startsWith('look-') && c !== look)) el.classList.remove(c);
+    el.classList.add(nav, look);
   }
   if (css === S.designCss) return;
   S.designCss = css;

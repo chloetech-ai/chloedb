@@ -8,7 +8,9 @@ import { CHOICES, checkDesign, presetDesigns } from '../web/design.js';
 
 export const DESIGN_MODEL = process.env.STRATA_APPS_DESIGN_MODEL || 'claude-haiku-5-5';
 
-const choices = Object.entries(CHOICES).map(([k, opts]) => `- ${k}: ${Object.entries(opts).map(([v, what]) => `"${v}" (${what})`).join(', ')}`).join('\n');
+// The look (plain, bold) is not the model's to pick yet: it is chosen for
+// the studio as a whole while the looks are compared.
+const choices = Object.entries(CHOICES).filter(([k]) => k !== 'look').map(([k, opts]) => `- ${k}: ${Object.entries(opts).map(([v, what]) => `"${v}" (${what})`).join(', ')}`).join('\n');
 
 export const DESIGN_SYSTEM = `You are a product designer with taste for calm, precise tools: minimal, one accent color, clear small type, hairlines instead of boxes, nothing decorative. You design the look of small apps as a few tokens; the app's screens stay as they are.
 

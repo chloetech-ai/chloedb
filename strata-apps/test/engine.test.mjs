@@ -851,6 +851,24 @@ test('a design is a few tokens made readable, drawn as CSS variables for light a
   assert.notDeepEqual(presetDesigns('abc123').map((x) => x.name), presetDesigns('zz9').map((x) => x.name).reverse());
 });
 
+test('the bold look: a deep color white text reads on, a light one that reads on it, a page tinted by the accent', async () => {
+  const { checkDesign, designVars, boldColors, contrast, PRESETS } = await import('../web/design.js');
+  assert.equal(checkDesign(PRESETS[0]).look, 'plain', 'plain unless a design says otherwise');
+  assert.equal(checkDesign({ look: 'loud' }).look, 'plain', 'an unknown look falls back');
+  for (const p of PRESETS) {
+    const d = checkDesign({ ...p, look: 'bold' });
+    for (const [which, dark] of [['light', false], ['dark', true]]) {
+      const b = boldColors(d[which], dark);
+      assert.ok(contrast(b.deep, b.deepFg) >= 7, `${p.name} ${which}: words on the band read`);
+      assert.ok(contrast(b.pop, b.deep) >= 4.5, `${p.name} ${which}: the big word on the band reads`);
+    }
+    const v = designVars(d, 'light');
+    assert.equal(v['--look'], 'bold');
+    assert.equal(v['--bg'], v['--wash'], 'the page is the wash');
+    assert.equal(designVars(p, 'light')['--bg'], checkDesign(p).light.bg, 'a plain design keeps its page');
+  }
+});
+
 test('an app gets three designs from one model call, presets when the model fails, and new ones keep the one in use', async () => {
   const { makeDesigns, ensureDesigns } = await import('../engine/designs.mjs');
   const app = { id: 'a1', name: 'Guests', description: 'A wedding guest list', head: 0 };

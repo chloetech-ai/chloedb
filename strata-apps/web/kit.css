@@ -369,3 +369,81 @@ tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; 
   .checks-legend .check-day.past { width: 44px; }
 }
 @media (pointer: coarse) { .checks button.check.past { width: 44px; height: 44px; min-height: 44px; } .checks-legend .check-day.past { width: 44px; } }
+
+/* ---- the bold look (design token look: "bold"; frame.js sets data-look).
+   A page tinted by the accent, big confident type, borderless cards, pill
+   buttons; the first big numbers of a screen are a band in the deep color
+   (screen.js hero), and on a phone each row of a table is a card with its
+   number large, its state as a pill and its next step as a button
+   (screen.js rowCards). */
+:root[data-look="bold"] { --radius: 20px; --radius-control: 999px; --radius-field: 12px; --card-border: transparent; --card-shadow: 0 1px 2px rgba(16, 24, 40, .06); }
+:root[data-look="bold"] h1 { font-size: calc(var(--text) * 2); font-weight: 800; letter-spacing: -.03em; line-height: 1.05; }
+:root[data-look="bold"] h2 { font-size: calc(var(--text) * 1.5); font-weight: 800; letter-spacing: -.025em; }
+:root[data-look="bold"] h3 { font-weight: 700; }
+:root[data-look="bold"] button { font-weight: 650; border-color: transparent; background: var(--fill); box-shadow: none; padding: 0 16px; }
+:root[data-look="bold"] button:hover { background: color-mix(in srgb, var(--fg) 9%, var(--card)); }
+:root[data-look="bold"] button.primary { background: var(--deep); border-color: var(--deep); color: var(--deep-fg); font-weight: 700; }
+:root[data-look="bold"] button.primary:hover { background: color-mix(in srgb, var(--deep) 86%, var(--fg)); }
+:root[data-look="bold"] button.ghost { background: transparent; }
+:root[data-look="bold"] button.danger:not(.primary) { color: var(--bad); }
+:root[data-look="bold"] button.link { background: transparent; padding: 0; }
+:root[data-look="bold"] .card, :root[data-look="bold"] .list, :root[data-look="bold"] table, :root[data-look="bold"] .kpi, :root[data-look="bold"] .checks-row { border-color: transparent; }
+:root[data-look="bold"] .badge { padding: 3px 10px; font-size: calc(var(--text) * .86); font-weight: 700; }
+:root[data-look="bold"] .badge::before { width: 13px; height: 13px; border-radius: 0; opacity: 1; background: currentColor; -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat;
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='5' fill='black'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.ok::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m5 12.5 4.5 4.5L19 7.5' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.bad::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 7v6M12 17h.01' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='12' r='10' fill='none' stroke='black' stroke-width='2.4'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.warn::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.6'/%3E%3Cpath d='M12 7v5l3 2' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.plain::before { display: none; }
+/* filters: a row of pills, the chosen one in the deep color; on a phone they scroll sideways */
+:root[data-look="bold"] .chips { background: transparent; border: 0; padding: 0; gap: 8px; }
+:root[data-look="bold"] .chip { background: var(--card); color: var(--fg); font-weight: 700; padding: 0 15px; border-radius: 999px; box-shadow: 0 1px 2px rgba(16, 24, 40, .06); }
+:root[data-look="bold"] .chip.on { background: var(--deep); color: var(--deep-fg); box-shadow: none; }
+@media (max-width: 560px) { :root[data-look="bold"] .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; align-self: stretch; } :root[data-look="bold"] .chip { flex: none; } }
+:root[data-look="bold"] input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file])), :root[data-look="bold"] select { border-color: transparent; background-color: var(--card); box-shadow: 0 1px 2px rgba(16, 24, 40, .06); }
+:root[data-look="bold"] input:focus, :root[data-look="bold"] select:focus, :root[data-look="bold"] textarea:focus { border-color: var(--deep); box-shadow: 0 0 0 3px color-mix(in srgb, var(--deep) 18%, transparent); }
+
+/* the band: the one number that matters, large, the others small under it */
+.hero-band { background: var(--deep); color: var(--deep-fg); border-radius: 24px; padding: 22px 22px 20px; display: flex; flex-direction: column; gap: 10px; }
+.hero-big { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-family: var(--font-title); }
+.hero-big b { font-size: calc(var(--text) * 3.4); font-weight: 800; letter-spacing: -.035em; line-height: .95; font-variant-numeric: tabular-nums; }
+.hero-big span { font-size: calc(var(--text) * 1.45); font-weight: 750; letter-spacing: -.015em; color: var(--pop); }
+.hero-line { color: color-mix(in srgb, var(--deep-fg) 82%, transparent); }
+.hero-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: calc(var(--text) * .95); color: color-mix(in srgb, var(--deep-fg) 78%, transparent); }
+.hero-legend b { color: var(--deep-fg); font-weight: 750; font-variant-numeric: tabular-nums; }
+.hero-legend .zero { opacity: .7; }
+
+/* a row as a card (bold, on a phone) */
+.rcards { display: flex; flex-direction: column; gap: 12px; }
+.rcard { --c: var(--fg); background: var(--card); border-radius: var(--radius); box-shadow: var(--card-shadow); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.rcard.t-bad { --c: var(--bad); } .rcard.t-warn { --c: var(--warn); } .rcard.t-ok { --c: var(--ok); } .rcard.t-info { --c: var(--info); }
+.rc-head { display: flex; align-items: flex-start; gap: 12px; }
+.rc-name { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rc-title { font-size: calc(var(--text) * 1.2); font-weight: 750; letter-spacing: -.01em; line-height: 1.25; overflow-wrap: anywhere; }
+.rc-sub { color: var(--muted); font-size: calc(var(--text) * .95); overflow-wrap: anywhere; }
+.rc-fig { flex: none; text-align: right; display: flex; flex-direction: column; align-items: flex-end; max-width: 45%; }
+.rc-fig b { font-family: var(--font-title); font-size: calc(var(--text) * 2); font-weight: 800; letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; color: var(--fg); overflow-wrap: anywhere; }
+.rcard:is(.t-bad, .t-warn) .rc-fig b { color: var(--c); }
+.rc-fig small { font-size: calc(var(--text) * .82); font-weight: 700; color: var(--muted); margin-top: 4px; }
+.rc-level { position: relative; height: 8px; border-radius: 4px; background: var(--fill); }
+.rc-level i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--c); }
+.rcard.t-plain .rc-level i, .rcard:not([class*=" t-"]) .rc-level i { background: var(--deep); }
+.rc-level u { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--fg); }
+.rc-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.rc-acts { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.rc-acts > button { min-height: 44px; padding: 0 18px; }
+.rc-acts > button.rc-soft { background: var(--fill); color: var(--fg); }
+.rc-tick { display: inline-grid; place-items: center; min-width: 44px; min-height: 44px; margin: -8px 0 -8px -8px; cursor: pointer; }
+.rc-tick input[type=checkbox] { width: 24px; height: 24px; }
+.rcard.done .rc-title { text-decoration: line-through; color: var(--muted); }
+.rc-more { position: relative; }
+.rc-more > summary { list-style: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--fill); color: var(--fg); cursor: pointer; font-size: 10px; letter-spacing: 1px; }
+.rc-more > summary::-webkit-details-marker { display: none; }
+.rc-more[open] > summary { background: color-mix(in srgb, var(--fg) 12%, var(--card)); }
+.rc-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; min-width: 168px; display: flex; flex-direction: column; padding: 6px; background: var(--card); border-radius: 14px; box-shadow: 0 10px 30px rgba(16, 24, 40, .18), 0 0 0 1px var(--line); }
+.rc-menu > button { justify-content: flex-start; min-height: 44px; border-radius: 10px; color: var(--fg); }
+.rc-menu > button.danger { color: var(--bad); }
+/* rows the screen draws itself (each): cards apart, not in one box, and
+   the first words of each in the title's weight */
+:root[data-look="bold"] .list:has(> .card) { background: transparent; box-shadow: none; overflow: visible; gap: 12px; }
+:root[data-look="bold"] :is(.list, .grid) > :is(.card, .item, .col) p:not(.muted):not(.small):first-of-type { font-size: calc(var(--text) * 1.15); font-weight: 750; letter-spacing: -.01em; }

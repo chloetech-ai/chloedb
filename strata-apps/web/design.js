@@ -24,6 +24,7 @@ export const CHOICES = {
   nav: { segmented: 'a centered segmented control', tabs: 'underlined tabs, left aligned', sidebar: 'a list on the left (for apps with many views)' },
   width: { narrow: '760px: reading', regular: '1040px', wide: '1280px: tables, forms and boards' },
   motion: { calm: 'slow, quiet movement on front pages', lively: 'quicker, more movement', still: 'nothing moves by itself' },
+  look: { plain: 'rows as tables and label-value cards, numbers in tiles', bold: 'a color band with the one number that matters, each row a card with its number large, its state as a pill and its next step as a button' },
 };
 
 const C = (light, dark) => ({ light, dark });
@@ -139,6 +140,7 @@ export function checkDesign(d, base = PRESETS[0]) {
     nav: pick(d?.nav, 'nav', base.nav),
     width: pick(d?.width, 'width', base.width),
     motion: pick(d?.motion, 'motion', base.motion || 'calm'),
+    look: pick(d?.look, 'look', base.look || 'plain'),
     gradient: gradientOf(d?.gradient ? d : base.gradient && !d?.light && !d?.dark ? base : { gradient: null }, (d?.light || base.light)?.accent || base.light.accent),
   };
 }
@@ -160,6 +162,19 @@ export function mutedOf(p, start = 55) {
   return p.fg;
 }
 
+// The color pair of the bold look, from the accent: deep (a band and the
+// main buttons, white text on it at 8:1) and pop (a light tint of the same
+// hue, for big words on the band and for its button, at 5:1 on deep); wash
+// is the page, tinted by the accent.
+export function boldColors(p, isDark) {
+  const deep = readable(p.accent, '#ffffff', 8, '#000000');
+  const [hh, s] = hsl(p.accent);
+  let pop = fromHsl(hh, Math.min(0.85, Math.max(0.55, s)), 0.74);
+  for (let l = 0.76; contrast(pop, deep) < 5 && l <= 0.96; l += 0.02) pop = fromHsl(hh, Math.min(0.85, Math.max(0.55, s)), l);
+  const wash = isDark ? p.bg : mix(p.bg, p.accent, 0.06);
+  return { deep, deepFg: onColor(deep), pop, wash };
+}
+
 // The variables of a design in one scheme.
 export function designVars(input, which = 'light') {
   const d = checkDesign(input);
@@ -172,8 +187,10 @@ export function designVars(input, which = 'light') {
   const border = d.surface === 'outlined' || flat ? 'var(--line)' : isDark ? 'rgba(255,255,255,.06)' : 'transparent';
   const shadow = isDark ? 'none' : d.surface === 'raised' ? '0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.07)' : d.surface === 'outlined' ? '0 1px 2px rgba(16,24,40,.05)' : flat ? 'none' : '0 1px 2px rgba(16,24,40,.04)';
   const s = STATUS[isDark ? 'dark' : 'light'];
+  const b = boldColors(p, isDark);
+  const bold = d.look === 'bold';
   return {
-    '--bg': p.bg, '--card': p.card, '--fg': p.fg, '--accent': p.accent, '--accent-fg': onColor(p.accent),
+    '--bg': bold ? b.wash : p.bg, '--card': p.card, '--fg': p.fg, '--accent': p.accent, '--accent-fg': onColor(p.accent),
     '--ok': s.ok, '--warn': s.warn, '--bad': s.bad, '--info': s.info,
     '--font': FONTS[d.font], '--font-title': TITLE_FONTS[d.titles],
     '--radius': k.card, '--radius-control': k.control, '--radius-field': k.field, '--radius-small': k.small,
@@ -191,6 +208,7 @@ export function designVars(input, which = 'light') {
     '--shadow': shadow,
     '--g1': d.gradient[0], '--g2': d.gradient[1], '--g3': d.gradient[2],
     '--slow': d.motion === 'lively' ? '.6' : '1', '--play': d.motion === 'still' ? 'paused' : 'running', '--rv': d.motion === 'still' ? '0' : '1',
+    '--look': d.look, '--deep': b.deep, '--deep-fg': b.deepFg, '--pop': b.pop, '--wash': b.wash,
   };
 }
 
