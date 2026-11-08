@@ -17,6 +17,7 @@ import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.
 import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.mjs';
 import { checkRule, RULES_DOC } from './rules.mjs';
 import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
+import { LOOK, checkDrawn } from './look.mjs';
 
 const BASE_SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
@@ -227,7 +228,7 @@ Blocks, in "body" and in every block that holds blocks:
 - {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers; {"label": "Owed", "of": "<data name>", "format": "money"} shows the first value of a query's first row (formats: date, days, money, number, percent, pct, hours, duration, clock)
 - {"chips": "stateKey", "options": [...]}: picks one value of state (options: strings or {"value", "label"}); {"input": "stateKey", "type": "search" | "text" | "select" | "date" | "number" | "checkbox", "placeholder": "...", "options": [...], "label": "..."}: an input bound to state
 - {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small" | "link", "confirm": "a question to confirm first (never for a remove: it offers Undo)"}
-- {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col"}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
+- {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col", "fold": false}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. On a phone a form of three fields or more, on a screen that lists rows, folds behind its submit button so the rows show first; "fold": false keeps it open (when filling it is the job), true folds it everywhere. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
 - {"checks": "=things", "done": "=checks", "table": "checks table", "item": "its column holding the thing's id", "day": "its 'YYYY-MM-DD' column", "name": "the things' name column", "days": 7}: the daily check-off (habits, medication, chores): one big tap per thing for today, its last days, its streak and how many are done today; a tap adds or removes that day's row. A check per day is this block (or the CHECKS part), never a grid written in code
 - {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
 - {"code": "async function render(root, ctx) { ... }"}: for a part the blocks cannot say, JavaScript as in a view (h, svg, app, ui, lib), drawn again whenever the screen redraws; ctx holds state, set, refresh() and the data and lets by name.
@@ -1576,6 +1577,13 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     if (r.ran) engine.log(`[${appId}] opened ${r.views.length} view${r.views.length === 1 ? '' : 's'} after version ${n}${bad.length ? `: errors in ${bad.map((v) => `${v.tab || 'the app'} (${v.errors[0]})`).join('; ')}` : ', no errors'}`);
     return bad;
   }).catch((e) => { engine.log(`[${appId}] opening the views: ${e.message}`); return []; });
+  // The drawn-page check (look.mjs): the live version drawn on a phone and a
+  // computer, measured, and looked at against the brief, after the build has
+  // answered; the server sends what stands in the way to the repair.
+  if (LOOK && !candidate && engine.baseUrl) {
+    opening.then(() => checkDrawn(engine, appId)).then((r) => { if (r.ran) engine.emit('drawn', { app: appId, n, source: request.source || 'user', ...r }); })
+      .catch((e) => engine.log?.(`[${appId}] drawing the screens: ${e.message}`));
+  }
   if (candidate) {
     for (const b of await opening) problemsLeft.push(`${b.tab || 'the app'}: ${b.errors[0]}`);
     return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started, trace: tr.toJSON(), candidate: true, base: view.comp.n, problems: problemsLeft };

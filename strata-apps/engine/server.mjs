@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions } from './forge.mjs';
+import { repairRequest } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes } from './changes.mjs';
 import { useTableFunctions } from './sql.mjs';
@@ -286,6 +287,27 @@ async function repair(appId, capId, message, where) {
 }
 engine.on('error', ({ app, cap, message, where }) => { repair(app, cap, message, where).catch((e) => log(`repair: ${e.message}`)); });
 
+// The drawn-page check of each live version (look.mjs): what it found is kept
+// per app for the studio, and what stands in the way of the job goes to the
+// repair as one request; not after a fix it asked for (one round), and at
+// most once in ten minutes per app.
+const drawnOf = new Map();
+const lookedAt = new Map();
+engine.on('drawn', (d) => {
+  const high = d.found.filter((f) => f.severity === 'high');
+  drawnOf.set(d.app, { n: d.n, at: new Date().toISOString(), found: d.found, views: d.views, cost: d.cost, looked: d.looked });
+  const said = d.found.length ? `${d.found.length} problem${d.found.length === 1 ? '' : 's'}, ${high.length} in the way` : 'nothing in the way';
+  const look = d.looked ? ` (look $${(d.cost || 0).toFixed(3)})` : d.lookError ? ` (no look: ${d.lookError.slice(0, 120)})` : '';
+  log(`[${d.app}] drew version ${d.n} on a phone and a computer: ${said}${look}`);
+  const text = repairRequest(d.found);
+  const fixing = !!text && AUTOREPAIR && d.source !== 'look' && Date.now() - (lookedAt.get(d.app) || 0) > 600000;
+  broadcast('drawn', { app: d.app, n: d.n, found: d.found.length, high: high.length, fixing });
+  if (fixing) {
+    lookedAt.set(d.app, Date.now());
+    submit(d.app, text, 'look').catch((e) => log(`look ${d.app}: ${e.message}`));
+  }
+});
+
 // What people do makes the app evolve (evolve.mjs): the engine counts
 // patterns in it, suggests what would answer a new one, and builds the
 // strongest as a version to try. It looks after every 25 actions, at most
@@ -381,6 +403,7 @@ async function appState(appId) {
     versions: (await store.compositions(appId)).filter((c) => !unkept.has(Number(c.n)) || Number(c.n) === head),
     requests: await store.requests(appId, 30),
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
+    drawn: drawnOf.get(appId) || null,
   };
 }
 

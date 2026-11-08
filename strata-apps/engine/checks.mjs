@@ -127,7 +127,7 @@ async function emptyTables(engine, appId, tables) {
 }
 
 let playwright;
-function loadPlaywright() {
+export function loadPlaywright() {
   if (playwright !== undefined) return playwright;
   try { playwright = createRequire(import.meta.url)('playwright'); } catch { playwright = null; }
   return playwright;

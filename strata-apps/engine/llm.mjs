@@ -16,12 +16,14 @@ export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
 
 // onWrite(progress, text) is called as the answer streams in, with
 // {chars, thinking}: characters of answer and of thinking so far, and the
-// answer so far.
-export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE }) {
+// answer so far. images: [{data (base64), type ('image/png')}] go before the
+// prompt, in one message.
+export function ask({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE }) {
   return new Promise((resolve, reject) => {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
       '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
     if (effort) args.push('--effort', effort);
+    if (images.length) args.push('--input-format', 'stream-json');
     const env = { ...process.env, ENGRAM_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
     const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
     let buf = '';
@@ -78,7 +80,9 @@ export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA
       }
       resolve(out);
     });
-    child.stdin.end(prompt);
+    child.stdin.end(!images.length ? prompt : `${JSON.stringify({ type: 'user', message: { role: 'user', content: [
+      ...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.type || 'image/png', data: i.data } })),
+      { type: 'text', text: prompt }] } })}\n`);
   });
 }
 

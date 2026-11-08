@@ -62,7 +62,7 @@ export async function sequences(store, limit = 5000) {
   }
   const out = new Map();
   for (const [app, list] of by) {
-    const changes = list.slice(1).filter((r) => r.source !== 'repair').map((r) => kindsOf(r.text)).filter((k) => k.length);
+    const changes = list.slice(1).filter((r) => r.source !== 'repair' && r.source !== 'look').map((r) => kindsOf(r.text)).filter((k) => k.length);
     if (changes.length) out.set(app, changes);
   }
   return out;

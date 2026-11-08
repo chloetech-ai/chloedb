@@ -177,6 +177,13 @@ function connect() {
     if (!d) return;
     toast('A capability failed; the engine is repairing it');
   });
+  es.addEventListener('drawn', (e) => {
+    const d = mine(e);
+    if (!d) return;
+    toast(d.fixing ? `Checked the screens on a phone and a computer: ${d.high} thing${d.high === 1 ? '' : 's'} in the way; fixing ${d.high === 1 ? 'it' : 'them'} now`
+      : d.high ? `Checked the screens on a phone and a computer: ${d.high} thing${d.high === 1 ? '' : 's'} in the way`
+      : `Checked the screens on a phone and a computer: nothing in the way${d.found ? ` (${d.found} to polish)` : ''}`);
+  });
 }
 
 // ---- routing
@@ -669,7 +676,7 @@ function renderApp() {
   }
   // tabs
   const tabs = $('#tabs');
-  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, onclick: () => switchView(v.slug) }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
+  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => switchView(v.slug) }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
   if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderTryBar();

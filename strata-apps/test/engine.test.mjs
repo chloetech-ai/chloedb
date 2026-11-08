@@ -1781,6 +1781,11 @@ test('every app gets the same touch rules: 44 px taps, tables as cards on a phon
   // a small button is still 44 px tall under a finger
   assert.match(kit, /@media \(pointer: coarse\) \{\s*button:is\(\.small, \*\)[^{]*\{ min-height: 44px; \}/);
   assert.match(kit, /table\.stack thead \{ display: none; \}/);
+  // a tick in a row is a 44 px target; a form above a list folds on a phone; big numbers are one row
+  assert.match(kit, /@media \(pointer: coarse\) \{ td\.tick label\.tap \{ min-width: 44px; min-height: 44px; \}/);
+  assert.match(kit, /\.fold\.phone:not\(\.open\) > form \{ display: none; \}/);
+  assert.match(kit, /\.kpis \{ grid-template-columns: repeat\(auto-fit, minmax\(96px, 1fr\)\)/);
+  assert.match(web('screen.js'), /b\.fold === false \|\| !\(b\.fold === true \|\| b\.fold === 'phone' \|\| \(listing && n >= 3\)\)/);
   // a remove offers Undo, and a delete asks nothing first
   assert.match(web('frame.js'), /remove: \(table, id, opts\) => rpc\('remove', \[table, id\]\)\.then/);
   assert.match(web('screen.js'), /const asks = \(q, fn\) => !!q && !\/\\bapp\\\.remove\\\(\/\.test\(String\(fn\)\)/);
@@ -1824,4 +1829,39 @@ test('a new app is planned from a UX brief: a short name, who, the job, how ofte
   assert.equal(briefOf({ ux: JSON.stringify(ux) }).first, 'today');
   assert.equal(briefOf({ ux: 'not json' }), null);
   assert.equal(briefOf({}), null);
+});
+
+test('every version is drawn on a phone and a computer, and the rules find what stands in the way', async (t) => {
+  const { rules, repairRequest, measure } = await import('../engine/look.mjs');
+  const ok = { width: 390, scroll: 390, height: 900, screen: 740, wide: null, small: [], smallCount: 0, repeats: [], faint: [], faintCount: 0, ids: [], fieldsOnFirstScreen: 1, text: 200, controls: 6 };
+  assert.deepEqual(rules(ok, 'phone'), []);
+  const bad = { ...ok, scroll: 520, wide: { right: 520, what: 'table' }, small: ['Edit (44×26 px)'], smallCount: 8, faint: [{ text: 'No streak yet', ratio: 3.1 }], faintCount: 3, ids: ['ai7nozxh2o'], repeats: ['"Mark done" ×28'] };
+  const said = rules(bad, 'phone');
+  assert.deepEqual(said.map((r) => r.severity), ['high', 'high', 'high', 'high', 'low']);
+  assert.match(said[0].problem, /130 px wider than the phone and scrolls sideways \(table reaches 520 px\)/);
+  assert.match(said[1].problem, /8 things to tap are smaller than a finger \(44 px\): Edit/);
+  assert.match(said[2].problem, /"No streak yet" at 3.1:1/);
+  assert.match(said[3].problem, /raw ids are shown: ai7nozxh2o/);
+  // small targets are a phone's problem; a computer has a pointer
+  assert.ok(!rules(bad, 'computer').some((r) => /finger/.test(r.problem)));
+  assert.equal(repairRequest([{ view: 'Today', device: 'phone', problem: 'x', severity: 'low' }]), null);
+  assert.match(repairRequest([{ view: 'Books', device: 'phone', problem: 'The list is below the form.', fix: 'Put the list first', severity: 'high' }]), /- Books \(phone\): The list is below the form\. Fix: Put the list first$/);
+  // measured in a browser, when one is installed
+  const { loadPlaywright } = await import('../engine/checks.mjs');
+  const pw = loadPlaywright();
+  if (!pw) { t.diagnostic('no playwright: the measuring is not run'); return; }
+  const browser = await pw.chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.setContent(`<body style="margin:0;background:#fff;font:16px sans-serif">
+      <button style="height:24px">Edit</button><button style="height:48px;width:120px">Save</button>
+      <p style="color:#bbb">faint words</p><p style="color:#222">plain words</p><p>row ai7nozxh2o</p>
+      <div style="width:600px;height:10px"></div><input><input><select></select></body>`);
+    const m = await page.evaluate(measure, 844);
+    assert.equal(m.scroll, 600);
+    assert.equal(m.smallCount, 4, m.small.join(', ')); // Edit, two inputs and a select under 40 px
+    assert.deepEqual(m.faint.map((f) => f.text), ['faint words']);
+    assert.deepEqual(m.ids, ['ai7nozxh2o']);
+    assert.equal(m.fieldsOnFirstScreen, 3);
+  } finally { await browser.close(); }
 });

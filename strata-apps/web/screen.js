@@ -189,7 +189,7 @@
         if (b.chips !== undefined) return chips(b, s, path);
         if (b.input !== undefined) return input(b, s, path);
         if (b.button !== undefined) return button(b, s, path);
-        if (b.form !== undefined) return form(b, s, path);
+        if (b.form !== undefined) return folded(b, s, path);
         if (b.checks !== undefined) return checks(b, s, path);
         if (b.table !== undefined) return table(b, s, path);
         if (b.code !== undefined) return code(b, s, path);
@@ -257,6 +257,25 @@
 
     // A form keeps its element (and what is typed) across redraws; it is made
     // again only when the row it edits changes.
+    // On a phone, a form of three fields or more on a screen that lists rows
+    // folds behind its button, so the rows are on the first screen; it opens
+    // to edit a row, and folds again once it is saved. "fold": false keeps
+    // it open (when filling it is the job), true folds it on any screen.
+    const listing = /"(each|table|checks|code)"\s*:/.test(JSON.stringify(spec.body || []));
+    function folded(b, s, path) {
+      const el = form(b, s, path);
+      const n = (b.fields || []).filter((f) => typeof f === 'string' || (f && f.name)).length;
+      if (b.closes || b.fold === false || !(b.fold === true || b.fold === 'phone' || (listing && n >= 3))) return el;
+      const key = `__fold:${path}`;
+      const editing = b.edit !== undefined ? val(b.edit, s, `${path}.edit`) : null;
+      const open = !!state[key] || !!(editing && editing.id);
+      const label = b.submit !== undefined ? T(b.submit, s, path) : `Add ${human(b.form || '').replace(/s$/, '')}`;
+      return h('div', { class: `fold${b.fold === true ? '' : ' phone'}${open ? ' open' : ''}` },
+        h('button', { class: 'primary fold-open', type: 'button', 'aria-expanded': String(open), onclick: () => set({ [key]: true }) }, label),
+        el,
+        open && !(editing && editing.id) ? h('button', { class: 'ghost fold-close', type: 'button', onclick: () => set({ [key]: false }) }, 'Cancel') : null);
+    }
+
     function form(b, s, path) {
       const inCol = b.layout === 'col';
       const tableName = b.form;
@@ -350,6 +369,7 @@
           entry.touched = 0;
           if (!editing) { el.reset(); for (const c of controls.values()) c.__fileId = null; }
           forms.delete(path);
+          if (state[`__fold:${path}`]) set({ [`__fold:${path}`]: false });
           const after = b.after !== undefined ? val(b.after, cur, `${path}.after`) : null;
           await run(typeof after === 'function' ? after : null, [stored], `${path}.after`);
         } catch (err) { app.toast(err.message); report(fail(`${path} (${tableName})`, err)); } finally { saveBtn.disabled = false; }
@@ -444,7 +464,15 @@
       return h('div', { style: 'overflow-x:auto' }, h('table', { class: cols.length > 3 ? 'stack' : null },
         h('thead', null, h('tr', null, heads.map((x) => h('th', null, x)), acts.length ? h('th') : null)),
         h('tbody', null, rows.map((r) => h('tr', { style: onRow ? 'cursor:pointer' : null, onclick: onRow ? (e) => { if (!e.target.closest('button')) run(onRow, [r], `${path}.onRow`); } : null },
-          cols.map((c, i) => h('td', { 'data-label': heads[i] }, cell(c, fns[i], r))),
+          cols.map((c, i) => {
+            const v = cell(c, fns[i], r);
+            // A tick in a row is a 44 px target named by its row (kit.css).
+            if (v instanceof HTMLInputElement && v.type === 'checkbox') {
+              if (!v.getAttribute('aria-label')) v.setAttribute('aria-label', `${heads[i] || 'Done'}: ${rowName(r) || ''}`.replace(/: $/, ''));
+              return h('td', { class: 'tick', 'data-label': heads[i] }, h('label', { class: 'tap' }, v));
+            }
+            return h('td', { 'data-label': heads[i], class: v === '' ? 'blank' : null }, v);
+          }),
           acts.length ? h('td', { class: 'nowrap right' }, acts.map((a) => {
             const label = T(a.label, s, path);
             const who = rowName(r);

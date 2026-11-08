@@ -246,6 +246,14 @@ ul.list, ol.list { margin: 0; padding: 0; }
 .kpi .label { order: -1; color: var(--muted); font-size: calc(var(--text) * .86); font-weight: 500; }
 .kpi .value { font-family: var(--font-title); font-size: calc(var(--text) * 1.75); font-weight: 650; letter-spacing: -.025em; line-height: 1.15; font-variant-numeric: tabular-nums; }
 .kpi .small { font-size: calc(var(--text) * .84); }
+/* On a phone the big numbers are one compact row (up to three across), so
+   they do not push the screen's job below the first screenful. */
+@media (max-width: 560px) {
+  .kpis { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+  .kpis > .kpi { padding: 10px 12px; gap: 2px; min-height: 0; }
+  .kpi .value { font-size: calc(var(--text) * 1.35); }
+  .kpi .label { font-size: calc(var(--text) * .8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
 
 /* boards */
 .columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 6px; align-items: start; }
@@ -280,18 +288,45 @@ ul.list, ol.list { margin: 0; padding: 0; }
   label:has(> input[type=checkbox]), label:has(> input[type=radio]) { min-height: 44px; }
 }
 
-/* A table of more than three columns is a list of cards on a phone: each
-   row a card, each cell its column's name and its value. */
+/* A form folded behind its button (screen.js folded()): on a phone only,
+   or everywhere ("fold": true). */
+.fold > .fold-open, .fold > .fold-close { display: none; }
+.fold.phone > .fold-open { display: none; }
+.fold:not(.phone):not(.open) > form { display: none; }
+.fold:not(.phone):not(.open) > .fold-open { display: inline-flex; align-self: flex-start; }
+.fold.open > .fold-close { display: inline-flex; margin-top: 6px; }
 @media (max-width: 560px) {
-  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; width: 100%; }
+  .fold.phone:not(.open) > form { display: none; }
+  .fold.phone:not(.open) > .fold-open { display: inline-flex; width: 100%; justify-content: center; }
+  .fold.phone.open > .fold-close { display: inline-flex; }
+}
+@media (min-width: 561px) { .fold.phone > .fold-close { display: none !important; } }
+
+/* A tick in a table row: a 44 px target around the box, and a row ticked
+   off reads as done. */
+td.tick { width: 1%; }
+td.tick label.tap { display: inline-grid; place-items: center; min-width: 32px; min-height: 32px; margin: -6px; cursor: pointer; }
+@media (pointer: coarse) { td.tick label.tap { min-width: 44px; min-height: 44px; } td.tick input[type=checkbox] { width: 24px; height: 24px; } }
+tr:has(> td.tick input:checked) > td:not(.tick):not(.right) { color: var(--muted); }
+tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; }
+
+/* A table of more than three columns is a list of cards on a phone: each
+   row a card, its first cell the title (beside its tick, when it has one),
+   the other cells one line under it, each its column's name and value, and
+   the buttons at the end. A card is three lines, not one per column. */
+@media (max-width: 560px) {
+  table.stack, table.stack tbody { display: block; width: 100%; }
   table.stack { border: 0; background: transparent; box-shadow: none; }
   table.stack thead { display: none; }
-  table.stack tr { border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); padding: 6px 0; margin-bottom: 8px; }
-  table.stack td, table.stack td:first-child, table.stack td:last-child { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 5px 14px; border: 0; text-align: right; min-width: 0; }
-  table.stack td::before { content: attr(data-label); color: var(--muted); font-size: calc(var(--text) * .86); text-align: left; flex: none; max-width: 45%; }
-  table.stack td:first-child { font-weight: 600; text-align: left; justify-content: flex-start; }
-  table.stack td:first-child::before, table.stack td.right::before { content: none; }
-  table.stack td.right { justify-content: flex-end; gap: 6px; padding-top: 8px; }
+  table.stack tr { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); padding: 10px 14px; margin-bottom: 8px; }
+  table.stack td, table.stack td:first-child, table.stack td:last-child { display: inline-flex; align-items: baseline; gap: 5px; padding: 0; border: 0; min-width: 0; width: auto; text-align: left; font-size: calc(var(--text) * .92); }
+  table.stack td::before { content: attr(data-label); color: var(--muted); font-size: calc(var(--text) * .86); }
+  table.stack td.blank { display: none; }
+  table.stack td:first-child:not(.tick), table.stack td.tick + td { flex: 1 1 100%; font-weight: 600; font-size: var(--text); }
+  table.stack td.tick { flex: none; order: -1; align-self: center; }
+  table.stack td.tick + td { flex-basis: calc(100% - 60px); align-self: center; }
+  table.stack td:first-child::before, table.stack td.tick::before, table.stack td.tick + td::before, table.stack td.right::before { content: none; }
+  table.stack td.right { flex: 1 1 100%; justify-content: flex-end; gap: 6px; margin-top: 2px; }
 }
 
 /* checks: a check per item per day */
