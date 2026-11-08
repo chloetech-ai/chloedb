@@ -61,7 +61,7 @@ Choose text only for prose people search by words, and keyword for anything you 
 - GROUP BY keyword, int, float or bool columns, or date_trunc('day' | 'week' | 'month', a timestamp). Never GROUP BY a text column. Aggregates: COUNT(*), COUNT(DISTINCT c), SUM, AVG, MIN, MAX. HAVING. Name aggregates with AS.
 - ORDER BY any column or alias, ASC or DESC, several keys; always end a query that returns rows with LIMIT (at most 500).
 - JOIN ... ON, LEFT JOIN, subqueries, WITH, UNION, CASE, coalesce, round, abs, length, strftime('%Y-%m-%d', t), EXTRACT(dow FROM t), date_trunc, now(), CAST(x AS INT).
-- Dates: compare 'YYYY-MM-DD' text and timestamps as they are (due < :today); date_trunc and date_part read either; a day later is date_trunc('day', d) + n * 86400000000 (microseconds). CAST(... AS TIMESTAMP) takes a value only (a parameter or a literal), never a column or an expression of one.
+- Dates in computed values (SELECT, CASE, the SQL functions): 'YYYY-MM-DD' keywords and timestamps compare as they are (CASE WHEN due < :today THEN 'late' END), and date_trunc and date_part read either; a day later is date_trunc('day', d) + n * 86400000000 (microseconds). CAST(... AS TIMESTAMP) takes a value only (a parameter or a literal), never a column or an expression of one.
 - No INSERT, UPDATE or DELETE in app.sql: write with app.insert, app.update, app.remove.
 - Counts come back as numbers; timestamps as ISO text; bools as true or false; keyword[] as arrays.
 
@@ -220,7 +220,7 @@ Blocks, in "body" and in every block that holds blocks:
 - {"row": [blocks]}, {"col": [blocks]}, {"grid": [blocks]} (cards that wrap), {"split": [blocks]} (two columns, stacked on phones), {"card": [blocks], "title": "..."}, {"section": [blocks], "title": "..."}
 - {"if": "=expr", "then": [blocks], "else": [blocks]}
 - {"each": "=list", "as": "item", "body": [blocks], "empty": "text when the list is empty", "class": "list" | "grid" | "row"}
-- {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers
+- {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers; {"label": "Owed", "of": "<data name>", "format": "money"} shows the first value of a query's first row (formats: date, days, money, number, percent, pct, hours, duration, clock)
 - {"chips": "stateKey", "options": [...]}: picks one value of state (options: strings or {"value", "label"}); {"input": "stateKey", "type": "search" | "text" | "select" | "date" | "number" | "checkbox", "placeholder": "...", "options": [...], "label": "..."}: an input bound to state
 - {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small" | "link", "confirm": "a question to confirm first"}
 - {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col"}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).

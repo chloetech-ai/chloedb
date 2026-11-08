@@ -169,7 +169,13 @@
         if (b.card !== undefined) return h('div', { class: ['card', b.class].filter(Boolean).join(' ') }, b.title ? h('h3', null, T(b.title, s, path)) : null, h('div', { class: 'col' }, blocks(b.card, s, `${path}.card`)));
         if (b.section !== undefined) return h('section', { class: 'section col' }, b.title ? h('h3', null, T(b.title, s, path)) : null, blocks(b.section, s, `${path}.section`));
         if (b.each !== undefined) return each(b, s, path);
-        if (b.kpis !== undefined) return h('div', { class: 'kpis' }, (val(b.kpis, s, path) || []).map((k) => h('div', { class: 'kpi' }, h('div', { class: 'value' }, k.value == null ? '–' : String(k.value)), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null)));
+        if (b.kpis !== undefined) return h('div', { class: 'kpis' }, (val(b.kpis, s, path) || []).map((k) => {
+          // A KPI of a query ("of": its data) is the first value of its first row.
+          let v = k.of !== undefined ? (() => { const r = (data[k.of] || [])[0]; return r ? (r.v !== undefined ? r.v : Object.values(r)[0]) : null; })() : k.value;
+          if (k.of !== undefined && v == null) v = 0;
+          if (k.format && FORMAT[k.format] && v != null) v = FORMAT[k.format](v);
+          return h('div', { class: 'kpi' }, h('div', { class: 'value' }, v == null ? '–' : String(v)), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null);
+        }));
         if (b.chips !== undefined) return chips(b, s, path);
         if (b.input !== undefined) return input(b, s, path);
         if (b.button !== undefined) return button(b, s, path);
@@ -364,9 +370,27 @@
       return el;
     }
 
+    // How a value reads: a column's format word, a KPI's. Dates are
+    // 'YYYY-MM-DD' days or ISO times; durations are minutes, clocks seconds.
+    const DAY_MS = 86400000;
+    const dayOf = (v) => (v == null || v === '' ? null : Date.parse(`${String(v).slice(0, 10)}T00:00:00Z`));
+    const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+    const two = (n) => String(n).padStart(2, '0');
     const FORMAT = {
       date: (v) => app.fmt.date(v), datetime: (v) => app.fmt.datetime(v), time: (v) => app.fmt.time(v), ago: (v) => app.fmt.ago(v),
-      money: (v) => app.fmt.money(v), number: (v) => app.fmt.number(v), percent: (v) => (v == null ? '' : `${Math.round(Number(v) * 100)}%`),
+      money: (v) => app.fmt.money(v), number: (v) => app.fmt.number(num(v) == null ? v : Math.round(num(v) * 100) / 100),
+      percent: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 100)}%`), pct: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 10) / 10}%`),
+      hours: (v) => (num(v) == null ? '' : `${Math.round(num(v) * 10) / 10} h`),
+      duration: (v) => { const m = num(v); if (m == null) return ''; const t = Math.round(m); return t < 60 ? `${t} min` : `${Math.floor(t / 60)} h ${two(t % 60)}`; },
+      clock: (v) => { const x = num(v); if (x == null) return ''; const t = Math.round(x); const h = Math.floor(t / 3600); return h ? `${h}:${two(Math.floor(t / 60) % 60)}:${two(t % 60)}` : `${Math.floor(t / 60)}:${two(t % 60)}`; },
+      days: (v) => {
+        const d = dayOf(v);
+        if (d == null || !Number.isFinite(d)) return v == null ? '' : String(v);
+        const n = Math.round((d - dayOf(app.today())) / DAY_MS);
+        return n === 0 ? 'today' : n === 1 ? 'tomorrow' : n === -1 ? 'yesterday' : n > 0 ? `in ${n} days` : `${-n} days ago`;
+      },
+      weekday: (v) => { const d = dayOf(v); return d == null || !Number.isFinite(d) ? '' : new Date(d).toLocaleDateString(undefined, { weekday: 'long', timeZone: 'UTC' }); },
+      month: (v) => { const d = dayOf(String(v || '').length === 7 ? `${v}-01` : v); return d == null || !Number.isFinite(d) ? '' : new Date(d).toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }); },
       stars: (v) => (v ? '★'.repeat(Math.round(v)) : ''), bool: (v) => (v ? '✓' : ''),
     };
     // A badge's color from what its word means (paid, late, waiting, new...);

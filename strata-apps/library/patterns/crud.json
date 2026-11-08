@@ -80,6 +80,10 @@
   "actions": {
    "about": "more row actions for the table, as in a table block (\"do\": \"=row => ...\")"
   },
+  "deleteLabel": {
+   "about": "the label of each row's delete button",
+   "default": "Delete"
+  },
   "onRow": {
    "about": "a handler when a table row is tapped, such as \"=row => app.open('guest', {id: row.id})\""
   },
@@ -235,7 +239,7 @@
       "do": "=row => set({ {{key}}_editing: row })"
      },
      {
-      "label": "Delete",
+      "label": "{{deleteLabel}}",
       "class": "small ghost",
       "confirm": "Delete this {{noun}}?",
       "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
@@ -270,7 +274,7 @@
           "do": "=() => set({ {{key}}_editing: row })"
          },
          {
-          "button": "Delete",
+          "button": "{{deleteLabel}}",
           "class": "small ghost",
           "confirm": "Delete this {{noun}}?",
           "do": "=() => app.remove({{table|json}}, row.id)"
@@ -323,7 +327,7 @@
           "do": "=row => set({ {{key}}_editing: row })"
          },
          {
-          "label": "Delete",
+          "label": "{{deleteLabel}}",
           "class": "small ghost",
           "confirm": "Delete this {{noun}}?",
           "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
@@ -358,7 +362,7 @@
               "do": "=() => set({ {{key}}_editing: row })"
              },
              {
-              "button": "Delete",
+              "button": "{{deleteLabel}}",
               "class": "small ghost",
               "confirm": "Delete this {{noun}}?",
               "do": "=() => app.remove({{table|json}}, row.id)"

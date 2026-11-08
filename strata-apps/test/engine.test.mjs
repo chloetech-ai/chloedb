@@ -524,6 +524,32 @@ BLOCKS [{"text": "=guests.length + ' guests'"}]`;
   // A column's value is an expression of row; a function of the row is taken as written, not wrapped again.
   const valued = compileStatement("CREATE SCREEN x\nLIST t\n  FORM (a NUMBER)\n  COLUMNS (a 'A' = row.a * 2, b 'B' = r => r.a + 1, c 'C' = (row) => row.a)").screen.body[0].columns;
   assert.deepEqual(valued.map((x) => x.value), ['=row => row.a * 2', '=r => r.a + 1', '=(row) => row.a']);
+  // Formatting is said with words, not written as code: a KPI over any table, a value per
+  // period (TREND), how a column or a KPI reads (DAYS, DURATION, MONEY...).
+  const w = compileStatement(`CREATE SCREEN runs TITLE 'Runs'
+KPI 'This month' = SUM(distance_km) FROM runs WHERE date_trunc('month', day) = date_trunc('month', :today)
+KPI 'Owed' = SUM(amount) FROM bills WHERE paid = false MONEY
+LIST runs
+  FORM (day DATE, distance_km NUMBER, minutes NUMBER)
+  COLUMNS (day 'Day' DAYS, minutes 'Time' DURATION)
+  KPI 'Total' = SUM(minutes) DURATION
+  ACTION 'Remove' DELETE
+TREND runs AS weekly
+  DATE day  VALUE SUM(distance_km)  PER week  LAST 8  LINE`);
+  assert.deepEqual(w.screen.body.map((b) => b.use || Object.keys(b)[0]), ['kpis', 'crud', 'trend']);
+  assert.deepEqual(w.screen.body[0].kpis, [{ label: 'This month', of: 'kpi_0', format: 'number' }, { label: 'Owed', of: 'kpi_1', format: 'money' }]);
+  assert.deepEqual(w.screen.data.kpi_0.params, { today: '=today' });
+  assert.equal(w.screen.data.kpi_1, 'SELECT SUM(amount) AS v FROM bills WHERE paid = false');
+  assert.deepEqual(w.screen.body[1].columns.map((x) => x.format), ['days', 'duration']);
+  assert.equal(w.screen.body[1].deleteLabel, 'Remove', 'ACTION DELETE names the delete button every list has');
+  assert.equal(w.screen.body[1].actions, undefined);
+  assert.deepEqual(w.screen.body[2], { use: 'trend', table: 'runs', key: 'weekly', date: 'day', value: 'SUM(distance_km)', per: 'week', last: 8, line: true });
+  const we = expandScreen(w.screen);
+  assert.deepEqual(we.problems, []);
+  assert.match(JSON.stringify(we.screen.data), /date_trunc\('week', day\)/);
+  assert.equal((JSON.stringify(we.screen).match(/"Remove"/g) || []).length, 1);
+  assert.deepEqual(checkScreen(we.screen, (t) => ({ runs: new Set(['id', 'created', 'day', 'distance_km', 'minutes']), bills: new Set(['id', 'amount', 'paid']) })[t] || null), []);
+  assert.throws(() => compileStatement("CREATE SCREEN x\nTREND t\n  PER year"), /PER/);
   // mistakes name their line and what to write
   assert.throws(() => compileStatement("CREATE SCREEN x\nLIST t\n  FORM (a WIDGET)"), /line 3: FORM a: cannot read "WIDGET"/);
   assert.throws(() => compileStatement('CREATE SCREEN x\nLIST t\n  SEARCH a'), /needs FORM/);

@@ -45,6 +45,10 @@
   "sql": {
    "about": "the whole SELECT (default: from table, where and order)",
    "default": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 500"
+  },
+  "deleteLabel": {
+   "about": "the label of the delete button",
+   "default": "Delete"
   }
  },
  "example": {
@@ -88,7 +92,7 @@
   },
   "let": {
    "{{key}}_columns": "={{statuses|json}}.map(s => s && typeof s === 'object' ? {id: s.value, title: s.label || String(s.value)} : {id: s, title: String(s).charAt(0).toUpperCase() + String(s).slice(1).replace(/_/g, ' ')})",
-   "{{key}}_items": "={{key}}.map(row => ({id: row.id, column: row[{{status|json}}], title: String(row[{{name|json}}] ?? 'Untitled'), subtitle: ({{meta|json}} || []).map(k => row[k]).filter(v => v != null && v !== '').map(v => Array.isArray(v) ? v.join(', ') : String(v)).join(' \u00b7 ')}))"
+   "{{key}}_items": "={{key}}.map(row => ({id: row.id, column: row[{{status|json}}], title: String(row[{{name|json}}] ?? 'Untitled'), subtitle: ({{meta|json}} || []).map(k => row[k]).filter(v => v != null && v !== '').map(v => Array.isArray(v) ? v.join(', ') : String(v)).join(' · ')}))"
   },
   "body": [
    {
@@ -131,7 +135,7 @@
         "if": "=state.{{key}}_editing",
         "then": [
          {
-          "button": "Delete",
+          "button": "{{deleteLabel}}",
           "class": "danger small",
           "confirm": "Delete this {{noun}}?",
           "do": "=() => app.remove({{table|json}}, state.{{key}}_editing.id).then(() => set({ {{key}}_editing: null }))"

@@ -40,6 +40,10 @@
   },
   "where": {
    "about": "an SQL condition on the rows"
+  },
+  "deleteLabel": {
+   "about": "the label of the delete button",
+   "default": "Delete"
   }
  },
  "example": {
@@ -164,7 +168,7 @@
           "if": "=state.{{key}}_editing",
           "then": [
            {
-            "button": "Delete",
+            "button": "{{deleteLabel}}",
             "class": "danger small",
             "confirm": "Delete this {{noun}}?",
             "do": "=() => app.remove({{table|json}}, state.{{key}}_editing.id).then(() => set({ {{key}}_editing: null }))"

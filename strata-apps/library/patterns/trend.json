@@ -1,0 +1,112 @@
+{
+ "title": "A value per day, week or month over the last periods, as bars or a line",
+ "about": "Weekly distance run, monthly spending, sales per day, hours per week: one GROUP BY date_trunc query drawn as one bar per period, the periods with no rows shown as zero, with the total and the average per period as big numbers. The date column is a timestamp (created by default) or a 'YYYY-MM-DD' keyword.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_trend"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "date": {
+   "about": "the column with each row's day or time: a timestamp or a 'YYYY-MM-DD' keyword",
+   "default": "created"
+  },
+  "value": {
+   "about": "the SQL aggregate per period: SUM(column), COUNT(*), AVG(column)",
+   "default": "COUNT(*)"
+  },
+  "label": {
+   "about": "what the value is",
+   "default": "Total"
+  },
+  "per": {
+   "about": "day, week (from Monday) or month",
+   "default": "week"
+  },
+  "last": {
+   "about": "how many periods, ending with this one",
+   "default": 12
+  },
+  "format": {
+   "about": "how values read: number, money or hours",
+   "default": "number"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "line": {
+   "about": "true draws a line instead of bars"
+  }
+ },
+ "example": {
+  "use": "trend",
+  "table": "runs",
+  "title": "Distance per week",
+  "date": "day",
+  "value": "SUM(distance_km)",
+  "label": "Distance (km)",
+  "per": "week",
+  "last": 12
+ },
+ "screen": {
+  "data": {
+   "{{key}}": "SELECT date_trunc('{{per}}', {{date}}) AS p, {{value}} AS v FROM {{table}}{{where|pre: WHERE }} GROUP BY date_trunc('{{per}}', {{date}}) ORDER BY p DESC LIMIT 500"
+  },
+  "let": {
+   "{{key}}_periods": "=(() => { const per = {{per|json}}; const n = Number({{last|json}}) || 12; const t = new Date(today + 'T00:00:00Z'); const out = []; if (per === 'month') { for (let i = n - 1; i >= 0; i--) out.push(new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - i, 1)).toISOString().slice(0, 10)); } else { const step = per === 'week' ? 7 : 1; const start = per === 'week' ? t.getTime() - ((t.getUTCDay() + 6) % 7) * 864e5 : t.getTime(); for (let i = n - 1; i >= 0; i--) out.push(new Date(start - i * step * 864e5).toISOString().slice(0, 10)); } return out; })()",
+   "{{key}}_by": "=Object.fromEntries({{key}}.map(r => [String(r.p).slice(0, 10), Number(r.v) || 0]))",
+   "{{key}}_items": "={{key}}_periods.map(p => ({ label: new Date(p + 'T00:00:00Z').toLocaleDateString(undefined, {{per|json}} === 'month' ? { month: 'short', timeZone: 'UTC' } : { month: 'short', day: 'numeric', timeZone: 'UTC' }), x: p, y: {{key}}_by[p] || 0, value: {{key}}_by[p] || 0 }))",
+   "{{key}}_sum": "={{key}}_items.reduce((n, g) => n + g.value, 0)",
+   "{{key}}_fmt": "=v => {{format|json}} === 'money' ? app.fmt.money(v) : {{format|json}} === 'hours' ? (Math.round(v * 10) / 10) + ' h' : app.fmt.number(Math.round(v * 100) / 100)"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "={{label|json}} + ', last ' + {{last|json}} + ' ' + {{per|json}} + 's'",
+      "value": "={{key}}_fmt({{key}}_sum)"
+     },
+     {
+      "label": "='Per ' + {{per|json}}",
+      "value": "={{key}}_fmt({{key}}_sum / ({{key}}_items.length || 1))"
+     },
+     {
+      "label": "={{per|json}} === 'day' ? 'Today' : 'This ' + {{per|json}}",
+      "value": "={{key}}_fmt(({{key}}_items[{{key}}_items.length - 1] || {}).value || 0)"
+     }
+    ]
+   },
+   {
+    "card": [
+     {
+      "$when": "!line",
+      "ui": "barChart",
+      "props": {
+       "data": "={{key}}_items",
+       "format": "={{key}}_fmt"
+      }
+     },
+     {
+      "$when": "line",
+      "ui": "lineChart",
+      "props": {
+       "data": "={{key}}_items",
+       "area": true,
+       "format": "={{key}}_fmt"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

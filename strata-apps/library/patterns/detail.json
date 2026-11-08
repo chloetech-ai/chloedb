@@ -38,6 +38,10 @@
   },
   "back": {
    "about": "the slug of the view the back button opens (default: back to the pick list)"
+  },
+  "deleteLabel": {
+   "about": "the label of the delete button",
+   "default": "Delete"
   }
  },
  "example": {
@@ -157,7 +161,7 @@
             "do": "=() => set({ {{key}}_editing: true })"
            },
            {
-            "button": "Delete",
+            "button": "{{deleteLabel}}",
             "class": "small ghost",
             "confirm": "Delete this {{noun}}?",
             "do": "=() => app.remove({{table|json}}, {{key}}_row.id).then(() => set({ {{key}}_id: null }))"

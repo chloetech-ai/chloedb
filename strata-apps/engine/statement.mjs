@@ -32,10 +32,14 @@ const MORE = {
     clauses: { TEXT: ['text', 'name'], MEANING: ['meaning', 'name'], NAME: ['name', 'name'], SUB: ['sub', 'names'], SHOW: ['show', 'cols'], LIMIT: ['limit', 'num'], PLACEHOLDER: ['placeholder', 'str'], WHERE: ['where', 'sql'], PARAM: ['params', 'param'], TITLE: ['title', 'str'] } },
   DASHBOARD: { use: 'dashboard',
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'day'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], FORMAT: ['format', 'word'], DAYS: ['days', 'num'], BY: ['group', 'name'], 'GROUP BY': ['group', 'name'], WHERE: ['where', 'sql'], RECENT: ['recent', 'cols'], TITLE: ['title', 'str'] } },
+  TREND: { use: 'trend',
+    clauses: { DATE: ['date', 'name'], DAY: ['date', 'name'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], PER: ['per', 'word'], LAST: ['last', 'num'], FORMAT: ['format', 'word'], WHERE: ['where', 'sql'], LINE: ['line', 'flag'], TITLE: ['title', 'str'] } },
 };
 const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS', 'PAGE', 'PHOTOS'];
 const FIELD_TYPES = ['TEXT', 'TEXTAREA', 'NUMBER', 'DATE', 'TIME', 'DATETIME', 'SELECT', 'CHECKBOX', 'TAGS', 'EMAIL', 'URL', 'COLOR', 'FILE', 'RATING'];
-const COLUMN_FORMATS = ['DATE', 'DATETIME', 'AGO', 'MONEY', 'NUMBER', 'PERCENT', 'STARS', 'BOOL'];
+const COLUMN_FORMATS = ['DATE', 'DATETIME', 'AGO', 'DAYS', 'WEEKDAY', 'MONTH', 'MONEY', 'NUMBER', 'PERCENT', 'PCT', 'HOURS', 'DURATION', 'CLOCK', 'STARS', 'BOOL'];
+// How a big number reads (KPI ... MONEY): the column formats that fit a number.
+const KPI_FORMATS = ['MONEY', 'NUMBER', 'PERCENT', 'PCT', 'HOURS', 'DURATION', 'CLOCK'];
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 class StatementError extends Error {}
@@ -165,6 +169,18 @@ function columnSpec(spec, line) {
   return c;
 }
 
+// KPI 'Label' = <aggregate> [FROM table] [WHERE condition] [format]
+function kpiOf(rest, line, from = false) {
+  const m = rest.match(new RegExp(`^('(?:[^']|'')*')\\s*=\\s*([\\s\\S]+?)(?:\\s+FROM\\s+([A-Za-z_][A-Za-z0-9_]*))?(?:\\s+WHERE\\s+([\\s\\S]+?))?(?:\\s+(${KPI_FORMATS.join('|')}))?\\s*$`, 'i'));
+  if (!m || (from && !m[3])) fail(line, `KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) ...${from ? ' FROM <table>' : ''} [WHERE condition] [${KPI_FORMATS.join(' | ')}]`);
+  return { label: literal(m[1]), value: m[2].trim(), table: m[3], where: m[4], format: (m[5] || 'NUMBER').toLowerCase() };
+}
+
+// A query that names :today gets it from the screen.
+function withDays(sql) {
+  return /:today\b/.test(sql) ? { sql, params: { today: '=today' } } : sql;
+}
+
 const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
 const jsStr = (s) => JSON.stringify(String(s));
 
@@ -179,6 +195,7 @@ export function compileStatement(text) {
   let part = null;
   let photos = null;
   let kpiN = 0;
+  let kpiRow = null;
   const finish = () => {
     if (!part) return;
     const p = part;
@@ -194,7 +211,7 @@ export function compileStatement(text) {
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
@@ -215,6 +232,18 @@ export function compileStatement(text) {
   for (const { n, text: l } of split) {
     const kw = (l.match(/^([A-Za-z]+(?:\s+BY)?)\b/) || [])[1]?.toUpperCase().replace(/\s+/g, ' ');
     const rest = l.slice((l.match(/^[A-Za-z]+(?:\s+BY)?\b/) || [''])[0].length).trim();
+    // KPI 'Label' = SUM(col) FROM <table> [WHERE ...] [MONEY]: a big number of
+    // its own, over any table; KPIs one after the other share a row.
+    if (kw === 'KPI' && /\sFROM\s+[A-Za-z_]/i.test(rest)) {
+      finish();
+      const k = kpiOf(rest, n, true);
+      const name = `kpi_${kpiN++}`;
+      screen.data[name] = withDays(`SELECT ${k.value} AS v FROM ${k.table}${k.where ? ` WHERE ${k.where}` : ''}`);
+      const item = { label: k.label, of: name, format: k.format };
+      if (kpiRow && screen.body.at(-1) === kpiRow) kpiRow.kpis.push(item);
+      else { kpiRow = { kpis: [item] }; screen.body.push(kpiRow); }
+      continue;
+    }
     if (PARTS.includes(kw) && !(part && part.more && part.more.clauses[kw])) {
       finish();
       if (kw === 'HEADING') { screen.body.push({ h: literal(rest) }); continue; }
@@ -316,13 +345,11 @@ export function compileStatement(text) {
         break;
       }
       case 'KPI': {
-        const m = rest.match(/^('(?:[^']|'')*')\s*=\s*([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?(\s+MONEY)?\s*$/i);
-        if (!m) fail(n, "KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) ... [WHERE condition] [MONEY]");
+        const k = kpiOf(rest, n);
         const name = `${key}_k${kpiN++}`;
-        const conds = [u.where, m[3]].filter(Boolean).map((c) => `(${c})`).join(' AND ');
-        screen.data[name] = `SELECT ${m[2]} AS v FROM ${u.table}${conds ? ` WHERE ${conds}` : ''}`;
-        const fmt = m[4] ? 'money' : 'number';
-        u.kpis = [...(u.kpis || []), { label: literal(m[1]), value: `=app.fmt.${fmt}(Number((${name}[0] || {}).v) || 0)` }];
+        const conds = [u.where, k.where].filter(Boolean).map((c) => `(${c})`).join(' AND ');
+        screen.data[name] = withDays(`SELECT ${k.value} AS v FROM ${u.table}${conds ? ` WHERE ${conds}` : ''}`);
+        u.kpis = [...(u.kpis || []), { label: k.label, of: name, format: k.format }];
         break;
       }
       case 'ON': {
@@ -339,7 +366,7 @@ export function compileStatement(text) {
         else if (m[4]) {
           const sets = splitTop(m[4]).map((x) => { const mm = x.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/); if (!mm) fail(n, `ACTION SET: ${JSON.stringify(x)} is not col = value`); return [mm[1], literal(mm[2])]; });
           doIt = `=row => app.update(${jsStr(u.table)}, row.id, ${JSON.stringify(Object.fromEntries(sets.map(([k, v]) => [k, v === 'TODAY' || v === 'today' ? '@today' : v]))).replace(/"@today"/g, 'app.today()')})`;
-        } else doIt = `=row => app.remove(${jsStr(u.table)}, row.id)`;
+        } else { u.deleteLabel = literal(m[1]); break; } // every list has a delete button: this names it
         u.actions = [...(u.actions || []), { label: literal(m[1]), class: 'small ghost', do: doIt }];
         break;
       }
@@ -384,7 +411,11 @@ function moreClause(part, kw, rest, l, n) {
     case 'day': if (!NAME.test(rest)) fail(n, `${kw} <column holding 'YYYY-MM-DD'>`); u[param] = rest; u.day = true; break;
     case 'names': u[param] = names(rest, n, kw); break;
     case 'str': u[param] = literal(rest); break;
-    case 'word': u[param] = rest.toLowerCase(); break;
+    case 'word':
+      u[param] = rest.toLowerCase();
+      if (kw === 'PER' && !['day', 'week', 'month'].includes(u[param])) fail(n, 'PER day | week | month');
+      break;
+    case 'flag': if (rest) fail(n, `${kw} takes nothing after it`); u[param] = true; break;
     case 'num': if (!/^\d+$/.test(rest)) fail(n, `${kw} <a whole number>`); u[param] = Number(rest); break;
     case 'sql': case 'js': if (!rest) fail(n, `${kw} needs a value`); u[param] = rest; break;
     case 'fields': u[param] = splitTop(parens(rest, n, kw).inside).map((f) => fieldSpec(f, n)); break;
@@ -485,9 +516,9 @@ LIST <table> [AS key]          -- the crud pattern: rows, add/edit form, search,
   WHERE <SQL condition>  ORDER BY <SQL>  QUERY (SELECT ... when the rows need a join or computed columns)
   SEARCH col, col                       FILTER col IN ('a', 'b')        TOGGLE <bool col> ['Done']
   FORM [SIDE | NONE] (col 'Label' NUMBER REQUIRED DEFAULT 0, col SELECT ('a', 'b'), ...)   after the label, one type word: ${FIELD_TYPES.join(' ')}
-  COLUMNS (col 'Label' DATE, col 'Label' MONEY BADGE, col 'Label' = <JavaScript of row>, ...)   after the label, one format word: ${COLUMN_FORMATS.join(' ')}, and BADGE
+  COLUMNS (col 'Label' DATE, col 'Label' MONEY BADGE, col 'Label' MONEY = <JavaScript of row>, ...)   after the label, one format word: ${COLUMN_FORMATS.join(' ')} (DAYS reads a day as "in 3 days", DURATION minutes as "1 h 05", CLOCK seconds as "5:30", HOURS a number as "2.5 h", PCT a percent as "12.5%"), and BADGE
   CARDS <title col> [SUB col, col]      (cards instead of a table)
-  KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) [WHERE condition] [MONEY]   (one line each; SQL over the table)
+  KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) [WHERE condition] [${KPI_FORMATS.join(' | ')}]   (one line each; SQL over the table)
   ON ROW OPEN <view slug>   ACTION 'Label' OPEN <view slug> | SET col = value, ... | DELETE
 BOARD <table> [AS key]         -- the board pattern
   BY <status col> ('new', 'doing', 'done')  NAME <title col>  META col, col  FORM (...)  TITLE  NOUN  WHERE  ORDER BY
@@ -508,6 +539,9 @@ FIND <table> [AS key]          -- the search pattern: words and meaning ranked t
   TEXT <text col>  MEANING <meaning col>  NAME <col>  SUB col, col  SHOW (columns)  LIMIT 20  PLACEHOLDER 'Search notes'  WHERE  PARAM  TITLE
 DASHBOARD <table> [AS key]     -- a value over the last N days against the N before: per day, by a group, newest rows
   DATE <timestamp col> | DAY <'YYYY-MM-DD' col>  VALUE SUM(col)  LABEL 'Hours'  FORMAT number | money | hours  DAYS 30  BY <group col>  RECENT (columns)  WHERE  TITLE
+TREND <table> [AS key]         -- a value per day, week or month over the last periods, as bars (LINE for a line), with the total and the average
+  DATE <timestamp or 'YYYY-MM-DD' col>  VALUE SUM(col)  PER day | week | month  LAST 12  LABEL 'Distance (km)'  FORMAT number | money | hours  WHERE  LINE  TITLE
+KPI 'Label' = SUM(col) | COUNT(*) | AVG(col) FROM <table> [WHERE condition] [${KPI_FORMATS.join(' | ')}]   -- a big number over any table, outside a part (KPIs one after the other share a row); :today works in WHERE: this month is WHERE date_trunc('month', day) = date_trunc('month', :today), the last 30 days WHERE days_between(day, :today) <= 30
 HEADING 'text'   TEXT 'text'
 DATA <name> AS SELECT ...      -- more data for BLOCKS and LET, by name
 STATE <name> = <JSON>          LET <name> = <JavaScript expression>
@@ -526,6 +560,8 @@ LIST guests
   KPI 'Waiting' = COUNT(*) WHERE rsvp = 'waiting'
 SUMMARY guests AS meals
   TITLE 'Meals'  GROUP BY meal  WHERE rsvp = 'yes'
+
+Say what you can with the parts and their words, and keep JavaScript for what they cannot say: a total is a KPI (with FROM over another table), a value per week is a TREND, an amount reads with MONEY and a day with DATE or DAYS, a computed column is col 'Label' MONEY = row.a - row.b, and arithmetic over rows is SQL (the SQL functions, a QUERY with joins) rather than app.fmt, lib calls or reduce() in LET and BLOCKS.
 
 A screen that is mostly custom (a game, a chart of its own) may be a CREATE SCREEN with a BLOCKS part, or a JSON "screen" in the plan as described above.
 
