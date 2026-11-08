@@ -479,5 +479,8 @@ commits later.
   builders and on a shared machine. Bulk load, flush, merge and snapshot
   costs will be dominated by the real builders after integration. The bench
   runs unchanged and records `build_segment` time separately for bulk loads.
-* **Single process.** `flock` admits one `Database` per file. There is no
-  shared-memory reader table, so other processes cannot read concurrently.
+* **One writer process.** `flock` admits one writer per file. Readers in
+  other processes open it with `DbOptions::read_only` and follow its
+  commits; in the single file each keeps a pin in `<file>-readers/` with the
+  oldest version it reads, which the writer's page reuse respects
+  (`storage/share.rs`, `storage/reader.rs`).

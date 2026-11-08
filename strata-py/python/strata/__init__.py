@@ -239,9 +239,24 @@ class Database(Search, FrameStore):
         return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads))
 
     @classmethod
-    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None) -> "Database":
-        """Opens the database at `path`; `threads` as `create` takes it."""
-        return cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads))
+    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False) -> "Database":
+        """Opens the database at `path`; `threads` as `create` takes it.
+        `read_only` opens it to read while another process writes it (a
+        web server's other workers, a script): it sees each commit of the
+        writer, and every write fails. Without it only one process may have
+        the database open."""
+        return cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only))
+
+    @property
+    def read_only(self) -> bool:
+        """Whether it was opened with `read_only`."""
+        return self._db.read_only()
+
+    def refresh(self) -> bool:
+        """Opened `read_only`: reads what the writer committed since the
+        last query, now (each query does so by itself); whether anything
+        changed. False for the writer."""
+        return self._db.refresh()
 
     @property
     def schema(self) -> dict:
@@ -540,12 +555,13 @@ class Database(Search, FrameStore):
         return self.import_arrow(data, table=table)
 
 
-def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None) -> Database:
+def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False) -> Database:
     """Opens the database at `path`, creating it with `schema` if it does
     not exist. `threads`: how many cores vector indexes build on and each
-    query searches segments on (default: every core)."""
-    if os.path.exists(path):
-        return Database.open(path, models=models, threads=threads)
+    query searches segments on (default: every core). `read_only`: opens
+    it to read while another process writes it (see `Database.open`)."""
+    if os.path.exists(path) or read_only:
+        return Database.open(path, models=models, threads=threads, read_only=read_only)
     if schema is None:
         raise StrataError(f"{os.fspath(path)} does not exist: pass a schema to create it")
     return Database.create(path, schema, directory=directory, models=models, threads=threads)

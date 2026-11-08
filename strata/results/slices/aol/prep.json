@@ -1,0 +1,15 @@
+{
+ "searches": 21011340,
+ "skipped_dash_non_ascii_or_only_stopwords": 509264,
+ "train_searches": 17626504,
+ "train_distinct": 8697441,
+ "train_kept": 1000000,
+ "train_kept_share_of_searches": 0.5383551951084571,
+ "test_searches": 2875572,
+ "test_distinct": 1711752,
+ "test_sample": 200000,
+ "test_sample_distinct": 156325,
+ "test_volume_seen_in_training": 0.5214065236412094,
+ "test_volume_in_kept_training": 0.4483563617951489,
+ "docs": 8841823
+}

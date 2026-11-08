@@ -236,9 +236,10 @@ pub fn defaults() -> Vec<Rule> {
     let s = "self";
     #[rustfmt::skip]
     let v = [
-        (rule("failing", "Database refuses writes", "failing", ">", 0.0, "max", 30, 0, "critical", c, "A write failed partway (a full disk, an I/O error): restart the server once the cause is fixed."), 0.0),
+        (rule("failing", "Database refuses writes", "failing", ">", 0.0, "max", 30, 0, "critical", c, "A write failed partway (a full disk, an I/O error), and the database refuses writes until it is reopened. On a primary, hand the primary over to a replica in sync first (Cluster: its menu, Make it the primary), so writes go on; then fix the cause and restart the server."), 0.0),
         (rule("flush-failing", "Flushes fail", "flush_failing", ">", 0.0, "max", 30, 0, "critical", c, "Writes still commit to the log until the memtable holds twice its limit. Usually a full disk."), 0.0),
         (rule("merge-failing", "Merges fail", "merge_failing", ">", 0.0, "all", 60, 0, "warning", c, "Segments pile up and queries slow down until merges succeed again."), 0.0),
+        (rule("damaged", "Data damaged on disk", "damaged_segments", ">", 0.0, "max", 30, 0, "critical", c, "A scrub found segments that fail their checksums on this copy: searches that read them fail there, and it must not become the primary. Replace the copy (Cluster: Plan the repair), or restore it from a checkpoint."), 0.0),
         (rule("disk-full", "Disk almost full", "disk_used_ratio", ">", 0.9, "mean", 300, 0, "warning", c, "Under 10% of the copy's disk is left."), 0.88),
         (rule("disk-critical", "Disk nearly full", "disk_used_ratio", ">", 0.97, "mean", 120, 0, "critical", c, "Under 3% of the copy's disk is left: writes fail when it is full. Free space or move slots off the copy now."), 0.95),
         (rule("disk-filling", "Disk full within 12 hours", "disk_hours_to_full", "<", 12.0, "mean", 1800, 0, "warning", c, "At the rate the copy's disk filled over the last 30 minutes, it is full in under 12 hours."), 24.0),
@@ -253,6 +254,7 @@ pub fn defaults() -> Vec<Rule> {
         (rule("replica-reads", "A replica does not serve reads", "serves_reads", "<", 1.0, "all", 60, 0, "warning", c, "The replica is catching up with its primary, or lost it."), 1.0),
         (rule("query-memory", "Query memory almost spent", "query_memory_ratio", ">", 0.9, "mean", 60, 0, "warning", s, "The running queries hold over 90% of --query-memory-mb; more are refused with 429."), 0.8),
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
+        (rule("write-p99", "Writes are slow", "write_p99_ms", ">", 500.0, "mean", 60, 0, "warning", s, "The p99 of writes over a minute is over 500 ms: a replica or the link to it is slow (with --write-acks all a write waits for every copy), or the disk is."), 250.0),
         (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "This cluster follows another, and its follow process has been over a minute behind for a minute: it is down, catching up, or held (GET /v1/admin/follow says which)."), 30.0),
     ];
     let slo = crate::service::Slo::default();
@@ -332,6 +334,22 @@ pub const CLUSTER_METRICS: [&str; 5] = ["shards_no_majority", "copies_down", "sh
 pub const CAUSES: [&str; 2] = ["shard-no-majority", "copy-down"];
 /// Metrics of a shard's replicas, which a copy of it that is down explains.
 pub const REPLICA_METRICS: [&str; 5] = ["replicas_out_of_sync", "replica_behind_max", "replica_behind_s", "serves_reads", "shards_under_replicated"];
+
+/// The metrics a server reports in one role only: a primary its replicas
+/// out of sync and behind, a replica whether it serves reads. A server
+/// whose role changed stops reporting one, and one elected a moment ago
+/// has not reported it for long ([`role_key`]).
+const ROLE_METRICS: [&str; 4] = ["replicas_out_of_sync", "replica_behind_max", "replica_behind_s", "serves_reads"];
+
+/// The point key a role metric is read from (`replica_behind_s` is made of
+/// `replica_behind_max`).
+fn role_key(metric: &str) -> &str {
+    if metric == "replica_behind_s" {
+        "replica_behind_max"
+    } else {
+        metric
+    }
+}
 /// Metrics of the searches a coordinator serves, which a shard's trouble
 /// explains.
 pub const TRAFFIC_METRICS: [&str; 14] = ["availability", "error_ratio", "http_5xx_ratio", "http_5xx_s", "errors_s", "timeouts_s", "p99_ms", "p95_ms", "p50_ms", "partial_s", "rejected_s", "qps", "slow_s", "key_error_ratio"];
@@ -552,6 +570,21 @@ impl St {
             }
             _ => None,
         }
+    }
+
+    /// Its server no longer reports the rule's metric, as its role changed
+    /// (a primary that stepped down reports no replicas out of sync):
+    /// nothing of it is left here, so it is ok, and resolves if it fired.
+    fn gone(&mut self, t: u64) -> Option<&'static str> {
+        self.no_data_since_ms = None;
+        let was = self.state;
+        if was != "ok" {
+            (self.state, self.since_ms) = ("ok", t);
+        }
+        (was == "firing").then(|| {
+            self.clear(t);
+            "resolved"
+        })
     }
 
     /// What survives a restart ([`Saved`]).
@@ -1295,6 +1328,14 @@ impl Alerts {
             let mut states = lock(&self.states);
             for r in rules.iter().filter(|r| self.own(r)) {
                 let st = states.entry(r.id.clone()).or_insert_with(|| St::new(t));
+                let role = ROLE_METRICS.contains(&r.metric.as_str()).then(|| role_key(&r.metric));
+                if role.is_some_and(|k| points.last().is_some_and(|p| value_of(p, k).is_none())) {
+                    st.reports = false;
+                    if st.gone(t).is_some() {
+                        changes.push(Arc::new(self.resolution(r, st, t)));
+                    }
+                    continue;
+                }
                 let (v, partial) = if r.metric == "key_error_ratio" {
                     let (v, place) = key_window(r, st.state == "firing", &keys(t.saturating_sub(r.window_s * 1000), t + 1));
                     if v.is_some() {
@@ -1304,8 +1345,21 @@ impl Alerts {
                 } else {
                     window_of(r, points, t)
                 };
+                // A server that took the role within the window (a primary
+                // elected a moment ago, whose old primary is still starting
+                // again) is judged once the metric spans the window: "all"
+                // over a minute means a minute of it.
+                let since = role.and_then(|k| points.iter().rev().take_while(|p| value_of(p, k).is_some()).last()).and_then(|p| p["t"].as_u64());
+                let young = since.is_some_and(|s| s > t.saturating_sub(r.window_s * 1000) + crate::telemetry::INTERVAL.as_millis() as u64);
+                if young && st.state != "firing" && v.is_some_and(|x| r.holds(x)) {
+                    (st.value, st.no_data_since_ms, st.reports) = (v, None, true);
+                    if st.state != "pending" {
+                        (st.state, st.since_ms) = ("pending", t);
+                    }
+                    continue;
+                }
                 st.partial_ms = partial.filter(|_| v.is_some());
-                st.reports = v.is_some() || points.iter().any(|p| value_of(p, &r.metric).is_some());
+                st.reports = v.is_some() || points.iter().any(|p| value_of(p, &r.metric).is_some()) || role.is_some();
                 if let Some(change) = st.step(r, v, t) {
                     let mut e = if change == "resolved" { self.resolution(r, st, t) } else { Event::of(r, change, st, t) };
                     if r.metric == "key_error_ratio" {
@@ -3506,6 +3560,40 @@ fn backtest_events(svc: &crate::service::Service, rule: &Rule, from: u64, to: u6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A primary that stepped down reports no replicas out of sync: its
+    /// alert resolves rather than firing on (it kept a critical alert for
+    /// 13 minutes in the chaos monkey's run); and a primary elected a
+    /// moment ago, whose old primary is still starting again, is judged
+    /// once it has been primary for the rule's window.
+    #[test]
+    fn a_role_metric_resolves_when_the_role_ends_and_waits_after_it_begins() {
+        let sync = defaults().into_iter().find(|r| r.id == "out-of-sync").unwrap();
+        let a = Alerts::new(None, None).unwrap();
+        a.set_rules(vec![sync.clone()], "t").unwrap();
+        let primary = |from: u64, to: u64, v: f64| (from..=to).map(move |s| Arc::new(json!({"t": s * 1000, "replicas_out_of_sync": v})));
+        let replica = |from: u64, to: u64| (from..=to).map(|s| Arc::new(json!({"t": s * 1000, "serves_reads": 1.0})));
+        // A replica for 5 minutes, then elected: its old primary is out of sync.
+        let mut ps: Vec<Arc<Json>> = replica(0, 300).chain(primary(301, 330, 1.0)).collect();
+        a.check(&ps, 330_000);
+        assert_eq!(a.one("out-of-sync").unwrap()["state"], "pending", "30 s a primary");
+        ps.extend(primary(331, 365, 1.0));
+        a.check(&ps, 365_000);
+        let s = a.one("out-of-sync").unwrap();
+        assert_eq!(s["state"], "firing", "a whole minute out of sync: {s}");
+        // It steps down: a replica again, which reports no replicas.
+        ps.extend(replica(366, 370));
+        let changes = a.check(&ps, 370_000);
+        assert!(changes.iter().any(|e| e.rule == "out-of-sync" && e.state == "resolved"), "{changes:?}");
+        let s = a.one("out-of-sync").unwrap();
+        assert_eq!(s["state"], "ok", "{s}");
+        // A primary from its start is judged as before.
+        let b = Alerts::new(None, None).unwrap();
+        b.set_rules(vec![sync], "t").unwrap();
+        let ps: Vec<Arc<Json>> = primary(0, 300, 1.0).collect();
+        b.check(&ps, 300_000);
+        assert_eq!(b.one("out-of-sync").unwrap()["state"], "firing");
+    }
 
     fn points(vals: &[(u64, f64)]) -> Vec<Arc<Json>> {
         vals.iter().map(|(t, v)| Arc::new(json!({"t": t, "p99_ms": v}))).collect()

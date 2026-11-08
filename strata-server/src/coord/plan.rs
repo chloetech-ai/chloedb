@@ -43,6 +43,12 @@ struct Shard {
     urls: Vec<String>,
     shorts: HashMap<String, String>,
     primary: Option<String>,
+    /// With no primary that answers: the copy down that was the primary
+    /// when it last answered, which the coordinator still takes for it.
+    was_primary: Option<String>,
+    /// The copies that answer, of the latest term and transaction first:
+    /// those the others vote for.
+    newest: Vec<String>,
     down: Vec<String>,
     /// Rows of every table (a copy's `rows`; `docs` on an older server,
     /// which counts the first table only).
@@ -99,10 +105,18 @@ fn shards_of(snap: &Json) -> Vec<Shard> {
                 })
                 .collect();
             let slots = s["slots"].as_array().into_iter().flatten().filter_map(|r| Some((r[0].as_u64()? as usize, r[1].as_u64()? as usize))).collect();
+            let was_primary = match primary {
+                Some(_) => None,
+                None => copies.iter().filter(|r| r["status"] == "down" && r["last_role"] == "primary").max_by_key(|r| r["term"].as_u64().unwrap_or(0)).map(url),
+            };
+            let mut live: Vec<&Json> = copies.iter().filter(|r| r["status"] != "down").collect();
+            live.sort_by_key(|r| std::cmp::Reverse((r["term"].as_u64().unwrap_or(0), r["txn"].as_u64().unwrap_or(0))));
             Shard {
                 urls: copies.iter().map(url).collect(),
                 shorts: copies.iter().map(|r| (url(r), r["short"].as_str().unwrap_or_default().to_string())).collect(),
                 primary,
+                was_primary,
+                newest: live.into_iter().map(url).collect(),
                 down: copies.iter().filter(|r| r["status"] == "down").map(url).collect(),
                 docs,
                 bytes,
@@ -183,13 +197,22 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
             adds.push((i, u.clone()));
         }
         let leaving: Vec<String> = have.urls.iter().filter(|u| !want.contains(u)).cloned().collect();
-        // A lone copy is the primary once a copy joins it.
-        let primary = have.primary.clone().or_else(|| (have.urls.len() == 1).then(|| have.urls[0].clone()));
+        // A lone copy is the primary once a copy joins it. A dead primary
+        // is still the primary to the coordinator, which removes it only
+        // once another copy is (finding chaos-2).
+        let primary = have.primary.clone().or_else(|| have.was_primary.clone()).or_else(|| (have.urls.len() == 1).then(|| have.urls[0].clone()));
         for u in &leaving {
             if primary.as_deref() == Some(u.as_str()) {
-                // A copy it keeps that is up; else one this plan adds, which is
-                // in sync before the handover (additions run first).
-                let to = want.iter().find(|w| have.urls.contains(w) && !have.down.contains(w)).or_else(|| want.iter().find(|w| !have.urls.contains(w))).cloned();
+                // A copy it keeps that is up (for a dead primary, the one the
+                // others vote for); else one this plan adds, which is in sync
+                // before the handover (additions run first).
+                let kept_up = |w: &&String| want.contains(*w) && !have.down.contains(*w);
+                let to = match have.primary.is_none() {
+                    true => have.newest.iter().find(kept_up),
+                    false => want.iter().find(|w| have.urls.contains(w) && !have.down.contains(w)),
+                }
+                .or_else(|| want.iter().find(|w| !have.urls.contains(w)))
+                .cloned();
                 match to {
                     Some(to) => handovers.push((i, u.clone(), to)),
                     None => check(&mut preflight, "fail", format!("{} is shard {i}'s primary and no copy it keeps is up to hand over to: add a copy first", name(i, u))),
@@ -233,7 +256,14 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
             "call": {"method": "POST", "path": format!("/v1/admin/shards/{i}/replicas"), "body": {"url": u}}}));
     }
     for (i, from, to) in &handovers {
-        steps.push(json!({"kind": "handover", "shard": i, "copy": from, "from": from, "url": to, "text": format!("Hand shard {i}'s primary over from {} to {}", name(*i, from), name(*i, to)),
+        // From a dead primary: the votes of the copies that answer, skipped
+        // when they have elected a primary by then (a repair).
+        let dead = shards[*i].down.contains(from);
+        let text = match dead {
+            true => format!("Make {} shard {i}'s primary: {}, its primary, does not answer", name(*i, to), name(*i, from)),
+            false => format!("Hand shard {i}'s primary over from {} to {}", name(*i, from), name(*i, to)),
+        };
+        steps.push(json!({"kind": "handover", "shard": i, "copy": from, "from": from, "url": to, "text": text, "repair": dead,
             "call": {"method": "POST", "path": format!("/v1/admin/shards/{i}/promote"), "body": {"url": to}}}));
         blast.push(format!("writes to shard {i} wait for its new primary, about a second"));
     }
@@ -1355,6 +1385,12 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
             if primary.as_deref() == Some(url.as_str()) {
                 return Ok("it was the primary already".into());
             }
+            // A repair's promotion makes a copy that answers the primary in
+            // place of a dead one: a primary that answers, elected meanwhile,
+            // already is that (finding chaos-2).
+            if let (true, Some(p)) = (st["repair"] == true, &primary) {
+                return Ok(format!("{} was elected the primary meanwhile", c.copy_name(p)));
+            }
             let j = c.promote(i, &url, st["force"] == true).await.map_err(|e| ApiError { message: plain_votes(&e.message), ..e })?;
             Ok(j["term"].as_u64().map_or(String::new(), |t| format!("term {t}")))
         }
@@ -1659,6 +1695,33 @@ mod tests {
         assert_eq!((warn["level"].as_str(), warn["ok"].as_bool()), (Some("warn"), Some(true)), "{p}");
         assert_eq!(p["ok"], true, "{p}");
         assert!(p["estimate_from"].as_str().unwrap().starts_with("About 20,000 rows a second to a new copy, 7,000 rows a second for moves"), "{p}");
+    }
+
+    /// A dead primary is still the primary to the coordinator, which
+    /// removes it only once another copy is: a plan that replaces it
+    /// makes the copy the others vote for the primary first, as a repair
+    /// (skipped when they elect one meanwhile) (finding chaos-2).
+    #[test]
+    fn a_dead_primary_replaced_is_followed_by_the_newest_copy_first() {
+        let mut snap = snap();
+        let s0 = &mut snap["shards"][0];
+        s0["primary"] = Json::Null;
+        s0["replicas"][0] = json!({"url": "http://h00", "short": "s0-0", "status": "down", "role": "unknown", "last_role": "primary", "term": 3});
+        s0["replicas"][1]["term"] = json!(3);
+        s0["replicas"][1]["txn"] = json!(90);
+        s0["replicas"][2]["term"] = json!(3);
+        s0["replicas"][2]["txn"] = json!(95);
+        let ask = json!({"shards": [{"shard": 0, "copies": ["http://h01", "http://h02", "http://new"]}]});
+        let p = plan(&snap, &ask, false).unwrap();
+        let kinds: Vec<&str> = p["steps"].as_array().unwrap().iter().map(|s| s["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["add_copy", "handover", "remove_copy"], "{p}");
+        let h = &p["steps"][1];
+        assert_eq!((h["url"].as_str(), h["repair"].as_bool()), (Some("http://h02"), Some(true)), "{p}");
+        assert_eq!(h["text"], "Make s0-2 shard 0's primary: s0-0, its primary, does not answer");
+        assert_eq!(p["ok"], true, "{p}");
+        // A live primary hands over as before, not as a repair.
+        let p = plan(&self::snap(), &json!({"shards": [{"shard": 1, "copies": ["http://h11", "http://new"]}]}), false).unwrap();
+        assert_eq!(p["steps"][1]["repair"], false);
     }
 
     #[test]

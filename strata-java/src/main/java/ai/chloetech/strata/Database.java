@@ -27,9 +27,10 @@ import java.util.Map;
  * }
  * }</pre>
  *
- * <p>Only one process may have a database open at a time (another gets a
- * {@link StrataException}: "busy"); to share one, serve it with
- * {@code strata-server}. Within the process a {@code Database} is safe to
+ * <p>Only one process may have a database open to write it at a time
+ * (another gets a {@link StrataException}: "busy"); other processes may open
+ * it to read ({@link Options#readOnly}) and see each of its commits, or
+ * share it through {@code strata-server}. Within the process a {@code Database} is safe to
  * use from many threads at once: queries run in parallel, and calls do not
  * hold the JVM. Close it when done ({@link #close()}, or try-with-resources):
  * one left open is closed when it is garbage-collected.
@@ -55,6 +56,7 @@ public final class Database implements AutoCloseable {
         private boolean directory;
         private String models;
         private Integer threads;
+        private boolean readOnly;
 
         /**
          * Keeps a new database as a directory of segment files instead of
@@ -85,6 +87,16 @@ public final class Database implements AutoCloseable {
                 throw new IllegalArgumentException("threads: at least 1");
             }
             this.threads = threads;
+            return this;
+        }
+
+        /**
+         * Opens the database to read it while another process writes it: it
+         * sees each of the writer's commits, and every write fails (only an
+         * open reads it).
+         */
+        public Options readOnly(boolean readOnly) {
+            this.readOnly = readOnly;
             return this;
         }
 
@@ -186,6 +198,7 @@ public final class Database implements AutoCloseable {
         Map<String, Object> a = options.args();
         a.remove("directory");
         a.put("path", path);
+        a.put("readOnly", options.readOnly);
         return new Database(calls("open", a), path);
     }
 
@@ -443,6 +456,15 @@ public final class Database implements AutoCloseable {
      */
     public void optimize() {
         call("optimize");
+    }
+
+    /**
+     * Opened {@link Options#readOnly}: reads what the writer committed since
+     * the last query, now (each query does so by itself); whether anything
+     * changed. False for the writer.
+     */
+    public boolean refresh() {
+        return (Boolean) call("refresh");
     }
 
     /**

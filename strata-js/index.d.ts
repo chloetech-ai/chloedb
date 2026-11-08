@@ -18,19 +18,27 @@ export interface OpenOptions {
   threads?: number;
 }
 
+export interface ReadOnlyOption {
+  /** Open it to read while another process writes it: it sees each of
+   * the writer's commits, and every write fails. Without it only one
+   * process may have the database open. */
+  readOnly?: boolean;
+}
+
 export interface CreateOptions extends OpenOptions {
   /** Keep it as a directory of segment files instead of one file. */
   directory?: boolean;
 }
 
 /** A Strata database opened in this process, from its file: no server.
- * Only one process may have a database open at a time. */
+ * Only one process may have a database open to write it at a time; others
+ * may open it with `readOnly`. */
 export declare class Database extends Searchable {
   private constructor();
   /** Creates a database at `path` with `schema`. */
   static create(path: Path, schema: SchemaInput, options?: CreateOptions): Promise<Database>;
   /** Opens the database at `path`. */
-  static open(path: Path, options?: OpenOptions): Promise<Database>;
+  static open(path: Path, options?: OpenOptions & ReadOnlyOption): Promise<Database>;
 
   /** What the import that made it, or the last import into it, did. */
   lastImport: Record<string, unknown> | null;
@@ -89,6 +97,9 @@ export declare class Database extends Searchable {
   /** Returns the space merges freed to the file system: the bytes the file
    * shrank by. */
   vacuum(): Promise<number>;
+  /** Opened `readOnly`: reads what the writer committed since the last
+   * query, now; whether anything changed. */
+  refresh(): Promise<boolean>;
   /** Merges small segments, returns the space merges freed to the file system when it is an eighth of the file or more, and closes the database. */
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
@@ -96,7 +107,7 @@ export declare class Database extends Searchable {
 
 /** Opens the database at `path`, creating it with `schema` if it does not
  * exist. */
-export declare function open(path: Path, options?: CreateOptions & { schema?: SchemaInput }): Promise<Database>;
+export declare function open(path: Path, options?: CreateOptions & ReadOnlyOption & { schema?: SchemaInput }): Promise<Database>;
 export declare function fromSqlite(sqlitePath: Path, path: Path, options?: CreateOptions & { tables?: Tables; schemas?: unknown; blobsBase64?: boolean }): Promise<Database>;
 export declare function planSqlite(sqlitePath: Path, options?: { tables?: Tables; schemas?: unknown; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
 export declare function fromParquet(parquetPath: Path, path: Path, options?: CreateOptions & { table?: string; schema?: SchemaInput; key?: string; blobsBase64?: boolean }): Promise<Database>;

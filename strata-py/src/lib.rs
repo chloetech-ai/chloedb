@@ -452,14 +452,28 @@ impl Database {
         Ok(Database::new(with_threads(db, threads), Some(models)))
     }
 
-    /// Opens the database at `path`.
+    /// Opens the database at `path`; `read_only` to read it while another
+    /// process writes it.
     #[staticmethod]
-    #[pyo3(signature = (path, models = None, threads = None))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
+    #[pyo3(signature = (path, models = None, threads = None, read_only = false))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool) -> PyResult<Self> {
         let threads = threads_or_cores(threads)?;
         // The layout comes from the file; the option only matters to a create.
-        let db = py.detach(|| Db::open(&path, db_options(false, threads))).map_err(err)?;
+        let opts = DbOptions { read_only, ..db_options(false, threads) };
+        let db = py.detach(|| Db::open(&path, opts)).map_err(err)?;
         Ok(Database::new(with_threads(db, threads), models))
+    }
+
+    /// Whether it was opened read-only.
+    fn read_only(&self) -> PyResult<bool> {
+        Ok(self.get()?.storage().is_read_only())
+    }
+
+    /// A read-only database: reads what the writer committed since it
+    /// last looked, now; whether anything changed.
+    fn refresh(&self, py: Python<'_>) -> PyResult<bool> {
+        let db = self.get()?;
+        py.detach(|| db.storage().refresh()).map_err(err)
     }
 
     /// The schema of the first table, or of `table`, in its short JSON form.

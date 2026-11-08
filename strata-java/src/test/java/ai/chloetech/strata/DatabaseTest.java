@@ -133,6 +133,22 @@ class DatabaseTest {
     }
 
     @Test
+    void readOnlyFollowsTheWriter() {
+        // Another process, as the workers of a server are: here a second
+        // open of the file, read-only.
+        try (Database r = Database.open(dir.resolve("books.strata"), new Database.Options().readOnly(true))) {
+            assertEquals(200, r.count());
+            db.insert(books(200, 250));
+            db.optimize();
+            db.delete("b0001");
+            assertEquals(249, r.count());
+            assertFalse(db.refresh());
+            StrataException refused = assertThrows(StrataException.class, () -> r.insert(book(1000)));
+            assertTrue(refused.getMessage().contains("read-only"), refused.getMessage());
+        }
+    }
+
+    @Test
     void writes() {
         assertEquals(200, db.count());
         // Small inserts go through the log, large ones are bulk-loaded; both

@@ -37,6 +37,9 @@ async fn messages(State(m): State<Mock>, AxJson(body): AxJson<Json>) -> AxJson<J
     let question = body["messages"][0]["content"].as_str().unwrap_or("");
     let rule = m.rule.lock().unwrap().clone();
     let usage = json!({"input_tokens": 1000, "output_tokens": 100});
+    if question.contains("take your time") {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
     let content = match turns {
         _ if question.contains("note") => json!([{"type": "text", "text": "Summary: all is well."}]),
         1 => json!([
@@ -193,4 +196,67 @@ async fn the_agent_looks_proposes_and_an_admin_decides() {
     let (_, events) = get(&base, "/v1/events?kind=note", ana).await;
     let notes = events["events"].as_array().unwrap_or_else(|| panic!("{events}"));
     assert!(notes.iter().any(|e| e.to_string().contains("On-call agent") && e.to_string().contains("all is well")), "{events}");
+
+    // The runs are kept, with what each tool answered and what the model
+    // said between: the command center shows them.
+    let (status, _) = get(&base, "/v1/admin/oncall", read).await;
+    assert_eq!(status, 403);
+    let (_, ov) = get(&base, "/v1/admin/oncall", ana).await;
+    assert_eq!((ov["configured"].as_bool(), ov["model"].as_str(), ov["running"].as_u64()), (Some(true), Some("claude-haiku-5-5"), Some(0)), "{ov}");
+    let runs = ov["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{ov}");
+    assert_eq!((runs[1]["id"].as_str(), runs[1]["summary"].as_str(), runs[1]["alert"].as_str()), (Some(run.as_str()), Some("one statement is slow."), Some(rule.as_str())), "{ov}");
+    assert_eq!(runs[1]["proposals"], json!({"total": 3, "pending": 0}));
+    let (_, one) = get(&base, &format!("/v1/admin/oncall/runs/{run}"), ben).await;
+    assert_eq!((one["state"].as_str(), one["turns"].as_u64()), (Some("done"), Some(3)), "{one}");
+    assert_eq!(one["said"], json!([{"before": 0, "turn": 1, "text": "Starting broad."}]));
+    assert!(one["steps"][0]["preview"].as_str().unwrap().contains("\"docs\":100"), "{}", one["steps"][0]);
+    assert!(one["steps"][1]["at_ms"].as_f64().unwrap() >= one["steps"][0]["at_ms"].as_f64().unwrap());
+    assert_eq!(one["proposals"].as_array().unwrap().len(), 3);
+    let (status, _) = get(&base, "/v1/admin/oncall/runs/oc1", ana).await;
+    assert_eq!(status, 404);
+
+    // A follow-up goes on in the run's conversation.
+    let before = mock.seen.lock().unwrap().len();
+    let (status, f) = post(&base, "/v1/admin/oncall", ben, json!({"question": "and what should I watch?", "follows": run})).await;
+    assert_eq!(status, 200, "{f}");
+    assert_eq!((f["follows"].as_str(), f["alert"].as_str(), f["state"].as_str()), (Some(run.as_str()), Some(rule.as_str()), Some("done")), "{f}");
+    {
+        let seen = mock.seen.lock().unwrap();
+        let m = seen[before]["messages"].as_array().unwrap();
+        assert_eq!(m.len(), 7, "the whole conversation, then the question");
+        assert_eq!(m[1]["content"].as_array().unwrap().len(), 9, "its tool calls are in it");
+        assert_eq!(m[6]["content"], "and what should I watch?");
+    }
+    let (status, j) = post(&base, "/v1/admin/oncall", ben, json!({"follows": run})).await;
+    assert_eq!(status, 400, "{j}");
+
+    // In the background: the answer is the run's id, and it can be stopped.
+    let (status, bg) = post(&base, "/v1/admin/oncall", ana, json!({"question": "take your time", "wait": false})).await;
+    assert_eq!((status, bg["state"].as_str()), (200, Some("running")), "{bg}");
+    let id = bg["run"].as_str().unwrap().to_string();
+    let (_, live) = get(&base, &format!("/v1/admin/oncall/runs/{id}"), ana).await;
+    assert_eq!((live["state"].as_str(), live["doing"].as_str()), (Some("running"), Some("model")), "{live}");
+    let (_, ov) = get(&base, "/v1/admin/oncall", ana).await;
+    assert_eq!(ov["running"], 1);
+    let (status, j) = post(&base, "/v1/admin/oncall", ben, json!({"question": "more?", "follows": id})).await;
+    assert_eq!(status, 409, "a running run is followed up once it reports: {j}");
+    let (status, s) = post(&base, &format!("/v1/admin/oncall/runs/{id}/stop"), ben, json!({})).await;
+    assert_eq!(status, 200, "{s}");
+    let t = std::time::Instant::now();
+    let done = loop {
+        let (_, r) = get(&base, &format!("/v1/admin/oncall/runs/{id}"), ana).await;
+        if r["state"] != "running" {
+            break r;
+        }
+        assert!(t.elapsed() < Duration::from_secs(4), "a stop drops the model call under way: {r}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(done["state"], "stopped", "{done}");
+    assert!(done["stopped_by"].as_str().unwrap().contains("ops-ben"), "{done}");
+    assert!(done["answer"].as_str().unwrap().starts_with("Stopped by"), "{done}");
+    let (status, _) = post(&base, &format!("/v1/admin/oncall/runs/{id}/stop"), ben, json!({})).await;
+    assert_eq!(status, 409);
+    let (_, list) = get(&base, "/v1/admin/oncall/runs", ana).await;
+    assert_eq!(list["runs"].as_array().unwrap().len(), 4, "{list}");
 }
