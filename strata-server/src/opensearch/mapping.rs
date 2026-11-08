@@ -901,7 +901,7 @@ pub fn doc_of(ix: &Index, columns: &[String], row: &[Json]) -> (String, i64, Jso
 
 /// A float32 as the shortest decimal that reads back as it, as a double:
 /// `0.1`, not `0.10000000149011612`.
-fn shortest(x: f32) -> f64 {
+pub fn shortest(x: f32) -> f64 {
     x.to_string().parse::<f64>().unwrap_or(x as f64)
 }
 

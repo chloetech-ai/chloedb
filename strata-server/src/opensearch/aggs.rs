@@ -59,9 +59,18 @@ const FOLDED: [&str; 7] = ["avg", "sum", "min", "max", "value_count", "cardinali
 /// The aggregate columns of a metric (for `stats`, five), each with the
 /// key of its answer.
 fn metric_cols(cx: &Ctx, kind: &str, spec: &Json) -> Result<Vec<(String, String)>, OsError> {
+    Ok(metric_cols_of(kind, &metric_value(cx, kind, spec)?))
+}
+
+/// The value a metric reads.
+fn metric_value(cx: &Ctx, kind: &str, spec: &Json) -> Result<String, OsError> {
     let field = spec.get("field").and_then(Json::as_str).ok_or_else(|| OsError::parsing(format!("[{kind}] requires a field")))?;
-    let (x, _) = value_of(cx, field)?;
-    Ok(match kind {
+    Ok(value_of(cx, field)?.0)
+}
+
+/// A metric's columns over the value `x`.
+fn metric_cols_of(kind: &str, x: &str) -> Vec<(String, String)> {
+    match kind {
         "avg" => vec![("value".into(), format!("AVG({x})"))],
         "sum" => vec![("value".into(), format!("SUM({x})"))],
         "min" => vec![("value".into(), format!("MIN({x})"))],
@@ -70,7 +79,7 @@ fn metric_cols(cx: &Ctx, kind: &str, spec: &Json) -> Result<Vec<(String, String)
         "cardinality" => vec![("value".into(), format!("COUNT(DISTINCT {x})"))],
         "stats" => vec![("count".into(), format!("COUNT({x})")), ("min".into(), format!("MIN({x})")), ("max".into(), format!("MAX({x})")), ("avg".into(), format!("AVG({x})")), ("sum".into(), format!("SUM({x})"))],
         _ => unreachable!("a folded metric"),
-    })
+    }
 }
 
 /// A metric's answer from its columns' values.
@@ -578,15 +587,41 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     let offset = if dates { body.get("offset").and_then(Json::as_str).and_then(|o| super::dsl::duration_secs(o.trim_start_matches('+'))).unwrap_or(0.0) * 1e6 } else { body.get("offset").and_then(Json::as_f64).unwrap_or(0.0) };
     let min_docs = body.get("min_doc_count").and_then(Json::as_u64).unwrap_or(0);
     let p = with(&pred, format!("{x} IS NOT NULL"));
+    // The metrics under it, as columns of the one query: (name, kind,
+    // spec, first column, its columns' names).
+    let mut folded = Vec::new();
+    let mut values = Vec::new();
+    if let Some(Json::Object(m)) = subs {
+        for (name, s) in m {
+            let (k, b, sub_subs) = parts(s)?;
+            if FOLDED.contains(&k.as_str()) && sub_subs.is_none() {
+                values.push((k.clone(), metric_value(cx, &k, &b)?));
+                folded.push((name.clone(), k, b));
+            }
+        }
+    }
+    let mut metric_cols = Vec::new();
+    let mut at = Vec::new();
+    for (j, (k, v)) in values.iter().enumerate() {
+        // Over the table itself for calendar buckets, over the value
+        // carried through for fixed ones.
+        let over = if matches!(interval, Interval::Calendar(_)) { v.clone() } else { format!("m{j}") };
+        let cols = metric_cols_of(k, &over);
+        at.push((metric_cols.len(), cols.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>()));
+        metric_cols.extend(cols.into_iter().map(|(_, c)| c));
+    }
+    let extra: String = metric_cols.iter().map(|c| format!(", {c}")).collect();
     // Bucket keys: microseconds for dates, the values for numbers.
     let sql = match &interval {
-        Interval::Calendar(u) => format!("SELECT date_trunc('{}', {x}), COUNT(*) FROM {}{} GROUP BY 1 ORDER BY 1", u.name(), ix.table, where_of(&p)),
+        Interval::Calendar(u) => format!("SELECT date_trunc('{}', {x}), COUNT(*){extra} FROM {}{} GROUP BY 1 ORDER BY 1", u.name(), ix.table, where_of(&p)),
         Interval::Fixed(i) => {
             let v = if dates { format!("EXTRACT(epoch FROM {x}) * 1000000") } else { x.clone() };
+            let carried: String = values.iter().enumerate().map(|(j, (_, v))| format!(", {v} AS m{j}")).collect();
+            let through: String = (0..values.len()).map(|j| format!(", m{j}")).collect();
             // floor(), which Strata's row functions lack, as y - y % 1,
             // less 1 below 0.
             format!(
-                "WITH r AS (SELECT ({v} - {off}) / {i} AS y FROM {}{}), s AS (SELECT (y - (y % 1.0)) - CASE WHEN y % 1.0 < 0 THEN 1.0 ELSE 0.0 END AS b FROM r) SELECT b * {i} + {off} AS k, COUNT(*) FROM s GROUP BY k ORDER BY k",
+                "WITH r AS (SELECT ({v} - {off}) / {i} AS y{carried} FROM {}{}), s AS (SELECT (y - (y % 1.0)) - CASE WHEN y % 1.0 < 0 THEN 1.0 ELSE 0.0 END AS b{through} FROM r) SELECT b * {i} + {off} AS k, COUNT(*){extra} FROM s GROUP BY k ORDER BY k",
                 ix.table,
                 where_of(&p),
                 i = num(*i),
@@ -595,7 +630,7 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
         }
     };
     let r = os.rows(&sql, &[]).await?;
-    let mut got: Vec<(f64, i64)> = Vec::new();
+    let mut got: Vec<(f64, i64, Vec<Json>)> = Vec::new();
     for row in &r.rows {
         let k = match (&interval, row.first()) {
             (Interval::Calendar(_), Some(v)) => v.as_str().and_then(strata::timestamp::parse).map(|t| t as f64),
@@ -603,7 +638,7 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
             _ => None,
         };
         if let Some(k) = k {
-            got.push((k, row.get(1).and_then(Json::as_i64).unwrap_or(0)));
+            got.push((k, row.get(1).and_then(Json::as_i64).unwrap_or(0), row.iter().skip(2).cloned().collect()));
         }
     }
     // Empty buckets between the first and the last (and the bounds asked
@@ -636,18 +671,17 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
             hi = Some(hi.map_or(align(m), |h| h.max(align(m))));
         }
     }
-    let mut keys: Vec<(f64, i64)> = Vec::new();
+    let mut keys: Vec<(f64, i64, Vec<Json>)> = Vec::new();
     if min_docs == 0 {
         if let (Some(lo), Some(hi)) = (lo, hi) {
             let mut k = lo;
-            let mut at = 0;
+            let mut i = 0;
             let mut steps = 0;
             while k <= hi + 1e-9 && steps < 100_000 {
-                while at < got.len() && got[at].0 < k - 1e-9 {
-                    at += 1;
+                while i < got.len() && got[i].0 < k - 1e-9 {
+                    i += 1;
                 }
-                let n = if at < got.len() && (got[at].0 - k).abs() < 1e-6 { got[at].1 } else { 0 };
-                keys.push((k, n));
+                keys.push(if i < got.len() && (got[i].0 - k).abs() < 1e-6 { (k, got[i].1, got[i].2.clone()) } else { (k, 0, Vec::new()) });
                 k = next(k);
                 steps += 1;
             }
@@ -655,8 +689,9 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     } else {
         keys = got.into_iter().filter(|g| g.1 as u64 >= min_docs).collect();
     }
+    let names: Vec<String> = folded.iter().map(|f| f.0.clone()).collect();
     let mut buckets = Vec::new();
-    for (k, n) in keys {
+    for (k, n, vals) in keys {
         let mut b = Map::new();
         let end = next(k);
         if dates {
@@ -667,13 +702,17 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
             b.insert("key".into(), json!(k));
         }
         b.insert("doc_count".into(), json!(n));
+        for ((name, kind, spec), (first, cols)) in folded.iter().zip(&at) {
+            let v: Vec<(String, Json)> = cols.iter().enumerate().map(|(i, c)| (c.clone(), vals.get(first + i).cloned().unwrap_or(Json::Null))).collect();
+            b.insert(name.clone(), metric_json(kind, cx, spec, &v));
+        }
         if let Some(s) = subs {
             let cond = if dates {
                 format!("{x} >= {} AND {x} < {}", lit(&strata::timestamp::format(k as i64)), lit(&strata::timestamp::format(end as i64)))
             } else {
                 format!("{x} >= {} AND {x} < {}", num(k), num(end))
             };
-            subs_into(os, ix, with(&p, cond), s, &[], &mut b).await?;
+            subs_into(os, ix, with(&p, cond), s, &names, &mut b).await?;
         }
         buckets.push(Json::Object(b));
     }

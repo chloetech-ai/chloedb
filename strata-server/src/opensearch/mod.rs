@@ -2098,7 +2098,8 @@ impl Os {
             for (k, row) in r.rows.iter().enumerate() {
                 let (id, version, doc) = mapping::doc_of(&ix, &r.columns, row);
                 let score: Json = if by_score_first {
-                    let s = r.columns.iter().position(|c| c == "score()" || c == SCORE_COL).and_then(|i| row[i].as_f64()).or_else(|| r.scores.get(k).copied());
+                    // A float, as Lucene's scores are.
+                    let s = r.columns.iter().position(|c| c == "score()" || c == SCORE_COL).and_then(|i| row[i].as_f64()).or_else(|| r.scores.get(k).copied()).map(|s| mapping::shortest(s as f32));
                     if let Some(s) = s {
                         max_score = Some(max_score.map_or(s, |m: f64| m.max(s)));
                     }
