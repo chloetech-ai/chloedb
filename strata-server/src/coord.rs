@@ -2315,7 +2315,7 @@ impl Coordinator {
         if !stale.is_empty() {
             for &(i, r) in &stale {
                 match versions[i] {
-                    Some((kr, v)) if kr == r => self.stats.stale(&t.replicas[i][r].url, v),
+                    Some((kr, v)) if kr == r => self.stats.stale(&t.replicas[i][r].url, &schema.table, v),
                     _ => {
                         self.stats.stale.fetch_add(1, Ordering::Relaxed);
                     }

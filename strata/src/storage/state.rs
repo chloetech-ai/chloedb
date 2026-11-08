@@ -420,6 +420,12 @@ pub(crate) struct TableState {
     pub ties: Option<crate::sid::Ties>,
     /// The writes to it since the database was opened.
     pub activity: Activity,
+    /// The generation of its text statistics
+    /// ([`crate::storage::Snapshot::stats_gen`]): new with every change
+    /// to it ([`State::changed_table`]) and every change of the database's
+    /// version ([`State::changed`]), but those that leave each segment and
+    /// memtable chunk a snapshot reads as it was ([`State::changed_values`]).
+    pub stats_gen: u64,
 }
 
 /// A table's writes since its database was opened, kept in memory only
@@ -454,7 +460,7 @@ pub(crate) fn now_ms() -> u64 {
 
 impl TableState {
     pub fn new(id: u32, schema: Arc<Schema>, handles: Vec<Arc<SegHandle>>, chunk: usize, gen: u64) -> TableState {
-        TableState { id, schema, handles, mem: Memtable::new(chunk, gen), mem_live: Vec::new(), memsegs: Vec::new(), tail: Arc::default(), profiles: Arc::default(), ties: None, activity: Activity::default() }
+        TableState { id, schema, handles, mem: Memtable::new(chunk, gen), mem_live: Vec::new(), memsegs: Vec::new(), tail: Arc::default(), profiles: Arc::default(), ties: None, activity: Activity::default(), stats_gen: next_stats_gen() }
     }
 
     /// Empties the memtable (after a flush).
@@ -630,6 +636,11 @@ impl State {
     /// at commit and on WAL replay, of the transaction numbered `seq` (0 if
     /// the database does not number its writes).
     pub fn apply(&mut self, t: usize, op: Op, seq: u64) {
+        // Whether the text statistics may have moved: they count deleted
+        // documents, so only a new one moves them, or a delete that leaves
+        // a memtable chunk with no live one, which snapshots leave out. A
+        // rank profile counts as moving them too.
+        let mut moved = true;
         match op {
             Op::Insert(doc) => {
                 let table = &mut self.tables[t];
@@ -648,12 +659,15 @@ impl State {
                     let mem = &mut self.tables[t].mem;
                     mem.delete(i);
                     mem.keys.remove(&Key::of(&v).unwrap());
+                    let k = i as usize / mem.chunk;
+                    moved = mem.chunk_deleted[k] == mem.chunks[k].len();
                 }
                 Some(Loc::Disk(id, d)) => {
                     self.pending.entry(id).or_default().insert(d);
                     self.n_pending += 1;
+                    moved = false;
                 }
-                None => {}
+                None => moved = false,
             },
             // Never logged: a change of tables is a version of its own
             // (`Database::change_tables`).
@@ -666,28 +680,37 @@ impl State {
                     profiles.sort_by_key(|p| p.name.to_ascii_lowercase());
                 }
             }
-            Op::Set { key, field, value } => match self.find_live(t, &key) {
-                Some(Loc::Mem(i)) => {
-                    let u = &mut self.tables[t].mem.updates;
-                    u.set(field as usize, i, value);
-                    if seq > 0 {
-                        u.set(SEQ, i, Value::Int(seq as i64));
+            // A value set in place is read beside the segment's text
+            // index, which it leaves as it was.
+            Op::Set { key, field, value } => {
+                moved = false;
+                match self.find_live(t, &key) {
+                    Some(Loc::Mem(i)) => {
+                        let u = &mut self.tables[t].mem.updates;
+                        u.set(field as usize, i, value);
+                        if seq > 0 {
+                            u.set(SEQ, i, Value::Int(seq as i64));
+                        }
                     }
+                    Some(Loc::Disk(id, d)) => {
+                        let (n, u) = self.pending_updates.entry(id).or_default();
+                        *n += 1;
+                        if u.set(field as usize, d, value) {
+                            self.n_pending += 1;
+                        }
+                        if seq > 0 {
+                            u.set(SEQ, d, Value::Int(seq as i64));
+                        }
+                    }
+                    None => {}
                 }
-                Some(Loc::Disk(id, d)) => {
-                    let (n, u) = self.pending_updates.entry(id).or_default();
-                    *n += 1;
-                    if u.set(field as usize, d, value) {
-                        self.n_pending += 1;
-                    }
-                    if seq > 0 {
-                        u.set(SEQ, d, Value::Int(seq as i64));
-                    }
-                }
-                None => {}
-            },
+            }
         }
-        self.changed();
+        if moved {
+            self.changed_table(t);
+        } else {
+            self.changed_values();
+        }
     }
 
     /// The sequence number of the write that last changed the document at
@@ -720,9 +743,36 @@ impl State {
         Some(u)
     }
 
-    /// Invalidates the cached snapshot.
+    /// Invalidates the cached snapshot, and every table's text statistics
+    /// generation ([`TableState::stats_gen`]).
     pub fn changed(&mut self) {
+        self.changed_values();
+        for t in &mut self.tables {
+            t.stats_gen = next_stats_gen();
+        }
+    }
+
+    /// Invalidates the cached snapshot, and table `t`'s text statistics
+    /// generation (a position in `tables`).
+    pub fn changed_table(&mut self, t: usize) {
+        self.changed_values();
+        self.tables[t].stats_gen = next_stats_gen();
+    }
+
+    /// Invalidates the cached snapshot after a change that leaves the text
+    /// statistics as they were: values set in place, or deletes that leave
+    /// each segment and memtable chunk a snapshot reads (BM25 statistics
+    /// count deleted documents, as a segment's own do).
+    pub fn changed_values(&mut self) {
         self.version += 1;
         self.cached = None;
     }
+}
+
+static NEXT_STATS_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A text statistics generation no table of this process has had
+/// ([`TableState::stats_gen`]); never 0.
+pub(crate) fn next_stats_gen() -> u64 {
+    NEXT_STATS_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

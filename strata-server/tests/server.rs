@@ -1236,9 +1236,11 @@ async fn leases_end(shards: &[Arc<Recording>]) {
 
 /// A BM25 query whose terms the coordinator has seen skips the statistics
 /// round: it is sent the statistics kept of each shard's version and
-/// answers as one database would. After a write, the shard that took it
+/// answers as one database would. After a new row, the shard that took it
 /// answers stale, and the query runs again with a round, scoring with the
-/// write counted; then the new version's statistics are kept. A query with
+/// row counted; then the new version's statistics are kept. Values set in
+/// place and deletes keep them, but for a delete that empties a memtable
+/// chunk. A query with
 /// typos keeps its round, as do shards of protocol 11, which cannot tell
 /// their versions apart; and so does every query with no terms kept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1298,17 +1300,52 @@ async fn bm25_statistics_kept_by_the_coordinator() {
         assert!(m.contains(line), "{line}: {m}");
     }
 
+    // Values set in place and deletes leave a shard's statistics, which
+    // count deleted rows: the kept ones still hold, on shard 0's new row
+    // in its memtable and on a loaded row on disk. The first write through
+    // the coordinator to every shard, with an idempotency key, makes each
+    // shard's `_sources`: a change of tables, which moves every table's
+    // version once.
+    let write = |sql: String| {
+        let (coord, whole) = (coord.clone(), whole.clone());
+        async move {
+            for svc in [&coord, &whole] {
+                svc.sql(&Principal::open(), &sql, &Params::new(), After::Any, 0).await.unwrap();
+            }
+        }
+    };
+    write(format!("UPDATE products SET sold = 98 WHERE id = '{id}'")).await;
+    check(coord.clone(), sql).await;
+    assert_eq!((rounds(), stale()), (vec![4, 4], vec![2, 1]), "the shards' _sources made");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let on_disk = (0..N).map(key).find(|k| shard_of(k, 2) == 0).unwrap();
+    let on_disk = on_disk.as_str().unwrap();
+    for sql_write in [
+        format!("UPDATE products SET price = 1.5, sold = 99 WHERE id = '{id}'"),
+        format!("UPDATE products SET price = 2.5 WHERE id = '{on_disk}'"),
+        format!("DELETE FROM products WHERE id = '{on_disk}'"),
+    ] {
+        write(sql_write.clone()).await;
+        check(coord.clone(), sql).await;
+        assert_eq!((rounds(), stale()), (vec![4, 4], vec![2, 1]), "after {sql_write}");
+    }
+    // Deleting the new row empties shard 0's memtable chunk, which its
+    // snapshots leave out: its statistics move.
+    write(format!("DELETE FROM products WHERE id = '{id}'")).await;
+    check(coord.clone(), sql).await;
+    assert_eq!((rounds(), stale()), (vec![5, 5], vec![3, 1]));
+
     // Typos: only a shard finds the terms, so every such query has a round.
     for _ in 0..2 {
         check(coord.clone(), "SELECT id, score() FROM products ORDER BY bm25(body, 'waterprof boots', fuzzy => 'auto') DESC LIMIT 5").await;
     }
-    assert_eq!(rounds(), [5, 5]);
+    assert_eq!(rounds(), [7, 7]);
     // Off: a round each time.
     let off = cluster(Coordinator::connect_with(urls.clone(), CoordOptions { stats_cache_terms: 0, ..Default::default() }).await.unwrap());
     for _ in 0..2 {
         check(off.clone(), sql).await;
     }
-    assert_eq!(rounds(), [7, 7]);
+    assert_eq!(rounds(), [9, 9]);
     // Shards of protocol 11 answer no version: a round each time.
     for s in &shards {
         s.version.store(11, Ordering::Relaxed);
@@ -1317,7 +1354,7 @@ async fn bm25_statistics_kept_by_the_coordinator() {
     for _ in 0..2 {
         check(old.clone(), sql).await;
     }
-    assert_eq!(rounds(), [9, 9]);
+    assert_eq!(rounds(), [11, 11]);
 }
 
 /// A coordinator asks each shard the protocol versions it speaks and
