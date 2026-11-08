@@ -2,6 +2,8 @@
 name = "strata-server"
 version = "0.1.0"
 edition = "2021"
+# Integration tests are the targets below, not one per file in tests/.
+autotests = false
 license = "Apache-2.0"
 description = "Strata over the network: HTTP JSON and gRPC, a coordinator over shards, and a query UI"
 
@@ -106,3 +108,58 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # cargo's defaults here; every crate's CI runs the ci profile.
 [profile.ci]
 inherits = "release"
+
+# Integration tests (tests/all.rs says why).
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+# Timing: a join's full time against its time to a deadline, which other tests' load skews.
+[[test]]
+name = "cancel"
+path = "tests/cancel.rs"
+
+# The process's CPU profiler, one profile at a time.
+[[test]]
+name = "cpu_profile"
+path = "tests/cpu_profile.rs"
+
+# A global allocator of its own (heap::Counting).
+[[test]]
+name = "heap_profile"
+path = "tests/heap_profile.rs"
+
+# The process's log subscriber (obs::init_logs).
+[[test]]
+name = "logstore"
+path = "tests/logstore.rs"
+
+# CI's vision job builds it alone.
+[[test]]
+name = "media"
+path = "tests/media.rs"
+
+# CI's vision job builds it alone.
+[[test]]
+name = "media_vectors"
+path = "tests/media_vectors.rs"
+
+# A global allocator of its own (heap::Counting).
+[[test]]
+name = "node_profile"
+path = "tests/node_profile.rs"
+
+# The process's log subscriber, which keeps every test's lines.
+[[test]]
+name = "observability"
+path = "tests/observability.rs"
+
+# Timing: rollout gates held for seconds, which other tests' load stretches.
+[[test]]
+name = "operator"
+path = "tests/operator.rs"
+
+# The process's log subscriber (obs::init_logs).
+[[test]]
+name = "workload"
+path = "tests/workload.rs"
