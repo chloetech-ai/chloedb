@@ -468,7 +468,7 @@
 
   /* ---------- rise in as they come into view, a sibling at a time */
   var RISE = [".block-head", ".cap", ".dcard", ".lang", ".tiles > *", ".proofstrip > *", ".fact", ".pipe", ".feat", ".principles > div",
-    ".split2 > *", ".uc2 > *", ".flist li", ".fam-intro", ".chart", ".showcase", ".try", ".cta > *", ".rung", ".stage", ".sim", ".filemap", ".deploy-art"].join(",");
+    ".split2 > *", ".uc2 > *", ".flist li", ".fam-intro", ".chart", ".showcase", ".try", ".cta > *", ".rung", ".stage", ".sim", ".filemap", ".deploy-art", ".bento > *"].join(",");
   function rise() {
     var els = $$(RISE).filter(function (el) { return !el.closest(".hero-band, .head-band, .top, .foot, [data-panel][hidden]") && el.getBoundingClientRect().top > window.innerHeight * 0.92; });
     els.forEach(function (el) {
@@ -538,7 +538,7 @@
   function spotlight() {
     if (!window.matchMedia || !window.matchMedia("(hover: hover)").matches) return;
     document.addEventListener("pointermove", function (e) {
-      var el = e.target.closest && e.target.closest(".cap, .dcard, .lang, .fact, .tiles > a, .proofstrip > a, .latest");
+      var el = e.target.closest && e.target.closest(".cap, .dcard, .lang, .fact, .tiles > a, .proofstrip > a, .latest, .hl");
       if (!el) return;
       var r = el.getBoundingClientRect();
       el.style.setProperty("--mx", (e.clientX - r.left) + "px");
@@ -587,9 +587,57 @@
     }, { threshold: 0.3 }).observe(p);
   }
 
+  /* ---------- the home hero: what Strata can do, one statement at a time.
+     Arrows and dots always work; it plays by itself only when motion is
+     welcome, and holds while the pointer or focus is on it */
+  function says() {
+    var root = document.querySelector(".says");
+    if (!root) return;
+    var items = $$(".say", root), dots = root.querySelector(".says-dots"), i = 0, timer = 0, held = false, seen = true;
+    var DWELL = 4200;
+    items.forEach(function (it, j) {
+      it.setAttribute("role", "group"); it.setAttribute("aria-roledescription", "slide"); it.setAttribute("aria-label", (j + 1) + " of " + items.length);
+      var d = document.createElement("button");
+      d.type = "button"; d.setAttribute("aria-label", "Statement " + (j + 1) + " of " + items.length);
+      d.className = "f-" + (it.getAttribute("data-f") || "text");
+      d.addEventListener("click", function () { go(j, true); });
+      dots.appendChild(d);
+    });
+    function go(j, user) {
+      var prev = i; i = (j + items.length) % items.length;
+      items.forEach(function (it, k) { it.classList.toggle("on", k === i); it.classList.toggle("out", k === prev && k !== i); it.setAttribute("aria-hidden", k === i ? "false" : "true"); });
+      $$("button", dots).forEach(function (d, k) { d.classList.toggle("on", k === i); d.setAttribute("aria-current", k === i ? "true" : "false"); });
+      if (user) restart();
+    }
+    function restart() {
+      clearInterval(timer); timer = 0;
+      // start the lit dot's fill again
+      var on = dots.querySelector(".on"); if (on) { on.classList.toggle("on", false); void on.offsetWidth; on.classList.toggle("on", true); }
+      if (REDUCED || held || !seen) { root.classList.add("paused"); return; }
+      root.classList.toggle("paused", false);
+      timer = setInterval(function () { go(i + 1); restart(); }, DWELL);
+    }
+    root.querySelector(".says-prev").addEventListener("click", function () { go(i - 1, true); });
+    root.querySelector(".says-next").addEventListener("click", function () { go(i + 1, true); });
+    root.addEventListener("pointerenter", function () { held = true; restart(); });
+    root.addEventListener("pointerleave", function () { held = false; restart(); });
+    root.addEventListener("focusin", function () { held = true; restart(); });
+    root.addEventListener("focusout", function () { held = false; restart(); });
+    root.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight") { go(i + 1, true); e.preventDefault(); }
+      if (e.key === "ArrowLeft") { go(i - 1, true); e.preventDefault(); }
+    });
+    document.addEventListener("visibilitychange", function () { seen = !document.hidden; restart(); });
+    if (IO) new IntersectionObserver(function (es) { seen = es[0].isIntersecting; restart(); }, { threshold: 0.2 }).observe(root);
+    root.style.setProperty("--dwell", DWELL + "ms");
+    root.classList.add("ready");
+    go(0); restart();
+  }
+
   function boot() {
     $$(".hero-band, .head-band").forEach(field);
     statement();
+    says();
     if (REDUCED || !IO) return;
     // after the other scripts have drawn their charts
     requestAnimationFrame(function () { rise(); counts(); bars(); pipe(); });
