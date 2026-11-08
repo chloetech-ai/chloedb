@@ -53,6 +53,18 @@ pub fn model_files(name: &str) -> &'static [&'static str] {
     }
 }
 
+/// Opens the model of a derived field: with a prompt, a language model's
+/// endpoint ([`crate::hosted::Generator`]), else [`open`].
+pub fn open_for(spec: &crate::schema::Derive, models: &Path) -> Result<Arc<dyn Deriver>> {
+    if spec.prompt.is_empty() {
+        return open(&spec.model, models);
+    }
+    #[cfg(feature = "hosted")]
+    return Ok(Arc::new(crate::hosted::Generator::open(&spec.model, &spec.prompt, models)?));
+    #[cfg(not(feature = "hosted"))]
+    Err(model_err(format!("model {}: a language model is called over HTTP: build Strata with the `hosted` feature", spec.model)))
+}
+
 /// Opens the model a derived field names: `colors`, or a directory under
 /// `models` (or an absolute path) holding a BLIP captioner or a Whisper
 /// model.

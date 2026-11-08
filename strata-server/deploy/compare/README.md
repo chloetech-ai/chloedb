@@ -253,6 +253,12 @@ $C replay strata search-app --rate 200;  $C replay es search-app --rate 200
 $C replay strata search-app --shape ramp --label strata-ramp
 ```
 
+The command center's **Simulator** sends the same kinds and profiles (the
+library's `strata_server::traffic`, which `plan` and `replay` read too) at
+the cluster it runs on, over a table of synthetic documents of its own, and
+fits a model to what it measured that predicts other shapes and their cost
+(docs/strata/server.md, "The Simulator").
+
 **A profile** (`profiles/*.toml`, every value checked when it is read) holds
 the distributions:
 

@@ -41,9 +41,11 @@ use crate::keys::{self, Audit, Keys, Principal, Scope};
 use crate::telemetry::{self, LiveQueries, QueryLog, Sample, Series};
 use crate::{json as js, obs, pb, ApiError};
 
+pub(crate) mod arrivals;
 mod failover;
-mod feed;
+pub mod feed;
 mod moving;
+mod switch;
 
 pub use failover::tuned as failover_tuned;
 pub(crate) use moving::Moving;
@@ -101,6 +103,43 @@ pub fn part_of_clients_deadline() -> bool {
 tokio::task_local! {
     /// The request's [`Deadline`] (HTTP requests run in one).
     pub static DEADLINE: Deadline;
+}
+
+tokio::task_local! {
+    /// The cluster whose changes the request writes, when a follow process
+    /// sends it ([`FOLLOW_HEADER`], with the cluster's token): a cluster
+    /// that follows that one takes them ([`Service::follows`]).
+    pub static FOLLOW: Option<Arc<str>>;
+}
+
+tokio::task_local! {
+    /// Whether the request is the cluster's own (its token: a coordinator's
+    /// call to its shards, a follow process's write, or the server's own
+    /// work), which may write the server's own marks
+    /// ([`feed::own_mark`]: a hold of its writes, a promotion).
+    pub static OWN: bool;
+}
+
+/// Whether the request being served is the cluster's own ([`OWN`]).
+pub fn own() -> bool {
+    OWN.try_with(|o| *o).unwrap_or(false)
+}
+
+/// The header (and gRPC metadata key) by which a follow process names
+/// the cluster it follows ([`FOLLOW`]); a coordinator passes it on to its
+/// shards.
+pub const FOLLOW_HEADER: &str = "x-strata-follow";
+
+/// The cluster the request being served writes the changes of
+/// ([`FOLLOW`]).
+pub fn following() -> Option<Arc<str>> {
+    FOLLOW.try_with(Clone::clone).ok().flatten()
+}
+
+/// Whether `name` may name a cluster to follow: 1 to 64 letters, digits,
+/// `.`, `_` or `-`.
+pub fn follow_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 /// The client's own deadline in ms, when the request being served asked
@@ -438,6 +477,8 @@ pub struct Service {
     pub alerts: Alerts,
     /// Contain rules, applied at admission ([`crate::contain`]): alerts agent.
     pub contain: crate::contain::Contain,
+    /// The on-call agent's proposals, waiting for an admin ([`crate::oncall`]).
+    pub oncall: crate::oncall::Desk,
     /// The cloud view's AWS credentials and machine catalogues ([`crate::aws`]).
     pub aws: Arc<crate::aws::Aws>,
     /// The cloud view's DigitalOcean token and size catalogues
@@ -546,6 +587,8 @@ pub struct Service {
     slots_file: tokio::sync::Mutex<Option<PathBuf>>,
     /// Its part in moving slots between shards ([`moving`]).
     pub(crate) moving: Moving,
+    /// The cluster it follows, as last read ([`Self::follows`]).
+    follows: feed::Follows,
     /// Its part in replication ([`crate::replication`]), which a replica's
     /// promotion changes ([`Self::promote`]).
     replication: RwLock<Replication>,
@@ -560,6 +603,9 @@ pub struct Service {
     /// its shard's other copies to elect it (`--failover-after-ms`; zero:
     /// never), as [`Self::start_failover`] does.
     pub failover_after: Duration,
+    /// The command center's Simulator: its test run and the reports kept
+    /// ([`crate::traffic::run`]).
+    pub simulator: crate::traffic::run::Simulator,
 }
 
 /// A server's part in replication.
@@ -631,6 +677,7 @@ impl Service {
             audit: Audit::new(None).expect("an audit log in memory"),
             alerts: Alerts::new(None, None).expect("the default alert rules"),
             contain: Default::default(),
+            oncall: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
@@ -675,11 +722,13 @@ impl Service {
             slots_since: AtomicU64::new(0),
             slots_file: tokio::sync::Mutex::new(None),
             moving: Moving::default(),
+            follows: feed::Follows::default(),
             replication: RwLock::new(Replication::None),
             promote_options: None,
             promoting: tokio::sync::Mutex::new(()),
             replication_file: None,
             failover_after: Duration::ZERO,
+            simulator: Default::default(),
         }
     }
 
@@ -718,8 +767,15 @@ impl Service {
         self.admit_write()
     }
 
-    /// Refuses a client's write on a replica (409).
+    /// Refuses a client's write on a replica, and on a shard of a cluster
+    /// that follows another but from its follow process (409).
     fn takes_writes(&self) -> Result<(), ApiError> {
+        self.is_writer()?;
+        self.not_following(None, None)
+    }
+
+    /// Refuses a write on a replica (409): its writes are its primary's.
+    pub(super) fn is_writer(&self) -> Result<(), ApiError> {
         match &self.replication() {
             Replication::Replica(_) => Err(conflict("this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into())),
             _ => Ok(()),
@@ -1058,6 +1114,11 @@ impl Service {
 
     /// The coordinator this server is, for the calls that change the
     /// cluster; a database refuses them (400).
+    /// The cores this server may use.
+    pub fn cores(&self) -> usize {
+        self.cores
+    }
+
     pub fn coordinator(&self) -> Result<&Arc<Coordinator>, ApiError> {
         match &self.backend {
             Backend::Cluster(c) => Ok(c),
@@ -1122,12 +1183,16 @@ impl Service {
         }
         // The slots that change hands here are marked in the log before
         // the map lets a write reach them, so that a cluster following this
-        // one orders the writes on either side ([`feed`]).
-        if let Some((old, s)) = held.as_ref().filter(|(_, s)| writer && *s == shard && db.storage().numbering().is_some()) {
-            let marks = feed::flip_marks(old, &map, *s);
-            if !marks.is_empty() {
-                let (d, epoch, deadline) = (db.clone(), map.epoch, Instant::now() + self.timeout);
-                tokio::task::spawn_blocking(move || wait_for_writer(deadline, || feed::write_marks(&d, &marks, epoch))).await.map_err(ApiError::internal)??;
+        // one orders the writes on either side ([`feed`]), and the stream
+        // offsets they arrive with are kept for them ([`arrivals`]).
+        if let Some((old, s)) = held.as_ref().filter(|(_, s)| writer && *s == shard) {
+            let marks = match db.storage().numbering() {
+                Some(_) => feed::flip_marks(old, &map, *s),
+                None => Vec::new(),
+            };
+            if !marks.is_empty() || !old.same_slots(&map, shard) {
+                let (d, old, new, deadline) = (db.clone(), old.clone(), map.clone(), Instant::now() + self.timeout);
+                tokio::task::spawn_blocking(move || wait_for_writer(deadline, || write_flip(&d, &marks, &old, &new, shard))).await.map_err(ApiError::internal)??;
             }
         }
         if let Some(path) = &*file {
@@ -1283,8 +1348,12 @@ impl Service {
         // A field with a model it did not have: its rows may lack vectors.
         let opened = |l: &[FieldModel]| l.iter().filter(|m| m.model.is_ok()).map(|m| (m.table.to_lowercase(), m.field.clone(), m.spec.clone())).collect::<Vec<_>>();
         let gained = opened(&list).iter().any(|m| !opened(&old).contains(m));
+        // A field new here whose model did not open (a table created or
+        // altered since): its model may be one to fetch.
+        let same = |a: &FieldModel, b: &FieldModel| a.table.eq_ignore_ascii_case(&b.table) && a.field == b.field && a.spec == b.spec;
+        let wants = list.iter().any(|m| m.model.is_err() && !old.iter().any(|o| same(o, m)));
         *self.models.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(list);
-        if gained {
+        if gained || wants {
             self.models_changed.send_modify(|n| *n += 1);
         }
     }
@@ -1384,7 +1453,7 @@ impl Service {
                 let (t, f, chunk) = (table.to_string(), field.to_string(), chunk.to_vec());
                 let guard = self.statement_guard(0, Arc::new(Mutex::new(None)));
                 let prepare = move |db: &Db| db.prepare_backfill(&t, &f, chunk).map(|p| Some(p.guarded(guard)));
-                match self.write_local(db, prepare, 0).await {
+                match self.write_local(db, prepare, 0, None).await {
                     // The queue is full: clients' writes come first.
                     Err(e) if e.status == 429 && busy < 600 => {
                         busy += 1;
@@ -1615,7 +1684,7 @@ impl Service {
     /// 429 when [`Self::max_queued_writes`] requests hold one.
     fn enqueue(&self) -> Result<InQueue, ApiError> {
         InQueue::start(&self.writer_state, self.max_queued_writes)
-            .ok_or_else(|| ApiError { status: 429, message: format!("{} writes are queued, the most this server takes; try again", self.max_queued_writes) })
+            .ok_or_else(|| ApiError { status: 429, message: format!("{} writes are queued, the most this server takes, so the write was not applied; send it again in a second", self.max_queued_writes) })
     }
 
     /// Hands a write to the writer thread and waits for its commit. The
@@ -1626,8 +1695,14 @@ impl Service {
     /// holds the move's gate until it commits ([`Self::pass_gate`]).
     async fn write(&self, job: WriteJob, deadline: Instant, key: Option<String>, queued: InQueue, moved: Moved) -> Result<Written, ApiError> {
         let tx = self.writes.as_ref().ok_or_else(|| ApiError::internal("no writer for a coordinator"))?;
-        // Counted in before it looks at the map, which a move may change.
+        // Counted in before it looks at the map, which a move may change,
+        // and before it looks for a hold of the shard's writes, which waits
+        // for it: a client's write either commits before the hold or is
+        // refused. A slot move's own writes go on, and the hold's.
         let entry = self.moving.enter();
+        if matches!(moved, Moved::No) && !matches!(&job, WriteJob::Ops(ops) if ops.iter().any(feed::marks_hold)) {
+            self.not_held()?;
+        }
         let pass = if self.slots().is_none() {
             moving::Pass::Entry(entry)
         } else {
@@ -1654,7 +1729,7 @@ impl Service {
             Moved::Copy => Some((feed::MOVE_COPY, self.slot_epoch() as i64)),
             Moved::Cleanup => Some((feed::MOVE_CLEANUP, self.slot_epoch() as i64)),
         };
-        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass), mark }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
+        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass), mark, epoch: routed() }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
         rx.await.map_err(|_| ApiError::internal("the writer thread stopped"))?
     }
 
@@ -2223,7 +2298,7 @@ impl Service {
             let Backend::Local(db) = &self.backend else {
                 return Err(ApiError::bad("a coordinator takes writes as SQL; its shards do not take write plans yet"));
             };
-            let w = self.write_local(db, move |db| db.prepare_plan(&plan).map(Some), timeout_ms).await;
+            let w = self.write_local(db, move |db| db.prepare_plan(&plan).map(Some), timeout_ms, None).await;
             let w = self.wrote(w, t0, Some(&text))?;
             return Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
         }
@@ -2826,13 +2901,17 @@ impl Service {
     /// The statement needs the scope of its kind ([`command_scope`]), which
     /// `who` must have; a table's or rank profile's statement is audited.
     pub async fn sql(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
-        self.sql_in(who, sql, params, after, timeout_ms, None).await
+        self.sql_in(who, sql, params, after, timeout_ms, None, None).await
     }
 
     /// [`Self::sql`]; with `slots`, an UPDATE or DELETE over the rows of
     /// those slots alone, as a coordinator sends one again to the shard
-    /// slots moved to while it ran.
-    pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>) -> Result<SqlAnswer, ApiError> {
+    /// slots moved to while it ran. With an idempotency `key`, a write
+    /// statement sent again after it committed answers its first answer
+    /// rather than applying again; through a coordinator, each shard's part
+    /// is kept under the key ([`Coordinator::sql`]).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         let need = command_scope(&command);
         who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
@@ -2865,6 +2944,7 @@ impl Service {
             (_, true) => self.ddl(sql, params, timeout_ms).await,
             (Backend::Local(db), false) => {
                 let (text, p) = (sql.to_string(), params.clone());
+                let slots_hashed = slots.clone();
                 let only = slots.map(|s| moving::mask_outside(&s));
                 let refused = Arc::new(Mutex::new(None));
                 let guard = self.statement_guard(routed(), refused.clone());
@@ -2876,14 +2956,14 @@ impl Service {
                     };
                     Ok(Some(w.guarded(guard)))
                 };
-                let r = self.write_local(db, prepare, timeout_ms).await;
+                let r = self.write_local(db, prepare, timeout_ms, key.map(|k| (k, statement_hash(sql, params, slots_hashed.as_deref())))).await;
                 let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
                 match refusal {
                     Some(e) if r.is_err() => Err(e),
                     _ => r,
                 }
             }
-            (Backend::Cluster(c), false) => c.sql(sql, params).await,
+            (Backend::Cluster(c), false) => c.sql(sql, params, key).await,
         };
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
@@ -2900,6 +2980,9 @@ impl Service {
         let r = match &self.backend {
             Backend::Local(db) => {
                 self.takes_writes()?;
+                // Counted in until it commits, as a write is ([`Self::write`]).
+                let _entry = self.moving.enter();
+                self.not_held()?;
                 let by = self.admitted();
                 let timeout = self.timeout_of(timeout_ms);
                 let (db, sql, params) = (db.clone(), sql.to_string(), params.clone());
@@ -2924,32 +3007,65 @@ impl Service {
         r
     }
 
+    /// Applies write operations from a client (`/v1/write`, gRPC `Write`):
+    /// [`Self::write_ops`], under a key of its own through a coordinator
+    /// when it has none and may span shards ([`Coordinator::keyed`]).
+    pub async fn write_request(self: &Arc<Self>, ops: Vec<Json>, key: Option<String>) -> Result<Written, ApiError> {
+        let key = match &self.backend {
+            Backend::Cluster(c) => c.keyed(&ops, key),
+            Backend::Local(_) => key,
+        };
+        self.write_ops(ops, key).await
+    }
+
     /// A write `prepare` binds (`None`: not a write), queued for the writer
     /// thread. It is bound, and its vectors computed, before it queues:
-    /// models run on a core of their own, not in the writer thread.
-    async fn write_local<F>(self: &Arc<Self>, db: &Arc<Db>, prepare: F, timeout_ms: u64) -> Result<Written, ApiError>
+    /// models run on a core of their own, not in the writer thread. With
+    /// an idempotency key (and the hash of what it names), a retry of a
+    /// write that committed answers its first answer, as
+    /// [`Self::write_ops`] does.
+    async fn write_local<F>(self: &Arc<Self>, db: &Arc<Db>, prepare: F, timeout_ms: u64, key: Option<(String, u64)>) -> Result<Written, ApiError>
     where
         F: FnOnce(&Db) -> strata::Result<Option<PreparedWrite>> + Send + 'static,
     {
         let by = self.writable()?;
         self.backpressure(db).await?;
         let q = self.enqueue()?;
-        let core = match self.embeds() {
-            true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
-            false => None,
-        };
-        let db = db.clone();
-        let prepared = tokio::task::spawn_blocking(move || {
-            let _core = core;
-            prepare(&db)
-        })
-        .await
-        .map_err(ApiError::internal)??
-        .ok_or_else(|| ApiError::bad("not a write statement"))?;
-        // The deadline bounds the wait for the writer, not the embedding.
-        let deadline = Instant::now() + self.timeout_of(timeout_ms);
-        let w = self.write(WriteJob::Sql(Box::new(prepared)), deadline, None, q, Moved::No).await?;
-        self.replicated(w, self.timeout_of(timeout_ms), by).await
+        if let Some((k, hash)) = &key {
+            match self.idempotency.begin(k, *hash) {
+                idem::Begin::New => {}
+                idem::Begin::Done(n) => {
+                    self.metrics.replay();
+                    return self.replicated(n, self.timeout_of(timeout_ms), self.admitted()).await;
+                }
+                idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
+                idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for a different statement".into() }),
+            }
+        }
+        let key = key.map(|(k, _)| k);
+        let r = async {
+            let core = match self.embeds() {
+                true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
+                false => None,
+            };
+            let db = db.clone();
+            let prepared = tokio::task::spawn_blocking(move || {
+                let _core = core;
+                prepare(&db)
+            })
+            .await
+            .map_err(ApiError::internal)??
+            .ok_or_else(|| ApiError::bad("not a write statement"))?;
+            // The deadline bounds the wait for the writer, not the embedding.
+            let deadline = Instant::now() + self.timeout_of(timeout_ms);
+            self.write(WriteJob::Sql(Box::new(prepared)), deadline, key.clone(), q, Moved::No).await
+        }
+        .await;
+        if let (Err(_), Some(k)) = (&r, &key) {
+            // Not committed (the writer reports a commit as Ok).
+            self.idempotency.finish(k, None);
+        }
+        self.replicated(r?, self.timeout_of(timeout_ms), by).await
     }
 
     /// Applies write operations (see the proto's WriteRequest) in one
@@ -2965,11 +3081,24 @@ impl Service {
     /// ([`Self::write`]).
     pub async fn write_ops_as(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
+        own_marks_ok(&ops)?;
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
-                // flushes, or a full queue refuses the request.
-                let admitted = match self.takes_writes() {
+                // flushes, or a full queue refuses the request; and a
+                // client's on a follower (a move's copies and deletes are
+                // the cluster's own).
+                let own = ops.iter().any(feed::marks_own);
+                let carried = following().filter(|_| own).and_then(|n| feed::carried_follows(&ops, &n));
+                let copy = following().and_then(|n| feed::carried_copy(&ops, &n));
+                // A promotion's own writes end following ([`Self::promote_follower`]).
+                let promoting = own && crate::service::own() && ops.iter().any(feed::marks_promoted);
+                let writer = match moved {
+                    Moved::No if promoting => self.is_writer(),
+                    Moved::No => self.is_writer().and_then(|()| self.not_following(carried, copy)),
+                    _ => self.is_writer(),
+                };
+                let admitted = match writer {
                     Ok(()) => self.backpressure(db).await.and_then(|_| self.enqueue()),
                     Err(e) => Err(e),
                 };
@@ -2989,6 +3118,15 @@ impl Service {
                         idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
                         idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for different operations".into() }),
                     }
+                }
+                // A hold of the shard's writes: from here on it takes no
+                // other, and it commits once those under way did.
+                let _holding = feed::carried_hold(&ops).filter(|h| h % 2 == 1).map(|_| self.hold_pending());
+                if _holding.is_some() && !self.moving.drained(tokio::time::Instant::now() + self.timeout).await {
+                    if let Some(k) = &key {
+                        self.idempotency.finish(k, None);
+                    }
+                    return self.wrote(Err(ApiError { status: 503, message: format!("the writes under way did not commit within {} s, so the writes are not held: try again", self.timeout.as_secs()) }), t0, None);
                 }
                 let r = async {
                     // Not a retry of a write applied: a primary may refuse
@@ -3022,7 +3160,12 @@ impl Service {
                 // Committed: a retry with its key answers it, whatever its
                 // copies say.
                 match r {
-                    Ok((w, by)) => self.replicated(w, self.timeout, by).await,
+                    Ok((w, by)) => {
+                        if own {
+                            self.follows.forget();
+                        }
+                        self.replicated(w, self.timeout, by).await
+                    }
                     Err(e) => Err(e),
                 }
             }
@@ -3072,7 +3215,7 @@ impl Service {
         let until = Instant::now() + BACKLOG_WAIT;
         while db.storage().backlogged() {
             if Instant::now() >= until {
-                return Err(ApiError { status: 429, message: "the database is behind on flushing writes to disk; try again in a second".into() });
+                return Err(ApiError { status: 429, message: "the database is behind on flushing writes to disk, so the write was not applied; send it again in a second".into() });
             }
             tokio::time::sleep(STREAM_POLL).await;
         }
@@ -3084,13 +3227,39 @@ impl Service {
     /// stream resumes ([`Coordinator::sources`]).
     pub async fn sources(&self) -> Result<Vec<Source>, ApiError> {
         match &self.backend {
-            // Without the marks of the server's own transactions.
+            // Without the marks of the server's own transactions, but those
+            // of its state: the cluster it follows, a hold of its writes, a
+            // promotion ([`feed::own_mark`]); and at the least offset of
+            // each source's slots ([`arrivals::folded`]).
             Backend::Local(db) => {
                 let db = db.clone();
                 let all = tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)??;
-                Ok(all.into_iter().filter(|s| !s.name.starts_with(MARK)).collect())
+                Ok(arrivals::folded(all, MARK))
             }
             Backend::Cluster(c) => c.sources().await,
+        }
+    }
+
+    /// Each stream source's offset for the slots moving from this shard,
+    /// which the move carries to the shard they go to
+    /// ([`arrivals::of_slots`]): asked by the coordinator moving them while
+    /// it holds their writes, once their last changes are copied.
+    pub async fn moving_offsets(&self) -> Result<Vec<Source>, ApiError> {
+        let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator holds no slots"))?;
+        let mv = match self.slots() {
+            Some((m, shard)) => m.moving().filter(|mv| mv.from == shard).cloned(),
+            None => None,
+        };
+        let mv = mv.ok_or_else(|| conflict("no slots are moving from this shard".into()))?;
+        let all = tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)??;
+        Ok(arrivals::of_slots(all, &mv.slots, MARK).into_iter().map(|(name, offset)| Source { name, offset, updated: None }).collect())
+    }
+
+    /// Each shard's stream sources, in shard order: a server's own alone.
+    pub async fn sources_by_shard(&self) -> Result<Vec<Vec<Source>>, ApiError> {
+        match &self.backend {
+            Backend::Local(_) => Ok(vec![self.sources().await?]),
+            Backend::Cluster(c) => c.sources_by_shard().await,
         }
     }
 
@@ -3376,6 +3545,8 @@ impl Service {
             return Err(ApiError::bad(format!("a coordinator imports into the tables its shards have: create table {} first (CREATE TABLE through the coordinator), or import on each shard", schema.table)));
         };
         self.takes_writes()?;
+        let _entry = self.moving.enter();
+        self.not_held()?;
         let deadline = Instant::now() + self.timeout_of(timeout_ms);
         let db = db.clone();
         tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.create_table(schema.clone())?))).await.map_err(ApiError::internal)??;
@@ -3484,6 +3655,12 @@ impl Service {
         }
         g.insert("running", self.running() as f64);
         g.insert("live", self.live.len() as f64);
+        // A cluster that follows another: its follow processes' lag.
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            g.insert("follow_lag_s", lags.iter().map(|l| l.1).fold(0.0, f64::max));
+            g.insert("follow_behind", lags.iter().map(|l| l.2).fold(0.0, f64::max));
+        }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
             g.insert("query_memory_bytes", b.used() as f64);
@@ -3765,7 +3942,8 @@ impl Service {
         });
         json!({
             "health": health, "load": load, "minute": minute,
-            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "memory_limit_bytes": strata::storage::memory_limit()},
+            // The Simulator reads `cpu_seconds` (the process's CPU so far) before and after a test.
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "cpu_seconds": telemetry::process_usage().1, "memory_limit_bytes": strata::storage::memory_limit()},
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),
@@ -3838,6 +4016,14 @@ impl Service {
             Family { name: "strata_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
             one("strata_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
         ];
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
+            more.extend([
+                family("strata_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
+                family("strata_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
+            ]);
+        }
         if let Some(s) = &self.log_store {
             more.extend(s.metrics());
         }
@@ -3963,6 +4149,14 @@ pub const SMALL_BODY: usize = 16 << 20;
 /// writes. Loaders must split documents the same way.
 pub fn shard_of(key: &Value, n: usize) -> usize {
     slots::shard_of(key, n.max(1))
+}
+
+/// What an idempotency key of a write statement names: its text, its
+/// parameters (by name) and the slots it is limited to.
+fn statement_hash(sql: &str, params: &Params, slots: Option<&[usize]>) -> u64 {
+    let mut named: Vec<(&String, String)> = params.0.iter().map(|(k, v)| (k, format!("{v:?}"))).collect();
+    named.sort();
+    idem::hash_ops(&[json!(sql), json!(named), json!(slots)])
 }
 
 fn conflict(message: String) -> ApiError {
@@ -4153,6 +4347,9 @@ struct Queued {
     /// request shares its transaction only with others of the same mark,
     /// so that a shard's feed leaves out the move's rows and only them.
     mark: Option<(&'static str, i64)>,
+    /// The epoch of the cluster map the request was routed by (0: none),
+    /// which says which slots its stream events cover ([`arrivals`]).
+    epoch: u64,
 }
 
 impl Queued {
@@ -4341,7 +4538,7 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         }
         return;
     }
-    let requests: Vec<&[Json]> = group.iter().map(|q| q.ops()).collect();
+    let requests: Vec<(&[Json], u64)> = group.iter().map(|q| (q.ops(), q.epoch)).collect();
     // A group shares one mark ([`writer`]).
     let mark = group[0].mark;
     match wait_for_writer(deadline, || apply_requests(db, &requests, mark)) {
@@ -4357,7 +4554,7 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         // as Ok), so each request can run again alone.
         Err(_) => {
             for q in group {
-                let r = wait_for_writer(q.deadline, || apply_requests(db, &[q.ops()], q.mark).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
+                let r = wait_for_writer(q.deadline, || apply_requests(db, &[(q.ops(), q.epoch)], q.mark).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
                 q.answer(r);
             }
         }
@@ -4407,9 +4604,35 @@ pub(crate) fn wait_for_writer<T>(deadline: Instant, mut write: impl FnMut() -> R
     }
 }
 
+/// The transaction a shard writes as it takes cluster map `new` in place
+/// of `old`, before the map lets a write reach the slots that change hands
+/// here: their marks for a cluster following this one ([`feed::flip_marks`],
+/// each an offset `new.epoch` that `_sources` does not keep), and the stream
+/// offsets of the slots that arrive ([`arrivals::flip`]). Nothing when
+/// neither has anything to write.
+fn write_flip(db: &Db, marks: &[String], old: &SlotMap, new: &SlotMap, shard: usize) -> Result<(), ApiError> {
+    let offsets = new.moving().is_some_and(|m| m.to == shard && !m.offsets.is_empty());
+    if marks.is_empty() && !offsets && db.sources()?.is_empty() {
+        return Ok(());
+    }
+    db.storage().ensure_sources()?;
+    let mut t = db.storage().begin()?;
+    let now = strata::timestamp::now();
+    for m in marks {
+        t.mark_source(m, new.epoch as i64, now)?;
+    }
+    let kept = arrivals::flip(db, &mut t, old, new, shard, now)?;
+    if marks.is_empty() && !kept {
+        t.rollback();
+        return Ok(());
+    }
+    t.commit_seq()?;
+    Ok(())
+}
+
 /// Applies `ops` to `db` in one transaction.
 pub fn apply_ops(db: &Db, ops: &[Json]) -> Result<Written, ApiError> {
-    let (mut applied, seq_no) = apply_requests(db, &[ops], None)?;
+    let (mut applied, seq_no) = apply_requests(db, &[(ops, 0)], None)?;
     Ok(applied.remove(0).written(seq_no))
 }
 
@@ -4427,26 +4650,49 @@ impl Applied {
     }
 }
 
-/// Applies several requests' operations in one transaction; returns what
-/// each did, and the transaction's sequence number in a database that
-/// numbers its writes. With `mark`, the transaction also writes that
-/// offset of a source of the server's own ([`feed::MARK`]).
-fn apply_requests(db: &Db, requests: &[&[Json]], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
+/// Applies several requests' operations, each with the epoch of the
+/// cluster map it was routed by, in one transaction; returns what each
+/// did, and the transaction's sequence number in a database that numbers
+/// its writes. With `mark`, the transaction also writes that offset of a
+/// source of the server's own ([`feed::MARK`]).
+fn apply_requests(db: &Db, requests: &[(&[Json], u64)], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
     let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
-    if mark.is_some() || requests.iter().flat_map(|ops| ops.iter()).any(has_source) {
+    if mark.is_some() || requests.iter().flat_map(|(ops, _)| ops.iter()).any(has_source) {
         db.storage().ensure_sources()?;
     }
     let mut t = db.storage().begin()?;
     let mut applied = Vec::with_capacity(requests.len());
-    for ops in requests {
-        applied.push(apply_into(&catalog, &mut t, ops)?);
+    let mut arrived = arrivals::Group::new(db);
+    for (ops, epoch) in requests {
+        applied.push(apply_into(&catalog, &mut t, ops, *epoch, &mut arrived)?);
     }
     if let Some((name, offset)) = mark {
         t.mark_source(name, offset, strata::timestamp::now())?;
     }
     let seq_no = t.commit_seq()?;
     Ok((applied, seq_no))
+}
+
+/// Refuses a request whose operations carry the mark of a cluster
+/// followed ([`feed::FOLLOWS`]) unless that cluster's follow process sends
+/// it ([`following`]), or another of the server's own marks
+/// ([`feed::own_mark`]) unless the cluster's own does ([`own`]): checked
+/// as the request comes, before the writer thread, which knows no
+/// request's sender, applies it.
+pub(crate) fn own_marks_ok(ops: &[Json]) -> Result<(), ApiError> {
+    let sender = following();
+    for op in ops {
+        let Some(name) = op.pointer("/source/name").and_then(Json::as_str) else { continue };
+        let theirs = match name.strip_prefix(feed::FOLLOWS) {
+            Some(n) => sender.as_deref() == Some(n),
+            None => !feed::own_mark(name) || own(),
+        };
+        if !theirs {
+            return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
+        }
+    }
+    Ok(())
 }
 
 /// Where an operation's event came from (its `"source"`): a stream's
@@ -4495,7 +4741,9 @@ pub fn op_source(op: &Json) -> Result<Option<Mark>, ApiError> {
         .and_then(|n| n.as_str())
         .filter(|n| !n.is_empty() && n.len() <= SOURCE_NAME)
         .ok_or_else(|| ApiError::bad(format!("an operation's source has a \"name\" of 1 to {SOURCE_NAME} bytes")))?;
-    if name.starts_with(MARK) {
+    // But for the marks of the server's state, which a request may carry
+    // only from the cluster's own ([`own_marks_ok`]).
+    if name.starts_with(MARK) && !feed::own_mark(name) {
         return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
     }
     let offset = s.get("offset").and_then(|o| o.as_i64()).ok_or_else(|| ApiError::bad(format!("source {name}: the \"offset\" is a whole number")))?;
@@ -4617,12 +4865,16 @@ fn key_text(key: &Value) -> String {
 /// reached already, as the transaction finds it when the request starts,
 /// is a replay's and is skipped; afterwards each source's highest offset
 /// is kept, in the same transaction ([`WriteTxn::set_source`]). So a
-/// stream resumed from its sources' offsets applies each event once.
-fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> Result<Applied, ApiError> {
+/// stream resumed from its sources' offsets applies each event once. An
+/// operation in slots that arrived from another shard at another offset
+/// is checked against theirs ([`arrivals`]), which the request, routed by
+/// the map of `epoch`, moves on.
+fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json], epoch: u64, arrived: &mut arrivals::Group<'_>) -> Result<Applied, ApiError> {
     let mut a = Applied::default();
     let now = strata::timestamp::now();
-    // Each source's offset when the request started, and its highest here.
-    let mut sources: Vec<(String, Option<i64>, i64)> = Vec::new();
+    // Each source's offset when the request started, its highest applied
+    // here, and the highest it names here.
+    let mut sources: Vec<(String, Option<i64>, i64, i64)> = Vec::new();
     // The event last stamped: its operations follow one another.
     let mut stamped = None;
     for op in ops {
@@ -4631,15 +4883,26 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
                 Some(i) => i,
                 None => {
                     let stored = txn.source_offset(&m.name)?;
-                    sources.push((m.name.clone(), stored, i64::MIN));
+                    sources.push((m.name.clone(), stored, i64::MIN, i64::MIN));
                     sources.len() - 1
                 }
             };
-            let (_, stored, top) = &mut sources[i];
-            if stored.is_some_and(|s| m.offset <= s) {
+            let stored = sources[i].1;
+            sources[i].3 = sources[i].3.max(m.offset);
+            // An event's operation in slots that arrived at another offset
+            // is checked against theirs.
+            let reached = match is_mark(op) || arrived.of(txn, &m.name)?.is_empty() {
+                true => stored,
+                false => {
+                    let schema = &**op_schema(catalog, op)?;
+                    arrived.threshold(txn, &m.name, slots::slot(&op_place(schema, op)?), stored)?
+                }
+            };
+            if reached.is_some_and(|s| m.offset <= s) {
                 a.skipped += !is_mark(op) as u64;
                 continue;
             }
+            let (_, _, top, _) = &mut sources[i];
             *top = (*top).max(m.offset);
             if m.ts.is_some() && stamped != Some((i, m.offset)) {
                 a.stamps.extend(m.ts);
@@ -4713,10 +4976,15 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
         };
         a.rows += wrote as u64;
     }
-    for (name, stored, top) in sources {
-        if top > i64::MIN && stored.is_none_or(|s| top > s) {
-            txn.set_source(&name, top, now)?;
-        }
+    for (name, stored, top, seen) in sources {
+        let kept = match top > i64::MIN && stored.is_none_or(|s| top > s) {
+            true => {
+                txn.set_source(&name, top, now)?;
+                Some(top)
+            }
+            false => stored,
+        };
+        arrived.after(txn, &name, epoch, seen, kept, now)?;
     }
     Ok(a)
 }
@@ -4725,6 +4993,64 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A batch's part for the shard slots move to, routed by the map before
+    // their flip, reached it after the flip and moved its offset past an
+    // event of the slots that the shard they left still held (theirs and
+    // its own were equal at the flip, so it kept no arrival): when the
+    // event came by the new map, it was skipped as a replay, and lost.
+    // Both on a shard that holds slots and on one that held none.
+    #[test]
+    fn a_late_request_of_the_old_map_does_not_hide_an_arrived_event() {
+        let schema = Schema::from_json(r#"{"table": "events", "key": "id", "fields": [{"name": "id", "type": "keyword"}]}"#).unwrap();
+        let key = (0..).map(|i| format!("e{i}")).find(|k| SlotMap::even(2, 1).owner(slots::slot(&Value::Str(k.clone()))) == 0).unwrap();
+        let y = slots::slot(&Value::Str(key.clone()));
+        let mark = |o: i64| json!({"op": "source", "source": {"name": "s", "offset": o}});
+        let event = json!({"op": "upsert", "table": "events", "doc": {"id": key}, "source": {"name": "s", "offset": 11}});
+        for base in [SlotMap::even(2, 1), SlotMap::even(1, 1).with_replicas(vec![vec!["http://a".into()]]).unwrap().add_shard(vec!["http://new".into()]).unwrap()] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = Db::create(&dir.path().join("t.strata"), schema.clone(), strata::storage::DbOptions::default()).unwrap();
+            let old = base.start_move(&[y], 1).unwrap();
+            let new = old.flip_move_with(std::collections::BTreeMap::from([("s".to_string(), 10)])).unwrap();
+            apply_requests(&db, &[(&[mark(10)], old.epoch)], None).unwrap();
+            write_flip(&db, &[], &old, &new, 1).unwrap();
+            // The late part: no events of the slots, the batch's offset.
+            apply_requests(&db, &[(&[mark(11)], old.epoch)], None).unwrap();
+            // The event the shard they left held, by the new map.
+            let (a, _) = apply_requests(&db, &[(&[event.clone(), mark(11)], new.epoch)], None).unwrap();
+            assert_eq!((a[0].rows, a[0].skipped), (1, 0), "held none: {}", base.count(1) == 0);
+            // Once: sent again, it is skipped, and the arrival is gone.
+            let (a, _) = apply_requests(&db, &[(&[event.clone(), mark(11)], new.epoch)], None).unwrap();
+            assert_eq!((a[0].rows, a[0].skipped), (0, 1));
+            let left: Vec<(String, i64)> = db.sources().unwrap().into_iter().map(|s| (s.name, s.offset)).collect();
+            assert_eq!(left, vec![("s".to_string(), 11)]);
+        }
+    }
+
+    // A table created after the server started, naming a model the models
+    // directory lacked, did not wake `keep_models`, which then fetched only
+    // at start: the field had no model, and its rows no vectors, until the
+    // server was started again.
+    #[tokio::test]
+    async fn a_table_naming_a_model_to_fetch_wakes_the_fetcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), strata::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 16, Duration::from_secs(10));
+        svc.open_models(&dir.path().join("models"));
+        let svc = Arc::new(svc);
+        let mut changed = svc.models_changed.subscribe();
+        changed.borrow_and_update();
+        let ddl = "CREATE TABLE listings (id KEYWORD PRIMARY KEY, title TEXT, emb VECTOR OPTIONS(embed = 'title', model = 'potion-base-8M'))";
+        svc.sql(&Principal::open(), ddl, &Params::new(), After::Any, 0).await.unwrap();
+        assert!(changed.has_changed().unwrap(), "the fetcher was not woken");
+        let models = svc.models();
+        assert!(models.len() == 1 && models[0].model.as_ref().is_err_and(|e| e.contains("fetch it first")), "{:?}", models.iter().map(|m| m.model.as_ref().err()).collect::<Vec<_>>());
+        // Opening it again after a fetch that failed wakes it no more.
+        changed.borrow_and_update();
+        svc.reopen_models();
+        assert!(!changed.has_changed().unwrap());
+    }
 
     // A primary fenced by a call of the new primary as it kept its vote
     // for it wrote its replication file twice at once, through one new
@@ -4756,7 +5082,7 @@ mod tests {
         assert_eq!(keys.begin("k", 1), idem::Begin::New);
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let state = WriterState::default();
-        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some("k".into()), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None };
+        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some("k".into()), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None, epoch: 0 };
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _held = q;
             panic!("a bug while applying a write");

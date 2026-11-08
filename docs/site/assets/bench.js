@@ -11,7 +11,11 @@
  *   data-writes="cloud-1m"      writes, freshness and streams
  *   data-load="cloud-1m"        load time and index size
  *   data-graph-rank             the graph comparison's places
- *   data-ab="bm25-load"         a before/after table
+ *   data-ab="bm25-load"         a before/after table (data-merge: one row a
+ *                               kind, q/s at 16 and the median at 1;
+ *                               data-labels="before,after" names the two)
+ *   data-versus="cloud-1m,cloud-10m" Strata's speed over each engine's
+ *   data-ef="ef-1m"             recall and speed at each ef
  *   data-num="cloud-1m:p50:strata:bm25" one number, inline
  *   data-overall="cloud-1m"     Strata's overall place (data-mode="tile" or "line")
  *   data-variants="cloud-1m"    the ranking under other rules
@@ -104,7 +108,7 @@
       h += '<div class="rb-row' + (self ? " self" : "") + '" role="row"><span class="rb-pl" role="cell">' + (i + 1) + '</span><span class="rb-name" role="cell">' + esc(engineName(rep, r.e)) + '</span><span class="rb-bar" role="cell"><i style="width:' + w.toFixed(1) + '%"></i><b>' + r.points + '</b></span><span class="rb-own" role="cell">' + r.half + ' <span class="muted">of ' + rep.tests + '</span></span><span class="rb-own" role="cell">' + fmt(r.own, 2) + (r.cant ? ' <span class="muted">on ' + r.ran + " tests; no result on " + r.cant + (r.cant === 1 ? " kind" : " kinds") + "</span>" : ' <span class="muted">on all ' + rep.tests + "</span>") + "</span></div>";
     });
     h += "</div>";
-    h += '<p class="small muted">' + rep.tests + " tests: 14 kinds at three measures, plus recall on the vector kinds" + (rep.passes > 1 ? ", medians of " + rep.passes + " passes" : ", one pass") + ". Places add up, so fewer points is better (" + best + " is the best here); a kind an engine cannot run counts as last (" + n + "). <a href=\"bench-method.html#ranking\">How the ranking works</a>. " + srcLink(rep) + "</p>";
+    h += '<p class="small muted">' + rep.tests + " tests: 14 kinds at three measures, plus recall on the vector kinds" + (rep.passes_note ? ", " + rep.passes_note : rep.passes > 1 ? ", medians of " + rep.passes + " passes" : ", one pass") + ". Places add up, so fewer points is better (" + best + " is the best here); a kind an engine cannot run counts as last (" + n + "). <a href=\"bench-method.html#ranking\">How the ranking works</a>. " + srcLink(rep) + "</p>";
     el.innerHTML = h;
   }
 
@@ -343,15 +347,122 @@
     el.innerHTML = h;
   }
 
+  /* ------------------------------------------------------------ versus */
+  // Strata's speed over each engine's, the geometric mean over the kinds both
+  // run: at one client their median over Strata's, at 16 clients Strata's
+  // queries a second over theirs. Each row opens to its kinds.
+  function renderVersus(el) {
+    var ids = el.getAttribute("data-versus").split(",").filter(function (id) { return R[id] && R[id].versus; });
+    if (!ids.length) return pending(el);
+    var cur = ids[0];
+    var SIZE = { "cloud-1m": "1M documents", "cloud-10m": "10M documents" };
+    var lo = 0.25, hi = 32, ticks = [0.25, 0.5, 1, 2, 4, 8, 16, 32];
+    function x(v) { v = Math.max(lo, Math.min(hi, v)); return ((Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) * 100).toFixed(2); }
+    function times(v) { return v == null ? "–" : fmt(v) + "×"; }
+    function cls(v) { return v == null ? "pl-na" : v >= 2 ? "pl-1" : v > 1 ? "pl-2" : v === 1 ? "pl-3" : v >= 0.5 ? "pl-4" : "pl-5"; }
+    function draw() {
+      var rep = R[cur];
+      var rows = Object.keys(rep.versus).map(function (e) { return { e: e, v: rep.versus[e] }; });
+      rows.sort(function (a, b) { return a.v.p50_gm - b.v.p50_gm; });
+      var grid = ticks.map(function (t) { return '<b class="vs-tick' + (t === 1 ? " one" : "") + '" style="left:' + x(t) + '%"></b>'; }).join("");
+      var h = ids.length > 1 ? chips("Size", ids.map(function (id) { return [id, SIZE[id] || id]; }), cur) : "";
+      h += '<div class="vs"><div class="vs-head" aria-hidden="true"><span>engine</span><span class="vs-scale">' +
+        ticks.map(function (t) { return '<i style="left:' + x(t) + '%">' + fmt(t) + "×</i>"; }).join("") +
+        '</span><span>1 client · 16</span><span class="vs-won">kinds faster</span></div>';
+      rows.forEach(function (r) {
+        var v = r.v, eng = rep.engines.filter(function (z) { return z.id === r.e; })[0] || { name: r.e };
+        var a = x(v.p50_gm), b = x(v.qps16_gm);
+        var label = esc(eng.name) + ": at one client Strata is " + times(v.p50_gm) + " as fast, at 16 clients it serves " + times(v.qps16_gm) + " the queries a second; faster on " + v.p50_won + " of " + v.p50_of + " kinds at one client";
+        h += '<details class="vs-row"><summary aria-label="' + label + '"><span class="vs-name">' + esc(eng.name) + (eng.lane ? "<small>" + esc(eng.lane) + "</small>" : "") + "</span>" +
+          '<span class="vs-track" aria-hidden="true">' + grid +
+          '<span class="vs-span" style="left:' + Math.min(a, b) + "%;width:" + Math.abs(a - b).toFixed(2) + '%"></span>' +
+          '<i class="vs-dot one" style="left:' + a + '%"></i><i class="vs-dot sixteen" style="left:' + b + '%"></i></span>' +
+          '<span class="vs-num"><b>' + times(v.p50_gm) + "</b> · " + times(v.qps16_gm) + "</span>" +
+          '<span class="vs-won">' + v.p50_won + " of " + v.p50_of + "</span></summary>";
+        h += '<div class="table-wrap"><table class="data vs-kinds"><thead><tr><th scope="col">' + esc(eng.name) + ', kind by kind</th><th scope="col" class="num">1 client</th><th scope="col" class="num">16 clients</th></tr></thead><tbody>';
+        rep.kinds.forEach(function (k) {
+          var o = v.p50[k.id], s = v.qps16[k.id];
+          var why = rep.na[r.e] && rep.na[r.e][k.id];
+          if (o == null && s == null) {
+            h += '<tr><th scope="row">' + esc(k.name) + '</th><td class="n pl-na" colspan="2">' + esc(why ? "cannot run it" : "no result") + "</td></tr>";
+            return;
+          }
+          h += '<tr><th scope="row">' + esc(k.name) + '</th><td class="n ' + cls(o) + '">' + times(o) + '</td><td class="n ' + cls(s) + '">' + times(s) + "</td></tr>";
+        });
+        h += "</tbody></table></div></details>";
+      });
+      h += "</div>";
+      h += '<div class="legend vs-legend"><span><i class="vs-dot one"></i>one client: their median time over Strata\'s</span><span><i class="vs-dot sixteen"></i>16 clients: Strata\'s queries a second over theirs</span><span>Right of 1×, Strata is faster. Geometric mean over the kinds both run; open a row for each kind, green where Strata is faster.</span></div>';
+      el.innerHTML = h;
+      el.querySelectorAll(".chipbtn").forEach(function (btn) { btn.addEventListener("click", function () { cur = btn.getAttribute("data-v"); draw(); }); });
+    }
+    draw();
+  }
+
+  /* ---------------------------------------------------------------- ef */
+  // The candidates swept per engine and kind: recall@10, the median at one
+  // client and queries a second at 16.
+  function renderEf(el) {
+    var rep = R[el.getAttribute("data-ef")];
+    if (!rep || !rep.rows || !rep.rows.length) return pending(el);
+    var engines = [], kinds = [], efs = [], by = {};
+    rep.rows.forEach(function (r) {
+      if (engines.indexOf(r.engine) < 0) engines.push(r.engine);
+      if (kinds.indexOf(r.kind) < 0) kinds.push(r.kind);
+      if (efs.indexOf(r.ef) < 0) efs.push(r.ef);
+      by[r.engine + "|" + r.kind + "|" + r.ef] = r;
+    });
+    engines.sort(function (a, b) { return (b === "Strata") - (a === "Strata"); });
+    efs.sort(function (a, b) { return a - b; });
+    var h = '<div class="table-wrap"><table class="data ef"><thead><tr><th scope="col" rowspan="2">kind</th><th scope="col" rowspan="2" class="num">ef</th>';
+    engines.forEach(function (e) { h += '<th scope="colgroup" colspan="3"' + (e === "Strata" ? ' class="self"' : "") + ">" + esc(e) + "</th>"; });
+    h += "</tr><tr>";
+    engines.forEach(function () { h += '<th scope="col" class="num">recall@10</th><th scope="col" class="num">median, 1 client</th><th scope="col" class="num">q/s, 16 clients</th>'; });
+    h += "</tr></thead><tbody>";
+    kinds.forEach(function (k) {
+      efs.forEach(function (ef, i) {
+        h += "<tr>" + (i === 0 ? '<th scope="rowgroup" rowspan="' + efs.length + '">' + esc(kindName(R["cloud-1m"] || { kinds: [] }, k)) + "</th>" : "") + '<td class="n">' + ef + "</td>";
+        engines.forEach(function (e) {
+          var r = by[e + "|" + k + "|" + ef], s = e === "Strata" ? " self" : "";
+          h += r ? '<td class="n' + s + '">' + fmt(r.recall, 3) + '</td><td class="n' + s + '">' + fmt(r.p50) + ' ms</td><td class="n' + s + '">' + fmt(r.qps16) + "</td>" : '<td class="n" colspan="3">–</td>';
+        });
+        h += "</tr>";
+      });
+    });
+    h += "</tbody></table></div>";
+    h += '<p class="small muted">' + srcLink(rep, "ef.md") + "</p>";
+    el.innerHTML = h;
+  }
+
   /* ---------------------------------------------------------------- ab */
   function renderAB(el) {
     var rep = R[el.getAttribute("data-ab")];
     if (!rep) return pending(el);
+    if (el.hasAttribute("data-merge")) return renderABMerged(el, rep);
     var h = '<div class="table-wrap"><table class="data"><thead><tr><th scope="col">kind</th><th scope="col" class="num">clients</th><th scope="col" class="num">q/s before</th><th scope="col" class="num">q/s after</th><th scope="col" class="num">change</th><th scope="col" class="num">median before</th><th scope="col" class="num">median after</th></tr></thead><tbody>';
     rep.rows.forEach(function (r) {
       h += '<tr><th scope="row">' + esc(kindName(R["cloud-1m"] || { kinds: [] }, r.kind)) + '</th><td class="n">' + r.clients + '</td><td class="n">' + fmt(r.before) + '</td><td class="n"><b>' + fmt(r.after) + '</b></td><td class="n">' + (r.after >= r.before ? "+" : "−") + Math.abs(Math.round((r.after / r.before - 1) * 100)) + '%</td><td class="n">' + fmt(r.p50_before) + ' ms</td><td class="n">' + fmt(r.p50_after) + " ms</td></tr>";
     });
     h += "</tbody></table></div>";
+    el.innerHTML = h;
+  }
+  // Two images on the same nodes, one row a kind: queries a second at 16
+  // clients and the median at one client (data-labels names the two).
+  function renderABMerged(el, rep) {
+    var lab = (el.getAttribute("data-labels") || "before,after").split(",");
+    var by = {}, order = [];
+    rep.rows.forEach(function (r) { if (!by[r.kind]) { by[r.kind] = {}; order.push(r.kind); } by[r.kind][r.clients] = r; });
+    function pct(b, a) { var p = Math.round((a / b - 1) * 100); return (p > 0 ? "+" : p < 0 ? "−" : "") + Math.abs(p) + "%"; }
+    function ms(v) { return (v >= 100 ? fmt(v) : v.toPrecision(3)) + " ms"; }
+    var h = '<div class="table-wrap"><table class="data wrap-head"><thead><tr><th scope="col">kind</th><th scope="col" class="num">q/s at 16 clients, ' + esc(lab[0]) + '</th><th scope="col" class="num">' + esc(lab[1]) + '</th><th scope="col" class="num">change</th><th scope="col" class="num">median at 1 client, ' + esc(lab[0]) + '</th><th scope="col" class="num">' + esc(lab[1]) + "</th></tr></thead><tbody>";
+    order.forEach(function (k) {
+      var s = by[k][16], o = by[k][1];
+      h += '<tr><th scope="row">' + esc(kindName(R["cloud-1m"] || { kinds: [] }, k)) + "</th>" +
+        (s ? '<td class="n">' + fmt(s.before) + '</td><td class="n"><b>' + fmt(s.after) + '</b></td><td class="n">' + pct(s.before, s.after) + "</td>" : '<td class="n">–</td><td class="n">–</td><td class="n">–</td>') +
+        (o ? '<td class="n">' + ms(o.p50_before) + '</td><td class="n">' + ms(o.p50_after) + "</td>" : '<td class="n">–</td><td class="n">–</td>') + "</tr>";
+    });
+    h += "</tbody></table></div>";
+    h += '<p class="small muted">Medians of three passes each. ' + srcLink(rep, "passes.md") + "</p>";
     el.innerHTML = h;
   }
 
@@ -387,7 +498,7 @@
     var pos = 0;
     rep.rank.forEach(function (r, i) { if (r.e === "strata") pos = i + 1; });
     var top = rep.rank.slice(0, 3).map(function (r) { return esc(engineName(rep, r.e)) + " " + r.points; }).join(", ");
-    var passes = rep.passes > 1 ? "medians of " + rep.passes + " passes" : "one pass";
+    var passes = rep.passes_note || (rep.passes > 1 ? "medians of " + rep.passes + " passes" : "one pass");
     var head = ord(pos) + " of " + rep.ranked.length;
     if (mode === "chip") el.innerHTML = "<b>" + head + "</b> " + esc(CHIPS[id] || LABELS[id] || id);
     else if (mode === "tile") el.innerHTML = '<span class="eyebrow">' + esc(LABELS[id] || id) + '</span><span class="v">' + head + "</span><p>Summed places on " + rep.tests + " tests, " + passes + ": " + top + ".</p>";
@@ -448,6 +559,8 @@
     document.querySelectorAll("[data-load]").forEach(renderLoad);
     document.querySelectorAll("[data-graph-rank]").forEach(renderGraphRank);
     document.querySelectorAll("[data-ab]").forEach(renderAB);
+    document.querySelectorAll("[data-versus]").forEach(renderVersus);
+    document.querySelectorAll("[data-ef]").forEach(renderEf);
     document.querySelectorAll("[data-num]").forEach(renderV);
     document.querySelectorAll("[data-overall]").forEach(renderOverall);
     document.querySelectorAll("[data-rank-mini]").forEach(renderRankMini);
