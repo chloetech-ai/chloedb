@@ -381,6 +381,9 @@ impl HostedReranker {
     /// failure (with pauses of at most 5 s, as a query waits), and with its
     /// texts cut shorter when one was too long.
     fn batch(&self, query: &str, texts: &[String]) -> Result<Vec<f64>> {
+        if self.ep.api.grades() {
+            return texts.iter().map(|t| self.grade(query, t)).collect();
+        }
         let mut cut_to: Option<usize> = None;
         let (mut shortened, mut attempt) = (0, 0u32);
         let ep = &self.ep;
@@ -391,6 +394,7 @@ impl HostedReranker {
                 RerankApi::Jina => json!({"model": ep.model, "query": query, "documents": owned, "return_documents": false}),
                 RerankApi::Voyage => json!({"model": ep.model, "query": query, "documents": owned, "truncation": true}),
                 RerankApi::Tei => json!({"query": query, "texts": owned, "raw_scores": true, "truncate": true}),
+                RerankApi::Anthropic | RerankApi::Chat => unreachable!("a language model grades one text a request"),
             };
             let wire = Wire { url: &ep.url, key: ep.key.as_deref(), key_header: &ep.key_header, key_from: &ep.key_from, headers: &ep.headers };
             let failure = match post(&self.agent, wire, &body).and_then(|j| self.parse(&j, texts.len())) {
@@ -416,6 +420,54 @@ impl HostedReranker {
         }
     }
 
+    /// A language model's grade of `text` for `query`, 0 to 3
+    /// ([`super::grading_prompt`]), tried again as a batch is; NaN (no
+    /// score) when its answer holds no grade.
+    fn grade(&self, query: &str, text: &str) -> Result<f64> {
+        let ep = &self.ep;
+        let mut cut_to: Option<usize> = None;
+        let (mut shortened, mut attempt) = (0, 0u32);
+        loop {
+            let passage = cut_to.map_or(text, |n| cut(text, n));
+            let messages = json!([{"role": "user", "content": super::grading_prompt(query, passage)}]);
+            // A chat server takes its own defaults: newer OpenAI models
+            // refuse `max_tokens` and a temperature other than 1.
+            let body = match ep.api {
+                RerankApi::Anthropic => json!({"model": ep.model, "max_tokens": 16, "temperature": 0, "messages": messages}),
+                _ => json!({"model": ep.model, "messages": messages}),
+            };
+            let wire = Wire { url: &ep.url, key: ep.key.as_deref(), key_header: &ep.key_header, key_from: &ep.key_from, headers: &ep.headers };
+            let failure = match post(&self.agent, wire, &body).and_then(|j| answer_text(ep.api, &j, &ep.url)) {
+                Ok(t) => {
+                    return Ok(match super::grade_of(&t) {
+                        Some(g) => g as f64,
+                        None => {
+                            tracing::warn!(model = %ep.name, answer = %cut(&t, 200), "the model's answer held no grade from 0 to 3: the row gets no score");
+                            f64::NAN
+                        }
+                    })
+                }
+                Err(f) => f,
+            };
+            let longest = passage.chars().count();
+            match failure {
+                Failure::TooLong(m) if shortened < 4 && longest > 256 => {
+                    shortened += 1;
+                    cut_to = Some(longest / 2);
+                    tracing::warn!(model = %ep.name, chars = longest / 2, "a text was too long for the model: cut and sent again ({m})");
+                }
+                Failure::Again(m, wait) if attempt < ep.retries => {
+                    attempt += 1;
+                    let pause = wait.unwrap_or_else(|| backoff(attempt)).min(Duration::from_secs(5));
+                    tracing::warn!(model = %ep.name, attempt, pause_ms = pause.as_millis() as u64, "grading request failed, trying again: {m}");
+                    std::thread::sleep(pause);
+                }
+                Failure::Again(m, _) => return Err(Error::Unavailable(format!("cross-encoder {}: {m} (after {} tries)", ep.name, attempt + 1))),
+                Failure::TooLong(m) | Failure::Fatal(m) => return Err(Error::Unavailable(format!("cross-encoder {}: {m}", ep.name))),
+            }
+        }
+    }
+
     /// The `n` scores an answer holds, in the order of the texts: every
     /// text's, once.
     fn parse(&self, j: &J, n: usize) -> std::result::Result<Vec<f64>, Failure> {
@@ -424,6 +476,7 @@ impl HostedReranker {
             RerankApi::Cohere | RerankApi::Jina => (j.get("results"), "relevance_score"),
             RerankApi::Voyage => (j.get("data"), "relevance_score"),
             RerankApi::Tei => (Some(j), "score"),
+            RerankApi::Anthropic | RerankApi::Chat => unreachable!("a language model grades one text a request"),
         };
         let list = list.and_then(J::as_array).ok_or_else(|| Failure::Fatal(format!("{url} answered without a list of scores")))?;
         let mut out = vec![f64::NAN; n];
@@ -445,6 +498,125 @@ impl HostedReranker {
         }
         Ok(out)
     }
+}
+
+/// A language model that makes a derived TEXT field of another field's
+/// text, told what to make by the field's prompt ([`crate::schema::Derive`]):
+/// one request a text, the endpoint's `concurrency` at once, tried again
+/// on a rate limit or a server's failure, as a write waits on it. Its
+/// endpoint is a cross-encoder's of a language model's API
+/// ([`RerankEndpoint::from_config`]: `anthropic/<model>`, `openai/<model>`,
+/// or a directory's `endpoint.json` with `"api": "chat"` or
+/// `"anthropic"`).
+pub struct Generator {
+    ep: RerankEndpoint,
+    prompt: String,
+    agent: ureq::Agent,
+}
+
+/// Tokens a derived text takes at most.
+pub const GENERATED_TOKENS: u64 = 1024;
+
+impl Generator {
+    /// The model `name` names in `models` (an `endpoint.json` in
+    /// `models/<name>`, or a provider's name), told `prompt`.
+    pub fn open(name: &str, prompt: &str, models: &std::path::Path) -> Result<Generator> {
+        let bad = |m: String| Error::Schema(format!("model {name}: {m}"));
+        let path = models.join(name).join("endpoint.json");
+        let config = match path.exists() {
+            true => {
+                let text = std::fs::read_to_string(&path).map_err(|e| bad(format!("{}: {e}", path.display())))?;
+                Some(serde_json::from_str::<J>(&text).map_err(|e| bad(format!("{}: {e}", path.display())))?)
+            }
+            false => None,
+        };
+        let mut ep = RerankEndpoint::from_config(name, config.as_ref(), &|k| std::env::var(k).ok())?;
+        if !ep.api.grades() {
+            return Err(bad("a prompt is for a language model: anthropic/<model>, openai/<model>, or an endpoint.json with \"api\": \"chat\" or \"anthropic\"".into()));
+        }
+        // A write waits on it longer than a query does.
+        if config.as_ref().and_then(|c| c.get("timeout_s")).is_none() {
+            ep.timeout = Duration::from_secs(60);
+        }
+        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(ep.timeout)).http_status_as_error(false).user_agent(format!("strata/{}", env!("CARGO_PKG_VERSION"))).build().into();
+        Ok(Generator { ep, prompt: prompt.to_string(), agent })
+    }
+
+    /// The text made of `text`: the model's answer, trimmed. An empty text
+    /// makes an empty one, with no request.
+    pub fn generate(&self, text: &str) -> Result<String> {
+        if text.trim().is_empty() {
+            return Ok(String::new());
+        }
+        let ep = &self.ep;
+        let text = cut(text, ep.max_chars);
+        let body = match ep.api {
+            RerankApi::Anthropic => json!({"model": ep.model, "max_tokens": GENERATED_TOKENS, "temperature": 0, "system": self.prompt, "messages": [{"role": "user", "content": text}]}),
+            _ => json!({"model": ep.model, "messages": [{"role": "system", "content": self.prompt}, {"role": "user", "content": text}]}),
+        };
+        let mut attempt = 0u32;
+        loop {
+            let wire = Wire { url: &ep.url, key: ep.key.as_deref(), key_header: &ep.key_header, key_from: &ep.key_from, headers: &ep.headers };
+            let failure = match post(&self.agent, wire, &body).and_then(|j| answer_text(ep.api, &j, &ep.url)) {
+                Ok(t) => return Ok(t.trim().to_string()),
+                Err(f) => f,
+            };
+            match failure {
+                Failure::Again(m, wait) if attempt < ep.retries.max(4) => {
+                    attempt += 1;
+                    let pause = wait.unwrap_or_else(|| backoff(attempt)).min(Duration::from_secs(30));
+                    tracing::warn!(model = %ep.name, attempt, pause_ms = pause.as_millis() as u64, "a derived text's request failed, trying again: {m}");
+                    std::thread::sleep(pause);
+                }
+                Failure::Again(m, _) => return Err(Error::Unavailable(format!("model {}: {m} (after {} tries)", ep.name, attempt + 1))),
+                Failure::TooLong(m) | Failure::Fatal(m) => return Err(Error::Unavailable(format!("model {}: {m}", ep.name))),
+            }
+        }
+    }
+}
+
+impl crate::derive::Deriver for Generator {
+    fn name(&self) -> String {
+        self.ep.name.clone()
+    }
+
+    fn modality(&self) -> crate::embed::Modality {
+        crate::embed::Modality::Text
+    }
+
+    fn derive(&self, inputs: &[crate::embed::Input<'_>]) -> Result<Vec<String>> {
+        let texts: Vec<&str> = inputs
+            .iter()
+            .map(|i| match i {
+                crate::embed::Input::Text(t) => Ok(*t),
+                i => Err(Error::Schema(format!("model {} makes text of text, not of {}s", self.ep.name, i.modality().as_str()))),
+            })
+            .collect::<Result<_>>()?;
+        let mut out = Vec::with_capacity(texts.len());
+        for round in texts.chunks(self.ep.concurrency.max(1)) {
+            let made: Vec<Result<String>> = match round {
+                [one] => vec![self.generate(one)],
+                _ => std::thread::scope(|s| {
+                    let hs: Vec<_> = round.iter().map(|t| s.spawn(|| self.generate(t))).collect();
+                    hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(Error::Unavailable("a derived text's thread panicked".into())))).collect()
+                }),
+            };
+            for m in made {
+                out.push(m?);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// The text of a language model's answer: Anthropic's `content` blocks of
+/// type `text`, or a chat completion's first message.
+fn answer_text(api: RerankApi, j: &J, url: &str) -> std::result::Result<String, Failure> {
+    let t = match api {
+        RerankApi::Anthropic => j.get("content").and_then(J::as_array).map(|blocks| blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("")),
+        _ => j.pointer("/choices/0/message/content").and_then(J::as_str).map(String::from),
+    };
+    t.ok_or_else(|| Failure::Fatal(format!("{url} answered without a message")))
 }
 
 /// Where a request goes, and the secret and headers it carries.

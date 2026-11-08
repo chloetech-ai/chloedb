@@ -8,13 +8,14 @@ import base64
 import json
 import os
 import shutil
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Mapping
 
 from ._search import Search, ordered_schema, params as _params
-from ._strata import StrataError
+from ._native import StrataError
 from .build import Query
 from .result import Result
 
@@ -42,16 +43,31 @@ def _rows(rows: Any) -> list:
     return [rows] if isinstance(rows, Mapping) else list(rows)
 
 
+def _retry_after(headers: Any) -> float:
+    """The seconds a 429's `Retry-After` says to wait (1 when it says none)."""
+    try:
+        return min(max(float(headers.get("retry-after") or 1), 0.0), 10.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
 class Client(Search):
     """A strata-server at `url` ("http://host:7700"). `token` is the
     server's --token, if it has one. Errors the server reports raise
     `StrataError`; one it cannot be reached raises `urllib.error.URLError`.
+
+    A request the server refuses for its load (429: behind on flushing its
+    writes, its write queue full, too many queries running) did nothing,
+    and is sent again after the `Retry-After` it gives, for up to
+    `retry_for` seconds (0: never). A write that failed partway is not,
+    unless it has an idempotency key.
     """
 
-    def __init__(self, url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0):
+    def __init__(self, url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0):
         self.url = url.rstrip("/")
         self.token = token if token is not None else os.environ.get("STRATA_TOKEN")
         self.timeout = timeout
+        self.retry_for = retry_for
         self._schema: dict | None = None
 
     def _call(self, method: str, path: str, body: Any = None, *, data: Any = None, headers: Mapping[str, str] | None = None, text: bool = False, out: Any = None) -> Any:
@@ -63,24 +79,34 @@ class Client(Search):
             h["content-type"] = "application/json"
         if self.token:
             h["authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(self.url + path, data=data, method=method, headers=h)
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                if out is not None:
-                    shutil.copyfileobj(r, out)
-                    return r.headers
-                return r.read().decode() if text else json.loads(r.read() or b"null")
-        except urllib.error.HTTPError as e:
-            raw = e.read()
+        # A file is read once: an import is not sent again.
+        again = isinstance(data, (bytes, type(None)))
+        keyed = isinstance(body, Mapping) and bool(body.get("idempotency_key"))
+        give_up = time.monotonic() + self.retry_for
+        while True:
+            req = urllib.request.Request(self.url + path, data=data, method=method, headers=h)
             try:
-                answer = json.loads(raw)
-                msg = answer.get("error") or raw.decode(errors="replace")
-            except (ValueError, AttributeError):
-                answer, msg = None, raw.decode(errors="replace") or str(e)
-            err = StrataError(f"{msg} (HTTP {e.code})")
-            err.status = e.code
-            err.answer = answer
-            raise err from None
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    if out is not None:
+                        shutil.copyfileobj(r, out)
+                        return r.headers
+                    return r.read().decode() if text else json.loads(r.read() or b"null")
+            except urllib.error.HTTPError as e:
+                raw = e.read()
+                try:
+                    answer = json.loads(raw)
+                    msg = answer.get("error") or raw.decode(errors="replace")
+                except (ValueError, AttributeError):
+                    answer, msg = None, raw.decode(errors="replace") or str(e)
+                partial = isinstance(answer, dict) and answer.get("partial") is True
+                wait = _retry_after(e.headers)
+                if e.code == 429 and self.retry_for > 0 and again and (keyed or not partial) and time.monotonic() + wait <= give_up:
+                    time.sleep(wait)
+                    continue
+                err = StrataError(f"{msg} (HTTP {e.code})")
+                err.status = e.code
+                err.answer = answer
+                raise err from None
 
     def _schema_answer(self) -> dict:
         if self._schema is None:
@@ -122,10 +148,14 @@ class Client(Search):
             body["timeout_ms"] = timeout_ms
         return Result._of(self._call("POST", "/v1/query", body))
 
-    def sql(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> Result | int:
+    def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, idempotency_key: str | None = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
-        INSERT, UPDATE or DELETE wrote."""
-        r = self._call("POST", "/v1/sql", {"sql": sql, "params": _params(params, kw)})
+        INSERT, UPDATE or DELETE wrote. With `idempotency_key`, a write sent
+        again is not applied twice (see `write`)."""
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw)}
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        r = self._call("POST", "/v1/sql", body)
         return Result._of(r) if "rows" in r else int(r["written"])
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:
@@ -176,10 +206,17 @@ class Client(Search):
         got = self._call("POST", "/v1/sid/next", {k: v for k, v in body.items() if v is not None})
         return {n["prefix"]: {c["code"]: c["count"] for c in n["next"]} for n in got["next"]}
 
-    def write(self, ops: list[dict]) -> int:
+    def write(self, ops: list[dict], *, idempotency_key: str | None = None) -> int:
         """Write operations as /v1/write takes them ({"op": "insert",
-        "doc": {...}}, {"op": "delete", "key": k}, ...), in one request."""
-        return int(self._call("POST", "/v1/write", {"ops": ops})["written"])
+        "doc": {...}}, {"op": "delete", "key": k}, ...), in one request.
+        With `idempotency_key`, the same request sent again (after a lost
+        answer, or with the `idempotency_key` of an error whose `answer`
+        says it failed partway through a coordinator, `"partial": True`)
+        is not applied twice."""
+        body: dict[str, Any] = {"ops": ops}
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        return int(self._call("POST", "/v1/write", body)["written"])
 
     def _ops(self, op: str, rows: list, table: str | None) -> int:
         named = {} if table is None else {"table": table}
@@ -225,13 +262,17 @@ class Client(Search):
                 return None
             raise
 
-    def get_many(self, keys: Iterable[Any], *, table: str | None = None) -> list[dict | None]:
+    def get_many(self, keys: Iterable[Any], *, table: str | None = None, columns: Iterable[str] | None = None) -> list[dict | None]:
         """`get` of several keys (POST /v1/kv/get), 10,000 a request, in
-        their order."""
+        their order; with `columns`, each row of those columns alone (a
+        ranker's features, say), which reads no other."""
         keys = list(keys)
+        body: dict[str, Any] = {"table": self._table(table)}
+        if columns is not None:
+            body["columns"] = list(columns)
         out: list[dict | None] = []
         for i in range(0, len(keys), GET_BATCH):
-            out += self._call("POST", "/v1/kv/get", {"table": self._table(table), "keys": keys[i : i + GET_BATCH]})["rows"]
+            out += self._call("POST", "/v1/kv/get", {**body, "keys": keys[i : i + GET_BATCH]})["rows"]
         return out
 
     def put(self, key: Any, row: Mapping[str, Any], *, table: str | None = None, if_seq_no: int | None = None) -> int:

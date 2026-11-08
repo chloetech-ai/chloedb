@@ -320,7 +320,7 @@ impl Profile {
     }
 
     fn check(&self) -> Result<(), String> {
-        let known: Vec<&str> = super::super::KINDS.iter().map(|(k, _)| *k).collect();
+        let known: Vec<&str> = super::KINDS.iter().map(|(k, _)| *k).collect();
         if self.mix.is_empty() || self.mix.values().all(|w| *w <= 0.0) {
             return Err("profile: mix needs a kind with a weight above 0".into());
         }

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
-from ._strata import StrataError
+from ._native import StrataError
 from .build import Expr, Query, bm25, hops, rrf, score, similarity
 from .result import Result
 

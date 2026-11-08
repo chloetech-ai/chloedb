@@ -1,0 +1,354 @@
+{
+  "at": 1793958663.7222624,
+  "concurrency": [
+    1,
+    4,
+    16
+  ],
+  "engine": "strata",
+  "items": 100000,
+  "kinds": {
+    "r1": {
+      "answer_errors": 0,
+      "answered": 300,
+      "recall@500": 0.9794400000000002,
+      "runs": [
+        {
+          "concurrency": 1,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 4.651458257763977,
+            "n": 1288,
+            "p50_ms": 4.976867,
+            "p90_ms": 5.891449,
+            "p99_ms": 7.261463,
+            "qps": 214.6023933571574
+          }
+        },
+        {
+          "concurrency": 4,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 6.805685251418841,
+            "n": 3524,
+            "p50_ms": 6.485384000000001,
+            "p90_ms": 9.858037999999999,
+            "p99_ms": 14.274433,
+            "qps": 586.8308256960586
+          }
+        },
+        {
+          "concurrency": 16,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 22.43079383889802,
+            "n": 4283,
+            "p50_ms": 21.866598,
+            "p90_ms": 32.221401,
+            "p99_ms": 42.376622000000005,
+            "qps": 712.1343319085669
+          }
+        }
+      ],
+      "title": "user to items"
+    },
+    "r2": {
+      "answer_errors": 0,
+      "answered": 300,
+      "recall@1000": 0.997966666666667,
+      "runs": [
+        {
+          "concurrency": 1,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 12.844768379014992,
+            "n": 467,
+            "p50_ms": 12.884664,
+            "p90_ms": 16.780016,
+            "p99_ms": 19.402188000000002,
+            "qps": 77.69860329478205
+          }
+        },
+        {
+          "concurrency": 4,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 17.224632030868605,
+            "n": 1393,
+            "p50_ms": 16.540934,
+            "p90_ms": 23.889401,
+            "p99_ms": 31.324689000000003,
+            "qps": 231.7175889808554
+          }
+        },
+        {
+          "concurrency": 16,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 59.73702604210534,
+            "n": 1615,
+            "p50_ms": 58.39859,
+            "p90_ms": 86.497678,
+            "p99_ms": 113.852814,
+            "qps": 266.75099658345755
+          }
+        }
+      ],
+      "title": "candidates (RRF)"
+    },
+    "r3": {
+      "answer_errors": 0,
+      "answered": 300,
+      "rows_found": 1.0,
+      "runs": [
+        {
+          "concurrency": 1,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 7.282156647630627,
+            "n": 823,
+            "p50_ms": 6.972142,
+            "p90_ms": 8.550824,
+            "p99_ms": 9.873520000000001,
+            "qps": 137.01164623248866
+          }
+        },
+        {
+          "concurrency": 4,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 10.347284130772547,
+            "n": 2317,
+            "p50_ms": 9.916181,
+            "p90_ms": 14.107692,
+            "p99_ms": 19.704342,
+            "qps": 385.4857763938212
+          }
+        },
+        {
+          "concurrency": 16,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 28.05939348933057,
+            "n": 3421,
+            "p50_ms": 27.42176,
+            "p90_ms": 38.620455,
+            "p99_ms": 50.293935,
+            "qps": 567.8104653128272
+          }
+        }
+      ],
+      "title": "features"
+    },
+    "r4": {
+      "answer_errors": 0,
+      "answered": 300,
+      "precision@50": 1.0,
+      "runs": [
+        {
+          "concurrency": 1,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 14.12682741647059,
+            "n": 425,
+            "p50_ms": 13.645798000000001,
+            "p90_ms": 15.717489,
+            "p99_ms": 20.836339,
+            "qps": 70.77607789270479
+          }
+        },
+        {
+          "concurrency": 4,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 20.90330410869564,
+            "n": 1150,
+            "p50_ms": 19.677083000000003,
+            "p90_ms": 28.400809,
+            "p99_ms": 44.594034,
+            "qps": 191.10712935806527
+          }
+        },
+        {
+          "concurrency": 16,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 71.42510427716194,
+            "n": 1353,
+            "p50_ms": 70.29043899999999,
+            "p90_ms": 97.57593,
+            "p99_ms": 127.753893,
+            "qps": 223.1532986743846
+          }
+        }
+      ],
+      "title": "GBDT rerank"
+    },
+    "r5": {
+      "answer_errors": 0,
+      "answered": 300,
+      "artists_over_cap": 0,
+      "recall@20": 0.9843333333333318,
+      "runs": [
+        {
+          "concurrency": 1,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 5.231194260680032,
+            "n": 1147,
+            "p50_ms": 5.800744,
+            "p90_ms": 6.993441000000001,
+            "p99_ms": 8.711396,
+            "qps": 191.1253528829706
+          }
+        },
+        {
+          "concurrency": 4,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 7.482331895865718,
+            "n": 3217,
+            "p50_ms": 7.098008999999999,
+            "p90_ms": 11.550108,
+            "p99_ms": 16.330204000000002,
+            "qps": 533.9317648963538
+          }
+        },
+        {
+          "concurrency": 16,
+          "latency": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 24.1799557678392,
+            "n": 3980,
+            "p50_ms": 23.41424,
+            "p90_ms": 35.533049,
+            "p99_ms": 49.483895,
+            "qps": 660.6653928321896
+          }
+        }
+      ],
+      "title": "diversify"
+    },
+    "r6": {
+      "answer_errors": 0,
+      "answered": 300,
+      "recall@500": 0.9794400000000002,
+      "runs": [
+        {
+          "concurrency": 1,
+          "event_rate": 200.0,
+          "fresh": {
+            "max_ms": 5.983773,
+            "p50_ms": 2.12472,
+            "p99_ms": 5.983773,
+            "samples": 24,
+            "unseen": 0
+          },
+          "reads": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 4.938837294311623,
+            "n": 1213,
+            "p50_ms": 5.267515,
+            "p90_ms": 6.241979,
+            "p99_ms": 7.715977,
+            "qps": 202.0581075470755
+          },
+          "sent": 1200,
+          "writes": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 2.468823392499999,
+            "n": 1200,
+            "p50_ms": 2.3214770000000002,
+            "p90_ms": 3.314971,
+            "p99_ms": 5.1396560000000004,
+            "qps": 200.0
+          }
+        },
+        {
+          "concurrency": 4,
+          "event_rate": 200.0,
+          "fresh": {
+            "max_ms": 12.059357,
+            "p50_ms": 3.731138,
+            "p99_ms": 12.059357,
+            "samples": 24,
+            "unseen": 0
+          },
+          "reads": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 6.864375228677729,
+            "n": 3494,
+            "p50_ms": 6.628226,
+            "p90_ms": 9.932934,
+            "p99_ms": 13.288783,
+            "qps": 581.7935780260124
+          },
+          "sent": 1200,
+          "writes": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 4.714592083333333,
+            "n": 1200,
+            "p50_ms": 4.252453,
+            "p90_ms": 7.105681,
+            "p99_ms": 11.812872,
+            "qps": 200.0
+          }
+        },
+        {
+          "concurrency": 16,
+          "event_rate": 200.0,
+          "fresh": {
+            "max_ms": 41.36712,
+            "p50_ms": 21.230961,
+            "p99_ms": 41.36712,
+            "samples": 24,
+            "unseen": 0
+          },
+          "reads": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 24.12579944603421,
+            "n": 3984,
+            "p50_ms": 23.395424000000002,
+            "p90_ms": 34.742108,
+            "p99_ms": 49.864935,
+            "qps": 661.9897660187285
+          },
+          "sent": 1200,
+          "writes": {
+            "errors": 0,
+            "first_error": null,
+            "mean_ms": 23.25004201000001,
+            "n": 1200,
+            "p50_ms": 22.454253,
+            "p90_ms": 34.264453,
+            "p99_ms": 48.214311,
+            "qps": 200.0
+          }
+        }
+      ],
+      "title": "events while serving"
+    }
+  },
+  "seconds": 6.0,
+  "users": 300
+}

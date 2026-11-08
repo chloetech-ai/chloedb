@@ -16,6 +16,7 @@ pub mod deep;
 pub mod distill;
 pub mod doctor;
 pub mod embed;
+pub mod fixes;
 pub mod hook;
 pub mod inspect;
 pub mod install;

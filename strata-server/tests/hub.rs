@@ -209,3 +209,56 @@ async fn tables_are_copied_between_this_server_and_a_connection() {
     let (s, j) = copy(json!({"from": "", "to": "remote", "tables": ["products; DROP"]})).await;
     assert_eq!(s, 400, "{j}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connection_follows_another_only_where_the_operator_runs_its_follow_process() {
+    let dir = tempfile::tempdir().unwrap();
+    // Two clusters of their own (no operator), each with an admin key the hub holds.
+    let mut ends = Vec::new();
+    for name in ["east", "west"] {
+        let svc = service(dir.path(), &format!("{name}.strata"));
+        let (_, secret) = svc.keys.create("hub-laptop", Scope::Admin, None, true, false).unwrap();
+        let (url, _) = serve(svc, Access { token: Some(Secret::new(format!("{name}-root"))), ..Access::default() }).await;
+        ends.push((name, url, secret));
+    }
+    let hub = service(dir.path(), "hub.strata");
+    let (hub_url, _) = serve(hub, Access::default()).await;
+    for (name, url, secret) in &ends {
+        let (s, j) = call("POST", &format!("{hub_url}/v1/admin/hub/connections"), None, Some(json!({"name": name, "url": url, "key": secret}))).await;
+        assert_eq!(s, 201, "{j}");
+    }
+    let follow_url = format!("{hub_url}/v1/admin/hub/follow");
+    let follow = |b: Json| call("POST", &follow_url, None, Some(b));
+
+    // The plan says what it would do, and why it cannot here.
+    let (s, plan) = follow(json!({"follower": "west", "source": "east", "plan": true})).await;
+    assert_eq!(s, 200, "{plan}");
+    assert_eq!((plan["name"].as_str(), plan["start"].as_str(), plan["hub_writes_secret"].as_bool()), (Some("east"), Some("follow"), Some(true)), "{plan}");
+    let refused = plan["refused"].as_str().unwrap_or_default();
+    for says in ["west is not run by the Kubernetes operator", "an address of this machine", "cannot keep the source's key there"] {
+        assert!(refused.contains(says), "{says}: {refused}");
+    }
+    assert!(plan["steps"].as_array().is_some_and(|s| s.len() == 4), "{plan}");
+    // A source URL given, and a Secret made already: only the operator is missing.
+    let (_, plan) = follow(json!({"follower": "west", "source": "east", "plan": true, "source_url": "https://east.example:7700/", "key_secret": "east-feed", "start": "copy"})).await;
+    assert_eq!((plan["source_url"].as_str(), plan["source_url_from"].as_str(), plan["hub_writes_secret"].as_bool()), (Some("https://east.example:7700"), Some("as given"), Some(false)), "{plan}");
+    assert!(plan["refused"].as_str().is_some_and(|r| r.contains("not run by the Kubernetes operator") && !r.contains("address")), "{plan}");
+    // Without "plan", nothing is made: 409 with the same reasons, and no key on east.
+    let (s, j) = follow(json!({"follower": "west", "source": "east"})).await;
+    assert_eq!(s, 409, "{j}");
+    assert!(j["error"].as_str().unwrap_or_default().contains("not run by the Kubernetes operator"), "{j}");
+    let (_, keys) = call("GET", &format!("{}/v1/admin/keys", ends[0].1), Some("east-root"), None).await;
+    assert!(!keys.to_string().contains("follow west"), "no feed key was made: {keys}");
+    // What is not a follow.
+    assert_eq!(follow(json!({"follower": "west", "source": "west"})).await.0, 400);
+    assert_eq!(follow(json!({"follower": "west", "source": "nobody", "plan": true})).await.0, 404);
+    assert_eq!(follow(json!({"follower": "west", "source": "east", "name": "east coast", "plan": true})).await.0, 400);
+
+    // Through the hub, with its admin key: pausing needs the operator, and
+    // stopping names a cluster this one followed.
+    let (s, j) = call("POST", &format!("{hub_url}/c/west/v1/admin/follow/pause"), None, Some(json!({"name": "east"}))).await;
+    assert_eq!(s, 409, "{j}");
+    assert!(j["error"].as_str().unwrap_or_default().contains("not this cluster's operator's"), "{j}");
+    let (s, j) = call("POST", &format!("{hub_url}/c/west/v1/admin/follow/stop"), None, Some(json!({"name": "east"}))).await;
+    assert_eq!(s, 404, "an admin key may stop following, of a cluster this one followed: {j}");
+}

@@ -2338,7 +2338,8 @@ function render(page, r) {
       body: h("div", { class: "row", style: { gap: "6px" } },
         h("button", { class: "btn sm", onclick: () => { if (managed()) draft.kube.replicas = (sp.replicas ?? 3) + 1; else for (const sh of M.shards) draft.adds.push({ id: nextId(), shard: sh.i, url: "" }); tab = "map"; mode = "draft"; writeParams(); changed(); drawAll(); } }, icon("plus"), `A copy more for every shard (${plural(M.shards.length, "server")})`),
         h("button", { class: "btn sm", onclick: () => { addShards(Math.max(1, Math.round(M.shards.length / 4))); tab = "map"; mode = "draft"; writeParams(); drawAll(); } }, icon("plus"), `${plural(Math.max(1, Math.round(M.shards.length / 4)), "shard")} more`),
-        !managed() && Math.max(...slotsPer) - Math.min(...slotsPer) > 1 ? h("button", { class: "btn sm", onclick: evenOut }, "Even out the slots…") : null) });
+        !managed() && Math.max(...slotsPer) - Math.min(...slotsPer) > 1 ? h("button", { class: "btn sm", onclick: evenOut }, "Even out the slots…") : null),
+      foot: h("span", {}, "How much a copy or a shard more would hold, and cost: ", h("a", { href: "#/simulator" }, "test it in the Simulator")) });
     clear(body, h("div", { class: "cc-cap" }, auto1, head1, quick));
   }
   async function applySuggestion(sg, sp) {
