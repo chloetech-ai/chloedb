@@ -13,7 +13,7 @@
 //! * excerpts of the messages, for wording and figures a note left out.
 //!
 //! `memory_ask` answers with it. On BEAM 100K (400 questions, the same
-//! reader and judge for all three) it scores 60.2 with about 15K characters
+//! reader and judge for all three) it scores 61.5 with about 16K characters
 //! and no model call, against 55.0 for the query engine's picks and 63.4 for
 //! an observational memory that hands the reader its whole 153K-character
 //! log (`results/search/beam_100k`, `engram-bench search`).
@@ -50,10 +50,13 @@ pub struct ContextParams {
     /// The first `replies` exchanges a search of the assistant's answers
     /// finds, each with the start of the user's message (at most `reply_user_chars`) and the part of the
     /// assistant's reply closest to the question (at most `reply_chars`).
-    /// None for a broad question.
     pub replies: usize,
     pub reply_chars: usize,
     pub reply_user_chars: usize,
+    /// Replies for a broad question, and the characters of each: more and
+    /// shorter, since its answer is spread over many exchanges.
+    pub broad_replies: usize,
+    pub broad_reply_chars: usize,
 }
 
 impl Default for ContextParams {
@@ -71,6 +74,8 @@ impl Default for ContextParams {
             replies: 3,
             reply_chars: 1000,
             reply_user_chars: 200,
+            broad_replies: 8,
+            broad_reply_chars: 500,
         }
     }
 }
@@ -234,7 +239,7 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
     let wide;
     let is_broad = broad(question);
     let p = if is_broad {
-        wide = ContextParams { budget: (p.budget as f64 * p.broad_scale) as usize, replies: 0, ..p.clone() };
+        wide = ContextParams { budget: (p.budget as f64 * p.broad_scale) as usize, replies: p.broad_replies, reply_chars: p.broad_reply_chars, ..p.clone() };
         &wide
     } else {
         p
@@ -433,6 +438,11 @@ mod tests {
         assert!(b.records.iter().any(|r| r.kind == Kind::Answer && r.session == "s1"), "{:?}", b.records);
         let none = build(&s, q, &Filter::default(), &ContextParams { replies: 0, ..Default::default() }).unwrap();
         assert!(!none.text.contains("What the assistant replied"), "{}", none.text);
+        // A summary question gets its own, shorter replies.
+        let wide = build(&s, "Can you summarize what you suggested for the Andes trek?", &Filter::default(), &ContextParams { replies: 0, broad_replies: 2, broad_reply_chars: 40, ..Default::default() }).unwrap();
+        let at = wide.text.find("What the assistant replied").expect("replies for a broad question");
+        let block = wide.text[at..].split("\n\n").next().unwrap();
+        assert!(block.contains("assistant: For the Andes trek") && block.lines().all(|l| l.len() < 200), "{}", wide.text);
     }
 
     /// Notes come in their current versions with what they replaced, rules

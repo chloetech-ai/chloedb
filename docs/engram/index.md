@@ -218,9 +218,9 @@ The weights come from a logistic fit on LongMemEval-S (`engram/scripts/fit_gate.
 | replies | the assistant's answers (hybrid) | the three exchanges these hits rank first: the start of the user's message (200 characters) and the part of the reply closest to the question (1,000) |
 | excerpts | prompts and answers (hybrid) | the 400 characters of each closest to the question |
 
-Notes take 40% of the 12,000-character budget the rules leave, excerpts 25%, and both then fill the rest in rank order; the replies come on top, so a context is about 15,200 characters (about 3,800 tokens). A question about order or a summary ("in what order", "summarize", "a timeline of") gets one and a half times the budget and no replies, since its answer is spread over many exchanges. It takes about 5 ms a question on BEAM's stores.
+Notes take 40% of the 12,000-character budget the rules leave, excerpts 25%, and both then fill the rest in rank order; the replies come on top, so a context is about 16,400 characters (about 4,100 tokens). A question about order or a summary ("in what order", "summarize", "a timeline of") gets one and a half times the budget and the replies of eight exchanges, 500 characters each, since its answer is spread over many exchanges. It takes about 7 ms a question on BEAM's stores.
 
-On BEAM 100K (20 conversations, 400 questions; [results](results.md#search-alone-against-observational-memory)) this context scores 60.2, against 55.0 for the query engine's picks and 63.4 for an observational memory that hands the reader its whole log of observations, about 153,000 characters, with the same reader and judge. With `deep: true` (`engram ask --deep`, or a `model`) `memory_ask` runs the query engine below instead.
+On BEAM 100K (20 conversations, 400 questions; [results](results.md#search-alone-against-observational-memory)) this context scores 61.5, against 55.0 for the query engine's picks and 63.4 for an observational memory that hands the reader its whole log of observations, about 153,000 characters, with the same reader and judge. With `deep: true` (`engram ask --deep`, or a `model`) `memory_ask` runs the query engine below instead.
 
 ## Query understanding
 
@@ -273,7 +273,7 @@ Two settings make it cheaper. `"planner": "none"` (`ENGRAM_DEEP_PLAN=none`) skip
 | `UserPromptSubmit` | < 100 ms p99 at 1M records | 24.9 ms p50, 38.6 ms p99 as a hook process |
 | `SessionStart` | < 150 ms (daemon up), < 1 s with spawn | 50–72 ms including daemon start |
 | ingest | > 1,000 records/s | 48,000–52,000 records/s with the static embedder |
-| `memory_ask` (search alone) | < 100 ms | 5.2 ms a question on BEAM 100K's stores, one thread |
+| `memory_ask` (search alone) | < 100 ms | 6.7 ms a question on BEAM 100K's stores, one thread |
 | query engine (planner and ranker) | off the prompt's path unless `sync` | 12 s p50, 16 s p90, $0.0012 per request with Haiku |
 
 The default embedder is static (Model2Vec potion-retrieval-32M: token lookup and mean, 512 dimensions, microseconds per record). BGE-small (384 dimensions) is optional (`--features bert`) and costs about 50 ms per record on a CPU.
