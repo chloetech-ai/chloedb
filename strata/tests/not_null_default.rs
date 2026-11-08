@@ -135,12 +135,12 @@ fn through_sql(layout: Layout) {
     }
     // A key declared NOT NULL needs no feature: it always holds a value.
     written(&db, "CREATE TABLE plain (id KEYWORD PRIMARY KEY NOT NULL, n INT NULL, m INT DEFAULT NULL)");
-    assert_eq!(required(&path), ["compact_keys", "field_ids"]);
+    assert_eq!(required(&path), ["compact_keys", "field_ids", "packed_positions"]);
     let plain = db.catalog().into_iter().find(|t| t.table == "plain").unwrap();
     assert!(plain.fields.iter().all(|f| !f.not_null && f.default.is_none()), "{plain:?}");
 
     written(&db, TASKS);
-    assert_eq!(required(&path), ["bool", "compact_keys", "default", "field_ids", "not_null", "timestamp"]);
+    assert_eq!(required(&path), ["bool", "compact_keys", "default", "field_ids", "not_null", "packed_positions", "timestamp"]);
     let schema = db.catalog().into_iter().find(|t| t.table == "tasks").unwrap();
     let short = schema.to_short_json();
     assert_eq!(short["fields"][0], serde_json::json!({"name": "id", "type": "keyword"}));
@@ -232,9 +232,9 @@ fn through_sql(layout: Layout) {
 
     // Without the table, the database needs field ids alone.
     written(&db, "DROP TABLE tasks");
-    assert_eq!(required(&path), ["compact_keys", "field_ids"]);
+    assert_eq!(required(&path), ["compact_keys", "field_ids", "packed_positions"]);
     written(&db, "DROP TABLE plain");
-    assert_eq!(required(&path), ["compact_keys", "field_ids"]);
+    assert_eq!(required(&path), ["compact_keys", "field_ids", "packed_positions"]);
     if layout == Layout::SingleFile {
         let slots = meta_slots(&path);
         assert!(slots.iter().all(|m| m.is_some_and(|m| m.format == 3)), "{slots:?}");

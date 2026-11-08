@@ -674,7 +674,7 @@ CREATE TABLE otel_logs (ts TIMESTAMP NOT NULL, observed_ts TIMESTAMP, severity K
 - `attributes` holds the record's attributes, its event name as `event_name`, and bytes as base64, in a [JSON field](query-language.md#json-fields-keys-no-schema-names) whose paths filters read from its index.
 - `batch` is a random number per request: through a [coordinator](#sharding-one-coordinator-many-shards) it places the table's rows (`shard_by`), so that a request's rows go to one shard and requests spread over all of them. A log has no key, and the table has none.
 
-A table made beforehand takes the columns of these that it has, by name, so make it first for another retention (`retain = '30 days'`), more columns indexed or fewer kept. Its doc store is compressed with [zstd](query-language.md#tables): on four of Loghub's logs, a table of their fields with zstd took 54 to 78 bytes a line, and OpenSearch with its best compression 56 to 83 ([results](https://github.com/chloetech-ai/strata/tree/main/strata/results/log-bytes)). The rows are searched as any are:
+A table made beforehand takes the columns of these that it has, by name, so make it first for another retention (`retain = '30 days'`), more columns indexed or fewer kept. Its doc store is compressed with [zstd](query-language.md#tables): on four of Loghub's logs sent this way, `otel_logs` took 30 to 43 bytes a line (it has no key, and its positions are packed), and OpenSearch with its best compression 55 to 83 ([results](https://github.com/chloetech-ai/strata/tree/main/strata/results/log-bytes)). The rows are searched as any are:
 
 ```sql
 SELECT ts, service, severity, body FROM otel_logs

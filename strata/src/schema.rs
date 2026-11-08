@@ -185,6 +185,12 @@ pub const EXPIRE_BY: &str = "expire_by";
 /// cannot read those blocks, so they refuse the database by name.
 pub const ZSTD: &str = "zstd";
 
+/// The feature of a database with a table that writes packed positions
+/// ([`Schema::packed_positions`]) and has a field with positions: versions
+/// of Strata from before it cannot read them, so they refuse the database
+/// by name.
+pub const PACKED_POSITIONS: &str = "packed_positions";
+
 /// What an INT column's integers stand for (format 3; a database is
 /// written in format 3 only while a table has such a field). Queries and
 /// writes see [`Value::Bool`](crate::value::Value::Bool) and
@@ -734,6 +740,14 @@ pub struct Schema {
     /// ([`Schema::with_compression`]).
     #[serde(default, skip_serializing_if = "Compression::is_lz4")]
     pub compression: Compression,
+    /// Whether its TEXT fields' positions are written in the packed layout
+    /// ([`crate::text::cursor::write_packed_positions`]; feature
+    /// [`PACKED_POSITIONS`]), a third of the bytes of varints for log
+    /// lines. Every table made from now on writes them so; one read from a
+    /// database written before them (where the field is absent) keeps
+    /// varints, so that the version that wrote it still opens it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub packed_positions: bool,
 }
 
 /// How a table's doc store compresses its blocks of rows
@@ -996,9 +1010,10 @@ impl Schema {
         if let Some(e) = edges {
             s = s.with_edges(&e.src, &e.dst, e.weight.as_deref())?;
         }
-        // The doc store's compression: an altered table keeps writing its
-        // segments as it did.
+        // The doc store's compression, and the positions' layout: an
+        // altered table keeps writing its segments as it did.
         s.compression = self.compression;
+        s.packed_positions = self.packed_positions;
         Ok(s)
     }
 
@@ -1012,6 +1027,7 @@ impl Schema {
         let plain = |s: &Schema| {
             let mut s = s.clone();
             s.next_field_id = 0;
+            s.packed_positions = false;
             for f in &mut s.fields {
                 f.id = NO_ID;
                 f.added = None;
@@ -1082,7 +1098,7 @@ impl Schema {
     /// `next_field_id`: a field without one gets the next, never an id a
     /// field it had before held.
     fn with_next_id(table: &str, fields: Vec<Field>, primary_key: Option<&str>, next_field_id: u32) -> Result<Self> {
-        let mut s = Schema { table: table.to_string(), fields, next_field_id, primary_key: None, shard_by: None, cluster_by: None, retain: None, expire_by: None, edges: None, compression: Compression::Lz4 };
+        let mut s = Schema { table: table.to_string(), fields, next_field_id, primary_key: None, shard_by: None, cluster_by: None, retain: None, expire_by: None, edges: None, compression: Compression::Lz4, packed_positions: true };
         s.give_ids()?;
         if let Some(pk) = primary_key {
             let i = s.field_index(pk).ok_or_else(|| Error::Schema(format!("no primary key field {pk}")))?;
@@ -1344,6 +1360,26 @@ impl Schema {
         self
     }
 
+    /// Writes TEXT positions in the packed layout or as varints
+    /// ([`Schema::packed_positions`]; tables are made packed).
+    pub fn with_packed_positions(mut self, packed: bool) -> Schema {
+        self.packed_positions = packed;
+        self
+    }
+
+    /// Whether a field of the table indexes positions: a TEXT field with
+    /// them, or a JSON field with text.
+    pub fn has_positions(&self) -> bool {
+        self.fields.iter().any(|f| {
+            f.indexed
+                && match f.ty {
+                    FieldType::Text { positions } => positions,
+                    FieldType::Json => f.text,
+                    _ => false,
+                }
+        })
+    }
+
     /// Keeps this table's rows for `seconds` after the time in TIMESTAMP
     /// field `by`: older rows are dropped when a merge rewrites their
     /// segment (and not written by a flush), and segments that hold only
@@ -1581,7 +1617,9 @@ impl Schema {
     /// ([`Schema::with_shard_by`], [`Schema::with_cluster_by`],
     /// [`Schema::with_retain`], [`Schema::with_edges`]), [`EXPIRE_BY`],
     /// [`COMPACT_KEYS`] for a primary key (unless the table comes from a
-    /// database written before field ids), and [`ZSTD`].
+    /// database written before field ids), [`ZSTD`], and
+    /// [`PACKED_POSITIONS`] for a table that writes packed positions and
+    /// has a field with them.
     pub fn features(&self) -> impl Iterator<Item = String> + '_ {
         let fields = self.fields.iter().flat_map(|f| {
             let named = [
@@ -1609,6 +1647,7 @@ impl Schema {
             self.expire_by.as_ref().map(|_| EXPIRE_BY),
             (self.primary_key.is_some() && !self.is_legacy()).then_some(COMPACT_KEYS),
             (self.compression == Compression::Zstd).then_some(ZSTD),
+            (self.packed_positions && self.has_positions()).then_some(PACKED_POSITIONS),
         ];
         fields.chain(options.into_iter().flatten().map(String::from))
     }
@@ -1721,6 +1760,8 @@ impl Schema {
     pub fn without_ids(&self) -> Schema {
         let mut s = self.clone();
         s.next_field_id = 0;
+        // Such a database's versions read positions as varints alone.
+        s.packed_positions = false;
         for f in &mut s.fields {
             f.id = NO_ID;
         }

@@ -71,7 +71,7 @@ impl TextFieldReader {
         if !(post.as_ptr() as usize).is_multiple_of(8) {
             return Err(corrupt("text postings section is not 8-byte aligned"));
         }
-        let pos = if meta.positions { Some(seg.require(&section(field, "pos"))?) } else { None };
+        let pos = if meta.positions { Some(seg.require(&section(field, if meta.packed_positions { "ppos" } else { "pos" }))?) } else { None };
         let norms: Slice<u8> = Slice::view(seg.require(&section(field, "norms"))?).map_err(corrupt)?;
         if norms.len() != meta.n_docs as usize || dict.n_terms() != meta.n_terms || meta.n_docs as usize != seg.n_docs() {
             return Err(corrupt(format!("text field {field}: inconsistent document or term counts")));
@@ -204,7 +204,7 @@ impl TextFieldReader {
     /// A cursor over the postings of a dictionary entry.
     pub fn cursor(&self, info: &TermInfo) -> PostingCursor<'_> {
         let start = info.post_off as usize;
-        let positions = self.pos.as_ref().map(|p| &p[info.pos_off as usize..info.pos_off.saturating_add(info.pos_len) as usize]);
+        let positions = self.pos.as_ref().map(|p| (&p[info.pos_off as usize..info.pos_off.saturating_add(info.pos_len) as usize], self.meta.packed_positions));
         if self.is_loom(info) {
             let (list, pos) = self.open_loom(info);
             PostingCursor::loom(&self.post, start, list, pos, info.df, positions)

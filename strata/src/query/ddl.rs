@@ -915,7 +915,7 @@ mod tests {
         use crate::schema::Compression;
         let (s, _) = create("CREATE TABLE logs (id INT PRIMARY KEY, body TEXT) OPTIONS(compression = 'ZSTD')", &[]).unwrap();
         assert_eq!(s.compression, Compression::Zstd);
-        assert_eq!(s.features().collect::<Vec<_>>(), ["compact_keys", "zstd"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["compact_keys", "zstd", "packed_positions"]);
         assert_eq!(s.to_short_json()["compression"], serde_json::json!("zstd"));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
@@ -939,7 +939,7 @@ mod tests {
         assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into(), prompt: String::new() }));
         assert!(f.stored && matches!(f.ty, FieldType::Text { .. }));
         assert_eq!(s.derives_from(2), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys", "packed_positions"]);
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "caption", "type": "text", "derive": {"from": "image", "model": "blip-image-captioning-base"}}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
