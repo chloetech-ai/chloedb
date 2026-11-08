@@ -236,8 +236,8 @@ impl Manifest {
     /// unless it was written before field ids, its tables'
     /// ([`crate::schema::Schema::features`]), `seq_no` once it numbers its
     /// writes, `rank_profiles` while a table has a rank profile,
-    /// `sources` once it has [`SOURCES`], and [`COLD_SEGMENTS`] while a
-    /// segment is cold.
+    /// `sources` once it has [`SOURCES`], `functions` once it has
+    /// [`FUNCTIONS`], and [`COLD_SEGMENTS`] while a segment is cold.
     pub fn features(&self) -> Vec<String> {
         let mut used: BTreeSet<String> = self.tables.iter().flat_map(|t| t.schema.features()).collect();
         if !self.is_legacy() {
@@ -251,6 +251,9 @@ impl Manifest {
         }
         if self.table(SOURCES_ID).is_some() {
             used.insert("sources".to_string());
+        }
+        if self.table(FUNCTIONS_ID).is_some() {
+            used.insert(FUNCTIONS_FEATURE.to_string());
         }
         if self.segments().any(|s| s.cold.is_some()) {
             used.insert(COLD_SEGMENTS.to_string());
@@ -378,7 +381,7 @@ struct V1 {
 
 /// The features this version of Strata reads, besides its analyzers'
 /// ([`known_feature`]).
-pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", COLD_SEGMENTS, crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION, crate::schema::ZSTD];
+pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", COLD_SEGMENTS, crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, FUNCTIONS_FEATURE, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION, crate::schema::ZSTD];
 
 /// The feature of a database whose fields have ids
 /// ([`crate::schema::Field::id`]): every database this version creates.
@@ -413,6 +416,64 @@ pub fn sources_schema() -> Schema {
             {"name": "updated", "type": "timestamp"}]}"#,
     )
     .expect("the _sources schema is valid")
+}
+
+/// The system table that keeps stored functions, a row per version of
+/// each (`CREATE FUNCTION`, [`crate::query::function`]). The database then
+/// needs feature [`FUNCTIONS_FEATURE`].
+pub const FUNCTIONS: &str = "_functions";
+
+/// [`FUNCTIONS`]'s table id, the same in every copy of a database, as
+/// [`SOURCES_ID`] is: a replica makes its own `_functions` when its
+/// primary's first function arrives.
+pub const FUNCTIONS_ID: u32 = u32::MAX - 2;
+
+/// The feature of a database with [`FUNCTIONS`].
+pub const FUNCTIONS_FEATURE: &str = "functions";
+
+/// [`FUNCTIONS`]'s schema: one row per version of a function, never
+/// changed once written but for its deletion ([`crate::query::function`]).
+pub fn functions_schema() -> Schema {
+    Schema::from_json(
+        r#"{"table": "_functions", "key": "id", "fields": [
+            {"name": "id", "type": "keyword"},
+            {"name": "name", "type": "keyword", "not_null": true},
+            {"name": "version", "type": "int", "not_null": true},
+            {"name": "language", "type": "keyword", "not_null": true},
+            {"name": "kind", "type": "keyword", "not_null": true},
+            {"name": "signature", "type": "text", "indexed": false},
+            {"name": "body", "type": "text"},
+            {"name": "hash", "type": "keyword", "not_null": true},
+            {"name": "description", "type": "text"},
+            {"name": "created", "type": "timestamp"},
+            {"name": "created_by", "type": "keyword"},
+            {"name": "dropped", "type": "bool", "not_null": true, "default": false}]}"#,
+    )
+    .expect("the _functions schema is valid")
+}
+
+/// The system tables' ids: tables Strata makes and writes itself, which
+/// `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` never touch and which
+/// every copy of a database gives the same id.
+pub const SYSTEM_IDS: [u32; 2] = [SOURCES_ID, FUNCTIONS_ID];
+
+/// Whether `id` is a system table's ([`SYSTEM_IDS`]).
+pub fn is_system(id: u32) -> bool {
+    SYSTEM_IDS.contains(&id)
+}
+
+/// The schema of the system table with this id.
+pub fn system_schema(id: u32) -> Option<Schema> {
+    match id {
+        SOURCES_ID => Some(sources_schema()),
+        FUNCTIONS_ID => Some(functions_schema()),
+        _ => None,
+    }
+}
+
+/// The id of the system table named `name` (any case).
+pub fn system_id(name: &str) -> Option<u32> {
+    [(SOURCES, SOURCES_ID), (FUNCTIONS, FUNCTIONS_ID)].iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, id)| id)
 }
 
 /// Whether this version of Strata reads a database that requires feature

@@ -64,6 +64,7 @@ mod server;
 mod sim;
 mod sim_cluster;
 mod simulator;
+mod stored_functions;
 mod stream;
 mod stream_moves;
 mod tables;
