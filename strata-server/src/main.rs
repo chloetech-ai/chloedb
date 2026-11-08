@@ -127,6 +127,15 @@ struct Args {
     /// it serves no reads (0: no automatic failover; promote by hand).
     #[arg(long, default_value_t = 0)]
     failover_after_ms: u64,
+    /// On a database server: read every segment against its checksum every
+    /// this many seconds, while it serves, to find data damaged on disk
+    /// before a query or a failover does (0: only when asked, POST
+    /// /v1/admin/scrub). The first scrub starts within ten minutes.
+    #[arg(long, default_value_t = 86_400)]
+    scrub_every_s: u64,
+    /// The MiB a second a scheduled scrub reads at most.
+    #[arg(long, default_value_t = 64)]
+    scrub_mib_s: u64,
     /// Coordinate these shard servers (comma-separated gRPC URLs; replicas
     /// of one shard joined by '|'). Servers of protocol 9 hold the cluster
     /// map, which names every shard's servers: the coordinator then routes
@@ -909,6 +918,8 @@ async fn main() {
         ship_log_mb: a.ship_log_mb,
         verify_every_s: a.verify_every_s,
         failover_after_ms: a.failover_after_ms,
+        scrub_every_s: a.scrub_every_s,
+        scrub_mib_s: a.scrub_mib_s,
         shards: a.shards,
         kube_cluster: a.kube_cluster.filter(|c| !c.is_empty()),
         coord: strata_server::coord::CoordOptions {

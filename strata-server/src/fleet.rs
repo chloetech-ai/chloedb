@@ -633,6 +633,29 @@ impl Fleet {
             });
         }
 
+        // ----- data damaged on disk: what each copy's last scrub found
+        // (finding chaos-6: bit rot on a replica showed nowhere).
+        let damaged: Vec<(String, usize, usize)> = copies
+            .iter()
+            .filter(|(_, r)| !down(r))
+            .filter_map(|(k, r)| {
+                let n = r["detail"]["health"]["damaged"].as_array().map_or(0, Vec::len);
+                (n > 0).then(|| (short(r), shards[*k]["shard"].as_u64().unwrap_or(*k as u64) as usize, n))
+            })
+            .collect();
+        checks.push(json!({"id": "damaged", "status": if damaged.is_empty() { "ok" } else { "critical" }, "where": damaged.iter().map(|d| &d.0).collect::<Vec<_>>()}));
+        for (name, shard, n) in &damaged {
+            let title = format!("{name}'s data is damaged on disk: {n} {} {} {}", if *n == 1 { "segment" } else { "segments" }, if *n == 1 { "fails" } else { "fail" }, if *n == 1 { "its checksum" } else { "their checksums" });
+            problems.push(Problem {
+                rank: 4,
+                critical: true,
+                headline: title.clone(),
+                j: json!({"id": format!("damaged-{name}"), "severity": "critical", "title": title, "where": [format!("shard {shard}"), name], "since_ms": null,
+                    "impact": format!("Searches that read the damaged segments fail on {name} (a coordinator tries another copy), and a primary elected from it would serve the damage"),
+                    "next": {"text": format!("Replace {name} with a new copy (Cluster: Plan the repair), then remove it; or restore it from a checkpoint"), "view": "cluster", "params": {"shard": shard, "copy": name}}}),
+            });
+        }
+
         // ----- disk
         let mut disks: Vec<(f64, String, usize)> = Vec::new();
         for (k, r) in copies.iter().filter(|(_, r)| !down(r)) {
@@ -943,6 +966,24 @@ mod tests {
         assert_eq!(shards["value"], json!({"down": 0, "no_reads": 1, "no_writes": 0, "degraded": 0, "total": 2}));
         let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
         assert_eq!((copies["down"].as_u64(), copies["total"].as_u64()), (Some(1), Some(4)));
+    }
+
+    /// A copy whose scrub found segments failing their checksums is a
+    /// critical problem of its own, naming the copy to replace (finding
+    /// chaos-6: bit rot on a replica showed nowhere).
+    #[test]
+    fn a_copy_whose_data_is_damaged_is_to_be_replaced() {
+        let mut bad = copy("s0-1", true);
+        bad["detail"]["health"] = json!({"damaged": ["segment 7 fails its checksum"]});
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), bad, copy("s0-2", true)]}]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        assert_eq!(j["status"], "critical");
+        assert_eq!(j["headline"], "s0-1's data is damaged on disk: 1 segment fails its checksum");
+        let p = &j["problems"][0];
+        assert_eq!((p["id"].as_str(), p["severity"].as_str()), (Some("damaged-s0-1"), Some("critical")));
+        assert!(p["next"]["text"].as_str().unwrap().starts_with("Replace s0-1 with a new copy"), "{p}");
+        let ck = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "damaged").unwrap().clone();
+        assert_eq!(ck["where"], json!(["s0-1"]));
     }
 
     /// 1 of 2 copies answering is no majority: no election can choose a

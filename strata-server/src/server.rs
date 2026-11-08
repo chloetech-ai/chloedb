@@ -71,6 +71,12 @@ pub struct Options {
     /// its primary before it asks its shard's copies to elect it, in
     /// milliseconds (0: never; [`Service::start_failover`]).
     pub failover_after_ms: u64,
+    /// On a database server: how often it reads every segment against its
+    /// checksum, in seconds (0: only when asked, `POST /v1/admin/scrub`;
+    /// [`Service::start_scrubs`]).
+    pub scrub_every_s: u64,
+    /// The MiB a second a scheduled scrub reads at most (0: 64).
+    pub scrub_mib_s: u64,
     /// Coordinate these shard servers (gRPC URLs; replicas of a shard
     /// joined by `|`) instead of serving a database.
     pub shards: Vec<String>,
@@ -457,6 +463,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(dir) = &o.backup_dir {
         svc.set_backup_dir(dir).map_err(|e| e.message)?;
     }
+    svc.scrubs.every = Duration::from_secs(o.scrub_every_s);
+    svc.scrubs.rate = if o.scrub_mib_s == 0 { crate::service::scrub::DEFAULT_RATE } else { o.scrub_mib_s << 20 };
     if !o.media_fetch.is_empty() || o.media_store.is_some() || o.media_max_bytes > 0 {
         svc.set_media(media_resolver(o)?).map_err(|e| e.message)?;
     }
@@ -523,6 +531,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
+    svc.start_scrubs();
     // The cluster's keys: a coordinator takes them from its shards before
     // it serves, and a coordinator or primary passes changes on.
     crate::keysync::start(&svc).await;
