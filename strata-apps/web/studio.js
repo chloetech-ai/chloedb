@@ -3,6 +3,7 @@
 // generated and stored in Strata.
 
 import { drawGraph, nodePanel, GRAPH_HELP } from './graph.js';
+import { designCss, checkDesign, PRESETS } from './design.js';
 
 const $ = (sel, el = document) => el.querySelector(sel);
 function h(tag, props, ...children) {
@@ -103,6 +104,7 @@ function connect() {
   });
   es.addEventListener('app', (e) => { if (mine(e)) refreshApp(); else if (!S.appId) route(); });
   es.addEventListener('suggestions', (e) => { if (mine(e)) refreshApp(); });
+  es.addEventListener('design', (e) => { if (mine(e)) refreshApp(); });
   es.addEventListener('progress', (e) => {
     const d = mine(e);
     if (!d) return;
@@ -161,6 +163,8 @@ function route() {
 }
 
 function leaveApp() {
+  S.designCss = '';
+  S.designKey = '';
   S.appId = null;
   S.app = null;
   S.frames.clear();
@@ -528,9 +532,11 @@ async function refreshApp() {
 
 function renderApp() {
   const st = S.app;
+  applyDesign();
   if (BARE) {
     document.title = st.app.name;
     $('.brand').replaceChildren(h('span', { class: 'mark' }), st.app.name);
+    renderLook();
   } else {
     $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, `v${st.version.n}`) : null,
       st.views.length ? h('a', { class: 'navlink small', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null].filter(Boolean));
@@ -544,6 +550,123 @@ function renderApp() {
   if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderFrames();
   renderPanel();
+}
+
+// ---- designs: a block of CSS variables, posted to every frame and set on the
+// stage around them; nothing is rebuilt.
+
+const lookKey = () => `sa-design-${S.appId}`;
+function ownLook() {
+  if (!BARE) return null;
+  try { const v = localStorage.getItem(lookKey()); return v === null ? null : Number(v); } catch { return null; }
+}
+function currentDesign() {
+  const d = S.app?.design;
+  if (!d) return checkDesign(PRESETS[0]);
+  const own = ownLook();
+  return d.designs[own !== null && d.designs[own] ? own : d.chosen] || d.designs[0];
+}
+function applyDesign() {
+  const d = currentDesign();
+  const css = designCss(d);
+  const nav = `nav-${d.nav}`;
+  const stage = $('.stage');
+  for (const el of [stage, BARE ? document.body : null].filter(Boolean)) {
+    el.classList.add('designed');
+    for (const c of [...el.classList]) if (c.startsWith('nav-') && c !== nav) el.classList.remove(c);
+    el.classList.add(nav);
+  }
+  if (css === S.designCss) return;
+  S.designCss = css;
+  let style = document.getElementById('shell-design');
+  if (!style) { style = h('style', { id: 'shell-design' }); document.head.append(style); }
+  style.textContent = designCss(d, BARE ? 'body.bare' : '.stage');
+  for (const f of S.frames.values()) f.iframe.contentWindow?.postMessage({ __sa: 1, kind: 'design', css }, '*');
+  for (const f of $('#frames')?.querySelectorAll('.preview iframe') || []) f.contentWindow?.postMessage({ __sa: 1, kind: 'design', css }, '*');
+  if (!S.app?.design && S.appId && !S.askedDesigns) {
+    // An app made before designs gets its three on first open.
+    S.askedDesigns = S.appId;
+    api('GET', `/api/apps/${S.appId}/designs`).then(() => refreshApp()).catch(() => {});
+  }
+}
+async function chooseDesign(i) {
+  const d = S.app.design;
+  if (!d || !d.designs[i]) return;
+  if (BARE) {
+    try { localStorage.setItem(lookKey(), String(i)); } catch { /* the choice lasts this visit */ }
+    applyDesign();
+    renderLook();
+    return;
+  }
+  d.chosen = i;
+  applyDesign();
+  markChosen();
+  try { await api('POST', `/api/apps/${S.appId}/designs`, { chosen: i }); } catch (e) { toast(e.message); }
+}
+
+// The Design tab: the three designs, each a live miniature of the view open
+// now with the app's own data, its navigation drawn around it.
+function designTab() {
+  const st = S.app;
+  const d = st.design;
+  if (!d) {
+    return [h('div', { class: 'where' }, h('span', { class: 'spin' }), ' Designing three looks for this app (a few seconds)...')];
+  }
+  const v = st.views.find((x) => x.slug === S.view) || st.views[0];
+  const cards = d.designs.map((x, i) => {
+    const iframe = h('iframe', { sandbox: 'allow-scripts', title: `${x.name}: a preview`, tabindex: '-1' });
+    if (v) iframe.srcdoc = srcdoc(v, S.params?.[v.slug] || {}, st.components, st.helpers, designCss(x));
+    const tabs = st.views.slice(0, 5).map((w) => h('span', { class: `tab${w.slug === v?.slug ? ' on' : ''}` }, w.title));
+    return h('button', { class: `dcard${i === d.chosen ? ' on' : ''}`, 'data-i': String(i), type: 'button', onclick: () => chooseDesign(i), title: `Use ${x.name}` },
+      h('style', null, designCss(x, `.dcard[data-i="${i}"] .mini`)),
+      h('div', { class: 'mwrap' }, h('div', { class: `mini designed nav-${x.nav}` }, h('div', { class: 'tabs' }, tabs), h('div', { class: 'mframe' }, iframe))),
+      h('div', { class: 'dmeta' },
+        h('div', { class: 'dname' }, h('span', { class: 'swatch', style: `background:${x.light.accent}` }), h('span', { class: 'swatch', style: `background:${x.dark.bg}` }), h('b', x.name), h('span', { class: 'pill inuse' }, 'In use')),
+        x.about ? h('div', { class: 'hint' }, x.about) : null,
+        h('div', { class: 'dtokens' }, `${x.titles} titles · ${x.corners} corners · ${x.surface} · ${x.nav} · ${x.scheme === 'auto' ? 'light and dark' : x.scheme}`)));
+  });
+  const again = h('button', { class: 'btn small', onclick: async () => {
+    again.disabled = true;
+    again.textContent = 'Designing...';
+    try { await api('POST', `/api/apps/${S.appId}/designs/new`); S.designKey = ''; await refreshApp(); } catch (e) { toast(e.message); }
+    again.disabled = false;
+    again.textContent = 'New alternatives';
+  } }, 'New alternatives');
+  return [
+    h('div', { class: 'where' }, 'Three designs for this app. Click one to use it: every view changes at once, with no rebuild. A design is a few tokens (colors, type, corners, spacing, navigation) over the same screens. People using the app on its own can pick their own under Aa.'),
+    h('div', { class: 'dcards' }, cards),
+    h('div', { class: 'row', style: 'display:flex;gap:8px;align-items:center' }, again, h('span', { class: 'hint' }, 'keeps the one in use, replaces the other two')),
+  ];
+}
+function markChosen() {
+  const d = S.app?.design;
+  for (const c of document.querySelectorAll('.dcard')) c.classList.toggle('on', Number(c.dataset.i) === d?.chosen);
+}
+
+// On the app's own page: Aa opens the three designs; the pick is this
+// browser's own.
+function renderLook() {
+  if (!BARE) return;
+  const right = $('.top-right');
+  if (!right) return;
+  let btn = $('#look');
+  if (!btn) {
+    btn = h('button', { id: 'look', class: 'look', type: 'button', title: 'Design', onclick: (e) => { e.stopPropagation(); $('#lookmenu')?.toggleAttribute('hidden'); } }, 'Aa');
+    right.prepend(btn);
+    document.addEventListener('click', (e) => { if (!e.target.closest?.('#lookmenu')) $('#lookmenu')?.setAttribute('hidden', ''); });
+  }
+  const d = S.app?.design;
+  btn.hidden = !d;
+  $('#lookmenu')?.remove();
+  if (!d) return;
+  const own = ownLook();
+  const cur = own !== null && d.designs[own] ? own : d.chosen;
+  const menu = h('div', { id: 'lookmenu', class: 'lookmenu', hidden: true },
+    h('div', { class: 'lookhead' }, 'Design'),
+    d.designs.map((x, i) => h('button', { class: `lookitem${i === cur ? ' on' : ''}`, type: 'button', onclick: () => chooseDesign(i) },
+      h('span', { class: 'swatch', style: `background:${x.light.accent}` }), h('span', { class: 'swatch', style: `background:${x.dark.bg}` }),
+      h('span', { class: 'grow' }, h('b', x.name), x.about ? h('div', { class: 'hint' }, x.about) : null), i === cur ? h('span', { class: 'check' }, '✓') : null)));
+  right.append(menu);
 }
 
 function togglePanel() {
@@ -590,7 +713,7 @@ function compileScreen(text) {
   return { spec: compiled, scripts: scripts.join('\n') };
 }
 
-function srcdoc(view, params, components, helpers) {
+function srcdoc(view, params, components, helpers, design = S.designCss) {
   const screen = view.spec && view.spec.screen ? compileScreen(view.code) : null;
   const code = screen
     ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
@@ -605,7 +728,7 @@ ${noClose(c.code)}
 ;return helper(); });</script>`).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data: blob: ${location.origin}; media-src https: data: blob: ${location.origin}; font-src data:">
-<style>${KIT}</style></head><body><div id="root"></div>
+<style>${KIT}</style><style id="__design">${design || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
 ${screen ? `<script>${SCREEN}</script>\n${screen.scripts || ''}` : ''}
@@ -723,11 +846,20 @@ function renderPanel() {
   const body = h('div', { class: 'pbody' });
   const screenView = st.views.find((v) => v.slug === S.view && v.spec?.screen);
   if (S.panel === 'edit' && !screenView) S.panel = 'change';
+  // The Design tab's previews are live frames: redrawn only when what they
+  // show changes, not on every refresh.
+  if (S.panel === 'design') {
+    const v = st.views.find((x) => x.slug === S.view);
+    const key = JSON.stringify([st.design?.designs.map((x) => x.name), v?.id, (st.components || []).map((c) => c.id), st.views.map((w) => w.title)]);
+    if (S.designKey === key && panel.querySelector('.dcards')) { markChosen(); return; }
+    S.designKey = key;
+  } else S.designKey = '';
   if (S.panel === 'change') body.append(...changeTab(draft));
   else if (S.panel === 'edit') body.append(...editTab(screenView));
   else if (S.panel === 'versions') body.append(...versionsTab());
+  else if (S.panel === 'design') body.append(...designTab());
   else body.append(...insideTab());
-  panel.replaceChildren(h('div', { class: 'ptabs' }, tab('change', 'Change'), screenView ? tab('edit', 'Edit') : null, tab('versions', 'Versions', st.versions.length), tab('inside', 'Inside', st.views.length + st.functions.length + st.tables.length),
+  panel.replaceChildren(h('div', { class: 'ptabs' }, tab('change', 'Change'), screenView ? tab('edit', 'Edit') : null, tab('design', 'Design'), tab('versions', 'Versions', st.versions.length), tab('inside', 'Inside', st.views.length + st.functions.length + st.tables.length),
     h('button', { class: 'btn small ghost mobile-only', style: 'margin-left:auto', onclick: togglePanel }, 'Close')), body);
   if (hadFocus) { const t = panel.querySelector('textarea'); t?.focus(); t?.setSelectionRange(t.value.length, t.value.length); }
 }
@@ -958,7 +1090,12 @@ window.addEventListener('message', async (e) => {
   if (!m || !m.__sa || !S.appId) return;
   let entry = null;
   for (const [slug, f] of S.frames) if (f.iframe.contentWindow === e.source) entry = { slug, ...f };
-  if (!entry) return;
+  if (!entry) {
+    // A design's preview reads the app's data and changes none of it.
+    if (![...document.querySelectorAll('.dcard iframe')].some((f) => f.contentWindow === e.source) || m.kind !== 'rpc') return;
+    if (!['sql', 'me', 'people', 'files'].includes(m.method)) { e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, error: 'a preview changes nothing' }, '*'); return; }
+    entry = { slug: 'preview', preview: true };
+  }
   const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
   const base = `/api/apps/${S.appId}`;
   try {

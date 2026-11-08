@@ -15,6 +15,7 @@ import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
+import { ensureDesigns } from './designs.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -235,6 +236,7 @@ const STATIC = {
   '/screen.js': ['web/screen.js', 'text/javascript; charset=utf-8'],
   '/graph.js': ['web/graph.js', 'text/javascript; charset=utf-8'],
   '/kit.css': ['web/kit.css', 'text/css; charset=utf-8'],
+  '/design.js': ['web/design.js', 'text/javascript; charset=utf-8'],
 };
 
 async function body(req) {
@@ -255,6 +257,13 @@ function send(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+function designsOf(appId, fresh = false) {
+  return ensureDesigns(engine.store, appId, { fresh, onMade: (saved, out) => {
+    console.log(`designs ${appId}: ${saved.designs.map((d) => d.name).join(', ')} (${out.source}, ${(out.ms / 1000).toFixed(1)} s${out.error ? `; ${out.error.slice(0, 120)}` : ''})`);
+    broadcast('design', { app: appId, chosen: saved.chosen });
+  } });
+}
+
 async function appState(appId) {
   const { store } = engine;
   const view = await store.resolve(appId);
@@ -266,6 +275,7 @@ async function appState(appId) {
   const run = running.get(appId);
   return {
     app: view.app,
+    design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '' },
     views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map(cap),
@@ -294,9 +304,23 @@ const routes = [
     const name = description.split(/[.\n]/)[0].slice(0, 40);
     const app = await engine.store.createApp({ name, description });
     const request = await submit(app, description, 'user');
+    // Its three designs are made beside the first build, from the description.
+    designsOf(app).catch((e) => console.error(`designs ${app}: ${e.message}`));
     return { app, request: request.id };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id]) => appState(id)],
+  // Designs: three per app, made on first ask; choosing one is instant.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/designs$/, async (b, [id]) => designsOf(id)],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/designs$/, async (b, [id]) => {
+    const cur = await designsOf(id);
+    const chosen = Number(b.chosen);
+    if (!Number.isInteger(chosen) || chosen < 0 || chosen >= cur.designs.length) throw Object.assign(new Error(`chosen is 0 to ${cur.designs.length - 1}`), { status: 400 });
+    const next = { ...cur, chosen };
+    await engine.store.putDesigns(id, next);
+    broadcast('design', { app: id, chosen });
+    return next;
+  }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/designs\/new$/, async (b, [id]) => designsOf(id, true)],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/traces\/([A-Za-z0-9_-]+)$/, async (b, [id, rid]) => {
     const trace = await engine.store.trace(rid);
     if (!trace) throw Object.assign(new Error('no timeline for this build (it ran before timelines were recorded)'), { status: 404 });

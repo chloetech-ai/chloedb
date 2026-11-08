@@ -48,6 +48,8 @@ const SYSTEM_TABLES = {
   sa_members: `CREATE TABLE sa_members (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, person KEYWORD NOT NULL, role KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_sessions: `CREATE TABLE sa_sessions (id KEYWORD PRIMARY KEY, person KEYWORD NOT NULL, expires TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_files: `CREATE TABLE sa_files (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, type KEYWORD, size INT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Each app's three designs (designs.mjs) and the one in use.
+  sa_designs: `CREATE TABLE sa_designs (id KEYWORD PRIMARY KEY, designs TEXT, chosen INT, source KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_outbox: `CREATE TABLE sa_outbox (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, recipients KEYWORD[], subject TEXT, body TEXT,
     status KEYWORD, error TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
 };
@@ -116,6 +118,21 @@ export class Store {
     await this.db.write([{ op: 'upsert', table: 'sa_apps', doc: { ...doc, created: app.created } }]);
     this.resolved.delete(id);
     await this.syncAppGraph(id);
+  }
+
+  // ---- designs: three per app, by the app's id
+
+  async designs(app) {
+    const [row] = await this.db.get('sa_designs', [app]);
+    if (!row) return null;
+    try {
+      const designs = JSON.parse(row.designs);
+      return Array.isArray(designs) && designs.length ? { designs, chosen: Math.min(Math.max(Number(row.chosen) || 0, 0), designs.length - 1), source: row.source || '' } : null;
+    } catch { return null; }
+  }
+
+  async putDesigns(app, { designs, chosen = 0, source = '' }) {
+    await this.db.write([{ op: 'upsert', table: 'sa_designs', doc: { id: app, designs: JSON.stringify(designs), chosen, source } }]);
   }
 
   // ---- capabilities

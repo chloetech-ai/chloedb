@@ -38,6 +38,11 @@
       pending.delete(m.id);
       if (m.error !== undefined) p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}));
       else p.resolve(m.value);
+    } else if (m.kind === 'design') {
+      // A design is a block of CSS variables: swapping it redraws nothing.
+      let el = document.getElementById('__design');
+      if (!el) { el = document.createElement('style'); el.id = '__design'; document.head.append(el); }
+      el.textContent = m.css || '';
     } else if (m.kind === 'change') {
       for (const l of listeners) {
         if (l.tables === '*' || m.tables.some((t) => l.tables.includes(t))) {

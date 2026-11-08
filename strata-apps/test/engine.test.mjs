@@ -739,3 +739,45 @@ test('rule steps loop over rows, refuse with a message, insert or update, and re
   assert.match(checkRule({ steps: [{ upsert: 'cart', values: { qty: 1 } }] }, cols)[0], /find: give a SELECT/);
   assert.match(checkRule({ steps: [{ each: 'SELECT 1', do: [{ insert: 'cart', values: { color: 'red' } }] }] }, cols)[0], /steps\[0\]\.do\[0\]: color is not a column of cart/);
 });
+
+test('a design is a few tokens made readable, drawn as CSS variables for light and dark', async () => {
+  const { checkDesign, designCss, presetDesigns, contrast, PRESETS } = await import('../web/design.js');
+  const d = checkDesign({ name: 'Pale', light: { bg: '#ffffff', card: '#ffffff', fg: '#bbbbbb', accent: '#ffee00' }, font: 'comic', nav: 'sidebar' });
+  assert.ok(contrast(d.light.fg, d.light.bg) >= 7, 'text reads on the page');
+  assert.ok(contrast(d.light.accent, d.light.card) >= 4.5, 'the accent reads on cards');
+  assert.equal(d.font, PRESETS[0].font, 'an unknown token falls back');
+  assert.equal(d.nav, 'sidebar');
+  const css = designCss(d, '.stage');
+  assert.match(css, /^\.stage \{ --bg: #ffffff;/);
+  assert.match(css, /@media \(prefers-color-scheme: dark\) \{ \.stage \{/);
+  assert.match(css, /--card-border: var\(--line\)/, 'a card the color of its page gets a hairline');
+  assert.ok(!designCss({ ...d, scheme: 'dark' }).includes('@media'), 'a dark design is dark in both');
+  const three = presetDesigns('abc123');
+  assert.deepEqual(three.map((x) => x.nav), ['segmented', 'tabs', 'sidebar']);
+  assert.notDeepEqual(presetDesigns('abc123').map((x) => x.name), presetDesigns('zz9').map((x) => x.name).reverse());
+});
+
+test('an app gets three designs from one model call, presets when the model fails, and new ones keep the one in use', async () => {
+  const { makeDesigns, ensureDesigns } = await import('../engine/designs.mjs');
+  const app = { id: 'a1', name: 'Guests', description: 'A wedding guest list', head: 0 };
+  const answer = JSON.stringify([{ name: 'Linen', light: { bg: '#faf6f5', card: '#ffffff', fg: '#221a1c', accent: '#a8485f' } }, { name: 'Paper', titles: 'serif' }, { name: 'Gilt', scheme: 'dark', dark: { bg: '#0d0b08', card: '#19160f', fg: '#f5efe2', accent: '#e0b45a' } }]);
+  let prompt = '';
+  const out = await makeDesigns(app, null, { ask: async (a) => { prompt = a.prompt; return { text: `Here: ${answer}`, cost: 0.002 }; } });
+  assert.deepEqual(out.designs.map((x) => x.name), ['Linen', 'Paper', 'Gilt']);
+  assert.equal(out.designs[2].light.bg, '#0d0b08', 'a dark design is dark in both schemes');
+  assert.match(prompt, /A wedding guest list/);
+  const bad = await makeDesigns(app, null, { ask: async () => ({ text: 'no idea' }) });
+  assert.equal(bad.source, 'presets');
+  assert.equal(bad.designs.length, 3);
+  // stored once; asking again returns what is stored; fresh ones keep the chosen slot
+  const rows = new Map();
+  const store = { designs: async (id) => rows.get(id) || null, putDesigns: async (id, v) => rows.set(id, v), getApp: async () => app, resolve: async () => null };
+  let calls = 0;
+  const make = async () => { calls++; return { designs: [{ name: `N${calls}a` }, { name: `N${calls}b` }, { name: `N${calls}c` }], source: 'm' }; };
+  await Promise.all([ensureDesigns(store, 'a1', { make }), ensureDesigns(store, 'a1', { make })]);
+  assert.equal(calls, 1, 'one generation at a time');
+  rows.set('a1', { ...rows.get('a1'), chosen: 1 });
+  const fresh = await ensureDesigns(store, 'a1', { make, fresh: true });
+  assert.deepEqual(fresh.designs.map((x) => x.name), ['N2a', 'N1b', 'N2b']);
+  assert.equal(fresh.chosen, 1);
+});

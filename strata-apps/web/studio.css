@@ -253,3 +253,75 @@ svg.graph .k-component circle { fill: #d9480f; } svg.graph .k-helper circle { fi
 textarea.statement { width: 100%; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg); resize: vertical; outline: none; white-space: pre; overflow: auto; }
 .statement-error { color: #b42318; font-size: 13px; margin-top: 6px; white-space: pre-wrap; }
 .statement-error:empty { display: none; }
+
+/* ---- designs: the stage around the views takes the app's design (its
+   variables are set on .stage, or on the body of an app on its own) */
+.designed { background: var(--bg); color: var(--fg); font-family: var(--font); transition: background-color .35s ease, color .35s ease; }
+.designed .tabs { background: var(--bg); border-bottom: 0; font-family: var(--font); scrollbar-width: none; }
+.designed .tab { font-family: var(--font); font-size: 14px; letter-spacing: -.01em; color: var(--fg); transition: background-color .2s ease, color .2s ease, box-shadow .2s ease; }
+.designed .frames iframe { background: var(--bg); }
+
+/* segmented: a centered control, the open view lifted */
+.designed.nav-segmented .tabs { align-self: center; width: fit-content; max-width: calc(100% - 32px); margin: 14px auto 2px; padding: 3px; gap: 2px;
+  background: var(--fill); border-radius: min(var(--radius-control), 12px); }
+.designed.nav-segmented .tab { border: 0; border-radius: min(var(--radius-control), 9px); padding: 6px 16px; font-weight: 500; }
+.designed.nav-segmented .tab:hover { background: var(--soft); }
+.designed.nav-segmented .tab.on { background: var(--seg-on); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.04); }
+
+/* tabs: left aligned, a hairline under them, the open one underlined in ink */
+.designed.nav-tabs .tabs { padding: 10px 24px 0; gap: 26px; border-bottom: 1px solid var(--line); }
+.designed.nav-tabs .tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 0 11px; color: var(--muted); font-weight: 500; }
+.designed.nav-tabs .tab:hover { color: var(--fg); }
+.designed.nav-tabs .tab.on { color: var(--fg); border-bottom-color: var(--fg); }
+
+/* sidebar: a list on the left, the open view tinted with the accent */
+.stage.designed.nav-sidebar, .mini.designed.nav-sidebar { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.designed.nav-sidebar .tabs { flex-direction: column; align-items: stretch; padding: 22px 12px; gap: 2px; overflow-y: auto;
+  background: color-mix(in srgb, var(--fg) 3%, var(--bg)); border-right: 1px solid var(--line); }
+.designed.nav-sidebar .tab { border: 0; border-radius: min(var(--radius-field), 9px); padding: 8px 12px; text-align: left; font-weight: 500; }
+.designed.nav-sidebar .tab:hover { background: var(--soft); }
+.designed.nav-sidebar .tab.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+@media (max-width: 720px) {
+  .stage.designed.nav-sidebar { display: flex; flex-direction: column; }
+  .stage.designed.nav-sidebar .tabs { flex-direction: row; overflow-x: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+/* an app on its own: a translucent bar, the app's name in its title type */
+body.bare.designed { background: var(--bg); }
+.bare.designed .top { background: color-mix(in srgb, var(--bg) 78%, transparent); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--line); color: var(--fg); position: relative; z-index: 20; }
+.bare.designed .brand { font-family: var(--font-title); font-size: 17px; font-weight: 650; letter-spacing: -.02em; color: var(--fg); }
+.bare.designed .mark { background: var(--accent); border-radius: 7px; }
+.bare .status { display: none; }
+.look { border: 0; background: var(--fill, var(--soft)); color: var(--fg); width: 34px; height: 30px; border-radius: 9px; cursor: pointer; font: 600 14px/1 var(--font-title, inherit); letter-spacing: -.02em; }
+.look:hover { background: var(--soft); }
+.lookmenu { position: absolute; right: 12px; top: 48px; width: 300px; background: var(--card); color: var(--fg); border-radius: 16px; padding: 8px; z-index: 40;
+  box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 18px 48px rgba(0,0,0,.18); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
+.lookmenu[hidden] { display: none; }
+.lookhead { font-size: 12px; font-weight: 600; color: var(--muted); padding: 6px 10px 4px; }
+.lookitem { display: flex; align-items: center; gap: 10px; text-align: left; border: 0; background: transparent; padding: 9px 10px; border-radius: 10px; cursor: pointer; color: inherit; font: inherit; }
+.lookitem:hover { background: var(--soft); }
+.lookitem.on { background: var(--accent-soft); }
+.lookitem .hint { font-size: 12px; }
+.lookitem .check { color: var(--accent); font-weight: 700; }
+.swatch { width: 12px; height: 12px; border-radius: 50%; flex: none; display: inline-block; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+
+/* the Design tab: each design as a live miniature of the open view */
+.dcards { display: flex; flex-direction: column; gap: 14px; }
+.dcard { all: unset; box-sizing: border-box; display: flex; flex-direction: column; border-radius: 14px; overflow: hidden; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); transition: border-color .2s ease, box-shadow .2s ease, transform .15s ease; }
+.dcard:hover { border-color: var(--muted); }
+.dcard:active { transform: scale(.99); }
+.dcard:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+.dcard.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.dcard .mwrap { height: 210px; overflow: hidden; position: relative; pointer-events: none; }
+.dcard .mini { width: 900px; height: 560px; transform: scale(.385); transform-origin: 0 0; display: flex; flex-direction: column; }
+.dcard .mini .mframe { flex: 1; position: relative; min-height: 0; }
+.dcard .mini iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.dcard .mini .tab { padding-top: 8px; padding-bottom: 8px; }
+.dcard .dmeta { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--line); }
+.dcard .dname { display: flex; align-items: center; gap: 6px; }
+.dcard .dname b { font-weight: 650; margin-left: 2px; }
+.dcard .inuse { display: none; margin-left: auto; color: var(--accent); }
+.dcard.on .inuse { display: inline-flex; }
+.dcard .dtokens { font-size: 11.5px; color: var(--muted); }
