@@ -119,7 +119,11 @@ jobs:
         # which builds strata-server; here its other tests and clippy.
         crate: [strata, engram, strata-server, strata-crawl]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # rust-cache saves only from a job that passed, so a macOS job that ran
+    # out of time starts the next one cold too: strata-server's tests took
+    # 59 minutes from a cold build on the macOS runner on 11-08, and Clippy
+    # after them did not fit in 60.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 90 || 60 }}
     env: &test-env
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'strata' && '-C target-cpu=x86-64-v3' || '' }}
     steps: &test-steps
