@@ -297,3 +297,18 @@ def test_server_answers_arrow(tmp_path, serve):
     want = f.to_dicts()
     c._json_only = True  # as a server from before Arrow answers
     assert f.to_dicts() == want and f.to_arrow().schema == pa.table(local[sqls[0]]).select(["id", "amount", "ts"]).schema
+
+
+def test_server_result_window(tmp_path, serve):
+    """A frame that reads more rows than a server's result window says
+    which flag lets it."""
+    path = tmp_path / "shop.strata"
+    s = strata.connect(path)
+    s.create_table("orders", orders_arrow(), key="id")
+    s.close()
+    c = strata.connect(serve(path, "--max-result-window", "100"))
+    assert c["orders"].head(100).count() == 100 and len(c["orders"].head(100).to_dicts()) == 100
+    with pytest.raises(strata.StrataError, match="max-result-window"):
+        c["orders"].to_arrow()
+    with pytest.raises(strata.StrataError, match="max-result-window"):
+        c["orders"].head(500).to_arrow()

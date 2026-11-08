@@ -145,5 +145,6 @@ A frame is one SQL statement, so it runs where the data is and only the answer m
 
 - A filter on an indexed field is answered by its index. A group-by on indexed KEYWORD, number, BOOL or TIMESTAMP columns (or parts of a timestamp) folds into the table's own query; any other key first computes its rows in a `WITH` step, with only the columns it reads.
 - Joins are inner or left, between tables of one store. To join a server's table with a local one, copy one side with `write_to` first.
+- A server answers at most `--max-result-window` rows a query (10,000 by default, [its limits](server.md#limits)), and a frame reads its rows in one query: give a server that frames read many rows from a larger window, or 0 for none.
 - From a server, the answer comes back as an Arrow stream, its columns typed as a file's are, so the same frame gives the same table from either. A server too old for Arrow answers JSON, which the client types from the table's schema.
 - Not there yet: right, full and cross joins, `pivot` and `melt`, and a seeded `sample` or train/test split.

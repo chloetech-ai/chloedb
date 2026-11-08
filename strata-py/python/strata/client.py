@@ -498,7 +498,15 @@ class Client(Search, FrameStore):
     # fields its columns read; rows go up as Parquet.
 
     def _frame_arrow(self, sql: str, params: Mapping[str, Any], types: Mapping[str, dict]) -> Any:
-        return self._arrow_answer(sql, _params(params, {}), None, types)
+        try:
+            return self._arrow_answer(sql, _params(params, {}), None, types)
+        except StrataError as e:
+            # A server answers at most --max-result-window rows a query.
+            if "a query returns at most" not in str(e) and "the most a query returns" not in str(e):
+                raise
+            err = StrataError(f"{e}; a frame reads its rows in one query, so a server that holds more for it needs a larger --max-result-window (0: none)")
+            err.status, err.answer = getattr(e, "status", None), getattr(e, "answer", None)
+            raise err from None
 
     def _explain(self, sql: str, params: Mapping[str, Any]) -> list[str]:
         return list(self.explain(sql, params).get("tree") or [])
