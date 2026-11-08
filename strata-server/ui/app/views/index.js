@@ -9,6 +9,7 @@
 import home from "./overview.js";
 import timeline from "./timeline.js";
 import alerts from "./alerts.js";
+import oncall from "./oncall.js";
 import cluster from "./cluster.js";
 import logs from "./logs.js";
 import queries from "./queries.js";
@@ -40,7 +41,7 @@ import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
 
-export const VIEWS = [home, timeline, alerts, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -53,6 +54,7 @@ export const NAV = [
   ["Operate", [
     { id: "home", title: "Home", icon: "overview", key: "h" },
     { id: "alerts", title: "Alerts", icon: "alerts", key: "a" },
+    { id: "oncall", title: "On-call agent", icon: "agent", key: "n", scope: "admin" },
     { id: "cluster", title: "Cluster", icon: "cluster", key: "c" },
     { id: "timeline", title: "Timeline", icon: "timeline", key: "t" },
     { id: "logs", title: "Logs", icon: "logs", key: "l" },
