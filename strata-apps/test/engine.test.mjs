@@ -8,7 +8,7 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode } from '../engine/forge.mjs';
+import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER } from '../engine/forge.mjs';
 import { expandScreen as expandWith } from '../engine/patterns.mjs';
 import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
@@ -1399,4 +1399,12 @@ test('the store keeps SQL in Strata and compiles it when read', async (t) => {
   } finally {
     child.kill();
   }
+});
+
+test('small changes go to the small model; the build does not write suggestions', () => {
+  const app = { comp: { n: 2 } };
+  for (const t of ['Rename the Today page to Needs water', 'Sort the books by rating, best first.', 'Make the done tasks grey and move them to the bottom.', 'Hide the notes column in the list']) assert.ok(smallChange(t, app), t);
+  for (const t of ['Add a genre to each book and let me filter the list by genre.', 'Email me a weekly summary', "Show our opening hours with 'open now', and today's specials at the top of the menu.", 'Show the number of books per genre as a small bar chart above the list.']) assert.ok(!smallChange(t, app), t);
+  assert.ok(!smallChange('Rename the app', { comp: { n: 0 } }), 'a first version is never small');
+  if (SUGGEST_AFTER) assert.ok(!/"suggestions"/.test(SYSTEM) && !/- suggestions:/.test(SYSTEM));
 });

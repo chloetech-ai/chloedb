@@ -69,7 +69,14 @@ export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA
       if (data.is_error || data.subtype !== 'success' && data.subtype) {
         return reject(new Error(`claude: ${data.result || data.terminal_reason || data.subtype}`));
       }
-      resolve({ text: data.result || text, usage: data.usage || {}, cost: data.total_cost_usd || 0, ms: data.duration_ms || 0, model });
+      const out = { text: data.result || text, usage: data.usage || {}, cost: data.total_cost_usd || 0, ms: data.duration_ms || 0, model };
+      // STRATA_APPS_DUMP=dir keeps every answer there, to study what the model writes.
+      if (process.env.STRATA_APPS_DUMP) {
+        import('node:fs').then((fs) => fs.promises.mkdir(process.env.STRATA_APPS_DUMP, { recursive: true })
+          .then(() => fs.promises.writeFile(`${process.env.STRATA_APPS_DUMP}/${Date.now()}-${model}.json`, JSON.stringify({ model, effort: effort || null, ms: out.ms, cost: out.cost, usage: out.usage, thinking: seen.thinking, prompt: prompt.length, text: out.text }))))
+          .catch(() => {});
+      }
+      resolve(out);
     });
     child.stdin.end(prompt);
   });

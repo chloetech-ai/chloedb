@@ -294,14 +294,23 @@ const KEEP_LOGIC = 'Keep logic in views when it is simple and only one view need
 export const TESTS = SCREENS && process.env.STRATA_APPS_TESTS !== 'off';
 const withRules = (s) => (RULES || TESTS ? s.replace(KEEP_LOGIC, [KEEP_LOGIC, RULES ? (RULE_SQL ? RULE_SQL_DOC : RULES_DOC) : '', TESTS ? (RULE_SQL ? TESTS_SQL_DOC : TESTS_DOC) : ''].filter(Boolean).join('\n\n')) : s);
 
-export const SYSTEM = withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
+// Suggestions of what to ask next are written after the build, by a small
+// model, off the build's critical path (STRATA_APPS_SUGGEST=inline asks the
+// build's own answer for them, as before).
+export const SUGGEST_AFTER = process.env.STRATA_APPS_SUGGEST !== 'inline';
+export const SUGGEST_MODEL = process.env.STRATA_APPS_SUGGEST_MODEL || 'claude-haiku-5-5';
+const withoutSuggestions = (s) => (!SUGGEST_AFTER ? s : s
+  .replace(',\n  "suggestions": [{"text": "...", "why": "..."}]', '')
+  .replace(/\n- suggestions: 3 changes the person might ask for next[^\n]*/, ''));
+
+export const SYSTEM = withoutSuggestions(withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
   ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${PATTERN_ADD_DOC}\n\n${STATEMENT_DOC}\n\n# Components (shared by every app)`)
     .replace('- An app has one to five views.', `${STATEMENT_PLAN.trim()}\n- An app has one to five views.`)
     .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each view and function you add or rewrite (a screen view\'s block holds its CREATE SCREEN statement)')
   : BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${PATTERN_ADD_DOC}\n\n# Components (shared by every app)`)
     .replace('"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],', '"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1, "screen": {"data": {}, "body": []}}],')
     .replace('- An app has one to five views.', `${SCREEN_PLAN.trim()}\n- An app has one to five views.`)
-    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)'));
+    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)')));
 
 // A plan's screens made ready to check: statements compiled, patches applied
 // to the screens the app has, patterns expanded, and each screen put in the
@@ -731,7 +740,7 @@ export async function buildContext(engine, appId, request) {
     parts.push(`## What the person did lately\n${summarizeEvents(events)}`);
     const errors = events.filter((e) => e.kind === 'error').slice(0, 5);
     if (errors.length) parts.push(`## Errors lately, from the code that runs now\n${errors.map((e) => `- ${e.cap}: ${e.detail}`).join('\n')}`);
-    const history = await store.suggestionHistory(appId, 30);
+    const history = SUGGEST_AFTER ? [] : await store.suggestionHistory(appId, 30);
     if (history.length) parts.push(`## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n')}`);
   }
   // What to look for: the request, and for the shared pieces the app's
@@ -1057,7 +1066,7 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary", "seed" and "suggestions" as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
+- Keep "summary"${SUGGEST_AFTER ? ' and "seed"' : ', "seed" and "suggestions"'} as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
 
 // First versions written in parallel: the plan names every screen and rule
 // with a spec and no statement, and each is then written by its own writer
@@ -1075,7 +1084,7 @@ Answer with the <plan> alone this time, and no code blocks. Each view, function,
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well.
-- Keep "summary" and "suggestions" as always. Leave out "seed" and "tests": their writer adds them.`;
+- Keep "summary"${SUGGEST_AFTER ? '' : ' and "suggestions"'} as always. Leave out "seed" and "tests": their writer adds them.`;
 
 const screenStep = (slug) => `# This step: write the screen ${slug}
 
@@ -1262,6 +1271,15 @@ export async function forge(engine, appId, request, progress = () => {}) {
   }
 }
 
+// Small changes (a label, a colour, a sort order, renaming, hiding or moving
+// something) go to a small model first; when its answer fails the checks, the
+// usual model answers instead, with the small one's answer and its problems.
+// STRATA_APPS_SMALL_MODEL=off sends every change to the usual model.
+export const SMALL_MODEL = process.env.STRATA_APPS_SMALL_MODEL === 'off' ? null : (process.env.STRATA_APPS_SMALL_MODEL || 'claude-haiku-5-5');
+const SMALL_ASK = /\b(rename|call (it|them|the)|change (the |its |their )?(colou?rs?|titles?|labels?|names?|wording|text|icons?|order|defaults?|headings?)|sort|order (it |them )?by|reorder|move|hide|remove the|bigger|smaller|bolder|bold|darker|lighter|default to|instead of|red|green|blue|orange|grey|gray|colou?r)\b/i;
+const NOT_SMALL = /\b(add|new|track|let me|import|export|e-?mail|notify|remind|chart|graph|calculat|search|upload|photo|map|login|sign|share|invite|pay|schedule|every (day|week|month))\w*/i;
+export const smallChange = (text, view) => !!SMALL_MODEL && !!view?.comp?.n && String(text).length <= 160 && SMALL_ASK.test(text) && !NOT_SMALL.test(text);
+
 async function forgeTraced(engine, appId, request, progress, tr) {
   const { store } = engine;
   const started = Date.now();
@@ -1278,10 +1296,12 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   let decidedAt = 0;
   const split = SPLIT === 'always' || (SPLIT === 'first' && !view.comp.n);
   if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit(context, progress, tr));
-  for (let attempt = 1; attempt <= 2 && !split; attempt++) {
-    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
-    const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems');
-    answer = await ask({ system, prompt: attemptPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress), previewer(view, progress)) });
+  const small = !split && smallChange(request.text, view);
+  for (let attempt = 1; attempt <= (small ? 3 : 2) && !split; attempt++) {
+    const model = small && attempt === 1 ? SMALL_MODEL : SCREEN_MODEL;
+    progress(attempt === 1 ? `Asking the model (${model}${small ? ', for a small change' : ''}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model${small && attempt === 2 ? ` (${SCREEN_MODEL})` : ''} again to fix: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
+    const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems', { model });
+    answer = await ask({ system, prompt: attemptPrompt, model, onWrite: tee(writing(progress), previewer(view, progress)) });
     tr.call(span, answer, system.length + attemptPrompt.length);
     cost += answer.cost || 0;
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
@@ -1475,11 +1495,15 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started, trace: tr.toJSON(), candidate: true, base: view.comp.n, problems: problemsLeft };
   }
   await offerNewVersions(engine, appId, newVersions, progress);
-  const suggestions = (plan.suggestions || []).filter((s) => s && s.text).slice(0, 3)
-    .map((s) => ({ text: String(s.text).slice(0, 300), why: String(s.why || '').slice(0, 300), source: 'forge' }));
-  if (suggestions.length) {
-    await retireSuggestions(engine, appId);
-    await store.putSuggestions(appId, suggestions);
+  if (SUGGEST_AFTER) {
+    suggestNext(engine, appId, request, plan.summary || '').catch((e) => engine.log?.(`[${appId}] suggestions: ${e.message}`));
+  } else {
+    const suggestions = (plan.suggestions || []).filter((s) => s && s.text).slice(0, 3)
+      .map((s) => ({ text: String(s.text).slice(0, 300), why: String(s.why || '').slice(0, 300), source: 'forge' }));
+    if (suggestions.length) {
+      await retireSuggestions(engine, appId);
+      await store.putSuggestions(appId, suggestions);
+    }
   }
   return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started, trace: tr.toJSON() };
 }
@@ -1536,6 +1560,47 @@ async function retireSuggestions(engine, appId) {
   const open = await engine.store.suggestions(appId);
   const ops = open.filter((s) => s.source === 'forge').map((s) => ({ op: 'set', table: 'sa_suggestions', key: s.id, field: 'status', value: 'stale' }));
   if (ops.length) await engine.db.write(ops);
+}
+
+// ---- suggestions of what to ask next, written once a version is live
+
+const NEXT_SYSTEM = `A person builds a small app by asking for changes, and a change they asked for was just built. Suggest 3 changes they might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked, or to what they did as recorded; never claim a habit the record does not show. Make them specific to this app, small enough to build in one step, and new: not what the app does already (read the versions, which say what each change added), not what was just asked, and not one of the suggestions made before.
+
+Answer with JSON only: {"suggestions": [{"text": "the change, in one sentence", "why": "one plain sentence under 25 words"}]}.`;
+
+export async function suggestNext(engine, appId, request, summary) {
+  const { store } = engine;
+  const view = await store.resolve(appId);
+  if (!view.comp.n) return [];
+  const versions = await store.compositions(appId);
+  const history = await store.suggestionHistory(appId, 30);
+  const live = new Set(view.comp.caps);
+  const events = (await store.recentEvents(appId, 200)).filter((e) => e.kind !== 'error' || live.has(e.cap));
+  const prompt = [
+    `# The app: ${view.app.name}\n${view.app.description || ''}`,
+    `## Tables\n${view.tables.map((t) => `- ${t.spec.name}: ${(t.spec.columns || []).map((c) => c.name).join(', ')}`).join('\n') || '(none)'}`,
+    `## Views\n${view.views.map((v) => `- ${v.title}: ${v.description || ''}`).join('\n') || '(none)'}`,
+    `## Functions\n${view.functions.map((f) => `- ${f.slug}: ${f.description || ''}`).join('\n') || '(none)'}`,
+    `## Versions, oldest first (what each change added)\n${versions.slice().reverse().map((c) => `- v${c.n}: ${c.summary || c.request || ''}`).join('\n')}`,
+    `## Just built\nAsked: ${request.text}\nBuilt: ${summary}`,
+    `## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n') || '(none)'}`,
+    `## What the person did lately\n${summarizeEvents(events)}`,
+  ].join('\n\n');
+  const answer = await ask({ system: NEXT_SYSTEM, prompt, model: SUGGEST_MODEL, effort: 'low' });
+  let out;
+  try {
+    const m = answer.text.match(/\{[\s\S]*\}/);
+    out = JSON.parse(m ? m[0] : answer.text);
+  } catch { return []; }
+  const items = (out.suggestions || []).filter((x) => x && x.text).slice(0, 3)
+    .map((x) => ({ text: clipWords(x.text, 300), why: clipWords(x.why, 240), source: 'forge' }));
+  if (!items.length) return [];
+  // A newer version may have been built meanwhile: its own suggestions win.
+  if ((await store.resolve(appId)).comp.n !== view.comp.n) return [];
+  await retireSuggestions(engine, appId);
+  const put = await store.putSuggestions(appId, items);
+  engine.emit?.('suggestions', { app: appId });
+  return put;
 }
 
 // ---- suggestions from use
