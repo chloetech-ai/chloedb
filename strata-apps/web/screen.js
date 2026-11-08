@@ -208,7 +208,9 @@
       const kept = forms.get(path);
       if (kept && kept.sig === sig) { kept.s = s; kept.refresh(s); return kept.el; }
       const entry = { sig, s, el: null };
-      const fields = (b.fields || []).map((f) => (typeof f === 'string' ? { name: f } : f));
+      // A field may be a heading for the fields after it: {"section": "Payment"}.
+      const all = (b.fields || []).map((f) => (typeof f === 'string' ? { name: f } : f));
+      const fields = all.filter((f) => f && f.name);
       const controls = new Map();
       const valueOf = (f, el) => {
         const t = f.type || 'text';
@@ -236,7 +238,9 @@
       // on a grid: every field labelled above it, long ones across the
       // whole row, checkboxes beside their label, the buttons on a row of
       // their own. A short form stays one line ([title] [due] Add).
-      const wide = !inCol && (fields.length > 3 || fields.some((f) => f.type === 'textarea' || f.type === 'file'));
+      // A form in a column (layout "col") is a grid too: it has the room of
+      // its card, and narrows to one column where the card is narrow.
+      const wide = inCol ? fields.length > 1 || fields.some((f) => f.type === 'textarea' || f.type === 'file') : fields.length > 3 || fields.some((f) => f.type === 'textarea' || f.type === 'file');
       // A control a placeholder cannot name (a date, a select...) gets a
       // label; in a one-line form, then, every field does, so they line up.
       const named = (f) => !!f.label || ['checkbox', 'file', 'rating', 'date', 'time', 'datetime', 'select'].includes(f.type || 'text');
@@ -263,17 +267,19 @@
         controls.set(f.name, el);
         if (wide) {
           const text = f.label ? T(f.label, s, path) : human(f.name);
-          if (t === 'checkbox') return h('label', { class: 'check' }, el, h('span', null, text));
-          return h('label', { class: t === 'textarea' || t === 'file' || t === 'tags' ? 'span' : null }, h('span', null, text), el);
+          const hint = f.hint ? h('span', { class: 'hint' }, T(f.hint, s, path)) : null;
+          if (t === 'checkbox') return h('label', { class: 'check' }, el, h('span', null, text), hint);
+          return h('label', { class: t === 'textarea' || t === 'file' || t === 'tags' ? 'span' : null }, h('span', null, text, f.required ? h('span', { class: 'req', 'aria-hidden': 'true' }, ' *') : null), el, hint);
         }
         // In a column a control keeps its own height (a form's controls flex
         // along the row).
         if (inCol && t !== 'checkbox') el.style.flex = 'none';
+        if (inCol && t !== 'checkbox') el.style.width = '100%';
         const lab = f.label ? T(f.label, s, path) : labelAll || named(f) ? human(f.name) : null;
         return lab ? h('label', { class: 'col', style: inCol ? 'gap:4px' : 'gap:4px;flex:1 1 140px' }, h('span', { class: 'small muted' }, lab), el) : el;
       };
-      const saveBtn = h('button', { class: 'primary', type: 'submit', style: inCol ? 'align-self:flex-start' : null }, T(editing ? (b.update || 'Save') : (b.submit || 'Add'), s, path));
-      const el = h('form', { class: inCol ? 'col' : wide ? 'wide' : null, style: inCol ? 'align-items:stretch' : null, onsubmit: async (e) => {
+      const saveBtn = h('button', { class: 'primary', type: 'submit', style: inCol && !wide ? 'align-self:flex-start' : null }, T(editing ? (b.update || 'Save') : (b.submit || 'Add'), s, path));
+      const el = h('form', { class: wide ? 'wide' : inCol ? 'col' : null, style: inCol && !wide ? 'align-items:stretch' : null, onsubmit: async (e) => {
         e.preventDefault();
         const cur = entry.s;
         const row = {};
@@ -290,19 +296,31 @@
         } catch (err) { app.toast(err.message); report(fail(`${path} (${tableName})`, err)); } finally { saveBtn.disabled = false; }
       } }, wide ? [] : fields.map(make));
       if (wide) {
-        // Short fields first, as many columns as make even rows (5 fields:
-        // 3 and 2, not 4 and 1), then the long ones across, then the
+        // Each section (the fields after a {"section"} heading, or all of
+        // them): short fields first, as many columns as make even rows (5
+        // fields: 3 and 2, not 4 and 1), then the long ones across, then the
         // checkboxes together; each group keeps the order it was given in.
         const long = (f) => ['textarea', 'file', 'tags'].includes(f.type);
-        const short = fields.filter((f) => !long(f) && f.type !== 'checkbox');
-        const rows = Math.max(1, Math.ceil(short.length / 4));
-        el.style.setProperty('--cols', String(Math.max(1, Math.ceil(short.length / rows))));
-        el.append(...short.map(make), ...fields.filter(long).map(make));
-        const checks = fields.filter((f) => f.type === 'checkbox');
-        if (checks.length) el.append(h('div', { class: 'checks' }, checks.map(make)));
+        const groups = [];
+        for (const f of all) {
+          if (f && f.section !== undefined && !f.name) groups.push({ title: T(f.section, s, path), hint: f.hint ? T(f.hint, s, path) : null, fields: [] });
+          else if (f && f.name) { if (!groups.length) groups.push({ title: null, fields: [] }); groups.at(-1).fields.push(f); }
+        }
+        const most = Math.max(1, ...groups.map((g) => g.fields.filter((f) => !long(f) && f.type !== 'checkbox').length));
+        const rows = Math.max(1, Math.ceil(most / 4));
+        el.style.setProperty('--cols', String(Math.max(1, Math.ceil(most / rows))));
+        for (const g of groups) {
+          if (g.title) el.append(h('div', { class: 'part' }, h('span', null, g.title), g.hint ? h('span', { class: 'hint' }, g.hint) : null));
+          const short = g.fields.filter((f) => !long(f) && f.type !== 'checkbox');
+          el.append(...short.map(make), ...g.fields.filter(long).map(make));
+          const checks = g.fields.filter((f) => f.type === 'checkbox');
+          if (checks.length) el.append(h('div', { class: 'checks' }, checks.map(make)));
+        }
       }
-      const cancelBtn = editing && b.cancel !== undefined ? h('button', { class: 'ghost', type: 'button', onclick: () => { forms.delete(path); const c = val(b.cancel, entry.s, `${path}.cancel`); run(c, [], `${path}.cancel`); } }, 'Cancel') : null;
-      if (wide) el.append(h('div', { class: 'actions' }, saveBtn, cancelBtn));
+      // Cancel shows while a row is edited, or always on a form that opens
+      // and closes ("closes": true, as a pattern's New form does).
+      const cancelBtn = (editing || b.closes) && b.cancel !== undefined ? h('button', { class: 'ghost', type: 'button', onclick: () => { forms.delete(path); const c = val(b.cancel, entry.s, `${path}.cancel`); run(c, [], `${path}.cancel`); } }, 'Cancel') : null;
+      if (wide) el.append(h('div', { class: 'actions' }, cancelBtn, saveBtn));
       else el.append(...[saveBtn, cancelBtn].filter(Boolean));
       entry.el = el;
       forms.set(path, entry);
@@ -314,6 +332,20 @@
       money: (v) => app.fmt.money(v), number: (v) => app.fmt.number(v), percent: (v) => (v == null ? '' : `${Math.round(Number(v) * 100)}%`),
       stars: (v) => (v ? '★'.repeat(Math.round(v)) : ''), bool: (v) => (v ? '✓' : ''),
     };
+    // A badge's color from what its word means (paid, late, waiting, new...);
+    // a column may name them itself: "badge": {"shipped": "ok", "lost": "bad"}.
+    const TONES = {
+      ok: /^(paid|done|complete[d]?|yes|active|ok|okay|approved|accepted|delivered|ready|confirmed|present|won|live|published|available|resolved|success|passed|good|in stock|healthy|on track|finished|kept|enabled|true|✓|returned|received|fulfilled|signed)$/,
+      bad: /^(late|overdue|no|failed|fail|cancell?ed|rejected|out|out of stock|lost|absent|declined|blocked|error|urgent|expired|unpaid|critical|missing|broken|disabled|false|off track|bounced|damaged|needs repair|lost|refunded)$/,
+      warn: /^(due|waiting|pending|low|low stock|maybe|partial|partly paid|in progress|doing|preparing|review|in review|tentative|soon|on hold|hold|reorder|draft|stale|warning|busy|sent|fair|worn|out now|rented|on loan)$/,
+      info: /^(new|planned|scheduled|todo|to do|open|booked|invited|queued|next|info)$/,
+    };
+    function toneOf(v, given) {
+      const w = String(v).trim().toLowerCase();
+      if (given && typeof given === 'object' && given[w] !== undefined) return given[w] || 'plain';
+      for (const [tone, re] of Object.entries(TONES)) if (re.test(w)) return tone;
+      return 'plain';
+    }
     function table(b, s, path) {
       const rows = val(b.table, s, `${path}.table`) || [];
       if (!rows.length) return h('div', { class: 'empty' }, T(b.empty ?? 'Nothing here yet.', s, path));
@@ -327,7 +359,7 @@
         if (v instanceof Node) return v;
         if (c.format && FORMAT[c.format]) v = FORMAT[c.format](v);
         if (Array.isArray(v)) v = v.join(', ');
-        return c.badge && v != null && v !== '' ? h('span', { class: 'badge' }, String(v)) : v == null ? '' : String(v);
+        return c.badge && v != null && v !== '' ? h('span', { class: `badge ${toneOf(v, c.badge)}` }, String(v)) : v == null ? '' : String(v);
       };
       return h('div', { style: 'overflow-x:auto' }, h('table', null,
         h('thead', null, h('tr', null, cols.map((c) => h('th', null, c.label ?? human(c.key || ''))), acts.length ? h('th') : null)),

@@ -104,15 +104,16 @@ function interpolate(s, P) {
   });
 }
 
+// "a&b|c": any of the |-separated groups, each all of its &-separated tests.
 function when(cond, P) {
-  return cond.split('&').map((c) => c.trim()).every((c) => {
+  return cond.split('|').some((group) => group.split('&').map((c) => c.trim()).every((c) => {
     const ne = c.indexOf('!=');
     if (ne > 0) return String(get(P, c.slice(0, ne)) ?? '') !== c.slice(ne + 2);
     if (c.startsWith('!')) return empty(get(P, c.slice(1)));
     const eq = c.indexOf('=');
     if (eq > 0) return String(get(P, c.slice(0, eq)) ?? '') === c.slice(eq + 1);
     return !empty(get(P, c));
-  });
+  }));
 }
 
 // The template v with the parameters P put in.

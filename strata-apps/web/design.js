@@ -18,16 +18,19 @@ export const CHOICES = {
   scheme: { auto: 'follows the device: light by day, dark at night', light: 'always light', dark: 'always dark' },
   font: { system: 'San Francisco, neutral', rounded: 'SF Rounded, friendly', serif: 'New York, editorial', mono: 'SF Mono, technical' },
   titles: { system: 'San Francisco', rounded: 'SF Rounded', serif: 'New York', mono: 'SF Mono' },
-  corners: { round: 'capsule buttons and 20px cards', soft: '10-14px corners', square: '6px corners, crisp' },
-  density: { airy: 'large text, generous space', regular: 'balanced', compact: 'dense, for many rows' },
-  surface: { grouped: 'white cards on a tinted page (iOS Settings)', raised: 'cards lifted by a soft shadow', outlined: 'hairline boxes on a plain page' },
+  corners: { round: 'capsule buttons and 16px cards', soft: '7-10px corners, precise', square: '4px corners, crisp' },
+  density: { airy: 'larger text, more space', regular: 'balanced: 14px text, 32px controls', compact: 'dense, for many rows and fields' },
+  surface: { outlined: 'hairline boxes on a neutral page, like a console', grouped: 'borderless white cards on a tinted page (iOS Settings)', raised: 'cards lifted by a soft shadow' },
   nav: { segmented: 'a centered segmented control', tabs: 'underlined tabs, left aligned', sidebar: 'a list on the left (for apps with many views)' },
-  width: { narrow: '720px: reading and forms', regular: '980px', wide: '1240px: tables and boards' },
+  width: { narrow: '760px: reading', regular: '1040px', wide: '1280px: tables, forms and boards' },
   motion: { calm: 'slow, quiet movement on front pages', lively: 'quicker, more movement', still: 'nothing moves by itself' },
 };
 
 const C = (light, dark) => ({ light, dark });
 export const PRESETS = [
+  { name: 'Console', about: 'Neutral and precise, like a database console', scheme: 'auto',
+    ...C({ bg: '#f4f5f7', card: '#ffffff', fg: '#0f1216', accent: '#2f5bd3' }, { bg: '#0d0f12', card: '#16181c', fg: '#eceef1', accent: '#7aa2ff' }),
+    font: 'system', titles: 'system', corners: 'soft', density: 'regular', surface: 'outlined', nav: 'tabs', width: 'wide', gradient: ['#2f5bd3', '#6250d6', '#1baf7a'], motion: 'calm' },
   { name: 'Classic', about: 'Apple\'s own: quiet gray page, white cards, blue', scheme: 'auto',
     ...C({ bg: '#f5f5f7', card: '#ffffff', fg: '#1d1d1f', accent: '#0071e3' }, { bg: '#000000', card: '#1c1c1e', fg: '#f5f5f7', accent: '#2997ff' }),
     font: 'system', titles: 'system', corners: 'round', density: 'regular', surface: 'grouped', nav: 'segmented', width: 'regular', gradient: ['#2997ff', '#a259ff', '#ff6b9a'] },
@@ -117,7 +120,7 @@ export function gradientOf(d, accent) {
 const words = (v, n, d) => (typeof v === 'string' && v.trim() ? v.trim().replace(/\s+/g, ' ').slice(0, n) : d);
 
 // A design as given (by the model, a person or a preset), made whole and
-// readable: unknown tokens fall back to Classic's, colors are checked.
+// readable: unknown tokens fall back to Console's, colors are checked.
 export function checkDesign(d, base = PRESETS[0]) {
   const scheme = pick(d?.scheme, 'scheme', base.scheme);
   const light = palette(d?.light || d?.dark, base.light, false);
@@ -142,10 +145,10 @@ export function checkDesign(d, base = PRESETS[0]) {
 
 // ---- CSS
 
-const CORNERS = { round: { card: '22px', control: '999px', field: '12px', small: '10px' }, soft: { card: '14px', control: '10px', field: '10px', small: '8px' }, square: { card: '6px', control: '6px', field: '6px', small: '4px' } };
-const DENSITY = { airy: { text: '16px', space: '22px', pad: '22px', row: '14px' }, regular: { text: '15px', space: '16px', pad: '18px', row: '11px' }, compact: { text: '14px', space: '12px', pad: '14px', row: '7px' } };
-const WIDTH = { narrow: '720px', regular: '980px', wide: '1240px' };
-const STATUS = { light: { ok: '#248a3d', warn: '#c93400', bad: '#d70015', info: '#0066cc' }, dark: { ok: '#30d158', warn: '#ff9f0a', bad: '#ff6961', info: '#64d2ff' } };
+const CORNERS = { round: { card: '16px', control: '999px', field: '9px', small: '8px' }, soft: { card: '10px', control: '7px', field: '7px', small: '6px' }, square: { card: '4px', control: '4px', field: '4px', small: '3px' } };
+const DENSITY = { airy: { text: '15px', space: '20px', pad: '20px', row: '12px', control: '38px' }, regular: { text: '14px', space: '16px', pad: '16px', row: '9px', control: '32px' }, compact: { text: '13px', space: '12px', pad: '12px', row: '6px', control: '28px' } };
+const WIDTH = { narrow: '760px', regular: '1040px', wide: '1280px' };
+const STATUS = { light: { ok: '#18794e', warn: '#b4560a', bad: '#c4302b', info: '#2563c9' }, dark: { ok: '#3fcf8e', warn: '#f2a33a', bad: '#ff8a80', info: '#7cb4ff' } };
 
 // The variables of a design in one scheme.
 export function designVars(input, which = 'light') {
@@ -156,22 +159,25 @@ export function designVars(input, which = 'light') {
   const n = DENSITY[d.density];
   // Cards that would vanish on their page (same color, grouped) get a hairline.
   const flat = contrast(p.bg, p.card) < 1.04;
-  const border = d.surface === 'outlined' || flat ? 'var(--line)' : isDark && d.surface === 'raised' ? 'rgba(255,255,255,.07)' : 'transparent';
-  const shadow = d.surface === 'raised' && !isDark ? '0 1px 2px rgba(0,0,0,.04), 0 8px 28px rgba(0,0,0,.07)' : d.surface === 'grouped' && !isDark && !flat ? '0 1px 1px rgba(0,0,0,.02)' : 'none';
+  const border = d.surface === 'outlined' || flat ? 'var(--line)' : isDark ? 'rgba(255,255,255,.06)' : 'transparent';
+  const shadow = isDark ? 'none' : d.surface === 'raised' ? '0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.07)' : d.surface === 'outlined' ? '0 1px 2px rgba(16,24,40,.05)' : flat ? 'none' : '0 1px 2px rgba(16,24,40,.04)';
   const s = STATUS[isDark ? 'dark' : 'light'];
   return {
     '--bg': p.bg, '--card': p.card, '--fg': p.fg, '--accent': p.accent, '--accent-fg': onColor(p.accent),
     '--ok': s.ok, '--warn': s.warn, '--bad': s.bad, '--info': s.info,
     '--font': FONTS[d.font], '--font-title': TITLE_FONTS[d.titles],
     '--radius': k.card, '--radius-control': k.control, '--radius-field': k.field, '--radius-small': k.small,
-    '--text': n.text, '--space': n.space, '--pad': n.pad, '--row': n.row, '--page': WIDTH[d.width],
-    '--card-border': border, '--card-shadow': shadow, '--field-border': d.surface === 'outlined' ? 'var(--line)' : 'transparent',
-    '--muted': `color-mix(in srgb, var(--fg) ${isDark ? 62 : 56}%, var(--bg))`,
-    '--line': `color-mix(in srgb, var(--fg) ${isDark ? 16 : 11}%, transparent)`,
-    '--soft': `color-mix(in srgb, var(--fg) ${isDark ? 8 : 4.5}%, transparent)`,
-    '--fill': `color-mix(in srgb, var(--fg) ${isDark ? 11 : 6}%, var(--card))`,
-    '--accent-soft': `color-mix(in srgb, var(--accent) ${isDark ? 22 : 12}%, transparent)`,
-    '--seg-on': isDark ? 'color-mix(in srgb, var(--fg) 20%, var(--card))' : 'var(--card)',
+    '--text': n.text, '--space': n.space, '--pad': n.pad, '--row': n.row, '--control': n.control, '--page': WIDTH[d.width],
+    '--card-border': border, '--card-shadow': shadow, '--field-border': 'var(--line-2)',
+    '--field-bg': isDark ? 'color-mix(in srgb, var(--fg) 3%, var(--card))' : 'var(--card)',
+    '--muted': `color-mix(in srgb, var(--fg) ${isDark ? 58 : 55}%, var(--bg))`,
+    '--line': `color-mix(in srgb, var(--fg) ${isDark ? 11 : 10}%, transparent)`,
+    '--line-2': `color-mix(in srgb, var(--fg) ${isDark ? 19 : 17}%, transparent)`,
+    '--soft': `color-mix(in srgb, var(--fg) ${isDark ? 6 : 4}%, transparent)`,
+    '--fill': `color-mix(in srgb, var(--fg) ${isDark ? 8 : 5}%, var(--card))`,
+    '--head': `color-mix(in srgb, var(--fg) ${isDark ? 3 : 2.5}%, var(--card))`,
+    '--accent-soft': `color-mix(in srgb, var(--accent) ${isDark ? 20 : 12}%, transparent)`,
+    '--seg-on': isDark ? 'color-mix(in srgb, var(--fg) 14%, var(--card))' : 'var(--card)',
     '--shadow': shadow,
     '--g1': d.gradient[0], '--g2': d.gradient[1], '--g3': d.gradient[2],
     '--slow': d.motion === 'lively' ? '.6' : '1', '--play': d.motion === 'still' ? 'paused' : 'running', '--rv': d.motion === 'still' ? '0' : '1',

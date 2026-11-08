@@ -137,7 +137,8 @@
   "state": {
    "{{key}}_q": "",
    "{{key}}_f": "",
-   "{{key}}_editing": null
+   "{{key}}_editing": null,
+   "{{key}}_adding": false
   },
   "data": {
    "{{key}}": {
@@ -150,7 +151,21 @@
   },
   "body": [
    {
-    "$when": "title",
+    "$when": "form=top",
+    "row": [
+     {
+      "$when": "title",
+      "h": "{{title}}"
+     },
+     {
+      "button": "{{submit}}",
+      "class": "primary right",
+      "do": "=() => set({ {{key}}_adding: true, {{key}}_editing: null })"
+     }
+    ]
+   },
+   {
+    "$when": "title&form!=top",
     "h": "{{title}}"
    },
    {
@@ -158,36 +173,46 @@
     "kpis": "{{kpis}}"
    },
    {
-    "card": [
+    "$when": "form=top",
+    "if": "=state.{{key}}_adding || state.{{key}}_editing",
+    "then": [
      {
-      "form": "{{table}}",
-      "layout": "col",
-      "fields": "{{fields}}",
-      "set": "{{set}}",
-      "submit": "=state.{{key}}_editing ? 'Save' : {{submit|json}}",
-      "edit": "=state.{{key}}_editing",
-      "after": "=() => set({ {{key}}_editing: null })",
-      "cancel": "=() => set({ {{key}}_editing: null })"
+      "card": [
+       {
+        "form": "{{table}}",
+        "fields": "{{fields}}",
+        "set": "{{set}}",
+        "submit": "=state.{{key}}_editing ? 'Save' : {{submit|json}}",
+        "edit": "=state.{{key}}_editing",
+        "after": "=() => set({ {{key}}_adding: false, {{key}}_editing: null })",
+        "cancel": "=() => set({ {{key}}_adding: false, {{key}}_editing: null })",
+        "closes": true
+       }
+      ],
+      "title": "=state.{{key}}_editing ? 'Edit ' + {{noun|json}} : {{submit|json}}"
      }
-    ],
-    "title": "=state.{{key}}_editing ? 'Edit ' + {{noun|json}} : {{submit|json}}",
-    "$when": "form=top"
+    ]
    },
    {
-    "$when": "search&form!=side",
-    "input": "{{key}}_q",
-    "type": "search",
-    "placeholder": "{{placeholder}}"
-   },
-   {
-    "$when": "filter&form!=side",
-    "chips": "{{key}}_f",
-    "options": [
+    "$when": "search&form!=side|filter&form!=side",
+    "row": [
      {
-      "value": "",
-      "label": "All"
+      "$when": "search",
+      "input": "{{key}}_q",
+      "type": "search",
+      "placeholder": "{{placeholder}}"
      },
-     "{{...filter.options}}"
+     {
+      "$when": "filter",
+      "chips": "{{key}}_f",
+      "options": [
+       {
+        "value": "",
+        "label": "All"
+       },
+       "{{...filter.options}}"
+      ]
+     }
     ]
    },
    {
@@ -350,7 +375,6 @@
       "card": [
        {
         "form": "{{table}}",
-        "layout": "col",
         "fields": "{{fields}}",
         "set": "{{set}}",
         "submit": "=state.{{key}}_editing ? 'Save' : {{submit|json}}",

@@ -10,13 +10,13 @@ export const DESIGN_MODEL = process.env.STRATA_APPS_DESIGN_MODEL || 'claude-haik
 
 const choices = Object.entries(CHOICES).map(([k, opts]) => `- ${k}: ${Object.entries(opts).map(([v, what]) => `"${v}" (${what})`).join(', ')}`).join('\n');
 
-export const DESIGN_SYSTEM = `You are a product designer with Apple's taste: calm, minimal, generous whitespace, one accent color, clear type, nothing decorative. You design the look of small apps as a few tokens; the app's screens stay as they are.
+export const DESIGN_SYSTEM = `You are a product designer with taste for calm, precise tools: minimal, one accent color, clear small type, hairlines instead of boxes, nothing decorative. You design the look of small apps as a few tokens; the app's screens stay as they are.
 
 Answer with a JSON array of exactly three designs and nothing else. Each design:
 {"name": "one or two words", "about": "the mood in under 12 words", "scheme": "auto",
  "light": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
  "dark": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
- "font": "system", "titles": "system", "corners": "round", "density": "regular", "surface": "grouped", "nav": "segmented", "width": "regular",
+ "font": "system", "titles": "system", "corners": "soft", "density": "regular", "surface": "outlined", "nav": "tabs", "width": "wide",
  "gradient": ["#rrggbb", "#rrggbb", "#rrggbb"], "motion": "calm"}
 
 The tokens and their values:
@@ -25,7 +25,7 @@ ${choices}
 Colors: bg is the page, card the surface of cards and lists, fg the text, accent the one color for buttons, links and selection. gradient is three colors that drift behind front pages and fill emphasized words, icons and the featured plan: the accent and two neighbours that flatter it (a sunset of coral, pink and gold; an ocean of blue, violet and cyan), vivid but not neon. Text (fg) reads on bg and on card at 7:1 or more; the accent reads as text on card at 4.5:1 or more. In light, card is usually white and bg a faint tint of the accent's hue or a warm or cool gray; in dark, bg is near black and card a little lighter. Keep saturation low except the accent.
 
 The three must differ clearly, each fitting the app's subject and the people who use it:
-1. The natural one: Apple's own spirit (system font, grouped cards, segmented control), its accent taken from the subject.
+1. The natural one, quiet and precise like a well-made console: system font, a neutral gray page (#f4f5f7 in light, #0d0f12 in dark) with white outlined cards (#16181c in dark), soft corners, regular density (compact when the app is mostly forms and tables), tabs, wide; its accent taken from the subject.
 2. A warmer or more editorial one: serif or rounded titles, tinted paper, outlined or raised surfaces, tabs.
 3. A bolder one: a dark scheme or a strong accent, or a sidebar and wide layout when the app has many views or big tables.
 Names are evocative and short (Linen, Harbor, Ember), never the app's name.`;
