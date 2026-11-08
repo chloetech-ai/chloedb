@@ -1184,6 +1184,10 @@ enum Func {
   FUNC_DATE_TRUNC = 19;
   FUNC_DATE_PART = 20;
   FUNC_STRFTIME = 21;
+  // hash(x [, seed]): an INT from 0 to 2^63 - 1 of a value and a seed, the
+  // same everywhere, for a seeded sample, split or shuffle of rows (plan
+  // feature "hash").
+  FUNC_HASH = 22;
 }
 
 message Match {

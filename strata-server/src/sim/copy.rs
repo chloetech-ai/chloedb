@@ -237,11 +237,15 @@ impl Sim {
             }
             Req::Vote(r) => {
                 let mut step_down = false;
+                let resets = !self.cfg.bugs.contains(&Bug::ReplacesTheCopyItElected);
                 let a = match &mut self.copies[i].role {
                     Role::Replica(rep) => {
                         let (a, save) = rep.vote(&r, &n, now, sticky);
                         if let Some(k) = save {
                             rep.kept = k.clone();
+                            if resets {
+                                rep.granted(now);
+                            }
                             self.copies[i].kept = Some(k);
                             let (t, c) = (r.term, r.candidate.clone());
                             self.note(|| format!("s{i} votes for {c} in term {t}"));
@@ -469,13 +473,17 @@ impl Sim {
         match p {
             Purpose::Ship { k, gen } => self.ship_answer(i, k, gen, a),
             Purpose::Elect { round, idx } => {
+                let early = !self.cfg.bugs.contains(&Bug::ReplacesTheCopyItElected);
                 let Some(e) = &mut self.copies[i].election else { return };
                 if e.round != round || e.answers[idx].is_some() {
                     return;
                 }
                 e.answers[idx] = Some(a);
                 e.left -= 1;
-                if e.left == 0 {
+                // As the server does: an election on its own ends a round
+                // once its answers decide it.
+                let decided = early && e.reply.is_none() && e.phase != Phase::Hello && e.c.decided(&e.answers.iter().map(|a| a.clone().map(vote_of)).collect::<Vec<_>>());
+                if e.left == 0 || decided {
                     self.next_round(i);
                 }
             }
@@ -498,7 +506,7 @@ impl Sim {
         let copies = self.election_copies();
         let n = self.copies[i].db.numbering.clone();
         let Some(e) = &mut self.copies[i].election else { return };
-        let answers = std::mem::take(&mut e.answers).into_iter().map(|a| a.expect("every copy answered"));
+        let answers = std::mem::take(&mut e.answers).into_iter().map(|a| a.unwrap_or_else(|| Err("not waited for: the copies that answered decided the round".into())));
         match e.phase {
             Phase::Hello => {
                 let said: Vec<(String, Result<pb::HelloResponse, String>)> = copies
@@ -519,14 +527,7 @@ impl Sim {
                 }
             }
             Phase::Pre | Phase::Vote => {
-                let votes: Vec<Result<pb::VoteResponse, String>> = answers
-                    .map(|a| match a {
-                        Ok(Resp::Vote(Ok(v))) => Ok(v),
-                        Ok(Resp::Vote(Err(e))) => Err(e.message),
-                        Ok(r) => Err(format!("{r:?}")),
-                        Err(e) => Err(e),
-                    })
-                    .collect();
+                let votes: Vec<Result<pb::VoteResponse, String>> = answers.map(vote_of).collect();
                 let tally = e.c.tally(&copies, votes);
                 let (c, phase) = (e.c.clone(), e.phase);
                 let heard = !self.cfg.bugs.contains(&Bug::AsksAKnownTerm);
@@ -724,5 +725,15 @@ impl Copy {
     /// The primary it runs as, if any, and whether another replaced it.
     pub fn primary(&self) -> Option<&Primary> {
         self.role_primary().map(|r| &r.core)
+    }
+}
+
+/// A copy's answer to a call for its vote (an error: none, or not a vote).
+fn vote_of(a: Result<Resp, String>) -> Result<pb::VoteResponse, String> {
+    match a {
+        Ok(Resp::Vote(Ok(v))) => Ok(v),
+        Ok(Resp::Vote(Err(e))) => Err(e.message),
+        Ok(r) => Err(format!("{r:?}")),
+        Err(e) => Err(e),
     }
 }

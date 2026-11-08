@@ -1929,7 +1929,12 @@ impl<'a> Binder<'a> {
                             func.arity(args.len()).map_err(|a| err(format!("{n}() takes {a}")))?;
                             Ok(Score::Call { func, args: args.iter().map(|a| self.rank(a)).collect::<Result<_>>()? })
                         }
-                        None if matches!(n, "random" | "rand") => Err(err(format!("ORDER BY {n}() is not supported: rows come in the order of a score or a column (ORDER BY a column for a fixed order; a sample of rows needs a column of random numbers written with them)"))),
+                        None if matches!(n, "random" | "rand") => Err(err(format!("ORDER BY {n}() is not supported: rows come in the order of a score or a column; for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0"))),
+                        // Values of a row that the row evaluator computes,
+                        // not a ranking with scores.
+                        None if matches!(n, "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "json_extract") => Err(err(format!(
+                            "{n}() is a value of each row, which a ranking with scores does not take: order by it on its own (ORDER BY {n}(...), a score after it), or select it and order by its name"
+                        ))),
                         None => Err(err(format!(
                             "unknown function {n} in a ranking{}: a ranking is a score (bm25, similarity, maxsim, rrf, ppr, decay), a numeric column, or arithmetic and the functions {} of them",
                             hint::did_you_mean(n, RANK_FUNCS.iter().copied()),

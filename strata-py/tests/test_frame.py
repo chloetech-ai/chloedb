@@ -244,6 +244,67 @@ def test_writes(shop, tmp_path):
     copy.close()
 
 
+def strata_hash(x, seed=0):
+    """SQL's hash(), written out as docs/strata/query-language.md gives it."""
+    data = x.encode() if isinstance(x, str) else int(x).to_bytes(8, "little", signed=True)
+    m, h = (1 << 64) - 1, 0xCBF29CE484222325
+    for b in seed.to_bytes(8, "little", signed=True) + data:
+        h = ((h ^ b) * 0x100000001B3) & m
+    h = ((h ^ (h >> 30)) * 0xBF58476D1CE4E5B9) & m
+    h = ((h ^ (h >> 27)) * 0x94D049BB133111EB) & m
+    return (h ^ (h >> 31)) >> 1
+
+
+def under(h, fraction):
+    return h % 2**32 < round(fraction * 2**32)
+
+
+def test_sample_split_shuffle(shop):
+    o = shop["orders"]
+    # A share of the rows: those whose key's hash falls under it.
+    want = sorted(r["id"] for r in ORDERS if under(strata_hash(r["id"], 7), 0.25))
+    got = sorted(ids(o.sample(fraction=0.25, seed=7)))
+    assert got == want and 120 <= len(got) <= 180
+    assert sorted(ids(o.sample(fraction=0.25, seed=7))) == got
+    assert sorted(ids(o.sample(fraction=0.25, seed=8))) != got
+    assert set(ids(o.sample(fraction=0.1, seed=7))) <= set(got)
+    assert o.sample(fraction=0.0).count() == 0 and o.sample(fraction=1.0).count() == N
+    # A split: every row in one part, and filters before it narrow both.
+    train, test = o.filter(col("country") == "cl").split(0.8, seed=3)
+    cl = {r["id"] for r in ORDERS if r["country"] == "cl"}
+    a, b = set(ids(train)), set(ids(test))
+    assert a | b == cl and not a & b
+    assert a == {i for i in cl if under(strata_hash(i, 3), 0.8)}
+    # By user: each user's orders on one side.
+    tr, te = o.split(0.5, seed=1, on="user")
+    users_tr = {r["user"] for r in tr.select("user").to_dicts()}
+    users_te = {r["user"] for r in te.select("user").to_dicts()}
+    assert users_tr and users_te and not users_tr & users_te
+    assert users_tr == {f"u{i}" for i in range(40) if under(strata_hash(f"u{i}", 1), 0.5)}
+    # Several columns hash in a chain: hash(country, hash(user, seed)).
+    two = o.sample(fraction=0.5, seed=2, on=["user", "country"]).select("user", "country").to_dicts()
+    assert {(r["user"], r["country"]) for r in two} == {(r["user"], r["country"]) for r in ORDERS if under(strata_hash(r["country"], strata_hash(r["user"], 2)), 0.5)}
+    # n rows: those of the smallest hashes, in that order; shuffle is all of them.
+    by_hash = sorted(ORDERS, key=lambda r: strata_hash(r["id"], 5))
+    assert ids(o.sample(10, seed=5)) == [r["id"] for r in by_hash[:10]]
+    assert ids(o.shuffle(seed=5)) == [r["id"] for r in by_hash]
+    assert ids(o.filter(col("status") == "paid").shuffle(seed=5).head(3)) == [r["id"] for r in by_hash if r["status"] == "paid"][:3]
+    # hash() as a column, chained or not.
+    h = o.filter(col("id") == "o0042").select("id", h=col("id").hash(7), u=col("user").hash(col("country").hash(1))).to_dicts()[0]
+    assert h["h"] == strata_hash("o0042", 7) and h["u"] == strata_hash("u2", strata_hash("cl", 1))
+    assert o.with_columns(h=col("id").hash()).to_arrow().schema.field("h").type == pa.int64()
+    # A frame of groups has no key: it names the columns that tell rows apart.
+    g = o.group_by("user").agg(n=strata.len())
+    with pytest.raises(strata.StrataError, match="has none: name the columns"):
+        g.sample(fraction=0.5)
+    assert sorted(r["user"] for r in g.sample(fraction=0.5, seed=1, on="user").to_dicts()) == sorted(users_tr)
+    for bad, msg in [(lambda: o.sample(), "n= .* or fraction="), (lambda: o.sample(3, fraction=0.1), "n= .* or fraction="),
+                     (lambda: o.split(1.5), "a number from 0 to 1"), (lambda: o.sample(fraction=0.1, seed="x"), "seed is an int"),
+                     (lambda: col("id").hash(1.5), "seed is an int")]:
+        with pytest.raises(strata.StrataError, match=msg):
+            bad()
+
+
 def test_pending_store(tmp_path):
     s = strata.connect(tmp_path / "new.strata")
     assert "no tables" in repr(s) or "new.strata" in repr(s)

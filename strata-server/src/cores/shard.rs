@@ -202,6 +202,8 @@ pub struct Replica {
     /// The newest term a copy said it knows, answering its votes
     /// ([`Self::heard`]); its next [`Self::campaign`] asks above it.
     pub heard: u64,
+    /// When it last granted a vote ([`Self::granted`]).
+    pub voted_at: Option<Instant>,
 }
 
 impl Replica {
@@ -218,13 +220,24 @@ impl Replica {
         let next = Kept { role: Some(KeptRole::Replica), member, ..kept.clone() };
         let save = (next != kept).then_some(next);
         let kept = save.clone().unwrap_or(kept);
-        (Replica { kept, called_at: None, serves_reads: false, opened: now, global_checkpoint: 0, heard: 0 }, save)
+        (Replica { kept, called_at: None, serves_reads: false, opened: now, global_checkpoint: 0, heard: 0, voted_at: None }, save)
     }
 
-    /// How long since its primary last called, or since it started
-    /// following when none has.
+    /// How long since its primary last called or it granted a vote
+    /// ([`Self::granted`]), or since it started following when neither
+    /// happened: automatic failover asks to elect it after so long.
     pub fn silent_for(&self, now: Instant) -> Duration {
-        now.saturating_duration_since(self.called_at.unwrap_or(self.opened))
+        let last = self.called_at.max(self.voted_at).unwrap_or(self.opened);
+        now.saturating_duration_since(last)
+    }
+
+    /// It kept a vote it granted at `now` (not a pre-vote): as in Raft, it
+    /// waits a whole failover delay from then before it asks to be elected
+    /// itself. The copy it voted for may be a moment from winning; a
+    /// campaign of its own would ask for a newer term, and that term,
+    /// kept, fences the primary it just elected.
+    pub fn granted(&mut self, now: Instant) {
+        self.voted_at = Some(now);
     }
 
     /// Answers vote `r` ([`decide`]) at `n`, and what to keep (the vote)
@@ -232,7 +245,7 @@ impl Replica {
     /// called within `sticky`: that primary serves.
     pub fn vote(&self, r: &pb::VoteRequest, n: &Numbering, now: Instant, sticky: Duration) -> (pb::VoteResponse, Option<Kept>) {
         let kept = &self.kept;
-        let quiet = self.silent_for(now);
+        let quiet = now.saturating_duration_since(self.called_at.unwrap_or(self.opened));
         if !r.handover && r.candidate != kept.id && self.called_at.is_some() && quiet < sticky {
             return (refused(kept.newest(n.term), n.last(), format!("its primary called {} ms ago", quiet.as_millis())), None);
         }
@@ -498,6 +511,26 @@ impl Campaign {
         }
         let need = (others.len() + 1) / 2 + 1;
         Tally { others, granted, need, newer, last, said: Json::Array(said) }
+    }
+
+    /// Whether the answers a round has so far (`None`: not yet) decide
+    /// it, so that an election waits for no copy it does not need: the
+    /// candidate answered (which tells the copies besides it), and a
+    /// majority granted or too few are left to. A copy that is down, cut
+    /// off or paused answers at the call's timeout; while its campaign
+    /// waits for one, the copy that is winning is still a replica, grants
+    /// another copy's pre-vote, and that copy's newer term, kept, fences
+    /// it once it is elected.
+    pub fn decided(&self, answers: &[Option<Result<pb::VoteResponse, String>>]) -> bool {
+        let me = answers.iter().filter(|a| matches!(a, Some(Ok(a)) if a.candidate)).count();
+        if me != 1 {
+            return answers.iter().all(Option::is_some);
+        }
+        // As `tally` counts: the copies besides the candidate, and itself.
+        let need = answers.len() / 2 + 1;
+        let granted = 1 + answers.iter().filter(|a| matches!(a, Some(Ok(a)) if a.granted && !a.candidate)).count();
+        let left = answers.iter().filter(|a| a.is_none()).count();
+        granted >= need || granted + left < need
     }
 
     fn lost(&self, round: &str, t: &Tally) -> ApiError {
@@ -1391,6 +1424,51 @@ mod tests {
         assert!(!v.granted);
         let (v, save) = r.vote(&ask(3, "x", (2, 4), false), &at, t0 + Duration::from_secs(1), Duration::from_secs(1));
         assert!(v.granted && save.is_some_and(|k| k.voted == Some((3, "x".into()))));
+    }
+
+    #[test]
+    fn a_replica_that_voted_waits_a_whole_delay_before_it_campaigns() {
+        let t0 = Instant::now();
+        let after = Duration::from_secs(2);
+        let (mut r, _) = Replica::open(Kept { member: true, ..Kept::new("r".into()) }, t0, false);
+        r.took(None, t0);
+        let at = n(1, 4, &[(1, 1)]);
+        // Its primary went silent 3 s ago; it grants a vote at 3 s.
+        let voted = t0 + Duration::from_secs(3);
+        assert!(r.silent_for(voted) >= after);
+        let (v, save) = r.vote(&ask(2, "x", (1, 4), false), &at, voted, after);
+        assert!(v.granted);
+        r.kept = save.unwrap();
+        r.granted(voted);
+        assert_eq!(r.silent_for(voted + Duration::from_millis(500)), Duration::from_millis(500));
+        // A pre-vote changes nothing, and is not a vote to wait after.
+        let (v, save) = r.vote(&ask(3, "y", (1, 4), true), &at, voted + Duration::from_millis(500), after);
+        assert!(v.granted && save.is_none(), "its primary did not call: the stickiness counts the primary's calls only");
+        // Its primary calling counts as before.
+        r.took(None, voted + Duration::from_secs(1));
+        assert_eq!(r.silent_for(voted + Duration::from_secs(1)), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_round_is_decided_without_the_copies_it_does_not_need() {
+        let c = Campaign { id: "me".into(), term: 5, handover: false };
+        let me = Some(Ok(pb::VoteResponse { granted: true, candidate: true, ..Default::default() }));
+        let yes = Some(Ok(pb::VoteResponse { granted: true, ..Default::default() }));
+        let no = Some(Ok(pb::VoteResponse { granted: false, reason: "no".into(), ..Default::default() }));
+        let down = Some(Err("no answer within 2 s".into()));
+        // Three copies: itself and one more win; one copy cut off is not waited for.
+        assert!(c.decided(&[me.clone(), yes.clone(), None]));
+        assert!(!c.decided(&[me.clone(), None, None]));
+        assert!(!c.decided(&[None, yes.clone(), None]), "the candidate's own answer tells the copies besides it");
+        assert!(c.decided(&[me.clone(), no.clone(), down.clone()]), "lost");
+        assert!(!c.decided(&[me.clone(), no.clone(), None]), "the last copy could still grant it");
+        // Five copies: three votes win.
+        assert!(!c.decided(&[me.clone(), yes.clone(), None, None, None]));
+        assert!(c.decided(&[me.clone(), yes.clone(), yes.clone(), None, None]));
+        assert!(c.decided(&[me.clone(), no.clone(), no.clone(), down.clone(), None]), "1 granted, 1 left: fewer than 3");
+        // Not among the copies asked (its own answer never comes): every answer.
+        assert!(!c.decided(&[yes.clone(), yes.clone(), None]));
+        assert!(c.decided(&[yes.clone(), yes.clone(), no.clone()]));
     }
 
     #[test]

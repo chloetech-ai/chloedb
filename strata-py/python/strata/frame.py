@@ -48,6 +48,7 @@ from .build import (
     _Fn,
     _Named,
     _Pct,
+    _SqlCall,
     _Template,
     _Window,
     _colish,
@@ -447,6 +448,8 @@ def _type_of(e: Expr, b: _Block) -> dict | None:
         return {"type": "timestamp"}
     if isinstance(e, _Pct):
         return {"type": "float"}
+    if isinstance(e, _SqlCall) and e.func == "hash":
+        return {"type": "int"}
     if isinstance(e, _Agg):
         if e.func in ("count", "count_distinct"):
             return {"type": "int"}
@@ -901,6 +904,57 @@ class Frame:
         `distinct`); every frame has the same columns."""
         return concat([self, *others], distinct=distinct)
 
+    # Samples, splits and shuffles: by a hash of each row's key (SQL's
+    # hash()), so that a seed gives the same rows wherever the frame runs.
+
+    def sample(self, n: int | None = None, *, fraction: float | None = None, seed: int = 0, on: Any = None) -> "Frame":
+        """A seeded sample: `fraction=` of the rows (those whose hash falls
+        under it: about that share, the rows of a smaller fraction among
+        those of a larger), or `n` rows (the `n` first of `shuffle`). The
+        same seed gives the same rows, from a file or a server. Rows are
+        told apart by the table's key, or by the columns `on`; a row whose
+        `on` is NULL is in no sample."""
+        if (n is None) == (fraction is None):
+            raise StrataError("sample takes n= (a number of rows) or fraction= (a share of them)")
+        if n is not None:
+            return self.shuffle(seed=seed, on=on).head(_count(n, "sample"))
+        return self.filter(_under(self._row_hash(on, seed, "sample"), fraction, "sample"))
+
+    def split(self, fraction: float = 0.8, *, seed: int = 0, on: Any = None) -> tuple["Frame", "Frame"]:
+        """Two frames of this one's rows: about `fraction` of them in the
+        first and the rest in the second (`train, test = frame.split(0.8,
+        seed=7)`), each row in one, the same rows for a seed wherever the
+        frames run. Rows are told apart by the table's key, or by the
+        columns `on` (`on="user"` keeps each user's rows on one side); a
+        row whose `on` is NULL is in neither."""
+        h = self._row_hash(on, seed, "split")
+        under = _under(h, fraction, "split")
+        return self.filter(under), self.filter(~under)
+
+    def shuffle(self, *, seed: int = 0, on: Any = None) -> "Frame":
+        """The rows in a random order that the seed fixes: by the hash of
+        each row's key, or of the columns `on`."""
+        return self.sort(self._row_hash(on, seed, "shuffle"))
+
+    def _row_hash(self, on: Any, seed: Any, what: str) -> Expr:
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise StrataError(f"{what}'s seed is an int, not {seed!r}")
+        if on is None:
+            node = self._node
+            while not isinstance(node, _Table) and getattr(node, "input", None) is not None:
+                node = node.input
+            key = node.schema.get("key") if isinstance(node, _Table) else None
+            if not key or key not in self.columns:
+                raise StrataError(f"{what} hashes each row's key, and this frame has none: name the columns that tell its rows apart, {what}(..., on=\"user\")")
+            on = key
+        cols = [on] if isinstance(on, (str, Expr)) else list(on)
+        if not cols:
+            raise StrataError(f"{what}'s on= names one or more columns")
+        h: Any = seed
+        for c in cols:
+            h = _colish(c).hash(h)
+        return h
+
     # Search.
 
     def search(self, text: str, on: str, *, k: int = DEFAULT_K, syntax: str | None = None) -> "Frame":
@@ -1137,6 +1191,14 @@ class Frame:
             if isinstance(node, _Table) and node.schema.get("key") in self.columns:
                 key = node.schema["key"]
         return store.create_table(table, self.to_arrow(), key=key, text=text, embed=embed, if_exists=if_exists)
+
+
+def _under(h: Expr, fraction: Any, what: str) -> Expr:
+    """The rows whose hash `h` falls under `fraction`: its low 32 bits
+    against the fraction of 2^32."""
+    if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 <= fraction <= 1:
+        raise StrataError(f"{what}'s fraction is a number from 0 to 1, not {fraction!r}")
+    return (h % 4294967296) < round(fraction * 4294967296)
 
 
 def _pyarrow():

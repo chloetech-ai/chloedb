@@ -691,6 +691,8 @@ pub(crate) struct Topology {
     /// Per shard: calls answered, failed, timed out, and cut by a client's
     /// own deadline ([`Coordinator::call`]).
     outcomes: Vec<Arc<[AtomicU64; 4]>>,
+    /// Each copy's short name, as [`replicas`](Self::replicas) ([`copy_shorts`]).
+    shorts: Vec<Vec<String>>,
 }
 
 impl Topology {
@@ -715,7 +717,18 @@ impl Topology {
             outcomes.push(same.and_then(|i| before.map(|b| b.outcomes[i].clone())).unwrap_or_default());
             replicas.push(rs);
         }
-        Ok(Topology { shards: groups.iter().map(|g| g.join("|")).collect(), skip_until: groups.iter().map(|_| AtomicU64::new(0)).collect(), replicas, slots, outcomes })
+        let shorts = copy_shorts(&groups);
+        Ok(Topology { shards: groups.iter().map(|g| g.join("|")).collect(), skip_until: groups.iter().map(|_| AtomicU64::new(0)).collect(), replicas, slots, outcomes, shorts })
+    }
+
+    /// The short name of copy `k` of shard `i` ([`copy_shorts`]).
+    fn short(&self, i: usize, k: usize) -> &str {
+        self.shorts.get(i).and_then(|s| s.get(k)).map_or("?", String::as_str)
+    }
+
+    /// The short name of the copy at `url`, and its shard.
+    fn short_of(&self, url: &str) -> Option<(usize, &str)> {
+        self.replicas.iter().enumerate().find_map(|(i, rs)| rs.iter().position(|r| r.url == url).map(|k| (i, self.short(i, k))))
     }
 
     /// Each shard's servers' URLs.
@@ -821,6 +834,90 @@ pub async fn with_partial<F: Future>(f: F) -> (F::Output, Option<Json>) {
 /// bits.
 pub fn auto_key() -> String {
     format!("auto-{:032x}", rand::random::<u128>())
+}
+
+/// The default port of a shard server's gRPC (`--grpc`), which a short
+/// name leaves out.
+const GRPC_PORT: &str = "7701";
+
+/// A copy's short name, which every text, event and alert of the cluster
+/// says: from its URL alone, so that a copy keeps its name when another
+/// copy of its shard leaves or joins, and every coordinator names it alike
+/// (a name by its place in the shard's list, `s0-2`, became `s0-1` once
+/// `s0-0` left, and the alerts about `s0-0` then pointed at another
+/// server). A server the operator runs, `<cluster>-s<set>-<ordinal>.…`,
+/// is `s<shard>-<ordinal>` (`s1-0`), as its pod is numbered; another host
+/// is its first label (`a0` of `http://a0.example:7701`), with its port
+/// unless that is 7701 (`a0:7711`); an IP address or `localhost` is
+/// `host:port` (`127.0.0.1:8004`). [`copy_shorts`] makes them unique.
+pub fn copy_short(shard: usize, url: &str) -> String {
+    let (host, port) = host_port(url);
+    let ip = host.starts_with('[') || host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok();
+    if ip {
+        return match port {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        };
+    }
+    let label = host.split('.').next().unwrap_or(host);
+    let parts: Vec<&str> = label.split('-').collect();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if let [.., set, ordinal] = parts.as_slice() {
+        if parts.len() >= 3 && set.len() > 1 && set.starts_with('s') && digits(&set[1..]) && digits(ordinal) {
+            return format!("s{shard}-{ordinal}");
+        }
+    }
+    match port.filter(|p| *p != GRPC_PORT) {
+        Some(p) => format!("{label}:{p}"),
+        None => label.to_string(),
+    }
+}
+
+/// `host` and `port` of a URL (`[::1]` keeps its brackets).
+fn host_port(url: &str) -> (&str, Option<&str>) {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let auth = auth.rsplit_once('@').map_or(auth, |(_, a)| a);
+    if let Some(end) = auth.find(']') {
+        let (h, p) = auth.split_at(end + 1);
+        return (h, p.strip_prefix(':').filter(|p| !p.is_empty()));
+    }
+    match auth.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() => (h, Some(p)),
+        _ => (auth.trim_end_matches(':'), None),
+    }
+}
+
+/// The short names of the copies of each shard ([`copy_short`]): where two
+/// copies would share one (hosts `db.east` and `db.west`), each is named by
+/// its `host:port`, and failing that by its URL.
+pub fn copy_shorts<S: AsRef<str>>(groups: &[Vec<S>]) -> Vec<Vec<String>> {
+    let mut names: Vec<Vec<String>> = groups.iter().enumerate().map(|(i, g)| g.iter().map(|u| copy_short(i, u.as_ref())).collect()).collect();
+    for pass in 0..2 {
+        let mut by: HashMap<String, std::collections::HashSet<&str>> = HashMap::new();
+        for (g, ns) in groups.iter().zip(&names) {
+            for (u, n) in g.iter().zip(ns) {
+                by.entry(n.clone()).or_default().insert(u.as_ref());
+            }
+        }
+        let shared: std::collections::HashSet<String> = by.into_iter().filter(|(_, us)| us.len() > 1).map(|(n, _)| n).collect();
+        if shared.is_empty() {
+            break;
+        }
+        for (g, ns) in groups.iter().zip(&mut names) {
+            for (u, n) in g.iter().zip(ns.iter_mut()) {
+                if shared.contains(n) {
+                    let u = u.as_ref();
+                    *n = match (pass, host_port(u)) {
+                        (0, (h, Some(p))) => format!("{h}:{p}"),
+                        (0, (h, None)) => h.to_string(),
+                        _ => u.to_string(),
+                    };
+                }
+            }
+        }
+    }
+    names
 }
 
 /// Why a shard of `n` copies, `up` of them answering, elects no primary:
@@ -1604,12 +1701,10 @@ impl Coordinator {
     /// 1)`), or its URL when the cluster map no longer holds it.
     pub fn copy_name(&self, url: &str) -> String {
         let t = self.topo();
-        for (i, rs) in t.replicas.iter().enumerate() {
-            if let Some(k) = rs.iter().position(|r| r.url == url) {
-                return format!("s{i}-{k} (shard {i})");
-            }
+        match t.short_of(url) {
+            Some((i, short)) => format!("{short} (shard {i})"),
+            None => format!("copy {url}"),
         }
-        format!("copy {url}")
     }
 
     /// The statistics of shards `which`, and the replica, lease and
@@ -2441,7 +2536,7 @@ impl Coordinator {
                     Err((_, s)) if in_doubt(&s) => {
                         // The next write goes to the new primary.
                         self.ask_all(t, i).await;
-                        return Err(ApiError { status: 409, message: format!("s{i}-{k} (shard {i}): {}; {IN_DOUBT}", s.message()) });
+                        return Err(ApiError { status: 409, message: format!("{} (shard {i}): {}; {IN_DOUBT}", t.short(i, k), s.message()) });
                     }
                     Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
                         Some(m) => (k, passed_over) = (m, true),
@@ -3084,7 +3179,7 @@ impl Coordinator {
                 Some(u) => t.replicas[i].iter().position(|r| r.url == u),
                 None => t.replicas[i].iter().position(|r| r.takes_writes()),
             };
-            format!("s{i}-{}", k.unwrap_or(0))
+            t.short(i, k.unwrap_or(0)).to_string()
         };
         let mut shards: Vec<Json> = Vec::new();
         let mut took = Vec::new();
@@ -3198,7 +3293,7 @@ impl Coordinator {
                         let _ = r.down_since_ms.compare_exchange(0, wall, Ordering::Relaxed, Ordering::Relaxed);
                     }
                     let role = r.role().as_str_name().to_lowercase();
-                    j["short"] = json!(format!("s{i}-{k}"));
+                    j["short"] = json!(t.short(i, k));
                     {
                         let mut known = r.known.lock().unwrap_or_else(|e| e.into_inner());
                         if up {
@@ -3770,6 +3865,31 @@ async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_is_named_by_its_address_and_keeps_its_name_when_another_leaves() {
+        let k8s = |set: u32, o: u32| format!("http://search-s{set}-{o}.search-servers.prod.svc:7701");
+        for (url, want) in [
+            (k8s(0, 2), "s1-2"),
+            ("http://a0:7701".to_string(), "a0"),
+            ("http://a0.example:7711/".to_string(), "a0:7711"),
+            ("https://node-3.east.example".to_string(), "node-3"),
+            ("http://127.0.0.1:8004".to_string(), "127.0.0.1:8004"),
+            ("http://localhost:7701".to_string(), "localhost:7701"),
+            ("http://[::1]:8000".to_string(), "[::1]:8000"),
+            ("http://10.0.0.5".to_string(), "10.0.0.5"),
+        ] {
+            assert_eq!(copy_short(1, &url), want, "{url}");
+        }
+        // s0-0 leaves: the others keep their names, and a new copy has its own.
+        let before = copy_shorts(&[vec![k8s(0, 0), k8s(0, 1), k8s(0, 2)], vec!["http://127.0.0.1:8000".into(), "http://127.0.0.1:8004".into()]]);
+        let after = copy_shorts(&[vec![k8s(0, 1), k8s(0, 2), k8s(0, 3)], vec!["http://127.0.0.1:8004".into()]]);
+        assert_eq!(before, [vec!["s0-0", "s0-1", "s0-2"], vec!["127.0.0.1:8000", "127.0.0.1:8004"]]);
+        assert_eq!(after, [vec!["s0-1", "s0-2", "s0-3"], vec!["127.0.0.1:8004"]]);
+        // Two hosts that would share a name are named by host and port.
+        let same = copy_shorts(&[vec!["http://db.east.example:7701", "http://db.west.example:7701"], vec!["http://a1:7701"]]);
+        assert_eq!(same, [vec!["db.east.example:7701", "db.west.example:7701"], vec!["a1"]]);
+    }
 
     #[test]
     fn hedges_stay_within_their_share() {

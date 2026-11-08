@@ -80,6 +80,7 @@ Each method returns a new frame, and none of them runs anything.
 | `join(other, on=, left_on=, right_on=, how="inner", suffix="_right")` | `how` is `"inner"` or `"left"`, and both frames are of one store |
 | `unique()`, `unique(subset, keep="first")` | each row once; the first row of each value in the frame's order (`DISTINCT ON`) |
 | `union(*frames)`, `st.concat(frames)` | the rows of each (`UNION ALL`; `distinct=True` for `UNION`) |
+| `sample(fraction=, seed=)`, `sample(n, seed=)`, `split(fraction, seed=)`, `shuffle(seed=)` | a seeded sample, train/test split or order ([below](#samples-and-splits)) |
 
 ## Expressions
 
@@ -92,6 +93,7 @@ Each method returns a new frame, and none of them runs anything.
 | `.dt.truncate("month")`, `.year()`, `.quarter()`, `.month()`, `.week()`, `.day()`, `.weekday()`, `.hour()`, `.epoch()`, `.strftime("%Y-%m")` | timestamps |
 | `.sum()`, `.mean()`, `.median()`, `.quantile(q, interpolation="linear")`, `.min()`, `.max()`, `.count()`, `.n_unique()`, `st.len()` | aggregates, for `agg` or a `select` of totals |
 | `.over(*partition_by, order_by=, descending=)` with `.rank(method="min")`, `.cum_sum()`, `.shift(n)` or an aggregate | windows: `col("amount").rank(descending=True).over("user")`, `col("x").shift(1).over("user", order_by="ts")` |
+| `.hash(seed=0)` | an int from 0 to 2<sup>63</sup> - 1 of the value and the seed, the same everywhere ([SQL's `hash`](query-language.md#samples-splits-and-shuffles-hash)); `col("item").hash(col("user").hash(7))` hashes two columns |
 
 Every function of [queries built in Python](python.md#queries-built-in-python) is an expression of a frame too: `st.bm25`, `st.similarity`, `st.rrf`, `st.minmax`, `st.zscore`, `st.gbdt`, `st.coalesce`, and the rest.
 
@@ -114,6 +116,19 @@ docs.rank_by(0.6 * st.minmax(st.bm25("body", q))                # any ranking ex
 ```
 
 `search` reads [weights, required and excluded words](query-language.md#weights-required-and-excluded-words) (`"+mrna vaccine^2 -animal"`) unless `syntax="plain"`. `rerank` is a [rerank phase](query-language.md#rerank-phases), for a costlier score over the rows of the search before it.
+
+## Samples and splits
+
+```python
+events = shop["events"]
+some = events.sample(fraction=0.01, seed=7)            # about 1% of the rows, the same 1% every time
+train, test = events.split(0.8, seed=7)                # every row in one of the two
+train, test = events.split(0.8, seed=7, on="user")     # each user's rows on one side
+first = events.sample(1000, seed=7)                    # 1,000 rows, in a random order the seed fixes
+order = events.filter(col("lang") == "en").shuffle(seed=7)
+```
+
+A row is in a sample by the hash of its key ([`hash`](query-language.md#samples-splits-and-shuffles-hash)), or of the columns `on`, so a seed gives the same rows from a file and from a server, today and after more rows are written: the rows already sampled stay sampled. A smaller fraction's rows are among a larger's, and `split`'s two frames are the rows under the fraction and the rest. A frame without its table's key (a group-by's) names the columns with `on=`, and a row whose `on` is `NULL` is in no sample. `sample(n)` and `shuffle` sort the frame's rows by their hash, where the data is.
 
 ## Getting the rows
 
@@ -147,4 +162,4 @@ A frame is one SQL statement, so it runs where the data is and only the answer m
 - Joins are inner or left, between tables of one store. To join a server's table with a local one, copy one side with `write_to` first.
 - A server answers at most `--max-result-window` rows a query (10,000 by default, [its limits](server.md#limits)), so a frame reads a server's answer by a [scroll](server.md#reading-past-the-window-scrolls), a page of up to the window at a time, every page from one version: `to_arrow()` joins the pages, and `iter_batches()` yields them as they come. A sorted frame, or one that groups or joins, is held by the server between pages, at most its `--max-scroll-rows` (1,000,000) rows; a plain filter and select reads any number. Through a coordinator, a filter and select, or a frame sorted by a column, is merged from its shards' pages as they come, two pages held at most. A server from before scrolls reads a frame in one query, and needs a larger window for one of more rows.
 - From a server, the answer comes back as an Arrow stream, its columns typed as a file's are, so the same frame gives the same table from either. A server too old for Arrow answers JSON, which the client types from the table's schema.
-- Not there yet: right, full and cross joins, `pivot` and `melt`, and a seeded `sample` or train/test split.
+- Not there yet: right, full and cross joins, and `pivot` and `melt`.
