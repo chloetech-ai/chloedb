@@ -5,6 +5,8 @@
 //!   --param name=value                   bind :name (a number, a string, or a JSON array as a vector)
 //!   --plan                               print the planner's choices
 //!   --repeat N                           run each statement N times and report the median time
+//!   --read-only                          read it while another process writes it (also what an
+//!                                        open does when another process has it open to write)
 //!   .schema / .segments                  print the schema / the snapshot's segments
 //!   .check                               check every byte against its checksums
 //!   .vacuum                              return free space to the file system
@@ -38,6 +40,9 @@ struct Args {
     /// Run each statement this many times and report the median.
     #[arg(long, default_value_t = 1)]
     repeat: usize,
+    /// Open it read-only, to read it while another process writes it.
+    #[arg(long)]
+    read_only: bool,
 }
 
 fn parse_value(s: &str) -> Value {
@@ -149,7 +154,18 @@ fn run(db: &Db, sql: &str, params: &Params, args: &Args, out: &mut impl Write) -
 
 fn main() {
     let args = Args::parse();
-    let db = match Db::open(&args.file, DbOptions::default()) {
+    let read_only = DbOptions { read_only: true, ..DbOptions::default() };
+    let opened = match args.read_only {
+        true => Db::open(&args.file, read_only),
+        // Another process writes it: read it, as that one writes.
+        false => Db::open(&args.file, DbOptions::default()).or_else(|e| match e {
+            strata::Error::Busy(_) if args.file.exists() => Db::open(&args.file, read_only).inspect(|_| {
+                eprintln!("strata: {} is open in another process to write it; opened read-only", args.file.display());
+            }),
+            e => Err(e),
+        }),
+    };
+    let db = match opened {
         Ok(db) => db,
         Err(e) => {
             eprintln!("strata: cannot open {}: {e}", args.file.display());

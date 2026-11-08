@@ -24,10 +24,12 @@
 //!   version's snapshot before its commit returns, and readers only clone
 //!   the published one: they never build a memtable segment or wait for
 //!   one to be built.
+//! * Other processes can read the database while one writes it: they open
+//!   it with [`DbOptions::read_only`], and see its commits as they are made
+//!   ([`crate::storage::share`] has the locks and pins that make it safe).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, TryLockError, Weak};
@@ -51,7 +53,9 @@ use crate::storage::merge::{memory_limit, merge_memory, MergeEntry, MERGE_BATCH_
 use crate::storage::pager::{self, Extent, Meta, META_PAGES, PAGE};
 use crate::postings::bytes::OwnedBytes;
 use crate::storage::snapshot::{build_memseg, next_mem_id, Pins, SegmentView, Snapshot};
+use crate::storage::reader::Reader;
 use crate::storage::rowseq::{self, Seqs};
+use crate::storage::share::{self, lock_exclusive, ReaderInfo, ReaderPin, Session, WriterLock};
 use crate::storage::state::{mem_seq, Check, Chunk, Key, Loc, SegHandle, State, TableState};
 use crate::storage::updates::{Updates, SEQ};
 use crate::storage::ship::{Applied, LogRead, ShipLog, Shipped};
@@ -160,6 +164,24 @@ pub struct DbOptions {
     /// however long this is. 0: a write fails at once, as strata-server
     /// wants (its writer retries until each request's deadline).
     pub write_wait: Duration,
+    /// Open the database to read it while another process writes it (or
+    /// none does): any number of processes can, beside the one writer. It
+    /// never changes the database's files, and its writes fail. Its
+    /// snapshots see each commit the writer had made when they were taken
+    /// ([`DbOptions::refresh_interval`]); a thread of its own follows the
+    /// writer once a second when no snapshot does, so that the pages of
+    /// versions it no longer reads go back to the writer. Readers and
+    /// writers must be on one machine (a local file system, where `flock`
+    /// and the page cache are shared), and of a version of Strata that
+    /// knows read-only opens: an older one takes the file for itself and
+    /// is refused while readers have it ([`crate::storage::share`]).
+    pub read_only: bool,
+    /// How long a read-only database's snapshots go without looking for new
+    /// commits after one looked: 0 (the default) looks before every
+    /// snapshot, a few system calls; more saves those calls under many
+    /// queries a second, and a snapshot may then miss commits that recent.
+    /// [`Database::refresh`] looks at once.
+    pub refresh_interval: Duration,
 }
 
 /// How a database is laid out on disk.
@@ -176,7 +198,7 @@ pub enum Layout {
 
 impl DbOptions {
     /// How the segments of the version a database opens at are checked.
-    fn check_at_open(&self) -> Check {
+    pub(crate) fn check_at_open(&self) -> Check {
         match (self.verify_checksums, self.check_sections) {
             (true, _) => Check::Open,
             (false, true) => Check::Read,
@@ -206,6 +228,8 @@ impl Default for DbOptions {
             open_old: false,
             merge_spill_bytes: 64 << 20,
             write_wait: Duration::from_secs(5),
+            read_only: false,
+            refresh_interval: Duration::ZERO,
         }
     }
 }
@@ -252,6 +276,9 @@ pub struct FileStats {
     pub memtable_docs: usize,
     pub pending_deletes: usize,
     pub segments: Vec<SegmentStats>,
+    /// The processes reading the database read-only (one file): each one's
+    /// pid and the oldest version whose pages it keeps.
+    pub readers: Vec<ReaderInfo>,
 }
 
 /// Size of one on-disk segment.
@@ -278,7 +305,16 @@ pub struct Database {
     dir: Option<PathBuf>,
     /// The single-writer lock; it owns the WAL.
     writer: Mutex<Wal>,
-    state: Mutex<State>,
+    /// Shared with the reader, read-only.
+    state: Arc<Mutex<State>>,
+    /// Where the writer's lock and the readers' pins are
+    /// ([`share::share_dir`]).
+    share: PathBuf,
+    /// The writer's hold on the files, kept while it is open; `None`
+    /// read-only.
+    _writer_lock: Option<WriterLock>,
+    /// What follows another process's writes, read-only.
+    reader: Option<Arc<Reader>>,
     /// Serialises memtable segment builds, so concurrent readers build once.
     build_lock: Mutex<()>,
     /// The snapshot readers get, with `DbOptions::publish_snapshots`.
@@ -716,6 +752,9 @@ impl Drop for Database {
         if let Some(sig) = self.flush_signal.get() {
             sig.close();
         }
+        if let Some(r) = &self.reader {
+            r.close();
+        }
         if let Some(m) = self.merger.get() {
             m.close();
         }
@@ -833,6 +872,9 @@ impl Database {
         if path.exists() {
             return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists", path.display()))));
         }
+        if opts.read_only {
+            return Err(read_only(path));
+        }
         let tmp = beside(path, "creating")?;
         if opts.layout == Layout::Directory {
             return Database::create_dir(path, &tmp, schema, opts);
@@ -873,21 +915,97 @@ impl Database {
         Wal::create(&wal_path(path), db_id, false, true)?;
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(dir)?;
-        Database::load(path, file, opts)
+        // The file is held exclusively until here; from now on as a writer,
+        // whom readers can share it with.
+        let lock = WriterLock::take(&file, &share::share_dir(path, false))?;
+        Database::load(path, file, lock, opts)
     }
 
     /// Opens an existing database, recovering from a crash: the newest valid
     /// meta slot (or `CURRENT`) names the on-disk version, and committed WAL
     /// transactions not yet in it are replayed into the memtable.
+    ///
+    /// With [`DbOptions::read_only`] it opens the database to read it while
+    /// another process writes it, and changes nothing.
     pub fn open(path: &Path, opts: DbOptions) -> Result<Database> {
+        if opts.read_only {
+            return Database::open_read_only(path, opts);
+        }
         if path.is_dir() {
             let lockf = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path.join(dir::LOCK))?;
-            lock_exclusive(&lockf)?;
-            return Database::load_dir(path, lockf, opts);
+            let lock = WriterLock::take(&lockf, path)?;
+            return Database::load_dir(path, lockf, lock, opts);
         }
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-        lock_exclusive(&file)?;
-        Database::load(path, file, opts)
+        let lock = WriterLock::take(&file, &share::share_dir(path, false))?;
+        Database::load(path, file, lock, opts)
+    }
+
+    /// [`Database::open`] with [`DbOptions::read_only`].
+    fn open_read_only(path: &Path, opts: DbOptions) -> Result<Database> {
+        // Snapshots are taken by readers, and the log is the writer's to ship.
+        let opts = DbOptions { publish_snapshots: false, ship_log_bytes: 0, ..opts };
+        let (file, dir) = match path.is_dir() {
+            true => (File::open(path.join(dir::LOCK))?, Some(path.to_path_buf())),
+            false => (File::open(path)?, None),
+        };
+        share::lock_shared(&file)?;
+        let share_path = share::share_dir(path, dir.is_some());
+        // Before the first meta slot is read ([`share`]).
+        let pin = match &dir {
+            Some(_) => None,
+            None => ReaderPin::register(&share_path)?,
+        };
+        let wal_path = match &dir {
+            Some(d) => d.join(dir::WAL),
+            None => wal_path(path),
+        };
+        let (reader, damaged) = Reader::open(path, wal_path.clone(), dir.clone(), file.try_clone()?, opts.clone(), pin, Session::new(&share_path))?;
+        let db_id = lock(&reader.state).meta.db_id;
+        let merge_record_path = match &dir {
+            Some(d) => d.join(dir::MERGE_RECORD),
+            None => {
+                let mut s = path.as_os_str().to_owned();
+                s.push("-merging");
+                PathBuf::from(s)
+            }
+        };
+        let mem_opts = Arc::new(opts.mem_build.clone().unwrap_or_else(|| opts.build.clone()));
+        let db = Database {
+            path: path.to_path_buf(),
+            writer: Mutex::new(Wal::unwritable(file.try_clone()?, &wal_path, db_id)),
+            wal_path,
+            opts,
+            file,
+            dir,
+            state: reader.state.clone(),
+            share: share_path,
+            _writer_lock: None,
+            reader: Some(reader.clone()),
+            build_lock: Mutex::new(()),
+            published: RwLock::new(None),
+            merging: Mutex::new(Merging::default()),
+            expired: Mutex::new(HashMap::new()),
+            merge_record_path,
+            merger: OnceLock::new(),
+            merger_threads: Mutex::new(Vec::new()),
+            pins: reader.pins.clone(),
+            mem_opts,
+            poisoned: AtomicBool::new(false),
+            flush_error: Mutex::new(None),
+            damaged,
+            sealed_wals: Mutex::new(Vec::new()),
+            background: Mutex::new(()),
+            flush_signal: OnceLock::new(),
+            flusher: Mutex::new(None),
+            background_waiting: AtomicUsize::new(0),
+            background_holding: AtomicUsize::new(0),
+            commit_hook: RwLock::new(None),
+            codebooks: RwLock::new(Vec::new()),
+        };
+        let h = std::thread::Builder::new().name("strata-reader".into()).spawn(move || reader.run())?;
+        *lock(&db.flusher) = Some(h);
+        Ok(db)
     }
 
     /// [`Database::create`] in the directory layout, built in `tmp`.
@@ -917,10 +1035,11 @@ impl Database {
         };
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(parent)?;
-        Database::load_dir(path, lockf, opts)
+        let lock = WriterLock::take(&lockf, path)?;
+        Database::load_dir(path, lockf, lock, opts)
     }
 
-    fn load_dir(path: &Path, lockf: File, opts: DbOptions) -> Result<Database> {
+    fn load_dir(path: &Path, lockf: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
         let (cur, manifest) = dir::read_current(path)?;
         // Files a crash left behind: written for a commit that did not
         // finish, or no longer named after one that did.
@@ -933,7 +1052,7 @@ impl Database {
             .map(|t| t.segments.iter().map(|m| SegHandle::open_in(path, m, &t.schema, opts.read_ahead, opts.read_ahead && opts.random_hints, opts.check_at_open()).map(Arc::new)).collect())
             .collect::<Result<_>>()?;
         let meta = dir_meta(&cur);
-        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles)
+        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, lock, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles)
     }
 
     /// Opens the newest version named by a valid meta slot, or, when that
@@ -943,13 +1062,13 @@ impl Database {
     /// ([`crate::storage::freelist`]). With `sync` off, a power loss can
     /// leave the newest slot naming pages that never reached the disk;
     /// that loses the newest commits, not the database.
-    fn load(path: &Path, file: File, opts: DbOptions) -> Result<Database> {
+    fn load(path: &Path, file: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
         let metas = pager::read_metas(&file)?;
         let mut damaged = None;
         for (i, &(meta, slot)) in metas.iter().enumerate() {
             match Database::load_version(&file, &opts, meta, i > 0) {
                 Ok((manifest, freelist, map, handles)) => {
-                    let mut db = Database::assemble(path, wal_path(path), None, file, opts, manifest, meta, slot, freelist, map, handles)?;
+                    let mut db = Database::assemble(path, wal_path(path), None, file, lock, opts, manifest, meta, slot, freelist, map, handles)?;
                     db.damaged = match (damaged, db.damaged.take()) {
                         (Some(a), Some(b)) => Some(format!("{a}; {b}")),
                         (a, b) => a.or(b),
@@ -1001,6 +1120,7 @@ impl Database {
         wal_path: PathBuf,
         dir: Option<PathBuf>,
         file: File,
+        writer_lock: WriterLock,
         opts: DbOptions,
         manifest: Manifest,
         meta: Meta,
@@ -1015,6 +1135,8 @@ impl Database {
                 path.display()
             )));
         }
+        // Logs a crash left before they were named.
+        wal::remove_leftovers(&wal_path);
         let fits = |table: u32, op: &Op| manifest.table(table).is_none_or(|t| op_fits(&t.schema, op));
         let numbered = manifest.seq_no.is_some();
         let (sealed, mut txns, cut) = read_sealed_wals(&wal_path, &manifest, meta.db_id, opts.wal_drop_damaged, &fits)?;
@@ -1065,6 +1187,7 @@ impl Database {
             next_segment_id: 0,
             ship: ShipLog::new(opts.ship_log_bytes),
             dropped: Vec::new(),
+            pin_versions: false,
         };
         let mut flushed = false;
         for t in txns {
@@ -1112,6 +1235,7 @@ impl Database {
         let (spill_dir, spill_prefix) = spill_place(path, dir.as_deref());
         crate::segment::spill::remove_leftovers(spill_dir, &spill_prefix);
         let mem_opts = Arc::new(opts.mem_build.clone().unwrap_or_else(|| opts.build.clone()));
+        let share = share::share_dir(path, dir.is_some());
         let db = Database {
             path: path.to_path_buf(),
             wal_path,
@@ -1119,7 +1243,10 @@ impl Database {
             file,
             dir,
             writer: Mutex::new(wal),
-            state: Mutex::new(st),
+            state: Arc::new(Mutex::new(st)),
+            share,
+            _writer_lock: Some(writer_lock),
+            reader: None,
             build_lock: Mutex::new(()),
             published: RwLock::new(None),
             merging: Mutex::new(Merging { record, ..Merging::default() }),
@@ -1148,6 +1275,7 @@ impl Database {
     /// The schema of the database's first table, as it is now
     /// ([`Database::alter_table`] changes it).
     pub fn schema(&self) -> Arc<Schema> {
+        self.follow();
         lock(&self.state).tables[0].schema.clone()
     }
 
@@ -1156,11 +1284,13 @@ impl Database {
     /// [`SOURCES`] is not among them: [`Self::table`] and SQL read it by
     /// name.
     pub fn tables(&self) -> Vec<Arc<Schema>> {
+        self.follow();
         lock(&self.state).tables.iter().filter(|t| t.id != SOURCES_ID).map(|t| t.schema.clone()).collect()
     }
 
     /// The schema of the table named `name` (any case).
     pub fn table(&self, name: &str) -> Option<Arc<Schema>> {
+        self.follow();
         lock(&self.state).tables.iter().find(|t| t.schema.table.eq_ignore_ascii_case(name)).map(|t| t.schema.clone())
     }
 
@@ -1989,10 +2119,39 @@ impl Database {
     /// after a write rebuilds the last memtable chunk's segment, unless
     /// `DbOptions::publish_snapshots` has the writer build it.
     pub fn snapshot(&self) -> Snapshot {
+        self.follow();
         if let Some(s) = &*self.published.read().unwrap_or_else(|e| e.into_inner()) {
             return s.clone();
         }
         self.snapshot_inner(true)
+    }
+
+    /// A read-only database: follows the writer, at most once each
+    /// [`DbOptions::refresh_interval`], before a snapshot or a look at the
+    /// tables. A failure is tried again a little later; meanwhile what the
+    /// reader holds is read.
+    fn follow(&self) {
+        if let Some(r) = &self.reader {
+            if let Err(e) = r.sync(self.opts.refresh_interval, false) {
+                tracing::warn!(path = %self.path.display(), error = %e, "a read-only database could not follow its writer");
+            }
+        }
+    }
+
+    /// Whether the database was opened with [`DbOptions::read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// A read-only database: reads what the writer committed since it last
+    /// looked, now (snapshots do so at most once each
+    /// [`DbOptions::refresh_interval`]); returns whether anything changed.
+    /// `Ok(false)` for the writer.
+    pub fn refresh(&self) -> Result<bool> {
+        match &self.reader {
+            Some(r) => r.sync(Duration::ZERO, true),
+            None => Ok(false),
+        }
     }
 
     /// With `publish_snapshots`, builds the current version's snapshot and
@@ -2218,6 +2377,9 @@ impl Database {
     /// are refused, as without a flusher. The thread ends with the
     /// database; calling this again does nothing.
     pub fn spawn_flusher(self: &Arc<Self>) {
+        if self.reader.is_some() {
+            return;
+        }
         let sig = Arc::new(FlushSignal::default());
         if self.flush_signal.set(sig.clone()).is_err() {
             return;
@@ -2578,6 +2740,9 @@ impl Database {
     /// rate too). [`Database::merge_status`] says what they do. The threads
     /// end with the database; calling this again does nothing.
     pub fn spawn_merger(self: &Arc<Self>, opts: MergerOptions) {
+        if self.reader.is_some() {
+            return;
+        }
         let m = Arc::new(Merger {
             policy: opts.policy,
             budget: opts.memory_budget.or_else(|| memory_limit().map(|l| l / 2)),
@@ -3162,6 +3327,8 @@ impl Database {
         };
         let tmp = beside(dest, "checkpoint")?;
         let r = self.write_checkpoint(&tmp, opts.layout, &manifest, &handles, link);
+        // The copy's writer is gone; its lock is no part of the copy.
+        share::remove(&tmp, opts.layout == Layout::Directory);
         let mut stats = match r {
             Ok(stats) => stats,
             Err(e) => {
@@ -3333,6 +3500,7 @@ impl Database {
                 memtable_docs: st.mem_live_docs(),
                 pending_deletes: st.n_pending,
                 segments: segment_stats(&st.manifest),
+                readers: Vec::new(),
             };
         }
         let segments = segment_stats(&st.manifest);
@@ -3348,6 +3516,7 @@ impl Database {
             memtable_docs: st.mem_live_docs(),
             pending_deletes: st.n_pending,
             segments,
+            readers: share::readers(&self.share),
         }
     }
 
@@ -3356,7 +3525,14 @@ impl Database {
     /// key is found by its segment's index, and every page is used exactly
     /// once (meta slot, extent, free run or pending free). `Error::Busy`
     /// while a write is in progress.
+    ///
+    /// A read-only database checks the version it holds: every segment,
+    /// delete set and set of updates against its checksum and every key;
+    /// which pages or files are used is for the writer's check.
     pub fn check(&self) -> Result<()> {
+        if self.reader.is_some() {
+            return self.check_read_only();
+        }
         let _w = self.try_writer()?;
         if let Some(d) = &self.dir {
             return self.check_dir(d);
@@ -3489,12 +3665,63 @@ impl Database {
         }
     }
 
+    /// [`Database::check`] of a read-only database.
+    fn check_read_only(&self) -> Result<()> {
+        // The pin keeps the version's pages while they are read.
+        let (_pin, manifest, handles, map) = {
+            let st = lock(&self.state);
+            (self.pins.pin(st.meta.txn), st.manifest.clone(), st.handles().cloned().collect::<Vec<_>>(), st.map.clone())
+        };
+        check_field_lists(&manifest, &handles)?;
+        let bytes = |file: Option<&str>, e: Extent| -> Result<Vec<u8>> {
+            match (&self.dir, file) {
+                (Some(d), Some(f)) => std::fs::read(d.join(f)).map_err(|e| match e.kind() {
+                    // The writer replaced it since.
+                    std::io::ErrorKind::NotFound => Error::Busy(format!("{f} went while it was checked: the version changed; check again")),
+                    _ => e.into(),
+                }),
+                (Some(_), None) => Err(corrupt("a part of a segment has no file")),
+                (None, _) => Ok(map[e.range()].to_vec()),
+            }
+        };
+        for (s, h) in manifest.segments().zip(&handles) {
+            // The image as the reader maps it (the writer may have removed
+            // its file since, in the directory layout).
+            if crc32fast::hash(h.file.image()) != s.crc {
+                return Err(corrupt(format!("segment {} fails its checksum", s.id)));
+            }
+            if let Some(e) = s.deletes.or(s.deletes_file.as_ref().map(|_| Extent { page: 0, len: 0 })) {
+                if crc32fast::hash(&bytes(s.deletes_file.as_deref(), e)?) != s.deletes_crc {
+                    return Err(corrupt(format!("delete set of segment {} fails its checksum", s.id)));
+                }
+                let n: u32 = h.base.as_ref().map_or(0, |b| b.deleted_words().iter().map(|w| w.count_ones()).sum());
+                if n != s.n_deleted {
+                    return Err(corrupt(format!("segment {} has {n} deletes, manifest says {}", s.id, s.n_deleted)));
+                }
+            }
+            if let Some(e) = s.updates.or(s.updates_file.as_ref().map(|_| Extent { page: 0, len: 0 })) {
+                if crc32fast::hash(&bytes(s.updates_file.as_deref(), e)?) != s.updates_crc {
+                    return Err(corrupt(format!("updates of segment {} fail their checksum", s.id)));
+                }
+            }
+            if let Some(pk) = &h.pk {
+                for d in 0..s.n_docs {
+                    if !pk.lookup_all(&pk.key(d)).any(|x| x == d) {
+                        return Err(corrupt(format!("segment {} key of document {d} not found", s.id)));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The writer lock, waiting up to [`DbOptions::write_wait`] while
     /// another write holds it, then `Busy`. A background flush holds it
     /// only to seal or install, briefly: that is waited for however long.
     /// While one waits for the lock, so does this, for a few milliseconds,
     /// in case the lock is being handed to the flush.
     fn try_writer(&self) -> Result<MutexGuard<'_, Wal>> {
+        self.writable()?;
         let t0 = Instant::now();
         let mut nap = Duration::from_micros(50);
         loop {
@@ -3517,7 +3744,18 @@ impl Database {
         }
     }
 
+    /// `Error::Query` for a read-only database, which no write may change.
+    fn writable(&self) -> Result<()> {
+        match self.reader {
+            Some(_) => Err(read_only(&self.path)),
+            None => Ok(()),
+        }
+    }
+
+    /// Fails a write when an earlier one failed partway, or the database is
+    /// read-only.
     fn check_poisoned(&self) -> Result<()> {
+        self.writable()?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(Error::Io(std::io::Error::other("an earlier write failed; reopen the database")));
         }
@@ -4570,12 +4808,18 @@ struct VersionWriter<'a> {
 
 impl<'a> VersionWriter<'a> {
     fn begin(db: &'a Database) -> VersionWriter<'a> {
+        // Read before the state: a reader that registers after this cannot
+        // read a version older than the one in the newer meta slot now.
+        let readers = match db.dir {
+            None => share::oldest_pin(&db.share),
+            Some(_) => None,
+        };
         let st = lock(&db.state);
         let mut fl = st.freelist.clone();
         // Reusable: freed before the newest on-disk commit (so the older
         // meta slot cannot reach them) and by a commit no live snapshot
-        // predates.
-        fl.release((st.meta.txn - 1).min(db.pins.min().unwrap_or(u64::MAX)));
+        // predates, here or in a reader's process ([`share`]).
+        fl.release((st.meta.txn - 1).min(db.pins.min().unwrap_or(u64::MAX)).min(readers.unwrap_or(u64::MAX)));
         let mut manifest = st.manifest.clone();
         // Past the ids reserved for merges.
         manifest.next_segment_id = manifest.next_segment_id.max(st.next_segment_id);
@@ -5135,7 +5379,7 @@ fn pages_for(bytes: usize) -> u64 {
 /// could have committed (see [`WriteTxn`]'s checks). Replay takes one that
 /// is not, behind an intact checksum, as damage: applied, it would break
 /// what readers rely on.
-fn op_fits(schema: &Schema, op: &Op) -> bool {
+pub(crate) fn op_fits(schema: &Schema, op: &Op) -> bool {
     let is_key = |k: &Value| {
         schema.primary_key.is_some_and(|pk| matches!((&schema.fields[pk].ty, k), (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_))))
     };
@@ -5223,29 +5467,9 @@ fn wal_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// How long an open waits for a lock that is held.
-pub const LOCK_WAIT: Duration = Duration::from_millis(500);
+pub use crate::storage::share::LOCK_WAIT;
 
-/// One open `Database` per file: an exclusive `flock`, released when the
-/// file is closed (also by a crash). A child process holds a copy of every
-/// descriptor of its parent from its fork until its exec closes them, so a
-/// database that a process closes and opens again while it starts a child
-/// can find its own lock still held for a moment: a held lock is retried
-/// for [`LOCK_WAIT`] before the open fails.
-fn lock_exclusive(file: &File) -> Result<()> {
-    let deadline = Instant::now() + LOCK_WAIT;
-    loop {
-        // SAFETY: flock on a valid descriptor.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(());
-        }
-        let e = std::io::Error::last_os_error();
-        if e.raw_os_error() != Some(libc::EWOULDBLOCK) {
-            return Err(e.into());
-        }
-        if Instant::now() >= deadline {
-            return Err(Error::Busy("the database is open elsewhere".into()));
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+/// What a write to a read-only database fails with.
+fn read_only(path: &Path) -> Error {
+    Error::Query(format!("{} is open read-only", path.display()))
 }

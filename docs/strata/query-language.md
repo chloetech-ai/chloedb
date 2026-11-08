@@ -1114,6 +1114,7 @@ target/release/strata db.strata --param t='rapid covid tests' < queries.sql
 | `--param name=value` | binds `:name`: a number, a string, or a JSON array for a vector |
 | `--plan` | prints the plan lines the executor recorded for each statement |
 | `--repeat n` | runs each statement *n* times and reports the median time |
+| `--read-only` | opens the database read-only, to read it while another process writes it ([readers in other processes](index.md#readers-in-other-processes)); without it, the shell opens a database another process has open to write read-only, and says so |
 
 From Rust, `Db::query` takes a `SELECT` and a `Params` map, and `Db::sql` takes any statement, on any table, writes and `CREATE TABLE` included. Over the network, [strata-server](server.md) serves the same SQL over every table of a database.
 

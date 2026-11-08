@@ -311,7 +311,8 @@ pub struct Opened {
 }
 
 /// Opens or creates a database: `op` is "create" ({path, schema,
-/// directory?, models?, threads?}), "open" ({path, models?, threads?}),
+/// directory?, models?, threads?}), "open" ({path, models?, threads?,
+/// read_only?}),
 /// "from_sqlite" ({sqlite_path, path, tables?, schemas?, blobs_base64?,
 /// directory?, models?, threads?}) or "from_parquet" ({parquet_path, path,
 /// table?, schema?, key?, blobs_base64?, directory?, models?, threads?}).
@@ -329,7 +330,7 @@ fn open_db(op: &str, a: &Args) -> Result<Opened> {
         }
         // The layout comes from the file; the option only matters to a create.
         "open" => {
-            let db = Db::open(&path, db_options(false, threads))?;
+            let db = Db::open(&path, DbOptions { read_only: a.bool("read_only", false)?, ..db_options(false, threads) })?;
             let e = embed_errors_of(&db, &models);
             (db, e, None)
         }
@@ -780,6 +781,8 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>) -> Result<Js
             Ok(Json::Null)
         }
         "vacuum" => Ok(Json::from(db.storage().vacuum()?)),
+        // Opened read-only: what the writer committed since the last look.
+        "refresh" => Ok(Json::from(db.storage().refresh()?)),
         other => Err(bad(format!("no operation {other:?}"))),
     }
 }
@@ -893,7 +896,8 @@ fn copied(vectors: Option<Vec<Float32Array>>) -> Vec<Vec<f32>> {
 // ---------------------------------------------------------------- the class
 
 /// A database file (or directory) opened in this process. Only one process
-/// may have a database open at a time.
+/// may have a database open to write it at a time; others may open it
+/// read-only.
 #[napi]
 pub struct NativeDatabase {
     db: Arc<RwLock<Option<Arc<Db>>>>,
