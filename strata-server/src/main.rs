@@ -162,6 +162,17 @@ struct Args {
     /// gRPC address ("off" to disable).
     #[arg(long, default_value = "127.0.0.1:7701")]
     grpc: String,
+    /// Also serve an OpenSearch-compatible API (indexes, documents, _bulk,
+    /// _search with the Query DSL and aggregations) on this address, for
+    /// applications written for OpenSearch or Elasticsearch 7: the same
+    /// data, credentials and TLS as the HTTP API (a key or the token as a
+    /// Bearer token, or as Basic authentication's password).
+    #[arg(long, env = "STRATA_OPENSEARCH_LISTEN")]
+    opensearch_listen: Option<String>,
+    /// The version the OpenSearch API's root reports: OpenSearch 2's by
+    /// default; 7.10.2 for clients of Elasticsearch 7 that check it.
+    #[arg(long, env = "STRATA_OPENSEARCH_VERSION", default_value = strata_server::opensearch::VERSION_NUMBER)]
+    opensearch_version: String,
     /// Require "Authorization: Bearer TOKEN" on the API and on gRPC (the
     /// UI asks for it). Needed to listen beyond loopback.
     #[arg(long, env = "STRATA_TOKEN", hide_env_values = true)]
@@ -978,6 +989,18 @@ async fn main() {
         tasks.push(tokio::spawn(async move {
             if let Err(e) = server::serve_grpc(svc, l, access).await {
                 tracing::error!(error = %e, "gRPC stopped");
+            }
+        }));
+    }
+    if let Some(addr) = &a.opensearch_listen {
+        let (l, ip) = bind(addr).await;
+        let scheme = if access.tls.is_some() { "https" } else { "http" };
+        tracing::info!("OpenSearch API on {scheme}://{addr}/ (version {})", a.opensearch_version);
+        let os_access = Access { hosts: auth::allowed_hosts(ip, &a.allow_host), ..access.clone() };
+        let (svc, version) = (svc.clone(), a.opensearch_version.clone());
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = server::serve_opensearch(svc, l, os_access, &version).await {
+                tracing::error!(error = %e, "OpenSearch API stopped");
             }
         }));
     }

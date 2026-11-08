@@ -1096,6 +1096,19 @@ pub fn spawn_watch(svc: &Arc<Service>) {
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
     let router = http::router(svc, &access);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves the OpenSearch-compatible API ([`crate::opensearch`]) on its own
+/// listener (`--opensearch-listen`), with the HTTP API's credentials and
+/// TLS. `version` is the version its root reports.
+pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: Access, version: &str) -> std::io::Result<()> {
+    let router = crate::opensearch::router(svc, &access, version);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves `router` on `listener`, over TLS with `access.tls`.
+async fn serve_router(router: axum::Router, listener: TcpListener, access: &Access) -> std::io::Result<()> {
     let Some(tls) = &access.tls else {
         // Each request knows its peer's address (the audit log's `addr`).
         return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
