@@ -1517,7 +1517,7 @@ Reads are counted in memory, since the server started or since `POST /v1/index/r
 
 ### Apps
 
-An app is a program of its own that the command center shows as a view: the [crawler](crawler.md) is one. `--app name=url` (repeatable, or `STRATA_APPS=a=url,b=url`) names each, and the server reaches it there; browsers never do, so the app needs no address of theirs and no keys:
+An app is a program of its own that the command center shows as a view: the [crawler](crawler.md) is one. `--app name=url` (repeatable, or `STRATA_APPS=a=url,b=url`) names each, and the server reaches it there; browsers never do, so the app needs no address of theirs and no keys. On Kubernetes, `spec.crawler` of a `StrataCluster` has the operator run the crawler beside the cluster and set this on its coordinators ([the crawler on Kubernetes](crawler.md#on-kubernetes)):
 
 - `GET /v1/apps` lists the apps (read scope), each with its manifest, the app's `GET /app.json`: `title`, `description`, `icon_svg` (the shapes of a 24-unit outline icon; only shapes and their geometry are drawn), `version`, and `view`, the path of its view module, as `/v1/apps/<name>/<view>`. An app that does not answer is listed with `up: false` and why. Manifests are read again after 15 seconds.
 - `/v1/apps/<name>/<path>` is sent on to the app's `<path>`, with its query, body, `content-type` and `accept`, and the server's `STRATA_APP_TOKEN` as `Authorization: Bearer` in place of the caller's key; the caller's key is checked first, read scope for `GET` and `HEAD` and admin scope for the rest. An answer is at most 32 MB, in at most 120 s, and an app that does not answer is a 502.
@@ -1528,7 +1528,7 @@ The navigation lists the apps under **Apps**, each at `#/app/<name>`. Its view m
 
 `POST /v1/agent`, and the query console's **Ask an agent** tab, give a Claude model one tool, `run_sql`, which runs a read-only `SELECT` on the table. The model sees the schema and a description of Strata's SQL (it runs facet queries to learn a field's values), then searches, filters, ranks, counts and facets until it can answer, for at most `max_steps` model calls (8 by default, 20 at most). The answer lists every query it ran, with its row count and time, so you can check its work or open a query in the editor. Writes are refused.
 
-The model is a setting: `--model` sets the server's default (`claude-haiku-5-5`), and a request or the UI can name any other model id and an effort level. The API key comes from `ANTHROPIC_API_KEY` on the server, or from the request (`api_key`, never stored by the server; the UI keeps it in the browser only if you tick "remember").
+The model is a setting: `--model` sets the server's default (`claude-haiku-5-5`), and a request or the UI can name any other model id and an effort level. The API key comes from `ANTHROPIC_API_KEY` on the server, or from the request (`api_key`, never stored by the server; the UI keeps it in the browser only if you tick "remember"). On Kubernetes, a `StrataCluster`'s `secretEnv` gives it to every server and coordinator from a Secret ([model keys](https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/README.md#model-keys)).
 
 ### Relevance judgments
 
