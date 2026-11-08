@@ -227,6 +227,8 @@ function model(c) {
         inSync: primary ? true : f ? !!f.in_sync && !f.copying : null,
         copying: !primary && !!f?.copying,
         alerts: d.alerts || null,
+        // What its last scrub found failing its checksums (finding chaos-6).
+        damaged: !down && d.health?.damaged?.length ? d.health.damaged : null,
         // false: the server says it has no --backup-dir; null: it does not say.
         backupDir: "backup_dir" in r ? r.backup_dir || false : null,
         uptime: d.system?.uptime_s ?? null,
@@ -336,6 +338,7 @@ function issues(sh) {
     if (c.copying) out.push({ sev: 0, short: "copying", long: `${cname(c)} is being sent a copy of the primary` });
     else if (c.lag != null && c.lag >= LAG_WARN) out.push({ sev: 1, short: `lag ${kn(c.lag)}`, long: `${cname(c)} is ${fmt.n(c.lag)} transactions behind its primary` });
     if (c.disk != null && c.disk >= 0.85) out.push({ sev: 1, short: `disk ${pct0(c.disk)}`, long: `${cname(c)}'s volume is ${pct0(c.disk)} full` });
+    if (c.damaged) out.push({ sev: 2, short: "damaged", long: `${cname(c)}'s data is damaged on disk: ${plural(c.damaged.length, "segment")} ${c.damaged.length === 1 ? "fails its checksum" : "fail their checksums"}; replace the copy` });
     if (c.avoided) out.push({ sev: 1, short: "avoided", long: `the coordinator sends ${cname(c)} no searches${c.avoidedWhy ? ": " + c.avoidedWhy : " after failures"}` });
   }
   const failing = sh.copies.filter((c) => c.err != null && c.err > sloErr()).sort((a, b) => b.err - a.err)[0];
@@ -1269,6 +1272,9 @@ function render(page, r) {
     if (lead && !c.down) items.push({ label: `Force ${cname(c)} to be the primary, removing the dead ${sh.copies.filter((x) => x.down).length === 1 ? "copy" : "copies"}…`, icon: "up", danger: true, no: managed() ? "the operator hands primaries over" : changes ? changes : !canAdmin() ? needsAdmin : null, run: () => forcePromote(sh, c) });
     else if (!c.primary) items.push({ label: "Make it the primary", icon: "up", no: promote, run: () => promoteCopy(sh, c) });
     if (c.primary) items.push({ label: "Verify its replicas", icon: "okc", no: verifyNo, run: () => verifyCopy(sh, c) });
+    // Bytes against checksums, which Verify (rows against rows) does not
+    // see (finding chaos-6).
+    items.push({ label: "Check its data", icon: "okc", no: c.down ? "it does not answer" : unsupported.scrub ? "this server cannot run it from the coordinator (a newer server can)" : !canAdmin() ? needsAdmin : null, run: () => scrubCopy(sh, c) });
     items.push({ label: "Write a checkpoint", icon: "download", no: ckNo, run: () => checkpointCopy(sh, c) });
     // No Remove on a primary (finding CL-3): hand it over first.
     // A dead primary is still the primary to the server, which refuses to
@@ -1365,6 +1371,21 @@ function render(page, r) {
     } catch (e) {
       if (e.status === 404 || e.status === 405) { unsupported.verify = true; store.set("cluster.unsupported", unsupported); toast("This server cannot verify a shard's replicas from the coordinator: a newer server can.", "bad", 8000); drawSide(); }
       else toast(`Not verified: ${e.message}`, "bad", 8000);
+    }
+  }
+  /** Reads every segment of a copy against its checksum, while it serves. */
+  async function scrubCopy(sh, c) {
+    toast(`Checking ${cname(c)}'s data against its checksums: every segment is read, while it serves…`);
+    try {
+      const j = await api("/v1/admin/copies/scrub", { body: { url: c.url } });
+      const r = j.scrub || {}, bad = r.damaged || [];
+      const read = [r.segments != null ? plural(r.segments, "segment") : null, r.bytes != null ? fmt.bytes(r.bytes) : null, r.seconds != null ? `in ${r.seconds < 1 ? fmt.ms(r.seconds * 1000) : dur(r.seconds)}` : null].filter(Boolean).join(", ");
+      if (!bad.length) toast(`${cname(c)}'s data matches its checksums (${read})`, "ok", 8000);
+      else toast(`${cname(c)}'s data is damaged on disk: ${bad.length === 1 ? bad[0] : `${bad.length} segments fail their checksums, ${bad[0]} first`}. Replace the copy (Plan the repair).`, "bad", 15000);
+      refreshSoon();
+    } catch (e) {
+      if (e.status === 404 || e.status === 405 || /no profile of kind "scrub"/.test(e.message)) { unsupported.scrub = true; store.set("cluster.unsupported", unsupported); toast("This server cannot check a copy's data from the coordinator: a newer server can.", "bad", 8000); drawSide(); }
+      else toast(`Not checked: ${e.message}`, "bad", 8000);
     }
   }
   async function checkpointCopy(sh, c) {

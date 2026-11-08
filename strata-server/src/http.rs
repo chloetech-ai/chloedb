@@ -50,6 +50,7 @@
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
+//! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
@@ -229,6 +230,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/snapshot", post(snapshot))
         .route("/v1/admin/checkpoint", post(admin_checkpoint))
         .route("/v1/admin/check", post(admin_check))
+        .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
@@ -345,6 +347,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/index/tables", get(index_tables))
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
+        .route("/v1/admin/copies/scrub", post(copy_scrub))
         // ----- end core
         .route_layer(middleware::from_fn_with_state(app.clone(), auth))
 }
@@ -563,6 +566,23 @@ async fn copy_checkpoint(State(app): State<App>, w: Option<axum::Extension<Princ
     let body = json!({"name": name, "layout": layout, "link_from": b["link_from"], "by": by});
     let j = ask_copy(c, &copy.url, crate::profiling::Kind::Checkpoint, body).await?;
     Ok(audited(j, format!("checkpoint {name} of {}", copy.short)))
+}
+
+/// `POST /v1/admin/copies/scrub {"url"}` on a coordinator: that copy
+/// reads every segment of its database against its checksum (as its
+/// `POST /v1/admin/scrub`), and answers `{scrub}`.
+async fn copy_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = app.svc.coordinator()?;
+    let copy = copy_of(&*c.snapshot().await, body_str(&b, "url")?)?;
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("copy {}", copy.short)), after: Some(json!({"url": copy.url, "scrub": true})), ..Default::default() });
+    let j = ask_copy(c, &copy.url, crate::profiling::Kind::Scrub, json!({"by": by})).await?;
+    let found = j["scrub"]["damaged"].as_array().map_or(0, Vec::len);
+    Ok(audited(j, format!("checked {}'s data against its checksums: {}", copy.short, match found {
+        0 => "no damage".to_string(),
+        1 => "1 damaged segment".to_string(),
+        n => format!("{n} damaged segments"),
+    })))
 }
 
 /// `GET /v1/index/tables` ([`crate::inspect::tables`]).
@@ -2366,6 +2386,13 @@ async fn admin_checkpoint(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     };
     let stats = app.svc.checkpoint(body_str(&b, "name")?, layout, b.get("link_from").and_then(|v| v.as_str())).await?;
     Ok(AxJson(json!({"checkpoint": stats})))
+}
+
+/// `{"rate_mib_s"?}`: reads every segment against its checksum now
+/// ([`Service::scrub`]); unpaced unless asked.
+async fn admin_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Res {
+    let rate = body.as_ref().and_then(|b| b.get("rate_mib_s")).and_then(Json::as_u64).unwrap_or(0) << 20;
+    Ok(AxJson(app.svc.scrub(rate, &keys::audit_name(&who(w))).await?))
 }
 
 async fn admin_check(State(app): State<App>) -> Res {

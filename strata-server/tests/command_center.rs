@@ -436,6 +436,16 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
     let objects: Vec<&str> = changes["entries"].as_array().unwrap().iter().filter(|e| e["route"].as_str().is_some_and(|r| r.starts_with("/v1/admin/copies/"))).filter_map(|e| e["object"].as_str()).collect();
     assert_eq!(objects, ["copy s0-0", "copy s0-1", "copy s0-1"], "the newest first: {changes}");
+
+    // A copy's data read against its checksums, from the coordinator
+    // (finding chaos-6): nothing damaged, and the copy says when it ran.
+    let r = client().post(format!("{base}/v1/admin/copies/scrub")).json(&json!({"url": "s0-1"})).send().await.unwrap();
+    let status = r.status();
+    let k: Json = r.json().await.unwrap();
+    assert!(status.is_success(), "{k}");
+    assert_eq!(k["scrub"]["damaged"], json!([]), "{k}");
+    let h: Json = client().get(format!("http://127.0.0.1:{}/v1/health", b.http)).send().await.unwrap().json().await.unwrap();
+    assert!(h["scrub"]["last_at_ms"].as_u64().is_some() && h.get("damaged").is_none(), "{h}");
 }
 
 /// Through a coordinator: a write a shard cannot take is refused before

@@ -223,6 +223,19 @@ pub struct CheckpointOptions {
     pub link_from: Option<PathBuf>,
 }
 
+/// What [`Database::scrub`] read, and what failed its checksum.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ScrubReport {
+    /// The commit of the database whose segments it read.
+    pub txn: u64,
+    pub segments: usize,
+    /// Bytes read: segment images, delete sets and updates.
+    pub bytes: u64,
+    /// Each segment whose bytes fail their checksum, in words.
+    pub damaged: Vec<String>,
+    pub seconds: f64,
+}
+
 /// What [`Database::checkpoint`] copied.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct CheckpointStats {
@@ -3349,6 +3362,44 @@ impl Database {
             pending_deletes: st.n_pending,
             segments,
         }
+    }
+
+    /// Reads every segment of the current version, with its delete set
+    /// and updates, and compares each with its checksum, as [`Self::check`]
+    /// does, but without the writer lock: writes, flushes and merges go on
+    /// meanwhile. The version it reads stays pinned, so no commit reuses
+    /// its pages, and a segment merged away meanwhile is read through its
+    /// mapping (in the directory layout, its delete-set and updates files
+    /// are skipped once unlinked). Damage is listed, not an error: the
+    /// scrub reads on past it. `pace` is called after each segment with
+    /// the bytes it read, so that a caller can keep reads to a rate.
+    ///
+    /// A section of a segment is checked the first time a query reads it
+    /// ([`DbOptions::check_sections`]); a scrub finds the damage a query
+    /// has not read yet, as on a replica that serves few searches, or a
+    /// segment that only a merge would read.
+    pub fn scrub(&self, mut pace: impl FnMut(u64)) -> Result<ScrubReport> {
+        let t0 = Instant::now();
+        let (handles, txn, _pin) = {
+            let st = lock(&self.state);
+            (st.handles().cloned().collect::<Vec<_>>(), st.txn, self.pins.pin(st.txn))
+        };
+        let mut r = ScrubReport { txn, ..Default::default() };
+        for h in &handles {
+            let m = &h.meta;
+            let bytes = m.extent.len + m.deletes.map_or(0, |e| e.len) + m.updates.map_or(0, |e| e.len);
+            match h.verify(self.dir.as_deref()) {
+                Ok(()) => {}
+                // Merged away meanwhile, its small files unlinked.
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => r.damaged.push(e.to_string()),
+            }
+            r.segments += 1;
+            r.bytes += bytes;
+            pace(bytes);
+        }
+        r.seconds = t0.elapsed().as_secs_f64();
+        Ok(r)
     }
 
     /// Verifies the file: the meta slot and manifest on disk match the open
