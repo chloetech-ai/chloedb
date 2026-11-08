@@ -77,11 +77,14 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         kinds: Vec<String>,
     },
-    /// Answer a question about earlier work: a model plans several searches,
-    /// they run, and a second model call picks the records that answer it.
+    /// Answer a question about earlier work: the rules, notes, replies and
+    /// messages that bear on it, found by search alone and packed for it.
     Ask {
         question: String,
-        /// Model for planning and ranking (default: the configured one).
+        /// A model plans several searches and a second call picks the records.
+        #[arg(long)]
+        deep: bool,
+        /// With --deep: model for planning and ranking (default: the configured one).
         #[arg(long)]
         model: Option<String>,
         /// Print the JSON result (picked ids, answer, confidence, cost).
@@ -196,8 +199,8 @@ fn main() {
             }
         },
         Cmd::Search { query, limit, kinds } => text(&send(&project, json!({"op": "search", "query": query, "limit": limit, "kinds": kinds, "include_current": true}), 30)),
-        Cmd::Ask { question, model, json: as_json } => {
-            let r = send(&project, json!({"op": "ask", "question": question, "model": model, "include_current": true}), 300);
+        Cmd::Ask { question, deep, model, json: as_json } => {
+            let r = send(&project, json!({"op": "ask", "question": question, "deep": deep || model.is_some(), "model": model, "include_current": true}), 300);
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());
             } else {

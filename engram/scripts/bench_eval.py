@@ -71,6 +71,29 @@ ANSWER REQUIREMENTS:
 RESPONSE:
 """
 
+# The answer prompt of an assistant that reads Engram's context as Claude
+# Code does: grounded in the context, but it keeps to the user's stated
+# instructions and preferences, says when records disagree, and works out
+# dates. BEAM's own prompt (above) asks for a bare answer.
+BEAM_ANSWER_ENGRAM = """
+You are an assistant answering the user from your memory of earlier conversations with them. The context below is what that memory holds about this question.
+
+CONTEXT:
+<context>
+
+QUESTION:
+<question>
+
+HOW TO ANSWER:
+- Use only the context for facts about the user and their work; say so if it does not hold the answer.
+- When the context holds an instruction or preference the user stated for answers like this one (formatting, detail, style, what to recommend), follow it.
+- When two records disagree, say that they conflict and give both, with their dates if known; a later record that says the value changed is an update, so give the new value.
+- For questions about time, work from the dates in the context and show the dates you used.
+- Otherwise be direct and concise.
+
+RESPONSE:
+"""
+
 BEAM_JUDGE = """
 You are an expert evaluator tasked with judging whether the LLM's response demonstrates compliance with the specified RUBRIC CRITERION.
 
@@ -171,6 +194,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--full-every", type=int, default=1, help="the full config reads only every n-th question (it is the costly one)")
+    ap.add_argument("--answer-prompt", default="beam", choices=["beam", "engram"], help="beam: BEAM's own answer prompt; engram: an assistant reading Engram's context")
     ap.add_argument("--max-full-chars", type=int, default=600_000, help="skip full where the history is longer (the reader's window)")
     args = ap.parse_args()
 
@@ -225,7 +249,7 @@ def main():
             prompt = query if ctx is None else f"[Knowledge Pool]\n{ctx.strip() or '(nothing)'}\n\n{query}"
             system = MAB_SYSTEM
         else:
-            prompt = BEAM_ANSWER.replace("<context>", (ctx or "").strip() or "(nothing)").replace("<question>", q["question"])
+            prompt = (BEAM_ANSWER_ENGRAM if args.answer_prompt == "engram" else BEAM_ANSWER).replace("<context>", (ctx or "").strip() or "(nothing)").replace("<question>", q["question"])
             system = BEAM_SYSTEM
         answer, cost, tokens = call(args.reader, system, prompt)
         r = {"config": name, "qid": qid, "qtype": q["question_type"], "context_chars": len(ctx) if ctx else 0, "reader_tokens": tokens, "answer": answer, "cost_reader": cost}
@@ -307,7 +331,7 @@ def main():
         s = summary[name]
         print(f"{name:<24} n={s['n']:<5} score {s['score']:.3f}  by type {s['mean_over_types']:.3f}  context {s['context_chars']:.0f} chars  ${s['cost_usd']:.2f}", file=sys.stderr)
     with open(os.path.join(args.out, "summary.json"), "w") as f:
-        json.dump({"bench": args.bench, "data": os.path.basename(args.data), "reader": args.reader, "judge": args.judge, "questions": len(qids), "configs": summary}, f, indent=1)
+        json.dump({"bench": args.bench, "data": os.path.basename(args.data), "reader": args.reader, "judge": args.judge, "answer_prompt": args.answer_prompt, "questions": len(qids), "configs": summary}, f, indent=1)
 
 
 if __name__ == "__main__":

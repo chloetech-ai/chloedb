@@ -715,7 +715,7 @@ pub fn format(res: &DeepResult, shown: &HashSet<String>, now: i64, project: Opti
     if !res.answer.is_empty() && matches!(res.confidence.as_str(), "high" | "medium") {
         s += &format!("\nEngram's reading of these records (a model's summary; check it against them): {}\n", res.answer.split_whitespace().collect::<Vec<_>>().join(" "));
     }
-    s += "\nmemory_timeline shows what surrounded a record id; memory_ask runs this search for another question.";
+    s += "\nmemory_timeline shows what surrounded a record id; memory_ask answers another question from memory.";
     s
 }
 

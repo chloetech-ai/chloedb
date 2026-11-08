@@ -307,6 +307,20 @@ The runner is [`competitor_contexts.py`](https://github.com/chloetech-ai/strata/
 
 **mem0 is level with the query engine, and pays at write time.** Its extraction call per session turns a history into short dated facts ahead of time, where Engram stores the raw records and spends its model calls on each question instead: mem0 spent $0.13 per LongMemEval history and $0.22 per BEAM conversation, against Engram's $0 to store and $0.0012–0.0014 a question. Which costs less depends on how many questions a history gets: on BEAM, at 20 a conversation, mem0 spends $0.011 a question. By ability, mem0 is better on BEAM's knowledge updates (56 against 40), preferences (72 against 66) and summaries (24 against 17), the kinds of question that facts rewritten at write time should help; the query engine is better on abstention (74 against 58), instruction following (54 against 43) and extraction (64 against 60), which depend more on the exact message. Turning on its optional search extras does not change that: 78% and 41.4.
 
+## Search alone against observational memory
+
+Since this change `memory_ask` answers by search alone ([how](index.md#answering-a-question)): rules, notes in their current versions with what they replaced, the assistant's closest replies and message excerpts, about 15,000 characters, with no model call. It was measured on BEAM 100K (400 questions) against two others, each read by the same reader and graded by the same judge (Haiku, BEAM's rubric judge, an answer prompt for an assistant reading its memory), three gradings each, since the same contexts graded twice can differ by two points:
+
+| | BEAM 100K | context per question | reader tokens | model calls at question time | to store a conversation |
+|---|---|---|---|---|---|
+| observational memory (Mastra's method, rebuilt from its prompts) | **63.4** | 153,400 characters | 59,300 | none | $0.13 (observer) |
+| `memory_ask`, search alone | 60.2 | 15,200 | 6,200 | none, 5 ms | $0.28 (the distiller Engram already runs) |
+| `memory_ask` before: the query engine's picks | 55.0 | 1,600 | 1,400 | two, about 12 s, $0.0012 | none |
+
+*Paired over questions: search alone −3.2 points against observational memory (95% interval −5.9 to −0.5) and +5.1 against the query engine (+2.1 to +8.3). Everything is in `engram/results/search/beam_100k/`.*
+
+Search alone is ahead of the query engine where the answer is a note that changed or a date: knowledge updates (71 against 49) and temporal reasoning (70 against 59). Observational memory leads where an answer spans many exchanges, summaries (37 against 28) and multi-session reasoning (55 against 50), and on abstention (70 against 65), by handing the reader ten times more text: its whole log of observations. Dating each note by the message it came from mattered: notes merged by consolidation had carried the day they were merged, and dating them by their newest source raised temporal reasoning from 63 to 70.
+
 ## The note-writer
 
 After each turn a small model writes down what the turn settled: decisions with their reasons, rules, requirements, facts, failed approaches. A note it should not have written misleads every later session; the first build's slow mode lost a task to one (above). Twelve exchanges in [`eval/distill/cases.jsonl`](https://github.com/chloetech-ai/strata/blob/main/engram/eval/distill/cases.jsonl) each say what correct notes must and must not contain:
