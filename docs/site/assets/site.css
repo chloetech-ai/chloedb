@@ -847,7 +847,8 @@ a.cap:hover { border-color: var(--rule-2); box-shadow: var(--shadow); text-decor
 .band-foot { display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: center; align-items: center; color: var(--night-dim); font-size: 0.95rem; }
 
 /* languages */
-.langs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
+.langs { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 760px) { .langs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .lang { border: 1px solid var(--rule); border-radius: 12px; padding: 18px 16px; display: grid; gap: 4px; justify-items: center; text-align: center; background: var(--panel); color: inherit; text-decoration: none; }
 a.lang:hover { border-color: var(--rule-2); box-shadow: var(--shadow); text-decoration: none; }
 .lang b { font: 650 1.12rem/1.2 var(--display); color: var(--ink); }
