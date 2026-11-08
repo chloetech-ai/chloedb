@@ -190,6 +190,42 @@
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "crawler": {
+                    "description": "A crawler beside the cluster: a strata-crawl Deployment of one, which the command center shows under Apps; it crawls sites into tables and adds shards as they fill.",
+                    "properties": {
+                      "args": {
+                        "description": "More arguments of strata-crawl serve.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "grow": {
+                        "description": "Add a shard when a crawl's table fills one (default true).",
+                        "type": "boolean"
+                      },
+                      "maxShards": {
+                        "description": "The most shards growing makes (default 8).",
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "paused": {
+                        "description": "No crawler pod for now.",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of the crawler's container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "splitRows": {
+                        "description": "Rows of a crawl's table on a shard past which the cluster gets one more shard (0: never; default 100000).",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "demo": {
                     "description": "Instead of a schema: this many demo products, split over the shards the cluster starts with.",
                     "minimum": 0,
