@@ -104,6 +104,7 @@ editing their settings by hand.
 | `.github/CODEOWNERS`, `.github/pull_request_template.md` | the one-way doors (on-disk format, shard protocol, replication, auth), which wait for a human review; a pull request says whether it touches one |
 | `docs/` | the website and the documentation: GitHub Pages publishes the folder as it is (no Jekyll, `docs/.nojekyll`), its root redirects to the website in `docs/site/`, and the Markdown pages are read on GitHub; `docs/demo/inspector.html` is a separate static copy of the inspector |
 | `install.sh` | the installer described above |
+| `packaging/chloedb/` | placeholder packages that hold the name `chloedb` on PyPI, npm and crates.io; `.github/workflows/reserve-names.yml` publishes them, run by hand |
 
 Build and test each crate from its own directory (`engram` and
 `strata-server` depend on `strata` by path):
