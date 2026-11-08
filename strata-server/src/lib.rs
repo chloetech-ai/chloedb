@@ -47,9 +47,11 @@ pub mod judge;
 pub mod keys;
 pub mod keysync;
 pub mod logstore;
+pub mod mcp;
 pub mod media;
 pub mod metrics;
 pub mod obs;
+pub mod oncall;
 pub mod operator;
 // fleet: coordinators that know each other.
 pub mod peers;
@@ -63,6 +65,7 @@ pub mod service;
 pub mod sim;
 pub mod slots;
 pub mod telemetry;
+pub mod traffic;
 pub mod ui;
 
 /// A builder of the HTTP clients the server makes. They trust the roots

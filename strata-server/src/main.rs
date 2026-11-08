@@ -453,6 +453,22 @@ enum Command {
         #[arg(long, env = "STRATA_MODELS")]
         models: Option<PathBuf>,
     },
+    /// Serve the Model Context Protocol over stdin and stdout for an agent
+    /// such as Claude Code (`claude mcp add strata -- strata-server mcp
+    /// --url http://host:7700`): each message goes to the server's
+    /// /v1/mcp with the key, whose scope decides what the agent may change.
+    Mcp {
+        /// The server's HTTP URL (a coordinator, or a single server).
+        #[arg(long, env = "STRATA_URL", default_value = "http://127.0.0.1:7700")]
+        url: String,
+        /// The API key (or the server's token) to send as a bearer.
+        #[arg(long, env = "STRATA_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// A CA certificate (PEM) to trust for an https URL, beside the
+        /// system's.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+    },
     /// Make a running replica the primary of a new term (POST
     /// /v1/admin/promote), once a majority of its shard's copies vote for
     /// it: a primary that serves steps down. It refuses while a copy holds
@@ -727,6 +743,16 @@ async fn main() {
             match server::fetch_model(name, &dir).await {
                 Ok(path) => tracing::info!(model = name, dir = %path.display(), "fetched the model"),
                 Err(e) => fail(&e),
+            }
+            return;
+        }
+        Some(Command::Mcp { url, key, ca }) => {
+            let ca = match ca.as_ref().map(std::fs::read).transpose() {
+                Ok(c) => c,
+                Err(e) => fail(&format!("--ca: {e}")),
+            };
+            if let Err(e) = strata_server::mcp::stdio(url, key.as_deref(), ca).await {
+                fail(&e);
             }
             return;
         }
