@@ -42,7 +42,52 @@ export function loadPatterns(dir = process.env.STRATA_APPS_PATTERNS || DIR) {
   return out;
 }
 
+// The patterns the forge expands from: the built-in files at first, then,
+// once the engine has read them from Strata, the rows of kind "pattern"
+// (built in, and added by apps' builds).
 export const PATTERNS = loadPatterns();
+export const BUILTIN = new Set(PATTERNS.keys());
+
+// Makes the patterns stored in Strata the ones in use: rows from
+// store.patterns(), each one's code the pattern as JSON. Returns how many.
+export function usePatterns(rows) {
+  const next = new Map();
+  for (const [name, r] of rows) {
+    try { next.set(name, { ...JSON.parse(r.code), author: r.author, version: r.version }); } catch { /* a row that is not JSON is skipped */ }
+  }
+  if (!next.size) return 0;
+  PATTERNS.clear();
+  for (const [k, v] of [...next.entries()].sort((a, b) => a[0].localeCompare(b[0]))) PATTERNS.set(k, v);
+  return PATTERNS.size;
+}
+
+export const ANY_TABLE = () => ({ has: () => true });
+
+// A pattern a build adds: its shape, and its example expanded and checked
+// like a screen (checkScreen from the forge). Returns problems.
+export function checkPattern(p, checkScreen = () => []) {
+  const where = `pattern ${p && p.name ? p.name : '?'}`;
+  if (!p || typeof p !== 'object') return ['a pattern is {"name", "title", "about", "params", "example", "screen"}'];
+  const problems = [];
+  if (typeof p.name !== 'string' || !/^[a-z][a-z0-9-]{1,30}$/.test(p.name)) problems.push(`${where}: "name" is lowercase letters, digits and dashes`);
+  else if (BUILTIN.has(p.name)) problems.push(`${where}: ${p.name} is a built-in pattern; give yours another name`);
+  for (const k of ['title', 'about']) if (typeof p[k] !== 'string' || !p[k].trim()) problems.push(`${where}: give "${k}", a sentence`);
+  if (!p.params || typeof p.params !== 'object' || Array.isArray(p.params)) problems.push(`${where}: give "params": {"name": {"about": "...", "need": true | "default": ...}}`);
+  else for (const [k, d] of Object.entries(p.params)) if (!d || typeof d.about !== 'string') problems.push(`${where}: params.${k} needs "about"`);
+  if (!p.screen || typeof p.screen !== 'object' || !Array.isArray(p.screen.body)) problems.push(`${where}: give "screen": {"state", "data", "let", "body": [blocks]} with {{param}} where a parameter goes`);
+  if (!p.example || typeof p.example !== 'object') problems.push(`${where}: give "example": {"use": "${p.name}", ...parameters}, used to check it`);
+  if (problems.length) return problems;
+  const { name, title, about, params, example, screen } = p;
+  const one = new Map([[name, { title, about, params, example, screen }]]);
+  const { use, ...given } = example;
+  const r = expandScreen({ body: [{ use: name, ...given }] }, one);
+  if (r.problems.length) return r.problems.map((x) => `${where}: its example: ${x.replace(/^body\[0\]: /, '')}`);
+  // (its example's tables are made up: any table and column will do)
+  return checkScreen(r.screen, ANY_TABLE).map((x) => `${where}: its example, expanded: ${x}`);
+}
+
+export const PATTERN_ADD_DOC = `## Adding a pattern
+When a screen needs a part that apps of other kinds will clearly want too (a seating chart, a timeline, a booking grid, a leaderboard) and no pattern covers it, the plan may add it, at most one per build: "patterns": [{"name": "leaderboard", "title": "one line", "about": "when to use it", "params": {"table": {"about": "...", "need": true}, "score": {"about": "...", "default": "points"}, "key": {"about": "names its data and state", "default": "{{table}}"}}, "example": {"use": "leaderboard", "table": "kids", "score": "points"}, "screen": {"data": {"{{key}}": "SELECT * FROM {{table}} ORDER BY {{score}} DESC LIMIT 10"}, "body": [...blocks...]}}]. In "screen", "{{name}}" alone is the parameter's value, inside a longer string its text; "{{...name}}" in a list splices a list in; an object with "$when": "name" (or "name=value", "!name") is left out unless that holds. Its example is expanded and checked like a screen; it is stored in Strata as a new pattern every app can use, and this plan's screens may use it at once with {"use": "leaderboard", ...}. Most apps add none.`;
 
 const empty = (v) => v === undefined || v === null || v === '' || v === false || (Array.isArray(v) && !v.length) || (typeof v === 'object' && !Array.isArray(v) && !Object.keys(v).length);
 const get = (P, name) => name.split('.').reduce((o, k) => (o == null ? undefined : o[k]), P);

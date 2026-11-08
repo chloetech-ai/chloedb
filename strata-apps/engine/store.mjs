@@ -211,6 +211,7 @@ export class Store {
   async liveMap() {
     const starters = async (map) => {
       for (const c of (await this.starters()).values()) map.set(`${LIB}/${c.kind}/${c.slug}`, c.id);
+      for (const c of (await this.patterns()).values()) map.set(`${LIB}/pattern/${c.slug}`, c.id);
       return map;
     };
     try {
@@ -350,6 +351,16 @@ export class Store {
       const key = `${r.kind}/${r.slug}`;
       if (!out.has(key)) out.set(key, { ...r, version: Number(r.version), spec: parseSpec(r.spec) });
     }
+    return out;
+  }
+
+  // The screen patterns, built in and added by apps, the newest version of
+  // each, by name, with their code (the pattern as JSON).
+  async patterns() {
+    const rows = await this.db.query(`SELECT id, slug, version, kind, app, title, description, code, spec, author, created FROM sa_capabilities
+      WHERE app = :lib AND kind = 'pattern' ORDER BY version DESC LIMIT 2000`, { lib: LIB });
+    const out = new Map();
+    for (const r of rows) if (!out.has(r.slug)) out.set(r.slug, { ...r, version: Number(r.version), spec: parseSpec(r.spec) });
     return out;
   }
 

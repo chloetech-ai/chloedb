@@ -9,7 +9,7 @@ import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical } fr
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
 import { rewriteSql } from './sql.mjs';
-import { expandPlan, expandScreen, patternsDoc } from './patterns.mjs';
+import { expandPlan, expandScreen, patternsDoc, PATTERNS, BUILTIN, usePatterns, checkPattern, PATTERN_ADD_DOC } from './patterns.mjs';
 import { placePhotos, placeScreenPhotos, photoIds } from './photos.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
 import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.mjs';
@@ -292,10 +292,10 @@ export const TESTS = SCREENS && process.env.STRATA_APPS_TESTS !== 'off';
 const withRules = (s) => (RULES || TESTS ? s.replace(KEEP_LOGIC, [KEEP_LOGIC, RULES ? (RULE_SQL ? RULE_SQL_DOC : RULES_DOC) : '', TESTS ? (RULE_SQL ? TESTS_SQL_DOC : TESTS_DOC) : ''].filter(Boolean).join('\n\n')) : s);
 
 export const SYSTEM = withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
-  ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${STATEMENT_DOC}\n\n# Components (shared by every app)`)
+  ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${PATTERN_ADD_DOC}\n\n${STATEMENT_DOC}\n\n# Components (shared by every app)`)
     .replace('- An app has one to five views.', `${STATEMENT_PLAN.trim()}\n- An app has one to five views.`)
     .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each view and function you add or rewrite (a screen view\'s block holds its CREATE SCREEN statement)')
-  : BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n# Components (shared by every app)`)
+  : BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${PATTERN_ADD_DOC}\n\n# Components (shared by every app)`)
     .replace('"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],', '"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1, "screen": {"data": {}, "body": []}}],')
     .replace('- An app has one to five views.', `${SCREEN_PLAN.trim()}\n- An app has one to five views.`)
     .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)'));
@@ -304,10 +304,18 @@ export const SYSTEM = withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
 // to the screens the app has, patterns expanded, and each screen put in the
 // code of its view (as JSON). Returns problems.
 export function prepareScreens(plan, code, view) {
-  const problems = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...compileRuleStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan)];
+  const problems = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...compileRuleStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan, withPlanPatterns(plan))];
   screensToCode(plan, code);
   rulesToCode(plan, code);
   return problems;
+}
+
+// The patterns in use and the ones this plan adds, so its screens may use
+// a pattern it adds.
+function withPlanPatterns(plan) {
+  const add = (Array.isArray(plan?.patterns) ? plan.patterns : []).filter((p) => p && typeof p.name === 'string' && p.params && p.screen && !BUILTIN.has(p.name));
+  if (!add.length) return PATTERNS;
+  return new Map([...PATTERNS, ...add.map(({ name, title, about, params, example, screen }) => [name, { title, about, params, example, screen }])]);
 }
 
 // Columns of a table, as the app has it and as the plan adds to it.
@@ -708,6 +716,9 @@ export async function buildContext(engine, appId, request) {
     const history = await store.suggestionHistory(appId, 30);
     if (history.length) parts.push(`## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n')}`);
   }
+  // Patterns apps added (the built-in ones are in the system prompt).
+  const added = new Map([...PATTERNS].filter(([k]) => !BUILTIN.has(k)));
+  if (added.size) parts.push(`## Screen patterns other apps added (use them like the built-in ones)\n${patternsDoc(added).replace(/^# Screen patterns\n\n[^\n]*\n\n/, '')}`);
   // Shared components and helpers: all of them by name and props, and, for a
   // change to an app that exists, the code of the few that fit best (to use a
   // piece the model needs its props; it needs the code only to write a new
@@ -916,6 +927,11 @@ export async function validate(plan, code, view, library, shared = new Map()) {
     }
   }
   if (TESTS) problems.push(...checkTests(plan.tests, columnsFor(view, plan)));
+  if (plan.patterns !== undefined) {
+    if (!Array.isArray(plan.patterns)) problems.push('"patterns" is a list');
+    else if (plan.patterns.length > 1) problems.push('"patterns": add at most one pattern in a build');
+    else for (const p of plan.patterns) problems.push(...checkPattern(p, checkScreen));
+  }
   const known = new Set([...shared.keys(), ...view.shared.map((c) => `${c.kind}/${c.slug}`)]);
   const writtenCode = [];
   for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
@@ -1244,6 +1260,14 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   for (const s of plan.remove || []) {
     caps.delete(`view/${s}`);
     caps.delete(`function/${s}`);
+  }
+  // A pattern the plan adds becomes a row of the library, for every app.
+  for (const p of Array.isArray(plan.patterns) ? plan.patterns : []) {
+    const { name, title, about, params, example, screen } = p;
+    const id = await store.putCapability({ app: LIB, slug: name, kind: 'pattern', title, description: about,
+      code: `${JSON.stringify({ title, about, params, example, screen }, null, 1)}\n`, spec: { params: Object.keys(params), from: appId }, author: appId });
+    usePatterns(await store.patterns());
+    progress(`Added the pattern ${name} to the library (${id}); every app can use it now`);
   }
   // Components and helpers go to the shared library; then the app pins what
   // its views and functions call.

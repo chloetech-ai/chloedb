@@ -9,6 +9,7 @@ import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode } from '../engine/forge.mjs';
+import { expandScreen as expandWith } from '../engine/patterns.mjs';
 import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
@@ -139,6 +140,16 @@ test('the built-in library: every piece has a header, passes the checks a writte
   assert.ok(pieces.length >= 25, `${pieces.length} pieces`);
   const names = new Set(pieces.map((p) => `${p.kind}/${p.name}`));
   for (const p of pieces) {
+    if (p.kind === 'pattern') {
+      // A pattern's example expands into a screen that passes the checks.
+      const pat = JSON.parse(p.code);
+      assert.ok(p.meta.title && p.meta.description, `${p.name}: title and about`);
+      const { use, ...given } = pat.example;
+      const r = expandWith({ body: [{ use: p.name, ...given }] }, new Map([[p.name, pat]]));
+      assert.deepEqual(r.problems, [], p.name);
+      assert.deepEqual(checkScreen(r.screen, () => ({ has: () => true })), [], p.name);
+      continue;
+    }
     const third = { component: p.meta.props, helper: p.meta.api, view: p.meta.tables, function: p.meta.input }[p.kind];
     assert.ok(p.meta.title && p.meta.description && third, `${p.name}: header`);
     if (p.kind === 'view') {
@@ -1074,4 +1085,52 @@ test('CREATE RULE compiles SQL into the steps the engine runs: checkout, upsert,
   assert.deepEqual(plan.functions[0].on, { table: 'votes', event: 'insert' });
   assert.match(plan.functions[0].statement, /^CREATE RULE count_votes/);
   assert.deepEqual(plan.tests[0].do, [{ insert: 'features', values: { title: 'A' }, as: 'f' }, { insert: 'votes', values: { feature: ':f.id' } }]);
+});
+
+test('patterns are rows: seeded from library/patterns, versioned, used from Strata, and a plan may add one that its screens use at once', async () => {
+  const { seedLibrary } = await import('../engine/library.mjs');
+  const { PATTERNS, BUILTIN, usePatterns, checkPattern } = await import('../engine/patterns.mjs');
+  const builtins = new Map(PATTERNS);
+  // A store that keeps capabilities in memory.
+  const rows = [];
+  const store = {
+    async shared() { return new Map(); },
+    async starters() { return new Map(); },
+    async patterns() { const out = new Map(); for (const r of [...rows].reverse()) if (r.kind === 'pattern' && !out.has(r.slug)) out.set(r.slug, r); return out; },
+    async getCapabilities(ids) { return rows.filter((r) => ids.includes(r.id)); },
+    async putCapability(c) { const version = rows.filter((r) => r.kind === c.kind && r.slug === c.slug).length + 1; const id = `${c.app}/${c.kind}/${c.slug}@${version}`; rows.push({ ...c, id, version }); return id; },
+  };
+  const lib = new URL('../library', import.meta.url).pathname;
+  await seedLibrary(store, lib);
+  const patternRows = () => rows.filter((r) => r.kind === 'pattern').length;
+  assert.ok(rows.some((r) => r.id === 'lib/pattern/crud@1' && JSON.parse(r.code).params.table));
+  assert.equal(patternRows(), BUILTIN.size);
+  // Seeding again adds no pattern; a changed file would be version 2.
+  await seedLibrary(store, lib);
+  assert.equal(patternRows(), BUILTIN.size);
+  try {
+    assert.equal(usePatterns(await store.patterns()), BUILTIN.size);
+    assert.equal(PATTERNS.get('crud').author, 'builtin');
+    // A pattern an app adds: checked by expanding its example.
+    const board = { name: 'leaderboard', title: 'Top rows by a score', about: 'Kids by points, players by wins.',
+      params: { table: { about: 'the table', need: true }, score: { about: 'the column to rank by', default: 'points' }, key: { about: 'names its data', default: '{{table}}' } },
+      example: { use: 'leaderboard', table: 'kids', score: 'points' },
+      screen: { data: { '{{key}}': 'SELECT * FROM {{table}} ORDER BY {{score}} DESC LIMIT 10' }, body: [{ table: '=data.{{key}}', columns: [{ key: 'name' }, { key: '{{score}}' }] }] } };
+    assert.deepEqual(checkPattern(board, checkScreen), []);
+    assert.match(checkPattern({ ...board, name: 'crud' }, checkScreen)[0], /built-in pattern/);
+    assert.match(checkPattern({ ...board, example: { use: 'leaderboard' } }, checkScreen)[0], /needs "table"/);
+    // In a plan: its screens use the pattern it adds, before it is stored.
+    const plan = { patterns: [board], views: [{ slug: 'top', screen: { body: [{ use: 'leaderboard', table: 'players', score: 'wins' }] } }] };
+    const problems = prepareScreens(plan, {}, { views: [], functions: [], tables: [], shared: [] });
+    assert.deepEqual(problems, []);
+    assert.equal(plan.views[0].screen.data.players, 'SELECT * FROM players ORDER BY wins DESC LIMIT 10');
+    // Stored, it is a row like the built-in ones, and every build expands from it.
+    await store.putCapability({ app: 'lib', slug: 'leaderboard', kind: 'pattern', title: board.title, description: board.about, code: JSON.stringify(board), author: 'a1' });
+    usePatterns(await store.patterns());
+    assert.equal(PATTERNS.get('leaderboard').author, 'a1');
+    assert.ok(!BUILTIN.has('leaderboard'));
+  } finally {
+    PATTERNS.clear();
+    for (const [k, v] of builtins) PATTERNS.set(k, v);
+  }
 });

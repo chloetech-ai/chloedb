@@ -14,6 +14,7 @@ import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL } fro
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
+import { usePatterns } from './patterns.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { ensureDesigns } from './designs.mjs';
 import { Evolver, MODES } from './evolve.mjs';
@@ -54,6 +55,8 @@ const engine = new Engine(db, { log });
 engine.baseUrl = `http://127.0.0.1:${PORT}`;
 await engine.init();
 await seedLibrary(engine.store, process.env.STRATA_APPS_LIBRARY || path.join(ROOT, 'library'), log);
+// Screens expand from the patterns stored in Strata (built in and added by apps).
+usePatterns(await engine.store.patterns());
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
 engine.services = services;
 log(services.smtpUrl && services.smtpFrom ? `email goes out through ${new URL(services.smtpUrl).host}` : 'email is held in the outbox (set SMTP_URL and SMTP_FROM to send it)');
@@ -442,7 +445,8 @@ const routes = [
     const apps = new Map((await engine.store.listApps()).map((a) => [a.id, a.name]));
     const users = await engine.store.sharedUsers();
     const isShared = (r) => r.kind === 'component' || r.kind === 'helper';
-    return { capabilities: rows.map((r) => ({ ...r, app_name: isShared(r) ? 'shared' : r.app === 'lib' ? 'built-in starter' : apps.get(r.app) || r.app,
+    const patternBy = (r) => (r.author === 'builtin' ? 'built-in pattern' : `pattern from ${apps.get(r.author) || r.author}`);
+    return { capabilities: rows.map((r) => ({ ...r, app_name: isShared(r) ? 'shared' : r.kind === 'pattern' ? patternBy(r) : r.app === 'lib' ? 'built-in starter' : apps.get(r.app) || r.app,
       used_by: isShared(r) ? (users.get(`${r.kind}/${r.slug}`) || []).map((u) => ({ app: u.app, name: u.name, version: u.version })) : undefined })) };
   }],
   // The graph of apps and pieces: all of it, or one app's part.
