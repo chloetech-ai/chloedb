@@ -271,3 +271,29 @@ def test_near_embeds_text(where, tmp_path, request):
     again = store["books"].near(store.embed("dragon river", "emb"), on="emb", k=5).to_dicts()
     assert [h["score"] for h in again] == pytest.approx([h["score"] for h in hits])
     store.close()
+
+
+def test_server_answers_arrow(tmp_path, serve):
+    """A server's answers come as Arrow, typed as the file's own are; a
+    server that answers JSON alone still gives frames typed by the schema."""
+    path = tmp_path / "shop.strata"
+    s = strata.connect(path)
+    s.create_table("orders", orders_arrow(), key="id", text=["note"])
+    sqls = [
+        "SELECT id, amount, ts, emb FROM orders WHERE country = 'cl' ORDER BY amount LIMIT 20",
+        "SELECT id, note, score() FROM orders ORDER BY bm25(note, 'refund damaged') DESC LIMIT 5",
+        "SELECT country, COUNT(*) AS n, SUM(amount) AS s, MAX(ts) AS last FROM orders GROUP BY country ORDER BY country",
+        "SELECT id FROM orders WHERE amount < 0",
+    ]
+    local = {q: pa.table(s.query_arrow(q)) for q in sqls}
+    s.close()
+    c = strata.connect(serve(path))
+    for q in sqls:
+        got = c.query_arrow(q)
+        assert isinstance(got, pa.Table)
+        assert got.schema == local[q].schema, q
+        assert got.to_pylist() == local[q].to_pylist(), q
+    f = c["orders"].filter(country="cl").select("id", "amount", "ts").sort("amount").head(3)
+    want = f.to_dicts()
+    c._json_only = True  # as a server from before Arrow answers
+    assert f.to_dicts() == want and f.to_arrow().schema == pa.table(local[sqls[0]]).select(["id", "amount", "ts"]).schema

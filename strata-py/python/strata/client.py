@@ -70,6 +70,7 @@ class Client(Search, FrameStore):
         self.timeout = timeout
         self.retry_for = retry_for
         self._schema: dict | None = None
+        self._json_only = False  # a server that answers no Arrow
 
     def _call(self, method: str, path: str, body: Any = None, *, data: Any = None, headers: Mapping[str, str] | None = None, text: bool = False, out: Any = None) -> Any:
         """The answer's JSON, or its text with `text`; with `out`, a binary
@@ -148,6 +149,35 @@ class Client(Search, FrameStore):
         if timeout_ms:
             body["timeout_ms"] = timeout_ms
         return Result._of(self._call("POST", "/v1/query", body))
+
+    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, **kw: Any):
+        """Runs a SELECT and returns its answer as a pyarrow Table, sent by
+        the server as an Arrow IPC stream (no JSON either way), its columns
+        typed as `Database.query_arrow` types them. Needs pyarrow. A server
+        too old for Arrow answers JSON, which this types from the values."""
+        return self._arrow_answer(sql, _params(params, kw), timeout_ms, {})
+
+    def _arrow_answer(self, sql: str, params: Mapping[str, Any], timeout_ms: int | None, types: Mapping[str, dict]):
+        import io
+
+        from .frame import _pyarrow
+
+        _pyarrow()
+        if self._json_only:
+            r = self.query(sql, params, timeout_ms=timeout_ms)
+            return _client_arrow(r, types)
+        body: dict[str, Any] = {"sql": sql, "params": params, "format": "arrow"}
+        if timeout_ms:
+            body["timeout_ms"] = timeout_ms
+        buf = io.BytesIO()
+        headers = self._call("POST", "/v1/query", body, out=buf)
+        if "arrow" not in (headers.get("content-type") or ""):
+            # A server from before Arrow answers ignores "format".
+            self._json_only = True
+            return _client_arrow(Result._of(json.loads(buf.getvalue() or b"null")), types)
+        import pyarrow.ipc
+
+        return pyarrow.ipc.open_stream(buf.getvalue()).read_all()
 
     def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, idempotency_key: str | None = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
@@ -468,7 +498,7 @@ class Client(Search, FrameStore):
     # fields its columns read; rows go up as Parquet.
 
     def _frame_arrow(self, sql: str, params: Mapping[str, Any], types: Mapping[str, dict]) -> Any:
-        return _client_arrow(self.query(sql, params), types)
+        return self._arrow_answer(sql, _params(params, {}), None, types)
 
     def _explain(self, sql: str, params: Mapping[str, Any]) -> list[str]:
         return list(self.explain(sql, params).get("tree") or [])
