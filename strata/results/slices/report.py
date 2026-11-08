@@ -317,13 +317,53 @@ def t_zipf_tail():
                   "100K slice: top 10 proved, pairs", "10,000 cached answers (0.6 MB)", "best exact answer within 50 MB", "Gate A (40%)"], rows)
 
 
+G = os.path.join(HERE, "geo")
+
+
+def t_geo(mode, d0="1000"):
+    """Near-me searches: the device holds a square of tiles around the user
+    (`here`) or around home (`home`); per square, its places and bytes, and
+    the share of searches whose top k it proved."""
+    e, b = load(G, "eval.json"), load(G, "bytes.json")
+    if not e or not b:
+        return "(not run)"
+    rows = []
+    for kind in ("category", "name"):
+        for h, v in e[kind][d0][mode].items():
+            side = 2 * int(h) / 1000
+            sz = b[mode][h]
+            wrong = sum(v[k]["wrong_proofs"] for k in ("1", "3", "10"))
+            rows.append([kind, f"{side:g} km", f"{sz['median']['places']:,} / {sz['p90']['places']:,}",
+                         f"{sz['median']['file_bytes'] / 1e6:.1f} / {sz['p90']['file_bytes'] / 1e6:.1f}",
+                         pct(v["1"]["proved"]), pct(v["3"]["proved"]), pct(v["10"]["proved"]), pct(v["10"]["same"]), wrong])
+    n = load(G, "searches.json")["searches"]
+    both = lambda h, k: sum(e[kind][d0][mode][h][k]["proved"] * n[kind] for kind in n) / sum(n.values())
+    return table(["searches", "square's side", "places, median / 90th pct", "slice MB, median / 90th pct", "top 1 proved", "top 3 proved",
+                  "top 10 proved", "top 10 the cloud's (proved or not)", "wrong proofs"], rows) + \
+        f"\n\nOver both kinds ({sum(n.values()):,} searches), the 5 km square proves the top 3 of {pct(both('2500', '3'))} and the top 10 of " \
+        f"{pct(both('2500', '10'))}; the 9 km square {pct(both('4500', '3'))} and {pct(both('4500', '10'))}."
+
+
+def t_geo_d0():
+    """The same squares with a gentler distance fade (d0 = 3 km)."""
+    e = load(G, "eval.json")
+    if not e:
+        return "(not run)"
+    rows = []
+    for kind in ("category", "name"):
+        for h in e[kind]["3000"]["here"]:
+            a, c = e[kind]["1000"]["here"][h], e[kind]["3000"]["here"][h]
+            rows.append([kind, f"{2 * int(h) / 1000:g} km", pct(a["3"]["proved"]), pct(c["3"]["proved"]), pct(a["10"]["proved"]), pct(c["10"]["proved"])])
+    return table(["searches", "square's side", "top 3 proved, d0 1 km", "top 3 proved, d0 3 km", "top 10 proved, d0 1 km", "top 10 proved, d0 3 km"], rows)
+
+
 TABLES = {"slices-cov": lambda: t_slices("cov"), "slices-pop": lambda: t_slices("pop"), "overlap": t_overlap,
           "lengths": t_lengths, "pairs": t_pairs, "confidence": t_confidence, "recs": t_recs, "churn": t_churn,
           "pack-bytes": t_bytes, "discovery": t_discovery,
           "aol-cov": lambda: t_aol("cov"), "aol-pop": lambda: t_aol("pop"), "aol-cache": t_aol_cache, "aol-budget": t_aol_budget,
           "aol-bands": t_aol_bands, "zipf-summary": t_zipf_summary, "zipf-cov": lambda: t_aol("cov", Z), "zipf-pop": lambda: t_aol("pop", Z),
           "zipf-bands": lambda: t_aol_bands(Z), "zipf-cache": lambda: t_aol_cache(Z), "zipf-budget": lambda: t_aol_budget(Z),
-          "zipf-tail": t_zipf_tail}
+          "zipf-tail": t_zipf_tail, "geo-here": lambda: t_geo("here"), "geo-home": lambda: t_geo("home"), "geo-d0": t_geo_d0}
 
 
 def main():

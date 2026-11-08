@@ -6,7 +6,8 @@ anything. A slice is part of the corpus shipped to a device, scored there
 with the cloud's statistics, plus enough to know when the device's answer
 is the cloud's. The question is how much traffic a slice of a given size
 answers alone, for search (MS MARCO passages, searched by ORCAS's queries,
-by the AOL log's and by ideal Zipf traffic over AOL's strings) and for
+by the AOL log's and by ideal Zipf traffic over AOL's strings), for places
+near the user (New York's places, searched by Foursquare check-ins) and for
 recommendations (Yambda-50M).
 
 Everything ran in one cloud container (Intel Xeon @ 2.30GHz, 4 cores,
@@ -20,8 +21,17 @@ the device within 5% of the cloud's NDCG@10.
 
 ## Verdict
 
-- **Search passes Gate A when the traffic's head is heavy, and fails on
-  AOL's.** The gate passes once the 10,000 most searched strings carry about
+- **Search near the user passes Gate A by far**
+  ([below](#search-near-the-user-places-in-new-york)). With the places of a
+  5 km square around the user on the device (5.4 MB at the median and
+  14.6 MB at the 90th percentile, in New York), the device proves the top 3
+  of 94.8% of category searches ("pizza", "coffee shop") and the top 10 of
+  86.7%, against the cloud's ranking by text and distance. Over category
+  and name searches together, 85.1% and 71.1%. The bound works here
+  because a place outside the square scores at most its text score faded
+  by its distance.
+- **Search over text alone passes Gate A when the traffic's head is heavy,
+  and fails on AOL's.** The gate passes once the 10,000 most searched strings carry about
   a third of all searches.
   - **On ideal Zipf traffic** (the most searched query twice as often as
     the second, three times the third; [below](#search-on-ideal-zipf-traffic)),
@@ -509,6 +519,131 @@ with their passages, and on the middle of the distribution (strings
 searched 10 to 99 times, ranks 12,309 to 128,913 at s = 1), where a bigger
 slice raises the share held from 38% at 100K passages to 88% at 400K.
 
+## Search near the user: places in New York
+
+[`geo.py`](geo.py) tries the case where the proof should work: searching
+for places near the user. The device holds the places of a square of 1 km
+tiles around it, and the cloud ranks by text and distance, so a place
+outside the square can only score so much.
+
+- **Places:** Overture Maps' places (release 2026-10-21.0, CDLA Permissive
+  2.0) in a box around New York City, 629,748 of them; 477,995 are kept
+  (open or of unknown status, confidence 0.5 or more). A place's text is
+  its name, the words of its categories, its brand and its locality
+  ([`geo/prep.json`](geo/prep.json)).
+- **Demand:** Foursquare's New York check-ins of April 2012 to February
+  2013 (Yang et al., IEEE TSMC 2015; 227,428 check-ins by 1,083 users). Each
+  check-in is taken as a search made from where the user checked in before.
+  It searches for the venue's category (135,225 `category` searches over
+  212 distinct queries, such as "pizza" or "coffee shop") and, where an
+  Overture place within 50 m shares a word of that category, for that place
+  by name (88,607 `name` searches over 12,381 names). Check-ins at homes,
+  offices, transit, roads and areas are left out (83,279;
+  [`geo/searches.json`](geo/searches.json)).
+- **Ranking:** the cloud ranks every place by `bm25(body, q) / (1 + d^2 /
+  d0^2)`, d the distance from the user and d0 1 km, so a place 1 km away
+  counts half. Strata runs it as a rank-safe boost, checked against a
+  brute-force ranking on 100 searches.
+- **Proof:** the device ranks its square the same way, with the cloud's
+  statistics. Its top k is the cloud's when the k-th local score is at
+  least the sum of the query words' best city-wide BM25 scores divided by
+  `1 + e^2 / d0^2`, e the user's distance to the square's edge: no place
+  outside can score more. A table of every word's best score goes with the
+  slice (131,336 words, about 1.2 MB unpacked).
+
+The square follows the user, the app fetching the tiles around the tile it
+is in ([`geo/eval.json`](geo/eval.json), [`geo/bytes.json`](geo/bytes.json)):
+
+<!-- report:geo-here -->
+| searches | square's side | places, median / 90th pct | slice MB, median / 90th pct | top 1 proved | top 3 proved | top 10 proved | top 10 the cloud's (proved or not) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| category | 1 km | 1,389 / 10,844 | 0.3 / 1.6 | 1.5% | 0.4% | 0.0% | 9.6% | 0 |
+| category | 3 km | 10,668 / 66,418 | 1.6 / 9.1 | 85.8% | 73.4% | 54.5% | 84.8% | 0 |
+| category | 5 km | 38,711 / 107,031 | 5.4 / 14.6 | 98.0% | 94.8% | 86.7% | 94.4% | 0 |
+| category | 9 km | 125,824 / 168,545 | 17.4 / 23.3 | 99.5% | 98.6% | 96.2% | 97.8% | 0 |
+| category | 19 km | 256,377 / 264,336 | 35.7 / 37.0 | 99.9% | 99.7% | 99.1% | 99.3% | 0 |
+| name | 1 km | 1,389 / 10,844 | 0.3 / 1.6 | 1.3% | 0.0% | 0.0% | 4.6% | 0 |
+| name | 3 km | 10,668 / 66,418 | 1.6 / 9.1 | 53.8% | 15.9% | 5.3% | 67.8% | 0 |
+| name | 5 km | 38,711 / 107,031 | 5.4 / 14.6 | 88.3% | 70.4% | 47.2% | 82.9% | 0 |
+| name | 9 km | 125,824 / 168,545 | 17.4 / 23.3 | 97.7% | 91.0% | 81.8% | 90.5% | 0 |
+| name | 19 km | 256,377 / 264,336 | 35.7 / 37.0 | 99.4% | 95.4% | 90.4% | 95.6% | 0 |
+
+Over both kinds (223,832 searches), the 5 km square proves the top 3 of 85.1% and the top 10 of 71.1%; the 9 km square 95.6% and 90.5%.
+<!-- /report -->
+
+Slice MB are the Strata files of the squares with the median and 90th
+percentile number of places among the category searches, about 140 bytes a
+place.
+
+The square fixed around home (the user's most checked-in home, else the
+place they checked in at most), downloaded once. The median search is made
+2.8 km from home, and the 90th percentile 14.7 km:
+
+<!-- report:geo-home -->
+| searches | square's side | places, median / 90th pct | slice MB, median / 90th pct | top 1 proved | top 3 proved | top 10 proved | top 10 the cloud's (proved or not) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| category | 1 km | 863 / 9,896 | 0.3 / 1.5 | 0.3% | 0.1% | 0.0% | 1.9% | 0 |
+| category | 3 km | 6,221 / 66,418 | 1.0 / 9.1 | 25.5% | 20.3% | 13.7% | 28.3% | 0 |
+| category | 5 km | 15,054 / 105,653 | 2.2 / 14.4 | 41.5% | 38.1% | 32.6% | 42.5% | 0 |
+| category | 9 km | 63,467 / 168,545 | 9.0 / 23.3 | 59.4% | 57.4% | 54.1% | 59.7% | 0 |
+| category | 19 km | 252,504 / 265,891 | 35.1 / 37.2 | 80.5% | 79.7% | 78.1% | 80.5% | 0 |
+| name | 1 km | 863 / 9,896 | 0.3 / 1.5 | 0.3% | 0.0% | 0.0% | 1.2% | 0 |
+| name | 3 km | 6,221 / 66,418 | 1.0 / 9.1 | 17.0% | 4.5% | 1.5% | 22.0% | 0 |
+| name | 5 km | 15,054 / 105,653 | 2.2 / 14.4 | 33.8% | 22.8% | 13.7% | 36.3% | 0 |
+| name | 9 km | 63,467 / 168,545 | 9.0 / 23.3 | 54.9% | 47.0% | 39.3% | 54.7% | 0 |
+| name | 19 km | 252,504 / 265,891 | 35.1 / 37.2 | 79.2% | 73.9% | 68.2% | 77.2% | 0 |
+
+Over both kinds (223,832 searches), the 5 km square proves the top 3 of 32.1% and the top 10 of 25.1%; the 9 km square 53.3% and 48.2%.
+<!-- /report -->
+
+A gentler fade (d0 = 3 km, so a place 3 km away counts half) needs a bigger
+square, since places farther out can still win:
+
+<!-- report:geo-d0 -->
+| searches | square's side | top 3 proved, d0 1 km | top 3 proved, d0 3 km | top 10 proved, d0 1 km | top 10 proved, d0 3 km |
+|---|---:|---:|---:|---:|---:|
+| category | 1 km | 0.4% | 0.0% | 0.0% | 0.0% |
+| category | 3 km | 73.4% | 14.0% | 54.5% | 5.1% |
+| category | 5 km | 94.8% | 64.0% | 86.7% | 45.5% |
+| category | 9 km | 98.6% | 95.2% | 96.2% | 88.0% |
+| category | 19 km | 99.7% | 99.7% | 99.1% | 99.0% |
+| name | 1 km | 0.0% | 0.0% | 0.0% | 0.0% |
+| name | 3 km | 15.9% | 0.9% | 5.3% | 0.1% |
+| name | 5 km | 70.4% | 13.7% | 47.2% | 4.7% |
+| name | 9 km | 91.0% | 55.6% | 81.8% | 30.1% |
+| name | 19 km | 95.4% | 94.9% | 90.4% | 89.0% |
+<!-- /report -->
+
+This passes Gate A by far. A 5 km square, 5.4 MB at the median and 14.6 MB
+at the 90th percentile, proves the top 3 of 94.8% of category searches and
+the top 10 of 86.7%. Not one proof was wrong.
+
+It works where web search failed because the bound shrinks with distance.
+On AOL the bound was each word's best score anywhere, and the passage that
+scored it was almost always outside the slice. Here that score is faded by
+the distance to the square's edge: 2 km from the edge, with d0 = 1 km, it
+counts a fifth, and the places around the user outrank it. A search with a
+radius ("within 1 km") needs no bound at all: it is exact whenever the
+radius fits inside the square, which for a square that follows the user is
+every such search from the 3 km square on.
+
+Name searches prove less. A named place is one place, often not the nearest
+match of its words, and the rest of its top 10 is weaker matches of single
+words from farther away. Its top 1, what a search for a place by name
+shows first, is proved for 88.3% of name searches at 5 km.
+
+What following the user costs: a 1 km tile is 0.3 MB at the median and
+1.6 MB at the 90th percentile, and moving into the next tile fetches a row
+of 5 tiles for the 5 km square. A square fixed at home needs no fetches
+but proves much less, since people search far from home: 32.6% of category
+top 10s at 5 km and 78.1% at 19 km (35 MB).
+
+What this does not settle: the demand is check-ins from 2012 standing in
+for searches, and today's places were matched to them. The ranking has no
+ratings or popularity; a boost with a known maximum, such as a rating,
+multiplies the bound by that maximum and keeps the proof exact, but proves
+less. And this is one dense city.
+
 ## Recommendations: Yambda-50M
 
 [`recs.py`](recs.py) (its docstring has the details) uses the protocol of
@@ -646,10 +781,16 @@ python zipf.py $Z --work ~/data/slices/zipf prep && python zipf.py $Z --work ~/d
 python zipf.py $Z --work ~/data/slices/zipf load --tiers && python zipf.py $Z --work ~/data/slices/zipf eval && python zipf.py $Z --work ~/data/slices/zipf bytes
 python zipf.py $Z --work ~/data/slices/zipf086 prep --s 0.86   # then select, load --tiers, eval, bytes as above
 cp ~/data/slices/zipf/{prep,select,eval,bytes}.json zipf/ && cp ~/data/slices/zipf086/{prep,select,eval,bytes}.json zipf086/
+mkdir -p ~/data/geo && cd ~/data/geo  # geo.py prep also needs duckdb, and reads Overture's public bucket
+curl -LO http://www-public.imtbs-tsp.eu/~zhang_da/pub/dataset_tsmc2014.zip && unzip dataset_tsmc2014.zip  # md5 a9534dc06f0495b36f216017d2f47701
+cd - && G="--work $HOME/data/geo/work --checkins $HOME/data/geo/dataset_tsmc2014/dataset_TSMC2014_NYC.txt"
+python geo.py $G prep && python geo.py $G searches && python geo.py $G eval && python geo.py $G bytes
+cp ~/data/geo/work/{prep,searches,eval,bytes,maxima}.json geo/
 python report.py
 ```
 
 On the container above the ORCAS side takes under an hour (each load of
 the 8.8 million passages about 4 minutes, the cloud top 10 of a million
 queries about 6) and about 8 GB of disk; the AOL side about 40 minutes more
-and 3 GB, and each Zipf run about 20 minutes and 3 GB.
+and 3 GB, each Zipf run about 20 minutes and 3 GB, and the geo side about
+25 minutes and half a GB.
