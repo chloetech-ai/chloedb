@@ -232,10 +232,19 @@
         if (had != null && opts.some((o) => String(o.value) === String(had))) el.value = String(had);
       };
       entry.refresh = (s2) => { for (const f of fields) if ((f.type || 'text') === 'select' && isExpr(f.options)) fillSelect(controls.get(f.name), f, s2, null); };
+      // A form of more than three fields, or with a long one, is laid out
+      // on a grid: every field labelled above it, long ones across the
+      // whole row, checkboxes beside their label, the buttons on a row of
+      // their own. A short form stays one line ([title] [due] Add).
+      const wide = !inCol && (fields.length > 3 || fields.some((f) => f.type === 'textarea' || f.type === 'file'));
+      // A control a placeholder cannot name (a date, a select...) gets a
+      // label; in a one-line form, then, every field does, so they line up.
+      const named = (f) => !!f.label || ['checkbox', 'file', 'rating', 'date', 'time', 'datetime', 'select'].includes(f.type || 'text');
+      const labelAll = !inCol && !wide && fields.length > 1 && fields.some(named);
       const make = (f) => {
         const t = f.type || 'text';
         const v = editing ? editing[f.name] : val(f.value, s, `${path}.${f.name}`);
-        const ph = f.placeholder ? T(f.placeholder, s, path) : f.label ? null : human(f.name);
+        const ph = f.placeholder ? T(f.placeholder, s, path) : f.label || wide || labelAll ? null : human(f.name);
         let el;
         if (t === 'textarea') el = h('textarea', { name: f.name, placeholder: ph, required: !!f.required, rows: f.rows || 3 }, v ?? '');
         else if (t === 'select') { el = h('select', { name: f.name, required: !!f.required }); fillSelect(el, f, s, v); }
@@ -252,14 +261,19 @@
           el = h('input', { type: typ, name: f.name, placeholder: ph, required: !!f.required, value: shown, step: t === 'number' ? (f.step || 'any') : null, min: f.min ?? null, max: f.max ?? null });
         }
         controls.set(f.name, el);
+        if (wide) {
+          const text = f.label ? T(f.label, s, path) : human(f.name);
+          if (t === 'checkbox') return h('label', { class: 'check' }, el, h('span', null, text));
+          return h('label', { class: t === 'textarea' || t === 'file' || t === 'tags' ? 'span' : null }, h('span', null, text), el);
+        }
         // In a column a control keeps its own height (a form's controls flex
         // along the row).
         if (inCol && t !== 'checkbox') el.style.flex = 'none';
-        const lab = f.label ? T(f.label, s, path) : t === 'checkbox' || t === 'file' || t === 'rating' || t === 'date' || t === 'time' || t === 'datetime' || t === 'select' ? human(f.name) : null;
+        const lab = f.label ? T(f.label, s, path) : labelAll || named(f) ? human(f.name) : null;
         return lab ? h('label', { class: 'col', style: inCol ? 'gap:4px' : 'gap:4px;flex:1 1 140px' }, h('span', { class: 'small muted' }, lab), el) : el;
       };
       const saveBtn = h('button', { class: 'primary', type: 'submit', style: inCol ? 'align-self:flex-start' : null }, T(editing ? (b.update || 'Save') : (b.submit || 'Add'), s, path));
-      const el = h('form', { class: inCol ? 'col' : null, style: inCol ? 'align-items:stretch' : null, onsubmit: async (e) => {
+      const el = h('form', { class: inCol ? 'col' : wide ? 'wide' : null, style: inCol ? 'align-items:stretch' : null, onsubmit: async (e) => {
         e.preventDefault();
         const cur = entry.s;
         const row = {};
@@ -274,8 +288,22 @@
           const after = b.after !== undefined ? val(b.after, cur, `${path}.after`) : null;
           await run(typeof after === 'function' ? after : null, [stored], `${path}.after`);
         } catch (err) { app.toast(err.message); report(fail(`${path} (${tableName})`, err)); } finally { saveBtn.disabled = false; }
-      } }, fields.map(make), saveBtn,
-      editing && b.cancel !== undefined ? h('button', { class: 'ghost', type: 'button', onclick: () => { forms.delete(path); const c = val(b.cancel, entry.s, `${path}.cancel`); run(c, [], `${path}.cancel`); } }, 'Cancel') : null);
+      } }, wide ? [] : fields.map(make));
+      if (wide) {
+        // Short fields first, as many columns as make even rows (5 fields:
+        // 3 and 2, not 4 and 1), then the long ones across, then the
+        // checkboxes together; each group keeps the order it was given in.
+        const long = (f) => ['textarea', 'file', 'tags'].includes(f.type);
+        const short = fields.filter((f) => !long(f) && f.type !== 'checkbox');
+        const rows = Math.max(1, Math.ceil(short.length / 4));
+        el.style.setProperty('--cols', String(Math.max(1, Math.ceil(short.length / rows))));
+        el.append(...short.map(make), ...fields.filter(long).map(make));
+        const checks = fields.filter((f) => f.type === 'checkbox');
+        if (checks.length) el.append(h('div', { class: 'checks' }, checks.map(make)));
+      }
+      const cancelBtn = editing && b.cancel !== undefined ? h('button', { class: 'ghost', type: 'button', onclick: () => { forms.delete(path); const c = val(b.cancel, entry.s, `${path}.cancel`); run(c, [], `${path}.cancel`); } }, 'Cancel') : null;
+      if (wide) el.append(h('div', { class: 'actions' }, saveBtn, cancelBtn));
+      else el.append(...[saveBtn, cancelBtn].filter(Boolean));
       entry.el = el;
       forms.set(path, entry);
       return el;

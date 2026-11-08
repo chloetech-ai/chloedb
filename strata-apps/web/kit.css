@@ -110,6 +110,19 @@ label { display: inline-flex; flex-direction: column; gap: 6px; font-size: calc(
 label:has(> input[type=checkbox]), label:has(> input[type=radio]) { flex-direction: row; align-items: center; gap: 10px; color: var(--fg); font-size: inherit; font-weight: 400; cursor: pointer; }
 form { display: flex; flex-wrap: wrap; gap: calc(var(--space) * .6); align-items: end; }
 form > input:not([type=checkbox]), form > textarea { flex: 1 1 180px; }
+/* a wide form: a grid of labelled fields, long ones across, buttons below */
+form.wide { --gap: calc(var(--space) * .75); display: grid; gap: calc(var(--space) * .8) var(--gap); align-items: end;
+  /* at most --cols columns (the form sets it), fewer where they would be narrower than 180px */
+  grid-template-columns: repeat(auto-fill, minmax(max(min(180px, 100%), calc((100% - (var(--cols, 4) - 1) * var(--gap)) / var(--cols, 4))), 1fr)); }
+.screen > form.wide { margin-bottom: calc(var(--space) * .5); }
+form.wide > label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+form.wide > label > :is(input, select, textarea):not([type=checkbox]) { width: 100%; }
+/* one height for every one-line control in a form (a date input is otherwise a little taller) */
+form :is(input:not([type=checkbox]):not([type=radio]):not([type=color]):not([type=range]):not([type=file]), select) { height: calc(var(--text) * 1.35 + 1.2em + 2px); }
+form.wide > label.span { grid-column: 1 / -1; }
+form.wide > .checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 24px; }
+form.wide > .checks > label.check { flex-direction: row; align-items: center; gap: 10px; min-height: calc(var(--text) * 1.35 + 1.2em + 2px); color: var(--fg); font-size: var(--text); font-weight: 400; cursor: pointer; }
+form.wide > .actions { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; padding-top: 2px; }
 progress { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border: 0; border-radius: 999px; background: var(--fill); overflow: hidden; accent-color: var(--accent); }
 progress::-webkit-progress-bar { background: var(--fill); border-radius: 999px; }
 progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
