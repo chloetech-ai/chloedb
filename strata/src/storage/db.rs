@@ -2131,10 +2131,22 @@ impl Database {
         if !self.read.load(Ordering::Relaxed) {
             self.read.store(true, Ordering::Relaxed);
         }
-        if let Some(s) = &*self.published.read().unwrap_or_else(|e| e.into_inner()) {
-            return s.clone();
+        if let Some(s) = self.published() {
+            return s;
         }
-        self.snapshot_inner(true)
+        let s = self.snapshot_inner(true);
+        // Meanwhile the writer may have published a version and applied the
+        // next write, which this snapshot holds, without publishing that
+        // one yet: this reader's next snapshot would be the published one,
+        // older, and rows would disappear. So a version published meanwhile
+        // is returned instead; any published after this check holds at
+        // least what this snapshot does.
+        self.published().unwrap_or(s)
+    }
+
+    /// The snapshot readers get, with `DbOptions::publish_snapshots`.
+    fn published(&self) -> Option<Snapshot> {
+        self.published.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// A read-only database: follows the writer, at most once each
