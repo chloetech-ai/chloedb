@@ -26,6 +26,7 @@
 //!   one to be built.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ops::Range;
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -3472,10 +3473,17 @@ impl Database {
         if image.len() as u64 != h.meta.extent.len || crc32fast::hash(image) != h.meta.crc {
             return Err(corrupt(format!("{name} fails its checksum")));
         }
-        let header = crate::segment::header_len_from(image)?;
         let (cref, object) = cold.upload(id, &d.join(&name), image)?;
         let key = cref.key.clone();
-        let pinned = crate::storage::cold::pinned_of(&image[..header.min(image.len())], &object.table)?;
+        let read = |r: Range<usize>| image.get(r).map(<[u8]>::to_vec).ok_or_else(|| corrupt(format!("{name}: a section lies outside it")));
+        let pinned = match crate::storage::cold::pinned_of(&object.table, &read) {
+            Ok(p) => p,
+            Err(e) => {
+                object.retire();
+                cold.uploaded(&key);
+                return Err(e);
+            }
+        };
         // A commit that may have reached the disk poisons the database: then
         // the object stays, and opening sorts it out. Otherwise it goes, with
         // the cache file, once the image (dropped after this) and the object

@@ -647,21 +647,36 @@ impl Cold {
     }
 }
 
-/// The byte ranges, whole parts of `t`, of the header and keys (sections
-/// `pk` and `fields`) of the image whose first bytes, as many as its
-/// header takes, are `header`: what a cold segment's cache always keeps.
-pub fn pinned_of(header: &[u8], t: &ChunkTable) -> Result<Vec<Range<u64>>> {
-    let (len, sections) = crate::segment::directory(header)?;
-    let whole = |r: Range<usize>| {
-        let p = t.parts(&r);
+/// The byte ranges, whole parts of `t`, that a cold segment's cache
+/// always keeps: the header, the key index (section `pk`, and the keyword
+/// column it reads its keys from, if it does), and `fields`. `read` reads
+/// bytes of the image.
+pub fn pinned_of(t: &ChunkTable, read: &dyn Fn(Range<usize>) -> Result<Vec<u8>>) -> Result<Vec<Range<u64>>> {
+    let len = t.len as usize;
+    let header = crate::segment::header_len_from(&read(0..24.min(len))?)?;
+    if header > len {
+        return Err(corrupt("the segment's directory lies outside its image"));
+    }
+    let (_, sections) = crate::segment::directory(&read(0..header)?)?;
+    let inside = |name: &str, r: &Range<usize>| match r.end <= len {
+        true => Ok(()),
+        false => Err(corrupt(format!("section {name} lies outside the image"))),
+    };
+    let mut keep = vec![crate::storage::pk::SECTION.to_string(), crate::segment::FIELDS.to_string()];
+    if let Some((name, r)) = sections.iter().find(|(n, r)| n == crate::storage::pk::SECTION && !r.is_empty()) {
+        inside(name, r)?;
+        if let Some(f) = crate::storage::pk::key_column(crate::postings::bytes::OwnedBytes::new(read(r.clone())?))? {
+            keep.extend(["dict", "codes", "post"].map(|p| format!("kw.{f}.{p}")));
+        }
+    }
+    let whole = |r: &Range<usize>| {
+        let p = t.parts(r);
         t.range(p.start).start..t.range(p.end - 1).end
     };
-    let mut out = vec![whole(0..len)];
-    for (name, r) in sections {
-        if (name == crate::storage::pk::SECTION || name == crate::segment::FIELDS) && !r.is_empty() {
-            if r.end as u64 > t.len {
-                return Err(corrupt(format!("section {name} lies outside the image")));
-            }
+    let mut out = vec![whole(&(0..header))];
+    for (name, r) in &sections {
+        if keep.contains(name) && !r.is_empty() {
+            inside(name, r)?;
             out.push(whole(r));
         }
     }
@@ -789,20 +804,19 @@ impl ColdImage {
         Ok(())
     }
 
-    /// The byte ranges of the image's header and keys, whole parts.
+    /// The byte ranges of the image's header and keys, whole parts
+    /// ([`pinned_of`]).
     pub fn pinned_ranges(&self) -> Result<Vec<Range<u64>>> {
-        let t = &self.object.table;
-        self.ensure(0..24.min(t.len as usize))?;
-        let mut head = vec![0u8; 24.min(t.len as usize)];
-        self.file.read_exact_at(&mut head, 0)?;
-        let header = crate::segment::header_len_from(&head)?;
-        if header as u64 > t.len {
-            return Err(corrupt(format!("cold segment {}: its directory lies outside the image", self.object.id)));
-        }
-        self.ensure(0..header)?;
-        let mut bytes = vec![0u8; header];
-        self.file.read_exact_at(&mut bytes, 0)?;
-        pinned_of(&bytes, t).map_err(|e| corrupt(format!("cold segment {}: {e}", self.object.id)))
+        let read = |r: Range<usize>| -> Result<Vec<u8>> {
+            self.ensure(r.clone())?;
+            let mut b = vec![0u8; r.len()];
+            self.file.read_exact_at(&mut b, r.start as u64)?;
+            Ok(b)
+        };
+        pinned_of(&self.object.table, &read).map_err(|e| match e {
+            Error::Corrupt(m) => corrupt(format!("cold segment {}: {m}", self.object.id)),
+            e => e,
+        })
     }
 
     fn pinned_bytes(&self) -> u64 {

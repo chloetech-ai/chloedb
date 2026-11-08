@@ -480,3 +480,48 @@ fn offload_keeps_the_newest_segments_local() {
     drop(db);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn writes_by_key_need_no_store_with_keyword_keys_too() {
+    let d = tmp("keyword-keys");
+    let path = d.join("db");
+    let flaky = Arc::new(Flaky { inner: DirStore::new(d.join("store")).unwrap(), reads_fail: AtomicBool::new(false), tables_fail: AtomicBool::new(false) });
+    let store: Arc<dyn ObjectStore> = flaky.clone();
+    let db = Db::create_empty(&path, opts(ColdOptions { cache_bytes: 1, ..cold(store) })).unwrap();
+    db.sql("CREATE TABLE users (name KEYWORD PRIMARY KEY, n INT, bio TEXT)", &Params::new()).unwrap();
+    let mut rng = StdRng::seed_from_u64(3);
+    for s in 0..2 {
+        let docs: Vec<Vec<Value>> = (s * N..(s + 1) * N)
+            .map(|i| {
+                let bio: String = (0..200).map(|_| rng.gen_range(b'a'..=b'z') as char).collect();
+                vec![Value::Str(format!("user-{i:08}")), Value::Int(i), Value::Str(bio)]
+            })
+            .collect();
+        db.load_into("users", docs).unwrap();
+        db.storage().flush().unwrap();
+    }
+    for id in db.storage().file_stats().segments.iter().filter(|s| s.table == "users").map(|s| s.id).collect::<Vec<_>>() {
+        assert!(db.storage().offload_segment(id).unwrap());
+    }
+    rows(&db, "SELECT count(*) FROM users WHERE MATCH(bio, 'abc')");
+    // The key column is kept with the keys: evicted segments open again
+    // without fetching anything.
+    let before = db.storage().cold_stats().unwrap();
+    assert!(db.storage().evict_cold().unwrap() > 0);
+    let after = db.storage().cold_stats().unwrap();
+    assert_eq!((after.fetches, after.cached_bytes), (before.fetches, after.pinned_bytes), "{before:?} {after:?}");
+    // The store is down: deletes and upserts by key find their rows in
+    // the keys the cache keeps.
+    flaky.reads_fail.store(true, Ordering::Relaxed);
+    let mut tx = db.storage().begin().unwrap();
+    let mut t = tx.table("users").unwrap();
+    assert!(t.delete(&Value::Str("user-00000007".into())).unwrap());
+    assert!(!t.delete(&Value::Str("user-99999999".into())).unwrap());
+    t.upsert(vec![Value::Str("user-00012345".into()), Value::Int(-1), Value::Str("rewritten".into())]).unwrap();
+    tx.commit().unwrap();
+    flaky.reads_fail.store(false, Ordering::Relaxed);
+    assert_eq!(rows(&db, "SELECT count(*) FROM users"), vec![vec![Value::Int(2 * N - 1)]]);
+    assert_eq!(rows(&db, "SELECT n FROM users WHERE name = 'user-00012345'"), vec![vec![Value::Int(-1)]]);
+    db.storage().check().unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
