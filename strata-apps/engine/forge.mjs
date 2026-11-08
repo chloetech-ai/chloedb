@@ -482,9 +482,9 @@ export function screenWatcher(view, onScreen) {
     sent.add(v.slug);
     onScreen({ slug: v.slug, title: v.title || cur?.title || v.slug, order: v.order ?? cur?.spec?.order ?? 50, screen });
   };
-  return (seen, text) => {
+  return (seen, text, force = false) => {
     const now = Date.now();
-    if (!text || now - last < 600) return;
+    if (!text || (!force && now - last < 600)) return;
     last = now;
     // A CREATE SCREEN statement, once its code block is complete.
     for (const m of text.matchAll(/<code slug="([a-z][a-z0-9-]*)">\s*(CREATE\s+SCREEN\b[\s\S]*?)<\/code>/gi)) {
@@ -1059,15 +1059,54 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
 - Keep "summary", "seed" and "suggestions" as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
 
+// First versions written in parallel: the plan names every screen and rule
+// with a spec and no statement, and each is then written by its own writer
+// at once, with the example rows and tests by one more, so a first version
+// takes the time of its plan and its biggest piece rather than of all of it
+// in one answer. STRATA_APPS_PARALLEL=off writes screens and rules in the plan.
+export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL !== 'off';
+
+const PLAN_STEP_PARALLEL = `# This step: the plan alone
+
+Answer with the <plan> alone this time, and no code blocks. Each view, function, component and helper in it is then written by its own writer, all at once, and the example rows and tests by one more; each writer sees this plan and the request but nothing the others write. So the plan is the contract between them, and it is short: no statements and no code in it.
+- Give every view "format": "screen" (a CREATE SCREEN statement; the default) or "code" (JavaScript, only for what a screen cannot say), and every function "format": "rule" (a CREATE RULE statement; the default for reading and writing rows) or "javascript" (email, the model, outside services, or logic a rule cannot say).
+- Give every view, function, component and helper a "spec", in a few lines, enough to be written alone. For a screen: its parts in order (LIST, BOARD, DETAIL, SUMMARY, WEEK, CALENDAR, FLASHCARDS, QUIZ, FIND, DASHBOARD, HEADING, or custom BLOCKS), the table and columns of each, the form's fields with their types and choices, filters, KPIs, row actions, the views it opens and the functions it calls with their input. For a code view, the same and the components and helpers it calls with their props or arguments. For a rule or function: its input, the rows it reads and writes, what it returns, and its trigger ("on"). For content (lessons, explanations, questions, texts), an outline; the writer writes it out in full.
+- Use the same names everywhere: view and function slugs, table and column names, the values a status column takes.
+- Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
+- Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
+- Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well.
+- Keep "summary" and "suggestions" as always. Leave out "seed" and "tests": their writer adds them.`;
+
+const screenStep = (slug) => `# This step: write the screen ${slug}
+
+Write the screen ${slug} alone, as one CREATE SCREEN statement, as the plan above and its spec say: what the spec lists and nothing beyond it. Other writers write the other pieces at the same time, from the same plan: use the tables and columns as the plan gives them, open views by their slugs and call functions by their slugs with the input the plan gives. Answer with one <code slug="${slug}">CREATE SCREEN ...</code> block, and nothing else.`;
+
+const ruleStep = (slug) => `# This step: write the function ${slug}
+
+Write the function ${slug} alone, as one CREATE RULE statement (with its trigger, AFTER ... ON, when the plan gives one), as the plan above and its spec say. Other writers write the other pieces at the same time, from the same plan: use the tables and columns as the plan gives them. If what the spec asks cannot be said as a rule (email, the model, outside services), write it in JavaScript instead. Answer with one <code slug="${slug}">...</code> block, and nothing else.`;
+
+const EXAMPLES_STEP = `# This step: example rows and tests
+
+Write the example rows ("seed") and the tests ("tests") for the plan above, as described in the system prompt: rows that show the app working (3 to 8 per table, realistic, dated near today), left out when the app holds the person's own data from the start; and tests of its rules and functions. Other writers write the screens and functions at the same time, from the same plan: use the tables, columns, function slugs and inputs as the plan gives them. Answer with one <code slug="examples">{"seed": {...}, "tests": [...]}</code> block holding that JSON, and nothing else.`;
+
 const pieceStep = (what, slug) => `# This step: write ${what}
 
 Write the code of ${what} alone, as the plan above and its spec say: what the spec lists and nothing beyond it, in compact code. Other writers write the other pieces at the same time, from the same plan: call them exactly as the plan gives them (components by their props, helpers by their api, functions by their input and output, tables by their columns). Answer with one <code slug="${slug}">...</code> block holding the whole code, and nothing else.`;
 
 // The pieces a plan says to write, each with the slug of its code block.
-function planPieces(plan) {
+function planPieces(plan, parallel = false) {
   const out = [];
-  for (const v of plan.views || []) if (!v.screen) out.push({ what: `the view ${v.slug}`, label: `view ${v.slug}`, slug: v.slug, item: v });
-  for (const f of plan.functions || []) if (!f.rule) out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f });
+  for (const v of plan.views || []) {
+    if (v.screen) continue;
+    if (parallel && v.format !== 'code') out.push({ what: `the screen ${v.slug}`, label: `view ${v.slug}`, slug: v.slug, item: v, step: screenStep(v.slug), model: SCREEN_MODEL, statement: true });
+    else out.push({ what: `the view ${v.slug}`, label: `view ${v.slug}`, slug: v.slug, item: v });
+  }
+  for (const f of plan.functions || []) {
+    if (f.rule) continue;
+    if (parallel && f.format !== 'javascript') out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f, step: ruleStep(f.slug), model: SCREEN_MODEL, statement: true });
+    else out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f });
+  }
+  if (parallel && !plan.seed && !plan.tests) out.push({ what: 'the example rows and tests', label: 'examples', slug: 'examples', item: {}, step: EXAMPLES_STEP, model: SCREEN_MODEL, owns: (p) => /^tests\[|^seed|^examples/.test(p) });
   for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
     for (const c of plan[plural] || []) out.push({ what: `the shared ${kind} ${c.name}`, label: `${kind} ${c.name}`, slug: `${ns}:${c.name}`, item: c });
   }
@@ -1089,9 +1128,13 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   let plan;
   let problems = [];
   let decidedAt = 0;
-  let planPrompt = `${prompt}\n\n${PLAN_STEP}`;
+  // A first version is planned short and written in parallel (screens and
+  // rules too); otherwise the plan carries the screens' and rules' statements.
+  const parallel = PARALLEL && !view.comp.n;
+  const STEP = parallel ? PLAN_STEP_PARALLEL : PLAN_STEP;
+  let planPrompt = `${prompt}\n\n${STEP}`;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`);
+    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
     const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress, 'The model'), previewer(view, progress)) });
     tr.call(span, answer, system.length + planPrompt.length);
@@ -1109,57 +1152,101 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
       c.problems = problems.slice(0, 8);
     });
     if (!problems.length) { decidedAt = span.end; progress(`The model planned it in ${Math.round(answer.ms / 1000)} s`); break; }
-    planPrompt = `${prompt}\n\n${PLAN_STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`;
+    planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`;
   }
   if (problems.length) return { plan, code: {}, cost, problems, decidedAt };
-  const pieces = planPieces(plan);
+  const pieces = planPieces(plan, parallel);
   const code = rulesToCode(plan, screensToCode(plan, {}));
   const planText = `# The plan, decided\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>`;
+  // Each screen's writer has its own watcher, so a screen is drawn as soon as
+  // its statement is complete, even when another writer reported just before.
+  const previews = new Map();
+  const preview = (slug, w, text, force) => { if (!previews.has(slug)) previews.set(slug, previewer(view, progress)); previews.get(slug)(w, text, force); };
+  // The example rows and tests come as JSON from their writer.
+  let examples = '';
+  const takeExamples = () => {
+    if (typeof code.examples !== 'string') return;
+    examples = code.examples;
+    delete code.examples;
+    let out = null;
+    try { out = JSON.parse(examples.trim().replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '')); } catch { /* none */ }
+    if (out && typeof out === 'object') {
+      if (out.seed && typeof out.seed === 'object') plan.seed = out.seed; else delete plan.seed;
+      if (Array.isArray(out.tests)) plan.tests = out.tests; else delete plan.tests;
+    }
+  };
+  // What a piece was written as, for its writer to fix: a screen's or a
+  // rule's statement once compiled.
+  const sourceOf = (pc) => {
+    if (pc.slug === 'examples') return examples;
+    const item = [...(plan.views || []), ...(plan.functions || [])].find((x) => x.slug === pc.slug);
+    return (item && typeof item.statement === 'string' ? item.statement : null) ?? code[pc.slug] ?? '';
+  };
+  // Each piece's state for the studio: writing (with its characters), done, again.
+  const board = new Map();
+  const shown = () => [...board.values()];
   const write = async (pieces, notes = new Map()) => {
     const seen = new Map();
     const t0 = Date.now();
     let last = 0;
     const done = [];
-    progress(`Writing ${pieces.length === 1 ? pieces[0].label : `${pieces.length} pieces at once: ${pieces.map((p) => p.label).join(', ')}`}`);
-    await pool(pieces, 6, async (pc) => {
+    for (const pc of pieces) board.set(pc.slug, { label: pc.label.replace(/^(view|function) /, ''), kind: pc.label.split(' ')[0], state: notes.has(pc.slug) ? 'again' : 'writing', chars: 0 });
+    progress(`Writing ${pieces.length === 1 ? pieces[0].label : `${pieces.length} pieces at once: ${pieces.map((p) => p.label).join(', ')}`}`, { step: 'write', pieces: shown() });
+    await pool(pieces, 8, async (pc) => {
       const fix = notes.get(pc.slug);
       const span = tr.start(fix ? 'fix' : 'write', fix ? `${pc.label}, again` : pc.label, { piece: pc.slug, ...(fix ? { problems: fix.problems.slice(0, 4) } : {}) });
       const extra = fix ? `\n\n# Your previous code for it\n\n<code slug="${pc.slug}">\n${fix.code}\n</code>\n\n# Its problems\n\n${fix.problems.map((p) => `- ${p}`).join('\n')}\n\nWrite it again, whole, with these fixed.` : '';
-      const piecePrompt = `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pieceStep(pc.what, pc.slug)}${extra}`;
+      const piecePrompt = `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pc.step || pieceStep(pc.what, pc.slug)}${extra}`;
       const answer = await ask({
         system,
         prompt: piecePrompt,
-        onWrite: ({ chars }) => {
+        ...(pc.model ? { model: pc.model } : {}),
+        onWrite: (w, text) => {
+          const { chars } = w;
+          if (pc.statement && text) preview(pc.slug, w, text);
           seen.set(pc.slug, chars);
+          if (board.has(pc.slug)) board.get(pc.slug).chars = chars;
           const now = Date.now();
-          if (now - last < 5000) return;
+          if (now - last < 1000) return;
           last = now;
           const total = [...seen.values()].reduce((a, b) => a + b, 0);
-          progress(`The model is writing ${pieces.length - done.length} of ${pieces.length}: ${total.toLocaleString('en-US')} characters so far (${Math.round((now - t0) / 1000)} s)${done.length ? `; done: ${done.join(', ')}` : ''}`, { replace: true });
+          progress(`The model is writing ${pieces.length - done.length} of ${pieces.length}: ${total.toLocaleString('en-US')} characters so far (${Math.round((now - t0) / 1000)} s)${done.length ? `; done: ${done.join(', ')}` : ''}`, { replace: true, pieces: shown() });
         },
       });
       tr.call(span, answer, system.length + piecePrompt.length);
       cost += answer.cost || 0;
+      if (pc.statement && answer.text && !fix) preview(pc.slug, {}, answer.text, true);
       const blocks = parseAnswer(`<plan>{}</plan>\n${answer.text}`).code;
       code[pc.slug] = blocks[pc.slug] ?? Object.values(blocks)[0] ?? '';
+      // A screen or rule rewritten by its writer is compiled again from it.
+      if (pc.statement) { delete pc.item.screen; delete pc.item.rule; delete pc.item.statement; }
       done.push(pc.label);
-      progress(`Wrote ${pc.label} in ${Math.round(answer.ms / 1000)} s`);
+      if (board.has(pc.slug)) Object.assign(board.get(pc.slug), { state: 'done', secs: Math.round(answer.ms / 1000) });
+      progress(`Wrote ${pc.label} in ${Math.round(answer.ms / 1000)} s`, { pieces: shown() });
     });
   };
   await write(pieces);
+  takeExamples();
   problems = await tr.span('check', 'Check the code', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared)]; c.problems = p.slice(0, 8); return p; });
   if (problems.length) {
     const notes = new Map();
     for (const pc of pieces) {
-      const mine = problems.filter((p) => p.startsWith(`${pc.label}:`) || p.startsWith(`${pc.label} `));
-      if (mine.length) notes.set(pc.slug, { code: code[pc.slug] || '', problems: mine });
+      const mine = problems.filter((p) => (pc.owns ? pc.owns(p) : p.startsWith(`${pc.label}:`) || p.startsWith(`${pc.label} `)));
+      if (mine.length) notes.set(pc.slug, { code: sourceOf(pc), problems: mine });
     }
     const again = pieces.filter((pc) => notes.has(pc.slug));
     progress(`Checking the code: ${problems.length} problem${problems.length === 1 ? '' : 's'} (${problems.slice(0, 3).join('; ').slice(0, 400)})${again.length ? `; writing ${again.map((p) => p.label).join(', ')} again` : ''}`);
     if (again.length) {
       await write(again, notes);
+      takeExamples();
       problems = await tr.span('check', 'Check the code again', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared)]; c.problems = p.slice(0, 8); return p; });
     }
+  }
+  // Tests that are still wrong are left out rather than holding up the app.
+  if (parallel && problems.length && problems.every((p) => /^tests\[/.test(p))) {
+    progress(`Left out the tests: ${problems.slice(0, 2).join('; ').slice(0, 300)}`);
+    plan.tests = [];
+    problems = [];
   }
   return { plan, code, cost, problems, decidedAt };
 }
@@ -1178,7 +1265,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
 async function forgeTraced(engine, appId, request, progress, tr) {
   const { store } = engine;
   const started = Date.now();
-  progress('Reading the app and its history from Strata');
+  progress('Reading the app and its history from Strata', { step: 'read' });
   const context = await tr.span('strata', 'Read the app, its data and the library from Strata', () => buildContext(engine, appId, request));
   const { prompt, view, library, shared, system } = context;
   if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => `${c.title} (${c.found === 'meaning' ? 'by meaning' : c.found === 'both' ? 'by words and meaning' : 'by words'})`).join(', ')}`);
@@ -1192,7 +1279,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const split = SPLIT === 'always' || (SPLIT === 'first' && !view.comp.n);
   if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit(context, progress, tr));
   for (let attempt = 1; attempt <= 2 && !split; attempt++) {
-    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`);
+    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
     const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems');
     answer = await ask({ system, prompt: attemptPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress), previewer(view, progress)) });
     tr.call(span, answer, system.length + attemptPrompt.length);
@@ -1218,7 +1305,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     err.cost = cost;
     throw err;
   }
-  progress('The code passed the checks; storing it in Strata');
+  progress('The code passed the checks; storing it in Strata', { step: 'store' });
   let storing = tr.start('strata', 'Store the code and the new version in Strata');
 
   // Tables first: data the new code reads must exist when it goes live.

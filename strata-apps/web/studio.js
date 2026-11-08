@@ -69,6 +69,10 @@ const S = {
   panel: 'change',
   errors: new Map(), // slug -> {message, repairing}
   lines: [],         // progress of the running request
+  build: null,       // its steps, pieces and timing: {first, split, steps, pieces, elapsed, expect, at}
+  runningId: null,
+  ended: new Set(),  // requests whose done or failed came: a late read of the app's state does not bring them back
+  logOpen: false,
   previews: new Map(), // slug -> {title, order, screen}: screens drawn while the model writes
   previewView: null,
   runningText: '',
@@ -124,6 +128,8 @@ function connect() {
     else S.lines.push(d.line);
     S.lastReplace = !!d.replace;
     S.failed = null;
+    S.runningId = d.request;
+    if (d.steps) S.build = { first: d.first, split: d.split, steps: d.steps, pieces: d.pieces || [], elapsed: d.elapsed || 0, expect: d.expect || {}, at: Date.now() };
     renderProgress();
   });
   es.addEventListener('preview', (e) => {
@@ -136,9 +142,11 @@ function connect() {
   es.addEventListener('done', (e) => {
     const d = mine(e);
     if (!d) return;
+    S.ended.add(d.request);
     S.previews.clear();
     S.previewView = null;
     S.lines = [];
+    S.build = null;
     S.runningText = '';
     toast(d.candidate ? `Built from your use, ready to try (version ${d.n})${d.summary ? `: ${d.summary}` : ''}` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
     refreshApp();
@@ -146,12 +154,14 @@ function connect() {
   es.addEventListener('failed', (e) => {
     const d = mine(e);
     if (!d) return;
+    S.ended.add(d.request);
     S.previews.clear();
     S.previewView = null;
     renderFrames();
     if (d.candidate) toast(`A change built from your use did not go through: ${d.error}`);
     else S.failed = { text: S.runningText, error: d.error, lines: S.lines.slice() };
     S.lines = [];
+    S.build = null;
     S.runningText = '';
     refreshApp();
   });
@@ -182,6 +192,8 @@ function leaveApp() {
   S.frames.clear();
   S.errors.clear();
   S.lines = [];
+  S.build = null;
+  S.runningId = null;
   S.failed = null;
   S.runningText = '';
 }
@@ -606,8 +618,11 @@ async function refreshApp() {
       const state = await api('GET', `/api/apps/${S.appId}${atV()}`);
       if (state.app.id !== S.appId) return;
       S.app = state;
-      if (state.running && !S.lines.length) { S.runningText = state.running.text; S.lines = state.running.lines; }
-      if (!state.running && S.lines.length && !S.runningText) S.lines = [];
+      // A read that started before the build ended still lists it as running.
+      const run = state.running && !S.ended.has(state.running.id) ? state.running : null;
+      if (run && !S.lines.length) { S.runningText = run.text; S.lines = run.lines; S.runningId = run.id; }
+      if (run?.steps && S.runningText === run.text) S.build = { first: run.first, split: run.split, steps: run.steps, pieces: run.pieces || [], elapsed: run.elapsed || 0, expect: run.expect || {}, at: Date.now() };
+      if (!run && S.lines.length && (!S.runningText || S.ended.has(S.runningId))) { S.lines = []; S.build = null; S.runningText = ''; }
       renderApp();
     } catch (e) {
       $('#main').replaceChildren(h('div', { class: 'page' }, h('div', { class: 'err' }, e.message), h('a', { href: '#/' }, 'Back')));
@@ -882,6 +897,7 @@ function previewBox() {
   iframe.srcdoc = srcdoc(v, {}, S.app.components, S.app.helpers);
   return h('div', { class: 'preview' },
     h('div', { class: 'pbar' }, h('span', { class: 'spin' }), h('b', ' Preview'), h('span', { class: 'hint' }, ' while the model writes the rest; it goes live when the version is stored'),
+      h('span', { class: 'bmini' }, h('span', { class: 'bbar' }, h('div', { class: 'fill', style: 'width:1%' })), h('span', { class: 'bmeta' }, paceText(S.build))),
       h('span', { class: 'ptabs-mini' }, list.map((p) => h('button', { class: `chip${p.slug === cur.slug ? ' on' : ''}`, onclick: () => { S.previewView = p.slug; renderFrames(); } }, p.title)))),
     iframe);
 }
@@ -945,12 +961,94 @@ function buildingScreen() {
     progressBox() || (failed ? h('div', { class: 'log' }, h('div', { class: 'line bad' }, failed.error), h('button', { class: 'btn small', style: 'align-self:start;margin-top:6px', onclick: () => ask(st.app.description) }, 'Try again')) : h('div', { class: 'hint' }, 'Waiting for the engine...'))));
 }
 
+// A build's progress: a bar that moves at the pace builds here usually go
+// (each step's expected time, from the last builds' timelines), its steps,
+// the pieces being written at once, what it is doing now, and the log.
+const STEP_LABELS = {
+  read: () => 'Read the app and the library',
+  plan: (b) => b.first ? 'Plan the app' : stepKeys(b).includes('write') ? 'Plan the change' : 'Write the change',
+  write: (b) => b.first ? 'Write the screens and rules' : 'Write the pieces',
+  store: () => 'Check it and store it in Strata',
+};
+
+function stepKeys(b) {
+  const seen = new Set((b?.steps || []).map((x) => x.key));
+  return ['read', 'plan', 'write', 'store'].filter((k) => k !== 'write' || seen.has(k) || b?.split);
+}
+
+// How far the build is (0..1), how long it has run and about how long is
+// left, now: each finished step counts its expected time; inside the current
+// one, time goes linearly up to 85% of its share at its expected time and
+// then slows, so a long step never fills the bar.
+function buildPace(b) {
+  const elapsed = (b.elapsed || 0) + (Date.now() - b.at);
+  const keys = stepKeys(b);
+  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' ? 15000 : 1500));
+  const total = keys.reduce((a, k) => a + exp(k), 0);
+  const cur = b.steps.at(-1);
+  if (!cur) return { f: 0.01, elapsed, left: total, slow: false };
+  const i = Math.max(0, keys.indexOf(cur.key));
+  const before = keys.slice(0, i).reduce((a, k) => a + exp(k), 0);
+  const after = keys.slice(i + 1).reduce((a, k) => a + exp(k), 0);
+  const e = exp(cur.key);
+  const t = Math.max(0, elapsed - cur.t);
+  let within = t < e ? 0.85 * t / e : 0.85 + 0.15 * (1 - Math.exp(-(t - e) / e));
+  if (cur.key === 'write' && b.pieces?.length) within = Math.max(within, b.pieces.filter((p) => p.state === 'done').length / b.pieces.length * 0.95);
+  const f = Math.min(0.97, (before + within * e) / total);
+  return { f, elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6 };
+}
+
+const bsecs = (ms) => ms < 950 ? 'under 1 s' : ms < 10000 ? `${Math.max(1, Math.round(ms / 1000))} s` : ms < 90000 ? `${Math.round(ms / 5000) * 5} s` : `${Math.round(ms / 60000)} min`;
+
+function paceText(b) {
+  if (!b) return 'Waiting for its turn';
+  const p = buildPace(b);
+  return `${bsecs(p.elapsed)} so far · ${p.slow ? 'taking longer than usual' : p.left < 2000 ? 'almost done' : `about ${bsecs(p.left)} left`}`;
+}
+
 function progressBox() {
   if (!S.lines.length) return null;
-  return h('div', { class: 'log', id: 'progress' },
-    h('div', { class: 'req' }, h('span', { class: 'spin' }), ' ', S.runningText.length > 160 ? `${S.runningText.slice(0, 160)}...` : S.runningText),
-    S.lines.map((l, i) => h('div', { class: `line${i === S.lines.length - 1 ? ' last' : ''}${/^Failed/.test(l) ? ' bad' : ''}` }, l)));
+  const b = S.build;
+  const text = S.runningText.length > 160 ? `${S.runningText.slice(0, 160)}...` : S.runningText;
+  const pct = b ? Math.round(buildPace(b).f * 1000) / 10 : 1;
+  const now = S.lines.at(-1);
+  const guess = { first: !S.app?.version?.n, split: !S.app?.version?.n };
+  const keys = stepKeys(b || guess);
+  const at = new Map((b?.steps || []).map((x, i, all) => [x.key, { t: x.t, end: all[i + 1]?.t }]));
+  const cur = b?.steps.at(-1)?.key;
+  const steps = h('ol', { class: 'bsteps' }, keys.map((k) => {
+    const s = at.get(k);
+    const state = !s ? 'todo' : k === cur ? 'now' : 'done';
+    return h('li', { class: state }, h('span', { class: 'bmark' }, state === 'done' ? '✓' : state === 'now' ? h('span', { class: 'spin' }) : ''),
+      h('span', { class: 'what' }, STEP_LABELS[k](b || guess)),
+      state === 'done' && s.end != null ? h('span', { class: 'took' }, bsecs(s.end - s.t)) : null);
+  }));
+  const pieces = b?.pieces?.length ? h('div', { class: 'bpieces' }, b.pieces.map((p) =>
+    h('span', { class: `bpiece ${p.state}`, title: `${p.kind} ${p.label}` },
+      p.state === 'done' ? h('span', { class: 'bmark' }, '✓') : h('span', { class: 'spin' }),
+      h('span', { class: 'what' }, p.label),
+      h('span', { class: 'took' }, p.state === 'done' ? `${p.secs} s` : p.chars >= 1000 ? `${(p.chars / 1000).toFixed(1)}k chars` : p.chars ? `${p.chars} chars` : p.state === 'again' ? 'fixing' : '')))) : null;
+  const log = h('details', { class: 'blog', ontoggle: (e) => { S.logOpen = e.target.open; } },
+    h('summary', `Log (${S.lines.length} ${S.lines.length === 1 ? 'line' : 'lines'})`),
+    h('div', { class: 'log' }, S.lines.map((l, i) => h('div', { class: `line${i === S.lines.length - 1 ? ' last' : ''}${/^Failed/.test(l) ? ' bad' : ''}` }, l))));
+  log.open = S.logOpen;
+  return h('div', { class: 'bprog', id: 'progress' },
+    h('div', { class: 'req' }, text),
+    h('div', { class: 'bbar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(pct)) }, h('div', { class: 'fill', style: `width:${pct}%` })),
+    h('div', { class: 'bmeta' }, paceText(b)),
+    steps, pieces,
+    h('div', { class: `bnow${/^Failed/.test(now) ? ' bad' : ''}` }, now),
+    log);
 }
+
+// Moves the bars and the times between the engine's reports.
+setInterval(() => {
+  if (!S.lines.length) return;
+  const b = S.build;
+  const pct = b ? Math.round(buildPace(b).f * 1000) / 10 : 1;
+  for (const el of document.querySelectorAll('.bbar')) { el.firstChild.style.width = `${pct}%`; el.setAttribute('aria-valuenow', String(Math.round(pct))); }
+  for (const el of document.querySelectorAll('.bmeta')) el.textContent = paceText(b);
+}, 250);
 
 function renderProgress() {
   if (!S.app) return;
@@ -963,6 +1061,8 @@ async function ask(text, extra = {}) {
   S.failed = null;
   S.runningText = text;
   S.lines = ['Queued'];
+  S.build = null;
+  S.runningId = null;
   renderProgress();
 }
 

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
-import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL } from './forge.mjs';
+import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT } from './forge.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
@@ -174,16 +174,50 @@ async function submit(appId, text, source = 'user', extra = {}) {
   return req;
 }
 
+// How long each step of a build usually takes, first versions apart from
+// changes: medians of the last builds' timelines (sa_traces), so the studio's
+// progress bar moves at the pace builds here really go.
+const STEP_DEFAULTS = { first: { read: 300, plan: 12000, write: 9000, store: 2500 }, change: { read: 300, plan: 20000, write: 8000, store: 2000 } };
+let expected = structuredClone(STEP_DEFAULTS);
+async function learnExpected() {
+  let rows = [];
+  try { rows = await engine.db.query('SELECT trace FROM sa_traces ORDER BY created DESC LIMIT 80'); } catch { return; }
+  const seen = { first: {}, change: {} };
+  for (const r of rows) {
+    let t;
+    try { t = JSON.parse(r.trace); } catch { continue; }
+    if (t.status !== 'done' || !Array.isArray(t.spans)) continue;
+    const kind = t.spans.some((x) => /first version/.test(x.label || '')) ? 'first' : 'change';
+    const span = (k) => { const ss = t.spans.filter((x) => k.includes(x.kind)); return ss.length ? Math.max(...ss.map((x) => x.end ?? x.start)) - Math.min(...ss.map((x) => x.start)) : 0; };
+    const plan = span(['plan', 'model']);
+    const write = span(['write', 'fix']);
+    const read = t.spans.find((x) => x.kind === 'strata')?.end || 0;
+    const store = Math.max(0, (t.ms || 0) - read - plan - write);
+    for (const [k, v] of Object.entries({ read, plan, write, store })) if (v > 0 || k !== 'write') (seen[kind][k] ||= []).push(v);
+  }
+  const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  for (const kind of ['first', 'change']) {
+    for (const [k, list] of Object.entries(seen[kind])) if (list.length >= 3) expected[kind][k] = Math.round(median(list));
+  }
+}
+learnExpected().catch(() => {});
+
 async function runRequest(req, extra = {}) {
   const lines = [];
-  const state = { id: req.id, text: req.text, source: req.source, lines };
+  const first = !Number((await engine.store.getApp(req.app).catch(() => null))?.head);
+  // The build's steps as the studio draws them (read, plan, write, store),
+  // with when each began, and the pieces being written at once.
+  const split = SPLIT === 'always' || (SPLIT === 'first' && first);
+  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'] };
   running.set(req.app, state);
   // A line sent with {replace: true} takes the place of the previous such
   // line (the model's running count), so the log does not fill with them.
-  const progress = (line, { replace = false, preview = null } = {}) => {
+  const progress = (line, { replace = false, preview = null, step = null, pieces = null } = {}) => {
     if (replace && lines.at(-1)?.replace) lines[lines.length - 1] = { t: Date.now(), line, replace };
     else { lines.push({ t: Date.now(), line, replace }); if (!replace) log(`[${req.app}] ${line}`); }
-    broadcast('progress', { app: req.app, request: req.id, line, replace, source: req.source, text: req.text });
+    if (step && state.steps.at(-1)?.key !== step) state.steps.push({ key: step, t: Date.now() - state.t0 });
+    if (pieces) state.pieces = pieces;
+    broadcast('progress', { app: req.app, request: req.id, line, replace, source: req.source, text: req.text, ...buildState(state) });
     if (preview) broadcast('preview', { app: req.app, request: req.id, ...preview });
   };
   await engine.store.putRequest({ ...req, status: 'running' });
@@ -191,7 +225,7 @@ async function runRequest(req, extra = {}) {
     const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress)
       : await forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress);
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
-    if (out.trace) await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost });
+    if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
   } catch (e) {
@@ -204,6 +238,10 @@ async function runRequest(req, extra = {}) {
     running.delete(req.app);
   }
 }
+
+// What the studio needs to draw a build's progress: its steps so far, the
+// pieces being written, how long it has run and how long its steps usually take.
+const buildState = (st) => ({ first: st.first, split: st.split, steps: st.steps, pieces: st.pieces, elapsed: Date.now() - st.t0, expect: st.expect });
 
 // A build's timeline, with the progress lines it showed (their times from the
 // build's start), kept next to the request.
@@ -317,7 +355,7 @@ async function appState(appId) {
     // (versions built to try and not kept are listed with their candidates)
     versions: (await store.compositions(appId)).filter((c) => !unkept.has(Number(c.n)) || Number(c.n) === head),
     requests: await store.requests(appId, 30),
-    running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line) } : null,
+    running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
   };
 }
 
