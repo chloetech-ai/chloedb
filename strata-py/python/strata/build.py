@@ -139,7 +139,17 @@ class Expr:
     __hash__ = None  # type: ignore[assignment]
 
     def _ir(self, ctx: _Ctx) -> Any:
-        raise NotImplementedError
+        raise StrataError(f"{self!r} runs in frames (SQL), not in a Query's plan")
+
+    def _sql(self, s: Any) -> str:
+        """The expression as SQL: `s` (a frame's renderer) gives each
+        column's SQL (`s.col(name)`), binds values as parameters
+        (`s.param(v)`) and writes constants (`s.value(v)`)."""
+        raise StrataError(f"{self!r} has no SQL form, so a frame cannot use it")
+
+    def _kids(self) -> list:
+        """The expressions this one is made of."""
+        return []
 
     def _field(self) -> str | None:
         """The field this names, if it is one."""
@@ -262,7 +272,7 @@ class Expr:
         return _Arith("mod", other, self)
 
     def __neg__(self) -> Expr:
-        return _Ranked("neg", [self], lambda ctx, a: {"neg": a[0]}, f"-{self!r}")
+        return _Ranked("neg", [self], lambda ctx, a: {"neg": a[0]}, f"-{self!r}", sql=lambda s, a: f"(-{a[0]})")
 
     def __pos__(self) -> Expr:
         return self
@@ -296,6 +306,108 @@ class Expr:
     def max(self) -> Expr:
         return _Agg("max", self)
 
+    # What frames add, named as Polars names them; each is SQL, so it runs
+    # in frames and not in a Query's plan.
+    def mean(self) -> Expr:
+        """The average (`AVG`)."""
+        return _Agg("avg", self)
+
+    def median(self) -> Expr:
+        return _Agg("median", self)
+
+    def quantile(self, q: float, *, interpolation: str = "linear") -> Expr:
+        """The value a fraction `q` of the way through the group's values:
+        interpolated between the two around it (`PERCENTILE_CONT`), or
+        with `interpolation="nearest"` one of the values
+        (`PERCENTILE_DISC`)."""
+        if isinstance(q, bool) or not isinstance(q, (int, float)) or not 0 <= q <= 1:
+            raise StrataError(f"a quantile is a fraction from 0 to 1, not {q!r}")
+        if interpolation not in ("linear", "nearest"):
+            raise StrataError("interpolation is 'linear' (PERCENTILE_CONT) or 'nearest' (PERCENTILE_DISC)")
+        return _Pct(self, float(q), interpolation == "nearest")
+
+    def n_unique(self) -> Expr:
+        """The number of different values (`COUNT(DISTINCT ...)`)."""
+        return _Agg("count_distinct", self)
+
+    def is_in(self, values: Iterable[Any]) -> Expr:
+        """`isin`, as Polars names it."""
+        return self.isin(values)
+
+    def is_between(self, lo: Any, hi: Any) -> Expr:
+        """`between`, as Polars names it."""
+        return self.between(lo, hi)
+
+    def fill_null(self, value: Any) -> Expr:
+        """The expression, or `value` where it is NULL (`COALESCE`)."""
+        return _SqlCall("coalesce", [self, value])
+
+    def cast(self, dtype: Any) -> Expr:
+        """The expression as another type: "int", "float", "str" (TEXT),
+        "bool" or "timestamp", or the Python types int, float, str and
+        bool."""
+        return _Cast(self, dtype)
+
+    def over(self, *partition_by: Any, order_by: Any = None, descending: bool | Sequence[bool] = False) -> Expr:
+        """A window: the aggregate, rank, shift or running sum computed
+        over the rows of each `partition_by` group (every row without
+        one), in `order_by` order where it needs one, each row keeping its
+        own value (`... OVER (PARTITION BY ... ORDER BY ...)`). An
+        aggregate's value is the whole group's, as in Polars, whatever
+        the order."""
+        w = self._bare_window()
+        return w._with(partition=[_colish(p) for p in partition_by], order=_order_keys(order_by, descending))
+
+    def rank(self, method: str = "min", *, descending: bool = False) -> Expr:
+        """Each row's place in the order of this expression, from 1:
+        `"min"` (`RANK()`, ties share the lowest place), `"dense"`
+        (`DENSE_RANK()`) or `"ordinal"` (`ROW_NUMBER()`). Polars' default,
+        `"average"`, has no SQL form. With `.over(...)`, within each
+        group."""
+        fns = {"min": "RANK", "dense": "DENSE_RANK", "ordinal": "ROW_NUMBER"}
+        if method not in fns:
+            raise StrataError(f"rank's method is 'min', 'dense' or 'ordinal', not {method!r}")
+        return _Window(lambda s: f"{fns[method]}()", [], f"{self!r}.rank({method!r})", own_order=[(self, bool(descending))])
+
+    def shift(self, n: int = 1, *, fill_value: Any = None) -> Expr:
+        """The value `n` rows before (after, for a negative `n`), within a
+        window's order: `.shift(1).over("user", order_by="ts")` (`LAG`,
+        `LEAD`). Rows have no order of their own, so it needs one."""
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise StrataError(f"shift takes a whole number of rows, not {n!r}")
+        fn = "LAG" if n >= 0 else "LEAD"
+
+        def sql(s: Any) -> str:
+            args = [self._sql(s), str(abs(n))]
+            if fill_value is not None:
+                args.append(s.value(fill_value))
+            return f"{fn}({', '.join(args)})"
+
+        return _Window(sql, [self], f"{self!r}.shift({n})", needs_order=True)
+
+    def cum_sum(self) -> Expr:
+        """The running total, within a window's order:
+        `.cum_sum().over("user", order_by="ts")`."""
+        return _Window(lambda s: f"SUM({self._sql(s)})", [self], f"{self!r}.cum_sum()", needs_order=True, frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
+
+    def _bare_window(self) -> "_Window":
+        e = self
+        if isinstance(e, _Window):
+            return e
+        if isinstance(e, _Agg):
+            return _Window(e._sql, [e], repr(e), frame="ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING", agg=True)
+        raise StrataError(f"over() takes an aggregate, rank(), shift() or cum_sum(), not {self!r}")
+
+    @property
+    def str(self) -> "_StrNs":
+        """Text functions: `.str.lower()`, `.str.contains("x")`, ..."""
+        return _StrNs(self)
+
+    @property
+    def dt(self) -> "_DtNs":
+        """Time functions: `.dt.truncate("month")`, `.dt.year()`, ..."""
+        return _DtNs(self)
+
     def _name(self) -> str:
         """The column's name when it has no alias."""
         raise StrataError(f"{self!r} is not a column: select fields, score(), hops(), features(), aggregates or ranking expressions")
@@ -315,7 +427,7 @@ def _num(x: Any) -> Expr:
     if isinstance(x, Expr):
         return x
     if isinstance(x, (int, float)) and not isinstance(x, bool):
-        return _Lit(float(x))
+        return _Lit(float(x), x)
     raise TypeError(f"arithmetic takes expressions and numbers, not {x!r}")
 
 
@@ -343,6 +455,9 @@ class _Col(Expr):
             return {"output": ctx.outputs[("field", i)]}
         return {"field": i}
 
+    def _sql(self, s: Any) -> str:
+        return s.col(self.name)
+
     def _name(self) -> str:
         return self.name
 
@@ -351,11 +466,15 @@ class _Col(Expr):
 
 
 class _Lit(Expr):
-    def __init__(self, v: Any):
-        self.v = v
+    def __init__(self, v: Any, shown: Any = None):
+        # `shown`: the number as written (2, not 2.0), for SQL.
+        self.v, self.shown = v, shown
 
     def _ir(self, ctx: _Ctx) -> Any:
         return {"lit": _value(self.v)}
+
+    def _sql(self, s: Any) -> str:
+        return s.value(self.v if self.shown is None else self.shown)
 
     def __repr__(self) -> str:
         return f"lit({self.v!r})"
@@ -373,6 +492,16 @@ class _Cmp(Expr):
         f = _field_of(self.left, ctx) if ctx.outputs is None else None
         return {"cmp": {"op": self.op, "left": self.left._ir(ctx), "right": _operand(self.right, ctx, f)}}
 
+    def _sql(self, s: Any) -> str:
+        if not isinstance(self.left, Expr):
+            raise TypeError("a comparison names an expression first")
+        if self.right is None:
+            raise StrataError("a comparison with None is never true: use is_null() or is_not_null()")
+        return f"{self.left._sql(s)} {_SQL_OPS[self.op]} {_sql_of(self.right, s)}"
+
+    def _kids(self) -> list:
+        return [x for x in (self.left, self.right) if isinstance(x, Expr)]
+
     def __repr__(self) -> str:
         return f"({self.left!r} {self.op} {self.right!r})"
 
@@ -387,6 +516,12 @@ class _Bool(Expr):
     def _ir(self, ctx: _Ctx) -> Any:
         return {self.op: [p._ir(ctx) for p in self.parts]}
 
+    def _sql(self, s: Any) -> str:
+        return "(" + f" {self.op.upper()} ".join(p._sql(s) for p in self.parts) + ")"
+
+    def _kids(self) -> list:
+        return list(self.parts)
+
     def __repr__(self) -> str:
         return f" {self.op} ".join(map(repr, self.parts)).join("()")
 
@@ -397,6 +532,14 @@ class _Not(Expr):
 
     def _ir(self, ctx: _Ctx) -> Any:
         return {"not": self.e._ir(ctx)}
+
+    def _sql(self, s: Any) -> str:
+        if isinstance(self.e, _IsNull):
+            return f"{self.e.e._sql(s)} IS NOT NULL"
+        return f"NOT ({self.e._sql(s)})"
+
+    def _kids(self) -> list:
+        return [self.e]
 
     def __repr__(self) -> str:
         return f"~{self.e!r}"
@@ -409,6 +552,15 @@ class _IsNull(Expr):
     def _ir(self, ctx: _Ctx) -> Any:
         return {"is_null": self.e._ir(ctx)}
 
+    def _sql(self, s: Any) -> str:
+        return f"{self.e._sql(s)} IS NULL"
+
+    def _kids(self) -> list:
+        return [self.e]
+
+    def __repr__(self) -> str:
+        return f"{self.e!r}.is_null()"
+
 
 class _Prefix(Expr):
     def __init__(self, e: Expr, prefix: str, edits: int = 0):
@@ -420,6 +572,13 @@ class _Prefix(Expr):
             ir["edits"] = self.edits
         return {"prefix": ir}
 
+    def _sql(self, s: Any) -> str:
+        fuzzy = f", fuzzy => {self.edits}" if self.edits else ""
+        return f"PREFIX({self.e._sql(s)}, {s.param(self.prefix)}{fuzzy})"
+
+    def _kids(self) -> list:
+        return [self.e]
+
 
 class _In(Expr):
     def __init__(self, e: Expr, values: list[Any]):
@@ -430,6 +589,16 @@ class _In(Expr):
         if any(v is None for v in self.values):
             raise StrataError("isin with None: None equals nothing; use is_null()")
         return {"in": {"expr": self.e._ir(ctx), "list": [_operand(v, ctx, f) for v in self.values]}}
+
+    def _sql(self, s: Any) -> str:
+        if any(v is None for v in self.values):
+            raise StrataError("isin with None: None equals nothing; use is_null()")
+        if not self.values:
+            raise StrataError("isin takes at least one value")
+        return f"{self.e._sql(s)} IN ({', '.join(_sql_of(v, s) for v in self.values)})"
+
+    def _kids(self) -> list:
+        return [self.e] + [v for v in self.values if isinstance(v, Expr)]
 
 
 class _Between(Expr):
@@ -445,6 +614,19 @@ class _Between(Expr):
             b["hi"] = _operand(self.hi, ctx, f)
         return {"between": b}
 
+    def _sql(self, s: Any) -> str:
+        e = self.e._sql(s)
+        if self.lo is not None and self.hi is not None:
+            return f"{e} BETWEEN {_sql_of(self.lo, s)} AND {_sql_of(self.hi, s)}"
+        if self.lo is not None:
+            return f"{e} >= {_sql_of(self.lo, s)}"
+        if self.hi is not None:
+            return f"{e} <= {_sql_of(self.hi, s)}"
+        raise StrataError("between needs a bound")
+
+    def _kids(self) -> list:
+        return [self.e] + [v for v in (self.lo, self.hi) if isinstance(v, Expr)]
+
 
 class _Alias(Expr):
     def __init__(self, e: Expr, name: str):
@@ -453,11 +635,20 @@ class _Alias(Expr):
     def _ir(self, ctx: _Ctx) -> Any:
         return self.e._ir(ctx)
 
+    def _sql(self, s: Any) -> str:
+        return self.e._sql(s)
+
+    def _kids(self) -> list:
+        return [self.e]
+
     def _name(self) -> str:
         return self.name
 
     def _is_score(self) -> bool:
         return self.e._is_score()
+
+    def __repr__(self) -> str:
+        return f"{self.e!r}.alias({self.name!r})"
 
 
 class _Key:
@@ -484,6 +675,9 @@ class _Named(Expr):
     def _ir(self, ctx: _Ctx) -> Any:
         return self.what
 
+    def _sql(self, s: Any) -> str:
+        return f"{self.what}()"
+
     def _name(self) -> str:
         return f"{self.what}()"
 
@@ -495,13 +689,24 @@ class _Fn(Expr):
     """A function of the row: a score (BM25, a similarity, RRF) or a
     condition (MATCH, a traversal). `inputs` are the scores RRF fuses."""
 
-    def __init__(self, build, text: str, score: bool = True, inputs: list[Expr] | None = None, guard=None):
+    def __init__(self, build, text: str, score: bool = True, inputs: list[Expr] | None = None, guard=None, sql=None, fields: Sequence[str] = (), fname: str | None = None, kids: list[Expr] | None = None):
         self.build, self.text, self.score, self.inputs = build, text, score, inputs
         # The plan's guard, from a context, when the function has one.
         self.guard = guard
+        # For frames: its SQL from a renderer, the fields it names, and the
+        # column name a frame gives it.
+        self.sqlf, self.fields, self.fname, self.kids = sql, list(fields), fname, kids
 
     def _ir(self, ctx: _Ctx) -> Any:
         return self.build(ctx)
+
+    def _sql(self, s: Any) -> str:
+        if self.sqlf is None:
+            return super()._sql(s)
+        return self.sqlf(s)
+
+    def _kids(self) -> list:
+        return list(self.kids if self.kids is not None else self.inputs or [])
 
     def _is_score(self) -> bool:
         return self.score
@@ -521,12 +726,22 @@ class _Ranked(Expr):
     is over aggregates, which order groups. `inputs` are the parts whose
     values it reads (a case's values, not its conditions)."""
 
-    def __init__(self, what: str, parts: list[Any], build, text: str, inputs: list[Any] | None = None):
+    def __init__(self, what: str, parts: list[Any], build, text: str, inputs: list[Any] | None = None, sql=None):
         self.what, self.parts, self.build, self.text = what, parts, build, text
         self.inputs = parts if inputs is None else inputs
+        # For frames: SQL from a renderer and the parts' SQL.
+        self.sqlf = sql
 
     def _ir(self, ctx: _Ctx) -> Any:
         return self.build(ctx, [p._ir(ctx) for p in self.parts])
+
+    def _sql(self, s: Any) -> str:
+        if self.sqlf is None:
+            return super()._sql(s)
+        return self.sqlf(s, [p._sql(s) for p in self.parts])
+
+    def _kids(self) -> list:
+        return list(self.parts)
 
     def _is_score(self) -> bool:
         return not any(isinstance(_bare(p), _Agg) for p in self.parts)
@@ -541,12 +756,12 @@ class _Ranked(Expr):
 def _Arith(op: str, left: Any, right: Any) -> Expr:
     left, right = _num(left), _num(right)
     sym = {"add": "+", "sub": "-", "mul": "*", "div": "/", "mod": "%"}[op]
-    return _Ranked(op, [left, right], lambda ctx, a: {"arith": {"op": op, "left": a[0], "right": a[1]}}, f"({left!r} {sym} {right!r})")
+    return _Ranked(op, [left, right], lambda ctx, a: {"arith": {"op": op, "left": a[0], "right": a[1]}}, f"({left!r} {sym} {right!r})", sql=lambda s, a: f"({a[0]} {sym} {a[1]})")
 
 
 def _call(func: str, *args: Any) -> Expr:
     parts = [_num(a) for a in args]
-    return _Ranked(func, parts, lambda ctx, a: {"call": {"func": func, "args": a}}, f"{func}({', '.join(map(repr, parts))})")
+    return _Ranked(func, parts, lambda ctx, a: {"call": {"func": func, "args": a}}, f"{func}({', '.join(map(repr, parts))})", sql=lambda s, a: f"{func}({', '.join(a)})")
 
 
 class _Agg(Expr):
@@ -566,6 +781,17 @@ class _Agg(Expr):
         if self.arg is not None:
             a["arg"] = {"field": ctx.field(_arg_field(self.arg))[0]}
         return a
+
+    def _sql(self, s: Any) -> str:
+        if self.arg is None:
+            return "COUNT(*)"
+        a = self.arg._sql(s)
+        if self.func == "count_distinct":
+            return f"COUNT(DISTINCT {a})"
+        return f"{self.func.upper()}({a})"
+
+    def _kids(self) -> list:
+        return [] if self.arg is None else [self.arg]
 
     def _name(self) -> str:
         if self.arg is None:
@@ -674,7 +900,12 @@ def match(field: str, query: str, *, min: int | str | None = None, min_rows: int
     rows = _rows("match", min, min_rows, max_rows)
     site = lambda ctx: {"match": {"field": ctx.field(field)[0], "text": query}}
     extra = "".join(f", {k}={v!r}" for k, v in rows.items())
-    return _Fn(lambda ctx: {"match": {"field": ctx.field(field)[0], "query": q}}, f"match({field!r}, {q!r}{extra})", score=False, guard=_guarded(rows, site, min))
+    def sql(s: Any) -> str:
+        if rows:
+            raise StrataError("match's min_rows and max_rows are not in frames yet")
+        return f"MATCH({s.col(field)}, {s.param(q)})"
+
+    return _Fn(lambda ctx: {"match": {"field": ctx.field(field)[0], "query": q}}, f"match({field!r}, {q!r}{extra})", score=False, guard=_guarded(rows, site, min), sql=sql, fields=[field])
 
 
 def _of(need: int | str, y: int) -> int:
@@ -697,6 +928,14 @@ class _AtLeast(Expr):
 
     def _ir(self, ctx: _Ctx) -> Any:
         return {"at_least": {"need": self.need, "conds": [c._ir(ctx) for c in self.conds]}}
+
+    def _sql(self, s: Any) -> str:
+        if self.rows:
+            raise StrataError("at_least's min_rows and max_rows are not in frames yet")
+        return f"AT_LEAST({self.need}, {', '.join(c._sql(s) for c in self.conds)})"
+
+    def _kids(self) -> list:
+        return list(self.conds)
 
     def __repr__(self) -> str:
         extra = "".join(f", {k}={v!r}" for k, v in self.rows.items())
@@ -741,15 +980,22 @@ def bm25(field: str, text: str, *, syntax: str | None = None, min: int | str | N
             m["opts"] = opts
         return {"bm25": m}
 
+    def sql(s: Any) -> str:
+        if rows:
+            raise StrataError("bm25's min_rows and max_rows are not in frames yet")
+        opts = "".join(f", {k} => {s.value(v)}" for k, v in (("syntax", syntax), ("min", min)) if v is not None)
+        return f"bm25({s.col(field)}, {s.param(text)}{opts})"
+
     extra = "".join(f", {k}={v!r}" for k, v in (("syntax", syntax), ("min", min), *rows.items()) if v is not None)
     site = lambda ctx: {"bm25": {"field": ctx.field(field)[0], "text": text}}
-    return _Fn(build, f"bm25({field!r}, {text!r}{extra})", guard=_guarded(rows, site, min))
+    return _Fn(build, f"bm25({field!r}, {text!r}{extra})", guard=_guarded(rows, site, min), sql=sql, fields=[field], fname="bm25")
 
 
-def similarity(field: str, query: Sequence[float] | Mapping[str, float]) -> Expr:
+def similarity(field: str, query: Sequence[float] | Mapping[str, float] | str) -> Expr:
     """The similarity of a VECTOR field to a vector, or of a SPARSE field
     to `{term: weight}`, as a score. `Database.embed` and `Client.embed`
-    give a text's vector."""
+    give a text's vector; in a frame, a text is embedded by the field's
+    model where the query runs."""
 
     def build(ctx: _Ctx) -> Any:
         i, f = ctx.field(field)
@@ -761,7 +1007,7 @@ def similarity(field: str, query: Sequence[float] | Mapping[str, float]) -> Expr
             raise StrataError(f"{field} takes a vector: embed the text with embed(text, {field!r})")
         return {"similarity": {"field": i, "vector": [float(x) for x in query]}}
 
-    return _Fn(build, f"similarity({field!r}, ...)")
+    return _Fn(build, f"similarity({field!r}, ...)", sql=lambda s: f"similarity({s.col(field)}, {s.query(query)})", fields=[field], fname="similarity")
 
 
 def maxsim(field: str, vectors: Iterable[Sequence[float]], *, max_vectors: int | None = None) -> Expr:
@@ -789,7 +1035,11 @@ def rrf(*scores: Expr, k: float = 60, depth: int = 100) -> Expr:
     its rank), over each ranking's best `depth` rows."""
     if not scores:
         raise StrataError("rrf takes rankings")
-    return _Fn(lambda ctx: {"rrf": {"inputs": [s._ir(ctx) for s in scores], "k": float(k), "depth": int(depth)}}, f"rrf({', '.join(map(repr, scores))})", inputs=list(scores))
+    def sql(s: Any) -> str:
+        opts = ("" if k == 60 else f", k => {s.value(k)}") + ("" if depth == 100 else f", depth => {int(depth)}")
+        return f"rrf({', '.join(x._sql(s) for x in scores)}{opts})"
+
+    return _Fn(lambda ctx: {"rrf": {"inputs": [s._ir(ctx) for s in scores], "k": float(k), "depth": int(depth)}}, f"rrf({', '.join(map(repr, scores))})", inputs=list(scores), sql=sql, fname="rrf")
 
 
 def ranked(keys: Iterable[Any]) -> Expr:
@@ -812,7 +1062,7 @@ def minmax(x: Expr) -> Expr:
     1 where all are equal and 0 where `x` is NULL. A weighted sum of
     minmax() of scores is their weighted fusion."""
     x = _num(x)
-    return _Ranked("minmax", [x], lambda ctx, a: {"norm": {"kind": "min_max", "input": a[0]}}, f"minmax({x!r})")
+    return _Ranked("minmax", [x], lambda ctx, a: {"norm": {"kind": "min_max", "input": a[0]}}, f"minmax({x!r})", sql=lambda s, a: f"minmax({a[0]})")
 
 
 def tmm(x: Expr, lo: float | None = None, hi: float | None = None) -> Expr:
@@ -842,21 +1092,21 @@ def tmm(x: Expr, lo: float | None = None, hi: float | None = None) -> Expr:
             n["lo"] = float(lo)
         return {"norm": n}
 
-    return _Ranked("tmm", [x], build, shown)
+    return _Ranked("tmm", [x], build, shown, sql=lambda s, a: f"tmm({a[0]}{'' if lo is None else f', lo => {s.value(lo)}'})")
 
 
 def zscore(x: Expr) -> Expr:
     """`x` centred and scaled over the rows it ranks: (x - mean) / sd, 0
     where all are equal; a row where `x` is NULL takes the least value."""
     x = _num(x)
-    return _Ranked("zscore", [x], lambda ctx, a: {"norm": {"kind": "z_score", "input": a[0]}}, f"zscore({x!r})")
+    return _Ranked("zscore", [x], lambda ctx, a: {"norm": {"kind": "z_score", "input": a[0]}}, f"zscore({x!r})", sql=lambda s, a: f"zscore({a[0]})")
 
 
 def rank(x: Expr) -> Expr:
     """A row's place in `x`'s ranking of the rows it ranks: 1 plus the
     rows with a greater value; NULL places after every other."""
     x = _num(x)
-    return _Ranked("rank", [x], lambda ctx, a: {"norm": {"kind": "rank", "input": a[0]}}, f"rank({x!r})")
+    return _Ranked("rank", [x], lambda ctx, a: {"norm": {"kind": "rank", "input": a[0]}}, f"rank({x!r})", sql=lambda s, a: f"rank({a[0]})")
 
 
 def gbdt(model: str, *features: Any) -> Expr:
@@ -872,7 +1122,7 @@ def gbdt(model: str, *features: Any) -> Expr:
     if not features:
         raise StrataError("gbdt takes a model's name and the features it reads")
     parts = [_num(f) for f in features]
-    return _Ranked("gbdt", parts, lambda ctx, a: {"gbdt": {"model": model, "args": a}}, f"gbdt({model!r}, {', '.join(map(repr, parts))})")
+    return _Ranked("gbdt", parts, lambda ctx, a: {"gbdt": {"model": model, "args": a}}, f"gbdt({model!r}, {', '.join(map(repr, parts))})", sql=lambda s, a: f"gbdt({s.text(model)}, {', '.join(a)})")
 
 
 def cross_encoder(model: str, fields: str | Sequence[str], query: str) -> Expr:
@@ -890,7 +1140,8 @@ def cross_encoder(model: str, fields: str | Sequence[str], query: str) -> Expr:
     if not names:
         raise StrataError("cross_encoder reads the text of at least one field")
     build = lambda ctx: {"cross_encoder": {"model": model, "fields": [ctx.field(f)[0] for f in names], "query": str(query)}}
-    return _Fn(build, f"cross_encoder({model!r}, {', '.join(names)})")
+    sql = lambda s: f"cross_encoder({s.text(model)}, {', '.join(s.col(f) for f in names)}, {s.param(str(query))})"
+    return _Fn(build, f"cross_encoder({model!r}, {', '.join(names)})", sql=sql, fields=names, fname="cross_encoder")
 
 
 def ln(x: Any) -> Expr:
@@ -954,8 +1205,12 @@ def case(*whens: tuple[Expr, Any], otherwise: Any = None) -> Expr:
             c["otherwise"] = a[2 * n]
         return {"case": c}
 
+    def sql(s: Any, a: list) -> str:
+        branches = " ".join(f"WHEN {a[i]} THEN {a[n + i]}" for i in range(n))
+        return f"CASE {branches}{f' ELSE {a[2 * n]}' if rest else ''} END"
+
     text = " ".join(f"WHEN {c!r} THEN {v!r}" for c, v in zip(conds, values))
-    return _Ranked("case", conds + values + rest, build, f"CASE {text}{f' ELSE {rest[0]!r}' if rest else ''} END", inputs=values + rest)
+    return _Ranked("case", conds + values + rest, build, f"CASE {text}{f' ELSE {rest[0]!r}' if rest else ''} END", inputs=values + rest, sql=sql)
 
 
 def count_true(*conds: Expr) -> Expr:
@@ -966,7 +1221,7 @@ def count_true(*conds: Expr) -> Expr:
     if not conds:
         raise StrataError("count_true(*conds) takes one or more conditions")
     parts = [_expr(c) for c in conds]
-    return _Fn(lambda ctx: {"call": {"func": "count_true", "args": [c._ir(ctx) for c in parts]}}, f"count_true({', '.join(map(repr, parts))})")
+    return _Fn(lambda ctx: {"call": {"func": "count_true", "args": [c._ir(ctx) for c in parts]}}, f"count_true({', '.join(map(repr, parts))})", kids=parts, sql=lambda s: f"count_true({', '.join(c._sql(s) for c in parts)})", fname="count_true")
 
 
 def _graph(field: str, seeds: Any, kind: dict, dir: str, labels: Iterable[str], through: Expr | None, max_nodes: int, k: int, min_sim: float | None):
@@ -1326,3 +1581,307 @@ def _aggs(e: Any) -> list[_Agg]:
             if isinstance(x, Expr):
                 out += _aggs(x)
     return out
+
+
+# What frames add: expressions with a SQL form and no plan IR (a frame
+# compiles to SQL; see frame.py).
+
+_SQL_OPS = {"eq": "=", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">="}
+
+
+def _sql_of(x: Any, s: Any) -> str:
+    """An operand as SQL: an expression's, or a value (a parameter)."""
+    return x._sql(s) if isinstance(x, Expr) else s.value(x)
+
+
+def _colish(x: Any) -> Expr:
+    """A column name or an expression."""
+    if isinstance(x, str):
+        return _Col(x)
+    return _expr(x)
+
+
+def _order_keys(by: Any, descending: bool | Sequence[bool]) -> list[tuple[Expr, bool]]:
+    """`order_by` keys with their directions."""
+    if by is None:
+        return []
+    keys = [by] if isinstance(by, (str, Expr)) else list(by)
+    desc = [descending] * len(keys) if isinstance(descending, bool) else list(descending)
+    if len(desc) != len(keys):
+        raise StrataError("descending takes one bool, or one for each key")
+    return [(_colish(k), bool(d)) for k, d in zip(keys, desc)]
+
+
+class _Pct(Expr):
+    """`PERCENTILE_CONT(q)` (or `_DISC`) of a group's values."""
+
+    def __init__(self, e: Expr, q: float, disc: bool):
+        self.e, self.q, self.disc = e, q, disc
+
+    def _sql(self, s: Any) -> str:
+        return f"PERCENTILE_{'DISC' if self.disc else 'CONT'}({s.value(self.q)}) WITHIN GROUP (ORDER BY {self.e._sql(s)})"
+
+    def _kids(self) -> list:
+        return [self.e]
+
+    def __repr__(self) -> str:
+        return f"{self.e!r}.quantile({self.q})"
+
+
+class _SqlCall(Expr):
+    """A SQL function of expressions and values: `coalesce(x, 'none')`."""
+
+    def __init__(self, func: str, args: list[Any], shown: str | None = None):
+        self.func, self.args, self.shown = func, list(args), shown
+
+    def _sql(self, s: Any) -> str:
+        return f"{self.func}({', '.join(_sql_of(a, s) for a in self.args)})"
+
+    def _kids(self) -> list:
+        return [a for a in self.args if isinstance(a, Expr)]
+
+    def __repr__(self) -> str:
+        return self.shown or f"{self.func}({', '.join(map(repr, self.args))})"
+
+
+class _Template(Expr):
+    """SQL around one expression, with constants already written:
+    `date_trunc('month', {})`, `EXTRACT(year FROM {})`."""
+
+    def __init__(self, e: Expr, template: str, shown: str):
+        self.e, self.template, self.shown = e, template, shown
+
+    def _sql(self, s: Any) -> str:
+        return self.template.format(self.e._sql(s))
+
+    def _kids(self) -> list:
+        return [self.e]
+
+    def __repr__(self) -> str:
+        return self.shown
+
+
+class _Like(Expr):
+    def __init__(self, e: Expr, pattern: str, op: str, shown: str):
+        self.e, self.pattern, self.op, self.shown = e, pattern, op, shown
+
+    def _sql(self, s: Any) -> str:
+        return f"{self.e._sql(s)} {self.op} {s.param(self.pattern)}"
+
+    def _kids(self) -> list:
+        return [self.e]
+
+    def __repr__(self) -> str:
+        return self.shown
+
+
+_CASTS = {"int": "INT", "float": "FLOAT", "str": "TEXT", "text": "TEXT", "bool": "BOOL", "timestamp": "TIMESTAMP", "datetime": "TIMESTAMP"}
+
+
+class _Cast(Expr):
+    def __init__(self, e: Expr, dtype: Any):
+        name = getattr(dtype, "__name__", dtype)
+        if not isinstance(name, str) or name.lower() not in _CASTS:
+            raise StrataError(f"cast takes 'int', 'float', 'str', 'bool' or 'timestamp' (or int, float, str, bool), not {dtype!r}")
+        self.e, self.to = e, _CASTS[name.lower()]
+
+    def _sql(self, s: Any) -> str:
+        return f"CAST({self.e._sql(s)} AS {self.to})"
+
+    def _kids(self) -> list:
+        return [self.e]
+
+    def __repr__(self) -> str:
+        return f"{self.e!r}.cast({self.to.lower()!r})"
+
+
+class _Window(Expr):
+    """A window function: `fn` (its SQL from a renderer) over the rows of
+    each partition, in an order (its own, a rank's, then `over`'s)."""
+
+    def __init__(self, fn, kids: list[Expr], shown: str, *, own_order: list | None = None, needs_order: bool = False, frame: str | None = None, agg: bool = False, partition: list | None = None, order: list | None = None):
+        self.fn, self.parts, self.shown = fn, kids, shown
+        self.own_order, self.needs_order, self.frame, self.agg = own_order or [], needs_order, frame, agg
+        self.partition, self.order = partition or [], order or []
+
+    def _with(self, partition: list, order: list) -> "_Window":
+        return _Window(self.fn, self.parts, self.shown, own_order=self.own_order, needs_order=self.needs_order, frame=self.frame, agg=self.agg, partition=partition, order=order)
+
+    def _sql(self, s: Any) -> str:
+        order = self.own_order + self.order
+        if self.needs_order and not order:
+            raise StrataError(f"{self.shown} needs an order: .over(..., order_by=...), since rows have no order of their own")
+        parts = []
+        if self.partition:
+            parts.append("PARTITION BY " + ", ".join(p._sql(s) for p in self.partition))
+        if order:
+            parts.append("ORDER BY " + ", ".join(e._sql(s) + (" DESC" if d else "") for e, d in order))
+            if self.frame:
+                parts.append(self.frame)
+        return f"{self.fn(s)} OVER ({' '.join(parts)})"
+
+    def _kids(self) -> list:
+        return self.parts + [e for e, _ in self.own_order] + self.partition + [e for e, _ in self.order]
+
+    def _name(self) -> str:
+        return self.shown
+
+    def __repr__(self) -> str:
+        if not self.partition and not self.order:
+            return self.shown
+        return f"{self.shown}.over({', '.join(map(repr, self.partition))})"
+
+
+class _Case(Expr):
+    """`when(c).then(v)...otherwise(w)`, with values of any type."""
+
+    def __init__(self, whens: list[tuple[Expr, Any]], otherwise: Any = None, done: bool = False):
+        self.whens, self.else_, self.done = whens, otherwise, done
+
+    def when(self, condition: Expr) -> "_When":
+        return _When(self, _expr(condition))
+
+    def otherwise(self, value: Any) -> Expr:
+        return _Case(self.whens, value, True)
+
+    def _sql(self, s: Any) -> str:
+        branches = " ".join(f"WHEN {c._sql(s)} THEN {_sql_of(v, s)}" for c, v in self.whens)
+        rest = "" if self.else_ is None else f" ELSE {_sql_of(self.else_, s)}"
+        return f"CASE {branches}{rest} END"
+
+    def _kids(self) -> list:
+        out = []
+        for c, v in self.whens:
+            out += [c] + ([v] if isinstance(v, Expr) else [])
+        return out + ([self.else_] if isinstance(self.else_, Expr) else [])
+
+    def __repr__(self) -> str:
+        return "when(" + ").when(".join(f"{c!r}).then({v!r}" for c, v in self.whens) + ")" + ("" if self.else_ is None else f".otherwise({self.else_!r})")
+
+
+class _When:
+    def __init__(self, case: _Case | None, condition: Expr):
+        self.case, self.condition = case, condition
+
+    def then(self, value: Any) -> _Case:
+        before = self.case.whens if self.case is not None else []
+        return _Case(before + [(self.condition, value)])
+
+
+def when(condition: Expr) -> _When:
+    """`when(cond).then(value).when(...).then(...).otherwise(value)`, SQL's
+    CASE, as Polars writes it; values may be any type (text too), and a
+    row no branch takes is NULL without `otherwise`."""
+    return _When(None, _expr(condition))
+
+
+_UNITS = ("second", "minute", "hour", "day", "week", "month", "quarter", "year")
+_POLARS_UNITS = {"1s": "second", "1m": "minute", "1h": "hour", "1d": "day", "1w": "week", "1mo": "month", "1q": "quarter", "1y": "year"}
+
+
+class _DtNs:
+    """`.dt`: parts of times (UTC), as SQL's date_trunc and EXTRACT."""
+
+    def __init__(self, e: Expr):
+        self.e = e
+
+    def truncate(self, every: str) -> Expr:
+        """The time cut to the start of its `every`: "second", "minute",
+        "hour", "day", "week" (from Monday), "month", "quarter" or "year"
+        (or Polars' "1d", "1mo", ...)."""
+        unit = _POLARS_UNITS.get(every, every).lower().rstrip("s") if isinstance(every, str) else every
+        if unit not in _UNITS:
+            raise StrataError(f"truncate takes one of {', '.join(_UNITS)}, not {every!r}")
+        return _Template(self.e, f"date_trunc('{unit}', {{}})", f"{self.e!r}.dt.truncate({unit!r})")
+
+    def _part(self, part: str, name: str) -> Expr:
+        return _Template(self.e, f"EXTRACT({part} FROM {{}})", f"{self.e!r}.dt.{name}()")
+
+    def year(self) -> Expr:
+        return self._part("year", "year")
+
+    def quarter(self) -> Expr:
+        return self._part("quarter", "quarter")
+
+    def month(self) -> Expr:
+        return self._part("month", "month")
+
+    def week(self) -> Expr:
+        """The ISO week, 1 to 53."""
+        return self._part("week", "week")
+
+    def day(self) -> Expr:
+        """The day of the month."""
+        return self._part("day", "day")
+
+    def ordinal_day(self) -> Expr:
+        """The day of the year, 1 to 366."""
+        return self._part("doy", "ordinal_day")
+
+    def weekday(self) -> Expr:
+        """1 for Monday to 7 for Sunday, as Polars counts."""
+        return self._part("isodow", "weekday")
+
+    def hour(self) -> Expr:
+        return self._part("hour", "hour")
+
+    def minute(self) -> Expr:
+        return self._part("minute", "minute")
+
+    def second(self) -> Expr:
+        return self._part("second", "second")
+
+    def epoch(self) -> Expr:
+        """Seconds since 1970, a float."""
+        return self._part("epoch", "epoch")
+
+    def strftime(self, format: str) -> Expr:
+        """The time as text, with SQLite's strftime directives (`%Y-%m`)."""
+        if not isinstance(format, str):
+            raise TypeError("strftime takes a format string")
+        return _SqlCall("strftime", [format, self.e], f"{self.e!r}.dt.strftime({format!r})")
+
+
+class _StrNs:
+    """`.str`: text functions."""
+
+    def __init__(self, e: Expr):
+        self.e = e
+
+    def lower(self) -> Expr:
+        return _SqlCall("lower", [self.e], f"{self.e!r}.str.lower()")
+
+    def upper(self) -> Expr:
+        return _SqlCall("upper", [self.e], f"{self.e!r}.str.upper()")
+
+    def len_chars(self) -> Expr:
+        return _SqlCall("length", [self.e], f"{self.e!r}.str.len_chars()")
+
+    def _like(self, pattern: str, op: str, shown: str) -> Expr:
+        if not isinstance(pattern, str):
+            raise TypeError("a text pattern is a str")
+        return _Like(self.e, pattern, op, f"{self.e!r}.str.{shown}")
+
+    def contains(self, text: str, *, literal: bool = True) -> Expr:
+        """The text holds `text` (`LIKE '%text%'`). Polars reads a regular
+        expression unless `literal`; Strata has none, and `%` and `_` in
+        `text` match any run of letters and any one letter, as in LIKE."""
+        if not literal:
+            raise StrataError("Strata has no regular expressions: str.contains matches text as LIKE does")
+        return self._like(f"%{text}%", "LIKE", f"contains({text!r})")
+
+    def starts_with(self, prefix: str) -> Expr:
+        """The text starts with `prefix`; on a KEYWORD field, a run of its
+        index."""
+        return self._like(f"{prefix}%", "LIKE", f"starts_with({prefix!r})")
+
+    def ends_with(self, suffix: str) -> Expr:
+        return self._like(f"%{suffix}", "LIKE", f"ends_with({suffix!r})")
+
+    def like(self, pattern: str) -> Expr:
+        """SQL's LIKE: `%` any run of letters, `_` any one."""
+        return self._like(pattern, "LIKE", f"like({pattern!r})")
+
+    def ilike(self, pattern: str) -> Expr:
+        """LIKE in any case."""
+        return self._like(pattern, "ILIKE", f"ilike({pattern!r})")
