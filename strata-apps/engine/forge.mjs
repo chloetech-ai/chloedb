@@ -244,8 +244,9 @@ export const RULES = SCREENS && process.env.STRATA_APPS_RULES !== 'off';
 // constrained, so a faster model may write them as well); the writers of code
 // views, functions, components and helpers keep MODEL.
 // Plans, screens, rules and changes go to a faster model by default: on 11
-// personas (round 8) it built the same apps 2.3x faster and 2.7x cheaper
-// than Opus. Code views, functions and repairs keep MODEL.
+// personas it built apps with the same asks kept in 746 s for $3.08, against
+// 1,784 s and $8.73 with Opus (rounds 8 and 6, one run each). Code views,
+// functions and repairs keep MODEL.
 export const SCREEN_MODEL = SCREENS ? process.env.STRATA_APPS_SCREEN_MODEL || 'claude-sonnet-5-5' : MODEL;
 const KEEP_LOGIC = 'Keep logic in views when it is simple and only one view needs it.';
 // Tests as data (engine/checks.mjs), run when a version is built. Off with
