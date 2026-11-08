@@ -10,6 +10,7 @@ import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
 import { rewriteSql } from './sql.mjs';
 import { expandPlan, expandScreen, patternsDoc } from './patterns.mjs';
+import { placePhotos, placeScreenPhotos, photoIds } from './photos.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
 import { checkRule, RULES_DOC } from './rules.mjs';
 import { TESTS_DOC, checkTests, runTests, openViews } from './checks.mjs';
@@ -222,7 +223,39 @@ Blocks, in "body" and in every block that holds blocks:
 - {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
 - {"code": "async function render(root, ctx) { ... }"}: for a part the blocks cannot say, JavaScript as in a view (h, svg, app, ui, lib), drawn again whenever the screen redraws; ctx holds state, set, refresh() and the data and lets by name.
 
-Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a function, and logic another app could use in a helper. Write a code view (a code block, no "screen") only when most of the screen would be "code" blocks: a game, a drawing surface, an editor of its own.`;
+Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a function, and logic another app could use in a helper. Write a code view (a code block, no "screen") only when most of the screen would be "code" blocks: a game, a drawing surface, an editor of its own.
+
+## Front pages
+
+An app that people outside it will visit (a shop, café, restaurant, studio, salon, event, wedding, club, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. A tool only its owner uses has no front page unless asked.
+
+Its blocks (they work in any screen; on a front page each is a section of its own):
+- {"nav": "Brand", "links": [action, ...], "action": action}: the site's header, first in the body. Links go to parts of the page ("href": "#id") or to views ("open": "slug").
+- {"hero": "A headline with *one* emphasized word", "eyebrow": "a short line above", "sub": "one or two sentences", "photo": "what it shows", "look": "photo" | "split" | "gradient" | "plain", "actions": [action, action], "align": "center" | "left", "height": "full" | "tall" | "short", "badge": "a short floating note (split)", "note": "small print"}. photo: the photo fills the screen, white type over it; split: words beside the photo; gradient: the design's moving gradient (the photo, if given, rises below the words); plain: words alone. *word* draws a word in the gradient, in any title.
+- {"carousel": [{"title", "text", "photo", "price", "badge", "eyebrow", "action"}], "look": "cards" | "slides", "auto": 6}: cards is a shelf that scrolls sideways; slides fill the width, one photo at a time with its words, moving on by themselves every "auto" seconds. From rows: "carousel": "=products", "item": {"title": "=item.name", "price": "=app.fmt.money(item.price)", "src": "=item.image", "action": {"label": "Add", "do": "=() => app.insert('cart', {product: item.id})"}} (each row is "item", or the name in "as"); or "body": [blocks] to draw each card from blocks.
+- {"gallery": [{"photo", "title"}], "look": "mosaic" | "masonry" | "grid"} (or "=rows" with "item"): a photo opens large when tapped.
+- {"features": [{"icon", "title", "text", "action"}], "columns": 2 | 3 | 4, "look": "tiles" | "plain" | "photos"}: "photos" gives each a "photo" instead of an icon. Icons: check star heart bolt shield clock leaf sparkles chat calendar pin truck gift camera music cup globe lock users chart home phone mail tag cart sun moon book flame award smile card wifi arrow play dumbbell briefcase code cloud search bell rocket scissors paw tooth plane palette, or one emoji.
+- {"stats": [{"value": 1200, "label": "...", "prefix": "$", "suffix": "+"}]}: big numbers that count up (a value may be "=expression" over data).
+- {"quotes": [{"text", "name", "role", "photo", "stars": 5}], "look": "grid" | "carousel"}: what people say; a photo here is a face ("portrait woman smiling").
+- {"media": [blocks], "photo", "side": "left" | "right", "title", "eyebrow", "sub", "actions"}: a photo beside words; alternate the sides down the page.
+- {"band": [blocks], "look": "gradient" | "accent" | "dark" | "photo" | "tint", "photo", "title", "eyebrow", "sub", "actions", "align"}: a full-width stripe for a call to action or one strong sentence.
+- {"marquee": ["words", "*emphasized words*", ...], "look": "big"}: a strip that moves by itself (places, names, partners, a motto).
+- {"pricing": [{"name", "price": "$29", "per": "/ month", "text", "features": ["..."], "action", "featured": true, "badge": "Most popular"}]}
+- {"faq": [{"q", "a"}]}; {"steps": [{"title", "text", "icon"}]}: how it works, numbered.
+- {"footer": "Brand", "text": "...", "columns": [{"title", "links": [action, ...]}], "note": "..."}: last in the body.
+Section blocks (carousel, gallery, features, stats, quotes, pricing, faq, steps) take "title", "eyebrow" and "sub" for their heading. Any block takes "id" (the target of an "#id" link) and "tint": true (a tinted section). Plain blocks between them (h, text, grid, each, form, table, ui...) are gathered in a section of their own, so a booking form or today's menu from the data fits on a front page too.
+An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link"}; the first action of a group is primary, the others secondary.
+Photos: "photo": a few plain words, the subject first, as you would search a photo library ("barista pouring latte art", "yoga class in a bright studio", "bride and groom on a beach", "modern living room"). The engine finds each photo when the version is stored and adds "src" (and a "credit" when its license asks for one); never write "src" for such a photo yourself. A photo the app's data holds is "src": "=item.image" (a URL or a stored file's id). Example rows may hold "photo:a query" in a text column (a product's image), which becomes a photo's URL: name the thing itself, plainly, the kind first ("croissant", "pie pumpkin", "bread rye loaf", "coffee beans dark roast"), never a brand or place name.
+
+{"page": "front", "body": [
+  {"nav": "Ember & Oak", "links": [{"label": "Coffee", "href": "#coffee"}, {"label": "Visit", "href": "#visit"}], "action": {"label": "Order", "open": "shop"}},
+  {"hero": "Coffee, roasted *slowly*.", "eyebrow": "Small-batch roasters since 2014", "sub": "Single-origin beans, roasted on Tuesday, at your door by Friday.", "photo": "latte art coffee cups", "actions": [{"label": "Shop the beans", "open": "shop"}, {"label": "Find the café", "href": "#visit"}]},
+  {"carousel": "=beans", "item": {"title": "=item.name", "text": "=item.notes", "price": "=app.fmt.money(item.price)", "src": "=item.image"}, "id": "coffee", "eyebrow": "This week's roast", "title": "Four coffees, *one* Tuesday."},
+  {"features": [{"icon": "leaf", "title": "Direct trade", "text": "..."}, {"icon": "flame", "title": "Roasted to order", "text": "..."}, {"icon": "truck", "title": "Free shipping", "text": "..."}], "title": "Why it tastes different", "tint": true},
+  {"media": ["We started with a 5 kg roaster in a garage..."], "photo": "coffee shop interior", "eyebrow": "Our story", "title": "From a garage to your *kitchen*"},
+  {"band": ["Cupping every Saturday at 10."], "look": "photo", "photo": "cafe interior", "title": "Visit the roastery", "id": "visit", "actions": [{"label": "Book a seat", "open": "bookings"}]},
+  {"footer": "Ember & Oak", "text": "Small-batch coffee from Portland.", "columns": [{"title": "Visit", "links": ["412 Alder St", "Open 7-4 daily"]}]}
+]}`;
 
 const SCREEN_PLAN = `
 - views: a screen view carries its whole screen in the plan entry ("screen": {...}) and has no code block. A code view has no "screen" and a code block of its slug.
@@ -530,8 +563,11 @@ export async function dryRunScreens(db, appId, names, plan) {
   return problems;
 }
 
-const SCREEN_BLOCKS = ['h', 'text', 'ui', 'row', 'col', 'grid', 'split', 'card', 'section', 'if', 'each', 'kpis', 'chips', 'input', 'button', 'form', 'table', 'code'];
-const NESTED = { row: 'row', col: 'col', grid: 'grid', split: 'split', card: 'card', section: 'section', then: 'then', else: 'else', body: 'body' };
+// Front-page blocks first: a footer has "text", a band "title".
+const FRONT_BLOCKS = ['nav', 'hero', 'band', 'marquee', 'footer', 'features', 'stats', 'quotes', 'gallery', 'pricing', 'faq', 'steps', 'media', 'carousel'];
+const SCREEN_BLOCKS = [...FRONT_BLOCKS, 'h', 'text', 'ui', 'row', 'col', 'grid', 'split', 'card', 'section', 'if', 'each', 'kpis', 'chips', 'input', 'button', 'form', 'table', 'code'];
+const NESTED = { row: 'row', col: 'col', grid: 'grid', split: 'split', card: 'card', section: 'section', then: 'then', else: 'else', body: 'body', band: 'band', media: 'media' };
+const BLOCK_LISTS = ['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else', 'body', 'band', 'media'];
 
 // Checks a screen: its shape, that every expression parses, that its SQL is a
 // SELECT, and that its forms write tables and columns the app has.
@@ -577,7 +613,7 @@ export function checkScreen(screen, columnsOf = () => null) {
       }
       for (const [k, v] of Object.entries(b)) {
         if (NESTED[k] && k !== kind && !['then', 'else', 'body'].includes(k)) continue;
-        if (['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else', 'body'].includes(k) && Array.isArray(v)) walk(v, `${where}.${k}`);
+        if (BLOCK_LISTS.includes(k) && Array.isArray(v)) walk(v, `${where}.${k}`);
         else walkValues(v, `${where}.${k}`);
       }
     });
@@ -1178,6 +1214,9 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       storing = tr.start('strata', 'Store the code and the new version in Strata');
     }
   }
+  // Photos the screens name by what they show become pictures (engine/photos.mjs).
+  const photos = await tr.span('strata', 'Find the photos the screens name', () => placePhotos(plan, code));
+  if (photos.count) progress(`Found ${photos.count} photo${photos.count === 1 ? '' : 's'}: ${photos.sources}`);
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
       const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true } : {}) };
@@ -1413,6 +1452,8 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   } catch (e) { throw Object.assign(new Error(e.message), { status: 400 }); }
   const ex = expandScreen(next);
   const problems = [...ex.problems, ...checkScreen(ex.screen, columnsFor(view, {}))];
+  // A photo the edit names is found as for a built screen.
+  if (!problems.length) await placeScreenPhotos(ex.screen, { used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });
   if (!problems.length) problems.push(...await dryRunScreens(engine.db, appId, view.tables.map((t) => t.spec.name), { views: [{ slug, screen: ex.screen }] }));
   if (problems.length) throw Object.assign(new Error(problems.slice(0, 4).join('; ')), { status: 400, problems });
   const code = JSON.stringify(ex.screen, null, 1);

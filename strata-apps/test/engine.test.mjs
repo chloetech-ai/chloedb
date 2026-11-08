@@ -924,3 +924,81 @@ test('the engine builds the strongest new pattern beside the live version, once,
   assert.equal(submitted.length, 1);
   await assert.rejects(ev.setMode('a', 'sometimes'), /evolve is one of/);
 });
+
+test('a photo named by what it shows is found in the built-in set by its subject, and kept apart from the others on the page', async () => {
+  const { matchBuiltin, placeScreenPhotos, placePhotos, builtinPhotos, WIDTHS } = await import('../engine/photos.mjs');
+  assert.ok(builtinPhotos().length > 200, 'the built-in set ships with the engine');
+  // The subject (the first word naming a thing), two words or most of them
+  // must fit; a look word ("dark", "minimal") never makes a photo fit alone.
+  assert.match(matchBuiltin('coffee shop interior')[0].about, /cafe/);
+  assert.match(matchBuiltin('cozy living room')[0].about, /living room/);
+  assert.deepEqual(matchBuiltin('kayaking river'), [], 'a city on a river is not a kayak');
+  assert.deepEqual(matchBuiltin('snowmobile trail'), []);
+  assert.match(matchBuiltin('dark roast coffee beans')[0].about, /coffee beans/, 'not a dark abstract');
+  assert.match(matchBuiltin('house blend coffee bag')[0].about, /bag of coffee/, 'not a house');
+  assert.match(matchBuiltin('close-up of latte art')[0].about, /latte/);
+  assert.deepEqual(matchBuiltin('Sumatra Mandheling dark roast'), []);
+  // Another photo stands in for a used one only when it fits nearly as well.
+  const first = matchBuiltin('latte art coffee')[0];
+  const second = matchBuiltin('latte art coffee', { used: new Set([first.id]) })[0];
+  assert.ok(second && second.id !== first.id && /latte/.test(second.about));
+
+  // Placing: each block that names a photo gets src, sized for where it goes.
+  const asked = [];
+  const find = async (q, { use, used }) => { asked.push([q, use]); const id = `p${asked.length}`; return { id, src: `https://x/${id}?w=${WIDTHS[use]}`, source: 'builtin', credit: q === 'tram' ? 'Tram by A, CC BY 2.0' : null }; };
+  const screen = { page: 'front', body: [
+    { hero: 'Hi', photo: 'coffee' },
+    { carousel: [{ title: 'a', photo: 'bread' }, { title: 'b', photo: 'cake', src: 'https://kept' }], look: 'slides' },
+    { quotes: [{ text: 'x', photo: 'portrait man' }] },
+    { gallery: [{ photo: 'tram' }] },
+    { band: [{ media: ['x'], photo: 'farm' }], photo: '=row.image' },
+  ] };
+  const placed = await placeScreenPhotos(screen, { find });
+  assert.equal(placed.length, 5);
+  assert.deepEqual(asked.map(([q, u]) => `${q}:${u}`), ['coffee:hero', 'bread:slide', 'portrait man:avatar', 'tram:gallery', 'farm:media']);
+  assert.equal(screen.body[1].carousel[1].src, 'https://kept', 'a photo with a src is left as it is');
+  assert.equal(screen.body[3].gallery[0].credit, 'Tram by A, CC BY 2.0');
+  assert.equal(screen.body[4].src, undefined, 'an expression is the data\'s photo, not a query');
+
+  // Example rows: "photo:..." becomes a URL from the built-in set; a row the
+  // set has nothing of gets a photo of what its table holds, else nothing.
+  const plan = { views: [], seed: {
+    coffees: [{ name: 'Huila', image: 'photo:latte art coffee' }, { name: 'Sumatra', image: 'photo:Sumatra Mandheling dark roast' }],
+    sleds: [{ name: 'Polar', image: 'photo:snowmobile trail' }] } };
+  await placePhotos(plan, {});
+  assert.match(plan.seed.coffees[0].image, /^https:\/\/images\.unsplash\.com\/photo-/);
+  assert.match(plan.seed.coffees[1].image, /^https:\/\/images\.unsplash\.com\/photo-/);
+  assert.notEqual(plan.seed.coffees[1].image, plan.seed.coffees[0].image);
+  assert.equal(plan.seed.sleds[0].image, null);
+  // A product the page already shows gets that photo again; one the set has
+  // nothing of gets its kind's photo, never a photo of another thing.
+  const croissant = matchBuiltin('butter croissant')[0].id;
+  const shop = { views: [{ slug: 'home', screen: { page: 'front', body: [{ hero: 'Hi', photo: 'butter croissant' }] } }], seed: { products: [
+    { name: 'Butter croissant', image: 'photo:butter croissant' },
+    { name: 'Pumpkin pie', category: 'Pies', image: 'photo:pumpkin pie' },
+    { name: 'Cable', image: 'photo:usb charging cable' }] } };
+  const code = {};
+  await placePhotos(shop, code);
+  assert.match(code.home, new RegExp(croissant));
+  assert.match(shop.seed.products[0].image, /croissant|photo-/);
+  assert.match(builtinPhotos().find((p) => shop.seed.products[1].image.includes(p.id)).tags, /\bpie\b/);
+  assert.equal(shop.seed.products[2].image, null, '"products" says nothing of what a row shows');
+});
+
+test('front-page blocks pass the screen checks, their nested blocks checked like any others', () => {
+  const ok = { page: 'front', body: [
+    { nav: 'Brand', links: [{ label: 'Menu', href: '#menu' }], action: { label: 'Book', open: 'bookings' } },
+    { hero: 'Hello *there*', photo: 'cafe', actions: [{ label: 'Go', do: '=() => app.toast("hi")' }] },
+    { band: [{ h: 'Visit' }, 'Open daily'], look: 'dark' },
+    { media: ['Our story'], photo: 'garden', side: 'right' },
+    { carousel: '=rows', item: { title: '=item.name' } },
+    { features: [{ icon: 'leaf', title: 'A', text: 'B' }] },
+    { footer: 'Brand', text: 'Made here' },
+  ] };
+  assert.deepEqual(checkScreen(ok), []);
+  const bad = { page: 'front', body: [{ band: [{ nope: 1 }] }, { media: [{ h: '=(' }] }, { carousel: '=rows.map(', item: {} }] };
+  const p = checkScreen(bad);
+  assert.ok(p.some((x) => /body\[0\]\.band\[0\]: unknown block/.test(x)), p.join('\n'));
+  assert.ok(p.some((x) => /body\[1\]\.media\[0\]/.test(x) && /does not parse/.test(x)), p.join('\n'));
+  assert.ok(p.some((x) => /body\[2\]\.carousel/.test(x) && /does not parse/.test(x)), p.join('\n'));
+});

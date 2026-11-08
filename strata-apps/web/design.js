@@ -23,34 +23,35 @@ export const CHOICES = {
   surface: { grouped: 'white cards on a tinted page (iOS Settings)', raised: 'cards lifted by a soft shadow', outlined: 'hairline boxes on a plain page' },
   nav: { segmented: 'a centered segmented control', tabs: 'underlined tabs, left aligned', sidebar: 'a list on the left (for apps with many views)' },
   width: { narrow: '720px: reading and forms', regular: '980px', wide: '1240px: tables and boards' },
+  motion: { calm: 'slow, quiet movement on front pages', lively: 'quicker, more movement', still: 'nothing moves by itself' },
 };
 
 const C = (light, dark) => ({ light, dark });
 export const PRESETS = [
   { name: 'Classic', about: 'Apple\'s own: quiet gray page, white cards, blue', scheme: 'auto',
     ...C({ bg: '#f5f5f7', card: '#ffffff', fg: '#1d1d1f', accent: '#0071e3' }, { bg: '#000000', card: '#1c1c1e', fg: '#f5f5f7', accent: '#2997ff' }),
-    font: 'system', titles: 'system', corners: 'round', density: 'regular', surface: 'grouped', nav: 'segmented', width: 'regular' },
+    font: 'system', titles: 'system', corners: 'round', density: 'regular', surface: 'grouped', nav: 'segmented', width: 'regular', gradient: ['#2997ff', '#a259ff', '#ff6b9a'] },
   { name: 'Paper', about: 'Warm paper, serif titles, ink and sienna', scheme: 'auto',
     ...C({ bg: '#fbfaf6', card: '#ffffff', fg: '#23201b', accent: '#a0461b' }, { bg: '#151412', card: '#1e1c19', fg: '#efebe3', accent: '#f0a36b' }),
-    font: 'system', titles: 'serif', corners: 'soft', density: 'airy', surface: 'outlined', nav: 'tabs', width: 'narrow' },
+    font: 'system', titles: 'serif', corners: 'soft', density: 'airy', surface: 'outlined', nav: 'tabs', width: 'narrow', gradient: ['#f0a36b', '#d9636b', '#f6d08b'] },
   { name: 'Graphite', about: 'Monochrome and dense, for work', scheme: 'auto',
     ...C({ bg: '#f2f2f2', card: '#ffffff', fg: '#111111', accent: '#1d1d1f' }, { bg: '#0e0e0f', card: '#18181a', fg: '#ededed', accent: '#f5f5f7' }),
-    font: 'system', titles: 'system', corners: 'square', density: 'compact', surface: 'outlined', nav: 'sidebar', width: 'wide' },
+    font: 'system', titles: 'system', corners: 'square', density: 'compact', surface: 'outlined', nav: 'sidebar', width: 'wide', gradient: ['#8e8e93', '#48484a', '#c7c7cc'], motion: 'still' },
   { name: 'Midnight', about: 'Deep night blue with a bright accent', scheme: 'dark',
     ...C({ bg: '#0b0d12', card: '#151922', fg: '#f2f4f8', accent: '#4c8dff' }, { bg: '#0b0d12', card: '#151922', fg: '#f2f4f8', accent: '#4c8dff' }),
-    font: 'system', titles: 'system', corners: 'round', density: 'regular', surface: 'raised', nav: 'segmented', width: 'regular' },
+    font: 'system', titles: 'system', corners: 'round', density: 'regular', surface: 'raised', nav: 'segmented', width: 'regular', gradient: ['#4c8dff', '#7b5cff', '#00d4ff'], motion: 'lively' },
   { name: 'Mint', about: 'Fresh green on a pale page, rounded type', scheme: 'auto',
     ...C({ bg: '#f1f6f4', card: '#ffffff', fg: '#0f241c', accent: '#0b8a63' }, { bg: '#06110d', card: '#0f1f19', fg: '#e6f4ee', accent: '#3ad29f' }),
-    font: 'rounded', titles: 'rounded', corners: 'round', density: 'airy', surface: 'grouped', nav: 'segmented', width: 'narrow' },
+    font: 'rounded', titles: 'rounded', corners: 'round', density: 'airy', surface: 'grouped', nav: 'segmented', width: 'narrow', gradient: ['#3ad29f', '#00b4d8', '#b8f28a'] },
   { name: 'Coral', about: 'Warm and playful, with lifted cards', scheme: 'auto',
     ...C({ bg: '#fff6f2', card: '#ffffff', fg: '#2a1712', accent: '#d9480f' }, { bg: '#140c09', card: '#221613', fg: '#f8ebe5', accent: '#ff8a5c' }),
-    font: 'rounded', titles: 'rounded', corners: 'round', density: 'regular', surface: 'raised', nav: 'tabs', width: 'regular' },
+    font: 'rounded', titles: 'rounded', corners: 'round', density: 'regular', surface: 'raised', nav: 'tabs', width: 'regular', gradient: ['#ff8a5c', '#ff4f8b', '#ffc15e'], motion: 'lively' },
   { name: 'Lavender', about: 'Calm violet, serif headings, soft corners', scheme: 'auto',
     ...C({ bg: '#f6f5fb', card: '#ffffff', fg: '#1d1a2c', accent: '#6550c8' }, { bg: '#0d0c14', card: '#18162a', fg: '#eeecf8', accent: '#a493ff' }),
-    font: 'system', titles: 'serif', corners: 'soft', density: 'regular', surface: 'grouped', nav: 'segmented', width: 'regular' },
+    font: 'system', titles: 'serif', corners: 'soft', density: 'regular', surface: 'grouped', nav: 'segmented', width: 'regular', gradient: ['#a493ff', '#ff8fd8', '#7cc6ff'] },
   { name: 'Studio', about: 'Bright white, black type, a sidebar', scheme: 'light',
     ...C({ bg: '#ffffff', card: '#ffffff', fg: '#0a0a0a', accent: '#0066cc' }, { bg: '#ffffff', card: '#ffffff', fg: '#0a0a0a', accent: '#0066cc' }),
-    font: 'system', titles: 'system', corners: 'soft', density: 'regular', surface: 'outlined', nav: 'sidebar', width: 'wide' },
+    font: 'system', titles: 'system', corners: 'soft', density: 'regular', surface: 'outlined', nav: 'sidebar', width: 'wide', gradient: ['#0066cc', '#5e5ce6', '#64d2ff'] },
 ];
 
 // ---- colors
@@ -85,6 +86,34 @@ function palette(p, fallback, dark) {
 }
 
 const pick = (v, k, d) => (Object.hasOwn(CHOICES[k], v) ? v : d);
+
+// A gradient of three colors for front pages: as given, or drawn from the
+// accent (it, then two neighbours on the color wheel).
+const hsl = (h) => {
+  const [r, g, b] = rgb(h).map((v) => v / 255);
+  const mx = Math.max(r, g, b); const mn = Math.min(r, g, b); const l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn; const s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const hh = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [hh * 60, s, l];
+};
+const fromHsl = (hh, s, l) => {
+  const k = (n) => (n + hh / 30) % 12; const a = s * Math.min(l, 1 - l);
+  return hex([0, 8, 4].map((n) => 255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)))));
+};
+export function gradientOf(d, accent) {
+  if (Array.isArray(d?.gradient) && d.gradient.length >= 2 && d.gradient.every((c) => typeof c === 'string' && HEX.test(c))) {
+    const g = d.gradient.slice(0, 3).map((c) => c.toLowerCase());
+    return g.length === 3 ? g : [g[0], g[1], mix(g[0], g[1], 0.5)];
+  }
+  const [hh, s, l] = hsl(accent);
+  const sat = Math.min(0.74, Math.max(0.5, s));
+  const lit = Math.min(0.6, Math.max(0.5, l));
+  // Warm accents lean to pink and gold (a sunset), cool ones to violet and cyan.
+  const warm = hh < 60 || hh >= 300;
+  const [a, b] = warm ? [325, 28] : [45, 330];
+  return [fromHsl(hh, sat, lit), fromHsl((hh + a) % 360, sat, lit), fromHsl((hh + b) % 360, sat, Math.min(0.7, lit + 0.08))];
+}
 const words = (v, n, d) => (typeof v === 'string' && v.trim() ? v.trim().replace(/\s+/g, ' ').slice(0, n) : d);
 
 // A design as given (by the model, a person or a preset), made whole and
@@ -106,6 +135,8 @@ export function checkDesign(d, base = PRESETS[0]) {
     surface: pick(d?.surface, 'surface', base.surface),
     nav: pick(d?.nav, 'nav', base.nav),
     width: pick(d?.width, 'width', base.width),
+    motion: pick(d?.motion, 'motion', base.motion || 'calm'),
+    gradient: gradientOf(d?.gradient ? d : base.gradient && !d?.light && !d?.dark ? base : { gradient: null }, (d?.light || base.light)?.accent || base.light.accent),
   };
 }
 
@@ -142,6 +173,8 @@ export function designVars(input, which = 'light') {
     '--accent-soft': `color-mix(in srgb, var(--accent) ${isDark ? 22 : 12}%, transparent)`,
     '--seg-on': isDark ? 'color-mix(in srgb, var(--fg) 20%, var(--card))' : 'var(--card)',
     '--shadow': shadow,
+    '--g1': d.gradient[0], '--g2': d.gradient[1], '--g3': d.gradient[2],
+    '--slow': d.motion === 'lively' ? '.6' : '1', '--play': d.motion === 'still' ? 'paused' : 'running', '--rv': d.motion === 'still' ? '0' : '1',
   };
 }
 

@@ -84,8 +84,14 @@ const atV = () => (S.tryV ? `?v=${S.tryV}` : '');
 let KIT = '';
 let FRAME = '';
 let SCREEN = '';
+let FRONT = '';
 async function assets() {
-  if (!KIT) [KIT, FRAME, SCREEN] = await Promise.all([fetch('/kit.css').then((r) => r.text()), fetch('/frame.js').then((r) => r.text()), fetch('/screen.js').then((r) => r.text())]);
+  if (!KIT) {
+    const get = (u) => fetch(u).then((r) => r.text());
+    const [kit, frame, screen, front, frontCss] = await Promise.all([get('/kit.css'), get('/frame.js'), get('/screen.js'), get('/front.js'), get('/front.css')]);
+    // Front-page styles come after the kit's: a screen draws with both.
+    [KIT, FRAME, SCREEN, FRONT] = [`${kit}\n${frontCss}`, frame, screen, front];
+  }
 }
 
 // ---- live updates
@@ -775,7 +781,7 @@ ${noClose(c.code)}
 <style>${KIT}</style><style id="__design">${design || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
-${screen ? `<script>${SCREEN}</script>\n${screen.scripts || ''}` : ''}
+${screen ? `<script>${FRONT}</script>\n<script>${SCREEN}</script>\n${screen.scripts || ''}` : ''}
 ${libs}
 ${comps}
 <script>
@@ -840,6 +846,9 @@ function renderFrames() {
     S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
   }
   for (const [slug, f] of S.frames) f.iframe.hidden = slug !== S.view;
+  // An app on its own showing a front page gives the page the whole window:
+  // the page has its own header.
+  document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"/.test(v.code || ''));
   box.querySelector('.viewerr')?.remove();
   const err = S.errors.get(S.view);
   if (err) {

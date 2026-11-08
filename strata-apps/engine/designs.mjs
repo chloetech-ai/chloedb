@@ -16,12 +16,13 @@ Answer with a JSON array of exactly three designs and nothing else. Each design:
 {"name": "one or two words", "about": "the mood in under 12 words", "scheme": "auto",
  "light": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
  "dark": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
- "font": "system", "titles": "system", "corners": "round", "density": "regular", "surface": "grouped", "nav": "segmented", "width": "regular"}
+ "font": "system", "titles": "system", "corners": "round", "density": "regular", "surface": "grouped", "nav": "segmented", "width": "regular",
+ "gradient": ["#rrggbb", "#rrggbb", "#rrggbb"], "motion": "calm"}
 
 The tokens and their values:
 ${choices}
 
-Colors: bg is the page, card the surface of cards and lists, fg the text, accent the one color for buttons, links and selection. Text (fg) reads on bg and on card at 7:1 or more; the accent reads as text on card at 4.5:1 or more. In light, card is usually white and bg a faint tint of the accent's hue or a warm or cool gray; in dark, bg is near black and card a little lighter. Keep saturation low except the accent.
+Colors: bg is the page, card the surface of cards and lists, fg the text, accent the one color for buttons, links and selection. gradient is three colors that drift behind front pages and fill emphasized words, icons and the featured plan: the accent and two neighbours that flatter it (a sunset of coral, pink and gold; an ocean of blue, violet and cyan), vivid but not neon. Text (fg) reads on bg and on card at 7:1 or more; the accent reads as text on card at 4.5:1 or more. In light, card is usually white and bg a faint tint of the accent's hue or a warm or cool gray; in dark, bg is near black and card a little lighter. Keep saturation low except the accent.
 
 The three must differ clearly, each fitting the app's subject and the people who use it:
 1. The natural one: Apple's own spirit (system font, grouped cards, segmented control), its accent taken from the subject.

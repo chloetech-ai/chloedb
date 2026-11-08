@@ -121,6 +121,8 @@
         if (b == null || b === false) return null;
         if (typeof b === 'string' || isExpr(b)) return h('p', null, T(b, s, path));
         if (b.if !== undefined) return blocks(val(b.if, s, `${path}.if`) ? b.then : b.else, s, `${path}.${val(b.if, s) ? 'then' : 'else'}`);
+        // Front-page blocks (web/front.js): a hero, carousels, galleries...
+        if (front) { const k = front.kinds.find((x) => b[x] !== undefined); if (k) return front.blocks[k](b, s, path); }
         if (b.h !== undefined) return h(`h${b.level || 2}`, { class: b.class }, T(b.h, s, path));
         if (b.text !== undefined) return h('p', { class: [b.muted ? 'muted' : '', b.small ? 'small' : '', b.class || ''].join(' ').trim() || null }, T(b.text, s, path));
         if (b.ui !== undefined) {
@@ -317,6 +319,12 @@
       return box;
     }
 
+    // A front page (spec.page "front") is drawn edge to edge, its parts in
+    // sections; its blocks work in any screen.
+    const front = window.__sa_front ? window.__sa_front({ h, val, T, block, run, app, scope }) : null;
+    const isFront = spec.page === 'front' && !!front;
+    if (isFront) document.body.classList.add('front');
+
     // ---- drawing: the whole screen again, keeping focus and what is typed.
     function focusPath() {
       const a = document.activeElement;
@@ -341,8 +349,10 @@
         do {
           again = false;
           const f = focusPath();
-          const out = blocks(spec.body, scope(), 'body');
-          root.replaceChildren(h('div', { class: 'col screen' }, out));
+          if (isFront) {
+            root.replaceChildren(h('div', { class: 'screen front' }, front.page(spec.body, scope())));
+          } else root.replaceChildren(h('div', { class: 'col screen' }, blocks(spec.body, scope(), 'body')));
+          if (front) front.after(root);
           restore(f);
         } while (again);
       } finally { drawing = false; }
