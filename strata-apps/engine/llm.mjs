@@ -14,8 +14,9 @@ const CLAUDE = process.env.STRATA_APPS_CLAUDE || 'claude';
 export const IDLE_S = Number(process.env.STRATA_APPS_IDLE_S) || 180;
 export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
 
-// onWrite(progress) is called as the answer streams in, with
-// {chars, thinking}: characters of answer and of thinking so far.
+// onWrite(progress, text) is called as the answer streams in, with
+// {chars, thinking}: characters of answer and of thinking so far, and the
+// answer so far.
 export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE }) {
   return new Promise((resolve, reject) => {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
@@ -48,7 +49,7 @@ export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA
       if (!d) return;
       if (d.type === 'text_delta') { text += d.text; seen.chars += d.text.length; } else if (d.type === 'thinking_delta') seen.thinking += (d.thinking || '').length;
       else return;
-      onWrite?.(seen);
+      onWrite?.(seen, text);
     };
     child.stdout.on('data', (d) => {
       buf += d;

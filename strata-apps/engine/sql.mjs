@@ -75,5 +75,12 @@ export function rewriteSql(sql, tables, physical) {
       return `${kw}${sp}${physical(lower)}${hasAlias ? '' : ` AS ${lower}`}`;
     });
   }).join('');
-  return { sql: out, tables: [...used] };
+  // Graph walks name a links table as their first argument.
+  const walked = out.replace(/\b(REACHABLE|PATH|ppr)(\s*\(\s*)([A-Za-z_][A-Za-z0-9_]*)\b/gi, (all, fn, open, name) => {
+    const lower = name.toLowerCase();
+    if (!names.has(lower)) return all;
+    used.add(lower);
+    return `${fn}${open}${physical(lower)}`;
+  });
+  return { sql: walked, tables: [...used] };
 }

@@ -14,7 +14,15 @@ export const TYPES = {
   float: 'FLOAT',
   bool: 'BOOL',
   timestamp: 'TIMESTAMP',  // ISO 8601 text in and out
+  meaning: 'VECTOR',       // what other text columns mean, embedded by Strata as rows are written
 };
+
+// The embedding model of meaning columns: Strata computes each row's vector
+// when it is written (and fills in rows written before the column).
+export const EMBED_MODEL = process.env.STRATA_APPS_EMBED_MODEL || 'potion-retrieval-32M';
+const colSql = (c) => (c.type === 'meaning'
+  ? `${c.name} VECTOR OPTIONS(embed = '${(Array.isArray(c.of) ? c.of : [c.of]).filter(Boolean).join(', ')}', model = '${EMBED_MODEL}')`
+  : `${c.name} ${TYPES[c.type]}`);
 
 const SYSTEM_TABLES = {
   sa_apps: `CREATE TABLE sa_apps (id KEYWORD PRIMARY KEY, name TEXT, description TEXT, head INT DEFAULT 0, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
@@ -393,9 +401,12 @@ export class Store {
     const cols = spec.columns || [];
     if (!existing.has(name)) {
       const defs = ['id KEYWORD PRIMARY KEY'];
-      for (const c of cols) defs.push(`${c.name} ${TYPES[c.type]}`);
+      // A links table: each row is a link from the row src to the row dst of
+      // another table, which graph queries walk.
+      if (spec.links) defs.push(`src KEYWORD NOT NULL REFERENCES ${physical(appId, spec.links)}`, `dst KEYWORD NOT NULL REFERENCES ${physical(appId, spec.links)}`);
+      for (const c of cols) if (!(spec.links && (c.name === 'src' || c.name === 'dst'))) defs.push(colSql(c));
       defs.push('created TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
-      await this.db.sql(`CREATE TABLE ${name} (${defs.join(', ')})`);
+      await this.db.sql(`CREATE TABLE ${name} (${defs.join(', ')})${spec.links ? " OPTIONS(edges = 'src, dst')" : ''}`);
       existing.add(name);
       return { created: name, added: [] };
     }
@@ -405,7 +416,7 @@ export class Store {
     const added = [];
     for (const c of cols) {
       if (!have.has(c.name)) {
-        await this.db.sql(`ALTER TABLE ${name} ADD COLUMN ${c.name} ${TYPES[c.type]}`);
+        await this.db.sql(`ALTER TABLE ${name} ADD COLUMN ${colSql(c)}`);
         added.push(c.name);
       }
     }

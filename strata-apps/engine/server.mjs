@@ -165,10 +165,11 @@ async function runRequest(req, extra = {}) {
   running.set(req.app, state);
   // A line sent with {replace: true} takes the place of the previous such
   // line (the model's running count), so the log does not fill with them.
-  const progress = (line, { replace = false } = {}) => {
+  const progress = (line, { replace = false, preview = null } = {}) => {
     if (replace && lines.at(-1)?.replace) lines[lines.length - 1] = { t: Date.now(), line, replace };
     else { lines.push({ t: Date.now(), line, replace }); if (!replace) log(`[${req.app}] ${line}`); }
     broadcast('progress', { app: req.app, request: req.id, line, replace, source: req.source, text: req.text });
+    if (preview) broadcast('preview', { app: req.app, request: req.id, ...preview });
   };
   await engine.store.putRequest({ ...req, status: 'running' });
   try {

@@ -58,7 +58,11 @@
       for (const [k, v] of Object.entries(props || {})) out[k] = typeof v === 'function' && /^on[A-Z]/.test(k) ? (...args) => run(v, args, `${where}.${k}`) : v;
       return out;
     };
+    // A preview (drawn while the model still writes the app) has no tables
+    // or components yet: what fails stays quiet.
+    const preview = !!spec.preview;
     function report(e) {
+      if (preview) return;
       const key = String(e && e.message);
       if (reported.has(key)) return;
       reported.add(key);
@@ -68,6 +72,8 @@
     async function load() {
       const s = scope();
       const entries = Object.entries(spec.data || {});
+      // A preview has no app to ask yet: its data is empty.
+      if (preview) { data = Object.fromEntries(entries.map(([name]) => [name, []])); return; }
       const out = await Promise.all(entries.map(async ([name, q]) => {
         const where = `data.${name}`;
         try {
@@ -124,6 +130,7 @@
         if (b.code !== undefined) return code(b, s, path);
         throw new Error(`unknown block ${JSON.stringify(Object.keys(b))}`);
       } catch (e) {
+        if (preview) return h('div', { class: 'card small muted', style: 'border-style: dashed' }, b && b.ui ? `ui.${b.ui}` : 'Being written');
         report(fail(path, e));
         return h('div', { class: 'card small', style: 'border-color: var(--bad); color: var(--bad)' }, `This part of the screen failed: ${e.message}`);
       }

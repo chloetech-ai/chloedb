@@ -68,6 +68,8 @@ const S = {
   panel: 'change',
   errors: new Map(), // slug -> {message, repairing}
   lines: [],         // progress of the running request
+  previews: new Map(), // slug -> {title, order, screen}: screens drawn while the model writes
+  previewView: null,
   runningText: '',
   failed: null,
   suggesting: false,
@@ -111,9 +113,18 @@ function connect() {
     S.failed = null;
     renderProgress();
   });
+  es.addEventListener('preview', (e) => {
+    const d = mine(e);
+    if (!d) return;
+    S.previews.set(d.slug, { slug: d.slug, title: d.title, order: d.order, screen: d.screen });
+    if (!S.previewView || !S.previews.has(S.previewView)) S.previewView = d.slug;
+    renderFrames();
+  });
   es.addEventListener('done', (e) => {
     const d = mine(e);
     if (!d) return;
+    S.previews.clear();
+    S.previewView = null;
     S.lines = [];
     S.runningText = '';
     toast(`Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
@@ -122,6 +133,9 @@ function connect() {
   es.addEventListener('failed', (e) => {
     const d = mine(e);
     if (!d) return;
+    S.previews.clear();
+    S.previewView = null;
+    renderFrames();
     S.failed = { text: S.runningText, error: d.error, lines: S.lines.slice() };
     S.lines = [];
     S.runningText = '';
@@ -518,8 +532,8 @@ function renderApp() {
     document.title = st.app.name;
     $('.brand').replaceChildren(h('span', { class: 'mark' }), st.app.name);
   } else {
-    $('#crumbs').replaceChildren(h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, `v${st.version.n}`) : null,
-      st.views.length ? h('a', { class: 'navlink small', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null);
+    $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, `v${st.version.n}`) : null,
+      st.views.length ? h('a', { class: 'navlink small', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null].filter(Boolean));
   }
   const views = st.views;
   if (!views.find((v) => v.slug === S.view)) S.view = views[0]?.slug || null;
@@ -607,9 +621,36 @@ __sa_ready();
 </script></body></html>`;
 }
 
+// Screens the model has written while it writes the rest: drawn over the
+// app with what data there is (none, for a first version).
+function previewBox() {
+  if (!S.previews.size || !S.lines.length) return null;
+  const list = [...S.previews.values()].sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+  const cur = S.previews.get(S.previewView) || list[0];
+  const v = { slug: cur.slug, id: `preview:${cur.slug}`, title: cur.title, spec: { screen: true }, code: JSON.stringify({ ...cur.screen, preview: true }) };
+  const iframe = h('iframe', { sandbox: 'allow-scripts', title: `Preview: ${cur.title}` });
+  iframe.srcdoc = srcdoc(v, {}, S.app.components, S.app.helpers);
+  return h('div', { class: 'preview' },
+    h('div', { class: 'pbar' }, h('span', { class: 'spin' }), h('b', ' Preview'), h('span', { class: 'hint' }, ' while the model writes the rest; it goes live when the version is stored'),
+      h('span', { class: 'ptabs-mini' }, list.map((p) => h('button', { class: `chip${p.slug === cur.slug ? ' on' : ''}`, onclick: () => { S.previewView = p.slug; renderFrames(); } }, p.title)))),
+    iframe);
+}
+
 function renderFrames() {
   const box = $('#frames');
   const st = S.app;
+  const key = S.previews.size && S.lines.length ? `${[...S.previews.keys()].join(',')}|${S.previewView}` : '';
+  const shown = box.querySelector('.preview');
+  if (key && shown?.dataset.key === key) return;
+  shown?.remove();
+  const pv = key ? previewBox() : null;
+  if (pv) {
+    pv.dataset.key = key;
+    for (const f of S.frames.values()) f.iframe.hidden = true;
+    box.querySelector('.building')?.remove();
+    box.append(pv);
+    return;
+  }
   if (!st.views.length) {
     for (const f of S.frames.values()) f.iframe.remove();
     S.frames.clear();

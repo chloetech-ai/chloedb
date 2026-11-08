@@ -241,3 +241,11 @@ svg.graph .k-component circle { fill: #d9480f; } svg.graph .k-helper circle { fi
   .dec { grid-template-columns: auto minmax(0, 1fr); }
   .dec .cost { grid-column: 2; text-align: left; }
 }
+
+/* A screen drawn while the model writes the rest of the version. */
+.preview { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+.preview .pbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px dashed var(--line, #ddd); font-size: 13px; }
+.preview .ptabs-mini { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+.preview .chip { border: 1px solid var(--line, #ddd); background: transparent; border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer; }
+.preview .chip.on { background: var(--fg); color: var(--bg); }
+.frames .preview iframe { position: static; flex: 1; height: auto; opacity: .92; }

@@ -28,6 +28,9 @@ Column types:
 - keyword[]: a list of labels (tags)
 - int, float, bool
 - timestamp: a moment, ISO 8601 text in and out ("2026-11-08T10:00:00Z"). For a calendar day without a time (a due date, the day of a check-in, a birthday) use a keyword holding "YYYY-MM-DD" instead: it compares and sorts correctly, does not shift with time zones, and app.today() gives today's in the person's time zone
+- meaning: what other text columns of the row mean, as a vector Strata computes when the row is written (and for rows written before the column): {"name": "meaning", "type": "meaning", "of": ["title", "body"]}. Never write it; search by it (below). Use it when people look for things by what they are about rather than their exact words: notes, recipes, questions, products, documents.
+
+A links table holds links between rows of another table of the app, for graphs: {"name": "note_links", "links": "notes", "columns": [{"name": "kind", "type": "keyword"}]}. It has src and dst (the ids of the rows linked, from src to dst) besides the columns you give; insert a row to link two rows (app.insert('note_links', {src: a.id, dst: b.id, kind: 'cites'})), remove it to unlink.
 
 Every table also has id (keyword, the primary key; app.insert makes one when the row has none) and created (timestamp, set when the row is inserted). Do not declare those two. Table and column names: lowercase letters, digits and _, starting with a letter, and not a word of SQL such as key, index, order, group, check or default.
 
@@ -43,6 +46,10 @@ Choose text only for prose people search by words, and keyword for anything you 
 - IS NULL and IS NOT NULL on any column. A bool column alone is a condition (WHERE done, WHERE NOT done). To take rows where a bool is false or has no value, write (done = false OR done IS NULL); IS TRUE and IS NOT TRUE are refused once combined with other conditions.
 - A keyword[] column matches when any of its values does: WHERE tags = 'work'.
 - Words in text: WHERE MATCH(body, 'words') (words side by side all must appear; OR, NOT, prefix*, typo~ also work), ranked with ORDER BY bm25(body, :q) DESC. LIKE '%x%' works on text and keyword columns too (fine for small tables). lower(x) works.
+- By meaning: ORDER BY similarity(meaning, :q) DESC LIMIT 20, with the words as {q: {embed: 'what to look for', field: 'meaning'}}. Rows like a row: the same, embedding that row's text, and WHERE id != :id. Words and meaning together, best of both: ORDER BY rrf(bm25(body, :t), similarity(meaning, :q)) DESC (with t the words and q their embedding). similarity scores from -1 to 1; above about 0.5 is close.
+- Links: WHERE REACHABLE(note_links, :id, hops => 2, dir => 'both') walks from the row :id along a links table (dir 'out' follows src to dst, 'in' the other way, 'both' either), and ORDER BY hops() puts the nearest first (hops() is each row's distance). ORDER BY ppr(note_links, :id) DESC ranks rows by how close they are through the links (personalized PageRank), and works inside rrf too. The seed can be a list of ids, ('a', 'b'), or a subquery.
+- Completions as the person types: WHERE PREFIX(tag, :typed, fuzzy => 'auto') on a keyword column (also a keyword[]), which forgives a typo; LIKE 'p%' without typos.
+- Counts for the results of a search (facets): SELECT source, COUNT(*) AS n FROM notes WHERE MATCH(body, :q) GROUP BY source ORDER BY n DESC.
 - GROUP BY keyword, int, float or bool columns, or date_trunc('day' | 'week' | 'month', a timestamp). Never GROUP BY a text column. Aggregates: COUNT(*), COUNT(DISTINCT c), SUM, AVG, MIN, MAX. HAVING. Name aggregates with AS.
 - ORDER BY any column or alias, ASC or DESC, several keys; always end a query that returns rows with LIMIT (at most 500).
 - JOIN ... ON, LEFT JOIN, subqueries, WITH, UNION, CASE, coalesce, round, abs, length, strftime('%Y-%m-%d', t), EXTRACT(dow FROM t), date_trunc, now(), CAST(x AS INT).
@@ -230,7 +237,7 @@ function columnsFor(view, plan) {
     const t = view.tables.find((x) => x.spec.name === name);
     const p = (plan.tables || []).find((x) => x.name === name);
     if (!t && !p) return null;
-    return new Set(['id', 'created', ...(t?.spec.columns || []).map((c) => c.name), ...(p?.columns || []).map((c) => c.name)]);
+    return new Set(['id', 'created', ...(t?.spec.links || p?.links ? ['src', 'dst'] : []), ...(t?.spec.columns || []).map((c) => c.name), ...(p?.columns || []).map((c) => c.name)]);
   };
 }
 
@@ -333,6 +340,46 @@ export function patchScreens(plan, view) {
   return problems;
 }
 
+// Watches an answer as it streams in and reports each screen the moment its
+// plan entry is complete (a patch is applied to the screen the app has), so
+// the studio can draw it while the model writes the rest.
+export function screenWatcher(view, onScreen) {
+  const sent = new Set();
+  let last = 0;
+  const handle = (json) => {
+    let v;
+    try { v = JSON.parse(json); } catch { return; }
+    if (!v || typeof v.slug !== 'string' || sent.has(v.slug)) return;
+    const cur = view.views.find((x) => x.slug === v.slug && x.spec?.screen);
+    let screen = v.screen && typeof v.screen === 'object' ? v.screen : null;
+    if (!screen && Array.isArray(v.patch) && cur) { try { screen = applyPatch(JSON.parse(cur.code), v.patch); } catch { return; } }
+    if (!screen || !Array.isArray(screen.body)) return;
+    sent.add(v.slug);
+    onScreen({ slug: v.slug, title: v.title || cur?.title || v.slug, order: v.order ?? cur?.spec?.order ?? 50, screen });
+  };
+  return (seen, text) => {
+    const now = Date.now();
+    if (!text || now - last < 600) return;
+    last = now;
+    const key = text.indexOf('"views"');
+    const open = key < 0 ? -1 : text.indexOf('[', key);
+    if (open < 0) return;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let start = -1;
+    for (let i = open + 1; i < text.length; i++) {
+      const c = text[i];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '{') { if (!depth) start = i; depth++; } else if (c === '}') { depth--; if (!depth && start >= 0) { handle(text.slice(start, i + 1)); start = -1; } } else if (c === ']' && !depth) break;
+    }
+  };
+}
+
+const tee = (...fns) => (seen, text) => { for (const f of fns) if (f) f(seen, text); };
+const previewer = (view, progress) => screenWatcher(view, (p) => progress(`Drew the screen ${p.title} while the rest is written`, { preview: p }));
+
 // A plan's screens become the code of their views (JSON text), so the rest
 // of the forge handles them as it handles code.
 export function screensToCode(plan, code) {
@@ -367,6 +414,10 @@ export async function dryRunScreens(db, appId, names, plan) {
       if (typeof sql !== 'string' || sql.startsWith('=')) continue;
       const params = {};
       for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) params[k] = guess(x, state);
+      // A parameter worked out from what only the running screen has (its
+      // data, a helper) cannot be known here: such a query is not run, so
+      // that a right query is never sent back as wrong.
+      if (Object.entries((q && typeof q === 'object' && q.params) || {}).some(([k, x]) => typeof x === 'string' && x.startsWith('=') && params[k] == null)) continue;
       try {
         const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
         await db.query(phys, params);
@@ -442,8 +493,8 @@ const RESERVED = new Set(('key index unique primary foreign check constraint ref
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}\n... (${s.length - n} more characters)` : s);
 
 function describeTable(t, count, sample) {
-  const cols = ['id keyword', 'created timestamp', ...(t.spec.columns || []).map((c) => `${c.name} ${c.type}`)];
-  const lines = [`- ${t.spec.name} (${count} rows): ${cols.join(', ')}${t.spec.description ? `\n  ${t.spec.description}` : ''}`];
+  const cols = ['id keyword', 'created timestamp', ...(t.spec.columns || []).map((c) => `${c.name} ${c.type}${c.type === 'meaning' ? ` of ${[].concat(c.of || []).join(', ')}` : ''}`)];
+  const lines = [`- ${t.spec.name} (${count} rows)${t.spec.links ? `, links between rows of ${t.spec.links} (src -> dst)` : ''}: ${cols.join(', ')}${t.spec.description ? `\n  ${t.spec.description}` : ''}`];
   if (sample.length) lines.push(`  latest rows: ${clip(JSON.stringify(sample), 1500)}`);
   return lines.join('\n');
 }
@@ -684,6 +735,17 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       else if (RESERVED.has(c.name)) problems.push(`column ${t.name}.${c.name}: ${c.name} is a word of SQL; choose another name (such as ${t.name.replace(/s$/, '')}_${c.name} or sort_${c.name})`);
       if (!TYPES[c.type]) problems.push(`column ${t.name}.${c.name}: type ${JSON.stringify(c.type)} is not one of ${Object.keys(TYPES).join(', ')}`);
       if (have.has(c.name) && have.get(c.name) !== c.type) problems.push(`column ${t.name}.${c.name} is ${have.get(c.name)} already; types never change (add a new column instead)`);
+      if (c.type === 'meaning') {
+        const of = [].concat(c.of || []);
+        const textCols = new Map([...(tables.get(t.name)?.columns || []), ...(t.columns || [])].map((x) => [x.name, x.type]));
+        if (!of.length) problems.push(`column ${t.name}.${c.name}: a meaning column says which text columns it means: "of": ["title", "body"]`);
+        for (const o of of) if (!['text', 'keyword'].includes(textCols.get(o))) problems.push(`column ${t.name}.${c.name}: "of" names ${o}, which is not a text or keyword column of ${t.name}`);
+      }
+    }
+    if (t.links) {
+      const target = tables.has(t.links) || (plan.tables || []).some((x) => x.name === t.links);
+      if (!target) problems.push(`table ${t.name}: "links" names ${t.links}, which the app does not have`);
+      if (tables.has(t.name) && !tables.get(t.name).links) problems.push(`table ${t.name} exists already as a plain table; a links table must be a new table`);
     }
   }
   const slugs = new Set();
@@ -828,7 +890,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   for (let attempt = 1; attempt <= 2; attempt++) {
     progress(attempt === 1 ? `Asking the model (${MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`);
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system, prompt: planPrompt, onWrite: writing(progress, 'The model') });
+    const answer = await ask({ system, prompt: planPrompt, onWrite: tee(writing(progress, 'The model'), previewer(view, progress)) });
     tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
@@ -926,7 +988,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   for (let attempt = 1; attempt <= 2 && !split; attempt++) {
     progress(attempt === 1 ? `Asking the model (${MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`);
     const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems');
-    answer = await ask({ system, prompt: attemptPrompt, onWrite: writing(progress) });
+    answer = await ask({ system, prompt: attemptPrompt, onWrite: tee(writing(progress), previewer(view, progress)) });
     tr.call(span, answer, system.length + attemptPrompt.length);
     cost += answer.cost || 0;
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
@@ -965,8 +1027,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   for (const t of plan.tables || []) {
     const old = tableSpecs.get(t.name);
     const columns = [...(old?.columns || [])];
-    for (const c of t.columns || []) if (!columns.find((x) => x.name === c.name)) columns.push({ name: c.name, type: c.type });
-    const spec = { name: t.name, description: t.description || old?.description || '', columns };
+    for (const c of t.columns || []) if (!columns.find((x) => x.name === c.name)) columns.push({ name: c.name, type: c.type, ...(c.type === 'meaning' ? { of: [].concat(c.of || []) } : {}) });
+    const links = old?.links || t.links || null;
+    if (links) for (const n of ['src', 'dst']) if (!columns.find((x) => x.name === n)) columns.unshift({ name: n, type: 'keyword' });
+    const spec = { name: t.name, description: t.description || old?.description || '', columns, ...(links ? { links } : {}) };
     const res = await store.ensureTable(appId, spec, existingTables);
     if (res.created) progress(`Created table ${res.created}`);
     if (res.added.length) progress(`Added ${res.added.join(', ')} to ${t.name}`);
