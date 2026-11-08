@@ -31,7 +31,7 @@
     <h1>Search, data and recommendations in one engine</h1>
     <p class="lede">Every table is indexed four ways over the same rows: full text, columns, vectors and graph edges. One SQL statement can use them all.</p>
     <nav class="toc" aria-label="Feature families">
-      <a href="#text">Full text</a><a href="#columns">Columns and JSON</a><a href="#vectors">Vectors</a><a href="#graph">Graphs</a><a href="#ranking">Ranking</a><a href="#recs">Recommendations</a><a href="#sql">SQL and storage</a><a href="#server">Server and clients</a><a href="#data-in">Data in</a><a href="#device">On the device</a><a href="#cluster">Cluster</a><a href="#ops">Operations</a>
+      <a href="#text">Full text</a><a href="#columns">Columns and JSON</a><a href="#vectors">Vectors</a><a href="#graph">Graphs</a><a href="#ranking">Ranking</a><a href="#recs">Recommendations</a><a href="#sql">SQL and storage</a><a href="#server">APIs and clients</a><a href="#data-in">Data in</a><a href="#device">On the device</a><a href="#cluster">Cluster</a><a href="#ops">Operations</a>
     </nav>
   </div></div>
 
@@ -125,17 +125,17 @@
   </div></section>
 
   <section class="gutter" id="server"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="1.5"/><rect x="3.5" y="13" width="17" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span><h2>Server and clients</h2><p>The same methods in your process or over the network.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server</a></div>
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="1.5"/><rect x="3.5" y="13" width="17" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span><h2>APIs and clients</h2><p>The same methods in your process or over the network, and the APIs other systems speak.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server</a></div>
     <ul class="flist">
       <li><b>HTTP JSON and gRPC</b><span>API keys, TLS, an audit log and limits.</span></li>
+      <li><b>The OpenSearch API</b><span>Apps and clients written for OpenSearch or Elasticsearch index and search unchanged. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/opensearch.md">How</a></span></li>
       <li><b>Python</b><span>In-process or a client, with Arrow, pandas and polars.</span></li>
-        <li><b>DataFrames</b><span>Frames written as Polars writes them, run as one SQL query, answered in Arrow.</span></li>
+      <li><b>DataFrames</b><span>Frames written as Polars writes them, run as one SQL query, answered in Arrow.</span></li>
       <li><b>JavaScript</b><span>Node, Bun and Deno, prebuilt for four platforms.</span></li>
       <li><b>Java and JDBC</b><span>A JNI library and a <code>jdbc:strata:</code> driver.</span></li>
       <li><b>Rust and the shell</b><span>The engine as a crate, and a command line.</span></li>
-      <li><b>The OpenSearch API</b><span>Apps and clients written for OpenSearch or Elasticsearch, unchanged.</span></li>
-        <li><b>Agents over MCP</b><span>Claude Code and other agents list tables, query and write.</span></li>
-        <li><b>An agent</b><span>Ask in English, get an answer in SQL.</span></li>
+      <li><b>Agents over MCP</b><span>Claude Code and other agents list tables, query and write.</span></li>
+      <li><b>An agent</b><span>Ask in English, get an answer in SQL.</span></li>
     </ul>
   </div></section>
 
