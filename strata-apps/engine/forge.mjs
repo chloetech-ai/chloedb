@@ -6,7 +6,7 @@ import { sqlFunctionsDoc } from './sqlfns.mjs';
 import vm from 'node:vm';
 import { ask, parseAnswer, MODEL } from './llm.mjs';
 import { checkFunction } from './sandbox.mjs';
-import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical } from './store.mjs';
+import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical, briefOf } from './store.mjs';
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
 import { rewriteSql } from './sql.mjs';
@@ -159,7 +159,8 @@ Below the app you may get capabilities that other apps built, and built-in start
 First <plan>...</plan> holding one JSON object, then one <code slug="...">...</code> block for each view and function you add or rewrite, one <code slug="ui:NAME">...</code> block for each component and one <code slug="lib:NAME">...</code> block for each helper you add or write a new version of, the code alone (no markdown fences). Nothing else.
 
 {
-  "name": "a short name for the app (only for a new app, or when asked to rename it)",
+  "name": "Habits",
+  "ux": {"who": "...", "job": "...", "often": "daily", "device": "phone", "first": "today", "glance": "..."},
   "summary": "what this version changed, in one or two plain sentences, written to the person",
   "tables": [{"name": "tasks", "description": "what a row is", "columns": [{"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}]}],
   "views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],
@@ -173,6 +174,8 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "suggestions": [{"text": "...", "why": "..."}]
 }
 
+- name: only for a new app, or when asked to rename it: what a person would call it on their home screen, 2 to 4 words ("Habits", "Plant care", "Lunch votes"); never the request cut short.
+- ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
 - components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
@@ -735,6 +738,8 @@ export async function buildContext(engine, appId, request) {
   } else {
     parts.push(`# The app now: "${view.app.name}", version ${view.comp.n}`);
     if (view.app.description) parts.push(`First described as: ${view.app.description}`);
+    const brief = briefOf(view.app);
+    if (brief) parts.push(`## Its UX brief\n${BRIEF.map((k) => `- ${k}: ${brief[k]}`).join('\n')}\n\nKeep to it: the first screen stays the one where the job is done, and a change goes where its use belongs (what is done as often as the job, on the first screen; looking back, on a later one; setting up, last). Give "ux" again only when the request changes who uses the app or how.`);
     const tables = [];
     for (const t of view.tables) {
       const name = physical(appId, t.spec.name);
@@ -954,7 +959,7 @@ export function checkView(code) {
 
 // Checks a plan against the app as it is. Returns a list of problems.
 export async function validate(plan, code, view, library, shared = new Map()) {
-  const problems = [];
+  const problems = checkBrief(plan, view);
   const tables = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
   for (const t of plan.tables || []) {
     if (!NAME_RE.test(t.name || '')) { problems.push(`table name ${JSON.stringify(t.name)}: lowercase letters, digits and _`); continue; }
@@ -1048,7 +1053,49 @@ export async function validate(plan, code, view, library, shared = new Map()) {
 
 // A reused starter view brings its tables: the ones the app and the plan
 // lack are added to the plan, and so are missing columns of ones they have.
+// The UX brief: who uses the app, for what job, how often, on what, which
+// screen opens first and what it shows at a glance. A new app decides it
+// with its name, before its tables and screens; a change may restate it.
+export const OFTEN = ['several times a day', 'daily', 'weekly', 'monthly', 'now and then'];
+export const DEVICES = ['phone', 'desktop', 'both'];
+const BRIEF = ['who', 'job', 'often', 'device', 'first', 'glance'];
+export { briefOf };
+
+export function checkBrief(plan, view) {
+  const problems = [];
+  const fresh = !view.comp.n;
+  if (fresh || plan.name !== undefined) {
+    const n = typeof plan.name === 'string' ? plan.name.trim() : '';
+    if (!n) problems.push('"name": a new app needs a short name, 2 to 4 words ("Habits", "Plant care")');
+    else if (n.length > 32 || n.split(/\s+/).length > 5) problems.push(`"name" ${JSON.stringify(n)} is long: 2 to 4 words, at most 32 characters`);
+  }
+  const ux = plan.ux;
+  if (ux === undefined && !fresh) return problems;
+  if (!ux || typeof ux !== 'object' || Array.isArray(ux)) return [...problems, `"ux": a new app gives its brief, {${BRIEF.map((k) => `"${k}"`).join(', ')}}, before its tables and screens`];
+  for (const k of ['who', 'job', 'glance']) if (typeof ux[k] !== 'string' || !ux[k].trim()) problems.push(`ux.${k}: ${{ who: 'who uses the app, and where', job: 'the job they come back for, in their words', glance: 'what they see on opening, without a tap' }[k]}`);
+  if (!OFTEN.includes(ux.often)) problems.push(`ux.often ${JSON.stringify(ux.often)}: one of ${OFTEN.map((x) => `"${x}"`).join(', ')}`);
+  if (!DEVICES.includes(ux.device)) problems.push(`ux.device ${JSON.stringify(ux.device)}: one of ${DEVICES.map((x) => `"${x}"`).join(', ')}`);
+  const gone = new Set(plan.remove || []);
+  const slugs = [...new Set([...(plan.views || []), ...(plan.reuse || []), ...view.views].map((v) => v.slug).filter((x) => x && !gone.has(x)))];
+  if (!slugs.includes(ux.first)) problems.push(`ux.first ${JSON.stringify(ux.first)}: the slug of the screen that opens first, where the job is done (one of ${slugs.join(', ') || 'the views'})`);
+  return problems;
+}
+
+// The screen the brief names opens first: it gets the lowest order.
+export function orderByBrief(plan, view) {
+  const first = plan?.ux?.first;
+  if (!first) return;
+  const entries = [...(plan.views || []), ...(plan.reuse || [])];
+  const mine = entries.find((v) => v.slug === first);
+  if (!mine) return;
+  const others = [...entries.filter((v) => v !== mine), ...view.views.filter((v) => !entries.some((e) => e.slug === v.slug)).map((v) => ({ order: v.spec?.order }))]
+    .map((v) => Number(v.order)).filter(Number.isFinite);
+  const low = Math.min(...others);
+  if (others.length && !(Number(mine.order) < low)) mine.order = low - 1;
+}
+
 export function completePlan(plan, view, library) {
+  if (plan) orderByBrief(plan, view);
   if (!plan || !Array.isArray(plan.reuse)) return plan;
   const have = new Map(view.tables.map((t) => [t.spec.name, new Set((t.spec.columns || []).map((c) => c.name))]));
   plan.tables = Array.isArray(plan.tables) ? plan.tables : [];
@@ -1091,6 +1138,7 @@ export const SPLIT = process.env.STRATA_APPS_SPLIT || 'first';
 const PLAN_STEP = `# This step: the plan alone
 
 Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_SQL ? ` (but for the ${[STATEMENTS ? 'screens\' CREATE SCREEN' : '', RULE_SQL ? 'rules\' CREATE RULE' : ''].filter(Boolean).join(' and ')} statements)` : ''}. Each view, function, component and helper in it is then written by its own writer, all at once, and each writer sees this plan and the request but nothing the others write. So the plan is the contract between them:
+- For a new app, decide "name" and "ux" first: the tables and screens follow from them.
 - Give every view, function, component and helper a "spec": what it shows or computes, in enough detail to be written alone. For a view: the tables and columns it reads and writes, the functions it calls with their input and output, and the components and helpers it calls with the props or arguments it passes. For a function: its input and what it returns. For content (lessons, explanations, questions, texts), an outline of it; the writer writes it out in full.
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
@@ -1111,6 +1159,7 @@ const PLAN_STEP_PARALLEL = `# This step: the plan alone
 Answer with the <plan> alone this time, and no code blocks. Each view, function, component and helper in it is then written by its own writer, all at once, and the example rows and tests by one more; each writer sees this plan and the request but nothing the others write. So the plan is the contract between them, and it is short: no statements and no code in it.
 - Give every view "format": "screen" (a CREATE SCREEN statement; the default) or "code" (JavaScript, only for what a screen cannot say), and every function "format": "rule" (a CREATE RULE statement; the default for reading and writing rows) or "javascript" (the model, outside services, or logic a rule cannot say; email is a rule's SEND EMAIL).
 - Give every view, function, component and helper a "spec", in a few lines, enough to be written alone. For a screen: its parts in order (LIST, BOARD, DETAIL, SUMMARY, WEEK, CALENDAR, FLASHCARDS, QUIZ, FIND, DASHBOARD, HEADING, or custom BLOCKS), the table and columns of each, the form's fields with their types and choices, filters, KPIs, row actions, the views it opens and the functions it calls with their input. For a code view, the same and the components and helpers it calls with their props or arguments. For a rule or function: its input, the rows it reads and writes, what it returns, and its trigger ("on"). For content (lessons, explanations, questions, texts), an outline; the writer writes it out in full.
+- For a new app, decide "name" and "ux" first: the tables and screens follow from them.
 - Use the same names everywhere: view and function slugs, table and column names, the values a status column takes.
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
@@ -1479,6 +1528,12 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   // A candidate (built from use, to try) is a version beside the live one.
   const candidate = !!request.candidate;
   const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '', { head: !candidate });
+  // The live version's name and brief are the app's.
+  if (!candidate) {
+    const named = typeof plan.name === 'string' && plan.name.trim() ? { name: plan.name.trim().slice(0, 32) } : {};
+    const ux = plan.ux && typeof plan.ux === 'object' ? { ux: JSON.stringify(Object.fromEntries(BRIEF.map((k) => [k, String(plan.ux[k] ?? '').slice(0, 300)]))) } : {};
+    if (named.name || ux.ux) await store.updateApp(appId, { ...named, ...ux });
+  }
   tr.end(storing, { written: written.length });
   tr.decisions.push(...planDecisions({ plan, view, library, shared, pinned, written: writtenShared, code, at: decidedAt }));
   progress(candidate

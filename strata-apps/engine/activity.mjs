@@ -3,7 +3,7 @@
 // check-in "Read 20 pages · 2026-11-08"), and the app's own words for its
 // screens, tables and functions, so the view can tell it the way the app does.
 
-import { physical } from './store.mjs';
+import { physical, briefOf } from './store.mjs';
 
 // Columns that name a row, best first; then a column named after something
 // else's name (plant_name); then the row it points to (plant, habit_id).
@@ -108,7 +108,7 @@ export async function activity(engine, appId, { days = 30 } = {}) {
   const counts = {};
   for (const t of view.tables) counts[t.spec.name] = await engine.store.countRows(physical(appId, t.spec.name)).catch(() => null);
   return {
-    app: { id: view.app.id, name: view.app.name, description: view.app.description || '' },
+    app: { id: view.app.id, name: view.app.name, description: view.app.description || '', brief: briefOf(view.app) },
     days, since, now: new Date().toISOString(), truncated: events.length >= MAX_EVENTS,
     events: events.map((e) => {
       const out = {};

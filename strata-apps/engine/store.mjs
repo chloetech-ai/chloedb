@@ -15,7 +15,7 @@ import { sameScreen } from './statement.mjs';
 export { TYPES, EMBED_MODEL };
 
 const SYSTEM_TABLES = {
-  sa_apps: `CREATE TABLE sa_apps (id KEYWORD PRIMARY KEY, name TEXT, description TEXT, head INT DEFAULT 0, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  sa_apps: `CREATE TABLE sa_apps (id KEYWORD PRIMARY KEY, name TEXT, description TEXT, head INT DEFAULT 0, ux TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_capabilities: `CREATE TABLE sa_capabilities (id KEYWORD PRIMARY KEY, slug KEYWORD NOT NULL, version INT NOT NULL,
     kind KEYWORD NOT NULL, app KEYWORD, title TEXT, description TEXT, code TEXT, spec TEXT,
     forked_from KEYWORD, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
@@ -62,7 +62,15 @@ const SYSTEM_TABLES = {
 
 // Columns added to system tables after they were first made: a store made
 // before them gets them on start.
+// The UX brief kept with an app (sa_apps.ux), or null.
+export function briefOf(app) {
+  if (!app?.ux) return null;
+  try { const b = typeof app.ux === 'string' ? JSON.parse(app.ux) : app.ux; return b && typeof b === 'object' && b.job ? b : null; } catch { return null; }
+}
+
 const ADDED_COLUMNS = {
+  // The UX brief, as JSON: who, job, often, device, first, glance.
+  sa_apps: ['ux TEXT'],
   sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT'],
   sa_suggestions: ['signal KEYWORD', 'measure TEXT'],
   // What a piece is and does, embedded, so that pieces are found by meaning

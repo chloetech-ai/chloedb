@@ -407,6 +407,7 @@ body.bare.designed { background: var(--bg); }
 .frames .act-box[hidden] { display: none; }
 .act { position: absolute; inset: 0; overflow-y: auto; padding: 0 24px 48px; color: var(--fg); font-family: var(--font, inherit); font-size: 14px; container-type: inline-size; }
 .act > :not(.act-head) { max-width: 1180px; margin-left: auto; margin-right: auto; }
+.act-title p.act-brief { margin: 2px 0 0; font-size: 13px; color: var(--muted); max-width: 640px; }
 .act-head { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; justify-content: space-between; margin: 0 -24px 18px;
   padding: 26px max(24px, calc((100% + 48px - 1180px) / 2)) 22px; border-bottom: 1px solid var(--line);
   background: linear-gradient(115deg, color-mix(in srgb, var(--g1, var(--accent)) 16%, transparent), color-mix(in srgb, var(--g2, var(--accent)) 9%, transparent) 50%, color-mix(in srgb, var(--g3, var(--accent)) 16%, transparent)); }

@@ -604,6 +604,7 @@ export function mountActivity(box, { appId, api, onClose, openScreen }) {
       h('div', { class: 'act-title' },
         h('h1', 'Activity'),
         h('p', st.data ? ['What people did in ', h('b', st.data.app.name), st.data.truncated ? ' (the newest 5,000 events)' : ''] : 'What people did in this app'),
+        st.data?.app.brief ? h('p', { class: 'act-brief' }, `Made for ${st.data.app.brief.who}, to ${st.data.app.brief.job.replace(/^to /i, '')}, ${st.data.app.brief.often}, on ${st.data.app.brief.device === 'both' ? 'a phone and a computer' : `a ${st.data.app.brief.device === 'desktop' ? 'computer' : 'phone'}`}.`) : null,
         h('div', { class: 'act-live' }, h('i'), h('span', st.at ? `Updated ${ago(st.at)}` : 'Loading'))),
       h('div', { class: 'act-tools' },
         h('div', { class: 'act-seg', role: 'tablist', 'aria-label': 'Period' }, RANGES.map(([d, label]) => h('button', { class: st.days === d ? 'on' : '', role: 'tab', 'aria-selected': String(st.days === d), onclick: () => { st.days = d; st.shown = 12; try { sessionStorage.setItem(`sa-act-days-${appId}`, String(d)); } catch {} load(true); } }, label))),

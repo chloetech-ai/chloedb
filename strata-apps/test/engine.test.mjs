@@ -8,7 +8,7 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER } from '../engine/forge.mjs';
+import { checkBrief, orderByBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER } from '../engine/forge.mjs';
 import { expandScreen as expandWith } from '../engine/patterns.mjs';
 import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
@@ -49,9 +49,11 @@ test('the answer parser keeps code verbatim', () => {
 });
 
 const empty = { app: {}, comp: { n: 0, caps: [] }, caps: [], tables: [], views: [], functions: [], components: [], helpers: [], shared: [] };
+// A new app's name and UX brief, which every first plan gives.
+const brief = { name: 'Notes', ux: { who: 'me, on my phone', job: 'jot a note', often: 'daily', device: 'phone', first: 'home', glance: 'the newest notes' } };
 
 test('a plan is checked before anything is stored', async () => {
-  const good = { tables: [{ name: 'notes', columns: [{ name: 'body', type: 'text' }] }], views: [{ slug: 'home', title: 'Home' }] };
+  const good = { ...brief, tables: [{ name: 'notes', columns: [{ name: 'body', type: 'text' }] }], views: [{ slug: 'home', title: 'Home' }] };
   assert.deepEqual(await validate(good, { home: 'async function render(root, app) { root.append("hi") }' }, empty, []), []);
   const bad = {
     tables: [{ name: 'Notes', columns: [] }, { name: 'n2', columns: [{ name: 'id', type: 'text' }, { name: 'x', type: 'string' }] }],
@@ -412,7 +414,7 @@ test('a screen view is data in the plan: checked for shape, expressions, SQL and
     let: { shown: "=notes.filter(n => state.filter === 'all' || n.tag === state.filter)" },
     body: [{ h: 'Notes' }, { form: 'notes', fields: [{ name: 'body', type: 'textarea' }] }, { table: '=shown', columns: [{ key: 'body' }] }, { ui: 'barChart', props: { items: '=[]' } }],
   };
-  const plan = { tables: [{ name: 'notes', columns: [{ name: 'body', type: 'text' }, { name: 'tag', type: 'keyword' }] }], views: [{ slug: 'home', title: 'Home', screen }] };
+  const plan = { ...brief, tables: [{ name: 'notes', columns: [{ name: 'body', type: 'text' }, { name: 'tag', type: 'keyword' }] }], views: [{ slug: 'home', title: 'Home', screen }] };
   const code = screensToCode(plan, {});
   assert.equal(JSON.parse(code.home).body[0].h, 'Notes');
   assert.deepEqual(await validate(plan, code, empty, [], new Map([['component/barChart', {}]])), []);
@@ -688,7 +690,7 @@ test('a rule is checked against the tables it writes, and needs no writer', asyn
   for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, upsert, remove, call, email, let, each, require or return']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
   assert.match(checkRule({ query: 'UPDATE x SET a = 1' }).join(), /give a SELECT/);
   // In a plan: the rule becomes the function's code, is checked, and gets no writer.
-  const plan = { tables: [{ name: 'features', columns: [{ name: 'votes', type: 'int' }] }, { name: 'votes', columns: [{ name: 'feature', type: 'keyword' }] }],
+  const plan = { ...brief, tables: [{ name: 'features', columns: [{ name: 'votes', type: 'int' }] }, { name: 'votes', columns: [{ name: 'feature', type: 'keyword' }] }],
     views: [{ slug: 'home', title: 'Home', screen: { body: [{ h: 'Hi' }] } }], functions: [{ slug: 'count-votes', on: { table: 'votes', event: 'insert' }, rule: { steps: [{ update: 'features', id: ':row.feature', set: { votes: 'SELECT COUNT(*) FROM votes WHERE feature = :row.feature' } }] } },
       { slug: 'bad', rule: { steps: [{ insert: 'features', values: { stars: 5 } }] } }] };
   const code = {};
@@ -1798,4 +1800,28 @@ test('every app gets the same touch rules: 44 px taps, tables as cards on a phon
   await engine.insert('a', 'plants', out.row);
   assert.deepEqual(rows.get('p1'), { id: 'p1', created: '2026-11-08T10:00:00.000Z', name: 'Monstera', every: 7 });
   assert.deepEqual(await engine.remove('a', 'plants', 'nope'), { removed: 0, row: null });
+});
+
+test('a new app is planned from a UX brief: a short name, who, the job, how often, the device, the first screen and what it shows', () => {
+  const views = [{ slug: 'manage', title: 'Habits', order: 1 }, { slug: 'today', title: 'Today', order: 2 }, { slug: 'history', title: 'History', order: 3 }];
+  const ux = { who: 'me, on my phone', job: 'tick off my habits', often: 'daily', device: 'phone', first: 'today', glance: 'how many are done today' };
+  assert.deepEqual(checkBrief({ name: 'Habits', ux, views }, empty), []);
+  const said = (plan) => checkBrief(plan, empty).join('\n');
+  assert.match(said({ ux, views }), /"name": a new app needs a short name/);
+  assert.match(said({ name: 'A habit tracker: my daily habits, a chec', ux, views }), /is long: 2 to 4 words/);
+  assert.match(said({ name: 'Habits', views }), /"ux": a new app gives its brief/);
+  assert.match(said({ name: 'Habits', ux: { ...ux, often: 'a lot', device: 'watch', job: '' }, views }), /ux\.job[\s\S]*ux\.often "a lot"[\s\S]*ux\.device "watch"/);
+  assert.match(said({ name: 'Habits', ux: { ...ux, first: 'home' }, views }), /ux\.first "home": .*one of manage, today, history/);
+  // a change needs neither, and may restate the brief
+  const app = { ...empty, comp: { n: 3, caps: [] }, views: [{ slug: 'today', spec: { order: 1 } }] };
+  assert.deepEqual(checkBrief({ views: [] }, app), []);
+  assert.deepEqual(checkBrief({ ux: { ...ux, device: 'both' } }, app), []);
+  // the screen where the job is done opens first
+  const plan = { ux, views: views.map((v) => ({ ...v })) };
+  orderByBrief(plan, empty);
+  assert.deepEqual(plan.views.sort((a, b) => a.order - b.order).map((v) => v.slug), ['today', 'manage', 'history']);
+  // kept with the app as JSON, read back for later changes
+  assert.equal(briefOf({ ux: JSON.stringify(ux) }).first, 'today');
+  assert.equal(briefOf({ ux: 'not json' }), null);
+  assert.equal(briefOf({}), null);
 });
