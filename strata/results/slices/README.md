@@ -19,14 +19,27 @@ the device within 5% of the cloud's NDCG@10.
 
 ## Verdict
 
-- **Search fails Gate A, and not narrowly.** At about 33 MB (100,000
-  passages), the proof answers 0.2% to 0.4% of queries' top 10 and 0.6% to
-  1.3% of their top 1; with pair bounds, 0.5% to 1.2% and 2.5% to 4.1%. Even
-  a perfect bound could not reach 40%: the slice holds the whole cloud top
-  10 of only 5% of new queries and 8% of repeats. The proof itself is sound
-  (not one wrong answer, at any size, k or kind of bound), but on a web query log
-  over a web corpus a slice small enough for a phone rarely holds the
-  answer, and the sum of per-word bounds is far looser than the slice.
+- **Search fails Gate A on both logs, but by very different margins.**
+  - **Counted by search volume** (the AOL log, 21 million searches, run over
+    the same passages; [below](#search-weighted-by-volume-the-aol-log)): a
+    33 MB slice holds the whole cloud top 10 for 41.5% of test searches,
+    so a perfect proof would just pass. The real one, with pair bounds,
+    proves 22.6%. The best mix found within 50 MB, that slice and a cache
+    of the 100,000 most searched answers (38.6 MB), answers 27.6% exactly,
+    against the gate's 40%. The head is answered almost entirely (strings searched 100
+    times or more in training: 100% held, 78% to 91% proved); the 48% of
+    searches that are new strings almost never (0.6% proved).
+  - **Counted by distinct strings** (ORCAS): at the same 33 MB the proof
+    answers 0.2% to 0.4% of top 10s, or 0.5% to 1.2% with pair bounds, and
+    the slice holds only 5% to 8% of them.
+  - The proof itself is sound: not one wrong answer, on either log, at any
+    size, k or kind of bound. What limits it is the bound: the sum of
+    per-word bounds is near every word's ceiling at once, so from two words
+    on it proves far less than the slice holds.
+  - For cost alone, a plain result cache does most of the work and needs no
+    slice and no proof: the top 10 ids of the 300,000 most searched
+    training strings (18 MB) answer 40.2% of AOL's test searches. Only
+    showing those results offline needs their passages on the device.
 - **Recommendations pass.** Ranking only the user's own tracks, a 1,000
   track base pack and the meaning packs nearest the user's taste (5,000
   tracks, 1.9 MB), the device's NDCG@10 is 0.0828 against the same model's
@@ -38,11 +51,11 @@ the device within 5% of the cloud's NDCG@10.
   most played tracks of the last week gains 591 tracks a day on average,
   about 217 KB a day at 367 bytes a track.
 
-What this does not settle: ORCAS has no query counts, so "query volume"
-could not be measured, only shares of distinct strings. A head-heavy log
-(an app's own search, a shop's catalogue) would be needed before giving up
-on search slices for that kind of product, and a result cache, which needs
-no proof, is the right tool for repeats (below).
+What this does not settle: AOL's traffic is web search from 2006, run over
+another corpus, and its head is mostly short navigational queries, which
+the proof handles best. An app's own search (a shop, a catalogue, a help
+centre) may concentrate more or less than this; its own log, or TripClick's
+health-search log (on request from the Trip Database), would say.
 
 ## Search: ORCAS queries over MS MARCO passages
 
@@ -244,6 +257,112 @@ full top 10 ([`search/select.json`](search/select.json)), about 210,000
 answers or 13 MB. New strings are where only the proof (or the confidence
 rule) can help.
 
+## Search weighted by volume: the AOL log
+
+[`aol.py`](aol.py) (its docstring has the details) repeats the search study
+on a log with counts: the AOL search log of March to May 2006, 21,011,340
+searches (a user's consecutive rows of one query are one search), over the
+same 8.8 million MS MARCO passages. The cloud's answer is BM25 over a
+modern web corpus, not over the pages AOL's users saw, so only the shape of
+the traffic comes from AOL. That log was withdrawn in 2006 for its privacy
+failings and is still widely used in IR research (ir_datasets' `aol-ia`);
+nothing here quotes a query, and the results hold only counts and shares.
+
+Training is every search before 17 May 2006 (17.6 million searches, 8.7
+million distinct strings); the 1,000,000 most searched strings, 54% of the
+training searches, choose the slices and fill the result cache. The test is
+a uniform sample of 200,000 of the 2.9 million searches of the last two
+weeks (156,325 distinct strings), so each string weighs its searches and
+every share below is a share of test search volume
+([`aol/prep.json`](aol/prep.json)). 52.1% of test searches repeat a string
+searched in training. Slices are chosen as for ORCAS, weighted by training
+searches: `cov` completes the query with the most searches per missing
+passage first. Shares are of the test searches whose query has a full top
+10 in the whole corpus (93.6% of them).
+
+Query coverage (`cov`, [`aol/eval.json`](aol/eval.json)):
+
+<!-- report:aol-cov -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 30.0% | 8.3% | 15.6% | 26.3% | 7.2% | 13.4% | 17.3% | 0 |
+| 30K | 9.9 | 38.6% | 10.9% | 20.7% | 33.1% | 9.3% | 17.6% | 22.5% | 0 |
+| 100K | 32.5 | 50.8% | 13.5% | 27.0% | 41.5% | 11.6% | 22.6% | 28.6% | 0 |
+| 200K | 64.6 | 59.5% | 15.0% | 30.8% | 47.7% | 12.7% | 25.7% | 32.5% | 0 |
+| 400K | 128.7 | 69.3% | 16.6% | 34.9% | 55.0% | 13.8% | 28.8% | 36.2% | 0 |
+<!-- /report -->
+
+Popular passages (`pop`):
+
+<!-- report:aol-pop -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 32.6% | 8.2% | 16.3% | 25.3% | 6.7% | 12.2% | 15.9% | 0 |
+| 30K | 9.8 | 42.2% | 11.0% | 21.7% | 31.0% | 8.8% | 16.0% | 20.5% | 0 |
+| 100K | 31.8 | 55.2% | 13.7% | 27.9% | 39.0% | 10.9% | 20.9% | 26.3% | 0 |
+| 200K | 63.3 | 63.8% | 15.2% | 31.7% | 45.0% | 12.2% | 24.1% | 30.3% | 0 |
+| 400K | 126.3 | 72.8% | 16.6% | 35.4% | 52.4% | 13.4% | 27.5% | 34.5% | 0 |
+<!-- /report -->
+
+By how often the test query was searched in training (`cov`, top 10):
+
+<!-- report:aol-bands -->
+| passages | training searches of the string | share of test volume | top 10 held | top 10 proved, pairs |
+|---|---:|---:|---:|---:|
+| 100K | new string | 48.0% | 20.4% | 0.6% |
+| 100K | 1 to 9 | 16.4% | 22.8% | 4.0% |
+| 100K | 10 to 99 | 13.6% | 44.0% | 23.1% |
+| 100K | 100 to 999 | 10.7% | 100.0% | 77.6% |
+| 100K | 1,000 or more | 11.3% | 100.0% | 90.6% |
+| 400K | new string | 48.0% | 30.1% | 1.5% |
+| 400K | 1 to 9 | 16.4% | 39.8% | 11.1% |
+| 400K | 10 to 99 | 13.6% | 88.6% | 56.6% |
+| 400K | 100 to 999 | 10.7% | 100.0% | 77.8% |
+| 400K | 1,000 or more | 11.3% | 100.0% | 90.7% |
+<!-- /report -->
+
+A result cache alone, the cloud's top 10 ids for the most searched training
+strings, needs no slice and no proof; to show its answers offline, the
+device needs their passages too:
+
+<!-- report:aol-cache -->
+| answers cached | MB (ids only) | test search volume answered |
+|---|---:|---:|
+| 10,000 | 0.6 | 22.6% |
+| 30,000 | 1.8 | 27.9% |
+| 100,000 | 6.1 | 34.4% |
+| 300,000 | 18.2 | 40.2% |
+| 1,000,000 | 60.8 | 44.8% |
+
+52.1% of test searches repeat a string searched in training at all.
+<!-- /report -->
+
+The best ways found to spend 50 MB on exact answers with the passages on
+the device (a slice, a cache of answers whose passages the slice holds, and
+the proof):
+
+<!-- report:aol-budget -->
+| slice | passages | slice MB | answers cached | cache MB | pair bounds MB | MB on the device | answered by | test volume answered exactly on the device |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cov | 100K | 32.5 | 100,000 | 6.1 |  | 38.6 | cache | 27.6% |
+| cov | 100K | 32.5 | 30,000 | 1.8 | 12.8 | 47.1 | cache + proof | 27.4% |
+| cov | 100K | 32.5 | 10,000 | 0.6 | 12.8 | 45.9 | cache + proof | 26.2% |
+| cov | 100K | 32.5 | 30,000 | 1.8 |  | 34.3 | cache | 25.6% |
+| pop | 100K | 31.8 | 100,000 | 6.1 |  | 37.9 | cache | 25.6% |
+| pop | 100K | 31.8 | 30,000 | 1.8 | 12.8 | 46.4 | cache + proof | 25.3% |
+| pop | 100K | 31.8 | 10,000 | 0.6 | 12.8 | 45.2 | cache + proof | 24.5% |
+| pop | 100K | 31.8 | 30,000 | 1.8 |  | 33.6 | cache | 24.1% |
+
+Pair bounds are counted for all 1,422,227 training pairs at 9 bytes each (12.8 MB); a slice needs only the pairs of words it holds, so this is an upper bound.
+<!-- /report -->
+
+With volume, the slice holds what the traffic asks for most: the head. At
+33 MB it holds the whole top 10 for 41.5% of searches, which would pass the
+gate with a perfect bound. The proof gets about half of that, almost all of
+it from strings searched before, and there a cached answer does the same
+job more cheaply. On new strings, the only place the proof could add what a
+cache cannot, it proves 0.6% of their volume at 33 MB (1.5% at 128 MB).
+
 ## Recommendations: Yambda-50M
 
 [`recs.py`](recs.py) (its docstring has the details) uses the protocol of
@@ -369,11 +488,17 @@ python search.py $W eval test && python search.py $W eval seen && python search.
 python search.py $W eval2 test && python search.py $W eval2 seen && python search.py $W residuals
 python recs.py $W --data ~/data/yambda prep && python recs.py $W --data ~/data/yambda eval
 python recs.py $W --data ~/data/yambda churn && python recs.py $W bytes
+curl -L -o ~/data/slices/aol-data.tar.gz https://cim.mcgill.ca/~dudek/206/Logs/AOL-user-ct-collection/aol-data.tar.gz  # md5 31cd27ce12c3a3f2df62a38050ce4c0a
+A="--work $HOME/data/slices/aol --orcas $HOME/data/slices/work"
+python aol.py $A prep --data ~/data/slices && python aol.py $A cloud train && python aol.py $A cloud test
+python aol.py $A select && python aol.py $A load --tiers && python aol.py $A eval && python aol.py $A bytes
 cp ~/data/slices/work/{prep,select,eval_test,eval_seen,eval2_test,eval2_seen,bytes,residuals}.json search/
 cp ~/data/slices/work/recs_*.json recs/
+cp ~/data/slices/aol/{prep,select,eval,bytes}.json aol/
 python report.py
 ```
 
-On the container above the search side takes under an hour (each load of
+On the container above the ORCAS side takes under an hour (each load of
 the 8.8 million passages about 4 minutes, the cloud top 10 of a million
-queries about 6) and about 8 GB of disk.
+queries about 6) and about 8 GB of disk; the AOL side about 40 minutes more
+and 3 GB.

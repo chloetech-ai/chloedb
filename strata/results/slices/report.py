@@ -11,6 +11,7 @@ import re
 HERE = os.path.dirname(os.path.abspath(__file__))
 S = os.path.join(HERE, "search")
 R = os.path.join(HERE, "recs")
+METHODS = ("cov", "pop")
 
 
 def load(d, name):
@@ -153,9 +154,81 @@ def t_discovery():
         f"\n\n{e['discovery_users']:,} of {e['history']['users']:,} test users listened to at least one track they had never played."
 
 
+A = os.path.join(HERE, "aol")
+
+
+def t_aol(m):
+    e, b = load(A, "eval.json"), load(A, "bytes.json")
+    if not e:
+        return "(not run)"
+    rows = []
+    for n, v in e["methods"][m].items():
+        t1, t10 = v["1"], v["10"]
+        rows.append([docs(n), f"{b[m][n]['file_bytes'] / 1e6:.1f}" if b else "", pct(t1["held"]), pct(t1["proved"]), pct(t1["proved_pairs"]),
+                     pct(t10["held"]), pct(t10["proved"]), pct(t10["proved_pairs"]), pct(t10["proved_or_cache_held"]["100000"]), v["violations"]])
+    return table(["passages", "file MB", "top 1 held", "top 1 proved, words", "top 1 proved, pairs", "top 10 held", "top 10 proved, words",
+                  "top 10 proved, pairs", "top 10 proved or cached (100K answers)", "wrong proofs"], rows)
+
+
+def t_aol_cache():
+    e, p = load(A, "eval.json"), load(A, "prep.json")
+    if not e:
+        return "(not run)"
+    any_n = next(iter(e["methods"]["cov"].values()))["10"]["cache_ids"]
+    q = load(S, "answer_cache.json")
+    per = q["mean_query_bytes"] + 4 * q["k"] if q else 61
+    rows = [[f"{int(c):,}", f"{int(c) * per / 1e6:.1f}", pct(v)] for c, v in any_n.items()]
+    return table(["answers cached", "MB (ids only)", "test search volume answered"], rows) + \
+        f"\n\n{pct(p['test_volume_seen_in_training'])} of test searches repeat a string searched in training at all."
+
+
+PAIR_BYTES = 9  # two 4-byte term ids and a 1-byte bound, unpacked
+
+
+def t_aol_budget():
+    """The best ways to spend 50 MB: a slice, a result cache, and pair
+    bounds for every training pair (counted unpacked) when the proof uses them."""
+    e, b = load(A, "eval.json"), load(A, "bytes.json")
+    if not e or not b:
+        return "(not run)"
+    q = load(S, "answer_cache.json")
+    per = q["mean_query_bytes"] + 4 * q["k"]
+    pairs_mb = e["train_pairs"] * PAIR_BYTES / 1e6
+    rows = []
+    for m in METHODS:
+        for n, v in e["methods"][m].items():
+            mb = b[m][n]["file_bytes"] / 1e6
+            for c in v["10"]["cache_held"]:
+                cmb = int(c) * per / 1e6
+                for how, share, extra in (("cache", v["10"]["cache_held"][c], 0.0),
+                                          ("cache + proof", v["10"]["proved_or_cache_held"][c], pairs_mb)):
+                    tot = mb + cmb + extra
+                    if tot <= 50:
+                        rows.append((share, [m, docs(n), f"{mb:.1f}", f"{int(c):,}", f"{cmb:.1f}", f"{extra:.1f}" if extra else "", f"{tot:.1f}", how, pct(share)]))
+    rows.sort(key=lambda r: -r[0])
+    return table(["slice", "passages", "slice MB", "answers cached", "cache MB", "pair bounds MB", "MB on the device", "answered by",
+                  "test volume answered exactly on the device"], [r for _, r in rows[:8]]) + \
+        f"\n\nPair bounds are counted for all {e['train_pairs']:,} training pairs at {PAIR_BYTES} bytes each ({pairs_mb:.1f} MB); a slice needs only the pairs of words it holds, so this is an upper bound."
+
+
+def t_aol_bands():
+    e = load(A, "eval.json")
+    if not e:
+        return "(not run)"
+    rows = []
+    for n in ("100000", "400000"):
+        for lbl, v in e["methods"]["cov"][n]["10"]["by_training_searches"].items():
+            lo, hi = lbl.split("-")
+            name = "new string" if lo == "0" else (f"{int(lo):,} to {int(hi):,}" if hi else f"{int(lo):,} or more")
+            rows.append([docs(n), name, pct(v["volume"]), pct(v["held"]), pct(v["proved_pairs"])])
+    return table(["passages", "training searches of the string", "share of test volume", "top 10 held", "top 10 proved, pairs"], rows)
+
+
 TABLES = {"slices-cov": lambda: t_slices("cov"), "slices-pop": lambda: t_slices("pop"), "overlap": t_overlap,
           "lengths": t_lengths, "pairs": t_pairs, "confidence": t_confidence, "recs": t_recs, "churn": t_churn,
-          "pack-bytes": t_bytes, "discovery": t_discovery}
+          "pack-bytes": t_bytes, "discovery": t_discovery,
+          "aol-cov": lambda: t_aol("cov"), "aol-pop": lambda: t_aol("pop"), "aol-cache": t_aol_cache, "aol-budget": t_aol_budget,
+          "aol-bands": t_aol_bands}
 
 
 def main():
