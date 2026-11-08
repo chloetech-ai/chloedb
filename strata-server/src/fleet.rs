@@ -37,6 +37,17 @@ struct Memory {
     not_ok: Option<u64>,
     problems: HashMap<String, u64>,
     disk: HashMap<String, VecDeque<(u64, f64)>>,
+    /// Copies down here that another coordinator reaches: since when that
+    /// was first seen (ms), by URL. Said cut off once a survey of this
+    /// coordinator begun since failed again, not before: a copy coming
+    /// back answers another coordinator's survey a few seconds before
+    /// this one's.
+    cut_seen: HashMap<String, u64>,
+    /// When this coordinator's survey last found each copy down (ms), by
+    /// URL: another coordinator's report that it cannot reach a copy counts
+    /// only from a survey begun since, as one begun before may have asked
+    /// while the copy was down for all.
+    down_seen: HashMap<String, u64>,
 }
 
 /// The window the headline judges searches by now: the last minute (the
@@ -56,7 +67,17 @@ pub struct PeerWindow {
     pub window: Window,
     pub recent: Window,
     pub error: Option<String>,
+    /// The copies that did not answer its last survey of the cluster, by
+    /// URL, and when that survey began (ms); `None` from a coordinator
+    /// that does not say.
+    pub unreached: Option<Vec<String>>,
+    pub surveyed_ms: u64,
 }
+
+/// How much later than a copy stopped answering this coordinator another
+/// coordinator's survey begins, at least, for its answer to show that the
+/// copy answers it still: a survey waits 2 s for each copy.
+const CUT_MARGIN_MS: u64 = 3000;
 
 /// What a judgement reads.
 pub struct Inputs<'a> {
@@ -347,8 +368,40 @@ impl Fleet {
         let mut checks = Vec::new();
         let mut problems: Vec<Problem> = Vec::new();
 
+        // ----- what the other coordinators reach (Home over every
+        // coordinator): a copy that does not answer this coordinator, but
+        // answered another's survey begun since, is cut off from this one,
+        // not down.
+        let me = i.coordinator.as_ref().map(|c| c["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("this coordinator").to_string());
+        let said: Vec<&PeerWindow> = if me.is_some() { i.peers.iter().filter(|p| p.error.is_none() && p.unreached.is_some()).collect() } else { Vec::new() };
+        // When this coordinator's own survey began (a judgement without one
+        // takes what it is given as of now).
+        let surveyed = i.cluster["at_ms"].as_u64().unwrap_or(u64::MAX);
+        let all_copies = || shards.iter().flat_map(|s| s["replicas"].as_array().into_iter().flatten());
+        let mut cut_here: HashMap<String, Vec<String>> = HashMap::new();
+        let mut seen = std::mem::take(&mut m.cut_seen);
+        for r in all_copies().filter(|r| down(r)) {
+            let url = r["url"].as_str().unwrap_or_default();
+            let since = r["down_since_ms"].as_u64().unwrap_or(u64::MAX - CUT_MARGIN_MS);
+            let by: Vec<String> = said.iter().filter(|p| p.surveyed_ms > since + CUT_MARGIN_MS && !p.unreached.iter().flatten().any(|u| u == url)).map(|p| p.name.clone()).collect();
+            if by.is_empty() {
+                continue;
+            }
+            let first = *seen.entry(url.to_string()).or_insert(now);
+            m.cut_seen.insert(url.to_string(), first);
+            if surveyed > first || surveyed == u64::MAX {
+                cut_here.insert(url.to_string(), by);
+            }
+        }
+        drop(seen);
+        for r in all_copies().filter(|r| down(r)) {
+            m.down_seen.insert(r["url"].as_str().unwrap_or_default().to_string(), surveyed.min(now));
+        }
+        m.down_seen.retain(|_, t| *t + 600_000 > now);
+        let reached_by = |r: &Json| -> Vec<String> { cut_here.get(r["url"].as_str().unwrap_or_default()).cloned().unwrap_or_default() };
+
         // ----- shards
-        let (mut no_reads, mut no_writes, mut degraded, mut downs) = (0, 0, 0, 0);
+        let (mut no_reads, mut no_writes, mut degraded, mut downs, mut cut_off) = (0, 0, 0, 0, 0);
         let mut where_shards = Vec::new();
         for s in &shards {
             let n = s["shard"].as_u64().unwrap_or(0);
@@ -461,24 +514,62 @@ impl Fleet {
                 }
                 (rank, critical, headline, title, impact, next)
             });
+            // Every copy down here answers another coordinator: this
+            // coordinator is cut off from them, and the shard serves the
+            // other coordinators' clients.
+            let mut by: Vec<String> = copies.iter().filter(|r| down(r)).flat_map(reached_by).collect();
+            by.sort();
+            by.dedup();
+            let only_here = !gone.is_empty() && copies.iter().filter(|r| down(r)).all(|r| !reached_by(r).is_empty());
+            let mut id = format!("shard-{n}-{state}");
+            let p = match p {
+                Some(p) if only_here => {
+                    let me = me.as_deref().unwrap_or("this coordinator");
+                    let (them, reach) = (if gone.len() == 1 { "it" } else { "them" }, if by.len() == 1 { "reaches" } else { "reach" });
+                    let look = format!("Look at the network between {me} and {} (a firewall, a network policy, DNS): {} {reach} {them}", both(&gone), both(&by));
+                    // A shard that fails here stays critical: this
+                    // coordinator's clients fail.
+                    if !p.1 {
+                        degraded -= 1;
+                        cut_off += 1;
+                    }
+                    id = format!("shard-{n}-cut-off");
+                    if p.1 {
+                        // Its clients fail for real: critical still, said as it is.
+                        let what = if state == "no_writes" { "Writes" } else { "Searches" };
+                        let lower = |t: &str| t.get(..1).map_or(String::new(), |c| c.to_lowercase() + &t[1..]);
+                        Some((
+                            p.0,
+                            true,
+                            format!("{what} through this coordinator are failing: it cannot reach {}, which {} {reach}", both(&gone), both(&by)),
+                            format!("From {me}, {}; {} {reach} {}", lower(&p.3), both(&by), both(&gone)),
+                            format!("Clients of {me}: {}. Clients of {} are served", lower(&p.4), both(&by)),
+                            next(format!("{look}; meanwhile its clients can use {}", either(&by))),
+                        ))
+                    } else {
+                        Some((13, false, format!("This coordinator cannot reach {}, which {} {reach}", both(&gone), both(&by)), format!("{me} cannot reach {} of {name}, which {} {reach}", both(&gone), both(&by)), format!("None: {name} serves reads and takes writes, and searches through {me} go to its other copies"), next(look)))
+                    }
+                }
+                p => p,
+            };
             if let Some((rank, critical, headline, title, impact, next)) = p {
                 where_shards.push(name.clone());
                 problems.push(Problem {
                     rank,
                     critical,
                     headline,
-                    j: json!({"id": format!("shard-{n}-{state}"), "severity": severity(critical), "title": title, "where": where_, "since_ms": since, "impact": impact, "next": next, "why": why}),
+                    j: json!({"id": id, "severity": severity(critical), "title": title, "where": where_, "since_ms": since, "impact": impact, "next": next, "why": why}),
                 });
             }
         }
         let shards_status = if downs + no_reads + no_writes > 0 {
             "critical"
-        } else if degraded > 0 {
+        } else if degraded + cut_off > 0 {
             "warning"
         } else {
             "ok"
         };
-        checks.push(json!({"id": "shards", "status": shards_status, "value": {"down": downs, "no_reads": no_reads, "no_writes": no_writes, "degraded": degraded, "total": shards.len()}, "where": where_shards}));
+        checks.push(json!({"id": "shards", "status": shards_status, "value": {"down": downs, "no_reads": no_reads, "no_writes": no_writes, "degraded": degraded, "cut_off": cut_off, "total": shards.len()}, "where": where_shards}));
 
         // ----- the clients' searches over the window: every coordinator's
         // (fleet); the headline judges the last minute, the SLO checks the
@@ -536,7 +627,7 @@ impl Fleet {
             problems.push(Problem {
                 rank: if critical { 3 } else { 12 },
                 critical,
-                headline: format!("Searches are failing: {} failed over {over} (SLO {})", pct(x), pct(slo)),
+                headline: format!("Searches are failing: more than the SLO's {} fail", pct(slo)),
                 j: json!({"id": "error_ratio", "severity": severity(critical), "title": format!("{} of searches failed over {over} (SLO {})", pct(x), pct(slo)), "where": ["searches"], "since_ms": er_since,
                     "impact": format!("{} of searches fail", pct(x)), "next": {"text": "See which statements fail, and on which shards", "view": "queries", "params": {"outcome": "error"}}}),
             });
@@ -569,7 +660,7 @@ impl Fleet {
             problems.push(Problem {
                 rank: if critical { 4 } else { 13 },
                 critical,
-                headline: format!("Searches are slow: p99 {v:.0} ms over {over} (SLO {slo_ms:.0} ms)"),
+                headline: format!("Searches are slow: p99 is over the SLO's {slo_ms:.0} ms"),
                 j: json!({"id": "p99", "severity": severity(critical), "title": format!("Searches are slow: p99 {v:.0} ms over {over} (SLO {slo_ms:.0} ms)"), "where": ["searches"], "since_ms": null,
                     "impact": format!("1 search in 100 takes over {v:.0} ms"), "next": {"text": "See the slowest statements and where their time goes", "view": "performance", "params": {}}}),
             });
@@ -578,7 +669,7 @@ impl Fleet {
             problems.push(Problem {
                 rank: 17,
                 critical: false,
-                headline: title.clone(),
+                headline: "Searches were slow and are fast again".into(),
                 j: json!({"id": "p99_recovered", "severity": "warning", "title": title, "where": ["searches"], "since_ms": null,
                     "impact": format!("p99 {n:.0} ms now (SLO {slo_ms:.0} ms)"), "next": {"text": "See where the time went", "view": "performance", "params": {}}}),
             });
@@ -587,7 +678,46 @@ impl Fleet {
         // ----- copies
         let copies: Vec<(usize, Json)> = shards.iter().enumerate().flat_map(|(k, s)| s["replicas"].as_array().cloned().unwrap_or_default().into_iter().map(move |r| (k, r))).collect();
         let gone: Vec<String> = copies.iter().filter(|(_, r)| down(r)).map(|(_, r)| short(r)).collect();
-        checks.push(json!({"id": "copies", "status": if gone.is_empty() { "ok" } else { "warning" }, "down": gone.len(), "total": copies.len(), "where": gone}));
+        let cut: Vec<String> = copies.iter().filter(|(_, r)| down(r) && !reached_by(r).is_empty()).map(|(_, r)| short(r)).collect();
+        // Copies another coordinator cannot reach which answer this one,
+        // by coordinator: from its surveys begun since this one last found
+        // the copy down.
+        let peer_cuts: Vec<(&PeerWindow, Vec<(String, u64)>)> = said
+            .iter()
+            .map(|p| {
+                let theirs = p
+                    .unreached
+                    .iter()
+                    .flatten()
+                    .filter(|u| m.down_seen.get(u.as_str()).is_none_or(|t| p.surveyed_ms > t + CUT_MARGIN_MS))
+                    .filter_map(|u| copies.iter().find(|(_, r)| r["url"].as_str() == Some(u.as_str()) && !down(r)))
+                    .map(|(k, r)| (short(r), shards[*k]["shard"].as_u64().unwrap_or(*k as u64)))
+                    .collect::<Vec<_>>();
+                (*p, theirs)
+            })
+            .filter(|(_, t)| !t.is_empty())
+            .collect();
+        let elsewhere: Vec<String> = peer_cuts.iter().flat_map(|(p, t)| t.iter().map(|c| format!("{} from {}", c.0, p.name))).collect();
+        let status = if gone.is_empty() && elsewhere.is_empty() { "ok" } else { "warning" };
+        checks.push(json!({"id": "copies", "status": status, "down": gone.len(), "total": copies.len(), "where": gone, "unreached_here": cut, "unreached_elsewhere": elsewhere}));
+
+        // ----- copies another coordinator cannot reach which answer this
+        // one: that coordinator's clients are served by fewer copies, or
+        // fail, and its own Home says why.
+        for (p, theirs) in &peer_cuts {
+            let names: Vec<String> = theirs.iter().map(|t| t.0.clone()).collect();
+            let mut w = vec![p.name.clone()];
+            w.extend(names.iter().cloned());
+            let title = format!("Coordinator {} cannot reach {}, which this coordinator reaches", p.name, both(&names));
+            problems.push(Problem {
+                rank: 13,
+                critical: false,
+                headline: title.clone(),
+                j: json!({"id": format!("coordinator-{}-cut-off", p.name), "severity": "warning", "title": title, "where": w, "since_ms": null,
+                    "impact": format!("Searches through {} go to the shards' other copies, and fail on a shard none of whose copies it reaches", p.name),
+                    "next": {"text": format!("Look at the network between {} and {} (a firewall, a network policy, DNS), or its logs", p.name, both(&names)), "view": "cluster", "params": {"shard": theirs[0].1}}}),
+            });
+        }
 
         // ----- lag: what each primary says its replicas lack
         let mut lag: Option<(u64, Option<f64>, String, usize, bool)> = None;
@@ -627,7 +757,7 @@ impl Fleet {
             problems.push(Problem {
                 rank: 14,
                 critical: false,
-                headline: title.clone(),
+                headline: if out_of_sync.is_empty() { format!("{name} is behind its primary") } else { title.clone() },
                 j: json!({"id": "lag", "severity": "warning", "title": title, "where": [format!("shard {shard}"), name], "since_ms": null,
                     "impact": format!("Searches {name} serves may miss recent writes; it may not count toward a write majority"), "next": {"text": format!("Look at {name}'s replication"), "view": "cluster", "params": {"shard": shard, "copy": name}}}),
             });
@@ -718,10 +848,18 @@ impl Fleet {
                     (format!("{name}'s disk is {} full{fills}", pct(max)), vec![format!("shard {shard}"), name.clone()])
                 };
                 let impact = if over.len() > 1 { "Writes to a shard stop when its primary's disk is full".to_string() } else { format!("Writes to shard {shard} stop when its disk is full") };
+                // The headline says the line crossed, not the share now
+                // and when it fills, which change every look.
+                let line = if critical { "95%" } else { "85%" };
+                let headline = match over.len() {
+                    0 => format!("{name}'s disk fills within 3 days at the last hour's rate"),
+                    1 => format!("{name}'s disk is over {line} full"),
+                    n => format!("{n} copies' disks are over {} full", if over.iter().all(|d| d.0 >= 0.95) { "95%" } else { "85%" }),
+                };
                 problems.push(Problem {
                     rank: if critical { 5 } else { 15 },
                     critical,
-                    headline: title.clone(),
+                    headline,
                     j: json!({"id": "disk", "severity": severity(critical), "title": title, "where": where_, "since_ms": null, "copies": over.len(),
                         "impact": impact, "next": {"text": "See which tables grow, then free space, add disk or add a shard", "view": "tables", "params": {"shard": shard}}}),
                 });
@@ -839,8 +977,9 @@ impl Fleet {
                 if shards.len() == 1 && i.coordinator.is_none() {
                     h = "This server serves reads and takes writes".into();
                 }
+                // Steady while nothing changes: the numbers are in the checks.
                 match (ratio, p99) {
-                    (Some(r), Some(v)) => format!("{h}. Over the last 5 min {} of searches failed and p99 was {v:.0} ms", pct(r)),
+                    (Some(_), Some(_)) => format!("{h}. Searches are within their SLOs"),
                     _ => format!("{h}. No search ended in the last 5 min"),
                 }
             }
@@ -947,6 +1086,74 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_another_coordinator_reaches_is_cut_off_from_this_one_not_down() {
+        let c = json!({"shards": [
+            {"shard": 0, "state": "degraded", "failover": true, "majority": true, "why": "1 of 3 copies does not answer", "replicas": [copy("s0-0", true), copy("s0-1", false), copy("s0-2", true)]},
+            {"shard": 1, "state": "no_reads", "failover": true, "majority": false, "why": "1 of 2 copies answers", "replicas": [copy("s1-0", true), copy("s1-1", false)]},
+        ]});
+        let peer = |surveyed_ms: u64, unreached: &[&str]| PeerWindow { url: "http://b".into(), name: "coord-b".into(), unreached: Some(unreached.iter().map(|u| format!("http://{u}")).collect()), surveyed_ms, ..Default::default() };
+        // coord-b's survey began after s0-1 and s1-1 stopped answering here (at 1 s), and reached both.
+        let mut i = inputs(&c, &[]);
+        i.peers = vec![peer(5_000, &["s0-2"])];
+        let j = Fleet::default().judge(i);
+        let ps = j["problems"].as_array().unwrap();
+        let id = |id: &str| ps.iter().find(|p| p["id"] == id).unwrap_or_else(|| panic!("no {id}: {j}")).clone();
+        let s1 = id("shard-1-cut-off");
+        assert_eq!((s1["severity"].as_str(), s1["title"].as_str()), (Some("critical"), Some("From c, shard 1 has no majority, so it serves no reads; coord-b reaches s1-1")), "its clients fail: {s1}");
+        assert_eq!(j["headline"], "Searches through this coordinator are failing: it cannot reach s1-1, which coord-b reaches");
+        assert!(s1["next"]["text"].as_str().unwrap().ends_with("meanwhile its clients can use coord-b"), "{s1}");
+        let s0 = id("shard-0-cut-off");
+        assert_eq!((s0["severity"].as_str(), s0["title"].as_str()), (Some("warning"), Some("c cannot reach s0-1 of shard 0, which coord-b reaches")));
+        let b = id("coordinator-coord-b-cut-off");
+        assert_eq!((b["title"].as_str(), b["where"].clone()), (Some("Coordinator coord-b cannot reach s0-2, which this coordinator reaches"), json!(["coord-b", "s0-2"])));
+        let check = |id: &str| j["checks"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap().clone();
+        assert_eq!((check("shards")["value"]["cut_off"].as_u64(), check("shards")["status"].as_str()), (Some(1), Some("critical")));
+        assert_eq!(check("copies")["unreached_here"], json!(["s0-1", "s1-1"]));
+        // A survey begun before they stopped answering here says nothing of them: down.
+        let mut i = inputs(&c, &[]);
+        i.peers = vec![peer(3_500, &[])];
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["headline"], "Searches are failing: shard 1 has no majority");
+        assert!(j["problems"].as_array().unwrap().iter().any(|p| p["id"] == "shard-0-degraded"), "{j}");
+        // Down for coord-b too: down.
+        let mut i = inputs(&c, &[]);
+        i.peers = vec![peer(5_000, &["s0-1", "s1-1"])];
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["headline"], "Searches are failing: shard 1 has no majority");
+    }
+
+    #[test]
+    fn a_copy_coming_back_is_not_said_cut_off_on_the_way() {
+        let peer = |surveyed_ms: u64, unreached: &[&str]| PeerWindow { url: "http://b".into(), name: "coord-b".into(), unreached: Some(unreached.iter().map(|u| format!("http://{u}")).collect()), surveyed_ms, ..Default::default() };
+        let degraded = |at_ms: u64| json!({"at_ms": at_ms, "shards": [{"shard": 0, "state": "degraded", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", false), copy("s0-2", true)]}]});
+        let whole = |at_ms: u64| json!({"at_ms": at_ms, "shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true), copy("s0-2", true)]}]});
+        let f = Fleet::default();
+        let judge = |c: &Json, now_ms: u64, p: PeerWindow| {
+            let mut i = inputs(c, &[]);
+            (i.now_ms, i.peers) = (now_ms, vec![p]);
+            f.judge(i)
+        };
+        let ids = |j: &Json| j["problems"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        // s0-1 answers coord-b again before this coordinator's next survey: down, as this one last saw it.
+        let c = degraded(9_000);
+        assert_eq!(ids(&judge(&c, 10_000, peer(9_500, &[]))), ["shard-0-degraded"]);
+        // This coordinator's next survey reaches it: all well.
+        assert_eq!(judge(&whole(14_000), 15_000, peer(9_500, &[]))["status"], "ok");
+        // Cut off for real: a survey begun after coord-b reached it fails again.
+        let c = degraded(19_000);
+        assert_eq!(ids(&judge(&c, 20_000, peer(19_500, &[]))), ["shard-0-degraded"]);
+        assert_eq!(ids(&judge(&degraded(24_000), 25_000, peer(24_500, &[]))), ["shard-0-cut-off"]);
+        // Back here, while coord-b's last survey, begun before, did not reach it: said of nobody.
+        let j = judge(&whole(29_000), 30_000, peer(26_000, &["s0-1"]));
+        assert_eq!((j["status"].as_str(), ids(&j).len()), (Some("ok"), 0), "{j}");
+        // coord-b's survey begun after this one found it back still fails: coord-b is cut off from it.
+        let j = judge(&whole(34_000), 35_000, peer(34_500, &["s0-1"]));
+        assert_eq!((j["status"].as_str(), ids(&j)), (Some("warning"), vec!["coordinator-coord-b-cut-off".to_string()]), "{j}");
+        let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
+        assert_eq!(copies["unreached_elsewhere"], json!(["s0-1 from coord-b"]));
+    }
+
+    #[test]
     fn a_shard_without_majority_is_the_headline() {
         let c = json!({"shards": [
             {"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true)]},
@@ -963,7 +1170,7 @@ mod tests {
         assert_eq!(p["next"]["params"]["shard"], 1);
         assert_eq!(p["impact"], "Every search fails: each one needs shard 1");
         let shards = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "shards").unwrap().clone();
-        assert_eq!(shards["value"], json!({"down": 0, "no_reads": 1, "no_writes": 0, "degraded": 0, "total": 2}));
+        assert_eq!(shards["value"], json!({"down": 0, "no_reads": 1, "no_writes": 0, "degraded": 0, "cut_off": 0, "total": 2}));
         let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
         assert_eq!((copies["down"].as_u64(), copies["total"].as_u64()), (Some(1), Some(4)));
     }
@@ -1057,7 +1264,9 @@ mod tests {
         assert_eq!(er["value"], 0.025);
         assert_eq!(er["status"], "critical");
         assert_eq!(er["since_ms"], 10_000, "since the first point of the run over half the SLO");
-        assert_eq!(j["headline"], "Searches are failing: 2.5% failed over the last minute (SLO 1%)");
+        // The headline holds while the share moves; the problem says it.
+        assert_eq!(j["headline"], "Searches are failing: more than the SLO's 1% fail");
+        assert_eq!(j["problems"][0]["title"], "2.5% of searches failed over the last minute (SLO 1%)");
         assert!(j["coordinators"][0]["qps"].as_f64().unwrap() == 50.0);
         let p99 = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "p99").unwrap().clone();
         assert!(p99["value_ms"].as_f64().unwrap() <= 50.0 && p99["status"] == "ok", "{p99}");
@@ -1092,7 +1301,7 @@ mod tests {
         i.now_ms = 300_000;
         let j = Fleet::default().judge(i);
         assert_eq!(j["status"], "critical");
-        assert_eq!(j["headline"], "Searches are failing: 3.3% failed over the last minute (SLO 1%)");
+        assert_eq!(j["problems"][0]["title"], "3.3% of searches failed over the last minute (SLO 1%)");
         assert_eq!(j["problems"][0]["since_ms"], 260_000);
         // Two failures in the last minute are not an outage.
         let p = pts(0, 300, |t| if t == 298_000 { 2 } else { 0 });
@@ -1128,11 +1337,11 @@ mod tests {
         let theirs = Window { queries: 1000.0, failures: 50.0, hist: vec![0, 0, 0, 0, 0, 1000], secs: 20.0, cpu_s: 2.0, ratios: Vec::new() };
         let mut i = inputs(&c, &p);
         i.peers = vec![
-            PeerWindow { url: "http://b".into(), name: "coord-b".into(), window: theirs.clone(), recent: theirs, error: None },
+            PeerWindow { url: "http://b".into(), name: "coord-b".into(), window: theirs.clone(), recent: theirs, error: None, ..Default::default() },
             PeerWindow { url: "http://c".into(), name: "coord-c".into(), error: Some("coord-c: cannot connect".into()), ..Default::default() },
         ];
         let j = Fleet::default().judge(i);
-        assert_eq!(j["headline"], "Searches are failing: 2.5% failed over the last minute (SLO 1%)");
+        assert_eq!(j["problems"][0]["title"], "2.5% of searches failed over the last minute (SLO 1%)");
         let er = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
         assert_eq!((er["queries"].as_f64(), er["failures"].as_f64(), er["coordinators"].as_u64()), (Some(2000.0), Some(50.0), Some(2)));
         let cs = j["coordinators"].as_array().unwrap();
@@ -1152,8 +1361,9 @@ mod tests {
         let f = Fleet::default();
         let j = f.judge(inputs(&c, &[]));
         assert_eq!(j["status"], "warning");
-        assert_eq!(j["headline"], "3 copies' disks are 88% to 90% full; the fullest is s1-0");
+        assert_eq!(j["headline"], "3 copies' disks are over 85% full");
         let pr = &j["problems"][0];
+        assert_eq!(pr["title"], "3 copies' disks are 88% to 90% full; the fullest is s1-0");
         assert_eq!((pr["id"].as_str(), pr["copies"].as_u64()), (Some("disk"), Some(3)));
         assert_eq!(pr["where"], json!(["shard 0", "shard 1", "s1-0", "s1-1", "s0-0"]));
         let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
@@ -1165,7 +1375,7 @@ mod tests {
         for (a, b) in [(0.92001, 0.91999), (0.91999, 0.92001)] {
             let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [disk("s0-1", a), disk("s0-0", b)]}]});
             let j = Fleet::default().judge(inputs(&c, &[]));
-            assert_eq!(j["headline"], "2 copies' disks are 92% full");
+            assert_eq!(j["problems"][0]["title"], "2 copies' disks are 92% full");
             let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
             assert_eq!((dc["where"].as_str(), dc["over"].clone()), (Some("s0-0"), json!(["s0-0", "s0-1"])));
         }
