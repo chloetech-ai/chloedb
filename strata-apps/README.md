@@ -36,18 +36,43 @@ each other in a graph that Strata walks.
   takes a fraction of a second and no model call. Plain logic shared the same
   way is a **helper**, called as `lib.dates.addDays(day, 1)` in views,
   components and server functions alike.
-- **It starts with a library.** 50 pieces written by hand ship in `library/`
-  and are stored in Strata at start-up like any other. Components: a
-  calendar, a day strip, an activity heatmap, bar, line and donut charts, a
-  sparkline, stat tiles, a progress ring, a data table, a kanban board, a
-  timeline, a checklist, a form, a tag input, filter chips, rating stars, a
-  timer, sign-in, an account menu, avatars, a people picker, an uploader,
-  images, a gallery, a full-screen image viewer, a file list, an email
-  composer, a map, a location picker, Markdown (shown and edited), comments,
-  reactions, a drawing and signature pad, booking slots and a dialog.
-  Helpers: dates, streaks, repeating schedules, statistics, money, CSV, text,
-  geo, validation, colour, Markdown, durations, units and access rules. A
-  changed file is stored as a new version at the next start.
+- **It starts with a library.** 150 pieces ship in `library/` and are stored
+  in Strata at start-up like any other. The first 50 were written by hand;
+  the next 100 were written by the model from a spec each and kept only after
+  passing the checks a written piece must pass, their example calls (every
+  helper's run as tests, in Node and in QuickJS, from `library/examples/`)
+  and a render in Chromium without errors. A changed file is stored as a new
+  version at the next start.
+  - 86 components. Inputs: a form, tag input, filter chips, rating stars,
+    date, time and date-range pickers, a colour picker, combobox, multi
+    select, slider, number stepper, toggle switch, segmented control,
+    password field, inline edit, editable and sortable lists, a Markdown
+    editor, an uploader, a drawing pad. Layout and navigation: tabs,
+    accordion, dialog, dropdown menu, stepper, pagination, search box, empty
+    state, confirm button, tree view. Records: a data table, list view,
+    grouped list, record card, key-value list, tag list, kanban, checklist,
+    timeline, notifications, comments, chat, reactions. Time: a calendar,
+    day strip, agenda, week view, Gantt chart, countdown, timer, booking
+    slots, opening hours. Charts: bar, stacked bar, line, donut, histogram,
+    funnel, heatmap, sparkline, gauge, progress bar and ring, stat tiles,
+    leaderboard. Learning and voting: quiz question, flashcard, poll. Shops:
+    product card, cart, line items, reviews. People and media: sign-in, an
+    account menu, avatars, a people picker, images, a gallery, an image
+    viewer, a file list, a map, a location picker, code and Markdown blocks,
+    an email composer.
+  - 44 helpers: dates, times of day, deadlines and business days, repeating
+    schedules, scheduling free slots, streaks, statistics, forecasts,
+    numbers, money, tax and tips, invoices, loans, budgets, settling shared
+    expenses, inventory, grades, quizzes, spaced repetition, ranking and Elo,
+    votes, nutrition, fitness, units, durations, geo, phones, addresses,
+    URLs, files, CSV, text, templates, Markdown, diffs, lists, objects,
+    trees, paging, IDs, random (seeded), colour, validation, access rules.
+  - 20 starters an app copies as they are: screens (notes, tasks, contacts,
+    inventory, expenses, events, journal, timesheet, orders, support tickets,
+    recipes, workouts, goals, announcements, bookings, settings), each with
+    the tables it names in its header, which a reuse adds to the app; and
+    server functions for any table (export as CSV, a daily digest email,
+    find duplicates, remove old rows).
 - **Every app gets services.** People sign in (one account for every app on
   the engine; the first person in an app is its owner), upload files, send
   email and find places, through `app.me()`, `app.signIn()`, `app.upload()`,
@@ -99,6 +124,7 @@ cd strata-apps
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
+| `STRATA_APPS_LIBRARY` | the built-in library's folder (default `library/`) |
 | `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
 | `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 180), or after this many in all (default 1200) |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
@@ -117,7 +143,7 @@ A first version of a small app takes 50 seconds to a minute; a bigger one takes 
 | `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following Strata's feed |
 | `engine/store.mjs` | the system tables in Strata and the app's tables |
 | `engine/graph.mjs` | what each capability links to, read from its code, and the rows of `sa_graph` |
-| `engine/library.mjs`, `library/` | the built-in components and helpers, one file each, seeded into Strata at start-up |
+| `engine/library.mjs`, `library/` | the built-in library, one file each (`components/`, `helpers/`, and the starters in `views/` and `functions/`), seeded into Strata at start-up; `library/examples/` holds each piece's example (props, calls with their results, rows) |
 | `engine/sql.mjs` | rewrites `FROM tasks` to the app's physical table and refuses anything but one `SELECT` over the app's own tables |
 | `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
@@ -191,6 +217,6 @@ safety net). The doc lists what a real version needs.
 ## Tests
 
 ```bash
-npm test     # the SQL rewrite, the answer parser, the plan checks, the sandbox, pinning, the built-in library, the graph's edges,
+npm test     # the SQL rewrite, the answer parser, the plan checks, the sandbox, pinning, the built-in library (and every helper's example calls), the graph's edges,
              # functions seeing the signed-in person and the services, passwords, and SMTP against a fake mail server
 ```

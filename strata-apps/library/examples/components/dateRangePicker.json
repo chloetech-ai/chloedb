@@ -1,0 +1,34 @@
+[
+ {
+  "props": {
+   "value": {
+    "from": "2026-11-02",
+    "to": "2026-11-08"
+   },
+   "onChange": "$fn",
+   "today": "2026-11-08"
+  }
+ },
+ {
+  "props": {
+   "value": {
+    "from": "2026-10-01",
+    "to": null
+   },
+   "onChange": "$fn",
+   "presets": [
+    "last7",
+    "last30",
+    "lastMonth",
+    {
+     "label": "Q4",
+     "from": "2026-10-01",
+     "to": "2026-12-31"
+    },
+    "all"
+   ],
+   "weekStart": 0,
+   "label": "Report period"
+  }
+ }
+]

@@ -1,0 +1,104 @@
+[
+ {
+  "props": {
+   "items": [
+    {
+     "id": "c1",
+     "title": "Maya Lindqvist",
+     "subtitle": "Product designer at Fieldnote",
+     "meta": "7 Nov",
+     "badge": {
+      "text": "Client",
+      "tone": "ok"
+     },
+     "tags": [
+      "design",
+      "stockholm"
+     ]
+    },
+    {
+     "id": "c2",
+     "title": "Daniel Okafor",
+     "subtitle": "Accountant, handles the yearly return",
+     "meta": "2 Nov",
+     "badge": {
+      "text": "Follow up",
+      "tone": "warn"
+     },
+     "tags": [
+      "finance"
+     ]
+    },
+    {
+     "id": "c3",
+     "title": "Priya Raman",
+     "subtitle": "Met at the climbing gym",
+     "meta": "28 Oct",
+     "tags": [
+      "friend",
+      "climbing",
+      "running",
+      "books"
+     ]
+    },
+    {
+     "id": "c4",
+     "title": "Tomás Ferreira",
+     "subtitle": "Landlord, flat on Rua das Flores",
+     "meta": "15 Oct",
+     "badge": {
+      "text": "Owes deposit",
+      "tone": "bad"
+     }
+    },
+    {
+     "id": "c5",
+     "title": "Hannah Becker",
+     "subtitle": "Piano teacher, Tuesdays",
+     "meta": "3 Oct",
+     "badge": "Weekly",
+     "tags": [
+      "music"
+     ]
+    }
+   ],
+   "onSelect": "$fn",
+   "selected": "c2",
+   "searchable": true,
+   "filters": [
+    {
+     "label": "Clients",
+     "test": "$fn"
+    },
+    {
+     "label": "Needs attention",
+     "test": "$fn"
+    }
+   ],
+   "sorts": [
+    {
+     "label": "Recently contacted",
+     "compare": "$fn"
+    },
+    {
+     "label": "Name A–Z",
+     "compare": "$fn"
+    }
+   ],
+   "placeholder": "Search people"
+  }
+ },
+ {
+  "props": {
+   "items": [],
+   "onSelect": "$fn",
+   "empty": "No recipes yet. Add your first one above.",
+   "filters": [
+    {
+     "label": "Vegetarian",
+     "test": "$fn"
+    }
+   ]
+  }
+ }
+]

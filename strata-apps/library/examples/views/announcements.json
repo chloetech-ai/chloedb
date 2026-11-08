@@ -1,0 +1,36 @@
+{
+ "rows": {
+  "posts": [
+   {
+    "title": "Office closed on Wednesday 11 November",
+    "body": "The building is closed for **Veterans Day**. Work from home if you can; the shared drive and chat stay up as usual.",
+    "author": "u_owner",
+    "pinned": true
+   },
+   {
+    "title": "New coffee machine in the kitchen",
+    "body": "It takes beans, not pods. Instructions are taped to the side. Please empty the drip tray when it is full.",
+    "author": "u_maria",
+    "pinned": false
+   },
+   {
+    "title": "Quarterly planning on 17 November",
+    "body": "We meet at 10:00 in the big room.\n\n- Bring your project updates\n- Lunch is provided\n- Remote folks: the call link is in the calendar invite",
+    "author": "u_owner",
+    "pinned": false
+   },
+   {
+    "title": "Lost: blue umbrella",
+    "body": "Left it by the front desk on Thursday. If you have seen it, let me know.",
+    "author": "u_james",
+    "pinned": false
+   },
+   {
+    "title": "Welcome Priya to the team",
+    "body": "Priya joins us as a designer starting Monday. Say hello when you see her!",
+    "author": "u_maria",
+    "pinned": false
+   }
+  ]
+ }
+}

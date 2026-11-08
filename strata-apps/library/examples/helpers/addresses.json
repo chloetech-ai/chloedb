@@ -1,0 +1,133 @@
+{
+ "cases": [
+  {
+   "call": "format",
+   "args": [
+    {
+     "name": "Jane Doe",
+     "street": "123 Main St",
+     "street2": "Apt 4",
+     "city": "Springfield",
+     "region": "IL",
+     "postal": "62704",
+     "country": "USA"
+    }
+   ],
+   "expect": [
+    "Jane Doe",
+    "123 Main St",
+    "Apt 4",
+    "Springfield, IL 62704",
+    "USA"
+   ]
+  },
+  {
+   "call": "format",
+   "args": [
+    {
+     "street": "Hauptstraße 5",
+     "city": "Berlin",
+     "postal": "10115",
+     "country": "Germany"
+    },
+    {
+     "oneLine": true,
+     "style": "EU"
+    }
+   ],
+   "expect": "Hauptstraße 5, 10115 Berlin, Germany"
+  },
+  {
+   "call": "format",
+   "args": [
+    null
+   ],
+   "expect": []
+  },
+  {
+   "call": "parse",
+   "args": [
+    "123 Main St, Springfield, IL 62704"
+   ],
+   "expect": {
+    "street": "123 Main St",
+    "city": "Springfield",
+    "region": "IL",
+    "postal": "62704",
+    "country": ""
+   }
+  },
+  {
+   "call": "parse",
+   "args": [
+    "1 Rue de Rivoli, 75001 Paris, France"
+   ],
+   "expect": {
+    "street": "1 Rue de Rivoli",
+    "city": "Paris",
+    "region": "",
+    "postal": "75001",
+    "country": "France"
+   }
+  },
+  {
+   "call": "parse",
+   "args": [
+    "Springfield, IL"
+   ],
+   "expect": {
+    "street": "",
+    "city": "Springfield",
+    "region": "IL",
+    "postal": "",
+    "country": ""
+   }
+  },
+  {
+   "call": "parse",
+   "args": [
+    " , "
+   ],
+   "expect": null
+  },
+  {
+   "call": "mapsUrl",
+   "args": [
+    {
+     "name": "PM",
+     "street": "10 Downing St",
+     "city": "London",
+     "country": "UK"
+    }
+   ],
+   "expect": "https://www.openstreetmap.org/search?query=10%20Downing%20St%2C%20London%2C%20UK"
+  },
+  {
+   "call": "same",
+   "args": [
+    "123 Main Street, Springfield, IL 62704",
+    {
+     "street": "123 main st.",
+     "city": "SPRINGFIELD",
+     "region": "il",
+     "postal": "62704-1234"
+    }
+   ],
+   "expect": true
+  },
+  {
+   "call": "same",
+   "args": [
+    {
+     "street": "12 Oak Avenue",
+     "city": "Portland"
+    },
+    {
+     "street": "12 Oak Ave",
+     "city": "Salem"
+    }
+   ],
+   "expect": false
+  }
+ ]
+}

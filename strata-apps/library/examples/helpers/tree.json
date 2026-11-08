@@ -1,0 +1,293 @@
+{
+ "cases": [
+  {
+   "call": "build",
+   "args": [
+    [
+     {
+      "id": "a",
+      "parent": null,
+      "name": "A"
+     },
+     {
+      "id": "b",
+      "parent": "a",
+      "name": "B"
+     },
+     {
+      "id": "c",
+      "parent": "a",
+      "name": "C"
+     },
+     {
+      "id": "d",
+      "parent": "b",
+      "name": "D"
+     }
+    ]
+   ],
+   "expect": [
+    {
+     "id": "a",
+     "parent": null,
+     "name": "A",
+     "children": [
+      {
+       "id": "b",
+       "parent": "a",
+       "name": "B",
+       "children": [
+        {
+         "id": "d",
+         "parent": "b",
+         "name": "D",
+         "children": []
+        }
+       ]
+      },
+      {
+       "id": "c",
+       "parent": "a",
+       "name": "C",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "call": "build",
+   "args": [
+    [
+     {
+      "id": "x",
+      "parent": "y"
+     },
+     {
+      "id": "y",
+      "parent": "x"
+     }
+    ]
+   ],
+   "expect": [
+    {
+     "id": "x",
+     "parent": "y",
+     "children": [
+      {
+       "id": "y",
+       "parent": "x",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "call": "flatten",
+   "args": [
+    [
+     {
+      "id": "a",
+      "children": [
+       {
+        "id": "b",
+        "children": []
+       }
+      ]
+     },
+     {
+      "id": "c"
+     }
+    ]
+   ],
+   "expect": [
+    {
+     "id": "a",
+     "depth": 0
+    },
+    {
+     "id": "b",
+     "depth": 1
+    },
+    {
+     "id": "c",
+     "depth": 0
+    }
+   ]
+  },
+  {
+   "call": "path",
+   "args": [
+    [
+     {
+      "id": "a",
+      "parent": null
+     },
+     {
+      "id": "b",
+      "parent": "a"
+     },
+     {
+      "id": "c",
+      "parent": "a"
+     },
+     {
+      "id": "d",
+      "parent": "b"
+     }
+    ],
+    "d"
+   ],
+   "expect": [
+    {
+     "id": "a",
+     "parent": null
+    },
+    {
+     "id": "b",
+     "parent": "a"
+    },
+    {
+     "id": "d",
+     "parent": "b"
+    }
+   ]
+  },
+  {
+   "call": "ancestors",
+   "args": [
+    [
+     {
+      "id": "a",
+      "parent": null
+     },
+     {
+      "id": "b",
+      "parent": "a"
+     },
+     {
+      "id": "c",
+      "parent": "a"
+     },
+     {
+      "id": "d",
+      "parent": "b"
+     }
+    ],
+    "d"
+   ],
+   "expect": [
+    {
+     "id": "b",
+     "parent": "a"
+    },
+    {
+     "id": "a",
+     "parent": null
+    }
+   ]
+  },
+  {
+   "call": "descendants",
+   "args": [
+    [
+     {
+      "id": "a",
+      "parent": null
+     },
+     {
+      "id": "b",
+      "parent": "a"
+     },
+     {
+      "id": "c",
+      "parent": "a"
+     },
+     {
+      "id": "d",
+      "parent": "b"
+     }
+    ],
+    "a"
+   ],
+   "expect": [
+    "b",
+    "d",
+    "c"
+   ]
+  },
+  {
+   "call": "moveCheck",
+   "args": [
+    [
+     {
+      "id": "a",
+      "parent": null
+     },
+     {
+      "id": "b",
+      "parent": "a"
+     },
+     {
+      "id": "c",
+      "parent": "a"
+     },
+     {
+      "id": "d",
+      "parent": "b"
+     }
+    ],
+    "a",
+    "d"
+   ],
+   "expect": false
+  },
+  {
+   "call": "moveCheck",
+   "args": [
+    [
+     {
+      "id": "a",
+      "parent": null
+     },
+     {
+      "id": "b",
+      "parent": "a"
+     },
+     {
+      "id": "c",
+      "parent": "a"
+     },
+     {
+      "id": "d",
+      "parent": "b"
+     }
+    ],
+    "d",
+    "c"
+   ],
+   "expect": true
+  },
+  {
+   "call": "path",
+   "args": [
+    [
+     {
+      "id": "a",
+      "parent": null
+     }
+    ],
+    "zz"
+   ],
+   "expect": []
+  },
+  {
+   "call": "build",
+   "args": [
+    null
+   ],
+   "expect": []
+  }
+ ]
+}

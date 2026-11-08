@@ -1,0 +1,124 @@
+{
+ "cases": [
+  {
+   "call": "bmi",
+   "args": [
+    70,
+    175
+   ],
+   "expect": {
+    "bmi": 22.9,
+    "category": "normal"
+   }
+  },
+  {
+   "call": "bmi",
+   "args": [
+    0,
+    175
+   ],
+   "expect": null
+  },
+  {
+   "call": "bmr",
+   "args": [
+    {
+     "kg": 70,
+     "cm": 175,
+     "age": 30,
+     "sex": "male"
+    }
+   ],
+   "expect": 1649
+  },
+  {
+   "call": "bmr",
+   "args": [
+    {
+     "kg": 60,
+     "cm": 165,
+     "age": 25,
+     "sex": "female"
+    }
+   ],
+   "expect": 1345
+  },
+  {
+   "call": "tdee",
+   "args": [
+    1500,
+    "light"
+   ],
+   "expect": 2063
+  },
+  {
+   "call": "tdee",
+   "args": [
+    1500,
+    "couch"
+   ],
+   "expect": null
+  },
+  {
+   "call": "calories",
+   "args": [
+    {
+     "protein": 30,
+     "carbs": 50,
+     "fat": 10
+    }
+   ],
+   "expect": 410
+  },
+  {
+   "call": "macros",
+   "args": [
+    2000
+   ],
+   "expect": {
+    "protein": 150,
+    "carbs": 200,
+    "fat": 67
+   }
+  },
+  {
+   "call": "scale",
+   "args": [
+    {
+     "name": "Oats",
+     "kcal": 389,
+     "protein": 17
+    },
+    50
+   ],
+   "expect": {
+    "name": "Oats",
+    "kcal": 194.5,
+    "protein": 8.5
+   }
+  },
+  {
+   "call": "totals",
+   "args": [
+    [
+     {
+      "name": "Toast",
+      "kcal": 100,
+      "protein": 5
+     },
+     {
+      "name": "Eggs",
+      "kcal": 250,
+      "protein": 10,
+      "fat": 3
+     }
+    ]
+   ],
+   "expect": {
+    "kcal": 350,
+    "protein": 15,
+    "fat": 3
+   }
+  }
+ ]
+}

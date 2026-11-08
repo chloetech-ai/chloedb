@@ -133,7 +133,7 @@ Keep logic in views when it is simple and only one view needs it.
 
 # Library
 
-Below the app you may get capabilities that other apps built, from Strata's library. When one does what is needed as it is, reuse it instead of writing it again: name it in "reuse" (it is copied into this app as it is; make sure this app has the tables and columns its code reads, adding them in "tables" when needed). When one is close but needs changes, write your own version in a code block, and say "forked_from" with its id. Ignore the ones that do not fit.
+Below the app you may get capabilities that other apps built, and built-in starters (common screens and functions, written to be copied), from Strata's library. When one does what is needed as it is, reuse it instead of writing it again: name it in "reuse" (it is copied into this app as it is; make sure this app has the tables and columns its code reads, adding them in "tables" when needed). When one is close but needs changes, write your own version in a code block, and say "forked_from" with its id. Ignore the ones that do not fit.
 
 # Your answer
 
@@ -288,9 +288,14 @@ export async function buildContext(engine, appId, request) {
   if (libCaps.length) {
     const entries = [];
     for (const c of libCaps) {
-      const src = await store.resolve(c.app).catch(() => null);
-      const tables = src ? src.tables.map((t) => `${t.spec.name}(${(t.spec.columns || []).map((x) => `${x.name} ${x.type}`).join(', ')})`).join('; ') : '';
-      entries.push(`<capability id="${c.id}" kind="${c.kind}" title="${c.title}" app="${src?.app?.name || c.app}">\n// ${c.description}\n// its app's tables: ${tables}\n${clip(c.code, 5000)}\n</capability>`);
+      const starter = c.app === LIB;
+      const src = starter ? null : await store.resolve(c.app).catch(() => null);
+      const specs = starter ? (c.spec?.tables || []) : src ? src.tables.map((t) => t.spec) : [];
+      const tables = specs.map((t) => `${t.name}(${(t.columns || []).map((x) => `${x.name} ${x.type}`).join(', ')})`).join('; ');
+      const about = starter
+        ? (c.kind === 'view' ? `// a built-in starter screen; reusing it adds its tables to the app when missing: ${tables || 'none'}` : `// a built-in starter function, for any table; input: ${c.spec?.input || ''}`)
+        : `// its app's tables: ${tables}`;
+      entries.push(`<capability id="${c.id}" kind="${c.kind}" title="${c.title}" app="${starter ? 'built-in starter' : src?.app?.name || c.app}">\n// ${c.description}\n${about}\n${clip(c.code, 5000)}\n</capability>`);
     }
     parts.push(`# Library: capabilities other apps have that may fit\n\n${entries.join('\n\n')}`);
   }
@@ -359,7 +364,7 @@ export async function pinShared(store, rootIds, { written = new Map(), had = new
   return want;
 }
 
-function checkView(code) {
+export function checkView(code) {
   const problems = [];
   if (!/\basync\s+function\s+render\s*\(|\bfunction\s+render\s*\(/.test(code)) problems.push('must define async function render(root, app)');
   if (/\bimport\s*\(|\brequire\s*\(/.test(code)) problems.push('no import or require: the frame has nothing to load');
@@ -439,6 +444,27 @@ export async function validate(plan, code, view, library, shared = new Map()) {
   return problems;
 }
 
+// A reused starter view brings its tables: the ones the app and the plan
+// lack are added to the plan, and so are missing columns of ones they have.
+export function completePlan(plan, view, library) {
+  if (!plan || !Array.isArray(plan.reuse)) return plan;
+  const have = new Map(view.tables.map((t) => [t.spec.name, new Set((t.spec.columns || []).map((c) => c.name))]));
+  plan.tables = Array.isArray(plan.tables) ? plan.tables : [];
+  for (const r of plan.reuse) {
+    const src = library.find((c) => c.id === r.id);
+    if (!src || src.app !== LIB) continue;
+    for (const t of src.spec?.tables || []) {
+      let entry = plan.tables.find((x) => x.name === t.name);
+      const known = new Set([...(have.get(t.name) || []), ...((entry?.columns || []).map((c) => c.name))]);
+      const missing = (t.columns || []).filter((c) => !known.has(c.name));
+      if (!missing.length) continue;
+      if (!entry) { entry = { name: t.name, description: `from the starter ${src.title}`, columns: [] }; plan.tables.push(entry); }
+      entry.columns = [...(entry.columns || []), ...missing];
+    }
+  }
+  return plan;
+}
+
 // Reports how far the model has got, at most every 5 s, on one line that
 // each report replaces.
 function writing(progress, what = 'The model') {
@@ -505,6 +531,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress)
     cost += answer.cost || 0;
     try {
       ({ plan } = parseAnswer(answer.text));
+      completePlan(plan, view, library);
       problems = (await validate(plan, {}, view, library, shared)).filter((p) => !/has no <code slug=/.test(p));
     } catch (e) { problems = [e.message]; }
     if (!problems.length) { progress(`The model planned it in ${Math.round(answer.ms / 1000)} s`); break; }
@@ -583,6 +610,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
     try {
       ({ plan, code } = parseAnswer(answer.text));
+      completePlan(plan, view, library);
       problems = await validate(plan, code, view, library, shared);
     } catch (e) {
       problems = [e.message];

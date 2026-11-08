@@ -1,0 +1,65 @@
+{
+ "rows": {
+  "projects": [
+   {
+    "name": "Acme website redesign",
+    "rate": 95,
+    "color": "#3b82f6"
+   },
+   {
+    "name": "Northwind data migration",
+    "rate": 120,
+    "color": "#10b981"
+   },
+   {
+    "name": "Internal admin",
+    "rate": 0,
+    "color": "#64748b"
+   }
+  ],
+  "hours": [
+   {
+    "project": "Acme website redesign",
+    "day": "2026-11-02",
+    "hours": 4.5,
+    "note": "Homepage wireframes",
+    "billable": true
+   },
+   {
+    "project": "Northwind data migration",
+    "day": "2026-11-03",
+    "hours": 6,
+    "note": "Schema mapping with client",
+    "billable": true
+   },
+   {
+    "project": "Internal admin",
+    "day": "2026-11-04",
+    "hours": 1.5,
+    "note": "Invoicing and email",
+    "billable": false
+   },
+   {
+    "project": "Acme website redesign",
+    "day": "2026-11-05",
+    "hours": 3.25,
+    "note": "Design review call",
+    "billable": true
+   },
+   {
+    "project": "Northwind data migration",
+    "day": "2026-11-06",
+    "hours": 5,
+    "note": "Test import of customer records",
+    "billable": true
+   },
+   {
+    "project": "Acme website redesign",
+    "day": "2026-11-06",
+    "hours": 1,
+    "note": "Fixing my own typo in mockups",
+    "billable": false
+   }
+  ]
+ }
+}

@@ -1,0 +1,71 @@
+[
+ {
+  "props": {
+   "title": "Notifications",
+   "items": [
+    {
+     "id": "n1",
+     "title": "Maya commented on “Kitchen renovation”",
+     "text": "Can we move the tile delivery to Thursday? The installer is free then.",
+     "at": "2026-11-08T09:12:00Z",
+     "read": false,
+     "icon": "💬",
+     "tone": "info"
+    },
+    {
+     "id": "n2",
+     "title": "Electricity bill due tomorrow",
+     "text": "$84.20 to City Power",
+     "at": "2026-11-08T07:00:00Z",
+     "read": false,
+     "icon": "⏰",
+     "tone": "warn"
+    },
+    {
+     "id": "n3",
+     "title": "Backup failed",
+     "text": "The photo library could not be copied: the disk is full.",
+     "at": "2026-11-07T22:40:00Z",
+     "read": false,
+     "tone": "bad"
+    },
+    {
+     "id": "n4",
+     "title": "Payment received from Jonas",
+     "text": "$45.00 for the concert tickets",
+     "at": "2026-11-06T18:05:00Z",
+     "read": true,
+     "icon": "💸",
+     "tone": "ok"
+    },
+    {
+     "id": "n5",
+     "title": "Weekly summary is ready",
+     "at": "2026-11-02T08:00:00Z",
+     "read": true
+    }
+   ],
+   "filter": "all",
+   "onOpen": "$fn",
+   "onMarkRead": "$fn",
+   "onMarkAllRead": "$fn",
+   "onFilter": "$fn"
+  }
+ },
+ {
+  "props": {
+   "items": [
+    {
+     "id": "n4",
+     "title": "Payment received from Jonas",
+     "at": "2026-11-06T18:05:00Z",
+     "read": true,
+     "tone": "ok"
+    }
+   ],
+   "filter": "unread",
+   "onFilter": "$fn",
+   "onMarkRead": "$fn"
+  }
+ }
+]

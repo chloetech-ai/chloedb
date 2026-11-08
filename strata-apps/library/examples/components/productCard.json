@@ -1,0 +1,31 @@
+[
+ {
+  "props": {
+   "name": "Linen Throw Blanket",
+   "price": 64,
+   "compareAt": 89,
+   "currency": "USD",
+   "image": "https://images.unsplash.com/photo-1580301762395-21ce84d00bc6?w=600",
+   "description": "Stonewashed European linen, soft from the first use. 130 × 170 cm, in natural oat.",
+   "badge": "Sale",
+   "rating": 4.6,
+   "ratingCount": 212,
+   "onAdd": "$fn",
+   "onClick": "$fn"
+  }
+ },
+ {
+  "props": {
+   "name": "Ceramic Pour-Over Dripper",
+   "price": 32,
+   "currency": "USD",
+   "image": "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=600",
+   "description": "Hand-thrown stoneware dripper for a single cup.",
+   "rating": 4.2,
+   "ratingCount": 38,
+   "soldOut": true,
+   "onAdd": "$fn",
+   "onClick": "$fn"
+  }
+ }
+]

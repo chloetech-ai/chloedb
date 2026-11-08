@@ -1,0 +1,90 @@
+{
+ "cases": [
+  {
+   "call": "parse",
+   "args": [
+    "9:30pm"
+   ],
+   "expect": "21:30"
+  },
+  {
+   "call": "parse",
+   "args": [
+    "12am"
+   ],
+   "expect": "00:00"
+  },
+  {
+   "call": "parse",
+   "args": [
+    "21h"
+   ],
+   "expect": "21:00"
+  },
+  {
+   "call": "parse",
+   "args": [
+    "13pm"
+   ],
+   "expect": null
+  },
+  {
+   "call": "format",
+   "args": [
+    "21:30",
+    "12h"
+   ],
+   "expect": "9:30 PM"
+  },
+  {
+   "call": "add",
+   "args": [
+    "23:30",
+    45
+   ],
+   "expect": "00:15"
+  },
+  {
+   "call": "between",
+   "args": [
+    "22:00",
+    "06:00"
+   ],
+   "expect": 480
+  },
+  {
+   "call": "slots",
+   "args": [
+    "09:00",
+    "10:30",
+    30
+   ],
+   "expect": [
+    "09:00",
+    "09:30",
+    "10:00"
+   ]
+  },
+  {
+   "call": "overlaps",
+   "args": [
+    [
+     "22:00",
+     "02:00"
+    ],
+    [
+     "01:00",
+     "03:00"
+    ]
+   ],
+   "expect": true
+  },
+  {
+   "call": "round",
+   "args": [
+    "23:53"
+   ],
+   "expect": "00:00"
+  }
+ ]
+}

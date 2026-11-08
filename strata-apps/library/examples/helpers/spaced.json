@@ -1,0 +1,182 @@
+{
+ "cases": [
+  {
+   "call": "review",
+   "args": [
+    {},
+    "good",
+    "2026-11-08"
+   ],
+   "expect": {
+    "ease": 2.5,
+    "interval": 1,
+    "reps": 1,
+    "due": "2026-11-09"
+   }
+  },
+  {
+   "call": "review",
+   "args": [
+    {
+     "ease": 2.5,
+     "interval": 1,
+     "reps": 1,
+     "due": "2026-11-09"
+    },
+    "good",
+    "2026-11-09"
+   ],
+   "expect": {
+    "ease": 2.5,
+    "interval": 6,
+    "reps": 2,
+    "due": "2026-11-15"
+   }
+  },
+  {
+   "call": "review",
+   "args": [
+    {
+     "ease": 2.5,
+     "interval": 6,
+     "reps": 2
+    },
+    "easy",
+    "2026-11-15"
+   ],
+   "expect": {
+    "ease": 2.6,
+    "interval": 15,
+    "reps": 3,
+    "due": "2026-11-30"
+   }
+  },
+  {
+   "call": "review",
+   "args": [
+    {
+     "ease": 2.5,
+     "interval": 6,
+     "reps": 2
+    },
+    "hard",
+    "2026-11-08"
+   ],
+   "expect": {
+    "ease": 2.36,
+    "interval": 15,
+    "reps": 3,
+    "due": "2026-11-23"
+   }
+  },
+  {
+   "call": "review",
+   "args": [
+    {
+     "ease": 2,
+     "interval": 15,
+     "reps": 3
+    },
+    "again",
+    "2026-11-08"
+   ],
+   "expect": {
+    "ease": 2,
+    "interval": 1,
+    "reps": 0,
+    "due": "2026-11-09"
+   }
+  },
+  {
+   "call": "review",
+   "args": [
+    {
+     "ease": 1.4,
+     "interval": 10,
+     "reps": 4
+    },
+    "hard",
+    "2026-11-08"
+   ],
+   "expect": {
+    "ease": 1.3,
+    "interval": 14,
+    "reps": 5,
+    "due": "2026-11-22"
+   }
+  },
+  {
+   "call": "review",
+   "args": [
+    {
+     "ease": 2.5
+    },
+    "maybe",
+    "2026-11-08"
+   ],
+   "expect": null
+  },
+  {
+   "call": "preview",
+   "args": [
+    {
+     "ease": 2.5,
+     "interval": 6,
+     "reps": 2
+    }
+   ],
+   "expect": {
+    "again": 1,
+    "hard": 15,
+    "good": 15,
+    "easy": 15
+   }
+  },
+  {
+   "call": "isDue",
+   "args": [
+    {
+     "due": "2026-11-09"
+    },
+    "2026-11-08"
+   ],
+   "expect": false
+  },
+  {
+   "call": "dueCards",
+   "args": [
+    [
+     {
+      "id": "a",
+      "due": "2026-11-10"
+     },
+     {
+      "id": "b",
+      "due": "2026-11-01"
+     },
+     {
+      "id": "c"
+     },
+     {
+      "id": "d",
+      "due": "2026-11-08"
+     }
+    ],
+    "2026-11-08"
+   ],
+   "expect": [
+    {
+     "id": "b",
+     "due": "2026-11-01"
+    },
+    {
+     "id": "d",
+     "due": "2026-11-08"
+    },
+    {
+     "id": "c"
+    }
+   ]
+  }
+ ]
+}

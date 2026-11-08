@@ -1,0 +1,63 @@
+[
+ {
+  "props": {
+   "label": "This week's priorities",
+   "items": [
+    {
+     "id": "p1",
+     "content": "Finish the quarterly budget review"
+    },
+    {
+     "id": "p2",
+     "content": "Book the dentist appointment"
+    },
+    {
+     "id": "p3",
+     "content": "Call the landlord about the heating"
+    },
+    {
+     "id": "p4",
+     "content": "Renew passport before the March trip"
+    },
+    {
+     "id": "p5",
+     "content": "Plan Sunday's family dinner"
+    }
+   ],
+   "onReorder": "$fn"
+  }
+ },
+ {
+  "props": {
+   "label": "Morning routine",
+   "handle": true,
+   "items": [
+    {
+     "id": "s1",
+     "content": {
+      "$el": "Drink a glass of water · 1 min"
+     }
+    },
+    {
+     "id": "s2",
+     "content": {
+      "$el": "Stretch · 10 min"
+     }
+    },
+    {
+     "id": "s3",
+     "content": {
+      "$el": "Journal · 15 min"
+     }
+    },
+    {
+     "id": "s4",
+     "content": {
+      "$el": "Review today's calendar · 5 min"
+     }
+    }
+   ],
+   "onReorder": "$fn"
+  }
+ }
+]

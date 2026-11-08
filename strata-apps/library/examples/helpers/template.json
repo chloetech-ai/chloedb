@@ -1,0 +1,120 @@
+{
+ "cases": [
+  {
+   "call": "fill",
+   "args": [
+    "Hi {name}, you owe {amount|money}",
+    {
+     "name": "Ana",
+     "amount": 1234.5
+    },
+    {
+     "missing": ""
+    }
+   ],
+   "expect": "Hi Ana, you owe $1,234.50"
+  },
+  {
+   "call": "fill",
+   "args": [
+    "Dear {customer.name|upper}, {count|plural:item}",
+    {
+     "customer": {
+      "name": "Bo"
+     },
+     "count": 3
+    }
+   ],
+   "expect": "Dear BO, 3 items"
+  },
+  {
+   "call": "fill",
+   "args": [
+    "Hello {name|default:friend}!",
+    {}
+   ],
+   "expect": "Hello friend!"
+  },
+  {
+   "call": "fill",
+   "args": [
+    "Due {due|date}, {other}",
+    {
+     "due": "2026-11-08"
+    }
+   ],
+   "expect": "Due 8 Nov 2026, {other}"
+  },
+  {
+   "call": "fill",
+   "args": [
+    "{{literal}} {n|number} {kids|plural:child,children}",
+    {
+     "n": 1234567.891,
+     "kids": 1
+    }
+   ],
+   "expect": "{literal} 1,234,567.89 1 child"
+  },
+  {
+   "call": "fields",
+   "args": [
+    "{a} {b.c|upper} {a} {{x}} { not a key }"
+   ],
+   "expect": [
+    "a",
+    "b.c"
+   ]
+  },
+  {
+   "call": "check",
+   "args": [
+    "{name} {email} {address.city}",
+    {
+     "name": "Ana",
+     "email": null,
+     "address": {}
+    }
+   ],
+   "expect": [
+    "email",
+    "address.city"
+   ]
+  },
+  {
+   "call": "mailMerge",
+   "args": [
+    "Hi {name}",
+    [
+     {
+      "name": "Ana"
+     },
+     {
+      "name": "Bo"
+     }
+    ]
+   ],
+   "expect": [
+    "Hi Ana",
+    "Hi Bo"
+   ]
+  },
+  {
+   "call": "escape",
+   "args": [
+    "<a href=\"x\">Tom & Jerry</a>"
+   ],
+   "expect": "&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&lt;/a&gt;"
+  },
+  {
+   "call": "fill",
+   "args": [
+    null,
+    {
+     "name": "Ana"
+    }
+   ],
+   "expect": ""
+  }
+ ]
+}

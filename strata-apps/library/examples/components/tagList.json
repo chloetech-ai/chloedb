@@ -1,0 +1,46 @@
+[
+ {
+  "props": {
+   "tags": [
+    {
+     "label": "work",
+     "count": 12
+    },
+    {
+     "label": "urgent",
+     "color": "#ef4444",
+     "count": 3
+    },
+    {
+     "label": "reading",
+     "count": 7
+    },
+    {
+     "label": "travel",
+     "count": 2
+    },
+    {
+     "label": "family",
+     "count": 5
+    },
+    {
+     "label": "ideas",
+     "count": 9
+    }
+   ],
+   "onClick": "$fn",
+   "max": 4
+  }
+ },
+ {
+  "props": {
+   "tags": [
+    "groceries",
+    "weekend",
+    "health"
+   ],
+   "onRemove": "$fn",
+   "size": "small"
+  }
+ }
+]

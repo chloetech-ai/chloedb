@@ -1,0 +1,21 @@
+[
+ {
+  "props": {
+   "label": "Pages read this month",
+   "value": 186,
+   "max": 300,
+   "warnAt": 2
+  }
+ },
+ {
+  "props": {
+   "label": "Groceries budget",
+   "value": 432,
+   "max": 400,
+   "format": "$fn",
+   "warnAt": 0.8,
+   "overAt": 1,
+   "height": 10
+  }
+ }
+]

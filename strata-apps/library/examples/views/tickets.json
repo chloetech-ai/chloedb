@@ -1,0 +1,64 @@
+{
+ "rows": {
+  "tickets": [
+   {
+    "subject": "Can't log in after password reset",
+    "requester": "Maria Lopez",
+    "email": "maria.lopez@example.com",
+    "priority": "high",
+    "status": "open",
+    "body": "I reset my password this morning but the new one is rejected every time. I've tried twice and cleared my browser cache."
+   },
+   {
+    "subject": "Invoice for October shows the wrong VAT number",
+    "requester": "Tom Becker",
+    "email": "tom@beckerdesign.de",
+    "priority": "normal",
+    "status": "pending",
+    "body": "Our VAT number changed in September. Could you reissue the October invoice with DE298374651?"
+   },
+   {
+    "subject": "Checkout page is down",
+    "requester": "Priya Nair",
+    "email": "priya@shopnair.com",
+    "priority": "urgent",
+    "status": "open",
+    "body": "Customers get a blank page after clicking Pay since about 9:40 today. Orders have stopped completely."
+   },
+   {
+    "subject": "How do I export my contacts to CSV?",
+    "requester": "Daniel Kim",
+    "email": "dkim@example.org",
+    "priority": "low",
+    "status": "solved",
+    "body": "I'd like a spreadsheet of all my contacts for a mailing. Is there an export option?"
+   },
+   {
+    "subject": "Request to add a second admin",
+    "requester": "Aisha Bello",
+    "email": "aisha.bello@example.com",
+    "priority": "normal",
+    "status": "open",
+    "body": "Our office manager needs admin rights while I'm on leave from 16 November."
+   }
+  ],
+  "ticket_replies": [
+   {
+    "ticket": "1",
+    "body": "Thanks Maria, I've cleared the lock on your account. Please try the reset link again and let me know if it still fails."
+   },
+   {
+    "ticket": "2",
+    "body": "Hi Tom, the corrected invoice is being prepared. I'll send it over once finance confirms the new number."
+   },
+   {
+    "ticket": "3",
+    "body": "We can reproduce this and the payments team is on it. I'll update you within the hour."
+   },
+   {
+    "ticket": "4",
+    "body": "Go to Contacts, open the menu at the top right and choose Export CSV. Closing this for now, reply anytime if you need more help."
+   }
+  ]
+ }
+}

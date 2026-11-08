@@ -1,0 +1,54 @@
+{
+ "rows": {
+  "tasks": [
+   {
+    "title": "Renew car insurance",
+    "notes": "Compare the quote from the broker before renewing",
+    "due": "2026-11-06",
+    "priority": "high",
+    "done": false,
+    "done_at": null
+   },
+   {
+    "title": "Call the dentist to reschedule",
+    "notes": null,
+    "due": "2026-11-08",
+    "priority": "normal",
+    "done": false,
+    "done_at": null
+   },
+   {
+    "title": "Buy a birthday present for Maya",
+    "notes": "She mentioned the new pottery book",
+    "due": "2026-11-10",
+    "priority": "normal",
+    "done": false,
+    "done_at": null
+   },
+   {
+    "title": "Book flights for December",
+    "notes": null,
+    "due": "2026-11-20",
+    "priority": "high",
+    "done": false,
+    "done_at": null
+   },
+   {
+    "title": "Clear out the garage shelves",
+    "notes": null,
+    "due": null,
+    "priority": "low",
+    "done": false,
+    "done_at": null
+   },
+   {
+    "title": "Pay the electricity bill",
+    "notes": null,
+    "due": "2026-11-05",
+    "priority": "normal",
+    "done": true,
+    "done_at": "2026-11-04T18:20:00Z"
+   }
+  ]
+ }
+}

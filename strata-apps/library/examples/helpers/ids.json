@@ -1,0 +1,88 @@
+{
+ "cases": [
+  {
+   "call": "code",
+   "args": [
+    "INV",
+    42
+   ],
+   "expect": "INV-0042"
+  },
+  {
+   "call": "code",
+   "args": [
+    "",
+    7,
+    3
+   ],
+   "expect": "007"
+  },
+  {
+   "call": "code",
+   "args": [
+    "INV",
+    12345
+   ],
+   "expect": "INV-12345"
+  },
+  {
+   "call": "code",
+   "args": [
+    "INV",
+    -1
+   ],
+   "expect": null
+  },
+  {
+   "call": "next",
+   "args": [
+    [
+     "INV-0007",
+     "INV-0042",
+     "EST-0100",
+     "INV-12",
+     "INV-draft"
+    ],
+    "INV"
+   ],
+   "expect": "INV-0043"
+  },
+  {
+   "call": "next",
+   "args": [
+    null,
+    "A",
+    3
+   ],
+   "expect": "A-001"
+  },
+  {
+   "call": "check",
+   "args": [
+    "7992739871"
+   ],
+   "expect": 3
+  },
+  {
+   "call": "verify",
+   "args": [
+    "7992 7398 713"
+   ],
+   "expect": true
+  },
+  {
+   "call": "verify",
+   "args": [
+    "79927398710"
+   ],
+   "expect": false
+  },
+  {
+   "call": "short",
+   "args": [
+    0
+   ],
+   "expect": ""
+  }
+ ]
+}

@@ -1,0 +1,175 @@
+{
+ "cases": [
+  {
+   "call": "status",
+   "args": [
+    500,
+    420
+   ],
+   "expect": {
+    "budget": 500,
+    "spent": 420,
+    "left": 80,
+    "pct": 84,
+    "state": "near"
+   }
+  },
+  {
+   "call": "status",
+   "args": [
+    500,
+    650
+   ],
+   "expect": {
+    "budget": 500,
+    "spent": 650,
+    "left": -150,
+    "pct": 130,
+    "state": "over"
+   }
+  },
+  {
+   "call": "status",
+   "args": [
+    500,
+    100
+   ],
+   "expect": {
+    "budget": 500,
+    "spent": 100,
+    "left": 400,
+    "pct": 20,
+    "state": "ok"
+   }
+  },
+  {
+   "call": "status",
+   "args": [
+    100,
+    90,
+    {
+     "near": 0.95
+    }
+   ],
+   "expect": {
+    "budget": 100,
+    "spent": 90,
+    "left": 10,
+    "pct": 90,
+    "state": "ok"
+   }
+  },
+  {
+   "call": "status",
+   "args": [
+    0,
+    0
+   ],
+   "expect": {
+    "budget": 0,
+    "spent": 0,
+    "left": 0,
+    "pct": null,
+    "state": "ok"
+   }
+  },
+  {
+   "call": "status",
+   "args": [
+    "abc",
+    10
+   ],
+   "expect": null
+  },
+  {
+   "call": "compare",
+   "args": [
+    {
+     "food": 300,
+     "fun": 100
+    },
+    [
+     {
+      "category": "food",
+      "amount": 120.5
+     },
+     {
+      "category": "food",
+      "amount": 79.5
+     },
+     {
+      "category": "fun",
+      "amount": 110
+     },
+     {
+      "category": "travel",
+      "amount": 40
+     }
+    ]
+   ],
+   "expect": [
+    {
+     "category": "food",
+     "budget": 300,
+     "spent": 200,
+     "left": 100,
+     "pct": 66.7,
+     "state": "ok"
+    },
+    {
+     "category": "fun",
+     "budget": 100,
+     "spent": 110,
+     "left": -10,
+     "pct": 110,
+     "state": "over"
+    },
+    {
+     "category": "travel",
+     "budget": 0,
+     "spent": 40,
+     "left": -40,
+     "pct": null,
+     "state": "over"
+    }
+   ]
+  },
+  {
+   "call": "pace",
+   "args": [
+    300,
+    120,
+    {
+     "from": "2026-11-01",
+     "to": "2026-11-30",
+     "today": "2026-11-10"
+    }
+   ],
+   "expect": {
+    "budget": 300,
+    "spent": 120,
+    "left": 180,
+    "days": 30,
+    "daysLeft": 21,
+    "elapsed": 0.333,
+    "expected": 100,
+    "projected": 360,
+    "perDay": 8.57,
+    "state": "over"
+   }
+  },
+  {
+   "call": "pace",
+   "args": [
+    300,
+    120,
+    {
+     "from": "2026-11-30",
+     "to": "2026-11-01",
+     "today": "2026-11-10"
+    }
+   ],
+   "expect": null
+  }
+ ]
+}

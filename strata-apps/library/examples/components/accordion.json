@@ -1,0 +1,59 @@
+[
+ {
+  "props": {
+   "items": [
+    {
+     "id": "ship",
+     "title": "When will my order arrive?",
+     "subtitle": "Shipping",
+     "content": {
+      "$el": "Orders placed before 2 pm ship the same day and arrive in 2 to 4 working days."
+     }
+    },
+    {
+     "id": "return",
+     "title": "Can I return something?",
+     "subtitle": "Returns",
+     "content": {
+      "$el": "Yes, within 30 days of delivery, unused and in its original packaging."
+     }
+    },
+    {
+     "id": "pay",
+     "title": "Which payment methods do you take?",
+     "content": {
+      "$el": "Cards, PayPal and bank transfer."
+     }
+    }
+   ],
+   "open": [
+    "ship"
+   ],
+   "onToggle": "$fn"
+  }
+ },
+ {
+  "props": {
+   "items": [
+    {
+     "id": "2026-11-08",
+     "title": "Sunday 8 November",
+     "subtitle": "3 workouts",
+     "content": {
+      "$el": "Run 5 km, yoga 30 min, stretching 10 min"
+     }
+    },
+    {
+     "id": "2026-11-07",
+     "title": "Saturday 7 November",
+     "subtitle": "1 workout",
+     "content": {
+      "$el": "Swim 1.2 km"
+     }
+    }
+   ],
+   "multiple": false,
+   "onToggle": "$fn"
+  }
+ }
+]

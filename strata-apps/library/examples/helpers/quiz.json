@@ -1,0 +1,266 @@
+{
+ "cases": [
+  {
+   "call": "score",
+   "args": [
+    [
+     {
+      "answer": "Paris"
+     },
+     {
+      "answer": 2,
+      "points": 2
+     },
+     {
+      "answer": [
+       "a",
+       "c"
+      ]
+     }
+    ],
+    [
+     " paris ",
+     1,
+     [
+      "c",
+      "a"
+     ]
+    ]
+   ],
+   "expect": {
+    "points": 2,
+    "possible": 4,
+    "percent": 50,
+    "correct": [
+     0,
+     2
+    ],
+    "wrong": [
+     1
+    ]
+   }
+  },
+  {
+   "call": "score",
+   "args": [
+    [
+     {
+      "id": "q1",
+      "answer": "4"
+     },
+     {
+      "id": "q2",
+      "answer": true
+     }
+    ],
+    {
+     "q1": 4,
+     "q2": false
+    }
+   ],
+   "expect": {
+    "points": 1,
+    "possible": 2,
+    "percent": 50,
+    "correct": [
+     0
+    ],
+    "wrong": [
+     1
+    ]
+   }
+  },
+  {
+   "call": "score",
+   "args": [
+    [],
+    []
+   ],
+   "expect": {
+    "points": 0,
+    "possible": 0,
+    "percent": null,
+    "correct": [],
+    "wrong": []
+   }
+  },
+  {
+   "call": "passed",
+   "args": [
+    {
+     "points": 2,
+     "possible": 4,
+     "percent": 50,
+     "correct": [
+      0,
+      2
+     ],
+     "wrong": [
+      1
+     ]
+    }
+   ],
+   "expect": false
+  },
+  {
+   "call": "passed",
+   "args": [
+    {
+     "percent": 50
+    },
+    50
+   ],
+   "expect": true
+  },
+  {
+   "call": "shuffleChoices",
+   "args": [
+    {
+     "text": "Is water wet?",
+     "choices": [
+      "Yes"
+     ],
+     "answer": 0
+    },
+    7
+   ],
+   "expect": {
+    "text": "Is water wet?",
+    "choices": [
+     "Yes"
+    ],
+    "answer": 0
+   }
+  },
+  {
+   "call": "review",
+   "args": [
+    [
+     {
+      "question": "a",
+      "correct": true,
+      "at": "2026-11-01"
+     },
+     {
+      "question": "b",
+      "correct": false,
+      "at": "2026-11-02"
+     },
+     {
+      "question": "a",
+      "correct": false,
+      "at": "2026-11-03"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-01"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-02"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-03"
+     },
+     {
+      "question": "b",
+      "correct": true,
+      "at": "2026-11-04"
+     }
+    ]
+   ],
+   "expect": [
+    "a",
+    "b"
+   ]
+  },
+  {
+   "call": "streak",
+   "args": [
+    [
+     {
+      "question": "a",
+      "correct": true,
+      "at": "2026-11-01"
+     },
+     {
+      "question": "b",
+      "correct": false,
+      "at": "2026-11-02"
+     },
+     {
+      "question": "a",
+      "correct": false,
+      "at": "2026-11-03"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-01"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-02"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-03"
+     },
+     {
+      "question": "b",
+      "correct": true,
+      "at": "2026-11-04"
+     }
+    ]
+   ],
+   "expect": 2
+  },
+  {
+   "call": "streak",
+   "args": [
+    [
+     {
+      "question": "a",
+      "correct": true,
+      "at": "2026-11-01"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-01"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-02"
+     },
+     {
+      "question": "a",
+      "correct": false,
+      "at": "2026-11-03"
+     },
+     {
+      "question": "c",
+      "correct": true,
+      "at": "2026-11-03"
+     }
+    ],
+    "c"
+   ],
+   "expect": 3
+  },
+  {
+   "call": "review",
+   "args": [
+    []
+   ],
+   "expect": []
+  }
+ ]
+}

@@ -1,0 +1,61 @@
+[
+ {
+  "props": {
+   "rows": [
+    {
+     "id": "u1",
+     "name": "Maya Chen",
+     "value": 84210,
+     "sub": "12 day streak"
+    },
+    {
+     "id": "u2",
+     "name": "Tom Okafor",
+     "value": 79950,
+     "sub": "9 day streak"
+    },
+    {
+     "id": "u3",
+     "name": "Priya Nair",
+     "value": 79950
+    },
+    {
+     "id": "u4",
+     "name": "Lena Fischer",
+     "value": 66400,
+     "sub": "4 day streak"
+    },
+    {
+     "id": "u5",
+     "name": "Sam Rivera",
+     "value": 51230
+    },
+    {
+     "id": "u6",
+     "name": "Jonas Berg",
+     "value": 48775
+    },
+    {
+     "id": "u7",
+     "name": "Ava Martin",
+     "value": 31020
+    },
+    {
+     "id": "u8",
+     "name": "Rosa Klein",
+     "value": 22890
+    }
+   ],
+   "format": "$fn",
+   "highlight": "u8",
+   "limit": 5,
+   "onSelect": "$fn"
+  }
+ },
+ {
+  "props": {
+   "rows": [],
+   "empty": "No scores yet: finish a quiz to get on the board"
+  }
+ }
+]

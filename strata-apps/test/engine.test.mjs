@@ -8,8 +8,8 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validate, uiRefs, pinShared, checkShared, sharedRefs } from '../engine/forge.mjs';
-import { readLibrary, parsePiece } from '../engine/library.mjs';
+import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan } from '../engine/forge.mjs';
+import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
 import { checkFunction, runFunction } from '../engine/sandbox.mjs';
 import { Services, buildMessage, smtpSend } from '../engine/services.mjs';
@@ -137,14 +137,26 @@ test('the built-in library: every piece has a header, passes the checks a writte
   assert.ok(pieces.length >= 25, `${pieces.length} pieces`);
   const names = new Set(pieces.map((p) => `${p.kind}/${p.name}`));
   for (const p of pieces) {
-    assert.ok(p.meta.title && p.meta.description && (p.kind === 'helper' ? p.meta.api : p.meta.props), `${p.name}: header`);
-    assert.deepEqual(checkShared(p.kind, p.code), [], p.name);
+    const third = { component: p.meta.props, helper: p.meta.api, view: p.meta.tables, function: p.meta.input }[p.kind];
+    assert.ok(p.meta.title && p.meta.description && third, `${p.name}: header`);
+    if (p.kind === 'view') {
+      assert.deepEqual(checkView(p.code), [], p.name);
+      assert.ok(p.tables.length, `${p.name}: names its tables`);
+      for (const t of p.tables) assert.deepEqual(await validate({ tables: [t] }, {}, { tables: [], views: [], functions: [], shared: [], comp: { n: 1 } }, []), ['the app would have no view'], `${p.name}: table ${t.name}`);
+    } else if (p.kind === 'function') {
+      assert.deepEqual(await checkFunction(p.code), [], p.name);
+    } else {
+      assert.deepEqual(checkShared(p.kind, p.code), [], p.name);
+    }
     for (const ref of sharedRefs(p.code)) assert.ok(names.has(ref), `${p.name} calls ${ref}, which the library lacks`);
     if (p.kind === 'helper') {
       const api = new Function(`${p.code}\n;return helper();`)();
       assert.ok(Object.values(api).every((f) => typeof f === 'function'), `${p.name}: helper() returns functions`);
     }
   }
+  assert.deepEqual(parseTables('notes(title text, tags keyword[]); links(note keyword, n int)'),
+    [{ name: 'notes', columns: [{ name: 'title', type: 'text' }, { name: 'tags', type: 'keyword[]' }] }, { name: 'links', columns: [{ name: 'note', type: 'keyword' }, { name: 'n', type: 'int' }] }]);
+  assert.throws(() => parseTables('notes(title string)'), /not "name type"/);
   const { meta, code } = parsePiece('// title: T\n// description: one\n//   two\n// api: f()\nfunction helper() { return {} }\n');
   assert.deepEqual(meta, { title: 'T', description: 'one\ntwo', api: 'f()' });
   assert.equal(code, 'function helper() { return {} }\n');
@@ -280,4 +292,52 @@ test('the word import in a lesson is fine; loading code is not', () => {
   assert.deepEqual(checkShared('component', lesson).filter((p) => /import/.test(p)), []);
   assert.ok(checkShared('component', "function component(props) { const m = require('fs'); return h('div'); }").some((p) => /import or require/.test(p)));
   assert.ok(checkShared('component', "function component(props) { import('x'); return h('div'); }").some((p) => /import or require/.test(p)));
+});
+
+test('a reused starter view brings its tables, adding only what the app lacks', () => {
+  const library = [{ id: 'lib/view/notes@1', app: 'lib', kind: 'view', title: 'Notes', spec: { tables: [{ name: 'notes', columns: [{ name: 'title', type: 'text' }, { name: 'pinned', type: 'bool' }] }] } },
+    { id: 'abc123/view/board@2', app: 'abc123', kind: 'view', title: 'Board', spec: { tables: [{ name: 'cards', columns: [{ name: 'x', type: 'text' }] }] } }];
+  const fresh = { tables: [] };
+  const p1 = completePlan({ reuse: [{ id: 'lib/view/notes@1', slug: 'notes' }, { id: 'abc123/view/board@2' }] }, fresh, library);
+  assert.deepEqual(p1.tables.map((t) => [t.name, t.columns.map((c) => c.name)]), [['notes', ['title', 'pinned']]]);
+  const has = { tables: [{ spec: { name: 'notes', columns: [{ name: 'title', type: 'text' }] } }] };
+  const p2 = completePlan({ reuse: [{ id: 'lib/view/notes@1' }], tables: [] }, has, library);
+  assert.deepEqual(p2.tables.map((t) => [t.name, t.columns.map((c) => c.name)]), [['notes', ['pinned']]]);
+  const p3 = completePlan({ reuse: [{ id: 'lib/view/notes@1' }], tables: [{ name: 'notes', columns: [{ name: 'pinned', type: 'bool' }] }] }, has, library);
+  assert.deepEqual(p3.tables.map((t) => [t.name, t.columns.map((c) => c.name)]), [['notes', ['pinned']]]);
+});
+
+// Each built-in helper's example calls, from library/examples/helpers, run
+// where views run (here, in Node) and where functions run (QuickJS).
+test('the built-in helpers give the results their examples promise, in the browser and in the server sandbox', async () => {
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const lib = new URL('../library', import.meta.url).pathname;
+  const pieces = (await readLibrary(lib)).filter((p) => p.kind === 'helper');
+  const helpers = pieces.map((p) => ({ name: p.name, code: p.code }));
+  const near = (a, b) => {
+    if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(a), Math.abs(b));
+    if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => near(x, b[i]));
+    if (a && b && typeof a === 'object' && typeof b === 'object') {
+      const ka = Object.keys(a).filter((k) => a[k] !== undefined).sort();
+      const kb = Object.keys(b).filter((k) => b[k] !== undefined).sort();
+      return ka.length === kb.length && ka.every((k, i) => k === kb[i] && near(a[k], b[k]));
+    }
+    return a === b;
+  };
+  const libs = {};
+  for (const h of helpers) libs[h.name] = new Function('lib', `${h.code}\n;return helper();`)(libs);
+  let n = 0;
+  for (const f of readdirSync(`${lib}/examples/helpers`).filter((x) => x.endsWith('.json'))) {
+    const name = f.slice(0, -5);
+    const { cases } = JSON.parse(readFileSync(`${lib}/examples/helpers/${f}`, 'utf8'));
+    for (const c of cases) {
+      const got = JSON.parse(JSON.stringify(libs[name][c.call](...c.args) ?? null));
+      assert.ok(near(got, c.expect ?? null), `${name}.${c.call}(${JSON.stringify(c.args)}) -> ${JSON.stringify(got)}, expected ${JSON.stringify(c.expect)}`);
+      n++;
+    }
+    const res = await runFunction(`function run(input, app) { return input.cases.map(function (c) { var v = lib[input.name][c.call].apply(null, c.args); return v === undefined ? null : v; }); }`,
+      { name, cases }, async () => null, { helpers });
+    res.result.forEach((got, i) => assert.ok(near(JSON.parse(JSON.stringify(got)), cases[i].expect ?? null), `in QuickJS, ${name}.${cases[i].call}(${JSON.stringify(cases[i].args)}) -> ${JSON.stringify(got)}`));
+  }
+  assert.ok(n >= 150, `${n} cases`);
 });

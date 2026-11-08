@@ -144,9 +144,13 @@ export class Store {
   // newest version of every shared component. Older versions stay in Strata
   // (going back needs them) but the library offers only what is live.
   async liveMap() {
+    const starters = async (map) => {
+      for (const c of (await this.starters()).values()) map.set(`${LIB}/${c.kind}/${c.slug}`, c.id);
+      return map;
+    };
     try {
       const rows = await this.db.query(`SELECT id, live FROM sa_graph WHERE kind != 'app' LIMIT 10000`);
-      return new Map(rows.filter((r) => r.live).map((r) => [r.id, r.live]));
+      return starters(new Map(rows.filter((r) => r.live).map((r) => [r.id, r.live])));
     } catch (e) {
       this.log(`graph: ${e.message}; reading what is live from every app`);
     }
@@ -157,7 +161,7 @@ export class Store {
       for (const c of view?.caps || []) if (!SHARED_KINDS.includes(c.kind)) live.set(`${c.app}/${c.kind}/${c.slug}`, c.id);
     }
     for (const c of (await this.shared()).values()) live.set(`${LIB}/${c.kind}/${c.slug}`, c.id);
-    return live;
+    return starters(live);
   }
 
   // BM25 over what capabilities are and do, and over their code. A hit on
@@ -255,6 +259,19 @@ export class Store {
   async shared() {
     const rows = await this.db.query(`SELECT id, slug, version, kind, title, description, spec, author, created FROM sa_capabilities
       WHERE kind IN ('component', 'helper') ORDER BY version DESC LIMIT 5000`);
+    const out = new Map();
+    for (const r of rows) {
+      const key = `${r.kind}/${r.slug}`;
+      if (!out.has(key)) out.set(key, { ...r, version: Number(r.version), spec: parseSpec(r.spec) });
+    }
+    return out;
+  }
+
+  // The built-in starters (views and functions an app copies as they are),
+  // the newest version of each, by kind/slug.
+  async starters() {
+    const rows = await this.db.query(`SELECT id, slug, version, kind, title, description, spec, author, created FROM sa_capabilities
+      WHERE app = :lib AND kind IN ('view', 'function') ORDER BY version DESC LIMIT 2000`, { lib: LIB });
     const out = new Map();
     for (const r of rows) {
       const key = `${r.kind}/${r.slug}`;

@@ -1,0 +1,67 @@
+{
+ "rows": {
+  "recipes": [
+   {
+    "title": "Lemon garlic roast chicken",
+    "photo": "https://images.unsplash.com/photo-1598103442097-8b74394b95c6?w=800",
+    "minutes": 75,
+    "servings": 4,
+    "ingredients": "1 whole chicken (about 1.6 kg)\n2 lemons\n6 cloves garlic\n3 tbsp olive oil\n1 tsp salt\n1/2 tsp black pepper\n4 sprigs thyme",
+    "steps": "Heat the oven to 220°C.\nPat the chicken dry and rub it with olive oil, salt and pepper.\nHalve the lemons and put them in the cavity with the garlic and thyme.\nRoast for 60 to 70 minutes, until the juices run clear.\nRest for 10 minutes before carving.",
+    "tags": [
+     "dinner",
+     "chicken"
+    ]
+   },
+   {
+    "title": "Weeknight tomato soup",
+    "photo": "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=800",
+    "minutes": 35,
+    "servings": 4,
+    "ingredients": "2 tbsp butter\n1 onion, chopped\n2 cloves garlic\n800 g canned whole tomatoes\n500 ml vegetable stock\n1/2 cup cream\n1 tsp sugar\nSalt to taste",
+    "steps": "Melt the butter and soften the onion for 8 minutes.\nAdd the garlic and cook for 1 minute.\nAdd the tomatoes, stock and sugar; simmer for 20 minutes.\nBlend until smooth, stir in the cream and season.",
+    "tags": [
+     "soup",
+     "vegetarian"
+    ]
+   },
+   {
+    "title": "Banana oat pancakes",
+    "photo": null,
+    "minutes": 20,
+    "servings": 2,
+    "ingredients": "2 ripe bananas\n2 eggs\n1 cup rolled oats\n1/2 tsp baking powder\n1 pinch salt\n1 tbsp butter for the pan",
+    "steps": "Blend the bananas, eggs, oats, baking powder and salt until smooth.\nRest the batter for 5 minutes.\nCook small pancakes in butter over medium heat, 2 minutes a side.",
+    "tags": [
+     "breakfast",
+     "vegetarian"
+    ]
+   },
+   {
+    "title": "Chickpea and spinach curry",
+    "photo": null,
+    "minutes": 40,
+    "servings": 4,
+    "ingredients": "Base:\n2 tbsp oil\n1 onion, diced\n1 tbsp grated ginger\n3 cloves garlic\n2 tbsp curry paste\nCurry:\n800 g chickpeas, drained\n400 ml coconut milk\n200 g spinach\n1 lime",
+    "steps": "Fry the onion in the oil until golden, about 10 minutes.\nAdd the ginger, garlic and curry paste and cook for 2 minutes.\nAdd the chickpeas and coconut milk and simmer for 15 minutes.\nStir in the spinach until it wilts, then finish with lime juice.",
+    "tags": [
+     "dinner",
+     "vegetarian",
+     "vegan"
+    ]
+   },
+   {
+    "title": "Classic chocolate chip cookies",
+    "photo": null,
+    "minutes": 30,
+    "servings": 24,
+    "ingredients": "225 g butter, softened\n200 g brown sugar\n100 g white sugar\n2 eggs\n1 tsp vanilla\n340 g flour\n1 tsp baking soda\n1/2 tsp salt\n300 g chocolate chips",
+    "steps": "Heat the oven to 180°C.\nCream the butter and sugars, then beat in the eggs and vanilla.\nMix in the flour, baking soda and salt, then the chocolate chips.\nScoop onto lined trays and bake for 10 to 12 minutes.",
+    "tags": [
+     "baking",
+     "dessert"
+    ]
+   }
+  ]
+ }
+}

@@ -1,0 +1,35 @@
+[
+ {
+  "props": {
+   "value": 72,
+   "min": 0,
+   "max": 100,
+   "label": "Monthly budget used",
+   "format": "$fn",
+   "size": 180
+  }
+ },
+ {
+  "props": {
+   "value": 38,
+   "min": 0,
+   "max": 100,
+   "label": "Battery",
+   "bands": [
+    {
+     "to": 20,
+     "color": "#ef4444"
+    },
+    {
+     "to": 50,
+     "color": "#f59e0b"
+    },
+    {
+     "to": 100,
+     "color": "#22c55e"
+    }
+   ],
+   "size": 160
+  }
+ }
+]

@@ -1,0 +1,68 @@
+{
+ "tables": [
+  {
+   "name": "contacts",
+   "columns": [
+    {
+     "name": "name",
+     "type": "text"
+    },
+    {
+     "name": "email",
+     "type": "keyword"
+    },
+    {
+     "name": "phone",
+     "type": "keyword"
+    }
+   ]
+  }
+ ],
+ "rows": {
+  "contacts": [
+   {
+    "name": "Ana Lima",
+    "email": "ana@example.com",
+    "phone": "555-0101"
+   },
+   {
+    "name": "Ben Ortiz",
+    "email": "ben@example.com",
+    "phone": "555-0102"
+   },
+   {
+    "name": "ana  lima",
+    "email": " ANA@example.com",
+    "phone": "555-0199"
+   },
+   {
+    "name": "Cara Diaz",
+    "email": "cara@example.com",
+    "phone": "555-0103"
+   },
+   {
+    "name": "Ana Lima",
+    "email": "ana@example.com",
+    "phone": ""
+   },
+   {
+    "name": "",
+    "email": "",
+    "phone": "555-0104"
+   },
+   {
+    "name": "",
+    "email": "",
+    "phone": "555-0105"
+   }
+  ]
+ },
+ "input": {
+  "table": "contacts",
+  "columns": [
+   "name",
+   "email"
+  ],
+  "remove": false
+ }
+}

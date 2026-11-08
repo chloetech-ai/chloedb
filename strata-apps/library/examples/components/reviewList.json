@@ -1,0 +1,59 @@
+[
+ {
+  "props": {
+   "title": "Reviews",
+   "summary": true,
+   "sort": "new",
+   "onSort": "$fn",
+   "onHelpful": "$fn",
+   "reviews": [
+    {
+     "id": "r1",
+     "author": "Maya Lindqvist",
+     "rating": 5,
+     "text": "Best sourdough in the neighbourhood. The crust is perfect and they still have loaves at 4 pm.",
+     "at": "2026-11-07T15:20:00Z",
+     "helpful": 4
+    },
+    {
+     "id": "r2",
+     "author": "Tom Okafor",
+     "rating": 4,
+     "text": "Great coffee, a little slow on Saturday mornings.",
+     "at": "2026-11-03T09:05:00Z",
+     "helpful": 1
+    },
+    {
+     "id": "r3",
+     "author": "Priya Shah",
+     "rating": 2,
+     "text": "Croissant was stale and the line was long.\nWill try again on a weekday.",
+     "at": "2026-10-28T11:40:00Z",
+     "helpful": 7
+    },
+    {
+     "id": "r4",
+     "author": "Lukas Brandt",
+     "rating": 5,
+     "text": "",
+     "at": "2026-10-20T17:00:00Z"
+    },
+    {
+     "id": "r5",
+     "author": "Ana Ruiz",
+     "rating": 3,
+     "text": "Fine, nothing special. Friendly staff though.",
+     "at": "2026-10-12T13:15:00Z",
+     "helpful": 0
+    }
+   ]
+  }
+ },
+ {
+  "props": {
+   "title": "Reviews",
+   "reviews": [],
+   "empty": "No reviews yet — be the first to leave one."
+  }
+ }
+]

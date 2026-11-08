@@ -1,0 +1,71 @@
+[
+ {
+  "props": {
+   "tabs": [
+    {
+     "id": "open",
+     "label": "Open",
+     "count": 7,
+     "content": {
+      "$el": "7 tasks still to do: call the plumber, renew passport, book dentist…"
+     }
+    },
+    {
+     "id": "waiting",
+     "label": "Waiting",
+     "count": 2,
+     "content": {
+      "$el": "2 tasks waiting on someone else"
+     }
+    },
+    {
+     "id": "done",
+     "label": "Done",
+     "count": 31,
+     "content": {
+      "$el": "31 tasks finished this month"
+     }
+    },
+    {
+     "id": "archived",
+     "label": "Archived",
+     "content": {
+      "$el": "Nothing archived yet"
+     }
+    }
+   ],
+   "value": "open",
+   "onChange": "$fn",
+   "label": "Task lists"
+  }
+ },
+ {
+  "props": {
+   "tabs": [
+    {
+     "id": "overview",
+     "label": "Overview",
+     "content": {
+      "$el": "Spent $1,284.50 of a $1,600 budget in November"
+     }
+    },
+    {
+     "id": "history",
+     "label": "History",
+     "content": {
+      "$el": "Every expense since January, newest first"
+     }
+    },
+    {
+     "id": "settings",
+     "label": "Settings",
+     "content": {
+      "$el": "Currency, monthly budget and categories"
+     }
+    }
+   ],
+   "value": "history",
+   "onChange": "$fn"
+  }
+ }
+]

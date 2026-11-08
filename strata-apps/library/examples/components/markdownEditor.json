@@ -1,0 +1,19 @@
+[
+ {
+  "props": {
+   "value": "## Trip to Lisbon\n\nThings to **book** before we go:\n\n- Flights for _14 Nov_\n- Tram 28 tickets\n- Dinner at [Taberna da Rua das Flores](https://example.com)\n\nConfirmation code: `LX4821`",
+   "onChange": "$fn",
+   "onSave": "$fn",
+   "rows": 10
+  }
+ },
+ {
+  "props": {
+   "value": "",
+   "placeholder": "What happened today?",
+   "rows": 6,
+   "label": "Journal entry",
+   "onChange": "$fn"
+  }
+ }
+]

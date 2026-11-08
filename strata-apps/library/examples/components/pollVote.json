@@ -1,0 +1,64 @@
+[
+ {
+  "props": {
+   "question": "Where should we go for the team lunch on Friday?",
+   "options": [
+    {
+     "id": "thai",
+     "label": "Bangkok Kitchen",
+     "votes": 7
+    },
+    {
+     "id": "pizza",
+     "label": "Luigi's Pizza",
+     "votes": 4
+    },
+    {
+     "id": "sushi",
+     "label": "Sushi Ten",
+     "votes": 5
+    },
+    {
+     "id": "salad",
+     "label": "Green Bowl",
+     "votes": 1
+    }
+   ],
+   "voted": null,
+   "onVote": "$fn",
+   "allowChange": true,
+   "showResults": "after"
+  }
+ },
+ {
+  "props": {
+   "question": "Where should we go for the team lunch on Friday?",
+   "options": [
+    {
+     "id": "thai",
+     "label": "Bangkok Kitchen",
+     "votes": 8
+    },
+    {
+     "id": "pizza",
+     "label": "Luigi's Pizza",
+     "votes": 4
+    },
+    {
+     "id": "sushi",
+     "label": "Sushi Ten",
+     "votes": 5
+    },
+    {
+     "id": "salad",
+     "label": "Green Bowl",
+     "votes": 1
+    }
+   ],
+   "voted": "thai",
+   "onVote": "$fn",
+   "allowChange": true,
+   "showResults": "after"
+  }
+ }
+]

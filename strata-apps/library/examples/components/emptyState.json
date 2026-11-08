@@ -1,0 +1,29 @@
+[
+ {
+  "props": {
+   "icon": "📋",
+   "title": "No tasks yet",
+   "text": "Add your first task to start planning the week.",
+   "action": {
+    "label": "Add a task",
+    "onClick": "$fn"
+   },
+   "secondary": {
+    "label": "Import from CSV",
+    "onClick": "$fn"
+   }
+  }
+ },
+ {
+  "props": {
+   "icon": "🔍",
+   "title": "No matches",
+   "text": "Nothing matches “dentist”. Try another word.",
+   "secondary": {
+    "label": "Clear search",
+    "onClick": "$fn"
+   },
+   "compact": true
+  }
+ }
+]

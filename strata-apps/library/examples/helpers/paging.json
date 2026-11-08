@@ -1,0 +1,145 @@
+{
+ "cases": [
+  {
+   "call": "page",
+   "args": [
+    [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    2,
+    2
+   ],
+   "expect": {
+    "items": [
+     3,
+     4
+    ],
+    "page": 2,
+    "pages": 3,
+    "total": 5,
+    "from": 3,
+    "to": 4
+   }
+  },
+  {
+   "call": "page",
+   "args": [
+    [
+     1,
+     2,
+     3
+    ],
+    9,
+    2
+   ],
+   "expect": {
+    "items": [
+     3
+    ],
+    "page": 2,
+    "pages": 2,
+    "total": 3,
+    "from": 3,
+    "to": 3
+   }
+  },
+  {
+   "call": "page",
+   "args": [
+    [],
+    1
+   ],
+   "expect": {
+    "items": [],
+    "page": 1,
+    "pages": 1,
+    "total": 0,
+    "from": 0,
+    "to": 0
+   }
+  },
+  {
+   "call": "pages",
+   "args": [
+    5,
+    20
+   ],
+   "expect": [
+    1,
+    "…",
+    4,
+    5,
+    6,
+    "…",
+    20
+   ]
+  },
+  {
+   "call": "pages",
+   "args": [
+    1,
+    20,
+    1
+   ],
+   "expect": [
+    1,
+    2,
+    "…",
+    20
+   ]
+  },
+  {
+   "call": "pages",
+   "args": [
+    4,
+    7,
+    1
+   ],
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ]
+  },
+  {
+   "call": "pages",
+   "args": [
+    1,
+    0
+   ],
+   "expect": []
+  },
+  {
+   "call": "offset",
+   "args": [
+    3,
+    25
+   ],
+   "expect": 50
+  },
+  {
+   "call": "clamp",
+   "args": [
+    9,
+    5
+   ],
+   "expect": 5
+  },
+  {
+   "call": "clamp",
+   "args": [
+    0,
+    5
+   ],
+   "expect": 1
+  }
+ ]
+}

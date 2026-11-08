@@ -1,0 +1,58 @@
+[
+ {
+  "props": {
+   "items": [
+    {
+     "id": "t1",
+     "title": "Book dentist appointment",
+     "subtitle": "Dr. Alvarez, before the end of the month",
+     "meta": "Nov 12",
+     "group": "To do"
+    },
+    {
+     "id": "t2",
+     "title": "Renew car insurance",
+     "subtitle": "Compare two quotes first",
+     "meta": "Nov 20",
+     "group": "To do"
+    },
+    {
+     "id": "t3",
+     "title": "Draft quarterly report",
+     "subtitle": "Sections 1–3 written",
+     "meta": "Today",
+     "group": "Doing"
+    },
+    {
+     "id": "t4",
+     "title": "Pay electricity bill",
+     "meta": "Nov 5",
+     "group": "Done"
+    },
+    {
+     "id": "t5",
+     "title": "Order birthday gift for Mia",
+     "meta": "Nov 3",
+     "group": "Done"
+    }
+   ],
+   "groupOrder": [
+    "Doing",
+    "To do",
+    "Done"
+   ],
+   "collapsible": true,
+   "collapsed": [
+    "Done"
+   ],
+   "onCollapse": "$fn",
+   "onSelect": "$fn"
+  }
+ },
+ {
+  "props": {
+   "items": [],
+   "empty": "No contacts yet. Add one with the form above."
+  }
+ }
+]

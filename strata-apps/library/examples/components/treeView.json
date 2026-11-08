@@ -1,0 +1,118 @@
+[
+ {
+  "props": {
+   "nodes": [
+    {
+     "id": "work",
+     "label": "Work",
+     "icon": "📁",
+     "badge": 7,
+     "children": [
+      {
+       "id": "clients",
+       "label": "Clients",
+       "icon": "📁",
+       "children": [
+        {
+         "id": "acme",
+         "label": "Acme proposal",
+         "icon": "📄"
+        },
+        {
+         "id": "northwind",
+         "label": "Northwind contract",
+         "icon": "📄",
+         "badge": "new"
+        }
+       ]
+      },
+      {
+       "id": "q4",
+       "label": "Q4 planning",
+       "icon": "📄"
+      }
+     ]
+    },
+    {
+     "id": "home",
+     "label": "Home",
+     "icon": "📁",
+     "children": [
+      {
+       "id": "garden",
+       "label": "Garden plans",
+       "icon": "📄"
+      },
+      {
+       "id": "taxes",
+       "label": "Taxes 2026",
+       "icon": "📄",
+       "badge": 3
+      }
+     ]
+    },
+    {
+     "id": "reading",
+     "label": "Reading list",
+     "icon": "📄"
+    }
+   ],
+   "expanded": [
+    "work",
+    "clients"
+   ],
+   "selected": "acme",
+   "onToggle": "$fn",
+   "onSelect": "$fn"
+  }
+ },
+ {
+  "props": {
+   "nodes": [
+    {
+     "id": "work",
+     "label": "Work",
+     "icon": "📁",
+     "children": [
+      {
+       "id": "clients",
+       "label": "Clients",
+       "icon": "📁",
+       "children": [
+        {
+         "id": "acme",
+         "label": "Acme proposal",
+         "icon": "📄"
+        },
+        {
+         "id": "northwind",
+         "label": "Northwind contract",
+         "icon": "📄"
+        }
+       ]
+      },
+      {
+       "id": "q4",
+       "label": "Q4 planning",
+       "icon": "📄"
+      }
+     ]
+    },
+    {
+     "id": "home",
+     "label": "Home",
+     "icon": "📁",
+     "children": [
+      {
+       "id": "garden",
+       "label": "Garden plans",
+       "icon": "📄"
+      }
+     ]
+    }
+   ],
+   "search": "plan",
+   "onSelect": "$fn"
+  }
+ }
+]

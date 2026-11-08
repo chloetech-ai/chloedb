@@ -1,0 +1,20 @@
+[
+ {
+  "props": {
+   "value": "",
+   "placeholder": "Search recipes",
+   "onSearch": "$fn",
+   "onEnter": "$fn",
+   "autofocus": true
+  }
+ },
+ {
+  "props": {
+   "value": "pasta",
+   "placeholder": "Search recipes",
+   "onSearch": "$fn",
+   "count": 12,
+   "delay": 300
+  }
+ }
+]

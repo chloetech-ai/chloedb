@@ -1,0 +1,140 @@
+{
+ "cases": [
+  {
+   "call": "payment",
+   "args": [
+    200000,
+    6,
+    360
+   ],
+   "expect": 1199.1
+  },
+  {
+   "call": "payment",
+   "args": [
+    1200,
+    0,
+    12
+   ],
+   "expect": 100
+  },
+  {
+   "call": "payment",
+   "args": [
+    1000,
+    12,
+    0
+   ],
+   "expect": null
+  },
+  {
+   "call": "schedule",
+   "args": [
+    1000,
+    12,
+    2
+   ],
+   "expect": {
+    "payment": 507.51,
+    "months": 2,
+    "totalPaid": 1015.02,
+    "totalInterest": 15.02,
+    "rows": [
+     {
+      "month": 1,
+      "payment": 507.51,
+      "interest": 10,
+      "principal": 497.51,
+      "balance": 502.49
+     },
+     {
+      "month": 2,
+      "payment": 507.51,
+      "interest": 5.02,
+      "principal": 502.49,
+      "balance": 0
+     }
+    ]
+   }
+  },
+  {
+   "call": "schedule",
+   "args": [
+    300,
+    0,
+    3,
+    {
+     "extra": 100
+    }
+   ],
+   "expect": {
+    "payment": 100,
+    "months": 2,
+    "totalPaid": 300,
+    "totalInterest": 0,
+    "rows": [
+     {
+      "month": 1,
+      "payment": 200,
+      "interest": 0,
+      "principal": 200,
+      "balance": 100
+     },
+     {
+      "month": 2,
+      "payment": 100,
+      "interest": 0,
+      "principal": 100,
+      "balance": 0
+     }
+    ]
+   }
+  },
+  {
+   "call": "compound",
+   "args": [
+    1000,
+    10,
+    2,
+    {
+     "perYear": 1,
+     "deposit": 100
+    }
+   ],
+   "expect": 1420
+  },
+  {
+   "call": "monthsToGoal",
+   "args": [
+    1000,
+    100
+   ],
+   "expect": 10
+  },
+  {
+   "call": "monthsToGoal",
+   "args": [
+    1000,
+    0
+   ],
+   "expect": null
+  },
+  {
+   "call": "apr",
+   "args": [
+    1000,
+    507.5124378,
+    2
+   ],
+   "expect": 12
+  },
+  {
+   "call": "effectiveRate",
+   "args": [
+    12,
+    12
+   ],
+   "expect": 12.68
+  }
+ ]
+}

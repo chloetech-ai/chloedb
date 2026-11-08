@@ -1,0 +1,42 @@
+{
+ "rows": {
+  "expenses": [
+   {
+    "amount": 64.2,
+    "category": "groceries",
+    "spent_on": "2026-11-08",
+    "note": "Weekly shop at the market"
+   },
+   {
+    "amount": 4.75,
+    "category": "coffee",
+    "spent_on": "2026-11-08",
+    "note": "Flat white"
+   },
+   {
+    "amount": 38,
+    "category": "dining",
+    "spent_on": "2026-11-07",
+    "note": "Dinner with Sam"
+   },
+   {
+    "amount": 2.9,
+    "category": "transport",
+    "spent_on": "2026-11-06",
+    "note": "Bus fare"
+   },
+   {
+    "amount": 119.99,
+    "category": "utilities",
+    "spent_on": "2026-11-03",
+    "note": "Electricity bill"
+   },
+   {
+    "amount": 15.49,
+    "category": "subscriptions",
+    "spent_on": "2026-11-01",
+    "note": "Streaming"
+   }
+  ]
+ }
+}

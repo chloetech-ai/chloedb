@@ -435,7 +435,7 @@ function renderFrames() {
   const v = st.views.find((x) => x.slug === S.view);
   if (v && !S.frames.has(v.slug)) {
     const params = S.params?.[v.slug] || {};
-    const iframe = h('iframe', { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads', title: v.title });
+    const iframe = h('iframe', { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads', title: v.title, allow: 'clipboard-write' });
     iframe.srcdoc = srcdoc(v, params, st.components, st.helpers);
     box.append(iframe);
     S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });

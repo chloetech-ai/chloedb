@@ -1,0 +1,22 @@
+[
+ {
+  "props": {
+   "title": "streak.py",
+   "language": "python",
+   "highlight": [
+    6,
+    7
+   ],
+   "code": "from datetime import date, timedelta\n\ndef current_streak(days, today=None):\n    \"\"\"Count the run of done days ending today or yesterday.\"\"\"\n    today = today or date.today()\n    done = set(days)\n    if today not in done:  # still alive until midnight\n        today -= timedelta(days=1)\n    n = 0\n    while today in done:\n        n += 1\n        today -= timedelta(days=1)\n    return n\n\nprint(current_streak([date(2026, 11, 7), date(2026, 11, 8)]))\n"
+  }
+ },
+ {
+  "props": {
+   "language": "sql",
+   "start": 12,
+   "copy": true,
+   "maxHeight": 240,
+   "code": "-- open tasks due this month, newest first\nSELECT title, status, due\nFROM tasks\nWHERE status = :s AND due LIKE '2026-11-%'\nORDER BY created DESC\nLIMIT 50"
+  }
+ }
+]
