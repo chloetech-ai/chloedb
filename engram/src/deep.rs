@@ -524,28 +524,53 @@ pub fn rank(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str,
                 out.error = Some("no JSON in the ranker's reply".into());
                 return out;
             };
-            let known: HashSet<&str> = cands.iter().map(|c| c.record.id.as_str()).collect();
+            let add = |out: &mut Ranked, given: &str, why: &str| {
+                for id in pick_ids(given, cands) {
+                    if out.picks.len() < cfg.max_picks && !out.picks.iter().any(|(i, _)| *i == id) {
+                        out.picks.push((id, clip(why, 200)));
+                    }
+                }
+            };
             for p in v.get("relevant").and_then(|x| x.as_array()).into_iter().flatten() {
                 let (id, why) = match p {
-                    Json::String(s) => (s.trim().trim_matches(|c| c == '[' || c == ']').to_string(), String::new()),
-                    _ => (
-                        p.get("id").and_then(|x| x.as_str()).unwrap_or("").trim().trim_matches(|c| c == '[' || c == ']').to_string(),
-                        p.get("why").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
-                    ),
+                    Json::String(s) => (s.as_str(), ""),
+                    _ => (p.get("id").and_then(|x| x.as_str()).unwrap_or(""), p.get("why").and_then(|x| x.as_str()).unwrap_or("").trim()),
                 };
-                if known.contains(id.as_str()) && !out.picks.iter().any(|(i, _)| *i == id) {
-                    out.picks.push((id, clip(&why, 200)));
-                }
-                if out.picks.len() >= cfg.max_picks {
-                    break;
-                }
+                add(&mut out, id, why);
             }
             out.answer = clip(v.get("answer").and_then(|x| x.as_str()).unwrap_or("").trim(), 800);
+            // No picks, but a reading that cites records: those it cites.
+            if out.picks.is_empty() {
+                let cited: Vec<String> = cite_re().find_iter(&out.answer).map(|m| m.as_str().to_string()).collect();
+                for c in cited {
+                    add(&mut out, &c, "cited in the reading");
+                }
+            }
             out.confidence = v.get("confidence").and_then(|x| x.as_str()).unwrap_or("low").trim().to_lowercase();
         }
         Err(e) => out.error = Some(e.to_string()),
     }
     out
+}
+
+/// The candidate ids a pick names: its id; or, when the model wrote a
+/// session's name instead (`b2g13` for `b2g13:2478`, which ids begin with),
+/// that session's candidates, best first, at most three.
+fn pick_ids(given: &str, cands: &[Cand]) -> Vec<String> {
+    let id = given.trim().trim_matches(|c: char| c == '[' || c == ']' || c == '(' || c == ')' || c == '"' || c == ',' || c == '.');
+    if id.is_empty() {
+        return Vec::new();
+    }
+    if let Some(c) = cands.iter().find(|c| c.record.id == id) {
+        return vec![c.record.id.clone()];
+    }
+    cands.iter().filter(|c| c.record.session == id || c.record.id.split(':').next() == Some(id)).take(3).map(|c| c.record.id.clone()).collect()
+}
+
+/// What a reading cites: ids (`b2g13:2478`) or names of sessions.
+fn cite_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[A-Za-z0-9][A-Za-z0-9_.-]*(?::[0-9]+)?").unwrap())
 }
 
 /// Features the local ranker scores a candidate by, in [`FEATURES`] order.
@@ -833,6 +858,23 @@ mod tests {
         let found = |f: &Filter| run_query(&s, &q, f, 10).unwrap().into_iter().map(|r| r.id).collect::<Vec<_>>();
         assert_eq!(found(&Filter { as_of: Some(100 * day), ..Default::default() }), vec![v1.id.clone()]);
         assert!(!found(&Filter::default()).contains(&v1.id));
+    }
+
+    /// A pick that names a session instead of a record gets that
+    /// session's candidates; a reading's citations stand in for no picks.
+    #[test]
+    fn picks_naming_a_session_are_kept() {
+        let cand = |sid: &str, seq: i64| Cand { record: Record::from_draft(Draft::new(Kind::Fact, format!("fact {seq}")), sid, 1, seq, 100), score: 1.0, sources: vec![] };
+        let cands = vec![cand("b4g4", 2679), cand("b2g13", 2478), cand("b4g4", 2680), cand("b1g6", 2272)];
+        assert_eq!(pick_ids("[b2g13:2478]", &cands), vec!["b2g13:2478"]);
+        assert_eq!(pick_ids("b4g4", &cands), vec!["b4g4:2679", "b4g4:2680"]);
+        assert!(pick_ids("b9g9", &cands).is_empty() && pick_ids("", &cands).is_empty());
+        // A long session id: its records' ids begin with its first 8 characters.
+        let long = vec![cand("8f3e2a91-77c0-4b1e", 12)];
+        assert_eq!(pick_ids("8f3e2a91", &long), vec!["8f3e2a91:12"]);
+        let cited: Vec<String> = cite_re().find_iter("Your target is 1,800 words (b4g4), replacing b1g6:2272.").map(|m| m.as_str().to_string()).collect();
+        let ids: Vec<String> = cited.iter().flat_map(|c| pick_ids(c, &cands)).collect();
+        assert_eq!(ids, vec!["b4g4:2679", "b4g4:2680", "b1g6:2272"]);
     }
 
     #[test]
