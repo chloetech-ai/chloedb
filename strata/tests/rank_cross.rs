@@ -158,7 +158,7 @@ fn what_a_cross_encoder_cannot_do_is_refused() {
     refused(&db, &phase("cross_encoder('nope', title, :t)"), &params, "no cross-encoder named nope");
     refused(&db, &phase("cross_encoder('../x', title, :t)"), &params, "a ranking model's name is letters");
     refused(&db, &phase("cross_encoder('builtin:overlap', body, :t)"), &params, "body is not stored");
-    refused(&db, &phase("cross_encoder('builtin:overlap', year, :t)"), &params, "year is not a TEXT or KEYWORD field");
+    refused(&db, &phase("cross_encoder('builtin:overlap', year, :t)"), &params, "year is an INT field, not a TEXT or KEYWORD field");
     refused(&db, &phase("cross_encoder('builtin:overlap', :t)"), &params, "cross_encoder('model', field, ..., query)");
     refused(&db, &phase("cross_encoder('builtin:overlap', title, 3)"), &params, "cross_encoder('model', field, ..., query)");
     // A model a build without the `bert` feature cannot run.

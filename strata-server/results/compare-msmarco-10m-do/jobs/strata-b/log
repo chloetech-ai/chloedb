@@ -1,0 +1,87 @@
+service/strata created
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator created
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata created
+strata   bm25                     warm-up: p50 7.080, 7.171 ms
+strata   bm25                     c=1        193 q/s  p50   4.121 ms  p90   8.532 ms  p99  20.761 ms  errors 0
+strata   bm25                     c=4        429 q/s  p50   7.289 ms  p90  15.911 ms  p99  39.818 ms  errors 0
+strata   bm25                     c=16       509 q/s  p50  23.920 ms  p90  55.468 ms  p99 134.810 ms  errors 0
+strata   bm25 + filter            warm-up: p50 16.244, 16.135 ms
+strata   bm25 + filter            c=1         98 q/s  p50   8.592 ms  p90  18.567 ms  p99  31.041 ms  errors 0
+strata   bm25 + filter            c=4        202 q/s  p50  16.433 ms  p90  37.652 ms  p99  65.688 ms  errors 0
+strata   bm25 + filter            c=16       226 q/s  p50  56.614 ms  p90 135.588 ms  p99 275.751 ms  errors 0
+strata   vector                   unavailable: "shard 0 (http://strata-0.strata:7701): no answer in time"
+strata   vector + filter          unavailable: "shard 0 (http://strata-0.strata:7701): no answer in time"
+strata   hybrid (RRF)             unavailable: "shard 0 (http://strata-0.strata:7701): no answer in time"
+strata   hybrid (weighted)        unavailable: "shard 0 (http://strata-0.strata:7701): no answer in time"
+strata   boosted (bm25 × decay)   warm-up: p50 29.729, 28.734 ms
+strata   boosted (bm25 × decay)   c=1         54 q/s  p50  14.782 ms  p90  32.865 ms  p99  71.444 ms  errors 0
+strata   boosted (bm25 × decay)   c=4        110 q/s  p50  28.908 ms  p90  66.312 ms  p99 141.885 ms  errors 0
+strata   boosted (bm25 × decay)   c=16       103 q/s  p50 109.227 ms  p90 285.407 ms  p99 843.226 ms  errors 0
+strata   facet                    warm-up: p50 4.588, 4.665 ms
+strata   facet                    c=1        258 q/s  p50   3.040 ms  p90   6.689 ms  p99  12.797 ms  errors 0
+strata   facet                    c=4        700 q/s  p50   4.678 ms  p90  10.044 ms  p99  17.922 ms  errors 0
+strata   facet                    c=16       937 q/s  p50  13.365 ms  p90  32.696 ms  p99  56.163 ms  errors 0
+strata   key lookup               warm-up: p50 0.957, 1.122, 1.017 ms
+strata   key lookup               c=1       1074 q/s  p50   0.906 ms  p90   1.073 ms  p99   1.357 ms  errors 0
+strata   key lookup               c=4       3930 q/s  p50   0.970 ms  p90   1.267 ms  p99   1.641 ms  errors 0
+strata   key lookup               c=16      5381 q/s  p50   2.820 ms  p90   3.993 ms  p99   4.857 ms  errors 0
+strata   phrase                   warm-up: p50 6.323, 6.665 ms
+strata   phrase                   c=1        192 q/s  p50   3.825 ms  p90   9.322 ms  p99  18.774 ms  errors 0
+strata   phrase                   c=4        426 q/s  p50   6.604 ms  p90  17.532 ms  p99  37.525 ms  errors 0
+strata   phrase                   c=16       534 q/s  p50  21.701 ms  p90  59.572 ms  p99 110.350 ms  errors 0
+strata   typo                     warm-up: p50 1797.393, 1744.837 ms
+strata   typo                     c=1          1 q/s  p50 939.532 ms  p90 1163.905 ms  p99 1670.495 ms  errors 0
+strata   typo                     c=4          2 q/s  p50 1549.057 ms  p90 2298.308 ms  p99 3207.488 ms  errors 0
+strata   typo                     c=16         1 q/s  p50 4144.173 ms  p90 4893.772 ms  p99 4907.092 ms  errors 20
+  first error: {"error":"shard 0 (http://strata-0.strata:7701): no answer in time"}
+strata   prefix                   warm-up: p50 22.726, 22.396 ms
+strata   prefix                   c=1         79 q/s  p50  11.142 ms  p90  20.901 ms  p99  41.351 ms  errors 0
+strata   prefix                   c=4        152 q/s  p50  22.841 ms  p90  43.424 ms  p99  82.136 ms  errors 0
+strata   prefix                   c=16       146 q/s  p50  90.168 ms  p90 203.172 ms  p99 390.620 ms  errors 0
+strata   similar items            warm-up: p50 8.272, 8.229 ms
+strata   similar items            c=1        209 q/s  p50   4.688 ms  p90   5.535 ms  p99   6.655 ms  errors 0
+strata   similar items            c=4        474 q/s  p50   8.174 ms  p90  10.592 ms  p99  13.758 ms  errors 0
+strata   similar items            c=16       523 q/s  p50  27.827 ms  p90  48.321 ms  p99  66.099 ms  errors 0
+strata   sql aggregate            warm-up: p50  ms
+strata   sql aggregate            c=1          0 q/s  p50 4057.541 ms  p90 4057.541 ms  p99 4057.541 ms  errors 0
+strata   sql aggregate            c=4          0 q/s  p50   0.000 ms  p90   0.000 ms  p99   0.000 ms  errors 8
+  first error: {"error":"shard 0 (http://strata-0.strata:7701): no answer in time"}
+strata   sql aggregate            c=16         0 q/s  p50   0.000 ms  p90   0.000 ms  p99   0.000 ms  errors 32
+  first error: {"error":"shard 0 (http://strata-0.strata:7701): no answer in time"}
+wrote /data/compare/run-strata.json
+job.batch/writes-strata created
+strata   insert one     c=1        240 docs/s  p50    3.740 ms  p90    4.365 ms  p99   12.371 ms  errors 0
+strata   insert one     c=4        792 docs/s  p50    3.828 ms  p90    5.443 ms  p99   31.838 ms  errors 0
+strata   insert one     c=16      2083 docs/s  p50    6.168 ms  p90    8.074 ms  p99   78.082 ms  errors 0
+strata   insert batch   c=1       1663 docs/s  p50   35.837 ms  p90  101.278 ms  p99  246.047 ms  errors 0
+strata   insert batch   c=4       3428 docs/s  p50   87.634 ms  p90  216.529 ms  p99  307.642 ms  errors 0
+strata   insert batch   c=16      4001 docs/s  p50  354.320 ms  p90  565.339 ms  p99  830.920 ms  errors 0
+strata   update one     c=1        231 docs/s  p50    3.578 ms  p90    5.949 ms  p99   16.991 ms  errors 0
+strata   update one     c=4        852 docs/s  p50    3.855 ms  p90    7.020 ms  p99   15.840 ms  errors 0
+strata   update one     c=16      2694 docs/s  p50    4.832 ms  p90    8.800 ms  p99   18.106 ms  errors 0
+strata   visible        written in p50 4.0 ms, found after p50 8.3 ms  p90 10.1 ms  max 130.3 ms
+wrote /data/compare/writes-strata.json
+strata   deleted 74230 written documents and put back 20000 ratings in 2.2 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-strata created
+strata   topic docs-strata-1793704714, 4 partitions; 10000000 documents before
+strata   250/s            produced 7500 in 30.0 s; written 7500 in 30.1 s (249/s); lag p50 78 ms  p90 98 ms  p99 122 ms  max 166 ms (read p50 34 ms)
+strata   500/s            produced 15000 in 30.0 s; written 15000 in 30.1 s (498/s); lag p50 78 ms  p90 98 ms  p99 167 ms  max 234 ms (read p50 32 ms)
+strata   1000/s           produced 30000 in 30.0 s; written 30000 in 30.1 s (996/s); lag p50 80 ms  p90 110 ms  p99 234 ms  max 391 ms (read p50 34 ms)
+strata   2000/s           produced 60000 in 30.0 s; written 60000 in 30.1 s (1992/s); lag p50 99 ms  p90 274 ms  p99 549 ms  max 789 ms (read p50 44 ms)
+strata   flat out         produced 20000 in 0.8 s; written 20000 in 6.7 s (2976/s); lag p50 2735 ms  p90 5221 ms  p99 5938 ms  max 5969 ms (read p50 2074 ms)
+strata   before the crash produced 10000 in 6.7 s; written 5066 in 6.7 s (751/s); lag p50 84 ms  p90 143 ms  p99 244 ms  max 291 ms (read p50 36 ms)
+strata   after the crash   resumed in 1.8 s: 0 events written a second time, 0 skipped by the server; 10142500 documents, 0 lost
+wrote /data/compare/stream-strata.json
+strata   deleted 142500 streamed documents in 3.3 s
+pod "strata-0" deleted from strata-b namespace
+pod "strata-1" deleted from strata-b namespace
+pod "strata-coordinator" deleted from strata-b namespace

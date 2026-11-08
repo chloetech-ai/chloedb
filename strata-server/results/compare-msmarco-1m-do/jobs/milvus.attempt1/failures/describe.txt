@@ -1,0 +1,157 @@
+Name:             load-milvus-ncsjn
+Namespace:        milvus
+Priority:         0
+Service Account:  default
+Node:             milvus-c-a1-3eeyht/10.120.0.10
+Start Time:       Tue, 03 Nov 2026 03:17:23 +0000
+Labels:           batch.kubernetes.io/controller-uid=002e34bd-acdb-4279-99d2-b6237e3338fa
+                  batch.kubernetes.io/job-name=load-milvus
+                  controller-uid=002e34bd-acdb-4279-99d2-b6237e3338fa
+                  job-name=load-milvus
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Failed
+IP:               10.121.4.17
+IPs:
+  IP:           10.121.4.17
+Controlled By:  Job/load-milvus
+Containers:
+  compare:
+    Container ID:  containerd://5cb6eb6d93712f156ecef22d91422698bc23ef580b42214fca141531aeec0d63
+    Image:         ghcr.io/chloetech-ai/strata-server:7a0e023f5d8d543179dd7221fdebc23e7e4c0bf0
+    Image ID:      ghcr.io/chloetech-ai/strata-server@sha256:b6c79d0bcd5ab2f651eb8e3e3c3065deb5eeccb9788ac0129e203b182f875c1a
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      milvus
+      --url
+      http://milvus-0.milvus:19530
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Tue, 03 Nov 2026 03:17:23 +0000
+      Finished:     Tue, 03 Nov 2026 03:21:20 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-29lt4 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-29lt4:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             milvus-0
+Namespace:        milvus
+Priority:         0
+Service Account:  default
+Node:             milvus-d-a1-3eeyh6/10.120.0.16
+Start Time:       Tue, 03 Nov 2026 03:17:04 +0000
+Labels:           app=milvus
+                  engine=milvus
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.121.3.136
+IPs:
+  IP:  10.121.3.136
+Containers:
+  milvus:
+    Container ID:  containerd://acc07e5ddd6b21e7e39cf420c7f7aad399c87de837a32ffe17c3f135e1d731b2
+    Image:         milvusdb/milvus:v2.6.26
+    Image ID:      docker.io/milvusdb/milvus@sha256:f43e0cd0c9912c35379c349f7f3a3a806b9308462d43d1bfa18d007c6642d693
+    Ports:         19530/TCP (api), 9091/TCP (health)
+    Host Ports:    0/TCP (api), 0/TCP (health)
+    Args:
+      milvus
+      run
+      standalone
+    State:          Running
+      Started:      Tue, 03 Nov 2026 03:17:17 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     6800m
+      memory:  52Gi
+    Requests:
+      cpu:      6800m
+      memory:   52Gi
+    Readiness:  http-get http://:health/healthz delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:
+      ETCD_USE_EMBED:      true
+      ETCD_DATA_DIR:       /var/lib/milvus/etcd
+      ETCD_CONFIG_PATH:    /milvus/configs/embedEtcd.yaml
+      COMMON_STORAGETYPE:  local
+      DEPLOY_MODE:         STANDALONE
+    Mounts:
+      /milvus/configs/embedEtcd.yaml from config (rw,path="embedEtcd.yaml")
+      /milvus/configs/user.yaml from config (rw,path="user.yaml")
+      /var/lib/milvus from data (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-rrpsx (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  config:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      milvus-config
+    Optional:  false
+  kube-api-access-rrpsx:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s

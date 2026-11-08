@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Graph · Strata benchmarks</title>
+<meta name="description" content="Strata against Neo4j, Memgraph, FalkorDB and ArangoDB on the ogbn-arxiv citation graph: neighbours, multi-hop expansions, shortest paths and personalized PageRank, with exact answers checked, load time, memory and disk.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <nav class="nav" aria-label="Site">
+    <a href="features.html">Features</a>
+    <a href="scale.html">Laptop to cloud</a>
+    <a href="command-center.html">Command center</a>
+    <a href="benchmarks.html" aria-current="page">Benchmarks</a>
+    <a href="use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+</div></header>
+
+<main>
+<div class="gutter head-band"><div class="wrap page-head">
+    <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html">Overview</a><a href="bench-10m.html">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop cluster</a><a href="bench-embedded.html">No server</a><a href="bench-graph.html" aria-current="page">Graph</a><a href="bench-method.html">How we test</a></nav>
+    <span class="eyebrow">Graph · arXiv citations · MacBook Air · 3 November 2026</span>
+    <h1>Graphs in your tables, against four graph databases</h1>
+    <p class="lede">Strata keeps edges in a table's rows, or in an edge table, and walks them inside SQL. Both layouts ran against Neo4j, Memgraph, FalkorDB and ArangoDB on a citation graph of 169,343 papers and 1.17M citations. Every engine's answers matched an exact reference.</p>
+    <p class="verdict"><b>Strata's two layouts place first and second</b> over 16 tests: 31 and 46 points, then Memgraph 60 and Neo4j 67. Without PageRank, which only Strata and Neo4j run, it is close: Strata 21, Memgraph 24.</p>
+    <dl class="atglance">
+      <div><dt>Machine</dt><dd>MacBook Air M2, 24 GB; Docker VM with 4 CPUs</dd></div>
+      <div><dt>Budget</dt><dd>3 CPUs and 6 GB per engine, alone in the VM</dd></div>
+      <div><dt>Engines</dt><dd>Neo4j 2026.10 with GDS, Memgraph 3.14, FalkorDB 4.22, ArangoDB 3.12</dd></div>
+      <div><dt>Queries</dt><dd>200 per kind from one client, after warm-up; the second of two passes</dd></div>
+    </dl>
+    <div class="note"><b>One laptop</b><span>This compares the engines with each other, not with a server. Each engine ran alone, one after another; between the two passes every median moved by at most 7%.</span></div>
+  </div></div>
+
+  <section class="gutter" id="rank"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Overall</span>
+      <h2>Summed places over 16 tests</h2>
+      <p>Median and 95th percentile on six kinds, PageRank recall, load time and memory. Each Strata layout is ranked on its own; a test a setup cannot run counts as last.</p>
+    </div>
+    <div data-graph-rank></div>
+  </div></section>
+
+  <section class="gutter" id="latency"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Latency</span>
+      <h2>Short hops: the in-memory stores. Paths and PageRank: Strata</h2>
+      <p>Memgraph and FalkorDB answer one to three hops in about half Strata's time. Strata is fastest on shortest paths, and on two-hop expansion at the 95th percentile. Its PageRank takes 1.42 ms against Neo4j's 93.1, as an approximation (below). Strata is shown over gRPC and over HTTP JSON: gRPC takes about 0.1 ms off its short hops. On one hop the rest of its gap is its own time, 0.10 ms against Memgraph's 0.02, and the Python client's gRPC call, 0.25 ms against 0.17 for Bolt.</p>
+    </div>
+    <div class="grid">
+      <div data-chart="graph-p50"></div>
+      <div data-chart="graph-p95"></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="ppr"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">How exact</span>
+      <h2>PageRank trades exactness for speed</h2>
+      <p>Strata pushes from the seed's neighbourhood to a tolerance; Neo4j iterates over the whole graph. Neo4j is closer to the exact top 20 at every setting: Strata's finest gets 0.955 in 52.6 ms, Neo4j's coarsest 0.988 in 93.1 ms.</p>
+    </div>
+    <div data-chart="graph-ppr-recall"></div>
+  </div></section>
+
+  <section class="gutter" id="load"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Load and footprint</span>
+      <h2>Loaded in about a second, with the least memory</h2>
+      <p>The field layout writes one row a paper and keeps 68 MB on disk; FalkorDB, all in memory, saved nothing during the run. As one row a citation, like the others, Strata loads in 6.22 s against Memgraph's 6.96.</p>
+    </div>
+    <div data-chart="graph-load"></div>
+  </div></section>
+
+  <section class="gutter" id="files"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Raw data</span>
+      <h2>Every number comes from these files</h2>
+    </div>
+    <ul class="files">
+      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/graph-compare-mac/README.md">README.md</a>: setup, schemas and every table</li>
+      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/graph-compare-mac/NOTES.md">NOTES.md</a>: what went wrong on the way, and the gRPC re-run</li>
+      <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata-server/results/graph-compare-mac">The directory</a>: raw reports per engine and pass</li>
+      <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata-server/deploy/graph-compare">deploy/graph-compare/</a>: <code>prep.py</code> (data and exact answers), <code>run.py</code> (queries) and <code>compare.sh</code></li>
+    </ul>
+  </div></section>
+</main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
+  <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="assets/bench-data.js"></script>
+<script src="assets/site.js"></script>
+<script src="assets/bench.js"></script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+{"node": "meili-r-d-a1-3ee655", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.509, "sha256_1g_x_vcpus_s": 11.522, "disk_write_2g_s": 1.972, "copy_ms": 0, "time": 1793680825, "size": "m-8vcpu-64gb"}
+{"node": "meili-r-c-a1-3ee65d", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382188, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.952, "sha256_1g_x_vcpus_s": 11.456, "disk_write_2g_s": 5.175, "copy_ms": 71163, "time": 1793680900, "size": "c-8"}

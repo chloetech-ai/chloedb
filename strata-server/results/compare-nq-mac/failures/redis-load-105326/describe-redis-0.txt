@@ -1,0 +1,80 @@
+Name:             redis-0
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker/172.19.0.4
+Start Time:       Mon, 02 Nov 2026 02:47:26 -0800
+Labels:           app=redis
+                  engine=redis
+Annotations:      <none>
+Status:           Running
+IP:               10.244.2.16
+IPs:
+  IP:  10.244.2.16
+Containers:
+  redis:
+    Container ID:  containerd://a7e65acc823971e4e7b3c4ea2c2e964a65107f7c218f100b6122bfbd199dbae7
+    Image:         redis:8.8.4
+    Image ID:      sha256:e041d8f3e9b269dfba642b6377b00c3c3c14cf4e506b361e898003d0ca6fda4d
+    Port:          6379/TCP (api)
+    Host Port:     0/TCP (api)
+    Args:
+      redis-server
+      --save
+      
+      --appendonly
+      no
+      --maxmemory
+      5500mb
+      --maxmemory-policy
+      noeviction
+      --search-workers
+      3
+      --search-timeout
+      10000
+      --search-on-timeout
+      fail
+    State:          Running
+      Started:      Mon, 02 Nov 2026 02:47:26 -0800
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     3
+      memory:  6Gi
+    Requests:
+      cpu:        3
+      memory:     6Gi
+    Readiness:    tcp-socket :api delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:  <none>
+    Mounts:
+      /data from data (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-bms9r (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-bms9r:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age   From     Message
+  ----     ------     ----  ----     -------
+  Normal   Pulled     6m2s  kubelet  spec.containers{redis}: Container image "redis:8.8.4" already present on machine and can be accessed by the pod
+  Normal   Created    6m2s  kubelet  spec.containers{redis}: Container created
+  Normal   Started    6m2s  kubelet  spec.containers{redis}: Container started
+  Warning  Unhealthy  6m2s  kubelet  spec.containers{redis}: Readiness probe failed: dial tcp 10.244.2.16:6379: connect: connection refused

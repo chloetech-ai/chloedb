@@ -1,0 +1,73 @@
+LAST SEEN   TYPE      REASON                 OBJECT                    MESSAGE
+56m         Normal    SuccessfulCreate       job/run-postgres          Created pod: run-postgres-rgzgw
+56m         Normal    Completed              job/load-postgres         Job completed
+56m         Normal    Started                pod/run-postgres-rgzgw    Container started
+56m         Normal    Created                pod/run-postgres-rgzgw    Container created
+56m         Normal    Pulled                 pod/run-postgres-rgzgw    Container image "strata-server:compare" already present on machine and can be accessed by the pod
+42m         Normal    Killing                pod/postgres-0            Stopping container postgres
+42m         Normal    Completed              job/run-postgres          Job completed
+42m         Warning   Unhealthy              pod/postgres-0            Readiness probe errored and resulted in unknown state: rpc error: code = Unknown desc = failed to exec in container: container is in CONTAINER_EXITED state
+42m         Warning   Unhealthy              pod/redis-0               Readiness probe failed: dial tcp 10.244.2.16:6379: connect: connection refused
+42m         Normal    Started                pod/redis-0               Container started
+42m         Normal    Created                pod/redis-0               Container created
+42m         Normal    Pulled                 pod/redis-0               Container image "redis:8.8.4" already present on machine and can be accessed by the pod
+42m         Normal    Started                pod/load-redis-7zclr      Container started
+42m         Normal    Created                pod/load-redis-7zclr      Container created
+42m         Normal    SuccessfulCreate       job/load-redis            Created pod: load-redis-7zclr
+42m         Normal    Pulled                 pod/load-redis-7zclr      Container image "strata-server:compare" already present on machine and can be accessed by the pod
+37m         Warning   BackoffLimitExceeded   job/load-redis            Job has reached the specified backoff limit
+36m         Normal    Killing                pod/redis-0               Stopping container redis
+33m         Normal    SuccessfulCreate       job/build-s0              Created pod: build-s0-kqhfl
+33m         Normal    Started                pod/build-s0-kqhfl        Container started
+33m         Normal    Pulled                 pod/build-s0-kqhfl        Container image "strata-server:compare" already present on machine and can be accessed by the pod
+33m         Normal    Created                pod/build-s0-kqhfl        Container created
+32m         Normal    Pulled                 pod/build-s1-2fcnm        Container image "strata-server:compare" already present on machine and can be accessed by the pod
+32m         Normal    SuccessfulCreate       job/build-s1              Created pod: build-s1-2fcnm
+32m         Normal    Started                pod/build-s1-2fcnm        Container started
+32m         Normal    Created                pod/build-s1-2fcnm        Container created
+32m         Normal    Completed              job/build-s0              Job completed
+30m         Normal    Completed              job/build-s1              Job completed
+30m         Normal    Created                pod/strata-1              Container created
+30m         Normal    Started                pod/strata-0              Container started
+30m         Warning   Unhealthy              pod/strata-coordinator    Readiness probe failed: Get "http://10.244.1.34:7700/v1/health": dial tcp 10.244.1.34:7700: connect: connection refused
+30m         Normal    Started                pod/strata-coordinator    Container started
+30m         Normal    Created                pod/strata-coordinator    Container created
+30m         Normal    Pulled                 pod/strata-coordinator    Container image "strata-server:compare" already present on machine and can be accessed by the pod
+30m         Warning   Unhealthy              pod/strata-1              Readiness probe failed: Get "http://10.244.3.9:7700/v1/health": dial tcp 10.244.3.9:7700: connect: connection refused
+30m         Normal    Started                pod/strata-1              Container started
+30m         Normal    Pulled                 pod/strata-1              Container image "strata-server:compare" already present on machine and can be accessed by the pod
+30m         Warning   Unhealthy              pod/strata-0              Readiness probe failed: Get "http://10.244.2.18:7700/v1/health": dial tcp 10.244.2.18:7700: connect: connection refused
+30m         Normal    Pulled                 pod/strata-0              Container image "strata-server:compare" already present on machine and can be accessed by the pod
+30m         Normal    Created                pod/strata-0              Container created
+30m         Normal    Created                pod/run-strata-8cxjd      Container created
+30m         Normal    SuccessfulCreate       job/run-strata            Created pod: run-strata-8cxjd
+30m         Normal    Started                pod/run-strata-8cxjd      Container started
+30m         Normal    Pulled                 pod/run-strata-8cxjd      Container image "strata-server:compare" already present on machine and can be accessed by the pod
+25m         Normal    Completed              job/run-strata            Job completed
+25m         Normal    Pulled                 pod/writes-strata-kj7n9   Container image "strata-server:compare" already present on machine and can be accessed by the pod
+25m         Normal    SuccessfulCreate       job/writes-strata         Created pod: writes-strata-kj7n9
+25m         Normal    Created                pod/writes-strata-kj7n9   Container created
+25m         Normal    Started                pod/writes-strata-kj7n9   Container started
+24m         Normal    Completed              job/writes-strata         Job completed
+24m         Normal    SuccessfulCreate       job/stream-strata         Created pod: stream-strata-hm8pl
+24m         Normal    Pulled                 pod/stream-strata-hm8pl   Container image "strata-server:compare" already present on machine and can be accessed by the pod
+24m         Normal    Created                pod/stream-strata-hm8pl   Container created
+24m         Normal    Started                pod/stream-strata-hm8pl   Container started
+22m         Warning   BackoffLimitExceeded   job/stream-strata         Job has reached the specified backoff limit
+21m         Normal    Killing                pod/strata-coordinator    Stopping container strata
+21m         Normal    Killing                pod/strata-1              Stopping container strata
+21m         Normal    Killing                pod/strata-0              Stopping container strata
+21m         Normal    Pulled                 pod/vespa-1               Container image "vespaengine/vespa:8.778.45" already present on machine and can be accessed by the pod
+21m         Normal    Created                pod/vespa-2               Container created
+21m         Normal    Started                pod/vespa-0               Container started
+21m         Normal    Pulled                 pod/vespa-0               Container image "vespaengine/vespa:8.778.45" already present on machine and can be accessed by the pod
+21m         Normal    Created                pod/vespa-1               Container created
+21m         Normal    Started                pod/vespa-1               Container started
+21m         Normal    Pulled                 pod/vespa-2               Container image "vespaengine/vespa:8.778.45" already present on machine and can be accessed by the pod
+21m         Normal    Created                pod/vespa-0               Container created
+21m         Normal    Started                pod/vespa-2               Container started
+20m         Normal    SuccessfulCreate       job/load-vespa            Created pod: load-vespa-lg5r8
+20m         Normal    Started                pod/load-vespa-lg5r8      Container started
+20m         Normal    Created                pod/load-vespa-lg5r8      Container created
+20m         Normal    Pulled                 pod/load-vespa-lg5r8      Container image "strata-server:compare" already present on machine and can be accessed by the pod
+59s         Warning   BackoffLimitExceeded   job/load-vespa            Job has reached the specified backoff limit

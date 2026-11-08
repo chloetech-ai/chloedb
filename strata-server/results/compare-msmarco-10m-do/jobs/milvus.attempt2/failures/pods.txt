@@ -1,0 +1,3 @@
+NAME                READY   STATUS   RESTARTS     AGE   IP              NODE                 NOMINATED NODE   READINESS GATES
+load-milvus-v8xv5   0/1     Error    0            56m   10.150.13.228   milvus-c-a1-3e6aob   <none>           <none>
+milvus-0            0/1     Error    1 (9s ago)   56m   10.150.13.63    milvus-d-a1-3e6aor   <none>           <none>

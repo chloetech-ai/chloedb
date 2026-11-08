@@ -37,11 +37,68 @@ fn threads_do_not_change_answers() {
     for sql in queries {
         let one = db.query_with(sql, &params, &ExecOptions::default()).unwrap();
         for threads in [2, 4, 8] {
-            let many = db.query_with(sql, &params, &ExecOptions { threads, ..ExecOptions::default() }).unwrap();
+            // fan_out_rows 0: these segments are far below the size that
+            // fans out by default, and the point is to compare threads.
+            let many = db.query_with(sql, &params, &ExecOptions { threads, fan_out_rows: 0, ..ExecOptions::default() }).unwrap();
             assert_eq!(one.rows, many.rows, "{sql} on {threads} threads");
             assert!(many.stats.plan.iter().any(|l| l.contains("threads")), "{sql}: {:?}", many.stats.plan);
         }
     }
+}
+
+/// Segments searched one after another start at the `k`-th score the
+/// earlier ones found ("above" in the plan): the same rows and scores as
+/// one segment holding them all, for plain BM25, with filters, with a key
+/// tiebreak (every row tied with the `k`-th is kept) and for rank-safe
+/// boosts, whose values can be minus infinity (a NULL rating).
+#[test]
+fn a_floor_from_earlier_segments_changes_no_answer() {
+    let mut docs = data::synthetic(4000, 16, 5);
+    for d in docs.iter_mut().step_by(9) {
+        d[data::col::RATING] = Value::Null;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let open = |name: &str, seg: usize| {
+        let opts = DbOptions { segment_max_docs: seg, ..DbOptions::default() };
+        let db = Db::create(&dir.path().join(name), data::beir_schema(16, VectorIndexKind::Flat), opts).unwrap();
+        db.load(docs.iter().cloned()).unwrap();
+        let mut t = db.storage().begin().unwrap();
+        for i in (0..4000).step_by(11) {
+            t.delete(&Value::Str(format!("d{i:07}"))).unwrap();
+        }
+        t.commit().unwrap();
+        db
+    };
+    let (many, one) = (open("many.strata", 250), open("one.strata", 100_000));
+    assert!(many.snapshot().segments().len() >= 15);
+    assert_eq!(one.snapshot().segments().len(), 1);
+    let shapes = [
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t{algo}) DESC LIMIT {k}",
+        "SELECT id, score() FROM docs WHERE year >= 2005 ORDER BY bm25(body, :t{algo}) DESC LIMIT {k}",
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t{algo}) DESC, id LIMIT {k}",
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t{algo}) * (1 + 0.2 * rating) DESC, id LIMIT {k}",
+        "SELECT id, score() FROM docs WHERE category IN ('c00', 'c01', 'c02') ORDER BY bm25(body, :t{algo}) * decay(year, 2015, 3) DESC, id LIMIT {k}",
+    ];
+    let (mut above, mut runs) = (0, 0);
+    for (qi, i) in (0..4000).step_by(97).enumerate() {
+        let words: Vec<&str> = docs[i][data::col::TITLE].as_str().unwrap().split(' ').take(1 + qi % 4).collect();
+        let params = Params::new().set("t", Value::Str(words.join(" ")));
+        for shape in shapes {
+            let algo = ["", ", algo => 'maxscore'", ", algo => 'bmw'", ", algo => 'exhaustive'"][qi % 4];
+            let k = [1, 10, 40, 1000][qi / 4 % 4];
+            let sql = shape.replace("{algo}", algo).replace("{k}", &k.to_string());
+            let want = one.query(&sql, &params).unwrap();
+            let got = many.query_with(&sql, &params, &ExecOptions { threads: 1, ..ExecOptions::default() }).unwrap();
+            let scores = |r: &strata::query::exec::ResultSet| r.scores.iter().map(|s| s.to_bits()).collect::<Vec<_>>();
+            assert_eq!(scores(&got), scores(&want), "{sql} {params:?}: scores");
+            if sql.contains(", id") {
+                assert_eq!(got.rows, want.rows, "{sql} {params:?}");
+            }
+            above += got.stats.plan.iter().filter(|l| l.contains(", above ")).count();
+            runs += 1;
+        }
+    }
+    assert!(above > runs * 5, "{above} segments of {runs} queries started above a floor");
 }
 
 #[test]

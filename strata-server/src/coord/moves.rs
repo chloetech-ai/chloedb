@@ -20,7 +20,8 @@
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-use crate::cores::slots::{MoveRun, MoveStep, HOLD_RENEW, HOLD_TTL};
+use crate::cores::slots::{Edit, MoveRun, MoveStep, HOLD_RENEW, HOLD_TTL};
+use crate::grpc::MOVE_OFFSETS_PROTOCOL;
 use crate::service::RETRY_AFTER;
 use crate::slots::SLOTS;
 
@@ -112,6 +113,12 @@ struct Job {
     finished: Option<i64>,
     state: &'static str,
     error: Option<String>,
+    /// Who started it (a key's name), when the API said.
+    by: Option<String>,
+    /// The rows its slots held when it started, about: each shard's rows
+    /// (of every table) spread evenly over its slots (the cluster's
+    /// snapshot), when known.
+    rows_total: Option<u64>,
 }
 
 impl Job {
@@ -127,11 +134,41 @@ impl Job {
             })
             .collect();
         let done = self.steps.iter().filter(|s| s.phase == "done").count();
+        // core: how far, how fast, how long left (at the pace of the moves
+        // done), and each move's end, for a caller waiting on the job.
+        let running = self.state == "running";
+        let steps: Vec<Json> = steps
+            .into_iter()
+            .zip(&self.steps)
+            .map(|(mut j, s)| {
+                j["state"] = json!(s.phase);
+                j["done"] = json!(s.phase == "done");
+                j["finished"] = json!(!running || matches!(s.phase, "done" | "failed" | "given up"));
+                j
+            })
+            .collect();
+        let rows_done = self.steps.iter().map(|s| s.rows).sum::<u64>();
+        let end = self.finished.unwrap_or_else(strata::timestamp::now);
+        let secs = (end - self.started).max(1) as f64 / 1e6;
+        let ms_done: Vec<f64> = self.steps.iter().filter(|s| s.phase == "done").filter_map(|s| s.ms).collect();
+        let rate = rows_done as f64 / secs;
+        // At the pace of the moves done; before any, at the rows' pace.
+        let eta_s = match (running, ms_done.is_empty(), self.rows_total) {
+            (false, _, _) => None,
+            (true, false, _) => {
+                let mean = ms_done.iter().sum::<f64>() / ms_done.len() as f64;
+                Some((mean * (self.steps.len() - done) as f64 / 1e3).round())
+            }
+            (true, true, Some(total)) if rate > 0.0 => Some((total.saturating_sub(rows_done) as f64 / rate).round()),
+            _ => None,
+        };
         json!({
             "kind": self.kind, "state": self.state, "moves": steps, "done": done, "of": self.steps.len(),
             "slots_moved": self.steps.iter().filter(|s| s.phase == "done").map(|s| s.slots.len()).sum::<usize>(),
-            "rows_moved": self.steps.iter().map(|s| s.rows).sum::<u64>(),
+            "rows_moved": rows_done,
             "started_us": self.started, "finished_us": self.finished, "error": self.error,
+            "started_ms": self.started.div_euclid(1000), "started_by": self.by, "rows_done": rows_done, "rows_total": self.rows_total,
+            "rate_rows_s": (rows_done as f64 / secs * 10.0).round() / 10.0, "eta_s": eta_s,
         })
     }
 }
@@ -146,12 +183,33 @@ impl Drop for Renewing {
 }
 
 impl Coordinator {
+    /// The rows a second the last job of moves here ran at, once it is done
+    /// and sent enough rows to say (NEW-cluster-admin-7): the rate plans
+    /// estimate moves at.
+    pub fn measured_rate(&self) -> Option<f64> {
+        let j = lock(&self.moves.job);
+        let j = j.as_ref().filter(|j| j.state == "done")?;
+        let rows = j.steps.iter().map(|s| s.rows).sum::<u64>();
+        let secs = (j.finished? - j.started) as f64 / 1e6;
+        (rows >= 1000 && secs > 0.0).then(|| rows as f64 / secs)
+    }
+
     /// The job of moves running or last run here, and the move under way
     /// in the cluster map (which another coordinator may run).
     pub fn moves(&self) -> Json {
         let job = lock(&self.moves.job).as_ref().map(Job::json);
         let moving = self.map().and_then(|m| m.to_json().get("moving").cloned());
-        json!({"job": job, "moving": moving})
+        // The job's moves and progress at the top too: `{moving, moves}` is
+        // what a caller waits on (moving null and every move finished).
+        let mut j = json!({"job": job, "moving": moving, "moves": [], "running": false});
+        if let Some(job) = &job {
+            j["moves"] = job["moves"].clone();
+            j["running"] = json!(job["state"] == "running");
+            for k in ["state", "started_ms", "started_by", "rows_done", "rows_total", "rate_rows_s", "eta_s", "done", "of"] {
+                j[k] = job[k].clone();
+            }
+        }
+        j
     }
 
     /// Moves `slots` (of one shard) to shard `to`, in the background.
@@ -183,6 +241,13 @@ impl Coordinator {
         self.start_job(&format!("drain shard {i}"), plan_even(&map, Some(i), chunk))
     }
 
+    /// Names who started the job just started (`started_by`).
+    pub fn moves_by(&self, by: String) {
+        if let Some(j) = lock(&self.moves.job).as_mut() {
+            j.by.get_or_insert(by);
+        }
+    }
+
     /// Asks the job running here to stop once its move under way ends.
     pub fn stop_moves(&self) -> Json {
         self.moves.stop.store(true, Ordering::Relaxed);
@@ -199,7 +264,21 @@ impl Coordinator {
         let steps: Vec<Step> = plan.into_iter().map(|(slots, from, to)| Step { from, to, slots, phase: "planned", rows: 0, rounds: 0, busy: 0, held_ms: None, ms: None, error: None }).collect();
         let state = if steps.is_empty() { "done" } else { "running" };
         let now = strata::timestamp::now();
-        *lock(&self.moves.job) = Some(Job { kind: kind.to_string(), steps, started: now, finished: (state == "done").then_some(now), state, error: None });
+        let rows_total = self.held_snapshot(Duration::from_secs(60)).map(|snap| {
+            // A shard's rows: its primary's, else its first copy up's.
+            let rows = |i: usize| {
+                let s = snap["shards"].as_array().and_then(|v| v.iter().find(|s| s["shard"] == i));
+                let copies = s.and_then(|s| s["replicas"].as_array());
+                // cluster2: the rows of every table, which the move sends.
+                let docs = copies.and_then(|c| c.iter().find(|r| r["takes_writes"] == true).or_else(|| c.iter().find(|r| r["status"] != "down"))).and_then(super::plan::copy_rows).unwrap_or(0);
+                (docs, s.and_then(|s| s["slots_held"].as_u64()).unwrap_or(0).max(1))
+            };
+            steps.iter().map(|st| {
+                let (docs, held) = rows(st.from);
+                docs * st.slots.len() as u64 / held
+            }).sum()
+        });
+        *lock(&self.moves.job) = Some(Job { kind: kind.to_string(), steps, started: now, finished: (state == "done").then_some(now), state, error: None, by: None, rows_total });
         self.moves.stop.store(false, Ordering::Relaxed);
         let me = self.clone();
         tokio::spawn(async move {
@@ -318,7 +397,16 @@ impl Coordinator {
                         (true, Some(m), Some(s)) => self.topo().replicas.get(m.from).and_then(|rs| rs.get(s)).map(|r| r.url.clone()).into_iter().collect(),
                         _ => Vec::new(),
                     };
-                    let r = self.change(|m| edit.apply(m), &first).await.map(|(m, _)| m);
+                    // The flip carries the stream offsets of the slots on the
+                    // shard they leave, read while their writes are held.
+                    let edit = match edit {
+                        Edit::Flip(m) => self.moving_offsets(&m, src.unwrap_or(0)).await.map(|offsets| Edit::Flip(Move { offsets, ..m })),
+                        e => Ok(e),
+                    };
+                    let r = match edit {
+                        Ok(edit) => self.change(|m| edit.apply(m), &first).await.map(|(m, _)| m),
+                        Err(e) => Err(e),
+                    };
                     run.changed(r, self.map().as_ref())
                 }
                 MoveStep::Source => {
@@ -420,6 +508,25 @@ impl Coordinator {
                 self.step(k, |s| s.rows += chunk.rows);
             }
         }
+    }
+
+    /// The stream sources' offsets of `mv`'s slots on server `src` of the
+    /// shard they leave, for its flip to carry to the shard they go to
+    /// (`Sources` with `moving`): none while a server of the cluster speaks
+    /// a protocol before [`MOVE_OFFSETS_PROTOCOL`], which would not keep
+    /// them, nor while the shard has no stream source.
+    async fn moving_offsets(&self, mv: &Move, src: usize) -> Result<BTreeMap<String, i64>, ApiError> {
+        let t = self.topo();
+        if t.protocol() < MOVE_OFFSETS_PROTOCOL {
+            return Ok(BTreeMap::new());
+        }
+        let rep = t.replicas.get(mv.from).and_then(|rs| rs.get(src)).ok_or_else(|| ApiError::internal("the shard slots move from changed places"))?;
+        let mut c = rep.client.clone();
+        let a = tokio::time::timeout(Duration::from_secs(30), c.sources(pb::SourcesRequest { moving: true }))
+            .await
+            .map_err(|_| ApiError { status: 504, message: format!("shard {}: no stream offsets of the moving slots within 30 s", rep.url) })?
+            .map_err(|s| self.named(&rep.url, s))?;
+        Ok(a.into_inner().sources.into_iter().map(|s| (s.name, s.offset)).collect())
     }
 
     /// Holds writes to the slots moving from shard `i` on its server `src`

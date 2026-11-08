@@ -124,7 +124,7 @@ Table `{table}`, {docs} rows. Fields:
 Strata SQL (read-only here):
 SELECT <fields | * | score() | aggregates> FROM {table} [WHERE <predicate>] [GROUP BY <fields> [HAVING ...]] [ORDER BY <a score, numeric field, expression of them, or aggregate> [ASC|DESC]] [LIMIT n [OFFSET m]]
 - MATCH(text_field, 'query') is a boolean full-text filter: terms, "phrases", AND, OR, NOT, -term, prefix*, word~ (allows a typo), parentheses; words side by side mean AND.
-- MATCH and bm25 take fuzzy => 'auto' (tolerate typos in every word){synonym_help}.
+- MATCH and bm25 take fuzzy => 'auto' (MATCH tolerates typos in every word; bm25 corrects the words that look like typos){synonym_help}.
 - bm25(text_field, 'words') ranks by text relevance (a row scores if it has any of the words). Put the user's key words here.
 - Comparisons (=, <, <=, >, >=, !=), BETWEEN, IN (...), AND, OR, NOT on KEYWORD, INT and FLOAT fields.
 {vector_help}{sparse_help}{graph_help}
@@ -247,7 +247,7 @@ pub async fn run(svc: &Arc<Service>, req: AgentReq) -> Result<Json, ApiError> {
     })?;
     let model = req.model.unwrap_or_else(|| svc.agent.model.clone());
     let docs = svc.health().await["docs"].as_u64().unwrap_or(0);
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(300)).build().map_err(ApiError::internal)?;
+    let client = crate::http_client().timeout(Duration::from_secs(300)).build().map_err(ApiError::internal)?;
     let t0 = Instant::now();
     let mut messages = vec![json!({"role": "user", "content": req.question})];
     let mut steps = Vec::new();

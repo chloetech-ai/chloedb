@@ -1,0 +1,214 @@
+Name:             load-solr-xtr4p
+Namespace:        solr
+Priority:         0
+Service Account:  default
+Node:             solr-c-a1-3ea0ia/10.120.0.2
+Start Time:       Tue, 03 Nov 2026 11:30:43 +0000
+Labels:           batch.kubernetes.io/controller-uid=ca4fade8-b217-454d-90fe-22985288893e
+                  batch.kubernetes.io/job-name=load-solr
+                  controller-uid=ca4fade8-b217-454d-90fe-22985288893e
+                  job-name=load-solr
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Failed
+IP:               10.150.2.86
+IPs:
+  IP:           10.150.2.86
+Controlled By:  Job/load-solr
+Containers:
+  compare:
+    Container ID:  containerd://a818f123b418a813e3ba07bd7833350c3bd304cf674c0abe4590a37af811a7a4
+    Image:         ghcr.io/chloetech-ai/strata-server:f64dbb459febab46154e465ca2c87f0dc9b183a5
+    Image ID:      ghcr.io/chloetech-ai/strata-server@sha256:be4d5bb6c8cf56f774c644c1238b6f5a4b4e768bb1127c5bbafa51d76e932738
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-10000k
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Tue, 03 Nov 2026 11:30:44 +0000
+      Finished:     Tue, 03 Nov 2026 12:21:24 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-wz7zk (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-wz7zk:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             solr-0
+Namespace:        solr
+Priority:         0
+Service Account:  default
+Node:             solr-d-a1-3ea0ig/10.120.0.25
+Start Time:       Tue, 03 Nov 2026 11:29:49 +0000
+Labels:           app=solr
+                  engine=solr
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.150.0.140
+IPs:
+  IP:  10.150.0.140
+Containers:
+  solr:
+    Container ID:   containerd://e9c613834473eb1178ad2a698f0d9484ee5d5fe4664fea224a83ebe40d06f560
+    Image:          solr:10.1.0
+    Image ID:       docker.io/library/solr@sha256:c51416312939159e5b6e8b4eb05efce1fc41e1dd95cb8712aaba64b72f74ee86
+    Ports:          8983/TCP (http), 9983/TCP (zk)
+    Host Ports:     0/TCP (http), 0/TCP (zk)
+    State:          Running
+      Started:      Tue, 03 Nov 2026 11:30:01 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     3400m
+      memory:  26Gi
+    Requests:
+      cpu:      3400m
+      memory:   26Gi
+    Readiness:  http-get http://:http/solr/admin/info/health delay=0s timeout=1s period=5s successThreshold=1 failureThreshold=3
+    Environment:
+      SOLR_MODE:     solrcloud
+      SOLR_HOST:     solr-0.solr.solr.svc.cluster.local
+      ZK_HOST:       
+      SOLR_OPTS:     -Dsolr.zookeeper.embedded.host=0.0.0.0
+      SOLR_HEAP:     8g
+      SOLR_MODULES:  sql
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-4lmsb (ro)
+      /var/solr from data (rw)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-4lmsb:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+
+
+Name:             solr-1
+Namespace:        solr
+Priority:         0
+Service Account:  default
+Node:             solr-d-a1-3ea0iw/10.120.0.3
+Start Time:       Tue, 03 Nov 2026 11:30:13 +0000
+Labels:           app=solr
+                  engine=solr
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.150.3.186
+IPs:
+  IP:  10.150.3.186
+Containers:
+  solr:
+    Container ID:   containerd://973776101abc19811022d76de8cdf0711e183ddfc9be40f06055ac6af30029d8
+    Image:          solr:10.1.0
+    Image ID:       docker.io/library/solr@sha256:c51416312939159e5b6e8b4eb05efce1fc41e1dd95cb8712aaba64b72f74ee86
+    Ports:          8983/TCP (http), 9983/TCP (zk)
+    Host Ports:     0/TCP (http), 0/TCP (zk)
+    State:          Running
+      Started:      Tue, 03 Nov 2026 11:30:28 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     3400m
+      memory:  26Gi
+    Requests:
+      cpu:      3400m
+      memory:   26Gi
+    Readiness:  http-get http://:http/solr/admin/info/health delay=0s timeout=1s period=5s successThreshold=1 failureThreshold=3
+    Environment:
+      SOLR_MODE:     solrcloud
+      SOLR_HOST:     solr-1.solr.solr.svc.cluster.local
+      ZK_HOST:       solr-0.solr.solr.svc.cluster.local:9983
+      SOLR_OPTS:     -Dsolr.zookeeper.embedded.host=0.0.0.0
+      SOLR_HEAP:     8g
+      SOLR_MODULES:  sql
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-79qwv (ro)
+      /var/solr from data (rw)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-79qwv:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s

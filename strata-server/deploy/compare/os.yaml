@@ -7,7 +7,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: os
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   # Names resolve before a node is ready: the nodes find each other by name.
@@ -21,7 +21,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: os-__I__
-  namespace: compare
+  namespace: __NS__
   labels: {app: os, engine: os}
 spec:
   hostname: os-__I__
@@ -41,7 +41,7 @@ spec:
         - {name: DISABLE_INSTALL_DEMO_CONFIG, value: "true"}
         - {name: cluster.routing.allocation.disk.threshold_enabled, value: "false"}
         # Half the pod's memory, as Elasticsearch's; the rest for the page cache.
-        - {name: OPENSEARCH_JAVA_OPTS, value: "-Xms1536m -Xmx1536m"}
+        - {name: OPENSEARCH_JAVA_OPTS, value: "-Xms__HEAP__ -Xmx__HEAP__"}
       ports:
         - {name: http, containerPort: 9200}
         - {name: transport, containerPort: 9300}

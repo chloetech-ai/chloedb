@@ -3,7 +3,7 @@
 // that zooms, a threshold that can be dragged; a stacked area; a latency
 // heatmap; sparklines; a donut. One y axis each.
 
-import { h, s, clear, fmt, showTip, hideTip, clamp } from "./core.js";
+import { h, s, clear, fmt, showTip, hideTip, tapTip, clamp } from "./core.js";
 
 export const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)", "var(--s7)", "var(--s8)"];
 export const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -15,13 +15,34 @@ export function niceStep(span, n) {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
 }
 
-const TIME_STEPS = [5e3, 10e3, 15e3, 30e3, 60e3, 120e3, 300e3, 600e3, 900e3, 1800e3, 3600e3];
-function timeTicks(t0, t1, width) {
+// Steps of a time axis: seconds to an hour, then hours and days on local
+// boundaries (a 7-day axis has a label a day, not 168).
+const H1 = 3600e3, D1 = 86400e3;
+const TIME_STEPS = [5e3, 10e3, 15e3, 30e3, 60e3, 120e3, 300e3, 600e3, 900e3, 1800e3, H1, 2 * H1, 3 * H1, 6 * H1, 12 * H1, D1, 2 * D1, 7 * D1];
+export function timeTicks(t0, t1, width) {
   const want = Math.max(2, Math.floor(width / 90));
-  const step = TIME_STEPS.find((st) => (t1 - t0) / st <= want) || 3600e3;
+  const step = TIME_STEPS.find((st) => (t1 - t0) / st <= want) || TIME_STEPS[TIME_STEPS.length - 1];
   const out = [];
-  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) out.push(t);
+  if (step < H1) { for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) out.push(t); return { ticks: out, step }; }
+  // Hours and days fall on local hours from midnight, whatever the time zone.
+  const d = new Date(t0); d.setHours(0, 0, 0, 0);
+  if (step >= D1) {
+    while (d.getTime() < t0) d.setDate(d.getDate() + 1);
+    for (let n = 0; d.getTime() <= t1 && n < 400; n++) { out.push(d.getTime()); d.setDate(d.getDate() + step / D1); }
+  } else {
+    const hrs = step / H1;
+    while (d.getTime() < t0) d.setHours(d.getHours() + hrs);
+    for (let n = 0; d.getTime() <= t1 && n < 400; n++) { out.push(d.getTime()); d.setHours(d.getHours() + hrs); }
+  }
   return { ticks: out, step };
+}
+/** A tick's label: a date at midnight on axes of hours and days, else the time. */
+export function tickLabel(t, step, span) {
+  const d = new Date(t);
+  const date = () => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  if (step >= D1) return date();
+  if (step >= H1) return d.getHours() === 0 && d.getMinutes() === 0 ? date() : fmt.time(t, false);
+  return fmt.time(t, span < 600e3);
 }
 
 function bisect(points, t) {
@@ -102,8 +123,8 @@ export function timeChart(opts) {
       g.append(s("line", { x1: M.l, x2: width - M.r, y1: Y(v), y2: Y(v) }));
       ax.append(s("text", { x: M.l - 6, y: Y(v) + 3.5, "text-anchor": "end" }, yfmt(v)));
     }
-    const { ticks } = timeTicks(t0, t1, W);
-    for (const t of ticks) ax.append(s("text", { x: X(t), y: height - 5, "text-anchor": "middle" }, fmt.time(t, span < 600e3)));
+    const { ticks, step: tstep } = timeTicks(t0, t1, W);
+    for (const t of ticks) ax.append(s("text", { x: X(t), y: height - 5, "text-anchor": "middle", class: tstep >= H1 && new Date(t).getHours() === 0 ? "day" : null }, tickLabel(t, tstep, span)));
     svgEl.append(g, ax, s("line", { class: "base", x1: M.l, x2: width - M.r, y1: Y(ymin), y2: Y(ymin) }));
     // Band (e.g. p50..p99).
     if (opts.band) {
@@ -134,11 +155,16 @@ export function timeChart(opts) {
         svgEl.append(s("path", { class: "line", d: linePath(pts), style: { stroke: sr.color, strokeDasharray: sr.dash || null } }));
       }
     });
-    // Markers (events) on the time axis.
-    for (const m of opts.markers?.() || []) {
-      if (m.t < t0 || m.t > t1) continue;
-      const x = X(m.t);
-      svgEl.append(s("line", { class: "ann", x1: x, x2: x, y1: M.t, y2: Y(ymin) }), s("circle", { class: "ann-dot", cx: x, cy: M.t + 3, r: 3 }, s("title", {}, m.label)));
+    // Markers (events) on the time axis: those closer than 12 px are one,
+    // with their count, so a busy minute does not paint a block.
+    const ms = (opts.markers?.() || []).filter((m) => m.t >= t0 && m.t <= t1).sort((a, b) => a.t - b.t);
+    const piles = [];
+    for (const m of ms) { const x = X(m.t), p = piles[piles.length - 1]; if (p && x - p.x0 < 12) { p.ms.push(m); p.x = (p.x0 + x) / 2; } else piles.push({ x0: x, x, ms: [m] }); }
+    for (const p of piles) {
+      const n = p.ms.length;
+      const title = p.ms.slice(0, 12).map((m) => m.label).join("\n") + (n > 12 ? `\nand ${n - 12} more` : "");
+      svgEl.append(s("line", { class: "ann", x1: p.x, x2: p.x, y1: M.t, y2: Y(ymin) }), s("circle", { class: "ann-dot", cx: p.x, cy: M.t + 3, r: n > 1 ? 6 : 3 }, s("title", {}, title)));
+      if (n > 1) svgEl.append(s("text", { class: "ann-n", x: p.x, y: M.t + 6, "text-anchor": "middle" }, n > 99 ? "99" : String(n)));
     }
     // Threshold.
     if (threshold != null) {
@@ -184,7 +210,7 @@ export function timeChart(opts) {
     svgEl.append(brush, xh, dots, over);
     let b0 = null;
     const tAt = (cx) => t0 + clamp((cx - M.l) / W, 0, 1) * span;
-    over.addEventListener("pointermove", (e) => {
+    const hover = (e) => {
       const r = svgEl.getBoundingClientRect();
       const cx = (e.clientX - r.left) * (width / r.width);
       if (b0 != null) { const a = Math.min(b0, cx), b = Math.max(b0, cx); brush.setAttribute("x", a); brush.setAttribute("width", b - a); brush.style.display = ""; }
@@ -201,9 +227,13 @@ export function timeChart(opts) {
         rows.push(h("div", { class: "r" }, h("span", { class: "k", style: { background: sr.color } }), h("b", {}, raw == null ? "–" : (sr.fmt || yfmt)(raw)), h("span", { class: "n" }, sr.name)));
       });
       if (opts.band) rows.push(h("div", { class: "r" }, h("span", { class: "k box", style: { background: opts.band.color || "var(--s1)", opacity: 0.4 } }), h("b", {}, `${yfmt(opts.band.lo(p))} – ${yfmt(opts.band.hi(p))}`), h("span", { class: "n" }, opts.band.name || "range")));
-      showTip(e.clientX, e.clientY, [h("div", { class: "t" }, fmt.datetime(p.t)), ...rows, ...(opts.tipExtra ? [opts.tipExtra(p)] : [])]);
-    });
-    over.addEventListener("pointerleave", () => { if (b0 == null) { xh.style.display = "none"; dots.replaceChildren(); hideTip(); } });
+      showTip(e.clientX, e.pointerType === "mouse" ? e.clientY : e.clientY - 60, [h("div", { class: "t" }, fmt.datetime(p.t)), ...rows, ...(opts.tipExtra ? [opts.tipExtra(p)] : [])]);
+    };
+    over.addEventListener("pointermove", hover);
+    // On a phone a tap shows the values there (a drag across still zooms).
+    over.style.touchAction = "pan-y";
+    over.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") { hover(e); tapTip(); } });
+    over.addEventListener("pointerleave", (e) => { if (b0 == null && e.pointerType === "mouse") { xh.style.display = "none"; dots.replaceChildren(); hideTip(); } });
     if (opts.onBrush) {
       over.addEventListener("pointerdown", (e) => { const r = svgEl.getBoundingClientRect(); b0 = (e.clientX - r.left) * (width / r.width); over.setPointerCapture(e.pointerId); });
       over.addEventListener("pointerup", (e) => {
@@ -282,11 +312,11 @@ export function heatmap(opts) {
       });
     }
     for (let r = 0; r < rows; r += rows > 10 ? 2 : 1) ax.append(s("text", { class: "axis", x: M.l - 6, y: M.t + H - r * rh - rh / 2 + 3.5, "text-anchor": "end" }, r === rows - 1 ? "more" : "≤ " + labels[r]));
-    const { ticks } = timeTicks(t0, t1, W);
-    for (const t of ticks) ax.append(s("text", { class: "axis", x: M.l + (t - t0) / span * W, y: height - 5, "text-anchor": "middle" }, fmt.time(t, span < 600e3)));
+    const { ticks, step: tstep } = timeTicks(t0, t1, W);
+    for (const t of ticks) ax.append(s("text", { class: "axis", x: M.l + (t - t0) / span * W, y: height - 5, "text-anchor": "middle" }, tickLabel(t, tstep, span)));
     root.geom = { W, H, rh, t0, span, rows };
   }
-  cv.addEventListener("pointermove", (e) => {
+  const hv = (e) => {
     const g = root.geom; if (!g) return;
     const r = cv.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
@@ -298,7 +328,9 @@ export function heatmap(opts) {
     const lo = row === 0 ? 0 : bounds[row - 1] * 1000, hi = bounds[row] != null ? bounds[row] * 1000 : null;
     const total = (p.latency_hist || []).reduce((a, b) => a + b, 0);
     showTip(e.clientX, e.clientY, [h("div", { class: "t" }, fmt.datetime(p.t)), h("div", { class: "r" }, h("b", {}, fmt.n(n) + " queries"), h("span", { class: "n" }, hi == null ? `over ${fmt.ms(lo)}` : `${fmt.ms(lo)} – ${fmt.ms(hi)}`)), h("div", { class: "r" }, h("span", { class: "n", style: { marginLeft: 0 } }, total ? fmt.pct(n / total) + " of the interval's " + fmt.n(total) : ""))]);
-  });
+  };
+  cv.addEventListener("pointermove", hv);
+  cv.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") { hv(e); tapTip(); } });
   cv.addEventListener("pointerleave", hideTip);
   const ro = new ResizeObserver(() => { if (root.isConnected) draw(); });
   ro.observe(root);

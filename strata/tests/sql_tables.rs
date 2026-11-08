@@ -139,7 +139,7 @@ fn tables_through_sql(layout: Layout) {
     // A table created again starts empty.
     assert_eq!(written(&db, "CREATE TABLE authors (id INT PRIMARY KEY, name TEXT)"), 0);
     assert_eq!(rows(&db, "SELECT COUNT(*) FROM authors"), [[Value::Int(0)]]);
-    assert!(fails(&db, "INSERT INTO authors (id, name) VALUES ('ada', 'Ada')").contains("does not fit"));
+    assert!(fails(&db, "INSERT INTO authors (id, name) VALUES ('ada', 'Ada')").contains("id is an INT field: give it a number, not text 'ada'"));
 }
 
 /// A quoted table name is the name inside the quotes, wherever a statement

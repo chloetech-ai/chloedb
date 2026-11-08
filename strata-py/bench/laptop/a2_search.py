@@ -13,11 +13,20 @@ prefix, typo and a weighted hybrid made from the collection's queries.
 Each kind is answered natively, by "app code" (the app fuses or filters
 two results itself, as it would have to), or is "not supported", with the
 reason. Every system gets the same documents and vectors; analysis is each
-system's closest to Strata's (English stemming and stopwords). Per system
-and collection it writes RESULTS_DIR/a2_<system>_<collection>.json: build
-time and size, and per kind its support, warm latency at 1 and 4 threads,
-nDCG@10 against the judgments and, for the vector kinds, recall@10 against
-an exact search.
+system's closest to Strata's (English stemming and stopwords), and the
+queries the app builds for Tantivy, SQLite and LanceDB drop the words
+Strata's drop (`--stopwords strata`; `classic`: Lucene's 33), so that speed
+and nDCG compare the same queries. `strata-1t` is Strata with each query on
+one thread, as Tantivy, SQLite and DuckDB answer one. Per system and
+collection, each in a process of its own, it writes
+RESULTS_DIR/a2_<system>_<collection>.json: build time, size after the
+system's own compaction (VACUUM, optimize; `bytes_before_compact` before
+it) and memory; per kind its support, warm latency at 1 and 4 threads in
+three passes (the summary with each pass's p50, p99 and rate and their
+ranges), nDCG@10 against the judgments and, for the vector kinds, recall@10
+against an exact search; and for bm25 and vector a cold pass: the first 100
+queries after the index is opened again with its files dropped from the
+page cache.
 """
 
 from __future__ import annotations
@@ -29,7 +38,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -44,8 +53,13 @@ from common import (  # noqa: E402
     ndcg10,
     phrase_of,
     prefix_of,
+    evict,
+    memory,
     rrf,
+    rss_now_bytes,
+    summary,
     timed_passes,
+    use_stopwords,
     typo_of,
     typo_word_of,
     weighted,
@@ -128,12 +142,24 @@ class System:
     def files(self, path: Path) -> list[Path]:
         return [path]
 
+    def compact(self, path: Path) -> str | None:
+        """What a load ends with before its size is measured and queries
+        run, as the system's own compaction (None: its build already did)."""
+        return None
+
+    def reopen(self, path: Path, between: Callable[[], Any]) -> None:
+        """Closes the built index, calls `between` (the cold pass drops the
+        files from the page cache there) and opens it again."""
+        raise Unsupported("no reopen")
+
     def close(self) -> None:
         pass
 
 
 class StrataSys(System):
     name = "strata"
+    # Threads each query searches segments on (None: every core).
+    query_threads: int | None = None
 
     def __init__(self) -> None:
         import strata
@@ -164,14 +190,23 @@ class StrataSys(System):
             rows = []
             for i in range(start, min(start + 2000, len(coll.docs))):
                 d = coll.docs[i]
-                rows.append({**{k: d[k] for k in ("id", "title", "text", "year", "category", "rating", "topic")}, "emb": coll.vecs[i].tolist()})
+                rows.append({**{k: d[k] for k in ("id", "title", "text", "year", "category", "rating", "topic")}, "emb": coll.vecs[i]})
             db.insert(rows)
         db.optimize()
+        secs = time.perf_counter() - t0
+        if self.query_threads is not None:
+            db.close()
+            db = self.strata.open(str(path), threads=self.query_threads)
         self.db = db
-        return {"seconds": time.perf_counter() - t0}
+        return {"seconds": secs}
 
     def files(self, path: Path) -> list[Path]:
         return [path, Path(str(path) + "-wal")]
+
+    def reopen(self, path: Path, between: Callable[[], Any]) -> None:
+        self.db.close()
+        between()
+        self.db = self.strata.open(str(path), threads=self.query_threads)
 
     def _keys(self, sql: str, params: dict | None = None) -> list[str]:
         return list(self.db.query(sql, params or {}).keys or [])
@@ -223,6 +258,15 @@ class StrataSys(System):
     def close(self) -> None:
         if self.db is not None:
             self.db.close()
+
+
+class StrataOneThread(StrataSys):
+    """Strata built as `strata` is, each query on one thread (the calling
+    one), as Tantivy, SQLite and DuckDB answer a query: the per-core
+    comparison beside the default's."""
+
+    name = "strata-1t"
+    query_threads = 1
 
 
 def fts5_quote(text: str) -> str:
@@ -296,6 +340,19 @@ class SqliteSys(System):
 
     def files(self, path: Path) -> list[Path]:
         return [path, Path(str(path) + "-wal"), Path(str(path) + "-shm")]
+
+    def compact(self, path: Path) -> str | None:
+        c = self.connect()
+        c.execute("VACUUM")
+        c.close()
+        return "VACUUM"
+
+    def reopen(self, path: Path, between: Callable[[], Any]) -> None:
+        import gc
+
+        self.local = __import__("threading").local()
+        gc.collect()
+        between()
 
     @staticmethod
     def _where(flt, alias="d") -> tuple[str, list]:
@@ -404,8 +461,19 @@ class TantivySys(System):
         return qs
 
     def _ids(self, query, k=10) -> list[str]:
-        hits = self.searcher.search(query, k).hits
+        # count=False: the top k only, as Strata, SQLite and DuckDB answer;
+        # counting every match (tantivy-py's default) turns off pruning.
+        hits = self.searcher.search(query, k, count=False).hits
         return [self.searcher.doc(addr)["id"][0] for _, addr in hits]
+
+    def reopen(self, path: Path, between: Callable[[], Any]) -> None:
+        import gc
+
+        self.index = self.searcher = None
+        gc.collect()
+        between()
+        self.index = self.t.Index.open(str(path))
+        self.searcher = self.index.searcher()
 
     def _text(self, text: str):
         ws = kept(text)
@@ -426,10 +494,15 @@ class TantivySys(System):
         if kind == "filter":
             fq = self._filter_query(q["filter"])
             query = t.Query.boolean_query([(t.Occur.Must, x) for x in fq])
-            hits = self.searcher.search(query, 10, order_by_field="rating", order=t.Order.Desc).hits
+            hits = self.searcher.search(query, 10, count=False, order_by_field="rating", order=t.Order.Desc).hits
             return [self.searcher.doc(addr)["id"][0] for _, addr in hits]
         if kind == "facet":
-            raise Unsupported("tantivy-py has no terms aggregation over a query's matches (Tantivy's Rust API does)")
+            # A terms aggregation over the matches (Searcher.aggregate, in
+            # tantivy-py since 0.22), every category asked for so that the
+            # counts are exact, then ordered as the others' SQL orders them.
+            query = t.Query.boolean_query([(t.Occur.Must, self.index.parse_query(w, ["body"])) for w in q["words"]])
+            agg = self.searcher.aggregate(query, {"c": {"terms": {"field": "category", "size": 1000, "segment_size": 1000}}})
+            return sorted(((b["key"], b["doc_count"]) for b in agg["c"]["buckets"]), key=lambda r: (-r[1], r[0]))[:5]
         if kind == "phrase":
             a, b = q["phrase"]
             query = t.Query.boolean_query([(t.Occur.Must, self.index.parse_query(f'"{a} {b}"', ["body"])), (t.Occur.Should, self._text(q["text"]))])
@@ -505,6 +578,19 @@ class DuckSys(System):
 
     def files(self, path: Path) -> list[Path]:
         return [path, Path(str(path) + ".wal")]
+
+    def reopen(self, path: Path, between: Callable[[], Any]) -> None:
+        import gc
+
+        self.local = __import__("threading").local()
+        self.root.close()
+        gc.collect()
+        between()
+        c = self.duckdb.connect(str(path))
+        for e in ("fts", "vss"):
+            c.execute(f"LOAD {e}")
+        c.execute("SET hnsw_enable_experimental_persistence = true")
+        self.root = c
 
     def _where(self, flt) -> tuple[str, list]:
         parts, args = [], []
@@ -606,6 +692,23 @@ class LanceSys(System):
         self.indexed = len(coll.docs) >= 10_000
         return {"seconds": time.perf_counter() - t0, "vector_index": "IVF_HNSW_SQ" if self.indexed else "none (fewer than 10,000 rows: an exact scan)"}
 
+    def compact(self, path: Path) -> str | None:
+        from datetime import timedelta
+
+        try:
+            self.t.optimize(cleanup_older_than=timedelta(0))
+        except TypeError:
+            self.t.optimize()
+        return "optimize (compact files, drop old versions)"
+
+    def reopen(self, path: Path, between: Callable[[], Any]) -> None:
+        import gc
+
+        self.t = None
+        gc.collect()
+        between()
+        self.t = self.lancedb.connect(str(path)).open_table("docs")
+
     @staticmethod
     def _where(flt) -> str | None:
         parts = []
@@ -683,7 +786,10 @@ class LanceSys(System):
         raise Unsupported(kind)
 
 
-SYSTEMS = {"strata": StrataSys, "sqlite": SqliteSys, "tantivy": TantivySys, "duckdb": DuckSys, "lancedb": LanceSys}
+SYSTEMS = {"strata": StrataSys, "strata-1t": StrataOneThread, "sqlite": SqliteSys, "tantivy": TantivySys, "duckdb": DuckSys, "lancedb": LanceSys}
+
+COLD_KINDS = ("bm25", "vector")  # the kinds timed cold too
+COLD_QUERIES = 100
 
 
 # ---------------------------------------------------------------- the run
@@ -701,7 +807,21 @@ def exact_truth(coll: Collection, qs: list[dict]) -> list[set[str]]:
     return out
 
 
-def run_system(name: str, coll: Collection, by_kind: dict[str, list[dict]], work: Path, seconds: float, threads: list[int], kinds: list[str] | None) -> dict:
+def cold_pass(sys_: System, kind: str, qs: list[dict], path: Path, files: list[Path]) -> dict:
+    """The first COLD_QUERIES queries of `kind`, one at a time, on the index
+    opened again with its files dropped from the page cache: what the first
+    queries after a start take (each read from the disk once)."""
+    dropped: list[bool] = []
+    sys_.reopen(path, lambda: dropped.append(evict(files)))
+    lat = []
+    for q in qs[:COLD_QUERIES]:
+        t0 = time.perf_counter()
+        sys_.answer(kind, q)
+        lat.append((time.perf_counter() - t0) * 1e3)
+    return {"first_ms": lat[0], **summary(lat), "evicted": bool(dropped and dropped[0])}
+
+
+def run_system(name: str, coll: Collection, by_kind: dict[str, list[dict]], work: Path, seconds: float, threads: list[int], kinds: list[str] | None, cold: bool = True) -> dict:
     sys_ = SYSTEMS[name]()
     path = work / f"{name}_{coll.name}" / ("db" if name != "lancedb" else "lance")
     if path.parent.exists():
@@ -709,8 +829,16 @@ def run_system(name: str, coll: Collection, by_kind: dict[str, list[dict]], work
     path.parent.mkdir(parents=True)
     if name == "tantivy":
         path = path.parent / "index"
+    files = sys_.files(path) if name not in ("lancedb", "tantivy") else [path]
+    base = rss_now_bytes()
     built = sys_.build(coll, path)
-    built["bytes"] = files_bytes(sys_.files(path)) if name not in ("lancedb", "tantivy") else files_bytes([path])
+    built["bytes_before_compact"] = files_bytes(files)
+    t0 = time.perf_counter()
+    how = sys_.compact(path)
+    if how:
+        built["compact"], built["compact_seconds"] = how, time.perf_counter() - t0
+    built["bytes"] = files_bytes(files)
+    built["memory"] = memory(base)
     print(f"{name:8} {coll.name}: built in {built['seconds']:.1f} s, {built['bytes'] / 1e6:.1f} MB", file=sys.stderr)
     report: dict[str, Any] = {"system": name, "version": sys_.version, "collection": coll.name, "n_docs": len(coll.docs), "build": built, "kinds": {}}
     for kind, qs in by_kind.items():
@@ -763,6 +891,17 @@ def run_system(name: str, coll: Collection, by_kind: dict[str, list[dict]], work
             file=sys.stderr,
         )
         report["kinds"][kind] = entry
+    report["memory_after_queries"] = memory(base)
+    if cold:
+        for kind in COLD_KINDS:
+            entry = report["kinds"].get(kind)
+            if not entry or entry.get("support") == "not supported" or (kinds and kind not in kinds):
+                continue
+            try:
+                entry["cold"] = cold_pass(sys_, kind, by_kind[kind], path, files)
+                print(f"{name:8} {kind:16} cold: first {entry['cold']['first_ms']:.2f} ms, p50 {entry['cold']['p50_ms']:.3f} ms", file=sys.stderr)
+            except Unsupported:
+                pass
     sys_.close()
     return report
 
@@ -779,7 +918,25 @@ def main() -> None:
     ap.add_argument("--seconds", type=float, default=5.0, help="timed seconds per kind and thread count")
     ap.add_argument("--threads", default="1,4")
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--stopwords", choices=("strata", "classic"), default="strata", help="what the queries the app builds (Tantivy, SQLite, LanceDB) drop: Strata's own list, so that every system ranks the same words, or Lucene's classic 33")
+    ap.add_argument("--no-cold", action="store_true", help="skip the cold pass (index reopened with its files out of the page cache)")
+    ap.add_argument("--passes", type=int, default=3, help="timed passes per kind and thread count (the seconds are split among them)")
+    ap.add_argument("--one-process", action="store_true", help="run every system in this process (by default each system and collection runs in a process of its own, so that its peak memory is its own)")
     a = ap.parse_args()
+    systems = a.systems.split(",")
+    if not a.one_process and len(systems) * len(a.collections.split(",")) > 1:
+        import subprocess
+
+        for name in a.collections.split(","):
+            for s in systems:
+                r = subprocess.run([sys.executable, __file__, *sys.argv[1:], "--systems", s, "--collections", name, "--one-process"])
+                if r.returncode:
+                    sys.exit(f"{s} on {name} failed ({r.returncode})")
+        return
+    use_stopwords(a.stopwords)
+    import common
+
+    common.PASSES = a.passes
     work = Path(a.work)
     threads = [int(x) for x in a.threads.split(",")]
     kinds = [k for k in a.kinds.split(",") if k] or None
@@ -789,9 +946,9 @@ def main() -> None:
         if not wl.exists():
             sys.exit(f"no workload {wl}: run strata-baselines --collections {name} --workload-only first")
         by_kind = make_queries(coll, json.loads(wl.read_text()))
-        for s in a.systems.split(","):
-            rep = run_system(s, coll, by_kind, work, a.seconds, threads, kinds)
-            rep["params"] = {"seconds": a.seconds, "threads": threads, "hybrid_depth": DEPTH}
+        for s in systems:
+            rep = run_system(s, coll, by_kind, work, a.seconds, threads, kinds, cold=not a.no_cold)
+            rep["params"] = {"seconds": a.seconds, "threads": threads, "hybrid_depth": DEPTH, "passes": a.passes, "stopwords": a.stopwords}
             write_report(Path(a.out) / f"a2_{s}_{name}.json", rep)
             if not a.keep:
                 shutil.rmtree(work / f"{s}_{name}", ignore_errors=True)

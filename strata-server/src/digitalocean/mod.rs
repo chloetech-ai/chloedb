@@ -219,7 +219,7 @@ impl DigitalOcean {
             stored: Mutex::new(None),
             file: None,
             endpoint: None,
-            http: reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap_or_default(),
+            http: crate::http_client().timeout(Duration::from_secs(60)).build().unwrap_or_default(),
             catalogs: Mutex::new(HashMap::new()),
             calls: Mutex::new(Vec::new()),
         }

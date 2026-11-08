@@ -1,0 +1,24 @@
+{
+  "batch": 500,
+  "clients": 4,
+  "collection": "nq-1000k",
+  "docs": 1000000,
+  "engine": "postgres",
+  "index_bytes": 5183299584,
+  "indexes_bytes": 2264571904,
+  "ingest_s": 50.283866939,
+  "merge_s": 536.025400785,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 5303262011,
+  "searchable_docs": 1000000,
+  "setup_s": 0.010361292,
+  "steps": {
+    "analyze_s": 3.785681169,
+    "gin_index_s": 23.040748343,
+    "hnsw_index_s": 507.026179564,
+    "primary_key_s": 2.171023418
+  },
+  "table_bytes": 1336033280,
+  "total_s": 586.309300183
+}

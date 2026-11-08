@@ -11,7 +11,7 @@ permalink: /
 An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.
 {: .fs-6 .fw-300 }
 
-[How Strata works](strata/index.md){: .btn .btn-primary .mr-2 } [Query language](strata/query-language.md){: .btn .mr-2 } [Server](strata/server.md){: .btn .mr-2 } [Python](strata/python.md){: .btn .mr-2 } [Source on GitHub](https://github.com/rkonow/strata){: .btn }
+[How Strata works](strata/index.md){: .btn .btn-primary .mr-2 } [Query language](strata/query-language.md){: .btn .mr-2 } [Server](strata/server.md){: .btn .mr-2 } [Python](strata/python.md){: .btn .mr-2 } [JavaScript](strata/javascript.md){: .btn .mr-2 } [Source on GitHub](https://github.com/rkonow/strata){: .btn }
 
 ---
 
@@ -24,6 +24,7 @@ This repository holds Strata, the pieces around it, and Engram, an application b
 | **Strata** | The embedded, single-file database: ACID transactions, SQL, full text, structured columns, vectors and graph edges over the same rows, and a cost-based planner over all of it. SQLite databases import into it and it exports to SQLite. | [Design](strata/index.md) · [SQL](strata/query-language.md) · [Graphs](strata/graphs.md) · [Next items](strata/next-items.md) · [SQLite](strata/sqlite.md) · [Results](strata/results.md) |
 | **strata-server** | Strata over HTTP JSON and gRPC, with a command center for one server or a cluster (health, topology, performance, alerts, queries and their profiles, CPU and memory flame graphs, logs, access), a query console and an agent that answers questions with SQL. Shards behind a coordinator answer like one database, and a primary ships its writes to replicas. | [Server](strata/server.md) |
 | **strata-py** | Strata from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of strata-server with the same methods. | [Python](strata/python.md) |
+| **strata-js** | Strata from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of strata-server for any runtime, with the same methods. | [JavaScript](strata/javascript.md) |
 | **Strata's posting lists** | A study of compressed posting lists and their intersection and union algorithms, which produced three new formats. Strata's text and keyword indexes use two of them. | [Posting lists](posting-lists.md) |
 | **Engram**, built on Strata | Long-term memory for Claude Code. Hooks store every event of a session in a Strata file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](engram/index.md) · [Install](engram/setup.md) · [Inspector](engram/inspector.md) · [Results](engram/results.md) · [Why Engram](why/) |
 
@@ -72,6 +73,7 @@ A statement is parsed and bound into a predicate tree and a scorer; the planner 
 
 | question | answer |
 |---|---|
+| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean, 7 November): Strata **146**, Solr 286, Elasticsearch 291, Qdrant 300. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](site/benchmarks.html) |
 | Is Strata fast? | Warm BM25 **1.7–3.2×** faster than Tantivy, and 24 of 28 text and filter comparisons won; vector top-10 in **0.05–0.10 ms** at recall@10 0.99 on Quora. |
 | Does the planner earn its keep? | On filtered vector search it is **1.8–6.1×** faster than the best fixed strategy, at recall@10 0.991–0.998. |
 | Do graph edges help search? | Following the citations of the two nearest papers doubles nDCG@20 on arXiv (0.123 → 0.253). |
@@ -139,6 +141,6 @@ Each project also has a long-form report with interactive charts, formulas and e
 
 ## Where the numbers come from
 
-Every figure on these pages comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
+Every figure on these pages comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. The comparisons with other engines ran on DigitalOcean, and [each report](site/benchmarks.html) names its machines. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
 
 The repository was called `rkonow/engram`, and this site `rkonow.github.io/engram`, until October 2026.

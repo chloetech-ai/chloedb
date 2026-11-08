@@ -31,7 +31,7 @@ import datetime as _dt
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
-from ._strata import StrataError
+from ._native import StrataError
 
 VERSION = 1
 

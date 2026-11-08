@@ -1,371 +1,508 @@
-// Logs: what the servers logged and the queries they answered, kept in
-// Strata (each server's log store, `<db>.logs`) and searched with SQL. On a
-// coordinator every search reads every server's store and merges their
-// answers. Lines by time, level, text, request, server, module and route,
-// with their rate; queries, the failed and slow ones and their statements,
-// each with its trace; any SQL over both tables; and the latest lines
-// followed live from the server's memory, which needs no store.
+// Logs: every server's lines, merged, over the top bar's time range. One
+// search bar holds the whole search (level, server, shard, route, status,
+// request, words) and lives in the URL with the range, so a link opens the
+// same lines. Dense one-line rows, newest first, followed live or not; a
+// detail pane with the line's fields and where to go next (its request on
+// every server, the copy in Cluster, its statement, the lines around it);
+// the messages grouped as patterns; a histogram by level with the events
+// that changed things. The log level is set per server, with an expiry and
+// a reason. Queries live in Queries > History; SQL over the store opens in
+// the SQL workbench ("As SQL"). Without a log store, the latest lines in
+// this server's memory are shown instead, followed live.
 
-import { h, s, icon, clear, fmt, card, api, every, toast, seg, debounce, failure, copy, showTip, hideTip, store, drawer, table, pill, empty, sqlBlock, ApiError } from "../core.js";
-import { state } from "../data.js";
+import { h, s, icon, clear, fmt, card, api, bus, every, toast, seg, debounce, copy, showTip, hideTip, drawer, table, pill, empty, modal, confirm, can, needs, copyName, findCopy, link, when, whenTitle, ApiError } from "../core.js";
+import { state, timeRange, rangeParams, setWindow, setRange, isCoordinator } from "../data.js";
 import { lit } from "../catalog.js";
-import { editor } from "../sqledit.js";
-import { grid, exportMenu, resultChart, answerStats } from "../results.js";
-import { queryDrawer } from "./queries.js";
 
-export default { id: "logs", title: "Logs", icon: "logs", group: "Workload", keywords: "log lines tail errors warnings request id filter level debug search sql store history queries slow failed node server", render, onParams };
+export default { id: "logs", title: "Logs", icon: "logs", group: "Operate", keywords: "log lines errors warnings request id level debug search patterns live tail server copy shard route status", render, onParams };
 
 const LV = ["error", "warn", "info", "debug", "trace"];
 const LCOLOR = { error: "var(--crit)", warn: "var(--s4)", info: "var(--s1)", debug: "var(--muted)", trace: "var(--line-2)" };
-const OUTCOMES = { ok: "ok", partial: "warn", error: "bad", timeout: "bad", rejected: "warn", cancelled: "info" };
-const OCOLOR = { ok: "var(--s1)", partial: "var(--s4)", error: "var(--crit)", timeout: "var(--s8)", rejected: "var(--s2)", cancelled: "var(--s7)" };
-const PRESETS = ["error", "warn", "info", "debug", "info,strata_server=debug", "info,strata=debug", "trace"];
-const RANGES = [[15, "15m"], [60, "1h"], [360, "6h"], [1440, "24h"], [10080, "7d"]];
-const TABS = [["lines", "Lines"], ["queries", "Queries"], ["sql", "SQL"], ["live", "Live tail"]];
 const PAGE = 200;
-const LINE_COLS = "ts, node, level, target, method, route, message, fields, request_id, status, ms, id";
-const QUERY_COLS = "ts, node, request_id, kind, outcome, shard, sql, fingerprint, ms, n_rows, error, detail, id";
+/** L6: Patterns samples the newest lines of each group of levels apart, so that a server on debug does not crowd out the errors. */
+const BUCKETS = [{ levels: ["error", "warn"], n: 1000, name: "errors and warnings" }, { levels: ["info"], n: 600, name: "info" }, { levels: ["debug", "trace"], n: 400, name: "debug" }];
+const COLS = "ts, node, level, target, method, route, message, fields, request_id, status, ms, id";
+const KEYS = { level: "level", server: "node", node: "node", shard: "shard", route: "route", module: "target", target: "target", status: "status", request: "request_id", method: "method" };
+const TONE = { alert_fired: "bad", copy_down: "bad", majority_lost: "bad", primary_changed: "warn", contain: "warn", alert_resolved: "good", copy_up: "good", majority_back: "good" };
+const MARK_KINDS = new Set(["rollout", "upgrade", "primary_changed", "copy_down", "copy_up", "majority_lost", "majority_back", "alert_fired", "alert_resolved", "log_level", "change", "note", "contain", "autoscale", "moves_started", "moves_finished", "shard_added", "shard_removed"]);
 
 const iso = (ms) => new Date(ms).toISOString();
+const URL_RE = /https?:\/\/[^\s)"',\\]+/g;
 const msOf = (ts) => typeof ts === "string" ? Date.parse(ts) : (ts || 0) / 1000;
-const clock = (ms) => fmt.time(ms) + "." + String(Math.floor(ms) % 1000).padStart(3, "0");
-const day = (ms) => new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-const period = (sec) => sec % 86400 === 0 ? fmt.plural(sec / 86400, "day") : sec % 3600 === 0 ? fmt.plural(sec / 3600, "hour") : fmt.dur(sec);
+const clock = (ms) => { const d = new Date(ms); return d.toLocaleTimeString("en-GB", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0"); };
+/** The time of a line; the milliseconds drop on a phone. */
+const clockEl = (ms) => { const c = clock(ms); return [c.slice(0, -4), h("span", { class: "al-ms" }, c.slice(-4))]; };
+/** A level, its first letter alone on a phone. */
+const lvEl = (lv, cls = "al-l-lv") => h("span", { class: `${cls} al-lv-${lv}`, title: lv }, lv.charAt(0), h("span", { class: "al-lv-rest" }, lv.slice(1)));
 const objects = (j) => (j.rows || []).map((r) => Object.fromEntries(j.columns.map((c, i) => [c, r[i]])));
-function parseJson(t) { if (!t) return null; try { return JSON.parse(t); } catch { return t; } }
+function parseJson(t) { if (!t || typeof t !== "string") return t || null; try { return JSON.parse(t); } catch { return t; } }
+/** Values as Rust's Debug prints them read as values (A15: `Some(0.036)` is 0.036). */
+const plain = (v) => typeof v === "string" ? v.replace(/^Some\((.*)\)$/, "$1").replace(/^None$/, "none") : v;
+const tz = (() => { try { const z = Intl.DateTimeFormat().resolvedOptions().timeZone, off = -new Date().getTimezoneOffset(); const utc = `UTC${off >= 0 ? "+" : "-"}${Math.floor(Math.abs(off) / 60)}${off % 60 ? ":" + String(Math.abs(off) % 60).padStart(2, "0") : ""}`; return !z || /^(UTC|Etc\/UTC|GMT)$/.test(z) ? (off ? utc : "UTC") : `${z} (${utc})`; } catch { return "local time"; } })();
+const tzShort = /\(([^)]+)\)$/.exec(tz)?.[1] || tz;
 
-/** A query over the log store: every server's on a coordinator (scope "cluster"), or this one's. */
-const ask = (sql, scope) => api("/v1/logs/query", { body: scope ? { sql, scope } : { sql } });
+/** A query of the log store: every server's on a coordinator, merged. */
+const ask = (sql, opts = {}) => api("/v1/logs/query", { body: { sql }, ...opts });
+
+/** A message as a pattern: numbers, ids, URLs and quoted text become placeholders. */
+export function pattern(message, fields) {
+  const f = parseJson(fields);
+  const extra = f && typeof f === "object" ? ["error", "status", "kind"].filter((k) => f[k] != null).map((k) => `${k}=${typeof f[k] === "string" ? plain(f[k]) : JSON.stringify(f[k])}`).join(" ") : "";
+  return `${message || ""}${extra ? " " + extra : ""}`
+    .replace(/https?:\/\/[^\s)"',]+/g, "<url>")
+    .replace(/'(?:[^']|'')*'/g, "<str>")
+    .replace(/\b[0-9a-f]{12,}\b/gi, "<id>")
+    .replace(/\b\d+(?:\.\d+)?(?:ms|s|µs)?\b/g, "<n>")
+    .replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+// ---------------------------------------------------------------- the search
+/** The search's tokens: `level>=warn`, `server:s1-0`, `"a phrase"`, `word`. */
+function tokens(q) {
+  const out = [];
+  const re = /(-?[a-z_]+(?::|>=|=)"[^"]*"|-?"[^"]*"|\S+)/gi;
+  let m;
+  while ((m = re.exec(q || ""))) out.push(m[1]);
+  return out;
+}
+/** The search as filters: {level: {op, v}, node: [...], shard, route, ..., text}. */
+function parse(q) {
+  const f = { text: [] };
+  for (const t of tokens(q)) {
+    const m = /^(-?)([a-z_]+)(:|>=|=)(.*)$/i.exec(t);
+    const key = m && KEYS[m[2].toLowerCase()];
+    if (!key) { f.text.push(t); continue; }
+    const v = m[4].replace(/^"(.*)"$/, "$1");
+    if (key === "level") f.level = { ge: m[3] === ">=", v: v.toLowerCase() };
+    else (f[key] ||= []).push({ v, not: m[1] === "-" });
+  }
+  return f;
+}
+const quote = (v) => /[\s"]/.test(v) ? `"${String(v).replace(/"/g, "")}"` : String(v);
+const tokenLabel = (t) => {
+  const m = /^(-?)([a-z_]+)(:|>=|=)(.*)$/i.exec(t);
+  if (!m || !KEYS[m[2].toLowerCase()]) return t.startsWith("-") ? `not ${t.slice(1)}` : t;
+  const k = m[2].toLowerCase(), v = m[4].replace(/^"(.*)"$/, "$1");
+  return `${k === "node" ? "server" : k === "target" ? "module" : k} ${m[1] ? "≠" : m[3] === ">=" ? "≥" : "="} ${v}`;
+};
 
 let reroute = null;
 function onParams(r) { reroute?.(r.params); }
 
 function render(page, r) {
-  const filt = h("input", { class: "input sm mono", value: state.system?.logs?.filter || "", style: { width: "230px" }, list: "log-presets", title: "What this server logs from now on: a level, or target=level pairs, as --log" });
-  const apply = h("button", { class: "btn sm", onclick: async () => {
-    try { const j = await api("/v1/logs/filter", { method: "PUT", body: { filter: filt.value.trim() } }); filt.value = j.filter; toast(`The server now logs: ${j.filter}`, "ok"); }
-    catch (e) { toast(e instanceof ApiError && e.status === 403 ? "Changing the log level needs an admin key" : e.message, "bad"); }
-  } }, icon("check"), "Apply");
-  const strip = h("div", { class: "lg-store" });
-  const banner = h("div");
-  const tabs = h("div", { class: "tabs", role: "tablist" });
-  const body = h("div");
-  page.append(
-    h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, "Logs"), h("p", {}, "Every line the servers logged and every query they answered, kept in Strata and searched with SQL. Click a line for its fields, a request id for the whole request.")),
-      h("div", { class: "tools" }, h("span", { class: "small muted" }, "The server logs"), filt, h("datalist", { id: "log-presets" }, PRESETS.map((p) => h("option", { value: p }))), apply)),
-    strip, banner, tabs, body);
+  // Old links: the Queries tab is Queries > History, the SQL tab is the SQL workbench.
+  const tab0 = r.params.get("tab");
+  if (tab0 === "queries") { location.replace(link("queries", { tab: "history", request: r.params.get("request"), fingerprint: r.params.get("fingerprint") })); return; }
+  if (tab0 === "sql" && r.params.get("sql")) { location.replace(link("sql", { q: r.params.get("sql"), store: "logs" })); return; }
 
-  let info = null, tab = null, stop = null;
-  const ctx = {
-    coord: false,
-    schemas: [],
-    /** Names the servers that did not answer a search, under the strip. */
-    note(nodes) {
-      const bad = (nodes || []).filter((n) => n.error);
-      clear(banner, bad.length ? h("div", { class: "banner warn" }, icon("warn"), h("div", { class: "grow" },
-        h("b", {}, `${fmt.plural(bad.length, "server")} did not answer, so ${bad.length === 1 ? "its" : "their"} lines are missing here`),
-        bad.map((n) => h("div", { class: "small mono" }, `${n.node || n.url}${n.shard != null ? ` (shard ${n.shard})` : ""}: ${n.error}`)))) : null);
-    },
-    go(t, params = {}) { location.hash = "#/logs?" + new URLSearchParams({ tab: t, ...params }); },
-  };
-
-  function show(t, params) {
-    stop?.();
-    tab = t;
-    clear(banner);
-    clear(tabs, TABS.filter(([k]) => k === "live" || ctx.has).map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === t), onclick: () => ctx.go(k) }, v)));
-    clear(body);
-    const init = Object.fromEntries(params || []);
-    stop = t === "live" || !ctx.has ? live(body, init, filt) : t === "queries" ? queries(body, ctx, init) : t === "sql" ? sqlTab(body, ctx, init) : lines(body, ctx, init);
-  }
-  reroute = (params) => show(params.get("tab") || (ctx.has ? "lines" : "live"), params);
-
-  api("/v1/logs?limit=1&level=error").then((j) => { if (j.filter && document.activeElement !== filt) filt.value = j.filter; }).catch(() => {});
-  api("/v1/logs/store").then((j) => {
-    info = j;
-    ctx.coord = !!j.nodes;
-    ctx.schemas = (j.schemas || []).map((x) => ({ table: x.table, short: x.short }));
-    const kept = [j.store, ...(j.nodes || []).map((n) => n.store)].filter(Boolean);
-    ctx.has = kept.length > 0;
-    drawStrip(strip, j, kept);
-    reroute(r.params);
-  }).catch((e) => {
-    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) { clear(body, failure(e, "The logs")); return; }
-    ctx.has = false;
-    reroute(r.params);
-  });
-  return () => { stop?.(); reroute = null; };
-}
-
-/** What the stores hold, how big they are and how long they keep it; on a coordinator, each server's. */
-function drawStrip(strip, j, kept) {
-  if (!kept.length) {
-    clear(strip, h("div", { class: "notice grow" }, j.nodes
-      ? "No server of this cluster keeps a log store (each was started with --log-store off): only the live tail of this coordinator's latest lines is here."
-      : "This server keeps no log store (it was started with --log-store off): only its latest 5,000 lines, in memory, are here."));
-    return;
-  }
-  const sum = (f) => kept.reduce((a, x) => a + (f(x) || 0), 0);
-  const lines = sum((x) => x.tables?.logs?.rows), queries = sum((x) => x.tables?.queries?.rows), bytes = sum((x) => x.bytes);
-  const dropped = sum((x) => (x.dropped?.lines || 0) + (x.dropped?.failed || 0)), sampled = sum((x) => x.sampled_out);
-  const errors = kept.filter((x) => x.last_error);
-  const servers = j.nodes ? j.nodes.length + 1 : 1;
-  const one = kept[0];
-  clear(strip,
-    h("span", { class: "row nw", style: { gap: "6px" } }, icon("db"), h("b", {}, "Kept in Strata")),
-    j.nodes ? h("span", {}, h("b", {}, `${kept.length} of ${servers}`), " servers keep their logs") : h("span", { class: "mono", title: "the log store's file" }, one.path),
-    h("span", {}, h("b", {}, fmt.n(lines)), " lines · ", h("b", {}, fmt.n(queries)), " queries"),
-    h("span", { title: "what the stores take, and the most each keeps" }, h("b", {}, fmt.bytes(bytes)), ` of ${fmt.bytes(one.max_bytes)}${j.nodes ? " each" : ""}`),
-    h("span", {}, "kept for ", h("b", {}, period(one.retain_s))),
-    h("span", { title: "queries that ended well and were not slow, kept at most this many a second; every slow or failed one is kept" }, "queries sampled at ", h("b", {}, `${fmt.n(one.queries_per_sec)}/s`)),
-    sampled ? h("span", { class: "muted", title: "fast queries that went over the rate and were not kept" }, `${fmt.n(sampled)} not kept`) : null,
-    dropped ? pill("warn", `${fmt.n(dropped)} lines dropped`) : null,
-    errors.length ? h("span", { class: "pill bad", title: errors.map((x) => `${x.node}: ${x.last_error}`).join("\n") }, icon("bad"), `${errors.length} cannot write`) : null,
-    h("span", { class: "sep" }),
-    h("button", { class: "btn sm ghost", onclick: () => storesDrawer(j) }, icon("layers"), j.nodes ? "Each server's store" : "The store"));
-}
-
-function storesDrawer(j) {
-  const rows = [j.store ? { url: "this server", shard: null, status: "ok", store: j.store } : null, ...(j.nodes || [])].filter(Boolean);
-  drawer({
-    title: "Log stores", sub: "a Strata database beside each server's, of tables logs and queries", wide: true,
-    body: [
-      table([
-        { key: "url", label: "server", render: (x) => h("span", { class: "mono small" }, x.store?.node ? `${x.store.node} · ${x.url}` : x.url) },
-        { key: "shard", label: "shard", num: true, render: (x) => x.shard ?? "–" },
-        { key: "lines", label: "lines", num: true, sort: (x) => x.store?.tables?.logs?.rows, render: (x) => x.store ? fmt.n(x.store.tables?.logs?.rows) : "–" },
-        { key: "queries", label: "queries", num: true, sort: (x) => x.store?.tables?.queries?.rows, render: (x) => x.store ? fmt.n(x.store.tables?.queries?.rows) : "–" },
-        { key: "bytes", label: "size", num: true, sort: (x) => x.store?.bytes, render: (x) => x.store ? fmt.bytes(x.store.bytes) : "–" },
-        { key: "written", label: "last write", render: (x) => x.store ? fmt.ago(x.store.last_write_ms) : "–" },
-        { key: "state", label: "", render: (x) => x.error ? pill("bad", "down") : !x.store ? pill("disabled", "no store") : x.store.last_error ? h("span", { class: "pill bad", title: x.store.last_error }, icon("bad"), "cannot write") : pill("ok", "ok") },
-      ], { rows, compact: true }),
-      h("p", { class: "small muted" }, "Each server writes its lines and queries to its own store every second and deletes what is older than its retention or past its size; a coordinator's search asks every server and merges the answers. Flags: --log-store, --log-retain, --log-store-mb, --log-queries, --node-name."),
-      rows.filter((x) => x.store).map((x) => h("details", {}, h("summary", { class: "small" }, x.store.node), h("pre", { class: "code", style: { fontSize: "11.5px" } }, JSON.stringify(x.store, null, 2)))),
-    ],
-  });
-}
-
-// ---------------------------------------------------------------- shared
-
-/** The time a search covers: the latest `range` minutes, or [from, to) when zoomed. */
-function window0(range) { return { range, from: null, to: null }; }
-const spanOf = (w) => w.from != null ? { from: w.from, to: w.to } : { from: Date.now() - w.range * 60e3, to: null };
-const timeWhere = (t) => [`ts >= ${lit(iso(t.from))}`, t.to != null ? `ts < ${lit(iso(t.to))}` : null];
-
-/** The time controls: the range, and a chip of the zoomed window that unzooms. */
-function timeControls(w, key, onChange) {
-  const zoom = h("span");
-  const rng = seg(RANGES.map(([m, l]) => [m, l]), w.from == null ? w.range : null, (v) => { w.range = v; w.from = w.to = null; store.set(key, v); drawZoom(); onChange(); }, { title: "How far back" });
-  function drawZoom() {
-    rng.set(w.from == null ? w.range : null);
-    clear(zoom, w.from == null ? null : h("button", { class: "chip", "aria-pressed": "true", title: "Back to the latest " + RANGES.find(([m]) => m === w.range)?.[1], onclick: () => { w.from = w.to = null; drawZoom(); onChange(); } },
-      icon("clock"), `${fmt.datetime(w.from)} – ${w.to ? fmt.time(w.to) : "now"}`, h("span", { class: "x" }, "×")));
-  }
-  drawZoom();
-  return { el: h("div", { class: "row nw", style: { gap: "6px" } }, rng, zoom), drawZoom };
-}
-
-/**
- * Counts over time as stacked bars: rows of [bucket, series, n], buckets in
- * minutes (or hours) since 1970. Drag across it, or click a bar, to zoom.
- */
-function histogram(box, rows, { unit, t, order, colors, onZoom, what, whats }) {
-  const to = t.to ?? Date.now(), spanMin = Math.max(1, (to - t.from) / 60e3);
-  const binMin = Math.max(unit, Math.ceil(spanMin / 150 / unit) * unit);
-  const t0 = Math.floor(t.from / 60e3 / binMin) * binMin, n = Math.max(1, Math.ceil((to / 60e3 - t0) / binMin));
-  const bins = Array.from({ length: n }, () => ({}));
-  const totals = {};
-  for (const [b, k, c] of rows) {
-    if (b == null) continue;
-    const i = Math.floor((b * unit - t0) / binMin);
-    if (i < 0 || i >= n) continue;
-    const key = k ?? "–";
-    bins[i][key] = (bins[i][key] || 0) + c;
-    totals[key] = (totals[key] || 0) + c;
-  }
-  const keys = [...order.filter((k) => totals[k]), ...Object.keys(totals).filter((k) => !order.includes(k))];
-  const max = Math.max(1, ...bins.map((b) => Object.values(b).reduce((a, x) => a + x, 0)));
-  const W = 1000, H = 72, bw = W / n;
-  const svgEl = s("svg", { viewBox: `0 0 ${W} ${H + 16}`, style: { width: "100%", height: H + 16 + "px", cursor: "crosshair" }, preserveAspectRatio: "none", role: "img", "aria-label": `${what} over time` });
-  const binMs = binMin * 60e3, tAt = (i) => (t0 + i * binMin) * 60e3;
-  bins.forEach((b, i) => {
-    let y = H;
-    for (const k of keys) {
-      const v = b[k] || 0; if (!v) continue;
-      const hh = Math.max(1, v / max * (H - 4));
-      y -= hh;
-      const rc = s("rect", { x: i * bw + 0.5, y, width: Math.max(1, bw - 1), height: hh, style: { fill: colors(k) } });
-      rc.addEventListener("pointermove", (e) => showTip(e.clientX, e.clientY, [h("div", { class: "t" }, `${fmt.datetime(tAt(i))} – ${fmt.time(tAt(i + 1), binMin < 1440)}`), ...keys.filter((x) => b[x]).map((x) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: colors(x) } }), h("b", {}, fmt.n(b[x])), h("span", { class: "n" }, x)))]));
-      rc.addEventListener("pointerleave", hideTip);
-      svgEl.append(rc);
-    }
-  });
-  for (let k = 0; k <= 4; k++) {
-    const x = k * W / 4, at = tAt(0) + k / 4 * n * binMs;
-    svgEl.append(s("text", { x: Math.min(W - 2, Math.max(2, x)), y: H + 13, "text-anchor": k === 0 ? "start" : k === 4 ? "end" : "middle", style: { fill: "var(--muted)", fontSize: "10.5px" } }, spanMin > 1440 ? fmt.datetime(at).replace(/:\d\d$/, "") : fmt.time(at, false)));
-  }
-  const sel = s("rect", { class: "selr", x: 0, y: 0, width: 0, height: H, style: { display: "none" } });
-  svgEl.append(sel);
-  const xOf = (e) => { const r = svgEl.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); };
-  svgEl.addEventListener("pointerdown", (e) => {
-    const a = xOf(e);
-    svgEl.setPointerCapture(e.pointerId);
-    const mv = (ev) => { const b = xOf(ev); sel.style.display = ""; sel.setAttribute("x", Math.min(a, b) * W); sel.setAttribute("width", Math.abs(b - a) * W); };
-    const up = (ev) => {
-      svgEl.removeEventListener("pointermove", mv); svgEl.removeEventListener("pointerup", up);
-      sel.style.display = "none"; hideTip();
-      const b = xOf(ev);
-      if (Math.abs(b - a) * svgEl.getBoundingClientRect().width < 5) { const i = Math.min(n - 1, Math.floor(a * n)); if (bins[i] && Object.keys(bins[i]).length) onZoom(tAt(i), tAt(i + 1)); }
-      else onZoom(tAt(0) + Math.min(a, b) * n * binMs, tAt(0) + Math.max(a, b) * n * binMs);
-    };
-    svgEl.addEventListener("pointermove", mv); svgEl.addEventListener("pointerup", up);
-  });
-  const total = Object.values(totals).reduce((a, x) => a + x, 0);
-  clear(box, svgEl, h("div", { class: "legend", style: { marginTop: "4px" } },
-    keys.map((k) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "k box", style: { background: colors(k) } }), k, h("b", { class: "num" }, fmt.n(totals[k])))),
-    h("span", { class: "sep" }), h("span", { class: "muted" }, `${fmt.plural(total, what, whats)} · a bar is ${binMin >= 60 ? fmt.plural(binMin / 60, "hour") : fmt.plural(binMin, "minute")} · drag to zoom`)));
-  return total;
-}
-
-/** A column of the most common values of a field; a click keeps only that one, another click lets them all back. */
-function facet(title, rows, current, onPick) {
-  const items = rows.filter((r) => r[0] != null);
-  const max = Math.max(1, ...items.map((r) => r[1]));
-  return card({ title, cls: "lg-facet", body: items.length ? h("div", { class: "facet" }, items.map(([v, n]) => h("button", { "aria-pressed": String(current === v), title: current === v ? "Show them all again" : "Only " + v, onclick: () => onPick(current === v ? "" : v) },
-    h("span", { class: "ellipsis mono" }, v), h("b", { class: "num" }, fmt.si(n)),
-    h("div", { class: "meter" }, h("i", { style: { width: n / max * 100 + "%" } }))))) : h("div", { class: "small muted" }, "None") });
-}
-
-/** A line of the store or of the server's memory, as a row of the log box. */
-function lineRow(l, { coord, onRequest, actions }) {
-  const where = l.route ? `${l.method || ""} ${l.route}` : l.method && /::grpc$/.test(l.target || "") ? `gRPC ${l.method}` : l.target;
-  const fields = l.fields && typeof l.fields === "object" ? l.fields : {};
-  const ln = h("div", { class: "ln", dataset: { key: l.key || "" } },
-    h("span", { class: "muted", title: fmt.datetime(l.ms) }, clock(l.ms)),
-    h("span", { class: "lv " + String(l.level).toUpperCase() }, l.level),
-    coord ? h("span", { class: "nd", title: l.node }, l.node) : null,
-    h("span", { class: "tg", title: l.target }, where),
-    h("span", { class: "msg" }, l.message,
-      Object.entries(fields).slice(0, 6).map(([k, v]) => h("span", { class: "fld" }, "  ", h("b", {}, k + "="), typeof v === "string" ? v : JSON.stringify(v))),
-      l.request_id ? h("span", {}, "  ", h("span", { class: "rid", title: "Only this request", onclick: (e) => { e.stopPropagation(); onRequest(l.request_id); } }, l.request_id)) : null));
-  ln.onclick = (e) => {
-    if (e.target.closest("button,a,.rid")) return;
-    if (ln.classList.toggle("open")) ln.append(h("div", { class: "more" },
-      h("pre", { class: "code", style: { fontSize: "11.5px" } }, JSON.stringify(l.raw, null, 2)),
-      h("div", { class: "row", style: { marginTop: "6px" } }, h("button", { class: "btn sm", onclick: () => copy(JSON.stringify(l.raw)) }, icon("copy"), "Copy"), actions?.(l))));
-    else ln.querySelector(".more")?.remove();
-  };
-  return ln;
-}
-
-const stored = (r) => {
-  const fields = parseJson(r.fields);
-  return { key: `${r.node}/${r.id}`, ms: msOf(r.ts), level: r.level, node: r.node, target: r.target, method: r.method, route: r.route, message: r.message, fields: fields && typeof fields === "object" ? fields : {}, request_id: r.request_id, raw: { ...r, fields } };
-};
-
-// ---------------------------------------------------------------- lines
-
-function lines(body, ctx, init) {
-  const w = window0(store.get("logs.range", 60));
-  const f = { level: store.get("logs.storedLevel", "debug"), q: init.q || "", request: init.request || "", node: init.node || "", target: "", route: "", follow: true };
-  if (f.request) { w.range = 10080; }
-  if (init.from) { w.from = +init.from; w.to = init.to ? +init.to : null; f.level = "trace"; }
-  const at = init.at || "";
-  const coord = ctx.coord;
-
-  const time = timeControls(w, "logs.range", () => refresh());
-  const lvl = seg(LV.map((x) => [x, x]), f.level, (v) => { f.level = v; store.set("logs.storedLevel", v); refresh(); }, { title: "The least severe level shown" });
-  const q = h("input", { class: "input sm", value: f.q, placeholder: "Search: words, \"a phrase\", a OR b, -word", style: { width: "260px" }, title: "MATCH over the message and the fields, in Strata's query syntax", oninput: debounce(() => { f.q = q.value.trim(); refresh(); }, 300) });
-  const req = h("input", { class: "input sm mono", placeholder: "request id", value: f.request, style: { width: "170px" }, oninput: debounce(() => { f.request = req.value.trim(); refresh(); }, 300) });
-  const follow = h("button", { class: "chip", "aria-pressed": "true", title: "Add each new line at the top as it is written" }, icon("refresh"), "follow");
-  follow.onclick = () => { f.follow = !f.follow; follow.setAttribute("aria-pressed", String(f.follow)); };
-  const chips = h("div", { class: "row", style: { gap: "6px" } });
-  const count = h("span", { class: "small muted" });
+  const ctx = { coord: false, nodes: new Map(), store: null, has: null, missed: [] };
+  page.classList.add("al-logs");
+  const sub = h("p", { class: "al-lsub" });
+  const storeBtn = h("button", { class: "btn sm", title: "Each server's log store: size, retention, writes" }, icon("db"), "stores");
+  const levelBtn = h("button", { class: "btn sm", title: "What each server logs, with an expiry" }, icon("sliders"), "Log levels");
+  const sqlLink = h("a", { class: "btn sm ghost al-wide-only", title: "Open this search as SQL in the SQL workbench" }, icon("sql"), "As SQL");
+  const shareBtn = h("button", { class: "btn sm ghost al-wide-only", title: "Copy a link to these lines: the search and this time window" }, icon("link"), "Copy link");
+  // NEW-alerts-logs-15: on a phone the chart and the secondary links fold away, so lines come first.
+  const foldBtn = (label, cls, title) => { const b = h("button", { class: "chip al-narrow-only", "aria-pressed": "false", title, onclick: () => { const on = page.classList.toggle(cls); b.setAttribute("aria-pressed", String(on)); } }, label); return b; };
+  const chartBtn = foldBtn("Chart", "al-chart-open", "The lines by level and minute, and the events");
+  const moreBtn = foldBtn("More", "al-more-open", "As SQL, Copy link, Queries > History");
+  const chips = h("div", { class: "al-sq-chips" });
+  const input = h("input", { class: "al-sq-in", placeholder: "Search: words, \"a phrase\", level>=warn, server:s1-0, shard:1, route:, status:, request:", "aria-label": "Search the log lines", autocomplete: "off", spellcheck: "false" });
+  const bar = h("div", { class: "al-sq", onclick: (e) => { if (e.target === bar || e.target === chips) input.focus(); } }, icon("search"), chips, input);
+  const rangeNote = h("span", { class: "small muted" });
+  const alertChip = h("span");
+  const liveBtn = h("button", { class: "chip al-live", "aria-pressed": "true", title: "Add each new line at the top as it is written" });
+  const missedLine = h("div");
   const hist = h("div", { class: "hist" });
-  const box = h("div", { class: "logs" + (coord ? " nodes" : ""), role: "log", "aria-live": "off", style: { height: "calc(100vh - 420px)", minHeight: "360px" } });
-  const side = h("div", { class: "lg-side" });
-  const sqlBtn = h("button", { class: "btn sm ghost", title: "Open this search as SQL, to change it" }, icon("sql"), "As SQL");
-  body.append(
-    h("div", { class: "row", style: { gap: "10px", marginBottom: "8px" } }, time.el, lvl, q, req, follow, sqlBtn, h("span", { class: "sep" }), count),
-    chips,
-    h("div", { class: "lg-main" },
-      h("div", { class: "stack", style: { gap: "10px", minWidth: 0 } }, card({ title: "Lines over time", sub: "by level", body: hist }), box),
-      side));
+  const markLegend = h("div", { class: "al-marks small muted" });
+  const facets = h("div", { class: "al-facets" });
+  const tabs = h("div", { class: "tabs al-ltabs", role: "tablist" });
+  const countNote = h("span", { class: "small muted" });
+  const list = h("div", { class: "al-lines", role: "grid", "aria-label": "Log lines, newest first" });
+  const more = h("div", { class: "al-more" });
+  const detail = h("aside", { class: "al-detail card hidden", "aria-label": "The line's detail" });
+  const scrim = h("div", { class: "al-scrim", onclick: () => closeDetail() });
+  const filtersBtn = h("button", { class: "chip al-narrow-only al-fbtn", "aria-pressed": "false", onclick: () => { const on = main.classList.toggle("al-ffo"); filtersBtn.setAttribute("aria-pressed", String(on)); } }, icon("filter"), "Filters");
+  const main = h("div", { class: "al-lmain" }, facets, h("div", { class: "al-lcol" }, h("div", { class: "row nw al-lhead" }, tabs, h("span", { class: "sep" }), countNote), list, more), scrim, detail);
+  page.append(
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Logs"), sub),
+      h("div", { class: "tools" }, storeBtn, levelBtn, h("a", { class: "btn sm ghost al-wide-only", href: link("queries", { tab: "history" }), title: "Finished queries, failed and slow ones, with their traces: Queries > History" }, icon("queries"), "Queries > History"))),
+    h("div", { class: "row nw al-sqrow" }, bar, sqlLink, shareBtn),
+    h("div", { class: "row al-rangerow" }, alertChip, rangeNote, h("span", { class: "sep" }), filtersBtn, chartBtn, moreBtn, liveBtn),
+    h("section", { class: "card al-hist" }, h("div", { class: "bd" }, hist, markLegend)),
+    missedLine,
+    main);
 
-  const where = (skip) => [
-    ...timeWhere(spanOf(w)),
-    f.level !== "trace" ? `level IN (${LV.slice(0, LV.indexOf(f.level) + 1).map(lit).join(", ")})` : null,
-    f.q ? `(MATCH(message, ${lit(f.q)}) OR MATCH(fields, ${lit(f.q)}))` : null,
-    f.request ? `request_id = ${lit(f.request)}` : null,
-    ...["node", "target", "route"].filter((k) => f[k] && k !== skip).map((k) => `${k} = ${lit(f[k])}`),
-  ].filter(Boolean).join(" AND ");
-  const rowsSql = (extra = "") => `SELECT ${LINE_COLS} FROM logs WHERE ${where()}${extra} ORDER BY ts DESC, id DESC LIMIT ${PAGE}`;
-  sqlBtn.onclick = () => ctx.go("sql", { sql: rowsSql() });
+  let q = "", tab = "lines", live = true, gen = 0, newest = null, oldest = null, matched = 0, rows = [], sel = null, sample = null, buckets = [];
+  const f = () => parse(q);
 
-  let shown = new Set(), newest = null, oldest = null, gen = 0, ticks = 0, matched = 0, lastDay = null;
-  const pick = (k) => (v) => { f[k] = v; refresh(); };
-  function drawChips() {
-    clear(chips, ["node", "target", "route"].filter((k) => f[k]).map((k) => h("button", { class: "chip", "aria-pressed": "true", title: "Remove", onclick: () => pick(k)("") }, `${k} = ${f[k]}`, h("span", { class: "x" }, "×"))));
-    chips.style.marginBottom = chips.childElementCount ? "8px" : "0";
+  // ------------------------------------------------ servers
+  /** A server's name: the copy's (s1-0 or its node name), else the node name the store gives. */
+  const nameOf = (node) => { const n = ctx.nodes.get(node); return n?.url && findCopy(n.url) ? copyName(n.url) : node; };
+  const urlOf = (node) => ctx.nodes.get(node)?.url || null;
+  /** The node names a server token means: a node name, a copy's name or URL. */
+  function nodesFor(v) {
+    const out = [];
+    for (const [node, n] of ctx.nodes) if (node === v || (n.url && (n.url === v || copyName(n.url) === v))) out.push(node);
+    return out.length ? out : [v];
   }
-  const actions = (l) => [
-    h("button", { class: "btn sm", title: "Every line of this server in the minute around this one", onclick: () => ctx.go("lines", { from: String(Math.floor(l.ms - 30e3)), to: String(Math.ceil(l.ms + 30e3)), node: l.node || "", at: l.key }) }, icon("clock"), "Lines around it"),
-    l.request_id ? h("button", { class: "btn sm", onclick: () => ctx.go("lines", { request: l.request_id }) }, "This request's lines") : null,
-    l.request_id ? h("button", { class: "btn sm", onclick: () => ctx.go("queries", { request: l.request_id }) }, "Its queries", icon("right")) : null,
-  ];
-  const onRequest = (id) => { req.value = id; f.request = id; if (w.range < 10080 && w.from == null) { w.range = 10080; time.drawZoom(); } refresh(); };
-  const row = (r) => lineRow(stored(r), { coord, onRequest, actions });
+  const shardNodes = (sh) => [...ctx.nodes].filter(([, n]) => String(n.shard) === String(sh)).map(([k]) => k);
+  /** Copy URLs in a text, named: "shard 17 (http://…:7701)" reads "shard 17 (s17-0)". */
+  const nameUrls = (t) => String(t ?? "").replace(URL_RE, (u) => { const tail = /[:;.]+$/.exec(u)?.[0] || "", b = tail ? u.slice(0, -tail.length) : u; return (findCopy(b) ? copyName(b) : b) + tail; });
 
-  function place(rs, at) {
-    const els = [];
-    for (const r of rs) {
-      const key = `${r.node}/${r.id}`;
-      if (shown.has(key)) continue;
-      shown.add(key);
-      const ms = msOf(r.ts), d = day(ms);
-      if (at !== "top" && d !== lastDay) { els.push(h("div", { class: "day" }, d)); lastDay = d; }
-      els.push(row(r));
+  // ------------------------------------------------ SQL
+  function where(skip) {
+    const x = f(), t = timeRange();
+    const out = [`ts >= ${lit(iso(t.from))}`];
+    if (!(t.live && live)) out.push(`ts < ${lit(iso(t.to))}`);
+    if (x.level && skip !== "level") out.push(x.level.ge ? `level IN (${LV.slice(0, Math.max(0, LV.indexOf(x.level.v)) + 1).map(lit).join(", ")})` : `level = ${lit(x.level.v)}`);
+    const nodeIn = [];
+    for (const { v, not } of x.node || []) if (!not) nodeIn.push(...nodesFor(v)); else out.push(`node != ${lit(nodesFor(v)[0])}`);
+    for (const { v, not } of x.shard || []) if (!not) nodeIn.push(...shardNodes(v)); else for (const n of shardNodes(v)) out.push(`node != ${lit(n)}`);
+    if (nodeIn.length && skip !== "node") out.push(`node IN (${[...new Set(nodeIn)].map(lit).join(", ")})`);
+    else if ((x.node?.some((y) => !y.not) || x.shard?.some((y) => !y.not)) && !nodeIn.length && skip !== "node") out.push("node = ''");
+    for (const k of ["route", "target", "method", "request_id"]) for (const { v, not } of x[k] || []) if (skip !== k) out.push(`${k} ${not ? "!=" : "="} ${lit(v)}`);
+    for (const { v, not } of x.status || []) if (skip !== "status" && Number.isFinite(+v)) out.push(`status ${not ? "!=" : "="} ${+v}`);
+    if (x.text.length) {
+      const words = x.text.join(" ");
+      out.push(`(MATCH(message, ${lit(words)}) OR MATCH(fields, ${lit(words)}) OR MATCH(error, ${lit(words)}))`);
     }
-    return els;
+    return out.join(" AND ");
   }
-  function tail() {
-    box.querySelector(":scope > .tail")?.remove();
-    if (!shown.size) return;
-    box.append(h("div", { class: "tail" }, h("span", { class: "small muted" }, `${fmt.n(shown.size)} of ${fmt.plural(matched, "line")} shown`),
-      shown.size < matched ? h("button", { class: "btn sm", onclick: older }, icon("down"), "Older lines") : null));
-  }
-  const edge = (rs) => rs.length ? [msOf(rs[0].ts), msOf(rs[rs.length - 1].ts)] : null;
+  const rowsSql = (extra = "") => `SELECT ${COLS} FROM logs WHERE ${where()}${extra} ORDER BY ts DESC, id DESC LIMIT ${PAGE}`;
 
+  // ------------------------------------------------ the search bar
+  function setQ(next, { push = true } = {}) {
+    q = next.trim().replace(/\s+/g, " ");
+    drawChips();
+    if (push) writeUrl();
+    refresh();
+  }
+  function writeUrl() {
+    const want = link("logs", { q, tab: tab === "lines" ? null : tab, alert: alertId });
+    if (location.hash !== want) history.replaceState(null, "", location.pathname + location.search + want);
+    sqlLink.href = link("sql", { q: rowsSql(), store: "logs" });
+  }
+  function drawChips() {
+    clear(chips, tokens(q).map((t, i) => h("button", { class: "chip al-tok", "aria-pressed": "true", title: "Remove (click the text to edit it)", onclick: (e) => {
+      const all = tokens(q);
+      all.splice(i, 1);
+      if (!e.target.closest(".x")) { input.value = t; input.focus(); }
+      setQ(all.join(" "));
+    } }, tokenLabel(t), h("span", { class: "x", "aria-hidden": "true" }, "×"))));
+  }
+  const addTok = (t) => { const all = tokens(q).filter((x) => x !== t); all.push(t); setQ(all.join(" ")); };
+  const dropKey = (key) => tokens(q).filter((t) => { const m = /^-?([a-z_]+)(:|>=|=)/i.exec(t); return !(m && KEYS[m[1].toLowerCase()] === key); });
+  const setKey = (key, t) => { const all = dropKey(key); if (t) all.push(t); setQ(all.join(" ")); };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); const v = input.value.trim(); input.value = ""; if (v) setQ(`${q} ${v}`); }
+    else if (e.key === "Backspace" && !input.value && q) { const all = tokens(q); input.value = all.pop(); e.preventDefault(); setQ(all.join(" ")); }
+    else if (e.key === "Escape" && input.value) { input.value = ""; }
+  };
+  input.onblur = () => { const v = input.value.trim(); if (v) { input.value = ""; setQ(`${q} ${v}`); } };
+
+  // ------------------------------------------------ time and live
+  let alertId = r.params.get("alert") || null;
+  function drawRange() {
+    const t = timeRange();
+    clear(rangeNote, t.fixed ? `${when(t.from)} – ${when(t.to)}` : t.label, h("span", { class: "al-wide-only" }, " · the top bar's range, kept in the link"), ` · times in ${tz}`);
+    liveBtn.disabled = !t.live;
+    liveBtn.title = t.live ? "Add each new line at the top as it is written" : "The range is a fixed window: pick a range like 1h in the top bar to follow new lines";
+    liveBtn.setAttribute("aria-pressed", String(live && t.live));
+    clear(liveBtn, h("span", { class: "dot " + (live && t.live ? "ok pulse" : "") }), live && t.live ? "Live: new lines on top" : "Live: off");
+    const a = alertId && state.alerts ? (state.alerts.rules || []).find((x) => x.id === alertId) : null;
+    clear(alertChip, alertId ? h("button", { class: "chip al-alertchip", "aria-pressed": "true", title: "Lines of the alert's window: remove to go back to the last hour", onclick: () => { alertId = null; setRange("1h"); } },
+      icon("alerts"), `Alert window: ${a?.name || alertId}`, t.fixed ? ` · ${when(t.from)} – ${when(t.to)}` : "", h("span", { class: "x" }, "×")) : null);
+  }
+  liveBtn.onclick = () => { live = !live; drawRange(); if (live) refresh(); };
+
+  // ------------------------------------------------ the histogram
+  let events = [];
+  async function loadEvents() {
+    const t = timeRange();
+    try {
+      const j = await api(`/v1/events?from=${Math.round(t.from)}&to=${Math.round(t.to)}&limit=300`);
+      events = (j.events || []).filter((e) => MARK_KINDS.has(e.kind) && !(e.kind === "change" && /^\/v1\/alerts\/[^/]+\/(ack|silence|notes)$/.test(e.detail?.route || "")));
+      ctx.newer = true;
+    } catch (e) { events = []; if (e instanceof ApiError && (e.status === 404 || e.status === 405)) ctx.newer = false; }
+  }
+  /** The levels the search keeps. */
+  function levelOk() {
+    const x = f().level;
+    if (!x) return () => true;
+    const i = LV.indexOf(x.v);
+    return x.ge ? (k) => LV.indexOf(k) >= 0 && LV.indexOf(k) <= i : (k) => k === x.v;
+  }
+  let levelTotals = {};
+  const histSql = (col) => `SELECT ${col}, level, COUNT(*) FROM logs WHERE ${where("level")} GROUP BY ${col}, level LIMIT 20000`;
+  function drawHist(hrows, unit) {
+    const t = timeRange();
+    const to = t.to, spanMin = Math.max(1, (to - t.from) / 60e3);
+    const binMin = Math.max(unit, Math.ceil(spanMin / 120 / unit) * unit);
+    const t0 = Math.floor(t.from / 60e3 / binMin) * binMin, n = Math.max(1, Math.ceil((to / 60e3 - t0) / binMin));
+    const bins = Array.from({ length: n }, () => ({}));
+    const totals = {};
+    for (const [b, k, c] of hrows) {
+      if (b == null) continue;
+      const i = Math.floor((b * unit - t0) / binMin);
+      if (i < 0 || i >= n) continue;
+      const key = k ?? "–";
+      bins[i][key] = (bins[i][key] || 0) + c;
+      totals[key] = (totals[key] || 0) + c;
+    }
+    const ok = levelOk();
+    const keys = [...LV.filter((k) => totals[k]), ...Object.keys(totals).filter((k) => !LV.includes(k))].filter(ok);
+    const max = Math.max(1, ...bins.map((b) => keys.reduce((a, k) => a + (b[k] || 0), 0)));
+    const W = 1000, H = 64, bw = W / n, binMs = binMin * 60e3, tAt = (i) => (t0 + i * binMin) * 60e3;
+    const X = (ms) => (ms / 60e3 - t0) / (n * binMin) * W;
+    const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: H + "px", cursor: "crosshair", touchAction: "pan-y" }, preserveAspectRatio: "none", role: "img", "aria-label": "Log lines over time, by level" });
+    bins.forEach((b, i) => {
+      let y = H;
+      for (const k of keys) {
+        const v = b[k] || 0; if (!v) continue;
+        const hh = Math.max(1, v / max * (H - 4));
+        y -= hh;
+        const rc = s("rect", { x: i * bw + 0.5, y, width: Math.max(1, bw - 1), height: hh, style: { fill: LCOLOR[k] || "var(--s6)" } });
+        rc.addEventListener("pointermove", (e) => showTip(e.clientX, e.clientY, [h("div", { class: "t" }, `${when(tAt(i))} – ${when(tAt(i + 1))}`), ...keys.filter((x) => b[x]).map((x) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: LCOLOR[x] } }), h("b", {}, fmt.n(b[x])), h("span", { class: "n" }, x)))]));
+        rc.addEventListener("pointerleave", hideTip);
+        svgEl.append(rc);
+      }
+    });
+    for (const e of events) {
+      if (e.ts_ms < t.from || e.ts_ms > to) continue;
+      const x = X(e.ts_ms);
+      const ln = s("line", { class: "al-hmk " + (TONE[e.kind] || ""), x1: x, x2: x, y1: 0, y2: H, "vector-effect": "non-scaling-stroke" });
+      ln.addEventListener("pointermove", (ev) => showTip(ev.clientX, ev.clientY, [h("div", { class: "t" }, when(e.ts_ms)), h("div", {}, e.title || e.kind)]));
+      ln.addEventListener("pointerleave", hideTip);
+      svgEl.append(ln);
+    }
+    const axis = h("div", { class: "al-hax", "aria-hidden": "true" }, [0, 1, 2, 3, 4].map((k) => h("span", { class: k % 2 ? "al-hax-odd" : "" }, when(tAt(0) + k / 4 * n * binMs, { sec: false }))));
+    const selr = s("rect", { class: "selr", x: 0, y: 0, width: 0, height: H, style: { display: "none" } });
+    svgEl.append(selr);
+    const xOf = (e) => { const rr = svgEl.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - rr.left) / rr.width)); };
+    svgEl.addEventListener("pointerdown", (e) => {
+      const a = xOf(e);
+      svgEl.setPointerCapture(e.pointerId);
+      const mv = (ev) => { const b = xOf(ev); selr.style.display = ""; selr.setAttribute("x", Math.min(a, b) * W); selr.setAttribute("width", Math.abs(b - a) * W); };
+      const up = (ev) => {
+        svgEl.removeEventListener("pointermove", mv); svgEl.removeEventListener("pointerup", up);
+        selr.style.display = "none"; hideTip();
+        const b = xOf(ev);
+        if (Math.abs(b - a) * svgEl.getBoundingClientRect().width < 5) { const i = Math.min(n - 1, Math.floor(a * n)); if (bins[i] && Object.keys(bins[i]).length) setWindow(tAt(i), tAt(i + 1)); }
+        else setWindow(tAt(0) + Math.min(a, b) * n * binMs, tAt(0) + Math.max(a, b) * n * binMs);
+      };
+      svgEl.addEventListener("pointermove", mv); svgEl.addEventListener("pointerup", up);
+    });
+    const total = keys.reduce((a, k) => a + totals[k], 0);
+    levelTotals = totals;
+    clear(hist, svgEl, axis, h("div", { class: "legend", style: { marginTop: "4px" } },
+      keys.map((k) => h("button", { class: "row nw al-lvkey", title: `Only ${k}`, onclick: () => setKey("level", `level:${k}`) }, h("span", { class: "k box", style: { background: LCOLOR[k] } }), k, h("b", { class: "num" }, fmt.si(totals[k])))),
+      h("span", { class: "sep" }), h("span", { class: "muted" }, `a bar is ${binMin >= 60 ? fmt.plural(binMin / 60, "hour") : fmt.plural(binMin, "minute")} · drag to zoom`)));
+    clear(markLegend, events.filter((e) => e.ts_ms >= t.from && e.ts_ms <= to).sort((a, b) => b.ts_ms - a.ts_ms).slice(0, 6).map((e) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "al-mkey " + (TONE[e.kind] || "") }), `${when(e.ts_ms, { sec: false })} ${e.title || e.kind}`)));
+    return total;
+  }
+
+  // ------------------------------------------------ facets
+  function facet(title, items, active, onPick, fmtv = (v) => v) {
+    const max = Math.max(1, ...items.map((x) => x[1]));
+    return h("section", { class: "card al-facet" }, h("div", { class: "hd" }, h("h3", {}, title)), h("div", { class: "bd" },
+      items.length ? h("div", { class: "facet" }, items.map(([v, n, dot]) => h("button", { "aria-pressed": String(active === String(v)), title: active === String(v) ? "Show them all again" : `Only ${fmtv(v)}`, onclick: () => onPick(active === String(v) ? null : v) },
+        h("span", { class: "ellipsis mono" }, dot ? h("span", { class: "dot " + dot, style: { marginRight: "6px" } }) : null, fmtv(v)), h("b", { class: "num" }, fmt.si(n)),
+        h("div", { class: "meter" }, h("i", { style: { width: n / max * 100 + "%" } }))))) : h("div", { class: "small muted" }, "None")));
+  }
+  function drawFacets(lv, nodes, status, routes) {
+    const x = f();
+    const shardCount = {};
+    for (const [node, n] of nodes) { const sh = ctx.nodes.get(node)?.shard; if (sh != null) shardCount[sh] = (shardCount[sh] || 0) + n; }
+    const downShards = new Set(ctx.missed.map((m) => String(m.shard)));
+    const one = (key) => (x[key] || []).filter((y) => !y.not).map((y) => y.v)[0] ?? null;
+    clear(facets,
+      facet("Level", LV.map((l) => [l, (lv.find((y) => y[0] === l) || [])[1] || 0]).filter((y) => y[1]), x.level && !x.level.ge ? x.level.v : null, (v) => setKey("level", v ? `level:${v}` : null)),
+      ctx.coord && Object.keys(shardCount).length ? facet("Shard", Object.entries(shardCount).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => [k, n, downShards.has(k) ? "bad" : ""]), one("shard"), (v) => setKey("shard", v != null ? `shard:${v}` : null), (v) => `shard ${v}`) : null,
+      ctx.coord ? facet("Server", nodes.slice(0, 10).map(([k, n]) => [nameOf(k), n, ctx.missed.some((m) => m.node === k) ? "bad" : ""]), one("node"), (v) => setKey("node", v ? `server:${v}` : null)) : null,
+      facet("Status", status.filter((y) => y[0] != null).slice(0, 6), one("status"), (v) => setKey("status", v != null ? `status:${v}` : null)),
+      facet("Route", routes.filter((y) => y[0] != null).slice(0, 6), one("route"), (v) => setKey("route", v ? `route:${v}` : null)));
+  }
+
+  // ------------------------------------------------ the lines
+  const keyOf = (rw) => `${rw.node}/${rw.id}`;
+  function lineEl(rw) {
+    const ms = msOf(rw.ts), fields = parseJson(rw.fields);
+    const fl = fields && typeof fields === "object" ? Object.entries(fields).slice(0, 5) : [];
+    const lv = String(rw.level || "").toLowerCase();
+    const el = h("div", { class: "al-l", role: "row", tabindex: "-1", dataset: { key: keyOf(rw) }, "aria-selected": "false" },
+      h("span", { class: "al-l-t", title: whenTitle(ms) }, clockEl(ms)),
+      lvEl(lv),
+      h("span", { class: "al-l-s", title: rw.node + (urlOf(rw.node) ? ` · ${urlOf(rw.node)}` : "") }, nameOf(rw.node)),
+      h("span", { class: "al-l-m" }, h("span", { class: "al-l-msg" }, nameUrls(rw.message)), fl.map(([k, v]) => h("span", { class: "al-l-f" }, ` ${k}=`, h("span", {}, nameUrls(plain(typeof v === "string" ? v : JSON.stringify(v)))))),
+        rw.route ? h("span", { class: "al-l-f" }, ` ${rw.method || ""} ${rw.route}`) : null));
+    el.onclick = () => select(rw, el);
+    return el;
+  }
+  function select(rw, el, focus = true) {
+    for (const x of list.querySelectorAll(".al-l[aria-selected=true]")) { x.setAttribute("aria-selected", "false"); x.tabIndex = -1; }
+    sel = rw;
+    if (el) { el.setAttribute("aria-selected", "true"); el.tabIndex = 0; if (focus) el.focus({ preventScroll: false }); }
+    drawDetail(rw);
+  }
+  list.addEventListener("keydown", (e) => {
+    const cur = e.target.closest(".al-l");
+    if (!cur) return;
+    const all = [...list.querySelectorAll(".al-l")];
+    const i = all.indexOf(cur);
+    const go = (j) => { const el = all[Math.max(0, Math.min(all.length - 1, j))]; if (el) { const rw = rows.find((x) => keyOf(x) === el.dataset.key); if (rw) select(rw, el); el.scrollIntoView({ block: "nearest" }); } };
+    if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); go(i + 1); }
+    else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); go(i - 1); }
+    else if (e.key === "Home") { e.preventDefault(); go(0); }
+    else if (e.key === "End") { e.preventDefault(); go(all.length - 1); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(i); }
+    else if (e.key === "Escape" && sel) { e.preventDefault(); closeDetail(); }
+  });
+  function closeDetail() { sel = null; detail.classList.add("hidden"); main.classList.remove("al-wd"); for (const x of list.querySelectorAll(".al-l[aria-selected=true]")) x.setAttribute("aria-selected", "false"); }
+  function firstFocusable() { const el = list.querySelector(".al-l[aria-selected=true]") || list.querySelector(".al-l"); if (el) el.tabIndex = 0; }
+
+  function drawDetail(rw) {
+    const ms = msOf(rw.ts), fields = parseJson(rw.fields) || {};
+    const url = urlOf(rw.node), cp = url ? findCopy(url) : null;
+    const lv = String(rw.level || "").toLowerCase();
+    // The copy a line names in its error ("shard 17 (http://…)"), as a place to go.
+    const named = [...String(`${rw.message} ${typeof fields === "object" ? JSON.stringify(fields) : fields}`).matchAll(URL_RE)].map((m) => m[0].replace(/[:;.\\]+$/, "")).filter((u) => findCopy(u)).filter((u, i, a) => a.indexOf(u) === i).slice(0, 2);
+    const kv = [];
+    const add = (k, v, tok) => {
+      if (v == null || v === "") return;
+      const sv = plain(typeof v === "string" ? v : JSON.stringify(v));
+      kv.push(h("tr", {}, h("td", { class: "muted" }, k), h("td", { class: "mono al-dv" }, nameUrls(sv)),
+        h("td", { class: "nowrap" }, h("button", { class: "btn xs ghost", title: "Only lines like this", onclick: () => addTok(tok || quote(sv.slice(0, 80))) }, "+"), h("button", { class: "btn xs ghost", title: "Leave lines like this out", onclick: () => addTok("-" + (tok || quote(sv.slice(0, 80)))) }, "−"))));
+    };
+    add("server", nameOf(rw.node), `server:${nameOf(rw.node)}`);
+    if (typeof fields === "object") for (const [k, v] of Object.entries(fields)) add(k, v, k === "status" ? `status:${v}` : null);
+    add("module", rw.target, `module:${rw.target}`);
+    add("route", rw.route ? `${rw.method || ""} ${rw.route}`.trim() : null, rw.route ? `route:${rw.route}` : null);
+    if (rw.status != null && !(typeof fields === "object" && fields.status != null)) add("status", rw.status, `status:${rw.status}`);
+    if (rw.ms != null) add("took", fmt.ms(rw.ms));
+    add("request", rw.request_id, `request:${rw.request_id}`);
+    const around = (only) => link("logs", { q: only ? `server:${nameOf(rw.node)}` : "", from: Math.round(ms - 30e3), to: Math.round(ms + 30e3), at: keyOf(rw) });
+    const go = [];
+    const goto = (href, ic, text, onclick) => go.push(h("a", { class: "al-goto", href: href || "#", onclick }, icon(ic), h("span", { class: "grow" }, text), icon("right")));
+    if (rw.request_id) {
+      goto(null, "route", "This request on every server", (e) => { e.preventDefault(); setQ(`request:${rw.request_id}`); });
+      goto(link("queries", { tab: "history", request: rw.request_id }), "queries", "Its queries in Queries > History");
+    }
+    if (fields.fingerprint) goto(link("statement/" + encodeURIComponent(fields.fingerprint)), "sql", "The statement's page");
+    for (const u of named) { const c = findCopy(u); goto(link("cluster", { shard: c.shard, copy: copyName(u) }), "box", `${copyName(u)} in Cluster (named in the error)`); }
+    if (cp) goto(link("cluster", { shard: cp.shard, copy: copyName(url) }), "box", `${copyName(url)} in Cluster`);
+    goto(around(true), "clock", `${nameOf(rw.node)}'s lines ±30 s`);
+    if (ctx.coord) goto(around(false), "clock", "Every server's lines ±30 s");
+    goto(link("profile", { tab: "cpu", node: url || "" }), "flame", `Profile ${url ? nameOf(rw.node) : "this server"} now`);
+    const fired = (state.alerts?.events || []).find((e) => (e.state === "firing" || e.kind === "alert_fired") && Math.abs((e.ts_ms || 0) - ms) < 10 * 60e3);
+    if (fired) goto(link("alert/" + encodeURIComponent(fired.rule || fired.where?.rule)), "alerts", `Alert: ${fired.name || fired.rule} (${when(fired.ts_ms, { sec: false })})`);
+    // How common the line is, in the lines at hand.
+    const pat = pattern(rw.message, rw.fields);
+    const same = (sample || rows).filter((x) => pattern(x.message, x.fields) === pat);
+    const servers = new Set(same.map((x) => nameOf(x.node)));
+    clear(detail,
+      h("div", { class: "hd" }, h("span", { class: "al-l-lv al-lv-" + lv }, lv), h("b", { class: "mono" }, nameOf(rw.node)), h("span", { class: "small muted mono", title: whenTitle(ms) }, clock(ms)),
+        h("span", { class: "sep" }),
+        h("button", { class: "btn xs ghost", title: "Copy the line as JSON", onclick: () => copy(JSON.stringify({ ...rw, fields }), "Line copied as JSON") }, icon("copy")),
+        h("button", { class: "btn xs ghost", title: "Close (Esc)", onclick: closeDetail }, icon("x"))),
+      h("div", { class: "bd" },
+        h("div", { class: "al-dmsg" }, nameUrls(rw.message)),
+        h("table", { class: "al-dkv" }, h("tbody", {}, kv)),
+        h("h4", { class: "al-dh" }, "Go to"),
+        h("div", { class: "al-gotos" }, go),
+        same.length > 1 ? h("div", { class: "notice small", style: { marginTop: "10px" } }, `Same pattern: ${fmt.plural(same.length, "line")} of the ${fmt.n((sample || rows).length)} at hand, on ${fmt.plural(servers.size, "server")} (${[...servers].slice(0, 3).join(", ")}${servers.size > 3 ? " …" : ""}).`) : null));
+    detail.classList.remove("hidden");
+    main.classList.add("al-wd");
+  }
+
+  function drawMissed(nodes) {
+    ctx.missed = (nodes || []).filter((n) => n.error);
+    const total = (nodes || []).length;
+    if (!ctx.missed.length) { clear(missedLine); return; }
+    const names = ctx.missed.map((n) => n.url ? copyName(n.url) : n.node || "?");
+    const det = h("div", { class: "hidden al-missed-det" }, ctx.missed.map((n) => h("div", { class: "mono small" }, `${n.url ? copyName(n.url) : n.node}${n.shard != null ? ` (shard ${n.shard})` : ""}: ${n.error}`)));
+    // L1: a server's lines are kept on it alone, so they come back with it; what the others logged about it is here now.
+    const about = ctx.missed.filter((n) => n.url).slice(0, 2).map((n) => {
+      const hostPort = n.url.replace(/^\w+:\/\//, "").replace(/\/.*$/, "");
+      return h("button", { class: "btn xs", title: `Search every other server's lines for ${hostPort}`, onclick: () => setQ(`"${hostPort}"`) }, `What the others logged about ${copyName(n.url)}`);
+    });
+    clear(missedLine, h("div", { class: "al-missed" }, icon("warn"),
+      h("span", {}, h("b", {}, `${ctx.missed.length} of ${total} servers did not answer`), `: ${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4}` : ""}. Each server keeps its own lines: theirs are missing here until they answer again.`),
+      ...about,
+      h("button", { class: "btn xs ghost", onclick: (e) => { det.classList.toggle("hidden"); e.currentTarget.textContent = det.classList.contains("hidden") ? "details" : "hide"; } }, "details")), det);
+  }
+
+  // ------------------------------------------------ loading
   async function refresh() {
     const my = ++gen;
-    drawChips();
-    const t = spanOf(w), unit = (t.to ?? Date.now()) - t.from > 1440 * 60e3 ? 60 : 1, col = unit === 60 ? "hour" : "minute";
-    clear(box, h("div", { class: "empty" }, h("div", { class: "spin" }), "Searching…"));
+    drawRange();
+    writeUrl();
+    if (ctx.has === false) return;
+    clear(tabs, [["lines", "Lines"], ["patterns", "Patterns"]].map(([k, l]) => h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => { tab = k; writeUrl(); refresh(); } }, l)));
+    clear(list, h("div", { class: "empty" }, h("div", { class: "spin" }), "Searching every server…"));
+    clear(more);
+    const t = timeRange(), unit = t.to - t.from > 1440 * 60e3 ? 60 : 1, col = unit === 60 ? "hour" : "minute";
     try {
-      const [rs, hs, ...fs] = await Promise.all([
-        ask(rowsSql()),
-        ask(`SELECT ${col}, level, COUNT(*) FROM logs WHERE ${where()} GROUP BY ${col}, level LIMIT 20000`),
-        ...(coord ? ["node"] : []).concat(["target", "route"]).map((k) => ask(`SELECT ${k}, COUNT(*) FROM logs WHERE ${where(k)} GROUP BY ${k} ORDER BY 2 DESC LIMIT 8`)),
+      // A refresh asks every server: the histogram (every level, which the Level facet counts
+      // too), the facets, and the lines. L8: without a server filter the servers, routes and
+      // statuses are one query, and the facets of the same search are kept 30 s.
+      const [hs, facetsJ, main0] = await Promise.all([
+        ask(histSql(col)),
+        facetsOf(),
+        tab === "patterns" ? askPatterns() : ask(rowsSql()),
+        loadEvents(),
       ]);
       if (my !== gen) return;
-      ctx.note(rs.nodes);
-      matched = histogram(hist, hs.rows, { unit, t, order: LV, colors: (k) => LCOLOR[k] || "var(--s6)", what: "line", onZoom: (a, b) => { w.from = a; w.to = b; time.drawZoom(); refresh(); } });
-      const keys = (coord ? ["node"] : []).concat(["target", "route"]);
-      clear(side, keys.map((k, i) => facet({ node: "Server", target: "Module", route: "Route" }[k], fs[i].rows, f[k], pick(k))));
-      const r = objects(rs);
-      shown = new Set(); lastDay = null;
-      [newest, oldest] = edge(r) || [null, null];
-      clear(box, ...place(r));
-      if (!r.length) clear(box, empty("logs", "No lines match", f.level === "error" || f.level === "warn" || f.level === "info" ? "Requests log at debug: choose debug above, and set the server to debug to keep each one." : "Try a longer time, another level, or fewer filters."));
-      tail();
-      count.textContent = `${fmt.plural(matched, "line")} · ${fmt.ms(rs.took_ms)}`;
-      if (at) { const el = box.querySelector(`.ln[data-key="${CSS.escape(at)}"]`); if (el) { el.classList.add("hl"); el.scrollIntoView({ block: "center" }); } }
+      const [nodes, rs] = facetsJ;
+      drawMissed(main0.nodes);
+      matched = drawHist(hs.rows || [], unit);
+      const by = (i) => { const m = new Map(); for (const r0 of rs.rows || []) if (r0[i] != null) m.set(r0[i], (m.get(r0[i]) || 0) + r0[2]); return [...m].sort((a, b) => b[1] - a[1]); };
+      drawFacets(Object.entries(levelTotals), nodes.rows || [], by(1), by(0));
+      if (tab === "patterns") { buckets = main0.buckets; sample = buckets.flatMap((b) => b.rows); drawPatterns(); return; }
+      rows = objects(main0); sample = null;
+      [newest, oldest] = rows.length ? [msOf(rows[0].ts), msOf(rows[rows.length - 1].ts)] : [null, null];
+      clear(list, rows.length ? [linesHead(), ...rows.map(lineEl)] : empty("logs", "No lines match", q ? "Try fewer filters or a longer range." : "Nothing was logged in this range at the levels the servers keep. Requests log at debug: raise a server's level in Log levels."));
+      drawMore();
+      countNote.textContent = `newest first · ${fmt.n(rows.length)} of ${fmt.plural(matched, "line")} · ${fmt.ms(main0.took_ms)} from ${fmt.plural((main0.nodes || []).length - ctx.missed.length || 1, "server")}`;
+      const at = new URLSearchParams(location.hash.split("?")[1] || "").get("at");
+      if (at) { const el = list.querySelector(`.al-l[data-key="${CSS.escape(at)}"]`); const rw = rows.find((x) => keyOf(x) === at); if (el && rw) { el.classList.add("al-hl"); select(rw, el, false); el.scrollIntoView({ block: "center" }); } }
+      else if (sel) { const el = list.querySelector(`.al-l[data-key="${CSS.escape(keyOf(sel))}"]`); if (el) { el.setAttribute("aria-selected", "true"); el.tabIndex = 0; } else closeDetail(); }
+      firstFocusable();
     } catch (e) {
       if (my !== gen) return;
-      clear(box, h("div", { class: "error", style: { margin: "12px" } }, e.message));
-      clear(hist); clear(side); count.textContent = "";
+      if (e instanceof ApiError && /no log store|log store/i.test(e.message) && ctx.has !== true) { ctx.has = false; memoryTail(); return; }
+      clear(list, e instanceof ApiError && e.status === 403 ? empty("lock", "Log lines need an admin key", e.message) : h("div", { class: "error", style: { margin: "12px" } }, e.message));
+      clear(hist); clear(facets); countNote.textContent = "";
     }
+  }
+  let facetsKey = "", facetsAt = 0, facetsHeld = null;
+  /** The servers' counts and the routes' by status: [{rows: [[node, n]]}, {rows: [[route, status, n]]}]. */
+  async function facetsOf() {
+    const all = where(), others = where("node");
+    // A live range's window moves: the same search is the same for 30 s.
+    const key = (ctx.coord ? others : "") + "|" + all.replace(/ts >= '[^']*'/, "") + "|" + Math.round(timeRange().from / 30e3);
+    if (key === facetsKey && Date.now() - facetsAt < 30e3 && facetsHeld) return facetsHeld;
+    let out;
+    if (ctx.coord && others === all) {
+      const j = await ask(`SELECT node, route, status, COUNT(*) FROM logs WHERE ${all} GROUP BY node, route, status LIMIT 20000`);
+      const byNode = new Map(), byRs = new Map();
+      for (const [node, route, status, n] of j.rows || []) {
+        byNode.set(node, (byNode.get(node) || 0) + n);
+        const k = JSON.stringify([route, status]);
+        byRs.set(k, (byRs.get(k) || 0) + n);
+      }
+      out = [{ rows: [...byNode].sort((a, b) => b[1] - a[1]) }, { rows: [...byRs].map(([k, n]) => [...JSON.parse(k), n]).sort((a, b) => b[2] - a[2]).slice(0, 300) }];
+    } else {
+      out = await Promise.all([
+        ctx.coord ? ask(`SELECT node, COUNT(*) FROM logs WHERE ${others} GROUP BY node ORDER BY 2 DESC LIMIT 1000`) : { rows: [] },
+        ask(`SELECT route, status, COUNT(*) FROM logs WHERE ${all} GROUP BY route, status ORDER BY 3 DESC LIMIT 300`)]);
+    }
+    [facetsKey, facetsAt, facetsHeld] = [key, Date.now(), out];
+    return out;
+  }
+  const linesHead = () => h("div", { class: "al-l al-lh", role: "row", "aria-hidden": "true" }, h("span", { title: `Times are in ${tz}` }, `time ${tzShort}`), h("span", {}, "l", h("span", { class: "al-lv-rest" }, "evel")), h("span", {}, "server"), h("span", {}, "message"));
+  function drawMore() {
+    clear(more, rows.length && rows.length < matched ? [h("span", { class: "small muted" }, `${fmt.n(rows.length)} of ${fmt.plural(matched, "line")} shown`), h("button", { class: "btn sm", onclick: older }, icon("down"), "Older lines")] : null);
   }
   async function older() {
     if (oldest == null) return;
@@ -373,345 +510,275 @@ function lines(body, ctx, init) {
     try {
       const j = await ask(rowsSql(` AND ts <= ${lit(iso(oldest))}`));
       if (my !== gen) return;
-      const r = objects(j);
-      const els = place(r);
-      if (r.length) oldest = msOf(r[r.length - 1].ts);
-      box.querySelector(":scope > .tail")?.remove();
-      box.append(...els);
-      if (!els.length) matched = shown.size;
-      tail();
+      const seen = new Set(rows.map(keyOf));
+      const add = objects(j).filter((x) => !seen.has(keyOf(x)));
+      rows = rows.concat(add);
+      if (add.length) oldest = msOf(add[add.length - 1].ts); else matched = rows.length;
+      list.append(...add.map(lineEl));
+      drawMore();
     } catch (e) { toast(e.message, "bad"); }
   }
+  // Live: only the newest lines each tick (one query, not the facets), every 3 s, or every
+  // 10 s over more than 20 servers (each tick asks every server); the histogram once a minute.
+  let ticks = 0, lastTick = 0, lastHist = Date.now();
   async function tick() {
-    if (!f.follow || w.from != null) return;
+    const t = timeRange();
+    if (!live || !t.live || tab !== "lines" || ctx.has === false || document.hidden) return;
+    if (Date.now() - lastTick < (ctx.nodes.size > 20 ? 10e3 : 3e3) - 200) return;
+    lastTick = Date.now();
     ticks++;
-    if (newest == null) { if (ticks % 3 === 0 && await refreshCounts()) refresh(); return; }
-    if (ticks % 4 === 0) refreshCounts();
     const my = gen;
     try {
+      if (newest == null) { if (ticks % 3 === 0) refresh(); return; }
       const j = await ask(rowsSql(` AND ts >= ${lit(iso(newest))}`));
       if (my !== gen) return;
-      const r = objects(j);
-      if (r.length >= PAGE) { refresh(); return; }
-      const els = place(r, "top");
-      if (!els.length) return;
-      newest = msOf(r[0].ts);
-      matched += els.length;
-      const keep = box.scrollTop, top = box.firstElementChild;
-      if (top?.classList.contains("day") && top.textContent === day(newest)) top.after(...els); else box.prepend(h("div", { class: "day" }, day(newest)), ...els);
-      if (keep > 0) box.scrollTop = keep + els.reduce((a, el) => a + el.offsetHeight, 0);
-      tail();
-      count.textContent = `${fmt.plural(matched, "line")}`;
+      const seen = new Set(rows.slice(0, 400).map(keyOf));
+      const add = objects(j).filter((x) => !seen.has(keyOf(x)));
+      if (add.length >= PAGE) { refresh(); return; }
+      if (add.length) {
+        newest = msOf(add[0].ts);
+        rows = add.concat(rows).slice(0, 2000);
+        const keep = list.scrollTop;
+        const head = list.querySelector(".al-lh");
+        const els = add.map(lineEl);
+        if (head) head.after(...els); else list.prepend(linesHead(), ...els);
+        while (list.querySelectorAll(".al-l:not(.al-lh)").length > 2000) list.lastElementChild?.remove();
+        if (keep > 0) list.scrollTop = keep + els.reduce((a, el) => a + el.offsetHeight, 0);
+        for (const el of els) { el.classList.add("al-new"); setTimeout(() => el.classList.remove("al-new"), 1600); }
+        matched += add.length;
+        countNote.textContent = `newest first · live · ${fmt.plural(matched, "line")}`;
+      }
+      if (Date.now() - lastHist > 60e3) {
+        lastHist = Date.now();
+        const unit = t.to - t.from > 1440 * 60e3 ? 60 : 1, col = unit === 60 ? "hour" : "minute";
+        const hs = await ask(histSql(col));
+        if (my === gen) matched = drawHist(hs.rows || [], unit);
+      }
     } catch { /* the next refresh says what failed */ }
   }
-  async function refreshCounts() {
-    const my = gen, t = spanOf(w), unit = (t.to ?? Date.now()) - t.from > 1440 * 60e3 ? 60 : 1, col = unit === 60 ? "hour" : "minute";
-    try {
-      const hs = await ask(`SELECT ${col}, level, COUNT(*) FROM logs WHERE ${where()} GROUP BY ${col}, level LIMIT 20000`);
-      if (my !== gen) return;
-      matched = histogram(hist, hs.rows, { unit, t, order: LV, colors: (k) => LCOLOR[k] || "var(--s6)", what: "line", onZoom: (a, b) => { w.from = a; w.to = b; time.drawZoom(); refresh(); } });
-      tail();
-      return matched;
-    } catch { return 0; /* kept as it was */ }
+
+  /** L6: the newest lines of each group of levels the search allows, one query a group: {nodes, took_ms, buckets: [{levels, name, rows}]}. */
+  async function askPatterns() {
+    const lv = f().level, allowed = lv ? (lv.ge ? LV.slice(0, Math.max(0, LV.indexOf(lv.v)) + 1) : [lv.v]) : LV;
+    const bs = BUCKETS.map((b) => ({ ...b, levels: b.levels.filter((l) => allowed.includes(l)) })).filter((b) => b.levels.length);
+    const js = await Promise.all(bs.map((b) => ask(`SELECT ts, node, level, message, fields FROM logs WHERE ${where()} AND level IN (${b.levels.map(lit).join(", ")}) ORDER BY ts DESC, id DESC LIMIT ${b.n}`)));
+    return { nodes: js[0]?.nodes, took_ms: Math.max(0, ...js.map((j) => j.took_ms || 0)), buckets: bs.map((b, i) => ({ ...b, rows: objects(js[i]) })) };
   }
-  refresh();
-  return every(3000, tick, false);
-}
-
-// ---------------------------------------------------------------- queries
-
-const finished = (r) => ({ ...(parseJson(r.detail) || {}), ts_ms: msOf(r.ts), request_id: r.request_id, kind: r.kind, outcome: r.outcome, shard: r.shard, sql: r.sql, fingerprint: r.fingerprint, ms: r.ms, rows: r.n_rows, error: r.error, node: r.node });
-
-/** A query's drawer, with what every server's store holds of its request: its parts on the shards and its lines. */
-function openQuery(x, ctx) {
-  const d = queryDrawer(finished(x));
-  if (!x.request_id) return;
-  const id = lit(x.request_id);
-  const parts = h("div", { class: "small muted" }, "Searching…"), box = h("div", { class: "logs" + (ctx.coord ? " nodes" : ""), style: { height: "auto", maxHeight: "300px", minHeight: 0 } });
-  d.body.append(card({ title: "This request in the log store", sub: ctx.coord ? "on every server" : null, body: [parts, box],
-    tools: h("a", { class: "btn sm ghost", href: "#/logs?tab=lines&request=" + encodeURIComponent(x.request_id), onclick: () => d.close() }, "All its lines", icon("right")) }));
-  ask(`SELECT ${QUERY_COLS} FROM queries WHERE request_id = ${id} ORDER BY ts, id LIMIT 100`).then((j) => {
-    const qs = objects(j);
-    clear(parts, qs.length > 1 ? h("div", { style: { marginBottom: "8px" } }, qs.map((q) => h("div", { class: "row nw small", style: { padding: "3px 0", gap: "8px" } },
-      pill(OUTCOMES[q.outcome] || "info", q.outcome), h("span", { class: "mono", style: { width: "120px" } }, q.node), q.shard ? h("span", { class: "badge" }, "shard part") : h("span", { class: "badge accent" }, "the query"),
-      h("span", { class: "mono ellipsis grow", title: q.sql }, q.sql), h("b", { class: "num", style: { whiteSpace: "nowrap" } }, fmt.ms(q.ms))))) : null);
-  }).catch((e) => clear(parts, e.message));
-  ask(`SELECT ${LINE_COLS} FROM logs WHERE request_id = ${id} ORDER BY ts, id LIMIT 200`).then((j) => {
-    const ls = objects(j);
-    clear(box, ls.length ? ls.map((r) => lineRow(stored(r), { coord: ctx.coord, onRequest: (rid) => { d.close(); ctx.go("lines", { request: rid }); } })) : h("div", { class: "small muted", style: { padding: "8px 12px" } }, "No lines were kept for it: requests log at debug."));
-  }).catch((e) => clear(box, h("div", { class: "error" }, e.message)));
-}
-
-function queries(body, ctx, init) {
-  const w = window0(store.get("logs.qrange", 60));
-  const f = { outcome: "all", q: "", request: init.request || "", fingerprint: init.fingerprint || "", node: "", min: "", parts: false, follow: true };
-  if (f.request || f.fingerprint) w.range = 10080;
-  const coord = ctx.coord;
-  const time = timeControls(w, "logs.qrange", () => refresh());
-  const out = seg([["all", "all"], ["ok", "ok"], ["failed", "failed"]], f.outcome, (v) => { f.outcome = v; refresh(); }, { title: "How they ended" });
-  const q = h("input", { class: "input sm", placeholder: "Search the SQL", style: { width: "200px" }, title: "MATCH over the statement, in Strata's query syntax", oninput: debounce(() => { f.q = q.value.trim(); refresh(); }, 300) });
-  const req = h("input", { class: "input sm mono", placeholder: "request id", value: f.request, style: { width: "170px" }, oninput: debounce(() => { f.request = req.value.trim(); refresh(); }, 300) });
-  const min = h("input", { class: "input sm num", type: "number", min: 0, placeholder: "ms", style: { width: "80px" }, title: "Only the queries that took at least this many milliseconds", oninput: debounce(() => { f.min = min.value; refresh(); }, 300) });
-  const parts = h("label", { class: "row nw small dim", style: { gap: "6px", cursor: "pointer" }, title: "A coordinator's query runs a part on each shard, which each shard keeps too" },
-    h("input", { type: "checkbox", onchange: (e) => { f.parts = e.target.checked; refresh(); } }), "with shards' parts");
-  const follow = h("button", { class: "chip", "aria-pressed": "true", title: "Search again every few seconds" }, icon("refresh"), "follow");
-  follow.onclick = () => { f.follow = !f.follow; follow.setAttribute("aria-pressed", String(f.follow)); };
-  const chips = h("div", { class: "row", style: { gap: "6px" } });
-  const kpis = h("div", { class: "grid g4", style: { marginBottom: "10px" } });
-  const hist = h("div", { class: "hist" });
-  const stmts = h("div", { class: "lg-stmts" });
-  const list = h("div");
-  const more = h("div", { class: "row", style: { padding: "8px 2px" } });
-  const count = h("span", { class: "small muted" });
-  const sqlBtn = h("button", { class: "btn sm ghost", title: "Open this search as SQL, to change it" }, icon("sql"), "As SQL");
-  body.append(
-    h("div", { class: "row", style: { gap: "10px", marginBottom: "8px" } }, time.el, out, q, req, h("span", { class: "row nw small muted", style: { gap: "6px" } }, "at least", min), parts, follow, sqlBtn, h("span", { class: "sep" }), count),
-    chips, kpis,
-    h("div", { class: "grid", style: { gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", marginBottom: "10px", alignItems: "start" } },
-      card({ title: "Queries over time", sub: "by how they ended", body: hist }),
-      card({ title: "Statements", sub: "by the time they took in all", body: stmts, flush: true })),
-    card({ title: "Queries", sub: "newest first: click one for its trace", body: [list, more], flush: true }));
-
-  const where = (skip) => [
-    ...timeWhere(spanOf(w)),
-    f.outcome === "ok" ? "outcome = 'ok'" : f.outcome === "failed" ? "outcome != 'ok'" : null,
-    f.q ? `MATCH(sql, ${lit(f.q)})` : null,
-    f.request ? `request_id = ${lit(f.request)}` : null,
-    f.fingerprint && skip !== "fingerprint" ? `fingerprint = ${lit(f.fingerprint)}` : null,
-    f.node ? `node = ${lit(f.node)}` : null,
-    f.min !== "" && Number.isFinite(+f.min) ? `ms >= ${+f.min}` : null,
-    f.parts ? null : "shard = false",
-  ].filter(Boolean).join(" AND ");
-  const rowsSql = (extra = "") => `SELECT ${QUERY_COLS} FROM queries WHERE ${where()}${extra} ORDER BY ts DESC, id DESC LIMIT ${PAGE}`;
-  sqlBtn.onclick = () => ctx.go("sql", { sql: rowsSql() });
-
-  const pick = (k) => (v) => { f[k] = v; refresh(); };
-  const cols = [
-    { key: "ts", label: "time", render: (x) => h("span", { class: "mono small", title: fmt.datetime(msOf(x.ts)) }, clock(msOf(x.ts))) },
-    coord ? { key: "node", label: "server", render: (x) => h("button", { class: "btn ghost sm mono", title: "Only this server's", onclick: () => pick("node")(x.node) }, x.node) } : null,
-    { key: "outcome", label: "", render: (x) => pill(OUTCOMES[x.outcome] || "info", x.outcome) },
-    { key: "ms", label: "time", num: true, render: (x) => fmt.ms(x.ms) },
-    { key: "n_rows", label: "rows", num: true, render: (x) => fmt.n(x.n_rows) },
-    { key: "kind", label: "kind", render: (x) => h("span", { class: "badge" }, x.kind) },
-    { key: "sql", label: "SQL", render: (x) => h("div", { class: "mono small ellipsis", style: { maxWidth: "640px" }, title: x.error ? `${x.sql}\n\n${x.error}` : x.sql }, x.shard ? h("span", { class: "badge", style: { marginRight: "6px" } }, "shard part") : null, x.sql) },
-  ].filter(Boolean);
-  let rows = [], gen = 0, total = 0;
-  const tbl = table(cols, { rows, compact: true, onRow: (x) => openQuery(x, ctx), empty: empty("queries", "No queries match", "Try a longer time or fewer filters. Fast queries that ended well are kept at most --log-queries a second; every slow or failed one is kept.") });
-  list.append(tbl);
-
-  function drawChips() {
-    clear(chips, [["fingerprint", "statement"], ["node", "server"]].filter(([k]) => f[k]).map(([k, l]) => h("button", { class: "chip", "aria-pressed": "true", title: "Remove", onclick: () => pick(k)("") }, h("span", { class: "ellipsis", style: { maxWidth: "520px" } }, `${l} = ${f[k]}`), h("span", { class: "x" }, "×"))));
-    chips.style.marginBottom = chips.childElementCount ? "8px" : "0";
-  }
-  function kpi(label, val, sub, color) { return h("div", { class: "card kpi" }, h("div", { class: "lbl" }, label), h("div", { class: "val", style: { fontSize: "22px", color } }, val), sub ? h("div", { class: "delta" }, sub) : null); }
-
-  async function refresh(quiet) {
-    const my = ++gen;
-    drawChips();
-    const t = spanOf(w), unit = (t.to ?? Date.now()) - t.from > 1440 * 60e3 ? 60 : 1, col = unit === 60 ? "hour" : "minute";
-    try {
-      const [rs, hs, by, st] = await Promise.all([
-        ask(rowsSql()),
-        ask(`SELECT ${col}, outcome, COUNT(*) FROM queries WHERE ${where()} GROUP BY ${col}, outcome LIMIT 20000`),
-        ask(`SELECT outcome, COUNT(*), SUM(ms), MAX(ms) FROM queries WHERE ${where()} GROUP BY outcome`),
-        ask(`SELECT fingerprint, COUNT(*), SUM(ms), AVG(ms), MAX(ms) FROM queries WHERE ${where("fingerprint")} GROUP BY fingerprint ORDER BY 3 DESC LIMIT 12`),
-      ]);
-      if (my !== gen) return;
-      ctx.note(rs.nodes);
-      const n = by.rows.reduce((a, r) => a + r[1], 0), bad = by.rows.filter((r) => r[0] !== "ok").reduce((a, r) => a + r[1], 0);
-      const spent = by.rows.reduce((a, r) => a + (r[2] || 0), 0), worst = Math.max(0, ...by.rows.map((r) => r[3] || 0));
-      clear(kpis, kpi("Queries", fmt.n(n), `${fmt.ms(rs.took_ms)} to search`), kpi("Failed", fmt.n(bad), n ? fmt.pct(bad / n) + " of them" : null, bad ? "var(--crit-ink)" : null), kpi("Mean time", fmt.ms(n ? spent / n : null), `${fmt.ms(spent)} in all`), kpi("Slowest", fmt.ms(worst)));
-      histogram(hist, hs.rows, { unit, t, order: Object.keys(OCOLOR), colors: (k) => OCOLOR[k] || "var(--s6)", what: "query", whats: "queries", onZoom: (a, b) => { w.from = a; w.to = b; time.drawZoom(); refresh(); } });
-      const sMax = Math.max(1e-9, ...st.rows.map((r) => r[2] || 0));
-      clear(stmts, st.rows.length ? table([
-        { key: "0", label: "statement", render: (x) => h("div", { class: "mono small ellipsis", style: { maxWidth: "240px" }, title: x[0] }, x[0]) },
-        { key: "1", label: "runs", num: true, render: (x) => fmt.si(x[1]) },
-        { key: "2", label: "in all", num: true, render: (x) => h("div", { class: "row nw", style: { gap: "6px", justifyContent: "flex-end" } }, h("div", { class: "barbox", style: { width: "48px" } }, h("div", { class: "bar", style: { width: (x[2] || 0) / sMax * 100 + "%" } })), fmt.ms(x[2])) },
-        { key: "3", label: "mean", num: true, render: (x) => fmt.ms(x[3]) },
-        { key: "4", label: "max", num: true, render: (x) => fmt.ms(x[4]) },
-      ], { rows: st.rows, compact: true, onRow: (x) => pick("fingerprint")(f.fingerprint === x[0] ? "" : x[0]), rowClass: (x) => x[0] === f.fingerprint ? "sel" : "" }) : h("div", { class: "small muted", style: { padding: "12px" } }, "None in this time."));
-      rows = objects(rs);
-      tbl.update(rows);
-      total = n;
-      drawMore();
-      count.textContent = `${fmt.plural(n, "query", "queries")}`;
-    } catch (e) {
-      if (my !== gen) return;
-      if (!quiet) { clear(kpis); clear(hist); clear(stmts); tbl.update([]); clear(more, h("div", { class: "error" }, e.message)); }
-    }
-  }
-  function drawMore() {
-    clear(more, rows.length ? [h("span", { class: "small muted" }, `${fmt.n(rows.length)} of ${fmt.plural(total, "query", "queries")} shown`), rows.length < total ? h("button", { class: "btn sm", onclick: older }, icon("down"), "Older queries") : null] : null);
-  }
-  async function older() {
-    if (!rows.length) return;
-    f.follow = false; follow.setAttribute("aria-pressed", "false");
-    const my = gen, last = rows[rows.length - 1];
-    try {
-      const j = await ask(rowsSql(` AND (ts < ${lit(last.ts)} OR (ts = ${lit(last.ts)} AND id < ${last.id}))`));
-      if (my !== gen) return;
-      const seen = new Set(rows.map((x) => `${x.node}/${x.id}`));
-      const add = objects(j).filter((x) => !seen.has(`${x.node}/${x.id}`));
-      rows = rows.concat(add);
-      tbl.update(rows);
-      if (!add.length) total = rows.length;
-      drawMore();
-    } catch (e) { toast(e.message, "bad"); }
-  }
-  refresh();
-  return every(5000, () => f.follow && w.from == null ? refresh(true) : null, false);
-}
-
-// ---------------------------------------------------------------- SQL
-
-const examples = () => {
-  const hour = lit(iso(Date.now() - 3600e3)), day0 = lit(iso(Date.now() - 86400e3));
-  return [
-    ["Errors and warnings", `SELECT ts, node, level, target, message, fields\nFROM logs\nWHERE level IN ('error', 'warn') AND ts > ${day0}\nORDER BY ts DESC\nLIMIT 100`],
-    ["Lines a minute", `SELECT minute, level, COUNT(*)\nFROM logs\nWHERE ts > ${hour}\nGROUP BY minute, level\nORDER BY minute\nLIMIT 1000`],
-    ["Best matches", `SELECT ts, node, level, message\nFROM logs\nWHERE MATCH(message, 'replica OR shard OR timeout')\nORDER BY bm25(message, 'replica shard timeout') DESC\nLIMIT 20`],
-    ["Slowest routes", `SELECT route, COUNT(*) AS n, AVG(ms), MAX(ms)\nFROM logs\nWHERE route IS NOT NULL AND ms IS NOT NULL AND ts > ${day0}\nGROUP BY route\nORDER BY 4 DESC\nLIMIT 20`],
-    ["Statements by time", `SELECT fingerprint, COUNT(*) AS n, SUM(ms), AVG(ms), MAX(ms)\nFROM queries\nWHERE ts > ${day0} AND shard = false\nGROUP BY fingerprint\nORDER BY 3 DESC\nLIMIT 20`],
-    ["Failed queries", `SELECT ts, node, kind, outcome, ms, error, sql\nFROM queries\nWHERE outcome != 'ok'\nORDER BY ts DESC\nLIMIT 100`],
-    ["Errors by server", `SELECT node, level, COUNT(*)\nFROM logs\nWHERE level IN ('error', 'warn') AND ts > ${day0}\nGROUP BY node, level\nORDER BY 3 DESC`],
-    ["5xx answers", `SELECT ts, node, method, route, status, ms, error, request_id\nFROM logs\nWHERE status >= 500\nORDER BY ts DESC\nLIMIT 100`],
-  ];
-};
-
-function sqlTab(body, ctx, init) {
-  let scope = "cluster", view = store.get("logs.sqlView", "grid"), last = null;
-  const ed = editor({
-    value: init.sql || store.get("logs.sql", examples()[0][1]),
-    onChange: (v) => store.set("logs.sql", v),
-    onRun: () => run(),
-    catalog: () => ctx.schemas,
-    label: "SQL over the log store",
-  });
-  const runBtn = h("button", { class: "btn primary", title: "Run (Ctrl+Enter)", onclick: () => run() }, icon("play"), "Run");
-  const scopeSeg = ctx.coord ? seg([["cluster", "every server"], ["local", "this one"]], scope, (v) => { scope = v; run(); }, { title: "On a coordinator: every server's store, merged, or its own alone (which also runs joins and subqueries)" }) : null;
-  const status = h("div", { class: "row", style: { gap: "12px", minHeight: "28px" } });
-  const outTabs = h("div", { class: "tabs", role: "tablist", style: { marginBottom: "0" } });
-  const out = h("div", { style: { minHeight: "200px" } });
-  const tools = h("div", { class: "row nw" });
-  body.append(
-    h("div", { class: "row", style: { gap: "6px", marginBottom: "8px" } }, h("span", { class: "small muted" }, "Examples"), examples().map(([name, sql]) => h("button", { class: "chip", onclick: () => { ed.value = sql; store.set("logs.sql", sql); run(); } }, name))),
-    h("div", { style: { height: "190px", marginBottom: "8px" } }, ed.el),
-    h("div", { class: "row", style: { gap: "10px", marginBottom: "10px" } }, runBtn, scopeSeg, h("span", { class: "small muted" }, "Tables ", h("b", { class: "mono" }, "logs"), " and ", h("b", { class: "mono" }, "queries"), ": every column is in the editor's completions."),
-      h("span", { class: "sep" }), h("button", { class: "btn sm ghost", onclick: () => schemaDrawer(ctx) }, icon("schema"), "Their schemas")),
-    status,
-    card({ body: [h("div", { class: "row between", style: { padding: "0 10px" } }, outTabs, tools), out], flush: true }));
-
-  function drawOut() {
-    clear(outTabs, [["grid", "Rows"], ["chart", "Chart"], ["plan", "Plan"]].map(([k, l]) => h("button", { role: "tab", "aria-selected": String(k === view), onclick: () => { view = k; store.set("logs.sqlView", k); drawOut(); } }, l)));
-    if (!last) { clear(out, empty("sql", "Run a query", "Pick an example, or write SQL over logs and queries.")); clear(tools); return; }
-    clear(tools, exportMenu(last, "strata-logs"));
-    clear(out, view === "chart" ? h("div", { style: { padding: "12px" } }, resultChart(last)) : view === "plan" ? h("pre", { class: "code", style: { margin: "12px" } }, (last.stats?.plan || []).join("\n") || "No plan was kept.") : grid(last));
-  }
-  async function run() {
-    const sql = ed.value.trim().replace(/;\s*$/, "");
-    if (!sql) return;
-    ed.clearMarks();
-    clear(status, h("div", { class: "spin" }), h("span", { class: "small muted" }, "Running…"));
-    try {
-      last = await ask(sql, ctx.coord ? scope : undefined);
-      ctx.note(last.nodes);
-      clear(status, answerStats(last), ctx.coord && last.nodes ? h("span", { class: "small muted", title: last.nodes.map((n) => `${n.node || n.url}: ${n.error || `${fmt.plural(n.rows, "row")} in ${fmt.ms(n.ms)}`}`).join("\n") }, `from ${fmt.plural(last.nodes.filter((n) => !n.error).length, "server")}`) : null);
-    } catch (e) {
-      last = null;
-      ed.markFrom(e.message);
-      clear(status, h("div", { class: "error grow" }, e.message));
-    }
-    drawOut();
-  }
-  drawOut();
-  if (init.sql || init.run) run();
-  return () => {};
-}
-
-function schemaDrawer(ctx) {
-  api("/v1/logs/store").then((j) => drawer({
-    title: "The log store's tables", sub: "one Strata database beside each server's",
-    body: (j.schemas || []).map((x) => card({ title: x.table, body: sqlBlock(x.sql) })),
-  })).catch((e) => toast(e.message, "bad"));
-}
-
-// ---------------------------------------------------------------- live
-
-/** The latest 5,000 lines in this server's memory, followed as they come: works with no store. */
-function live(body, init, filt) {
-  const f = { level: store.get("logs.level", "info"), q: "", request: init.request || "", follow: true };
-  let lines = [], lastSeq = 0;
-  const box = h("div", { class: "logs", role: "log", "aria-live": "off" });
-  const rate = h("div");
-  const count = h("span", { class: "small muted" });
-  const lvl = seg(LV.map((x) => [x, x]), f.level, (v) => { f.level = v; store.set("logs.level", v); reload(); }, { title: "The least severe level shown" });
-  const q = h("input", { class: "input sm", placeholder: "Search the text…", style: { width: "220px" }, oninput: debounce(() => { f.q = q.value; reload(); }, 250) });
-  const req = h("input", { class: "input sm mono", placeholder: "request id", value: f.request, style: { width: "190px" }, oninput: debounce(() => { f.request = req.value.trim(); reload(); }, 250) });
-  const follow = h("button", { class: "chip", "aria-pressed": "true", title: "Scroll to each new line", onclick: () => { f.follow = !f.follow; follow.setAttribute("aria-pressed", String(f.follow)); if (f.follow) box.scrollTop = box.scrollHeight; } }, icon("down"), "follow");
-  body.append(
-    h("div", { class: "row", style: { gap: "10px", marginBottom: "10px" } }, lvl, q, req, follow,
-      h("button", { class: "btn sm ghost", title: "Download the lines shown, as JSON Lines", onclick: () => download() }, icon("download"), "Download"),
-      h("span", { class: "sep" }), count),
-    card({ title: "Lines per 10 seconds", sub: "of those in memory, by level", body: rate, attrs: { style: { marginBottom: "10px" } } }),
-    box);
-
-  const onRequest = (id) => { req.value = id; f.request = id; reload(); };
-  const row = (l) => lineRow({ ms: l.ts_ms, level: l.level, target: l.target, method: l.method, route: l.route, message: l.message, fields: l.fields, request_id: l.request_id, raw: l }, { onRequest });
-
-  function drawRate() {
-    if (!lines.length) { clear(rate, h("div", { class: "small muted" }, "No lines at this level yet.")); return; }
-    const t1 = Date.now(), t0 = Math.min(lines[0].ts_ms, t1 - 600e3), B = 10e3;
-    const n = Math.ceil((t1 - t0) / B);
-    const bins = Array.from({ length: n }, () => ({}));
-    for (const l of lines) { const i = Math.min(n - 1, Math.floor((l.ts_ms - t0) / B)); bins[i][l.level] = (bins[i][l.level] || 0) + 1; }
-    const max = Math.max(1, ...bins.map((b) => Object.values(b).reduce((a, x) => a + x, 0)));
-    const W = 1000, H = 64, bw = W / n;
-    const svgEl = s("svg", { viewBox: `0 0 ${W} ${H + 14}`, style: { width: "100%", height: H + 14 + "px" }, preserveAspectRatio: "none" });
-    bins.forEach((b, i) => {
-      let y = H;
-      for (const L of LV) {
-        const v = b[L] || 0; if (!v) continue;
-        const hh = v / max * (H - 4);
-        y -= hh;
-        const rc = s("rect", { x: i * bw + 0.5, y, width: Math.max(1, bw - 1), height: hh, style: { fill: LCOLOR[L] } });
-        rc.addEventListener("pointermove", (e) => showTip(e.clientX, e.clientY, [h("div", { class: "t" }, `${fmt.time(t0 + i * B)} – ${fmt.time(t0 + (i + 1) * B)}`), ...LV.filter((x) => b[x]).map((x) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: LCOLOR[x] } }), h("b", {}, fmt.n(b[x])), h("span", { class: "n" }, x)))]));
-        rc.addEventListener("pointerleave", hideTip);
-        svgEl.append(rc);
+  function drawPatterns() {
+    const groups = new Map();
+    let estimated = 0;
+    for (const b of buckets) {
+      // Each line of a group's sample stands for its share of that group's lines in the range.
+      const total = b.levels.reduce((a, l) => a + (levelTotals[l] || 0), 0);
+      const w = b.rows.length && total > b.rows.length ? total / b.rows.length : 1;
+      if (w > 1) estimated++;
+      for (const rw of b.rows) {
+        const p = pattern(rw.message, rw.fields), key = rw.level + " " + p;
+        const g = groups.get(key) || { level: String(rw.level).toLowerCase(), p, n: 0, est: false, nodes: new Set(), first: Infinity, last: 0, ex: rw };
+        g.n += w; g.est ||= w > 1; g.nodes.add(nameOf(rw.node)); const ms = msOf(rw.ts); g.first = Math.min(g.first, ms); g.last = Math.max(g.last, ms);
+        groups.set(key, g);
       }
-    });
-    clear(rate, svgEl, h("div", { class: "legend", style: { marginTop: "4px" } }, LV.map((L) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "k box", style: { background: LCOLOR[L] } }), L))));
+    }
+    const list0 = [...groups.values()].sort((a, b) => b.n - a.n);
+    const max = Math.max(1, ...list0.map((g) => g.n));
+    countNote.textContent = `${fmt.plural(list0.length, "pattern")} in ${fmt.plural(matched, "line")}${estimated ? ` · from the newest ${fmt.n(sample.length)}, sampled by level` : ""}`;
+    clear(list, list0.length ? table([
+      { key: "n", label: "lines", num: true, cls: "al-c-n", render: (g) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" }, title: g.est ? "Estimated: its level's lines in the range, shared out as in the newest of them" : "Counted" }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: g.n / max * 100 + "%", background: LCOLOR[g.level] } })), h("b", {}, (g.est ? "≈" : "") + fmt.n(Math.round(g.n)))) },
+      { key: "level", label: "level", cls: "al-c-lv", render: (g) => h("span", { class: "al-l-lv al-lv-" + g.level }, g.level) },
+      { key: "p", label: "message pattern", cls: "al-c-p", render: (g) => h("span", { class: "mono small al-pat2", title: g.p }, nameUrls(g.p)) },
+      { key: "nodes", label: "where", cls: "al-c-where", sort: (g) => g.nodes.size, render: (g) => h("span", { class: "small nowrap", title: [...g.nodes].join(", ") }, [...g.nodes].sort().slice(0, 3).join(", ") + (g.nodes.size > 3 ? ` +${g.nodes.size - 3}` : "")) },
+      { key: "last", label: "last", cls: "al-c-last", render: (g) => h("span", { class: "small nowrap", title: `first ${when(g.first)}` }, when(g.last)) },
+    ], { rows: list0, compact: true, onRow: (g) => { const lit0 = g.p.split(/\s*<\w+>/)[0].trim(); tab = "lines"; setQ(`${tokens(q).filter((t) => !/^-?"/.test(t)).join(" ")} level:${g.level}${lit0 ? ` "${lit0.slice(0, 80).replace(/"/g, "")}"` : ""}`); } }) : empty("logs", "No lines match", "Try fewer filters or a longer range."));
+    list.firstElementChild?.classList.add("al-ptbl");
+    const short = buckets.filter((b) => b.rows.length >= b.n).map((b) => b.name);
+    clear(more, h("span", { class: "small muted" }, short.length
+      ? `Errors and warnings, info and debug are sampled apart (the newest ${BUCKETS.map((b) => fmt.n(b.n)).join(", ")} lines), so a server on debug does not crowd out the errors. A count with ≈ shares out its level's lines in the range as in that sample (${short.join(", ")}). Click a pattern for its lines.`
+      : "Every line of the range is counted. Click a pattern for its lines."));
   }
 
-  function params(after) {
-    const p = new URLSearchParams({ after: String(after), limit: "1000", level: f.level });
-    if (f.q) p.set("q", f.q);
-    if (f.request) p.set("request", f.request);
-    return p;
+  // ------------------------------------------------ no store: this server's memory
+  let memStop = null;
+  function memoryTail() {
+    clear(sub, "This server keeps no log store (--log-store off): these are the latest lines in its memory, followed live. Other servers' lines are not here.");
+    clear(tabs, h("button", { role: "tab", "aria-selected": "true" }, "Lines in memory"));
+    clear(hist); clear(facets); clear(markLegend);
+    let lastSeq = 0, mem = [];
+    const x0 = () => parse(q);
+    async function poll() {
+      const x = x0();
+      const p = new URLSearchParams({ after: String(lastSeq), limit: "1000", level: x.level?.v || "debug" });
+      if (x.text.length) p.set("q", x.text.join(" ").replace(/"/g, ""));
+      if (x.request_id?.[0]) p.set("request", x.request_id[0].v);
+      try {
+        const j = await api("/v1/logs?" + p);
+        const add = (j.lines || []).map((l) => ({ ts: new Date(l.ts_ms).toISOString(), node: "this server", level: String(l.level).toLowerCase(), target: l.target, method: l.method, route: l.route, message: l.message, fields: l.fields, request_id: l.request_id, id: l.seq }));
+        if (add.length) { lastSeq = j.lines[j.lines.length - 1].seq; mem = add.reverse().concat(mem).slice(0, 2000); rows = mem; clear(list, linesHead(), ...mem.slice(0, 500).map(lineEl)); firstFocusable(); }
+        else if (!mem.length) clear(list, empty("logs", "No lines in memory match", "Requests log at debug."));
+        countNote.textContent = `newest first · ${fmt.plural(mem.length, "line")} in memory`;
+      } catch (e) { clear(list, h("div", { class: "error" }, e.message)); }
+    }
+    memStop?.();
+    memStop = every(2000, () => (live ? poll() : null));
   }
-  async function poll() {
+
+  // ------------------------------------------------ the header
+  async function loadStore() {
     try {
-      const j = await api("/v1/logs?" + params(lastSeq));
-      if (j.filter && document.activeElement !== filt) filt.value = j.filter;
-      for (const l of j.lines) l.level = String(l.level).toLowerCase();
-      if (j.lines.length) {
-        const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-        lines.push(...j.lines);
-        lastSeq = j.lines[j.lines.length - 1].seq;
-        box.querySelector(":scope > .empty")?.remove();
-        box.append(...j.lines.map(row));
-        if (lines.length > 3000) { const cut = lines.length - 3000; lines.splice(0, cut); for (let i = 0; i < cut; i++) box.firstChild?.remove(); }
-        if (f.follow && (atEnd || j.lines.length === lines.length)) box.scrollTop = box.scrollHeight;
-        drawRate();
-      } else if (!lines.length) { clear(box, empty("logs", "No lines match", f.level === "info" || f.level === "warn" || f.level === "error" ? "Requests log at debug: set the server to debug above to see each one." : "Try a lower level or clear the filters.")); drawRate(); }
-      count.textContent = `${fmt.plural(lines.length, "line")} · newest #${j.last}`;
-    } catch (e) { clear(box, failure(e, "The logs")); stop(); }
+      const j = await api("/v1/logs/store");
+      ctx.store = j;
+      ctx.coord = !!j.nodes || isCoordinator();
+      ctx.nodes = new Map();
+      if (j.store?.node) ctx.nodes.set(j.store.node, { url: null, shard: null, self: true });
+      for (const n of j.nodes || []) { const name = n.store?.node || n.node || (n.url ? copyName(n.url) : null); if (name) ctx.nodes.set(name, { url: n.url, shard: n.shard, down: !!n.error }); }
+      const kept = [j.store, ...(j.nodes || []).map((n) => n.store)].filter(Boolean);
+      ctx.has = kept.length > 0;
+      const servers = (j.nodes ? j.nodes.length : 0) + (j.store !== undefined ? 1 : 0);
+      const bytes = kept.reduce((a, x) => a + (x.bytes || 0), 0), ret = kept[0]?.retain_s;
+      const down = (j.nodes || []).filter((n) => n.error).length;
+      const shards = new Set((j.nodes || []).map((n) => n.shard).filter((x) => x != null)).size;
+      clear(sub, ctx.has ? `Every server's lines, merged: ${fmt.plural(servers, "server")}${shards ? ` (${fmt.plural(shards, "shard")} and this coordinator)` : ""}. Newest first; click a line for where to go next.` : "");
+      clear(storeBtn, icon("db"), `stores ${fmt.n(kept.length)} of ${fmt.n(servers)}${down ? ` · ${down} down` : " ok"}${ret ? ` · ${ret % 86400 === 0 ? fmt.plural(ret / 86400, "day") : fmt.dur(ret)}` : ""} · ${fmt.bytes(bytes)}`);
+      storeBtn.classList.toggle("al-warnbtn", !!down);
+      storeBtn.onclick = () => storesDrawer(j);
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) { clear(list, empty("lock", "Log lines need an admin key", e.message)); ctx.has = null; return false; }
+      ctx.has = false;
+    }
+    return true;
   }
-  function reload() { lines = []; lastSeq = 0; clear(box); poll(); }
-  function download() {
-    const blob = new Blob([lines.map((l) => JSON.stringify(l)).join("\n") + "\n"], { type: "application/x-ndjson" });
-    const a = h("a", { href: URL.createObjectURL(blob), download: `strata-logs-${new Date().toISOString().slice(0, 19)}.jsonl` });
-    document.body.append(a); a.click(); a.remove();
+  levelBtn.onclick = () => levelsDrawer(ctx);
+  shareBtn.onclick = () => copy(location.origin + location.pathname + link("logs", { q, tab: tab === "lines" ? null : tab, ...rangeParams({ absolute: true }) }), "Link copied: it opens these lines in this window of time");
+
+  reroute = (params) => {
+    const nq = params.get("q") ?? legacyQ(params);
+    const nt = params.get("tab") === "patterns" ? "patterns" : "lines";
+    alertId = params.get("alert") || null;
+    if (nq !== q || nt !== tab) { q = nq; tab = nt; drawChips(); }
+    refresh();
+  };
+  q = r.params.get("q") ?? legacyQ(r.params);
+  tab = r.params.get("tab") === "patterns" ? "patterns" : "lines";
+  if (r.params.get("tab") === "live") live = true;
+  drawChips(); drawRange();
+  loadStore().then((ok) => { if (!ok) return; if (ctx.has === false) memoryTail(); else refresh(); });
+  const offs = [bus.on("range", () => { if (ctx.has) refresh(); else drawRange(); }), bus.on("paused", drawRange), bus.on("cluster", () => { if (!state.paused && sel) drawDetail(sel); })];
+  const stop = every(1000, tick, false);
+  return () => { stop(); memStop?.(); offs.forEach((x) => x()); reroute = null; };
+}
+/** The old Logs links (?request=, ?node=, ?shard=, ?level=) as a search. */
+function legacyQ(p) {
+  return [p.get("level") ? `level>=${p.get("level")}` : null, p.get("node") ? `server:${quote(p.get("node"))}` : null, p.get("shard") ? `shard:${p.get("shard")}` : null, p.get("request") ? `request:${p.get("request")}` : null].filter(Boolean).join(" ");
+}
+
+// ---------------------------------------------------------------- stores
+function storesDrawer(j) {
+  const rows = [j.store ? { url: null, shard: null, store: j.store, self: true } : null, ...(j.nodes || [])].filter(Boolean);
+  const period = (sec) => sec % 86400 === 0 ? fmt.plural(sec / 86400, "day") : sec % 3600 === 0 ? fmt.plural(sec / 3600, "hour") : fmt.dur(sec);
+  drawer({
+    title: "Log stores", sub: "a Strata database beside each server's, with the tables logs and queries", wide: true,
+    body: [
+      table([
+        { key: "url", label: "server", render: (x) => h("span", { class: "mono small", title: x.url || "this server" }, x.self ? `${x.store?.node || "this server"} (this one)` : x.url && findCopy(x.url) ? copyName(x.url) : x.store?.node || x.url) },
+        { key: "shard", label: "shard", num: true, render: (x) => x.shard ?? "–" },
+        { key: "lines", label: "lines", num: true, sort: (x) => x.store?.tables?.logs?.rows, render: (x) => x.store ? fmt.n(x.store.tables?.logs?.rows) : "–" },
+        { key: "bytes", label: "size", num: true, sort: (x) => x.store?.bytes, render: (x) => x.store ? `${fmt.bytes(x.store.bytes)} of ${fmt.bytes(x.store.max_bytes)}` : "–" },
+        { key: "kept", label: "kept", render: (x) => x.store?.retain_s ? period(x.store.retain_s) : "–" },
+        { key: "written", label: "last write", render: (x) => x.store?.last_write_ms ? when(x.store.last_write_ms) : "–" },
+        { key: "state", label: "", sort: (x) => (x.error ? 0 : 1), render: (x) => x.error ? h("span", { class: "pill bad", title: x.error }, icon("bad"), "did not answer") : !x.store ? pill("disabled", "no store") : x.store.last_error ? h("span", { class: "pill bad", title: x.store.last_error }, icon("bad"), "cannot write") : (x.store.dropped?.lines || 0) ? pill("warn", `${fmt.n(x.store.dropped.lines)} dropped`) : pill("ok", "ok") },
+      ], { rows, compact: true, sortKey: "state", desc: false }),
+      h("p", { class: "small muted" }, "Each server writes its lines and queries to its own store every second and deletes what is older than its retention or past its size; a search on a coordinator asks every server and merges the answers. A server that does not answer is missing from the results, and said so. Flags: --log-store, --log-retain, --log-store-mb, --log-queries, --node-name."),
+    ],
+  });
+}
+
+// ---------------------------------------------------------------- log levels
+// Trace is not a preset (L5): it can still be typed in the field.
+const PRESETS = [["error", "error"], ["warn", "warn"], ["info", "info"], ["debug", "debug"], ["info,strata_server=debug", "server debug"]];
+const SET = {};
+const EXPIRY = [[900, "15 min"], [1800, "30 min"], [3600, "1 h"], [14400, "4 h"]];
+async function levelsDrawer(ctx) {
+  const body = h("div", { class: "stack" });
+  const d = drawer({ title: "Log levels", sub: "what each server logs; a change reverts by itself when it expires", wide: true, body });
+  let self = null;
+  try { self = await api("/v1/logs?limit=1&level=error"); } catch { /* shown below */ }
+  const me = ctx.store?.store?.node;
+  const servers = [{ name: me ? `${me} (this server)` : "this server", node: me, url: null, filter: self?.filter, expires_ms: self?.filter_expires_ms ?? self?.expires_ms, set_by: self?.filter_set_by, default: self?.default_filter }];
+  // Another server's level: what it answers (GET /v1/logs?node=, below); until then, the ones changed from this page.
+  for (const [node, n] of ctx.nodes) if (!n.self && n.url) { const k = SET[n.url]; const live = k && (!k.expires_ms || k.expires_ms > Date.now()); servers.push({ name: findCopy(n.url) ? copyName(n.url) : node, node, url: n.url, shard: n.shard, down: n.down, filter: live ? k.filter : null, expires_ms: live ? k.expires_ms : null, set_by: live ? k.set_by : null, default: k?.previous }); }
+  // A server that reports when its level expires also sets another server's (PUT ?node=).
+  const perServer = !!self && ("filter_expires_ms" in self || "filter_set_by" in self || !!self.per_server);
+  ctx.newer = self ? perServer : ctx.newer;
+  // L5: each other server's own level, 16 at a time; the changed ones first.
+  const others = servers.filter((x) => x.url && !x.down);
+  const changed = (x) => !!(x.expires_ms || x.set_by);
+  const find = servers.length > 12 ? h("input", { class: "input sm", placeholder: "Filter servers", style: { width: "220px" }, oninput: debounce(() => draw(), 200) }) : null;
+  const tbody = h("tbody");
+  const draw = () => {
+    const q = (find?.value || "").trim().toLowerCase();
+    const xs = servers.filter((x) => !q || x.name.toLowerCase().includes(q) || (x.node || "").toLowerCase().includes(q)).sort((a, b) => (a.url ? 1 : 0) - (b.url ? 1 : 0) || Number(changed(b)) - Number(changed(a)));
+    clear(tbody, xs.map(row));
+  };
+  const row = (x) => h("tr", {},
+    h("td", {}, h("span", { class: "mono small", title: x.url || "" }, x.name), x.shard != null ? h("span", { class: "tiny muted" }, ` shard ${x.shard}`) : null),
+    h("td", { class: "mono small", title: x.err ? x.err : "" }, x.filter || (x.down ? "does not answer" : x.err ? "did not answer" : x.url && !x.read && perServer ? "reading…" : x.url ? "not reported" : "unknown")),
+    h("td", { class: "small" }, x.expires_ms ? `goes back at ${when(x.expires_ms, { sec: false })}${x.default ? ` to ${x.default}` : ""}${x.set_by ? ` · set by ${x.set_by}` : ""}` : x.filter ? (perServer ? "from the command line" : "until changed back") : ""),
+    h("td", {}, (() => {
+      const b = h("button", { class: "btn xs", onclick: () => change(x) }, "Change…");
+      if (!can("admin")) { b.disabled = true; b.title = needs("admin"); }
+      else if (x.url && !perServer) { b.disabled = true; b.title = "This server sets only its own level: a newer strata-server sets another server's"; }
+      else if (x.down) { b.disabled = true; b.title = "It does not answer"; }
+      return b;
+    })()));
+  draw();
+  clear(body,
+    find ? h("div", { class: "row", style: { gap: "8px" } }, find, h("span", { class: "small muted" }, "changed levels first")) : null,
+    h("div", { class: "tbl-wrap", style: { maxHeight: "60vh" } }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["server", "logs", "until", ""].map((k) => h("th", {}, k)))), tbody)),
+    h("p", { class: "small muted" }, "A level is error, warn, info, debug or trace, or target=level pairs as in --log (info,strata_server=debug). Requests log at debug: debug on a busy server writes a line a request, so it expires. Every change is audited and shows as an event."));
+  if (perServer) {
+    for (let i = 0; i < others.length; i += 16) {
+      await Promise.all(others.slice(i, i + 16).map(async (x) => {
+        try {
+          const j = await api("/v1/logs?node=" + encodeURIComponent(x.url));
+          Object.assign(x, { filter: j.filter ?? x.filter, expires_ms: j.filter_expires_ms ?? null, set_by: j.filter_set_by ?? null, default: j.previous ?? x.default, read: true });
+        } catch (e) { x.err = e.message; }
+      }));
+      if (!body.isConnected) return;
+      draw();
+    }
   }
-  const stop = every(1500, poll);
-  return stop;
+  async function change(x) {
+    // Expiry came with the events (one server version): an older server keeps a level until changed.
+    const expiring = ctx.newer !== false;
+    let filter = /^(error|warn|info)$/.test(x.filter || "info") ? "debug" : "info", exp = 1800;
+    const inp = h("input", { class: "input mono", value: filter, style: { width: "100%" }, "aria-label": "Log filter", oninput: () => { filter = inp.value.trim(); presets.set(filter); } });
+    const presets = seg(PRESETS, filter, (v) => { filter = v; inp.value = v; });
+    const expiry = seg(EXPIRY.map(([k, l]) => [k, l]), exp, (v) => { exp = v; });
+    const pick = await new Promise((resolve) => {
+      let done = false;
+      const ok = h("button", { class: "btn primary" }, "Next");
+      const no = h("button", { class: "btn" }, "Cancel");
+      const m = modal({ title: `What ${x.name} logs`, body: [h("label", { class: "f" }, "Level", presets), inp,
+        expiring ? h("label", { class: "f" }, "Goes back after", expiry) : h("div", { class: "notice small" }, `This server keeps the new level until someone changes it back: a newer strata-server sets it back by itself. Now: ${x.filter || "unknown"}.`)], foot: [no, ok], onClose: () => { if (!done) resolve(null); } });
+      ok.onclick = () => { done = true; m.close(); resolve({ filter, exp }); };
+      no.onclick = () => { done = true; m.close(); resolve(null); };
+      setTimeout(() => no.focus(), 0);
+    });
+    if (!pick?.filter) return;
+    const until = Date.now() + pick.exp * 1000;
+    const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+    const heavy = /debug|trace/.test(pick.filter) ? "Debug writes a line a request: on a busy server that is thousands a second, kept in its log store. " : "";
+    const okc = await confirm({
+      title: expiring ? `${cap(x.name)} logs ${pick.filter} until ${when(until, { sec: false })}?` : `${cap(x.name)} logs ${pick.filter} until changed back?`,
+      body: heavy + (expiring ? `It goes back to ${x.default || x.filter || "its level from the command line"} by itself at ${when(until, { sec: false })}.` : `This server does not set it back by itself: change it back to ${x.filter || "its level"} when you are done.`),
+      ok: "Change the level", reason: true });
+    if (!okc) return;
+    try {
+      const j = await api("/v1/logs/filter" + (x.url ? "?node=" + encodeURIComponent(x.url) : ""), { method: "PUT", body: { filter: pick.filter, expires_s: pick.exp }, reason: okc.reason });
+      if (x.url && j.node !== x.url) throw new Error(`the answer came from ${j.node || "this server"}, not ${x.name}: nothing was changed there`);
+      if (x.url) SET[x.url] = { filter: j.filter, expires_ms: j.expires_ms, set_by: j.set_by, previous: j.previous };
+      const exp0 = j.expires_ms || (j.expires_s ? Date.now() + j.expires_s * 1000 : null);
+      toast(exp0 ? `${x.name} logs ${j.filter} until ${when(exp0, { sec: false })}` : `${x.name} logs ${j.filter} until it is changed back`, exp0 ? "ok" : "warn", 6000);
+      d.close(); levelsDrawer(ctx);
+    } catch (e) { toast(e instanceof ApiError && e.status === 403 ? `Changing the log level ${needs("admin")}` : e.message, "bad"); }
+  }
 }

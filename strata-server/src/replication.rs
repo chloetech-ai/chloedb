@@ -468,7 +468,34 @@ impl Follower {
 struct Shared {
     core: Mutex<shard::Primary>,
     progress: watch::Sender<u64>,
+    /// The writes it took that are not applied or refused yet ([`Flight`]).
+    flights: watch::Sender<usize>,
 }
+
+/// A write a primary took ([`Primary::admit`]), until it is applied or
+/// refused, when it is dropped: a primary asked to hand its shard over
+/// waits for those ([`Primary::answer`]).
+pub struct Flight(Arc<Shared>);
+
+impl std::fmt::Debug for Flight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Flight")
+    }
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        self.0.flights.send_modify(|n| *n = n.saturating_sub(1));
+    }
+}
+
+/// How long a primary asked to hand its shard over takes no writes, unless
+/// the candidate's vote comes first ([`Primary::answer`]).
+const HANDOVER_PAUSE: Duration = Duration::from_secs(1);
+
+/// How long it waits for the writes it took to be applied then, and the
+/// candidate for it to hold their transactions ([`Follow::catch_up`]).
+const HANDOVER_CATCH_UP: Duration = Duration::from_millis(500);
 
 /// A primary: ships its database's numbered transactions to its replicas,
 /// and tells a write when enough copies hold it, as the core decides
@@ -526,7 +553,7 @@ impl Primary {
             save_kept(&k, file).map_err(|e| format!("keep the replication id and role: {e}"))?;
         }
         let followers = opts.replicas.iter().map(|url| Follower::new(url, &opts).map(Arc::new)).collect::<Result<Vec<_>, String>>()?;
-        let shared = Arc::new(Shared { core: Mutex::new(core), progress: watch::channel(0).0 });
+        let shared = Arc::new(Shared { core: Mutex::new(core), progress: watch::channel(0).0, flights: watch::channel(0).0 });
         Primary::run_with(db, file, shared, opts, followers)
     }
 
@@ -689,12 +716,38 @@ impl Primary {
 
     /// Whether a write may be applied: not on a primary another replaced
     /// (409), not while it waits out the lease of the primary it replaced
-    /// by hand (503, [`Follow::promote`]), and with `majority`, while a
-    /// majority of copies is in sync (503), so that a write the copies
-    /// cannot acknowledge is not applied.
-    pub fn admit(&self) -> Result<(), ApiError> {
+    /// by hand (503, [`Follow::promote`]) or hands its shard over (503,
+    /// [`Self::answer`]), and with `majority`, while a majority of copies
+    /// is in sync (503), so that a write the copies cannot acknowledge is
+    /// not applied. A write taken counts until its [`Flight`] is dropped.
+    pub fn admit(&self) -> Result<Flight, ApiError> {
         let term = self.term();
-        self.core(|c| c.admit(term, Instant::now()))
+        // Counted as it is taken: a handover that stops writes after it
+        // waits for it.
+        self.core(|c| c.admit(term, Instant::now()).map(|()| self.shared.flights.send_modify(|n| *n += 1)))?;
+        Ok(Flight(self.shared.clone()))
+    }
+
+    /// Answers vote `r` ([`Self::vote`]). A copy asking whether it would
+    /// vote in a handover first stops it taking writes, for
+    /// [`HANDOVER_PAUSE`] or until it answers the vote, and it waits for
+    /// the writes it took to be applied, up to [`HANDOVER_CATCH_UP`]: its
+    /// answer names its last transaction then, which the copy catches up
+    /// with before it asks for the vote ([`Follow::catch_up`]). A copy a
+    /// transaction behind is refused the vote, and refused once it kept
+    /// its vote for itself, it would leave the shard with no primary: this
+    /// one's next call would meet the copy's term, which fences it.
+    pub async fn answer(&self, r: &pb::VoteRequest) -> pb::VoteResponse {
+        if r.handover && r.pre && self.core(|c| c.hand_over(Instant::now() + HANDOVER_PAUSE)) {
+            let mut flights = self.shared.flights.subscribe();
+            let _ = tokio::time::timeout(HANDOVER_CATCH_UP, flights.wait_for(|&n| n == 0)).await;
+        }
+        let a = self.vote(r);
+        if r.handover {
+            let n = self.numbering();
+            self.core(|c| c.answered_handover(r, &n, &a));
+        }
+        a
     }
 
     /// Waits until the copies `--write-acks` asks for hold transaction
@@ -1159,37 +1212,74 @@ impl Follow {
     ///
     /// It asks for the term after the newest it knows or a copy told it
     /// ([`shard::Replica::heard`]).
-    pub async fn campaign(&self, copies: &[String], opts: &PrimaryOptions, handover: bool) -> Result<Elected, ApiError> {
+    ///
+    /// The copies of `first` (in a handover, those that serve as the
+    /// shard's primary) are asked for their votes before the others, while
+    /// this replica answers no call of theirs: once it voted for itself, it
+    /// would answer a call with the term it asks for, and so would a copy
+    /// that voted for it, and a primary that knows a term refuses a vote in
+    /// it. Refused, the primary is fenced and does not step down, and with
+    /// two copies the shard is left with no primary.
+    pub async fn campaign(&self, copies: &[String], opts: &PrimaryOptions, handover: bool, first: &[String]) -> Result<Elected, ApiError> {
         let c = self.core().campaign(&self.numbering()?, handover);
-        let ask = |pre: bool| {
-            let req = c.ask(self.db.storage().numbering().unwrap_or_default().last(), pre);
-            futures::future::join_all(copies.iter().map(move |url| {
-                let req = req.clone();
-                async move {
-                    let mut c = coord::client(url, opts.token.as_ref(), opts.ca.as_deref()).map_err(|e| e.message)?;
-                    match tokio::time::timeout(opts.call_timeout, c.vote(req)).await {
-                        Ok(Ok(a)) => Ok(a.into_inner()),
-                        Ok(Err(s)) => Err(format!("{}: {}", crate::grpc::code_name(s.code()), s.message())),
-                        Err(_) => Err(format!("no answer within {} s", opts.call_timeout.as_secs())),
-                    }
-                }
-            }))
-        };
-        let t = c.tally(copies, ask(true).await);
+        let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts).await);
         self.core().heard(&t);
         c.pre_voted(&t)?;
-        {
+        let (before, after): (Vec<String>, Vec<String>) = copies.iter().cloned().partition(|u| first.contains(u));
+        let (req, said) = {
             let _one = self.one.lock().await;
             let n = self.numbering()?;
             let k = c.vote_self(&self.core(), &n)?;
             self.keep(k, "the vote")?;
-        }
-        let t = c.tally(copies, ask(false).await);
+            let req = c.ask(n.last(), false);
+            let said = self.ask(req.clone(), &before, opts).await;
+            (req, said)
+        };
+        let (mut said, mut rest) = (said.into_iter(), self.ask(req, &after, opts).await.into_iter());
+        let answers = copies.iter().map(|u| if first.contains(u) { said.next() } else { rest.next() }.expect("an answer from each copy")).collect();
+        let t = c.tally(copies, answers);
         self.core().heard(&t);
         let votes = t.granted;
         let e = c.voted(t)?;
         tracing::info!(term = e.term, votes, of = e.others.len() + 1, "elected the shard's primary");
         Ok(e)
+    }
+
+    /// What each of `copies` answered vote `req` (an error: no answer).
+    async fn ask(&self, req: pb::VoteRequest, copies: &[String], opts: &PrimaryOptions) -> Vec<Result<pb::VoteResponse, String>> {
+        futures::future::join_all(copies.iter().map(|url| {
+            let req = req.clone();
+            async move {
+                let mut c = coord::client(url, opts.token.as_ref(), opts.ca.as_deref()).map_err(|e| e.message)?;
+                match tokio::time::timeout(opts.call_timeout, c.vote(req)).await {
+                    Ok(Ok(a)) => Ok(a.into_inner()),
+                    Ok(Err(s)) => Err(format!("{}: {}", crate::grpc::code_name(s.code()), s.message())),
+                    Err(_) => Err(format!("no answer within {} s", opts.call_timeout.as_secs())),
+                }
+            }
+        }))
+        .await
+    }
+
+    /// Before a handover: asks `copies` whether they would vote for it,
+    /// which stops their primary taking writes and names the last
+    /// transaction each holds ([`Primary::answer`]), and waits until it
+    /// holds the newest of them, up to [`HANDOVER_CATCH_UP`]. Under writes,
+    /// its primary and the other copies hold a transaction or two it has
+    /// not applied yet, and would refuse it the vote.
+    async fn catch_up(&self, copies: &[String], opts: &PrimaryOptions) -> Result<(), ApiError> {
+        let c = self.core().campaign(&self.numbering()?, true);
+        let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts).await);
+        let until = Instant::now() + HANDOVER_CATCH_UP;
+        let mut committed = self.committed.subscribe();
+        loop {
+            let (at, now) = (self.numbering()?.last(), Instant::now());
+            if (at.term, at.seq) >= t.last || now >= until {
+                return Ok(());
+            }
+            // As in `holding`: a copy installed tells no hook.
+            let _ = tokio::time::timeout((until - now).min(Duration::from_millis(10)), committed.changed()).await;
+        }
     }
 
     /// Whether a read may take a new snapshot here: once a call from its
@@ -1244,13 +1334,15 @@ impl Follow {
     /// ([`shard::promote_check`]), and a majority of `voters` (the shard's
     /// copies; `opts.replicas` when `None`) voted for it
     /// ([`Self::campaign`], as a handover: a primary that serves steps
-    /// down). Refused (409) otherwise, unless `force`, which asks for no
+    /// down). It catches up with them first ([`Self::catch_up`]), which
+    /// stops a primary that serves taking writes until it votes, and asks
+    /// that primary for its vote before the others. Refused
+    /// (409) otherwise, unless `force`, which asks for no
     /// votes: the new primary may then not hold transactions another copy
     /// holds, which a copy of it drops, and a primary that serves still may
     /// until it hears of the new term. Answers the new term, its last
     /// transaction, what each copy said and the votes.
     pub async fn promote(&self, mut opts: PrimaryOptions, voters: Option<Vec<String>>, force: bool) -> Result<(Arc<Primary>, Json), ApiError> {
-        let mine = self.numbering()?;
         // With no replicas named, the shard's copies are asked, and shipped
         // to once elected.
         let named = !opts.replicas.is_empty();
@@ -1258,6 +1350,10 @@ impl Follow {
             (false, Some(v)) => v.clone(),
             _ => opts.replicas.clone(),
         };
+        if !force {
+            self.catch_up(voters.as_deref().unwrap_or(&opts.replicas), &opts).await?;
+        }
+        let mine = self.numbering()?;
         let asks = checked.iter().map(|url| async {
             let mut c = coord::client(url, opts.token.as_ref(), opts.ca.as_deref()).map_err(|e| e.message)?;
             let hello = c.hello(pb::HelloRequest { min_protocol: crate::grpc::MIN_PROTOCOL, max_protocol: crate::grpc::PROTOCOL });
@@ -1271,7 +1367,7 @@ impl Follow {
         let asked = shard::promote_check(&mine, &said, force)?;
         let elected = match force {
             true => None,
-            false => Some(self.campaign(voters.as_deref().unwrap_or(&opts.replicas), &opts, true).await?),
+            false => Some(self.campaign(voters.as_deref().unwrap_or(&opts.replicas), &opts, true, &asked.primaries).await?),
         };
         match (named, &elected, &voters) {
             (false, Some(e), _) => opts.replicas = e.others.clone(),

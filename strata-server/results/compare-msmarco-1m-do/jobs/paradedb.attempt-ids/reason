@@ -1,0 +1,1 @@
+stopped: same NUL bytes as postgres; reruns on the fixed client

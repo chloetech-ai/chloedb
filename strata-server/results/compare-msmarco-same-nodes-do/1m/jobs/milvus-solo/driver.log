@@ -1,0 +1,10 @@
+13:16:15 milvus-solo: waiting for its nodes
+13:17:35 milvus-solo: nodes milvus-solo-d-a1-3epkvs milvus-solo-d-a1-3epkvs and milvus-solo-c-a1-3epkvk
+13:19:03 milvus-solo: step 1: compare.sh up milvus
+13:19:19 milvus-solo: step 2: compare.sh load milvus
+13:29:09 milvus-solo: step 3: compare.sh run milvus
+13:33:34 milvus-solo: step 4: compare.sh run milvus --label milvus-pass2
+13:38:00 milvus-solo: step 5: compare.sh run milvus --label milvus-pass3
+13:42:25 milvus-solo: step 6: compare.sh down milvus
+13:42:33 milvus-solo: reports fetched (6 files)
+13:42:35 milvus-solo: done after 1580 s

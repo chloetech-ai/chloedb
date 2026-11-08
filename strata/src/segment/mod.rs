@@ -82,6 +82,11 @@ pub trait FieldIndexBuilder: Send {
     fn add(&mut self, doc: DocId, value: &Value) -> Result<()>;
     /// Writes this field's sections.
     fn finish(self: Box<Self>, out: &mut SegmentWriter) -> Result<()>;
+    /// The value of a partitioned VECTOR field's partition key for document
+    /// `doc` ([`crate::schema::VectorPartition`]), after its own value.
+    fn partition_key(&mut self, _doc: DocId, _key: &Value) -> Result<()> {
+        Ok(())
+    }
     /// Keeps what grows with every document added (a vector field's
     /// float32 rows) in `spill` instead of in memory, where the builder
     /// can; called before the first document. A builder that cannot
@@ -421,6 +426,25 @@ impl SegmentFile {
 
     pub fn require(&self, name: &str) -> Result<OwnedBytes> {
         self.section(name)?.ok_or_else(|| corrupt(format!("missing section {name}")))
+    }
+
+    /// The bytes of section `name`, if the segment has one, not checked
+    /// against its crc32: for a section whose parts carry checksums of
+    /// their own, which its reader checks part by part as it reads them
+    /// (the doc store's blocks, `store.crc`), so that the first read of a
+    /// row does not read the whole section. [`verify_sections`]
+    /// (Self::verify_sections) still checks it whole.
+    pub fn section_unchecked(&self, name: &str) -> Option<OwnedBytes> {
+        match self.sections.get(name) {
+            Some(s) => Some(self.bytes.slice(s.offset..s.offset + s.len)),
+            None => self.overlay.as_ref().and_then(|o| o.section_unchecked(name)),
+        }
+    }
+
+    /// Whether sections are checked as they are first read
+    /// ([`checked_on_read`](Self::checked_on_read)).
+    pub fn checks_on_read(&self) -> bool {
+        self.checked.is_some()
     }
 
     /// Whether the segment has section `name` (without reading it).

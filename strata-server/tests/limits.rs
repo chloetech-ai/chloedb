@@ -54,7 +54,7 @@ async fn grpc(svc: Arc<Service>) -> String {
 
 /// The status and body of a query.
 async fn query(base: &str, sql: &str) -> (u16, Json) {
-    let r = reqwest::Client::new().post(format!("{base}/v1/query")).json(&json!({"sql": sql})).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/query")).json(&json!({"sql": sql})).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 
@@ -137,7 +137,7 @@ async fn a_closed_connection_is_seen_as_one() {
         std::io::Read::read(&mut conn, &mut [0u8; 1024]).unwrap();
         // Closed with unread bytes: the client gets a reset.
     });
-    let e = reqwest::Client::new().post(format!("http://{addr}/v1/query")).body("x".repeat(32 << 20)).send().await.unwrap_err();
+    let e = strata_server::http_client().build().unwrap().post(format!("http://{addr}/v1/query")).body("x".repeat(32 << 20)).send().await.unwrap_err();
     assert!(reset(&e), "{e:?}");
 }
 
@@ -147,7 +147,7 @@ async fn bodies_are_capped_by_route() {
     let mut svc = capped(open(dir.path(), "b.strata", |_| true));
     svc.max_body = 1 << 20;
     let base = http(Arc::new(svc)).await;
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let post = |path: &str, body: String| client.post(format!("{base}{path}")).header("content-type", "application/json").body(body).send();
     // A body over the cap gets 413, or, when the server answers before the
     // client has sent all of it, a closed connection (seen on macOS).
@@ -175,7 +175,7 @@ async fn a_full_write_queue_refuses_writes_until_it_drains() {
     let mut svc = capped(db.clone());
     svc.max_queued_writes = 2;
     let base = http(Arc::new(svc)).await;
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let write = |i: usize| client.post(format!("{base}/v1/write")).json(&json!({"ops": [{"op": "upsert", "doc": {"id": format!("q{i}"), "title": "queued"}}]})).send();
     // A transaction held here keeps the writer waiting.
     let held = db.storage().begin().unwrap();
@@ -210,7 +210,7 @@ async fn imports_write_as_they_read() {
     let dir = tempfile::tempdir().unwrap();
     let db = open(dir.path(), "i.strata", |_| false);
     let base = http(Arc::new(capped(db.clone()))).await;
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let import = |body: String| client.post(format!("{base}/v1/import?format=jsonl")).header("content-type", "application/x-ndjson").body(body).send();
     let line = |i: usize| json!({"id": format!("r{i}"), "title": "imported", "price": i}).to_string();
     let rows: Vec<String> = (0..2500).map(line).collect();
@@ -230,7 +230,7 @@ async fn imports_write_as_they_read() {
 const WIDE: &str = "SELECT id, title, description FROM products LIMIT 100";
 
 async fn metric(base: &str, name: &str) -> f64 {
-    let m = reqwest::get(format!("{base}/metrics")).await.unwrap().text().await.unwrap();
+    let m = strata_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     m.lines().find_map(|l| l.strip_prefix(&format!("{name} "))).unwrap_or_else(|| panic!("no {name}")).parse().unwrap()
 }
 
@@ -285,4 +285,61 @@ async fn a_coordinator_passes_on_its_shards_429_and_counts_its_joins() {
     assert_eq!(status, 200, "{body}");
     out_of_memory(&base, "SELECT x.id, y.title FROM products x JOIN products y ON x.brand = y.brand LIMIT 5").await;
     assert_eq!(metric(&base, "strata_query_memory_trips_total").await, 1.0);
+}
+
+/// A shard that refuses its part of a write for its load (429: here its
+/// write queue is full, as when it is behind on its flushes) is sent the
+/// part again by the coordinator, for up to 10 s: the client's write is
+/// slower, not refused, and nothing is applied twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_coordinator_sends_a_busy_shard_its_part_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let shard = |s: usize| move |i: usize| shard_of(&strata::Value::Str(format!("p{i:07}")), 2) == s;
+    let busy = open(dir.path(), "b0.strata", shard(0));
+    let mut svc = capped(busy.clone());
+    svc.max_queued_writes = 1;
+    let svc = Arc::new(svc);
+    let busy_http = http(svc.clone()).await;
+    let shards = vec![grpc(svc).await, grpc(Arc::new(capped(open(dir.path(), "b1.strata", shard(1))))).await];
+    let c = Coordinator::connect(shards).await.unwrap();
+    let schema = c.schema.clone();
+    let base = http(Arc::new(Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(10)))).await;
+    let client = strata_server::http_client().build().unwrap();
+    // Ten new rows a write, on both shards.
+    let write = |from: usize| {
+        let ops: Vec<Json> = (from..from + 10).map(|i| json!({"op": "upsert", "doc": {"id": format!("p{i:07}"), "title": "busy"}})).collect();
+        client.post(format!("{base}/v1/write")).json(&json!({"ops": ops})).send()
+    };
+    let metric = |name: &'static str| {
+        let client = client.clone();
+        let url = format!("{busy_http}/metrics");
+        async move {
+            let m = client.get(url).send().await.unwrap().text().await.unwrap();
+            m.lines().find_map(|l| l.strip_prefix(name)).map_or(0.0, |v| v.trim().parse::<f64>().unwrap())
+        }
+    };
+    // A transaction held on shard 0 keeps its writer waiting: the first
+    // write's part fills its queue, and the second's is refused.
+    let held = busy.storage().begin().unwrap();
+    let first = tokio::spawn(write(N));
+    let t0 = std::time::Instant::now();
+    while metric("strata_write_queue_requests ").await < 1.0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the first write never queued");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let second = tokio::spawn(write(N + 10));
+    while metric("strata_write_errors_total{status=\"429\"} ").await < 2.0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the shard refused the second write's part {} times", metric("strata_write_errors_total{status=\"429\"} ").await);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The shard catches up: both writes are taken, each once.
+    drop(held);
+    for w in [first, second] {
+        let r = w.await.unwrap().unwrap();
+        let status = r.status().as_u16();
+        let body: Json = r.json().await.unwrap();
+        assert_eq!((status, body["written"].as_u64()), (200, Some(10)), "{body}");
+    }
+    let (status, body) = query(&base, "SELECT COUNT(*) FROM products").await;
+    assert_eq!((status, body["rows"][0][0].as_u64()), (200, Some(N as u64 + 20)), "{body}");
 }

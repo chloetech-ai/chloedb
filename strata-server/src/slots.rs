@@ -14,6 +14,8 @@
 //! count ([`hash_shard_of`]), which a coordinator still routes by while a
 //! shard is from before protocol 4.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value as Json};
 use strata::value::Value;
 
@@ -132,7 +134,11 @@ pub struct SlotMap {
 /// gives up (`aborting`, while `to` deletes what it was sent). In JSON,
 /// `"moving": {"from": 0, "to": 2, "slots": [[0, 256]], "state":
 /// "copying"}`. A shard holding rows of moving slots that it does not
-/// serve hides them ([`SlotMap::residue`]).
+/// serve hides them ([`SlotMap::residue`]). A move flipped while every
+/// server spoke [`crate::grpc::MOVE_OFFSETS_PROTOCOL`] carries the stream
+/// sources' offsets of its slots on the shard they left, as of the flip
+/// (`"offsets": {"clicks/0": 81234}`), which the shard they went to keeps
+/// for them ([`crate::service::arrivals`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Move {
     pub from: usize,
@@ -140,6 +146,9 @@ pub struct Move {
     /// The slots, in increasing order.
     pub slots: Vec<usize>,
     pub state: MoveState,
+    /// Each stream source's offset for the slots on the shard they left,
+    /// when the move flipped (empty before, or from an older coordinator).
+    pub offsets: BTreeMap<String, i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,12 +331,19 @@ impl SlotMap {
         if from == to {
             return Err(format!("shard {to} holds those slots already"));
         }
-        Ok(SlotMap { epoch: self.epoch + 1, moving: Some(Move { from, to, slots, state: MoveState::Copying }), ..self.clone() })
+        Ok(SlotMap { epoch: self.epoch + 1, moving: Some(Move { from, to, slots, state: MoveState::Copying, offsets: BTreeMap::new() }), ..self.clone() })
     }
 
     /// The next map, the moving slots held by the shard they move to,
     /// while the one they left deletes its rows of them.
     pub fn flip_move(&self) -> Result<SlotMap, String> {
+        self.flip_move_with(BTreeMap::new())
+    }
+
+    /// [`Self::flip_move`], the move carrying `offsets`: each stream
+    /// source's offset for its slots on the shard they leave, which the
+    /// shard they go to keeps for them.
+    pub fn flip_move_with(&self, offsets: BTreeMap<String, i64>) -> Result<SlotMap, String> {
         let m = match &self.moving {
             Some(m) if m.state == MoveState::Copying => m,
             Some(m) => return Err(format!("the move is {}, not copying", m.state.name())),
@@ -337,7 +353,7 @@ impl SlotMap {
         for &s in &m.slots {
             owner[s] = m.to as u16;
         }
-        Ok(SlotMap { epoch: self.epoch + 1, owner, moving: Some(Move { state: MoveState::Cleaning, ..m.clone() }), ..self.clone() })
+        Ok(SlotMap { epoch: self.epoch + 1, owner, moving: Some(Move { state: MoveState::Cleaning, offsets, ..m.clone() }), ..self.clone() })
     }
 
     /// The next map, the move given up while the shard the slots were to
@@ -428,6 +444,9 @@ impl SlotMap {
         }
         if let Some(m) = &self.moving {
             j["moving"] = json!({"from": m.from, "to": m.to, "slots": m.ranges(), "state": m.state.name()});
+            if !m.offsets.is_empty() {
+                j["moving"]["offsets"] = json!(m.offsets);
+            }
         }
         j
     }
@@ -502,7 +521,11 @@ fn move_of_json(j: &Json, map: &SlotMap) -> Result<Move, String> {
     if from == to || slots.is_empty() || slots.iter().any(|&s| map.owner(s) != holder) {
         return Err(format!("\"moving\": slots of shard {holder}, from shard {from} to another, {to}"));
     }
-    Ok(Move { from, to, slots, state })
+    let offsets = match j.get("offsets") {
+        None | Some(Json::Null) => BTreeMap::new(),
+        Some(o) => serde_json::from_value(o.clone()).map_err(|_| "\"moving\": \"offsets\" are each stream source's offset, a whole number".to_string())?,
+    };
+    Ok(Move { from, to, slots, state, offsets })
 }
 
 

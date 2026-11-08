@@ -1,0 +1,154 @@
+Name:             load-typesense-dkmh8
+Namespace:        typesense
+Priority:         0
+Service Account:  default
+Node:             typesense-c-a1-3eal90/10.120.0.22
+Start Time:       Tue, 03 Nov 2026 10:05:05 +0000
+Labels:           batch.kubernetes.io/controller-uid=af110ba6-1174-418f-8d35-9463501a9252
+                  batch.kubernetes.io/job-name=load-typesense
+                  controller-uid=af110ba6-1174-418f-8d35-9463501a9252
+                  job-name=load-typesense
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Failed
+IP:               10.150.9.146
+IPs:
+  IP:           10.150.9.146
+Controlled By:  Job/load-typesense
+Containers:
+  compare:
+    Container ID:  containerd://eff4a50d2899089a6265e73b85a519720aa0fe3a103fc72144816a3e47dd7a62
+    Image:         ghcr.io/chloetech-ai/strata-server:f64dbb459febab46154e465ca2c87f0dc9b183a5
+    Image ID:      ghcr.io/chloetech-ai/strata-server@sha256:be4d5bb6c8cf56f774c644c1238b6f5a4b4e768bb1127c5bbafa51d76e932738
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      typesense
+      --url
+      http://typesense-0.typesense:8108
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-10000k
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Tue, 03 Nov 2026 10:05:07 +0000
+      Finished:     Tue, 03 Nov 2026 13:36:56 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-gsshq (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-gsshq:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             typesense-0
+Namespace:        typesense
+Priority:         0
+Service Account:  default
+Node:             typesense-d-a1-3eal9v/10.120.0.21
+Start Time:       Tue, 03 Nov 2026 10:04:43 +0000
+Labels:           app=typesense
+                  engine=typesense
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.150.9.34
+IPs:
+  IP:  10.150.9.34
+Containers:
+  typesense:
+    Container ID:  containerd://d45e68066fc6443e361ace4700ca951fe16c31b17ee946d6d93f41a3d8634962
+    Image:         typesense/typesense:30.2
+    Image ID:      docker.io/typesense/typesense@sha256:610f2d34b1f93d00762869da2c67736775e5798d19a2c8b91b014b8a0cc1e110
+    Port:          8108/TCP (api)
+    Host Port:     0/TCP (api)
+    Args:
+      --data-dir
+      /data
+      --api-key
+      compare
+      --thread-pool-size
+      14
+    State:          Running
+      Started:      Tue, 03 Nov 2026 13:36:57 +0000
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+      Started:      Tue, 03 Nov 2026 10:04:58 +0000
+      Finished:     Tue, 03 Nov 2026 13:36:56 +0000
+    Ready:          False
+    Restart Count:  1
+    Limits:
+      cpu:     6800m
+      memory:  52Gi
+    Requests:
+      cpu:        6800m
+      memory:     52Gi
+    Readiness:    http-get http://:api/health delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:  <none>
+    Mounts:
+      /data from data (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-bhnnc (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-bhnnc:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s

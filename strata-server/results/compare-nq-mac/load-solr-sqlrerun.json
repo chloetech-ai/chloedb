@@ -1,0 +1,63 @@
+{
+  "batch": 500,
+  "clients": 4,
+  "collection": "nq-1000k",
+  "cores": [
+    {
+      "core": "quora_shard2_replica_n2",
+      "index": {
+        "current": true,
+        "deletedDocs": 0,
+        "directory": "NRTCachingDirectory(MMapDirectory@/var/solr/data/quora_shard2_replica_n2/data/index lockFactory=org.apache.lucene.store.NativeFSLockFactory@6df01ed4; maxCacheMB=48.0 maxMergeSizeMB=4.0)",
+        "hasDeletions": false,
+        "lastModified": "2026-11-02T11:46:05.742Z",
+        "maxDoc": 500213,
+        "numDocs": 500213,
+        "segmentCount": 1,
+        "segmentsFile": "segments_w",
+        "segmentsFileSizeInBytes": 223,
+        "size": "1,021.81 MB",
+        "sizeInBytes": 1071448570,
+        "userData": {
+          "commitCommandVer": "1880746364640428032",
+          "commitTimeMSec": "1793619965742"
+        },
+        "version": 558
+      }
+    },
+    {
+      "core": "quora_shard1_replica_n1",
+      "index": {
+        "current": true,
+        "deletedDocs": 0,
+        "directory": "NRTCachingDirectory(MMapDirectory@/var/solr/data/quora_shard1_replica_n1/data/index lockFactory=org.apache.lucene.store.NativeFSLockFactory@63ec5abf; maxCacheMB=48.0 maxMergeSizeMB=4.0)",
+        "hasDeletions": false,
+        "lastModified": "2026-11-02T11:45:50.875Z",
+        "maxDoc": 499787,
+        "numDocs": 499787,
+        "segmentCount": 1,
+        "segmentsFile": "segments_w",
+        "segmentsFileSizeInBytes": 223,
+        "size": "1,021.37 MB",
+        "sizeInBytes": 1070985200,
+        "userData": {
+          "commitCommandVer": "1880746364643573760",
+          "commitTimeMSec": "1793619950875"
+        },
+        "version": 574
+      }
+    }
+  ],
+  "docs": 1000000,
+  "engine": "solr",
+  "index_bytes": 2142433770,
+  "indexed_docs": 1000000,
+  "ingest_s": 437.365268657,
+  "json_bytes": 5857526066,
+  "merge_s": 462.350109999,
+  "refresh_s": 0.776804418,
+  "searchable_docs": 1000000,
+  "segments": 2,
+  "setup_s": 3.146219209,
+  "total_s": 900.492199073
+}

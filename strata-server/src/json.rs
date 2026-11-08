@@ -31,6 +31,26 @@ pub fn to_json(v: &Value) -> Json {
     }
 }
 
+/// A value written as [`to_json`] makes it, without building the JSON
+/// first: a vector's numbers as doubles, so the digits are the same.
+pub struct AsJson<'a>(pub &'a Value);
+
+impl serde::Serialize for AsJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Null => s.serialize_unit(),
+            Value::Int(x) => s.serialize_i64(*x),
+            Value::Float(x) if x.is_finite() => s.serialize_f64(*x),
+            Value::Float(_) => s.serialize_unit(),
+            Value::Str(x) => s.serialize_str(x),
+            Value::Vector(v) => s.collect_seq(v.iter().map(|&x| x as f64)),
+            Value::List(xs) => s.collect_seq(xs.iter().map(AsJson)),
+            Value::Bool(b) => s.serialize_bool(*b),
+            Value::Timestamp(t) => s.serialize_str(&strata::timestamp::format(*t)),
+        }
+    }
+}
+
 /// A parameter value.
 pub fn param(j: &Json) -> Result<Value, ApiError> {
     Ok(match j {

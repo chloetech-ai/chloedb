@@ -91,7 +91,7 @@ async fn ids_reach_the_shards_and_name_the_log_lines() {
     let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
     let coord = Arc::new(Service::new(Backend::Cluster(Arc::new(c)), schema, agent, 16, Duration::from_secs(10)));
     let base = http(coord).await;
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let ask = |id: Option<&str>| {
         let mut r = client.post(format!("{base}/v1/query")).json(&json!({"sql": "SELECT id FROM products WHERE MATCH(body, 'laptop') ORDER BY bm25(body, 'laptop') DESC LIMIT 5"}));
         if let Some(id) = id {
@@ -111,20 +111,23 @@ async fn ids_reach_the_shards_and_name_the_log_lines() {
     assert_eq!(methods("Query"), 2, "{lines:#?}");
     assert!(lines.iter().all(|l| l["span"]["name"] == "request"), "{lines:#?}");
 
-    // No id, or one that is not plain: a new one.
+    // No id, or one that is not plain: a new one. The coordinator kept the
+    // term statistics of the first, so these skip that round.
     for given in [None, Some("not a plain id")] {
         let r = ask(given).await.unwrap();
         let id = r.headers()["x-request-id"].to_str().unwrap().to_string();
         assert_eq!(id.len(), 16, "{id}");
         assert!(id.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
-        assert!(lines_of(&id).len() >= 5);
+        let lines = lines_of(&id);
+        let methods = |m: &str| lines.iter().filter(|l| l["span"]["method"] == m && l["message"] == "answered").count();
+        assert_eq!((methods("POST"), methods("TermStats"), methods("Query")), (1, 0, 2), "{lines:#?}");
     }
 
     // The coordinator's metrics: requests by route, calls by shard.
     let m = client.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(m.contains("strata_http_requests_total{route=\"/v1/query\",status=\"200\"} 3"), "{m}");
     for s in 0..2 {
-        assert!(m.contains(&format!("strata_shard_calls_total{{shard=\"{s}\",outcome=\"ok\"}} 6")), "{m}");
+        assert!(m.contains(&format!("strata_shard_calls_total{{shard=\"{s}\",outcome=\"ok\"}} 4")), "{m}");
     }
     assert!(m.contains("strata_shard_hedges_total "), "{m}");
     let r = client.get(format!("{base}/no/such/route")).send().await.unwrap();
@@ -142,7 +145,7 @@ async fn slow_queries_and_writes_are_logged_and_counted() {
     let mut s = Arc::try_unwrap(svc).ok().unwrap();
     s.slow = Some(Duration::ZERO);
     let base = http(Arc::new(s)).await;
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let sql = "SELECT id FROM products WHERE price > 10 LIMIT 3";
     let r = client.post(format!("{base}/v1/query")).header("x-request-id", "slow-1").json(&json!({"sql": sql})).send().await.unwrap();
     assert_eq!(r.status(), 200);

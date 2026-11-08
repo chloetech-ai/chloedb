@@ -1,0 +1,50 @@
+# Meilisearch 1.56 (development mode: no master key).
+# One node with the whole budget of the other engines' two data pods (3
+# CPUs, 6 GiB; compare.sh fills in __CPU__ and __MEM__), its data on the
+# node's own disk (emptyDir). compare.sh writes it from this file.
+apiVersion: v1
+kind: Service
+metadata:
+  name: meili
+  namespace: __NS__
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: meili}
+  ports:
+    - {name: api, port: 7700}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: meili-0
+  namespace: __NS__
+  labels: {app: meili, engine: meili}
+spec:
+  hostname: meili-0
+  subdomain: meili
+  nodeName: __NODE__
+  containers:
+    - name: meili
+      image: getmeili/meilisearch:v1.56.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - {name: MEILI_ENV, value: development}
+        - {name: MEILI_NO_ANALYTICS, value: "true"}
+        # Indexing within the pod's budget (it reads the machine's cores and memory otherwise).
+        - {name: MEILI_MAX_INDEXING_THREADS, value: "__THREADS__"}
+        - {name: MEILI_MAX_INDEXING_MEMORY, value: "__MEILI_MEM__"}
+        - {name: MEILI_EXPERIMENTAL_MAX_NUMBER_OF_BATCHED_TASKS, value: "100"}
+      readinessProbe:
+        httpGet: {path: /health, port: api}
+        periodSeconds: 2
+      ports:
+        - {name: api, containerPort: 7700}
+      resources:
+        requests: {cpu: __CPU__, memory: __MEM__}
+        limits: {cpu: __CPU__, memory: __MEM__}
+      volumeMounts:
+        - {name: data, mountPath: /meili_data}
+  volumes:
+    - name: data
+      emptyDir: {}

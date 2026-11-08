@@ -1,0 +1,44 @@
+es: index created in 0.6 s
+es: 25000 documents sent, 13 s
+es: 50000 documents sent, 24 s
+es: 75000 documents sent, 33 s
+es: 100000 documents sent, 45 s
+es: 125000 documents sent, 56 s
+es: 150000 documents sent, 67 s
+es: 175000 documents sent, 75 s
+es: 200000 documents sent, 86 s
+es: 225000 documents sent, 97 s
+es: 250000 documents sent, 108 s
+es: 275000 documents sent, 120 s
+es: 300000 documents sent, 128 s
+es: 325000 documents sent, 139 s
+es: 350000 documents sent, 153 s
+es: 375000 documents sent, 169 s
+es: 400000 documents sent, 185 s
+es: 425000 documents sent, 199 s
+es: 450000 documents sent, 217 s
+es: 475000 documents sent, 232 s
+es: 500000 documents sent, 245 s
+es: 525000 documents sent, 258 s
+es: 550000 documents sent, 275 s
+es: 575000 documents sent, 292 s
+es: 600000 documents sent, 307 s
+es: 625000 documents sent, 320 s
+es: 650000 documents sent, 336 s
+es: 675000 documents sent, 353 s
+es: 700000 documents sent, 368 s
+es: 725000 documents sent, 381 s
+es: 750000 documents sent, 400 s
+es: 775000 documents sent, 412 s
+es: 800000 documents sent, 425 s
+es: 825000 documents sent, 434 s
+es: 850000 documents sent, 445 s
+es: 875000 documents sent, 457 s
+es: 900000 documents sent, 470 s
+es: 925000 documents sent, 484 s
+es: 950000 documents sent, 492 s
+es: 975000 documents sent, 504 s
+es: 1000000 documents sent, 515 s
+es: 1000000 documents (5.9 GB of JSON) sent in 515.0 s
+es: searchable after 1.2 s more, merged in 198.3 s; 714.4 s in all
+wrote /data/compare/load-es.json

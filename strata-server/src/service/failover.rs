@@ -59,7 +59,7 @@ impl Service {
                 f.vote(&r, sticky).await
             }
             Replication::Primary(p) => {
-                let a = p.vote(&r);
+                let a = p.answer(&r).await;
                 if a.granted && !a.candidate && !r.pre {
                     self.step_down().await;
                 }
@@ -132,7 +132,7 @@ impl Service {
         tracing::warn!(silent_ms = f.silent_for().as_millis() as u64, "its primary is silent: asking its shard's copies to elect this replica");
         // A copy that does not answer within the delay is taken for down.
         let ask = PrimaryOptions { call_timeout: fo.call_timeout(opts.call_timeout), ..opts.clone() };
-        let won = match f.campaign(&copies, &ask, false).await {
+        let won = match f.campaign(&copies, &ask, false, &[]).await {
             Ok(e) => e,
             Err(e) => {
                 tracing::info!(error = %e.message, "not elected");

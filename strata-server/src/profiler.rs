@@ -7,6 +7,12 @@
 //! ([`CpuProfile`]), or folded lines (`thread;root;...;leaf count`) that
 //! flamegraph.pl, inferno and speedscope read ([`CpuProfile::folded`]).
 //!
+//! Linux interrupts the thread that spent the CPU time; macOS does not. A
+//! BM25 query run in a loop on one thread (tests/cpu_profile.rs) got none
+//! of 534 samples on a macOS CI runner, nearly all of them in pthread's
+//! functions, where Linux gives it more than half (the cloud container):
+//! a profile taken on macOS shows little of where the time goes.
+//!
 //! One profile is taken at a time: the timer is the process's. Sampling
 //! slows the threads it interrupts: in a 4-core cloud container, a BM25
 //! query run in a loop by one caller ran 6% fewer times a second sampled
@@ -137,6 +143,49 @@ struct Taking;
 impl Drop for Taking {
     fn drop(&mut self) {
         TAKING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Who takes a profile of a kind on this server, since and until when (ms).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Taker {
+    pub kind: &'static str,
+    pub by: String,
+    pub since_ms: u64,
+    pub until_ms: u64,
+}
+
+static TAKERS: std::sync::Mutex<Vec<Taker>> = std::sync::Mutex::new(Vec::new());
+
+/// While it lives, [`claim`]'s taker is the one of its kind.
+pub struct Claim(&'static str);
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        TAKERS.lock().unwrap_or_else(|e| e.into_inner()).retain(|t| t.kind != self.0);
+    }
+}
+
+/// Notes that `by` takes a `kind` profile ("CPU", "allocation") for
+/// `seconds` from now, so that a second one is told who and how long to
+/// wait; when one of that kind is being taken, answers its taker.
+pub fn claim(kind: &'static str, by: &str, seconds: f64) -> Result<Claim, Taker> {
+    let mut t = TAKERS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(was) = t.iter().find(|t| t.kind == kind) {
+        return Err(was.clone());
+    }
+    let now = crate::telemetry::now_ms();
+    t.push(Taker { kind, by: by.to_string(), since_ms: now, until_ms: now + (seconds.max(0.0) * 1000.0) as u64 });
+    Ok(Claim(kind))
+}
+
+impl Taker {
+    /// What a second profile's refusal says: who takes this one, and for
+    /// how long still.
+    pub fn busy(&self) -> String {
+        let left = self.until_ms.saturating_sub(crate::telemetry::now_ms()).div_ceil(1000).max(1);
+        let a = if self.kind.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+        format!("{a} {} profile of this server is being taken, by {}, for {left} s more: one at a time", self.kind, self.by)
     }
 }
 
@@ -416,5 +465,20 @@ mod tests {
         assert_eq!(pool_name("strata-query-12", 1), "strata-query");
         assert_eq!(pool_name("main", 1), "main");
         assert_eq!(pool_name("42", 1), "42");
+    }
+
+    #[test]
+    fn a_second_profile_of_a_kind_is_told_who_takes_the_first_and_for_how_long() {
+        let first = claim("test", "alice", 30.0).expect("the first is claimed");
+        let other = claim("other test", "bob", 5.0).expect("another kind is claimed");
+        let was = claim("test", "bob", 5.0).err().expect("a second of the kind is refused");
+        assert_eq!(was.by, "alice");
+        assert!((29_000..=30_000).contains(&(was.until_ms - crate::telemetry::now_ms())), "{was:?}");
+        let said = was.busy();
+        assert!(said.starts_with("a test profile of this server is being taken, by alice, for "), "{said}");
+        assert!(said.ends_with(" s more: one at a time"), "{said}");
+        drop(first);
+        drop(other);
+        assert!(claim("test", "bob", 5.0).is_ok(), "the claim ends with its profile");
     }
 }

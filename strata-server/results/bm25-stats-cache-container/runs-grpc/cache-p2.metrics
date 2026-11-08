@@ -1,0 +1,6 @@
+strata_stats_cache_total{outcome="hit"} 74431
+strata_stats_cache_total{outcome="miss"} 298
+strata_stats_cache_total{outcome="stale"} 0
+strata_stats_cache_terms 1420
+strata_stale_stats_total 0
+strata_stale_stats_total 0

@@ -5,13 +5,14 @@
 // chosen. The SQL is written as you build, runs as you build, and the
 // connectors between stages show how many rows each step kept.
 
-import { h, icon, clear, fmt, api, store, toast, copy, menu, empty, seg, sqlBlock, debounce, failure, sortable } from "../core.js";
+import { h, icon, clear, fmt, api, store, toast, copy, menu, empty, seg, sqlBlock, debounce, failure, sortable, bus } from "../core.js";
+import { isProduction } from "../data.js";
 import { quoteName } from "../sqledit.js";
 import { tables, cached, table as tableOf, typeBadge, typeMeta, operators, lit, paths as listPaths, cachedPaths, pathFields, pathSql, PATH_TYPES } from "../catalog.js";
 import { grid, answerStats, exportMenu } from "../results.js";
 import { SERIES } from "../charts.js";
 
-export default { id: "builder", title: "Query builder", icon: "builder", group: "Data", full: true, keywords: "visual query builder drag drop filter facet boost hybrid fusion rrf group no code", render, onParams };
+export default { id: "builder", title: "Query builder", icon: "builder", group: "Labs", full: true, range: false, keywords: "visual query builder drag drop filter facet boost hybrid fusion rrf group no code", render, onParams };
 
 let reopen = null;
 function onParams(r) { const t = r.params.get("table"); if (t && reopen) reopen(t); }
@@ -194,7 +195,11 @@ function measureSql(m, F) {
 function render(page, r) {
   let st = store.get("builder.state", null);
   let drag = null;              // {kind: "field"|"block"|"table", value}
-  let live = store.get("builder.live", true);
+  // Each change runs the query when this is on: off on production (or a
+  // server whose environment is not set), where a half-built query can be
+  // a full scan. A choice made here is kept only off production.
+  const liveDefault = () => isProduction() ? false : store.get("builder.live", true);
+  let live = liveDefault(), liveTouched = false;
   let last = null, counts = {}, running = null;
   const stats = new Map();      // "table.field" -> {min, max, avg} or {top: [[v, n]]}
   const totals = new Map();     // table -> rows
@@ -205,6 +210,14 @@ function render(page, r) {
   const notesBox = h("div", { class: "bld-notes" });
   const out = h("div", { class: "bld-out" });
   const runBtn = h("button", { class: "btn primary", onclick: () => run(true) }, icon("play"), "Run");
+  const liveBox = h("input", { type: "checkbox", checked: live, onchange: (e) => { live = e.target.checked; liveTouched = true; if (!isProduction()) store.set("builder.live", live); drawLive(); if (live) run(); } });
+  const liveLabel = h("label", { class: "row nw small dim", style: { gap: "6px", cursor: "pointer" } }, liveBox, "run as I build");
+  function drawLive() {
+    liveBox.checked = live;
+    liveLabel.title = isProduction() ? "Off by default here: this server counts as production (or has no environment set), where each change would run a query. Turning it on lasts for this page only." : "Each change runs the query";
+  }
+  drawLive();
+  const offs = ["cluster", "health"].map((ev) => bus.on(ev, () => { if (!liveTouched) { const want = liveDefault(); if (want !== live) { live = want; if (live) run(); } } drawLive(); }));
   const right = h("div", { class: "bld-right" },
     h("section", { class: "card" },
       h("div", { class: "hd" }, h("h3", {}, "SQL"), h("span", { class: "sub" }, "written as you build"),
@@ -212,13 +225,17 @@ function render(page, r) {
           h("button", { class: "btn sm ghost", title: "Copy the SQL", onclick: () => last?.q && copy(last.q.sql, "SQL copied") }, icon("copy"), "Copy"),
           h("button", { class: "btn sm", title: "Open this query in the SQL workbench", onclick: openInWorkbench }, icon("sql"), "Edit as SQL"))),
       h("div", { class: "bd" }, sqlBox, notesBox),
-      h("div", { class: "ft" }, runBtn, h("label", { class: "row nw small dim", style: { gap: "6px", cursor: "pointer" } }, h("input", { type: "checkbox", checked: live, onchange: (e) => { live = e.target.checked; store.set("builder.live", live); if (live) run(); } }), "run as I build"), h("span", { class: "sep" }), h("button", { class: "btn sm ghost", title: "Start again on this table", onclick: () => { st = blank(st.table); changed(); } }, icon("refresh"), "Clear"))),
+      h("div", { class: "ft" }, runBtn, liveLabel, h("span", { class: "sep" }), h("button", { class: "btn sm ghost", title: "Start again on this table", onclick: () => { st = blank(st.table); changed(); } }, icon("refresh"), "Clear"))),
     out);
   page.append(h("div", { class: "bld" }, palette, h("div", { class: "bld-canvas" }, flow), right));
 
   const save = debounce(() => store.set("builder.state", st), 300);
   const runSoon = debounce(() => { if (live) run(); }, 450);
-  function changed(redraw = true) { save(); if (redraw) drawFlow(); drawSql(); runSoon(); }
+  function changed(redraw = true) {
+    save(); if (redraw) drawFlow(); drawSql(); runSoon();
+    // Not running by itself: say so where the rows would be.
+    if (!live && last?.q && last.ran !== last.q.sql) clear(out, h("section", { class: "card" }, h("div", { class: "bd" }, empty("play", last.ran ? "The query changed" : "Not run yet", last.ran ? "Press Run to read its rows." : isProduction() ? "Press Run to read the rows. On production a change does not run by itself." : "Press Run to read the rows.", h("button", { class: "btn primary", onclick: () => run(true) }, icon("play"), "Run")))));
+  }
 
   // ------------------------------------------------------------ dragging
   const startDrag = (kind, value) => (e) => {
@@ -621,7 +638,7 @@ function render(page, r) {
     loadTotal();
     for (const c of st.filters) { const f = field(c.field); if (f) loadStats(f); }
   }).catch((e) => clear(flow, failure(e, "The tables")));
-  return () => { reopen = null; running?.abort(); removeEventListener("dragend", endDrag); if (st) store.set(`builder.state.${st.table}`, st); };
+  return () => { reopen = null; offs.forEach((f) => f?.()); running?.abort(); removeEventListener("dragend", endDrag); if (st) store.set(`builder.state.${st.table}`, st); };
 
   /** A first query on a table: its words, its key and two fields to show. */
   function starter(t) {

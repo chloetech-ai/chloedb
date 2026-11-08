@@ -1,0 +1,212 @@
+service/strata created
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator created
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata created
+strata   bm25                     warm-up: p50 2.751, 2.943 ms
+strata   bm25                     c=1        512 q/s  p50   1.743 ms  p90   2.737 ms  p99   5.353 ms  errors 0
+strata   bm25                     c=4       1246 q/s  p50   2.999 ms  p90   4.507 ms  p99   7.564 ms  errors 0
+strata   bm25                     c=16      1599 q/s  p50   9.650 ms  p90  13.309 ms  p99  17.619 ms  errors 0
+strata   bm25 + filter            warm-up: p50 3.766, 3.836 ms
+strata   bm25 + filter            c=1        331 q/s  p50   2.656 ms  p90   5.013 ms  p99   7.851 ms  errors 0
+strata   bm25 + filter            c=4        915 q/s  p50   3.820 ms  p90   7.194 ms  p99  11.533 ms  errors 0
+strata   bm25 + filter            c=16      1288 q/s  p50  11.839 ms  p90  17.592 ms  p99  26.728 ms  errors 0
+strata   vector                   warm-up: p50 3.714, 3.222, 3.407 ms
+strata   vector                   c=1        522 q/s  p50   1.905 ms  p90   2.093 ms  p99   2.715 ms  errors 0
+strata   vector                   c=4       1173 q/s  p50   3.364 ms  p90   4.401 ms  p99   5.339 ms  errors 0
+strata   vector                   c=16      1296 q/s  p50  11.972 ms  p90  15.787 ms  p99  19.618 ms  errors 0
+strata   vector + filter          warm-up: p50 3.590, 3.491 ms
+strata   vector + filter          c=1        458 q/s  p50   2.144 ms  p90   2.431 ms  p99   3.090 ms  errors 0
+strata   vector + filter          c=4       1060 q/s  p50   3.689 ms  p90   4.773 ms  p99   5.960 ms  errors 0
+strata   vector + filter          c=16      1191 q/s  p50  12.973 ms  p90  16.918 ms  p99  21.396 ms  errors 0
+strata   hybrid (RRF)             warm-up: p50 8.337, 7.855 ms
+strata   hybrid (RRF)             c=1        194 q/s  p50   4.903 ms  p90   6.477 ms  p99  10.773 ms  errors 0
+strata   hybrid (RRF)             c=4        496 q/s  p50   7.630 ms  p90  11.222 ms  p99  16.097 ms  errors 0
+strata   hybrid (RRF)             c=16       503 q/s  p50  31.185 ms  p90  41.514 ms  p99  53.857 ms  errors 0
+strata   hybrid (weighted)        warm-up: p50 7.518, 8.124 ms
+strata   hybrid (weighted)        c=1        193 q/s  p50   4.905 ms  p90   6.487 ms  p99  10.778 ms  errors 0
+strata   hybrid (weighted)        c=4        466 q/s  p50   8.098 ms  p90  12.091 ms  p99  16.259 ms  errors 0
+strata   hybrid (weighted)        c=16       537 q/s  p50  28.797 ms  p90  39.841 ms  p99  56.217 ms  errors 0
+strata   boosted (bm25 × decay)   warm-up: p50 7.624, 7.696 ms
+strata   boosted (bm25 × decay)   c=1        159 q/s  p50   5.392 ms  p90  10.269 ms  p99  18.343 ms  errors 0
+strata   boosted (bm25 × decay)   c=4        447 q/s  p50   7.715 ms  p90  14.601 ms  p99  27.145 ms  errors 0
+strata   boosted (bm25 × decay)   c=16       550 q/s  p50  24.361 ms  p90  50.987 ms  p99  96.447 ms  errors 0
+strata   facet                    warm-up: p50 2.747, 2.839 ms
+strata   facet                    c=1        601 q/s  p50   1.625 ms  p90   2.094 ms  p99   2.599 ms  errors 0
+strata   facet                    c=4       1282 q/s  p50   3.070 ms  p90   4.076 ms  p99   5.281 ms  errors 0
+strata   facet                    c=16      1721 q/s  p50   8.866 ms  p90  12.149 ms  p99  15.327 ms  errors 0
+strata   key lookup               warm-up: p50 1.033, 1.020 ms
+strata   key lookup               c=1       1266 q/s  p50   0.772 ms  p90   0.935 ms  p99   1.218 ms  errors 0
+strata   key lookup               c=4       3663 q/s  p50   1.059 ms  p90   1.398 ms  p99   1.783 ms  errors 0
+strata   key lookup               c=16      4398 q/s  p50   3.495 ms  p90   4.838 ms  p99   5.883 ms  errors 0
+strata   phrase                   warm-up: p50 2.638, 2.851 ms
+strata   phrase                   c=1        575 q/s  p50   1.531 ms  p90   2.421 ms  p99   4.479 ms  errors 0
+strata   phrase                   c=4       1310 q/s  p50   2.899 ms  p90   4.138 ms  p99   6.291 ms  errors 0
+strata   phrase                   c=16      1647 q/s  p50   9.483 ms  p90  12.265 ms  p99  15.771 ms  errors 0
+strata   typo                     warm-up: p50 31.539, 31.652 ms
+strata   typo                     c=1         51 q/s  p50  20.326 ms  p90  26.437 ms  p99  34.253 ms  errors 0
+strata   typo                     c=4        126 q/s  p50  32.029 ms  p90  45.058 ms  p99  66.266 ms  errors 0
+strata   typo                     c=16       122 q/s  p50 135.078 ms  p90 193.113 ms  p99 274.475 ms  errors 0
+strata   prefix                   warm-up: p50 4.396, 4.492 ms
+strata   prefix                   c=1        300 q/s  p50   3.022 ms  p90   4.991 ms  p99   7.694 ms  errors 0
+strata   prefix                   c=4        839 q/s  p50   4.345 ms  p90   7.447 ms  p99  11.553 ms  errors 0
+strata   prefix                   c=16      1117 q/s  p50  12.336 ms  p90  23.998 ms  p99  39.459 ms  errors 0
+strata   similar items            warm-up: p50 4.425, 3.679, 3.847 ms
+strata   similar items            c=1        413 q/s  p50   2.389 ms  p90   2.686 ms  p99   3.535 ms  errors 0
+strata   similar items            c=4        979 q/s  p50   3.932 ms  p90   5.355 ms  p99   6.608 ms  errors 0
+strata   similar items            c=16      1023 q/s  p50  15.673 ms  p90  19.406 ms  p99  23.877 ms  errors 0
+strata   sql aggregate            warm-up: p50 423.011, 409.443 ms
+strata   sql aggregate            c=1          5 q/s  p50 179.841 ms  p90 312.073 ms  p99 352.195 ms  errors 0
+strata   sql aggregate            c=4         10 q/s  p50 380.602 ms  p90 593.419 ms  p99 625.279 ms  errors 0
+strata   sql aggregate            c=16        10 q/s  p50 1497.100 ms  p90 2493.647 ms  p99 2930.407 ms  errors 0
+wrote /data/compare/run-strata.json
+job.batch/run-strata-pass2 created
+strata-pass2 bm25                     warm-up: p50 2.953, 3.026 ms
+strata-pass2 bm25                     c=1        531 q/s  p50   1.663 ms  p90   2.653 ms  p99   5.261 ms  errors 0
+strata-pass2 bm25                     c=4       1331 q/s  p50   2.746 ms  p90   4.350 ms  p99   7.590 ms  errors 0
+strata-pass2 bm25                     c=16      1682 q/s  p50   9.212 ms  p90  12.568 ms  p99  16.957 ms  errors 0
+strata-pass2 bm25 + filter            warm-up: p50 3.839, 3.820 ms
+strata-pass2 bm25 + filter            c=1        332 q/s  p50   2.633 ms  p90   4.936 ms  p99   7.845 ms  errors 0
+strata-pass2 bm25 + filter            c=4        908 q/s  p50   3.895 ms  p90   7.049 ms  p99  11.462 ms  errors 0
+strata-pass2 bm25 + filter            c=16      1296 q/s  p50  11.646 ms  p90  17.224 ms  p99  25.794 ms  errors 0
+strata-pass2 vector                   warm-up: p50 3.589, 3.621 ms
+strata-pass2 vector                   c=1        550 q/s  p50   1.777 ms  p90   2.036 ms  p99   2.604 ms  errors 0
+strata-pass2 vector                   c=4       1173 q/s  p50   3.365 ms  p90   4.350 ms  p99   5.266 ms  errors 0
+strata-pass2 vector                   c=16      1339 q/s  p50  11.597 ms  p90  15.242 ms  p99  18.338 ms  errors 0
+strata-pass2 vector + filter          warm-up: p50 3.542, 3.793 ms
+strata-pass2 vector + filter          c=1        440 q/s  p50   2.242 ms  p90   2.526 ms  p99   3.208 ms  errors 0
+strata-pass2 vector + filter          c=4       1054 q/s  p50   3.699 ms  p90   4.840 ms  p99   6.069 ms  errors 0
+strata-pass2 vector + filter          c=16      1174 q/s  p50  13.360 ms  p90  17.001 ms  p99  21.331 ms  errors 0
+strata-pass2 hybrid (RRF)             warm-up: p50 8.184, 8.808 ms
+strata-pass2 hybrid (RRF)             c=1        181 q/s  p50   5.303 ms  p90   6.928 ms  p99  11.111 ms  errors 0
+strata-pass2 hybrid (RRF)             c=4        492 q/s  p50   7.646 ms  p90  11.368 ms  p99  16.403 ms  errors 0
+strata-pass2 hybrid (RRF)             c=16       545 q/s  p50  28.147 ms  p90  38.608 ms  p99  57.279 ms  errors 0
+strata-pass2 hybrid (weighted)        warm-up: p50 7.865, 7.557 ms
+strata-pass2 hybrid (weighted)        c=1        185 q/s  p50   5.035 ms  p90   7.081 ms  p99  11.703 ms  errors 0
+strata-pass2 hybrid (weighted)        c=4        480 q/s  p50   7.868 ms  p90  11.579 ms  p99  16.164 ms  errors 0
+strata-pass2 hybrid (weighted)        c=16       535 q/s  p50  28.433 ms  p90  39.479 ms  p99  64.631 ms  errors 0
+strata-pass2 boosted (bm25 × decay)   warm-up: p50 7.753, 7.849 ms
+strata-pass2 boosted (bm25 × decay)   c=1        167 q/s  p50   5.224 ms  p90   9.916 ms  p99  16.947 ms  errors 0
+strata-pass2 boosted (bm25 × decay)   c=4        446 q/s  p50   7.781 ms  p90  14.692 ms  p99  26.590 ms  errors 0
+strata-pass2 boosted (bm25 × decay)   c=16       552 q/s  p50  23.833 ms  p90  52.030 ms  p99 101.211 ms  errors 0
+strata-pass2 facet                    warm-up: p50 2.759, 3.005 ms
+strata-pass2 facet                    c=1        611 q/s  p50   1.590 ms  p90   2.076 ms  p99   2.611 ms  errors 0
+strata-pass2 facet                    c=4       1294 q/s  p50   3.025 ms  p90   4.051 ms  p99   5.245 ms  errors 0
+strata-pass2 facet                    c=16      1589 q/s  p50   9.756 ms  p90  13.267 ms  p99  16.306 ms  errors 0
+strata-pass2 key lookup               warm-up: p50 0.970, 1.022 ms
+strata-pass2 key lookup               c=1       1298 q/s  p50   0.755 ms  p90   0.890 ms  p99   1.170 ms  errors 0
+strata-pass2 key lookup               c=4       3696 q/s  p50   1.040 ms  p90   1.411 ms  p99   1.847 ms  errors 0
+strata-pass2 key lookup               c=16      4659 q/s  p50   3.456 ms  p90   4.363 ms  p99   5.289 ms  errors 0
+strata-pass2 phrase                   warm-up: p50 2.877, 3.061 ms
+strata-pass2 phrase                   c=1        563 q/s  p50   1.564 ms  p90   2.467 ms  p99   4.680 ms  errors 0
+strata-pass2 phrase                   c=4       1277 q/s  p50   2.963 ms  p90   4.226 ms  p99   6.620 ms  errors 0
+strata-pass2 phrase                   c=16      1628 q/s  p50   9.537 ms  p90  12.646 ms  p99  16.360 ms  errors 0
+strata-pass2 typo                     warm-up: p50 32.454, 31.930 ms
+strata-pass2 typo                     c=1         49 q/s  p50  21.160 ms  p90  28.321 ms  p99  38.793 ms  errors 0
+strata-pass2 typo                     c=4        126 q/s  p50  32.334 ms  p90  44.464 ms  p99  60.437 ms  errors 0
+strata-pass2 typo                     c=16       122 q/s  p50 131.092 ms  p90 197.945 ms  p99 284.594 ms  errors 0
+strata-pass2 prefix                   warm-up: p50 4.419, 4.518 ms
+strata-pass2 prefix                   c=1        300 q/s  p50   3.031 ms  p90   5.017 ms  p99   7.811 ms  errors 0
+strata-pass2 prefix                   c=4        829 q/s  p50   4.387 ms  p90   7.506 ms  p99  11.726 ms  errors 0
+strata-pass2 prefix                   c=16      1116 q/s  p50  12.634 ms  p90  23.242 ms  p99  35.793 ms  errors 0
+strata-pass2 similar items            warm-up: p50 3.720, 3.942 ms
+strata-pass2 similar items            c=1        400 q/s  p50   2.469 ms  p90   2.791 ms  p99   3.754 ms  errors 0
+strata-pass2 similar items            c=4        951 q/s  p50   4.058 ms  p90   5.461 ms  p99   6.851 ms  errors 0
+strata-pass2 similar items            c=16      1017 q/s  p50  15.350 ms  p90  19.944 ms  p99  24.921 ms  errors 0
+strata-pass2 sql aggregate            warm-up: p50 408.820, 423.723 ms
+strata-pass2 sql aggregate            c=1          5 q/s  p50 202.032 ms  p90 275.587 ms  p99 446.260 ms  errors 0
+strata-pass2 sql aggregate            c=4         10 q/s  p50 405.104 ms  p90 623.499 ms  p99 786.894 ms  errors 0
+strata-pass2 sql aggregate            c=16        10 q/s  p50 1533.421 ms  p90 2632.413 ms  p99 3033.574 ms  errors 0
+wrote /data/compare/run-strata-pass2.json
+job.batch/run-strata-pass3 created
+strata-pass3 bm25                     warm-up: p50 2.845, 2.919 ms
+strata-pass3 bm25                     c=1        518 q/s  p50   1.710 ms  p90   2.680 ms  p99   5.343 ms  errors 0
+strata-pass3 bm25                     c=4       1217 q/s  p50   3.025 ms  p90   4.663 ms  p99   8.171 ms  errors 0
+strata-pass3 bm25                     c=16      1467 q/s  p50  10.803 ms  p90  14.062 ms  p99  18.677 ms  errors 0
+strata-pass3 bm25 + filter            warm-up: p50 3.781, 3.797 ms
+strata-pass3 bm25 + filter            c=1        330 q/s  p50   2.649 ms  p90   4.981 ms  p99   7.945 ms  errors 0
+strata-pass3 bm25 + filter            c=4        907 q/s  p50   3.872 ms  p90   7.192 ms  p99  11.555 ms  errors 0
+strata-pass3 bm25 + filter            c=16      1279 q/s  p50  11.938 ms  p90  17.512 ms  p99  26.709 ms  errors 0
+strata-pass3 vector                   warm-up: p50 3.450, 3.402 ms
+strata-pass3 vector                   c=1        530 q/s  p50   1.870 ms  p90   2.067 ms  p99   2.855 ms  errors 0
+strata-pass3 vector                   c=4       1097 q/s  p50   3.585 ms  p90   4.635 ms  p99   5.614 ms  errors 0
+strata-pass3 vector                   c=16      1159 q/s  p50  13.713 ms  p90  16.919 ms  p99  20.305 ms  errors 0
+strata-pass3 vector + filter          warm-up: p50 3.869, 4.135 ms
+strata-pass3 vector + filter          c=1        440 q/s  p50   2.238 ms  p90   2.532 ms  p99   3.462 ms  errors 0
+strata-pass3 vector + filter          c=4       1136 q/s  p50   3.420 ms  p90   4.446 ms  p99   5.783 ms  errors 0
+strata-pass3 vector + filter          c=16      1278 q/s  p50  12.304 ms  p90  15.740 ms  p99  19.747 ms  errors 0
+strata-pass3 hybrid (RRF)             warm-up: p50 7.993, 8.419 ms
+strata-pass3 hybrid (RRF)             c=1        194 q/s  p50   4.919 ms  p90   6.479 ms  p99  10.852 ms  errors 0
+strata-pass3 hybrid (RRF)             c=4        455 q/s  p50   8.358 ms  p90  12.164 ms  p99  17.058 ms  errors 0
+strata-pass3 hybrid (RRF)             c=16       512 q/s  p50  29.679 ms  p90  40.969 ms  p99  58.656 ms  errors 0
+strata-pass3 hybrid (weighted)        warm-up: p50 7.887, 8.113 ms
+strata-pass3 hybrid (weighted)        c=1        196 q/s  p50   4.853 ms  p90   6.537 ms  p99  10.830 ms  errors 0
+strata-pass3 hybrid (weighted)        c=4        465 q/s  p50   8.184 ms  p90  12.082 ms  p99  17.025 ms  errors 0
+strata-pass3 hybrid (weighted)        c=16       535 q/s  p50  27.969 ms  p90  39.317 ms  p99  63.289 ms  errors 0
+strata-pass3 boosted (bm25 × decay)   warm-up: p50 7.618, 7.561 ms
+strata-pass3 boosted (bm25 × decay)   c=1        167 q/s  p50   5.191 ms  p90   9.683 ms  p99  16.139 ms  errors 0
+strata-pass3 boosted (bm25 × decay)   c=4        447 q/s  p50   7.653 ms  p90  15.110 ms  p99  26.545 ms  errors 0
+strata-pass3 boosted (bm25 × decay)   c=16       548 q/s  p50  24.533 ms  p90  49.007 ms  p99  93.154 ms  errors 0
+strata-pass3 facet                    warm-up: p50 2.752, 2.907 ms
+strata-pass3 facet                    c=1        622 q/s  p50   1.554 ms  p90   2.042 ms  p99   2.644 ms  errors 0
+strata-pass3 facet                    c=4       1345 q/s  p50   2.889 ms  p90   3.903 ms  p99   5.066 ms  errors 0
+strata-pass3 facet                    c=16      1539 q/s  p50  10.137 ms  p90  13.017 ms  p99  15.797 ms  errors 0
+strata-pass3 key lookup               warm-up: p50 1.016, 0.946 ms
+strata-pass3 key lookup               c=1       1297 q/s  p50   0.755 ms  p90   0.892 ms  p99   1.106 ms  errors 0
+strata-pass3 key lookup               c=4       3643 q/s  p50   1.062 ms  p90   1.416 ms  p99   1.815 ms  errors 0
+strata-pass3 key lookup               c=16      4594 q/s  p50   3.512 ms  p90   4.393 ms  p99   5.326 ms  errors 0
+strata-pass3 phrase                   warm-up: p50 2.702, 2.690 ms
+strata-pass3 phrase                   c=1        570 q/s  p50   1.546 ms  p90   2.447 ms  p99   4.361 ms  errors 0
+strata-pass3 phrase                   c=4       1264 q/s  p50   2.975 ms  p90   4.288 ms  p99   6.606 ms  errors 0
+strata-pass3 phrase                   c=16      1331 q/s  p50  11.890 ms  p90  15.290 ms  p99  20.295 ms  errors 0
+strata-pass3 typo                     warm-up: p50 31.790, 31.787 ms
+strata-pass3 typo                     c=1         51 q/s  p50  20.227 ms  p90  27.911 ms  p99  35.351 ms  errors 0
+strata-pass3 typo                     c=4        126 q/s  p50  32.270 ms  p90  44.844 ms  p99  62.587 ms  errors 0
+strata-pass3 typo                     c=16       123 q/s  p50 133.052 ms  p90 196.209 ms  p99 296.485 ms  errors 0
+strata-pass3 prefix                   warm-up: p50 4.473, 4.481 ms
+strata-pass3 prefix                   c=1        298 q/s  p50   3.047 ms  p90   5.059 ms  p99   7.949 ms  errors 0
+strata-pass3 prefix                   c=4        811 q/s  p50   4.476 ms  p90   7.696 ms  p99  11.805 ms  errors 0
+strata-pass3 prefix                   c=16      1119 q/s  p50  12.580 ms  p90  23.122 ms  p99  36.116 ms  errors 0
+strata-pass3 similar items            warm-up: p50 4.151, 3.993 ms
+strata-pass3 similar items            c=1        406 q/s  p50   2.416 ms  p90   2.761 ms  p99   3.713 ms  errors 0
+strata-pass3 similar items            c=4        975 q/s  p50   3.998 ms  p90   5.306 ms  p99   6.520 ms  errors 0
+strata-pass3 similar items            c=16      1105 q/s  p50  14.038 ms  p90  18.505 ms  p99  23.911 ms  errors 0
+strata-pass3 sql aggregate            warm-up: p50 414.592, 412.361 ms
+strata-pass3 sql aggregate            c=1          5 q/s  p50 178.101 ms  p90 304.046 ms  p99 388.882 ms  errors 0
+strata-pass3 sql aggregate            c=4         10 q/s  p50 387.518 ms  p90 591.197 ms  p99 638.364 ms  errors 0
+strata-pass3 sql aggregate            c=16        10 q/s  p50 1671.783 ms  p90 2623.303 ms  p99 2875.746 ms  errors 0
+wrote /data/compare/run-strata-pass3.json
+job.batch/writes-strata created
+strata   insert one     c=1        353 docs/s  p50    2.880 ms  p90    3.436 ms  p99    5.696 ms  errors 0
+strata   insert one     c=4       1050 docs/s  p50    3.110 ms  p90    4.712 ms  p99   35.810 ms  errors 0
+strata   insert one     c=16      1848 docs/s  p50    7.444 ms  p90   10.561 ms  p99   60.097 ms  errors 0
+strata   insert batch   c=1       1714 docs/s  p50   35.446 ms  p90   96.870 ms  p99  238.054 ms  errors 0
+strata   insert batch   c=4       3032 docs/s  p50  102.267 ms  p90  228.307 ms  p99  426.391 ms  errors 0
+strata   insert batch   c=16      3694 docs/s  p50  395.634 ms  p90  744.096 ms  p99  823.561 ms  errors 0
+strata   update one     c=1        506 docs/s  p50    2.275 ms  p90    2.766 ms  p99    3.713 ms  errors 0
+strata   update one     c=4       1627 docs/s  p50    2.300 ms  p90    3.774 ms  p99    8.086 ms  errors 0
+strata   update one     c=16      4439 docs/s  p50    3.434 ms  p90    5.245 ms  p99    7.450 ms  errors 0
+strata   visible        written in p50 2.4 ms, found after p50 6.4 ms  p90 8.3 ms  max 90.8 ms
+wrote /data/compare/writes-strata.json
+strata   deleted 71630 written documents and put back 20000 ratings in 2.0 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-strata created
+strata   topic docs-strata-1793762074, 4 partitions; 1000000 documents before
+strata   250/s            produced 7500 in 30.0 s; written 7500 in 30.1 s (249/s); lag p50 80 ms  p90 100 ms  p99 209 ms  max 488 ms (read p50 36 ms)
+strata   500/s            produced 15000 in 30.0 s; written 15000 in 30.1 s (498/s); lag p50 78 ms  p90 100 ms  p99 168 ms  max 257 ms (read p50 33 ms)
+strata   1000/s           produced 30000 in 30.0 s; written 30000 in 30.1 s (997/s); lag p50 80 ms  p90 105 ms  p99 257 ms  max 392 ms (read p50 35 ms)
+strata   2000/s           produced 60000 in 30.0 s; written 60000 in 30.1 s (1992/s); lag p50 93 ms  p90 264 ms  p99 531 ms  max 707 ms (read p50 42 ms)
+strata   flat out         produced 20000 in 1.9 s; written 20000 in 6.5 s (3092/s); lag p50 1963 ms  p90 4459 ms  p99 4548 ms  max 4557 ms (read p50 1241 ms)
+strata   before the crash produced 10000 in 6.5 s; written 5073 in 6.5 s (780/s); lag p50 83 ms  p90 122 ms  p99 179 ms  max 246 ms (read p50 36 ms)
+strata   after the crash   resumed in 1.8 s: 0 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-strata.json
+strata   deleted 142500 streamed documents in 3.2 s
+pod "strata-0" deleted from strata-new-b namespace
+pod "strata-1" deleted from strata-new-b namespace
+pod "strata-coordinator" deleted from strata-new-b namespace

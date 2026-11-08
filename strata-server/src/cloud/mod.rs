@@ -56,6 +56,31 @@ const COORDINATOR_CPU: f64 = 0.25;
 const OPERATOR_CPU: f64 = 0.05;
 const COREDNS_CPU: f64 = 0.1;
 
+/// What each copy gets at least on the size a plan picks for
+/// [`SMALLEST`]: memory for its segments' pages and a core's half to
+/// answer with, under which a copy starves.
+pub const COPY_FLOOR_GIB: f64 = 1.0;
+pub const COPY_FLOOR_CPU: f64 = 0.5;
+
+/// The machine a plan names to get the cheapest size whose nodes give
+/// each copy the floor ([`by_price_with_floor`]).
+pub const SMALLEST: &str = "smallest";
+
+/// Of `machines` (each its price an hour and what a node of it offers),
+/// those whose `nodes` give each copy of `cluster` at least
+/// [`COPY_FLOOR_GIB`] and [`COPY_FLOOR_CPU`]: their indexes, the cheapest
+/// first.
+pub fn by_price_with_floor(cluster: &Json, nodes: u32, machines: &[(f64, Node)], volume_gb: u32, storage_class: &str) -> Vec<usize> {
+    let mut ok: Vec<(usize, f64)> = machines
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, n))| fit(cluster, nodes, n, volume_gb, storage_class).is_ok_and(|f| f.copy_gib >= COPY_FLOOR_GIB && f.copy_cpu >= COPY_FLOOR_CPU))
+        .map(|(i, (price, _))| (i, *price))
+        .collect();
+    ok.sort_by(|a, b| a.1.total_cmp(&b.1));
+    ok.into_iter().map(|(i, _)| i).collect()
+}
+
 /// A cluster fitted to its nodes.
 pub struct Fit {
     /// The StrataCluster's spec, filled in.
@@ -75,7 +100,7 @@ pub struct Fit {
 
 /// Fills in `cluster` (a StrataCluster's spec, in part) for `nodes` of
 /// `node`: the shards (2), copies of each (3), coordinators (1), the image,
-/// 10,000 demo rows without a schema, each copy's volume of `volume_gb`
+/// each copy's volume of `volume_gb`
 /// in `storage_class`, and each copy's requests, a little under its share
 /// of the busiest node. `Err` when the spec is not one the operator takes.
 pub fn fit(cluster: &Json, nodes: u32, node: &Node, volume_gb: u32, storage_class: &str) -> Result<Fit, String> {
@@ -88,17 +113,22 @@ pub fn fit(cluster: &Json, nodes: u32, node: &Node, volume_gb: u32, storage_clas
     let (shards, replicas, coordinators) = (field(&cluster, "shards", 2), field(&cluster, "replicas", 3), field(&cluster, "coordinators", 1));
     let on = layout(shards, replicas, nodes);
     let per_node = on.iter().map(Vec::len).max().unwrap_or(0) as u32;
+    // A shard of fewer than three copies takes extra ones while an upgrade
+    // restarts its copies (rollout.extraCopies), one shard at a time: each
+    // node keeps room for one more copy.
+    let extra = replicas < 3 && cluster["rollout"]["extraCopies"].as_bool() != Some(false);
+    let room = per_node + u32::from(extra && per_node > 0);
     let alloc = node.alloc_gib;
     // The coordinators and the operator get a fixed share; the copies
     // split the rest of the busiest node.
     let (coordinator_gib, operator_gib) = (0.5_f64.min(alloc / 8.0), 0.25_f64);
     let spare = alloc - (f64::from(coordinators) * coordinator_gib + operator_gib) / f64::from(nodes.max(1));
-    let copy_gib = if per_node > 0 { spare / f64::from(per_node) } else { spare };
+    let copy_gib = if per_node > 0 { spare / f64::from(room) } else { spare };
     // The coordinators, the operator and CoreDNS go where the scheduler
     // finds room, so the busiest node is counted with its share of the
     // coordinators (rounded up) and both of the others.
     let beside = f64::from(coordinators.div_ceil(nodes.max(1))) * COORDINATOR_CPU + OPERATOR_CPU + COREDNS_CPU;
-    let copy_cpu = (f64::from(node.vcpu) - node.system_cpu - beside).max(0.0) / f64::from(per_node.max(1));
+    let copy_cpu = (f64::from(node.vcpu) - node.system_cpu - beside).max(0.0) / f64::from(room.max(1));
     // Requests a little under each copy's share, so they fit.
     let mib = |g: f64| format!("{}Mi", (g * 1024.0 * 0.9).floor().max(64.0) as u64);
     let milli = |c: f64| format!("{}m", (c * 1000.0 * 0.9).floor().max(50.0) as u64);
@@ -107,9 +137,11 @@ pub fn fit(cluster: &Json, nodes: u32, node: &Node, volume_gb: u32, storage_clas
     o.entry("replicas").or_insert(json!(replicas));
     o.entry("coordinators").or_insert(json!(coordinators));
     o.entry("image").or_insert(json!(IMAGE));
-    if !o.contains_key("schema") {
-        o.entry("demo").or_insert(json!(10_000));
-    }
+    // A token, always: the operator gives the servers the one kept in
+    // this Secret, which installing the cluster makes
+    // ([`install::ensure_token`]); the hub reads it there to make a key of
+    // its own ([`crate::hub::Hub::adopt`]).
+    o.entry("tokenSecret").or_insert(json!(TOKEN_SECRET));
     let storage = o.entry("storage").or_insert(json!({}));
     if let Some(s) = storage.as_object_mut() {
         s.entry("size").or_insert(json!(format!("{volume_gb}Gi")));
@@ -132,10 +164,10 @@ impl Fit {
         } else if self.replicas == 1 {
             w.push("one copy a shard: losing a node loses its shards until the node comes back".into());
         }
-        if self.copy_cpu < 0.5 {
+        if self.copy_cpu < COPY_FLOOR_CPU {
             w.push(format!("each copy may request {:.2} CPU after what the nodes keep for themselves: a larger machine or more nodes", self.copy_cpu * 0.9));
         }
-        if self.copy_gib < 1.0 {
+        if self.copy_gib < COPY_FLOOR_GIB {
             w.push(format!("each copy gets {:.1} GiB of memory: search keeps its segments and vectors in the page cache, so a larger machine or more nodes", self.copy_gib));
         }
         w
@@ -166,6 +198,24 @@ pub fn operator_yaml(image: &str) -> Result<String, String> {
 
 /// The namespace a cluster made from the cloud view runs in.
 pub const NAMESPACE: &str = "strata";
+
+/// The Secret a cluster's token is kept in: [`fit`] names it, installing
+/// the cluster makes it with a random token.
+pub const TOKEN_SECRET: &str = "strata-token";
+
+/// A plan's commands, by hand, with the token's Secret made before the
+/// cluster's manifests are applied when the cluster names [`TOKEN_SECRET`].
+pub fn with_token_secret(cluster: &Json, commands: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in commands {
+        if cluster["tokenSecret"] == TOKEN_SECRET && c.starts_with("kubectl apply -f ") && c.ends_with("-cluster.yaml") {
+            out.push(format!("kubectl create namespace {NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -"));
+            out.push(format!("kubectl -n {NAMESPACE} create secret generic {TOKEN_SECRET} --from-literal=token=\"$(openssl rand -hex 24)\""));
+        }
+        out.push(c.clone());
+    }
+    out
+}
 
 /// The cluster's objects: its namespace, the storage class when the cloud
 /// has none to use (`storage_class`), and the StrataCluster.
@@ -212,11 +262,15 @@ mod tests {
         // 4 shards of 2 copies on 4 nodes of 8 vCPUs and 57.5 GiB: 2 copies a node.
         let f = fit(&json!({"shards": 4, "replicas": 2}), 4, &Node { vcpu: 8, alloc_gib: 57.5, system_cpu: 0.5 }, 50, "do-block-storage").unwrap();
         assert_eq!((f.shards, f.replicas, f.coordinators, f.per_node), (4, 2, 1, 2));
-        // Each node keeps half a core, and a coordinator, the operator and
-        // CoreDNS may run beside the copies.
-        assert!((f.copy_gib - (57.5 - (0.5 + 0.25) / 4.0) / 2.0).abs() < 1e-9 && (f.copy_cpu - (8.0 - 0.5 - 0.4) / 2.0).abs() < 1e-9);
+        // Each node keeps half a core, a coordinator, the operator and
+        // CoreDNS may run beside the copies, and so may the third copy an
+        // upgrade adds to a shard of two.
+        assert!((f.copy_gib - (57.5 - (0.5 + 0.25) / 4.0) / 3.0).abs() < 1e-9 && (f.copy_cpu - (8.0 - 0.5 - 0.4) / 3.0).abs() < 1e-9);
+        let without = fit(&json!({"shards": 4, "replicas": 2, "rollout": {"extraCopies": false}}), 4, &Node { vcpu: 8, alloc_gib: 57.5, system_cpu: 0.5 }, 50, "do-block-storage").unwrap();
+        assert!((without.copy_cpu - (8.0 - 0.5 - 0.4) / 2.0).abs() < 1e-9);
         assert_eq!(f.cluster["storage"], json!({"size": "50Gi", "storageClassName": "do-block-storage"}));
-        assert_eq!((f.cluster["demo"].as_u64(), f.cluster["image"].as_str()), (Some(10_000), Some(IMAGE)));
+        // No demo rows unless asked: the cluster starts with no tables.
+        assert_eq!((f.cluster.get("demo"), f.cluster["image"].as_str()), (None, Some(IMAGE)));
         assert_eq!(f.warnings(4), Vec::<String>::new());
         // What was given is kept.
         let f = fit(&json!({"replicas": 1, "demo": 50, "storage": {"size": "5Gi"}}), 2, &Node { vcpu: 2, alloc_gib: 1.0, system_cpu: 0.25 }, 10, "gp3").unwrap();

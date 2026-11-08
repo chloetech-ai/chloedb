@@ -151,7 +151,7 @@ async fn paths_through_a_coordinator_answer_as_one_database() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(server::serve_http(svc.clone(), l, Access::default()));
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let get = |q: &str| c.get(format!("{url}/v1/tables/items/paths?{q}")).send();
     let j: serde_json::Value = get("field=attrs&path=dims&where=name%20%3D%20%27n1%27").await.unwrap().json().await.unwrap();
     let want = one.json_paths(&call(Some("dims"), Some("name = 'n1'")), &Params::new()).unwrap().to_json();

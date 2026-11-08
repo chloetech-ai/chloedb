@@ -22,6 +22,11 @@ use crate::error::{Error, Result};
 use crate::query::agg::cmp_int_float;
 use crate::value::Value;
 
+/// A value as SQL writes it, for a message.
+fn sv(v: &Value) -> String {
+    crate::query::hint::sql_value(v)
+}
+
 /// What an expression reads of its row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ref {
@@ -158,7 +163,7 @@ pub fn eval(e: &Expr, row: &Row) -> Result<Value> {
             Value::Null => Value::Null,
             Value::Int(x) => x.checked_neg().map_or(Value::Float(-(x as f64)), Value::Int),
             Value::Float(x) => Value::Float(-x),
-            v => return Err(err(format!("cannot negate {v:?}"))),
+            v => return Err(err(format!("cannot negate {}", sv(&v)))),
         },
         Expr::Concat(xs) => {
             let mut out = String::new();
@@ -223,7 +228,7 @@ pub fn eval(e: &Expr, row: &Row) -> Result<Value> {
             Value::Null => Value::Float(0.0),
             Value::Int(x) | Value::Timestamp(x) => Value::Float(decay.eval(x as f64)),
             Value::Float(x) => Value::Float(decay.eval(x)),
-            v => return Err(err(format!("decay of {v:?}, which is not a number"))),
+            v => return Err(err(format!("decay of {}, which is not a number", sv(&v)))),
         },
         Expr::Match { .. }
         | Expr::Graph(_)
@@ -251,7 +256,7 @@ fn truth(v: &Value) -> Result<Option<bool>> {
     match v {
         Value::Null => Ok(None),
         Value::Bool(b) => Ok(Some(*b)),
-        v => Err(err(format!("{v:?} is not a condition: a condition is TRUE, FALSE or NULL"))),
+        v => Err(err(format!("{} is not a condition: a condition is TRUE, FALSE or NULL", sv(&v)))),
     }
 }
 
@@ -325,7 +330,7 @@ pub fn compare(a: &Value, b: &Value) -> Result<Option<Ordering>> {
             (Some(x), Some(y), ..) => x.cmp(&y),
             (Some(x), None, _, Value::Float(y)) => cmp_int_float(x, *y),
             (None, Some(y), Value::Float(x), _) => cmp_int_float(y, *x).reverse(),
-            _ => return Err(err(format!("cannot compare {a:?} with {b:?}"))),
+            _ => return Err(err(format!("cannot compare {} with {}", sv(&a), sv(&b)))),
         },
     }))
 }
@@ -356,7 +361,7 @@ fn arith(op: ArithOp, a: &Value, b: &Value) -> Result<Value> {
             _ => x.checked_sub(y),
         }
         .map(Value::Timestamp)
-        .ok_or_else(|| err(format!("{a:?} {name} {b:?} is outside the times a TIMESTAMP holds")))
+        .ok_or_else(|| err(format!("{} {name} {} is outside the times a TIMESTAMP holds", sv(&a), sv(&b))))
     };
     Ok(match (a, b) {
         (Value::Null, _) | (_, Value::Null) => Value::Null,
@@ -375,7 +380,7 @@ fn arith(op: ArithOp, a: &Value, b: &Value) -> Result<Value> {
         (Value::Int(x), Value::Float(y)) => float(*x as f64, *y),
         (Value::Float(x), Value::Int(y)) => float(*x, *y as f64),
         (Value::Float(x), Value::Float(y)) => float(*x, *y),
-        _ => return Err(err(format!("cannot compute {a:?} {name} {b:?}"))),
+        _ => return Err(err(format!("cannot compute {} {name} {}", sv(&a), sv(&b)))),
     })
 }
 
@@ -386,7 +391,7 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
     let text = |f: fn(&str) -> Value| match &one {
         Value::Str(s) => Ok(f(s)),
         Value::Null => Ok(Value::Null),
-        v => Err(err(format!("{func:?} takes text, not {v:?}"))),
+        v => Err(err(format!("{} takes text, not {}", func.name(), sv(&v)))),
     };
     match func {
         Func::Lower => text(|s| Value::Str(s.to_lowercase())),
@@ -396,12 +401,12 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
         Func::JsonExtract => {
             let path = match args.get(1) {
                 Some(Value::Str(p)) => p,
-                v => return Err(err(format!("json_extract's path is text, not {v:?}"))),
+                v => return Err(err(format!("json_extract's path is text, not {}", sv(v.unwrap_or(&Value::Null))))),
             };
             let kind = match args.get(2) {
                 None => None,
                 Some(Value::Str(k)) => Some(crate::json::Kind::parse(k).ok_or_else(|| err(format!("json_extract's type is 'string', 'number' or 'bool', not {k:?}")))?),
-                Some(v) => return Err(err(format!("json_extract's type is text, not {v:?}"))),
+                Some(v) => return Err(err(format!("json_extract's type is text, not {}", sv(&v)))),
             };
             crate::json::extract(&one, path, kind)
         }
@@ -409,7 +414,7 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
         Func::CountTrue => {
             let mut n = 0;
             for v in args {
-                n += (truth(v).map_err(|_| err(format!("count_true counts conditions, not {v:?}")))? == Some(true)) as i64;
+                n += (truth(v).map_err(|_| err(format!("count_true counts conditions, not {}", sv(&v))))? == Some(true)) as i64;
             }
             Ok(Value::Int(n))
         }
@@ -417,18 +422,18 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             Value::Int(x) => x.checked_abs().map_or(Value::Float((x as f64).abs()), Value::Int),
             Value::Float(x) => Value::Float(x.abs()),
             Value::Null => Value::Null,
-            v => return Err(err(format!("abs takes a number, not {v:?}"))),
+            v => return Err(err(format!("abs takes a number, not {}", sv(&v)))),
         }),
         Func::Round => {
             let d = match args.get(1) {
                 None => 0,
                 Some(Value::Int(d)) => (*d).clamp(-30, 30) as i32,
-                Some(v) => return Err(err(format!("round takes a whole number of decimals, not {v:?}"))),
+                Some(v) => return Err(err(format!("round takes a whole number of decimals, not {}", sv(&v)))),
             };
             let x = match one {
                 Value::Null => return Ok(Value::Null),
                 Value::Int(x) if d == 0 => return Ok(Value::Int(x)),
-                v => v.as_f64().ok_or_else(|| err(format!("round takes a number, not {v:?}")))?,
+                v => v.as_f64().ok_or_else(|| err(format!("round takes a number, not {}", sv(&v))))?,
             };
             let m = 10f64.powi(d);
             let r = (x * m).round() / m;
@@ -441,12 +446,13 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
                 .iter()
                 .map(|v| match v {
                     Value::Null => Ok(f64::NAN),
-                    v => v.as_f64().ok_or_else(|| err(format!("{} takes numbers, not {v:?}", func.name()))),
+                    v => v.as_f64().ok_or_else(|| err(format!("{} takes numbers, not {}", func.name(), sv(&v)))),
                 })
                 .collect::<Result<Vec<f64>>>()?;
             let r = func.eval_f64(&xs);
             Ok(if r.is_nan() { Value::Null } else { Value::Float(r) })
         }
+        Func::DateTrunc | Func::DatePart | Func::Strftime => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
             (Some(a), Some(b)) if a.len() == b.len() => Ok(Some(crate::vector::kernels::dot_f32(&a, &b) as f64).filter(|d| d.is_finite()).map_or(Value::Null, Value::Float)),
@@ -456,6 +462,40 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
     }
 }
 
+/// `date_trunc(unit, t)`, `date_part(part, t)` and `strftime(format, t)`
+/// ([`crate::timestamp`]): `how` names the unit, part or format, and `t`
+/// is a TIMESTAMP, or ISO 8601 text of one; NULL either way gives NULL.
+fn dates(func: Func, how: &Value, t: &Value) -> Result<Value> {
+    use crate::timestamp as ts;
+    let micros = match t {
+        Value::Null => return Ok(Value::Null),
+        Value::Timestamp(m) => *m,
+        Value::Str(s) => ts::parse(s).ok_or_else(|| err(format!("{}: {} is not a time (ISO 8601: '2026-11-05' or '2026-11-05T07:30:00Z')", func.name(), sv(t))))?,
+        v => return Err(err(format!("{} takes a TIMESTAMP, not {}", func.name(), sv(v)))),
+    };
+    let how = match how {
+        Value::Null => return Ok(Value::Null),
+        Value::Str(s) => s,
+        v => return Err(err(format!("{}'s first argument is text, not {}", func.name(), sv(v)))),
+    };
+    Ok(match func {
+        Func::DateTrunc => {
+            let names = || ts::Unit::ALL.map(|u| format!("'{}'", u.name())).join(", ");
+            let unit = ts::Unit::parse(how).ok_or_else(|| err(format!("date_trunc has no unit {how:?}: it cuts to {}", names())))?;
+            Value::Timestamp(ts::trunc(micros, unit).ok_or_else(|| err(format!("date_trunc('{}', {}): the start is outside the times a TIMESTAMP holds", unit.name(), sv(t))))?)
+        }
+        Func::DatePart => {
+            let names = || ts::Part::ALL.map(|p| format!("'{}'", p.name())).join(", ");
+            let part = ts::Part::parse(how).ok_or_else(|| err(format!("date_part and EXTRACT have no part {how:?}: they read {}", names())))?;
+            match ts::part(micros, part) {
+                ts::PartValue::Int(x) => Value::Int(x),
+                ts::PartValue::Float(x) => Value::Float(x),
+            }
+        }
+        _ => Value::Str(ts::strftime(how, micros).map_err(err)?),
+    })
+}
+
 /// A vector argument: a vector, or a list of numbers as a parameter
 /// gives one; `None` for NULL.
 fn vector(v: &Value) -> Result<Option<std::borrow::Cow<'_, [f32]>>> {
@@ -463,7 +503,7 @@ fn vector(v: &Value) -> Result<Option<std::borrow::Cow<'_, [f32]>>> {
         Value::Null => None,
         Value::Vector(x) => Some(std::borrow::Cow::Borrowed(x)),
         Value::List(xs) if xs.iter().all(|x| matches!(x, Value::Int(_) | Value::Float(_))) => Some(xs.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect()),
-        v => return Err(err(format!("dot takes vectors, not {v:?}"))),
+        v => return Err(err(format!("dot takes vectors, not {}", sv(&v)))),
     })
 }
 

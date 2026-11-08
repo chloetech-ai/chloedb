@@ -1,0 +1,216 @@
+service/es created
+pod/es-0 created
+pod/es-1 created
+pod/es-0 condition met
+pod/es-1 condition met
+job.batch/load-es created
+es: index created in 0.3 s
+es: 25000 documents sent, 15 s
+es: 50000 documents sent, 28 s
+es: 75000 documents sent, 39 s
+es: 100000 documents sent, 49 s
+es: 125000 documents sent, 58 s
+es: 150000 documents sent, 72 s
+es: 175000 documents sent, 80 s
+es: 200000 documents sent, 90 s
+es: 225000 documents sent, 98 s
+es: 250000 documents sent, 106 s
+es: 275000 documents sent, 115 s
+es: 300000 documents sent, 127 s
+es: 325000 documents sent, 135 s
+es: 350000 documents sent, 148 s
+es: 375000 documents sent, 159 s
+es: 400000 documents sent, 166 s
+es: 425000 documents sent, 176 s
+es: 450000 documents sent, 188 s
+es: 475000 documents sent, 200 s
+es: 500000 documents sent, 211 s
+es: 525000 documents sent, 223 s
+es: 550000 documents sent, 236 s
+es: 575000 documents sent, 249 s
+es: 600000 documents sent, 258 s
+es: 625000 documents sent, 271 s
+es: 650000 documents sent, 284 s
+es: 675000 documents sent, 298 s
+es: 700000 documents sent, 309 s
+es: 725000 documents sent, 318 s
+es: 750000 documents sent, 330 s
+es: 775000 documents sent, 338 s
+es: 800000 documents sent, 349 s
+es: 825000 documents sent, 361 s
+es: 850000 documents sent, 376 s
+es: 875000 documents sent, 385 s
+es: 900000 documents sent, 399 s
+es: 925000 documents sent, 413 s
+es: 950000 documents sent, 425 s
+es: 975000 documents sent, 439 s
+es: 1000000 documents sent, 448 s
+es: 1000000 documents (11.8 GB of JSON) sent in 448.4 s
+es: searchable after 5.5 s more, merged in 210.9 s; 664.7 s in all
+wrote /data/compare/load-es.json
+job.batch/run-es created
+es       bm25                     c=1        150 q/s  p50   6.197 ms  p90   9.040 ms  p99  14.356 ms  errors 0
+es       bm25                     c=4        571 q/s  p50   6.671 ms  p90   9.695 ms  p99  13.720 ms  errors 0
+es       bm25                     c=16      1089 q/s  p50  13.574 ms  p90  22.804 ms  p99  32.326 ms  errors 0
+es       bm25 + filter            c=1        211 q/s  p50   4.286 ms  p90   6.805 ms  p99  11.273 ms  errors 0
+es       bm25 + filter            c=4        653 q/s  p50   5.498 ms  p90   9.425 ms  p99  15.476 ms  errors 0
+es       bm25 + filter            c=16      1181 q/s  p50  12.089 ms  p90  22.060 ms  p99  35.099 ms  errors 0
+es       vector                   c=1        212 q/s  p50   4.455 ms  p90   5.607 ms  p99   9.372 ms  errors 0
+es       vector                   c=4        647 q/s  p50   5.838 ms  p90   7.860 ms  p99  11.090 ms  errors 0
+es       vector                   c=16      1213 q/s  p50  12.469 ms  p90  18.268 ms  p99  26.118 ms  errors 0
+es       vector + filter          c=1        223 q/s  p50   4.288 ms  p90   5.042 ms  p99   7.561 ms  errors 0
+es       vector + filter          c=4        634 q/s  p50   6.046 ms  p90   7.821 ms  p99  10.330 ms  errors 0
+es       vector + filter          c=16      1014 q/s  p50  14.473 ms  p90  21.515 ms  p99  44.069 ms  errors 0
+es       hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es       hybrid (weighted)        c=1        139 q/s  p50   6.269 ms  p90  11.175 ms  p99  18.484 ms  errors 0
+es       hybrid (weighted)        c=4        366 q/s  p50   9.607 ms  p90  17.079 ms  p99  30.790 ms  errors 0
+es       hybrid (weighted)        c=16       471 q/s  p50  30.606 ms  p90  52.689 ms  p99  90.949 ms  errors 0
+es       boosted (bm25 × decay)   c=1        113 q/s  p50   6.936 ms  p90  18.628 ms  p99  29.534 ms  errors 0
+es       boosted (bm25 × decay)   c=4        278 q/s  p50  11.729 ms  p90  28.770 ms  p99  49.920 ms  errors 0
+es       boosted (bm25 × decay)   c=16       325 q/s  p50  42.817 ms  p90  81.830 ms  p99 139.171 ms  errors 0
+es       facet                    c=1        388 q/s  p50   2.324 ms  p90   3.552 ms  p99   6.224 ms  errors 0
+es       facet                    c=4       1346 q/s  p50   2.686 ms  p90   4.428 ms  p99   7.074 ms  errors 0
+es       facet                    c=16      2694 q/s  p50   5.109 ms  p90   9.759 ms  p99  17.904 ms  errors 0
+es       key lookup               c=1        509 q/s  p50   1.906 ms  p90   2.464 ms  p99   3.307 ms  errors 0
+es       key lookup               c=4       1870 q/s  p50   2.058 ms  p90   2.666 ms  p99   3.613 ms  errors 0
+es       key lookup               c=16      4655 q/s  p50   3.299 ms  p90   4.718 ms  p99   6.635 ms  errors 0
+es       phrase                   c=1        357 q/s  p50   2.711 ms  p90   4.071 ms  p99   6.867 ms  errors 0
+es       phrase                   c=4       1118 q/s  p50   3.440 ms  p90   5.519 ms  p99   8.151 ms  errors 0
+es       phrase                   c=16      2066 q/s  p50   7.127 ms  p90  12.431 ms  p99  19.541 ms  errors 0
+es       typo                     c=1         66 q/s  p50  14.443 ms  p90  23.957 ms  p99  35.516 ms  errors 0
+es       typo                     c=4        164 q/s  p50  23.258 ms  p90  37.181 ms  p99  53.846 ms  errors 0
+es       typo                     c=16       185 q/s  p50  82.844 ms  p90 122.792 ms  p99 168.561 ms  errors 0
+es       prefix                   c=1        252 q/s  p50   3.672 ms  p90   5.256 ms  p99   8.951 ms  errors 0
+read tcp 127.0.0.1:52984->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:52984->127.0.0.1:36661: read: connection reset by peer
+es       prefix                   c=4        689 q/s  p50   5.381 ms  p90   8.437 ms  p99  13.237 ms  errors 0
+es       prefix                   c=16      1109 q/s  p50  13.046 ms  p90  22.778 ms  p99  33.883 ms  errors 0
+es       similar items            c=1        135 q/s  p50   7.061 ms  p90   8.985 ms  p99  11.423 ms  errors 0
+es       similar items            c=4        363 q/s  p50  10.690 ms  p90  14.298 ms  p99  18.744 ms  errors 0
+es       similar items            c=16       565 q/s  p50  27.072 ms  p90  39.580 ms  p99  50.792 ms  errors 0
+es       sql aggregate            c=1        107 q/s  p50   9.078 ms  p90  11.382 ms  p99  14.916 ms  errors 0
+es       sql aggregate            c=4        356 q/s  p50  10.638 ms  p90  14.917 ms  p99  22.892 ms  errors 0
+es       sql aggregate            c=16       825 q/s  p50  18.543 ms  p90  27.173 ms  p99  36.542 ms  errors 0
+wrote /data/compare/run-es.json
+job.batch/run-es-pass2 created
+es-pass2 bm25                     c=1        347 q/s  p50   2.739 ms  p90   3.718 ms  p99   5.433 ms  errors 0
+es-pass2 bm25                     c=4       1063 q/s  p50   3.599 ms  p90   5.012 ms  p99   7.138 ms  errors 0
+es-pass2 bm25                     c=16      1874 q/s  p50   7.839 ms  p90  12.580 ms  p99  19.765 ms  errors 0
+es-pass2 bm25 + filter            c=1        281 q/s  p50   3.309 ms  p90   4.740 ms  p99   9.106 ms  errors 0
+es-pass2 bm25 + filter            c=4        829 q/s  p50   4.438 ms  p90   6.699 ms  p99  12.404 ms  errors 0
+es-pass2 bm25 + filter            c=16      1350 q/s  p50  10.562 ms  p90  19.284 ms  p99  29.898 ms  errors 0
+es-pass2 vector                   c=1        264 q/s  p50   3.696 ms  p90   4.390 ms  p99   5.249 ms  errors 0
+es-pass2 vector                   c=4        779 q/s  p50   4.976 ms  p90   6.161 ms  p99   7.518 ms  errors 0
+es-pass2 vector                   c=16      1378 q/s  p50  11.155 ms  p90  15.387 ms  p99  19.978 ms  errors 0
+es-pass2 vector + filter          c=1        224 q/s  p50   4.301 ms  p90   5.097 ms  p99   6.432 ms  errors 0
+es-pass2 vector + filter          c=4        642 q/s  p50   6.010 ms  p90   7.605 ms  p99   9.552 ms  errors 0
+es-pass2 vector + filter          c=16      1046 q/s  p50  14.342 ms  p90  21.234 ms  p99  28.976 ms  errors 0
+es-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-pass2 hybrid (weighted)        c=1        148 q/s  p50   5.788 ms  p90  10.210 ms  p99  18.964 ms  errors 0
+es-pass2 hybrid (weighted)        c=4        379 q/s  p50   9.190 ms  p90  16.168 ms  p99  30.623 ms  errors 0
+es-pass2 hybrid (weighted)        c=16       497 q/s  p50  29.324 ms  p90  49.305 ms  p99  85.942 ms  errors 0
+es-pass2 boosted (bm25 × decay)   c=1        113 q/s  p50   6.951 ms  p90  18.600 ms  p99  31.070 ms  errors 0
+es-pass2 boosted (bm25 × decay)   c=4        286 q/s  p50  11.476 ms  p90  27.738 ms  p99  49.826 ms  errors 0
+es-pass2 boosted (bm25 × decay)   c=16       340 q/s  p50  42.091 ms  p90  78.559 ms  p99 120.698 ms  errors 0
+es-pass2 facet                    c=1        538 q/s  p50   1.708 ms  p90   2.406 ms  p99   4.030 ms  errors 0
+es-pass2 facet                    c=4       1682 q/s  p50   2.200 ms  p90   3.301 ms  p99   5.266 ms  errors 0
+es-pass2 facet                    c=16      2992 q/s  p50   4.704 ms  p90   8.641 ms  p99  13.889 ms  errors 0
+es-pass2 key lookup               c=1        579 q/s  p50   1.705 ms  p90   1.999 ms  p99   2.372 ms  errors 0
+es-pass2 key lookup               c=4       2069 q/s  p50   1.903 ms  p90   2.375 ms  p99   2.935 ms  errors 0
+es-pass2 key lookup               c=16      4597 q/s  p50   3.342 ms  p90   4.741 ms  p99   6.744 ms  errors 0
+es-pass2 phrase                   c=1        408 q/s  p50   2.438 ms  p90   3.538 ms  p99   5.079 ms  errors 0
+es-pass2 phrase                   c=4       1179 q/s  p50   3.288 ms  p90   5.207 ms  p99   7.394 ms  errors 0
+es-pass2 phrase                   c=16      2057 q/s  p50   7.179 ms  p90  12.195 ms  p99  19.423 ms  errors 0
+es-pass2 typo                     c=1         68 q/s  p50  13.699 ms  p90  23.207 ms  p99  32.114 ms  errors 0
+es-pass2 typo                     c=4        165 q/s  p50  23.029 ms  p90  37.204 ms  p99  52.557 ms  errors 0
+es-pass2 typo                     c=16       187 q/s  p50  81.941 ms  p90 121.885 ms  p99 162.148 ms  errors 0
+es-pass2 prefix                   c=1        271 q/s  p50   3.393 ms  p90   4.890 ms  p99   8.489 ms  errors 0
+es-pass2 prefix                   c=4        730 q/s  p50   5.110 ms  p90   7.905 ms  p99  12.153 ms  errors 0
+es-pass2 prefix                   c=16      1116 q/s  p50  13.031 ms  p90  22.717 ms  p99  34.009 ms  errors 0
+es-pass2 similar items            c=1        163 q/s  p50   6.060 ms  p90   6.711 ms  p99   8.671 ms  errors 0
+es-pass2 similar items            c=4        403 q/s  p50   9.591 ms  p90  12.528 ms  p99  15.821 ms  errors 0
+es-pass2 similar items            c=16       494 q/s  p50  30.880 ms  p90  45.351 ms  p99  61.427 ms  errors 0
+es-pass2 sql aggregate            c=1        170 q/s  p50   5.721 ms  p90   6.614 ms  p99   8.964 ms  errors 0
+es-pass2 sql aggregate            c=4        573 q/s  p50   6.745 ms  p90   8.586 ms  p99  11.270 ms  errors 0
+es-pass2 sql aggregate            c=16      1185 q/s  p50  12.842 ms  p90  17.903 ms  p99  25.544 ms  errors 0
+wrote /data/compare/run-es-pass2.json
+job.batch/run-es-pass3 created
+es-pass3 bm25                     c=1        372 q/s  p50   2.569 ms  p90   3.349 ms  p99   5.191 ms  errors 0
+es-pass3 bm25                     c=4       1074 q/s  p50   3.528 ms  p90   4.920 ms  p99   7.280 ms  errors 0
+es-pass3 bm25                     c=16      1880 q/s  p50   7.941 ms  p90  12.484 ms  p99  18.147 ms  errors 0
+es-pass3 bm25 + filter            c=1        301 q/s  p50   3.043 ms  p90   4.405 ms  p99   8.765 ms  errors 0
+es-pass3 bm25 + filter            c=4        849 q/s  p50   4.336 ms  p90   6.574 ms  p99  12.380 ms  errors 0
+es-pass3 bm25 + filter            c=16      1343 q/s  p50  10.412 ms  p90  19.737 ms  p99  31.088 ms  errors 0
+es-pass3 vector                   c=1        277 q/s  p50   3.541 ms  p90   4.034 ms  p99   4.900 ms  errors 0
+es-pass3 vector                   c=4        782 q/s  p50   4.951 ms  p90   6.114 ms  p99   7.625 ms  errors 0
+es-pass3 vector                   c=16      1399 q/s  p50  11.096 ms  p90  15.042 ms  p99  19.334 ms  errors 0
+es-pass3 vector + filter          c=1        232 q/s  p50   4.147 ms  p90   4.970 ms  p99   6.002 ms  errors 0
+es-pass3 vector + filter          c=4        631 q/s  p50   6.047 ms  p90   7.619 ms  p99   9.985 ms  errors 0
+es-pass3 vector + filter          c=16      1026 q/s  p50  14.519 ms  p90  21.004 ms  p99  33.147 ms  errors 0
+es-pass3 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-pass3 hybrid (weighted)        c=1        147 q/s  p50   5.765 ms  p90  10.326 ms  p99  20.304 ms  errors 0
+es-pass3 hybrid (weighted)        c=4        380 q/s  p50   9.291 ms  p90  16.351 ms  p99  29.380 ms  errors 0
+es-pass3 hybrid (weighted)        c=16       501 q/s  p50  28.903 ms  p90  48.454 ms  p99  85.844 ms  errors 0
+es-pass3 boosted (bm25 × decay)   c=1        117 q/s  p50   6.735 ms  p90  18.524 ms  p99  30.856 ms  errors 0
+es-pass3 boosted (bm25 × decay)   c=4        287 q/s  p50  11.668 ms  p90  28.073 ms  p99  45.992 ms  errors 0
+es-pass3 boosted (bm25 × decay)   c=16       345 q/s  p50  40.892 ms  p90  78.446 ms  p99 121.678 ms  errors 0
+es-pass3 facet                    c=1        486 q/s  p50   1.898 ms  p90   2.757 ms  p99   5.150 ms  errors 0
+es-pass3 facet                    c=4       1578 q/s  p50   2.260 ms  p90   3.638 ms  p99   6.630 ms  errors 0
+es-pass3 facet                    c=16      2910 q/s  p50   4.849 ms  p90   8.927 ms  p99  14.766 ms  errors 0
+es-pass3 key lookup               c=1        548 q/s  p50   1.795 ms  p90   2.292 ms  p99   2.793 ms  errors 0
+es-pass3 key lookup               c=4       2050 q/s  p50   1.921 ms  p90   2.411 ms  p99   2.989 ms  errors 0
+es-pass3 key lookup               c=16      4600 q/s  p50   3.308 ms  p90   4.694 ms  p99   6.619 ms  errors 0
+es-pass3 phrase                   c=1        383 q/s  p50   2.582 ms  p90   3.774 ms  p99   5.242 ms  errors 0
+es-pass3 phrase                   c=4       1171 q/s  p50   3.261 ms  p90   5.191 ms  p99   7.416 ms  errors 0
+es-pass3 phrase                   c=16      2099 q/s  p50   7.127 ms  p90  12.311 ms  p99  18.663 ms  errors 0
+es-pass3 typo                     c=1         68 q/s  p50  14.059 ms  p90  22.445 ms  p99  34.206 ms  errors 0
+es-pass3 typo                     c=4        164 q/s  p50  23.267 ms  p90  37.488 ms  p99  53.127 ms  errors 0
+es-pass3 typo                     c=16       187 q/s  p50  79.295 ms  p90 127.306 ms  p99 180.625 ms  errors 0
+es-pass3 prefix                   c=1        266 q/s  p50   3.476 ms  p90   4.979 ms  p99   8.585 ms  errors 0
+es-pass3 prefix                   c=4        726 q/s  p50   5.116 ms  p90   7.821 ms  p99  12.357 ms  errors 0
+es-pass3 prefix                   c=16      1116 q/s  p50  12.930 ms  p90  22.950 ms  p99  35.687 ms  errors 0
+es-pass3 similar items            c=1        143 q/s  p50   6.935 ms  p90   7.646 ms  p99   9.523 ms  errors 0
+es-pass3 similar items            c=4        367 q/s  p50  10.528 ms  p90  13.817 ms  p99  17.319 ms  errors 0
+es-pass3 similar items            c=16       501 q/s  p50  30.642 ms  p90  44.706 ms  p99  54.489 ms  errors 0
+es-pass3 sql aggregate            c=1        188 q/s  p50   5.312 ms  p90   5.836 ms  p99   6.657 ms  errors 0
+es-pass3 sql aggregate            c=4        607 q/s  p50   6.298 ms  p90   8.208 ms  p99  11.215 ms  errors 0
+es-pass3 sql aggregate            c=16      1097 q/s  p50  13.267 ms  p90  20.941 ms  p99  31.882 ms  errors 0
+wrote /data/compare/run-es-pass3.json
+job.batch/writes-es created
+es       insert one     c=1        250 docs/s  p50    3.620 ms  p90    4.928 ms  p99    9.754 ms  errors 0
+es       insert one     c=4        724 docs/s  p50    4.706 ms  p90    8.198 ms  p99   16.922 ms  errors 0
+es       insert one     c=16      2096 docs/s  p50    6.443 ms  p90   10.657 ms  p99   28.047 ms  errors 0
+es       insert batch   c=1       1614 docs/s  p50   42.190 ms  p90   58.514 ms  p99  282.759 ms  errors 0
+es       insert batch   c=4       3348 docs/s  p50   73.578 ms  p90  208.674 ms  p99  566.021 ms  errors 0
+es       insert batch   c=16      3800 docs/s  p50  364.077 ms  p90  578.252 ms  p99 1378.685 ms  errors 0
+es       update one     c=1        199 docs/s  p50    3.867 ms  p90    6.065 ms  p99   11.470 ms  errors 0
+es       update one     c=4        725 docs/s  p50    4.504 ms  p90    7.885 ms  p99   24.031 ms  errors 0
+es       update one     c=16      2089 docs/s  p50    6.395 ms  p90   10.639 ms  p99   28.592 ms  errors 0
+es       visible        written in p50 6.1 ms, found after p50 715.3 ms  p90 1022.8 ms  max 1033.5 ms
+wrote /data/compare/writes-es.json
+es       deleted 73630 written documents and put back 18087 ratings in 13.3 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-es created
+es       topic docs-es-1793678752, 4 partitions; 1000000 documents before
+es       250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 24 ms  p90 34 ms  p99 42 ms  max 69 ms (read p50 19 ms)
+es       500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 25 ms  p90 34 ms  p99 49 ms  max 87 ms (read p50 18 ms)
+es       1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 29 ms  p90 39 ms  p99 80 ms  max 128 ms (read p50 20 ms)
+es       2000/s           produced 60000 in 30.0 s; written 60000 in 30.0 s (1997/s); lag p50 34 ms  p90 56 ms  p99 170 ms  max 270 ms (read p50 20 ms)
+es       flat out         produced 20000 in 0.8 s; written 20000 in 5.7 s (3509/s); lag p50 2740 ms  p90 4321 ms  p99 4669 ms  max 5003 ms (read p50 2017 ms)
+es       before the crash produced 10000 in 5.7 s; written 5023 in 5.7 s (879/s); lag p50 33 ms  p90 48 ms  p99 145 ms  max 201 ms (read p50 20 ms)
+es       after the crash   resumed in 2.7 s: 1413 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-es.json
+es       deleted 142500 streamed documents in 2.9 s
+{"acknowledged":true,"trial_was_started":true,"type":"trial"}
+job.batch/run-es-trial created
+es-trial hybrid (RRF)             c=1         48 q/s  p50  20.232 ms  p90  24.294 ms  p99  28.525 ms  errors 0
+es-trial hybrid (RRF)             c=4         87 q/s  p50  44.411 ms  p90  59.959 ms  p99  81.662 ms  errors 0
+es-trial hybrid (RRF)             c=16        91 q/s  p50 174.466 ms  p90 219.859 ms  p99 265.214 ms  errors 0
+es-trial hybrid (weighted)        c=1         48 q/s  p50  20.307 ms  p90  24.936 ms  p99  33.694 ms  errors 0
+es-trial hybrid (weighted)        c=4         82 q/s  p50  46.405 ms  p90  61.972 ms  p99  85.723 ms  errors 0
+es-trial hybrid (weighted)        c=16        77 q/s  p50 203.792 ms  p90 265.564 ms  p99 310.113 ms  errors 0
+wrote /data/compare/run-es-trial.json
+pod "es-0" deleted from es namespace
+pod "es-1" deleted from es namespace

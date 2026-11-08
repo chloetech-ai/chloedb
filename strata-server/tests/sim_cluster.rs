@@ -112,3 +112,28 @@ fn routing_by_a_map_no_server_took_is_found_again() {
     let r = found.expect("a seed of racing coordinators that only the bug breaks");
     assert!(!r.violations.is_empty(), "{:?}", r.stats);
 }
+
+/// Seeds that broke a promise before a fix, run again with no bug put
+/// back: they keep every promise.
+///
+/// * 623774930 (the nightly run of 11-02): the map in doubt, given again,
+///   was taken by s1 alone and forgotten when the change made from it
+///   failed; the next change, made while s1 was down, gave epoch 4 again.
+/// * 1085868: the same, at epoch 8 (`a_map_given_again_and_forgotten_is_found_again`).
+#[test]
+fn seeds_that_broke_a_promise_keep_them() {
+    let failed: Vec<Report> = [623_774_930, 1_085_868].into_iter().map(|s| cluster::run(Config::of(s), false)).filter(|r| !r.ok()).collect();
+    assert!(failed.is_empty(), "{}", explain(&failed));
+}
+
+/// Found once in tens of thousands of seeds, so by the seeds above
+/// (`strata-sim --cluster --seeds A..B --bug forgets-a-map-given-again`
+/// finds others, should a change of the simulator's draws move them): the
+/// map forks with the bug put back.
+#[test]
+fn a_map_given_again_and_forgotten_is_found_again() {
+    for seed in [623_774_930, 1_085_868] {
+        let r = cluster::run(Config { bugs: vec![Bug::ForgetsAMapGivenAgain], ..Config::of(seed) }, false);
+        assert!(r.stats.split_epochs > 0 && r.violations.iter().any(|v| v.contains("the map forked")), "seed {seed}: {:?} {:?}", r.violations, r.stats);
+    }
+}

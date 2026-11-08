@@ -9,6 +9,8 @@
 //! * [`freelist`]: free page runs and deferred frees.
 //! * [`manifest`]: one on-disk version (schema, segments, delete sets).
 //! * [`wal`]: the `-wal` sidecar.
+//! * [`feed`]: the changes of numbered transactions, read back from the
+//!   ship log with the schemas they were written under.
 //! * [`live`]: delete sets as live-document filters.
 //! * [`updates`]: in-place updates of numeric fields.
 //! * [`pk`]: the primary-key index section.
@@ -19,6 +21,7 @@
 
 mod db;
 pub mod dir;
+pub mod feed;
 pub mod freelist;
 pub mod io;
 pub mod live;
@@ -38,10 +41,11 @@ use std::sync::{Mutex, MutexGuard};
 pub use db::{CheckpointOptions, CheckpointStats, Database, DbOptions, DocumentSource, DropOptions, FileStats, Layout, SegmentStats, TableTxn, WriteTxn, LOCK_WAIT};
 pub use live::LiveDocs;
 pub use manifest::{sources_schema, Numbering, RankProfile, SeqNo, SOURCES, SOURCES_ID};
-pub use merge::{memory_limit, merge_memory, MergePolicy, MergeStats, MergeStatus, MergerOptions, SegmentInfo};
+pub use merge::{memory_limit, merge_memory, MergePolicy, MergeStats, MergeStatus, MergerOptions, SegmentInfo, MERGE_NICE};
 pub use ship::{Applied, LogRead, Shipped};
 pub use pk::{build_pk_index, build_pk_index_of, key_hash, KeyList, KeyRef, PkIndex};
-pub use snapshot::{Found, Mask, SegmentView, Snapshot};
+pub use snapshot::{tail_builds, Found, Mask, SegmentView, Snapshot};
+pub use state::Activity;
 pub(crate) use snapshot::page_aligned;
 pub use updates::Updates;
 

@@ -6,11 +6,25 @@
 // same runs it estimates what a lower hedge would do to the tail. Every
 // time is the query's own steps (`stats.steps`), measured by the
 // coordinator: a `shard` step per call, with the shard's own time inside.
+// A query takes its parameters as JSON (`?sql=&p=` open it with both); the
+// view says how many shard calls the runs make before it runs them, and
+// suggests the statements the cluster serves, leaving out failing ones
+// and the command center's own.
 
-import { h, s, icon, clear, fmt, card, api, toast, empty, bus, seg, store, tipOn } from "../core.js";
-import { state, isCoordinator, refreshCluster } from "../data.js";
+import { h, s, icon, clear, fmt, card, api, toast, empty, bus, seg, store, tipOn, confirm } from "../core.js";
+import { state, isCoordinator, refreshCluster, isProduction } from "../data.js";
+import { statements, split, isOwn, paramsObj, narrow } from "../workload.js";
 
-export default { id: "querypath", title: "Query path", icon: "route", group: "Monitor", keywords: "query path fan out fan-out scatter gather tail latency straggler hedge hedging shards radar slowest shard p99", render };
+// No time range: the runs are now (NEW-shell-monitor-8). The cluster in full, for its hedges.
+export default { id: "querypath", title: "Query path", icon: "route", group: "Diagnose", keywords: "query path fan out fan-out scatter gather tail latency straggler hedge hedging shards radar slowest shard p99 params", render, onParams, range: false, cluster: "full" };
+
+/** Shard calls above which the runs ask first, on production. */
+const ASK_ABOVE = 5000;
+/** The :names a query's SQL takes, outside its strings. */
+export const namesIn = (sql) => [...new Set([...String(sql).replace(/'(?:[^']|'')*'/g, "''").matchAll(/(?<![:\w]):([A-Za-z_]\w*)/g)].map((m) => m[1]))];
+
+let route = null;
+function onParams(r) { route?.(r.params); }
 
 const quant = (xs, q) => { if (!xs.length) return null; const a = xs.slice().sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(q * a.length))]; };
 const median = (xs) => quant(xs, 0.5);
@@ -48,7 +62,7 @@ export function hedged(runs, hedge) {
   });
 }
 
-function render(page) {
+function render(page, r) {
   page.append(h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Query path"), h("p", {}, "A search is as fast as the slowest shard it asks: run one a few times and see which shard it waited for, and what hedging buys."))));
   const form = h("div"), out = h("div");
   page.append(form, out);
@@ -59,21 +73,81 @@ function render(page) {
   }
 
   let runs = [], sel = 0, running = false, stop = false, hedgeWhatIf = null, hedgesBefore = null, hedgesAfter = null;
-  const sql = h("textarea", { class: "input mono", rows: 3, style: { width: "100%" }, spellcheck: "false", "aria-label": "The query to run" });
+  // The shard a link points at (Cluster's "Query path" from a shard): marked on every chart (NEW-shell-monitor-10).
+  let mark = r?.params?.get("shard") != null && r.params.get("shard") !== "" ? Number(r.params.get("shard")) : null;
+  const markNote = h("div");
+  const sql = h("textarea", { class: "input mono", rows: 3, style: { width: "100%" }, spellcheck: "false", "aria-label": "The query to run", oninput: () => drawCalls() });
   sql.value = store.get("qpath.sql", "");
+  const params = h("textarea", { class: "input mono", rows: 2, style: { width: "100%" }, spellcheck: "false", placeholder: '{"t": "waterproof tent"}', "aria-label": "Its parameters, as JSON", oninput: () => drawCalls() });
+  params.value = store.get("qpath.params", "");
+  const paramsBox = h("details", { open: !!params.value }, h("summary", { class: "small dim" }, "Parameters, as JSON (for :names in the SQL)"), params);
   const count = store.get("qpath.n", 20);
   let n = count;
-  const nSeg = seg([[10, "10 runs"], [20, "20"], [50, "50"], [100, "100"]], n, (v) => { n = v; store.set("qpath.n", v); });
+  const nSeg = seg([[10, "10 runs"], [20, "20"], [50, "50"], [100, "100"]], n, (v) => { n = v; store.set("qpath.n", v); drawCalls(); });
   const go = h("button", { class: "btn primary" }, icon("play"), "Run it");
-  const recent = h("div", { class: "row", style: { gap: "6px" } });
+  const recent = h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } });
   const status = h("span", { class: "small muted" });
+  const callsLine = h("div", { class: "small muted" });
+  const shardCount = () => state.cluster?.shards?.length || 0;
+  /** Before it runs: how many shard calls the runs make, and what the SQL still needs. */
+  function drawCalls() {
+    const k = shardCount();
+    const given = paramsObj(params.value.trim() || "{}") || {};
+    const missing = namesIn(sql.value).filter((x) => given[x] == null || given[x] === "");
+    if (missing.length) paramsBox.open = true;
+    clear(callsLine,
+      k ? h("span", {}, `${fmt.n(n)} runs × ${fmt.n(k)} shards = `, h("b", {}, `${fmt.n(n * k)} shard calls`), `, one run after the other${n * k > ASK_ABOVE && isProduction() ? ". On production it asks first." : "."}`) : null,
+      missing.length ? h("span", {}, ` It needs a value for ${missing.map((x) => ":" + x).join(", ")}.`) : null);
+  }
+  /** Put a query (and its parameters) in the form. */
+  function setQuery(text, p) {
+    sql.value = text;
+    params.value = p == null ? "" : typeof p === "string" ? p : JSON.stringify(p);
+    if (!params.value) { const need = namesIn(text); if (need.length) params.value = JSON.stringify(Object.fromEntries(need.map((x) => [x, ""]))); }
+    paramsBox.open = !!params.value;
+    drawCalls();
+    writeHash();
+  }
+  /** The query, its parameters and the marked shard in the link, so Share and a reload keep them (SH-3). */
+  function writeHash() {
+    const raw = location.hash.replace(/^#\/?/, ""), [path, q] = raw.split("?");
+    if (!path.startsWith("querypath")) return;
+    const ps = new URLSearchParams(q || "");
+    const set = (k, v) => { if (v) ps.set(k, v); else ps.delete(k); };
+    set("sql", sql.value.trim().length <= 4000 ? sql.value.trim() : "");
+    set("p", params.value.trim().length <= 2000 && !/^\{\s*\}$/.test(params.value.trim()) ? params.value.trim() : "");
+    set("shard", mark != null ? String(mark) : "");
+    const next = "#/" + path + (ps.toString() ? "?" + ps : "");
+    if (next !== location.hash) { try { history.replaceState(null, "", location.pathname + location.search + next); } catch { /* old browser */ } }
+  }
+  sql.addEventListener("change", writeHash); params.addEventListener("change", writeHash);
 
   async function suggest() {
-    const picks = [];
+    const picks = []; // {sql, params, why}
+    const has = (t) => picks.some((x) => x.sql === t);
+    // The statements the cluster serves over the range, the most time first,
+    // leaving out failing ones and the command center's own.
     try {
-      const r = await api("/v1/queries/recent");
-      for (const q of r.queries || r || []) { const t = (q.sql || "").trim(); if (t && /^select/i.test(t) && !picks.includes(t)) picks.push(t); if (picks.length >= 4) break; }
-    } catch { /* no admin key: the table's own query */ }
+      const st = await statements();
+      for (const x of st.statements.slice().sort((a, b) => (b.share || 0) - (a.share || 0))) {
+        const text = String(x.example || x.sample?.sql || (/\?/.test(x.sql || "") ? "" : x.sql) || "").trim();
+        if (!text || !/^select/i.test(text) || isOwn(x) || x.kind === "invalid" || has(text)) continue;
+        const sp = split(x.outcomes, x.calls);
+        if ((sp.server + sp.client) / Math.max(1, sp.calls) > 0.05) continue;
+        picks.push({ sql: text, params: paramsObj(x.sample?.params ?? x.params), why: `${x.kind ? x.kind + " · " : ""}${fmt.pct(x.share || 0, 0)} of the query time` });
+        if (picks.length >= 4) break;
+      }
+    } catch { /* an older server or no admin key: the latest queries */ }
+    if (picks.length < 2) {
+      try {
+        const r = await api("/v1/queries/recent");
+        for (const q of r.queries || r || []) {
+          const t = (q.sql || "").trim();
+          if (t && /^select/i.test(t) && q.outcome === "ok" && !isOwn(q) && !/\bFROM\s+(queries|logs)\b/i.test(t) && !has(t)) picks.push({ sql: t, params: paramsObj(q.params), why: "ran lately" });
+          if (picks.length >= 4) break;
+        }
+      } catch { /* no admin key: the table's own query */ }
+    }
     if (picks.length < 2) {
       // A search of the first table's first indexed text, for two words of its first row.
       try {
@@ -90,26 +164,39 @@ function render(page) {
               if (v?.length) words = v.slice(0, 2).join(" ");
             } catch { /* the plain word then */ }
           }
-          picks.push(`SELECT ${t.primary_key || "*"} FROM ${t.table} ORDER BY bm25(${searched.name}, '${words.replace(/'/g, "''")}') DESC LIMIT 10`);
-        } else if (t) picks.push(`SELECT * FROM ${t.table} LIMIT 10`);
+          picks.push({ sql: `SELECT ${t.primary_key || "*"} FROM ${t.table} ORDER BY bm25(${searched.name}, '${words.replace(/'/g, "''")}') DESC LIMIT 10`, params: null, why: "a search of " + t.table });
+        } else if (t) picks.push({ sql: `SELECT * FROM ${t.table} LIMIT 10`, params: null, why: t.table });
       } catch { /* nothing to offer */ }
     }
-    if (!sql.value && picks[0]) sql.value = picks[0];
-    clear(recent, picks.length ? h("span", { class: "small muted" }, "Try:") : null, picks.map((p) => h("button", { class: "chip", title: p, onclick: () => { sql.value = p; } }, p.length > 60 ? p.slice(0, 57) + "…" : p)));
+    if (!sql.value && picks[0]) setQuery(picks[0].sql, picks[0].params);
+    const cut = narrow() ? 38 : 60;
+    clear(recent, picks.length ? h("span", { class: "small muted" }, "Try:") : null, picks.map((p) => h("button", { class: "chip", title: `${p.sql}${p.params ? "\n" + JSON.stringify(p.params) : ""}\n${p.why}`, onclick: () => setQuery(p.sql, p.params) }, p.sql.length > cut ? p.sql.slice(0, cut - 3) + "…" : p.sql)));
   }
 
   go.onclick = async () => {
     if (running) { stop = true; return; }
     const text = sql.value.trim();
     if (!text) { sql.focus(); return; }
+    let p = {};
+    if (params.value.trim()) { p = paramsObj(params.value.trim()); if (!p || typeof p !== "object") { toast("The parameters are not a JSON object", "bad"); paramsBox.open = true; params.focus(); return; } }
+    const missing = namesIn(text).filter((x) => p[x] == null || p[x] === "");
+    if (missing.length) { toast(`Give a value for ${missing.map((x) => ":" + x).join(", ")} in the parameters`, "bad"); paramsBox.open = true; params.focus(); return; }
+    const total = n * shardCount();
+    if (total > ASK_ABOVE && isProduction()) {
+      const ok = await confirm({ title: `Make ${fmt.n(total)} shard calls?`, ok: "Run it", reason: "Why: kept in the audit log with the queries",
+        body: `${fmt.n(n)} runs × ${fmt.n(shardCount())} shards. They run one after the other, each a normal query that takes a slot on the coordinator and on every shard. This is production.` });
+      if (!ok) return;
+    }
     store.set("qpath.sql", text);
+    store.set("qpath.params", params.value.trim());
+    writeHash();
     running = true; stop = false; runs = []; sel = 0; hedgeWhatIf = null;
     clear(go, icon("stop"), "Stop");
     hedgesBefore = state.cluster?.hedges ?? null;
     try {
       for (let k = 0; k < n && !stop; k++) {
         const t0 = performance.now();
-        const j = await api("/v1/query", { body: { sql: text } });
+        const j = await api("/v1/query", { body: Object.keys(p).length ? { sql: text, params: p } : { sql: text } });
         runs.push(parseRun(j, performance.now() - t0));
         sel = runs.length - 1;
         status.textContent = `run ${runs.length} of ${n}`;
@@ -126,9 +213,25 @@ function render(page) {
     draw();
   };
 
-  clear(form, card({ title: "The query", sub: "it runs one after the other, so each run sees the cluster alone", attrs: { style: { marginBottom: "14px" } },
-    body: h("div", { class: "stack" }, sql, recent, h("div", { class: "row", style: { gap: "10px" } }, nSeg, go, status)) }));
+  clear(form, markNote, card({ title: "The query", sub: "it runs one after the other, so each run sees the cluster alone", attrs: { style: { marginBottom: "14px" } },
+    body: h("div", { class: "stack" }, sql, paramsBox, recent, callsLine, h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, nSeg, go, status)) }));
+  function drawMark() {
+    clear(markNote, mark != null ? h("div", { class: "notice row nw", style: { marginBottom: "14px" } }, icon("shard"), h("span", { class: "grow" }, `Shard ${mark} is marked on every chart: the runs show whether the query waits for it.`), h("button", { class: "btn xs", onclick: () => { mark = null; drawMark(); writeHash(); draw(); } }, "Unmark")) : null);
+  }
+  // ?sql= and ?p= put a query in the form, from a statement or the workbench; ?shard= marks a shard.
+  function open(ps) {
+    const q = ps?.get("sql");
+    if (q && q !== sql.value) setQuery(q, ps.get("p"));
+    const m = ps?.get("shard");
+    const next = m != null && m !== "" ? Number(m) : null;
+    if (next !== mark) { mark = next; drawMark(); draw(); }
+  }
+  drawMark();
+  open(r?.params);
+  drawCalls();
   suggest();
+  route = open;
+  const offCluster = bus.on("cluster", () => { if (callsLine.isConnected) drawCalls(); });
 
   // ---------------------------------------------------------------- drawing
   function radar(run, shards) {
@@ -145,12 +248,15 @@ function render(page) {
       const len = (R * c.call_us) / scale, own = c.own_us != null ? (R * c.own_us) / scale : null;
       const x = cx + Math.cos(a) * len, y = cy + Math.sin(a) * len;
       const isLast = c === last;
+      const marked = c.shard === mark;
       const g = s("g", { tabindex: 0 });
-      g.append(s("line", { x1: cx, y1: cy, x2: cx + Math.cos(a) * R, y2: cy + Math.sin(a) * R, stroke: "var(--line)", "stroke-width": 1 }),
-        s("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: isLast ? "var(--s2)" : "var(--s1)", "stroke-width": isLast ? 3.5 : 2.5, "stroke-linecap": "round" }),
+      const thin = shards > 32 && !isLast && !marked;
+      g.append(s("line", { x1: cx, y1: cy, x2: cx + Math.cos(a) * R, y2: cy + Math.sin(a) * R, stroke: "var(--line)", "stroke-width": thin ? 0.5 : 1 }),
+        s("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: isLast ? "var(--s2)" : "var(--s1)", "stroke-width": isLast ? 3.5 : thin ? 1 : 2.5, "stroke-linecap": "round" }),
         own != null ? s("line", { x1: cx + Math.cos(a) * (len - own) / 2, y1: cy + Math.sin(a) * (len - own) / 2, x2: cx + Math.cos(a) * (len + own) / 2, y2: cy + Math.sin(a) * (len + own) / 2, stroke: isLast ? "var(--s4)" : "var(--s3)", "stroke-width": 6, "stroke-linecap": "round", opacity: 0.85 }) : null,
-        s("circle", { cx: x, cy: y, r: isLast ? 6 : 4.5, fill: isLast ? "var(--s2)" : "var(--s1)" }),
-        s("text", { x: cx + Math.cos(a) * (R + 14), y: cy + Math.sin(a) * (R + 14) + 4, "text-anchor": "middle", style: { fontSize: "10.5px", fill: isLast ? "var(--text)" : "var(--muted)", fontWeight: isLast ? 700 : 400 } }, String(c.shard)));
+        s("circle", { cx: x, cy: y, r: isLast ? 6 : thin ? 1.8 : 4.5, fill: isLast ? "var(--s2)" : "var(--s1)" }),
+        marked ? s("circle", { cx: x, cy: y, r: 9, fill: "none", stroke: "var(--accent)", "stroke-width": 2 }) : null,
+        shards <= 32 || isLast || marked ? s("text", { x: cx + Math.cos(a) * (R + 14), y: cy + Math.sin(a) * (R + 14) + 4, "text-anchor": "middle", style: { fontSize: "10.5px", fill: isLast || marked ? "var(--text)" : "var(--muted)", fontWeight: isLast || marked ? 700 : 400 } }, marked ? `${c.shard} ◂` : String(c.shard)) : null);
       tipOn(g, () => h("div", {}, h("b", {}, `Shard ${c.shard}${isLast ? ", the last to answer" : ""}`), h("div", { class: "small" }, `the call ${fmt.ms(c.call_us / 1e3)}${c.own_us != null ? `, of which on the shard ${fmt.ms(c.own_us / 1e3)}` : ""}${c.rounds > 1 ? ` in ${c.rounds} rounds` : ""}`), c.replica ? h("div", { class: "small mono" }, c.replica) : null));
       svg.append(g);
     });
@@ -161,11 +267,19 @@ function render(page) {
   }
 
   function spread(shards) {
-    const ids = [...new Set(runs.flatMap((r) => r.calls.map((c) => c.shard)))].sort((a, b) => a - b);
+    let ids = [...new Set(runs.flatMap((r) => r.calls.map((c) => c.shard)))].sort((a, b) => a - b);
+    // On a big fleet, the 24 shards with the slowest p99 over the runs,
+    // slowest first (NEW-shell-monitor-9), and the marked one.
+    const KEEP = 24, of = ids.length;
+    if (of > KEEP) {
+      const p99s = new Map(ids.map((id) => [id, quant(runs.map((r) => r.calls.find((c) => c.shard === id)?.call_us).filter((v) => v != null), 0.99) || 0]));
+      ids = ids.slice().sort((a, b) => p99s.get(b) - p99s.get(a)).slice(0, KEEP);
+      if (mark != null && p99s.has(mark) && !ids.includes(mark)) ids.push(mark);
+    }
     const all = runs.flatMap((r) => r.calls.map((c) => c.call_us / 1e3));
     const hi = Math.max(1, ...all) * 1.05;
     const hedge = state.cluster?.hedge_ms;
-    const W = 640, row = 18, padL = 54, H = ids.length * row + 26;
+    const W = narrow() ? 380 : 640, row = 18, padL = 54, H = ids.length * row + 26;
     const X = (v) => padL + (v / hi) * (W - padL - 34);
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img", "aria-label": "Each shard's call times over the runs" });
     for (const t of [0.25, 0.5, 0.75, 1]) { const x = X(hi * t); svg.append(s("line", { x1: x, y1: 0, x2: x, y2: H - 18, stroke: "var(--grid)" }), s("text", { x, y: H - 4, "text-anchor": "middle", style: { fontSize: "10px", fill: "var(--muted)" } }, fmt.ms(hi * t))); }
@@ -176,7 +290,8 @@ function render(page) {
       const y = k * row + 10;
       const xs = runs.map((r, ri) => [r.calls.find((c) => c.shard === id), ri]).filter(([c]) => c);
       const times = xs.map(([c]) => c.call_us / 1e3);
-      svg.append(s("text", { x: padL - 8, y: y + 4, "text-anchor": "end", style: { fontSize: "10.5px", fill: "var(--muted)" } }, "shard " + id));
+      if (id === mark) svg.append(s("rect", { x: 0, y: y - 9, width: W, height: 18, fill: "var(--accent-soft)" }));
+      svg.append(s("text", { x: padL - 8, y: y + 4, "text-anchor": "end", style: { fontSize: "10.5px", fill: id === mark ? "var(--text)" : "var(--muted)", fontWeight: id === mark ? 700 : 400 } }, "shard " + id));
       const p50 = median(times), p99 = quant(times, 0.99);
       if (p50 != null) svg.append(s("line", { x1: X(p50), y1: y - 6, x2: X(p50), y2: y + 6, stroke: "var(--text-2)", "stroke-width": 2 }));
       if (p99 != null) svg.append(s("line", { x1: X(p99), y1: y - 6, x2: X(p99), y2: y + 6, stroke: "var(--s2)", "stroke-width": 2 }));
@@ -185,7 +300,7 @@ function render(page) {
         svg.append(s("circle", { cx: X(c.call_us / 1e3), cy: y, r: ri === sel ? 4.5 : 3, fill: lastOfRun ? "var(--s2)" : "var(--s1)", opacity: ri === sel ? 1 : 0.55, stroke: ri === sel ? "var(--text)" : "none" }));
       }
     });
-    return h("div", {}, svg, h("div", { class: "row small muted", style: { gap: "14px" } },
+    return h("div", {}, of > KEEP ? h("div", { class: "small muted", style: { marginBottom: "6px" } }, `The ${KEEP} shards with the slowest p99 over these runs, of ${fmt.n(of)}, slowest first${mark != null && ids.includes(mark) ? `; shard ${mark} marked` : ""}.`) : null, svg, h("div", { class: "row small muted", style: { gap: "14px", flexWrap: "wrap" } },
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "8px", height: "8px", borderRadius: "50%", background: "var(--s2)" } }), "the run's last shard"),
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "2px", height: "12px", background: "var(--text-2)" } }), "median"),
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "2px", height: "12px", background: "var(--s2)" } }), "p99"),
@@ -202,12 +317,17 @@ function render(page) {
     const ranked = [...lastCount.entries()].sort((a, b) => b[1] - a[1]);
     const calls = runs.flatMap((r) => r.calls.map((c) => c.call_us / 1e3));
     const shardMed = median(calls), shardP99 = quant(calls, 0.99);
-    const waitLast = runs.map((r) => { const ts = r.calls.map((c) => c.call_us / 1e3).sort((a, b) => a - b); return ts.length > 1 ? ts[ts.length - 1] - ts[Math.floor(ts.length / 2)] : 0; });
+    const waitLast = runs.map((r) => { const ts = r.calls.map((c) => c.call_us / 1e3).sort((a, b) => a - b); return ts.length > 1 ? ts[ts.length - 1] - ts[Math.floor((ts.length - 1) / 2)] : 0; });
     const hedge = state.cluster?.hedge_ms;
 
     // The runs as a strip: click one to see it on the radar.
     const hi = Math.max(...took);
-    const strip = h("div", { class: "qp-runs", role: "group", "aria-label": "The runs" }, runs.map((r, k) => h("button", { class: "qp-run" + (k === sel ? " sel" : ""), style: { height: Math.max(8, (r.took_ms / hi) * 54) + "px" }, title: `run ${k + 1}: ${fmt.ms(r.took_ms)}`, "aria-label": `Run ${k + 1}, ${fmt.ms(r.took_ms)}`, onclick: () => { sel = k; draw(); } })));
+    // Each run a full-height button (an easy tap) with its bar inside; the strip scrolls in its card, never the page.
+    const step = (d) => { sel = Math.max(0, Math.min(runs.length - 1, sel + d)); draw(); };
+    const strip = h("div", { class: "qp-strip row nw" },
+      h("button", { class: "btn icon sm", "aria-label": "The run before", disabled: sel === 0, onclick: () => step(-1) }, icon("left")),
+      h("div", { class: "qp-runs", role: "group", "aria-label": "The runs" }, runs.map((r, k) => h("button", { class: "qp-run" + (k === sel ? " sel" : ""), title: `run ${k + 1}: ${fmt.ms(r.took_ms)}`, "aria-label": `Run ${k + 1}, ${fmt.ms(r.took_ms)}`, onclick: () => { sel = k; draw(); } }, h("i", { style: { height: Math.max(6, (r.took_ms / hi) * 50) + "px" } })))),
+      h("button", { class: "btn icon sm", "aria-label": "The run after", disabled: sel >= runs.length - 1, onclick: () => step(1) }, icon("right")));
 
     const slowestCall = run.calls.reduce((a, c) => (c.call_us > (a?.call_us ?? -1) ? c : a), null);
     const net = slowestCall && slowestCall.own_us != null ? slowestCall.call_us - slowestCall.own_us : null;
@@ -219,21 +339,23 @@ function render(page) {
       // The delays worth trying: below the slowest call, and the one now.
       const top = Math.max(...calls);
       const opts = [hedge, ...[100, 50, 20, 10, 5, 2, 1].filter((v) => v < top && v !== hedge)].filter((v) => v != null).slice(0, 6);
-      if (hedgeWhatIf == null || !opts.includes(hedgeWhatIf)) hedgeWhatIf = opts.filter((v) => v < shardP99).sort((a, b) => b - a)[0] ?? opts[0];
+      // To start: the lowest delay above one shard's p99, so about one call in a hundred is asked twice.
+      if (hedgeWhatIf == null || !opts.includes(hedgeWhatIf)) hedgeWhatIf = opts.filter((v) => v >= shardP99).sort((a, b) => a - b)[0] ?? opts[0];
       const est = hedged(runs, hedgeWhatIf);
       const asked = runs.reduce((a, r) => a + r.calls.filter((c) => c.call_us / 1e3 > hedgeWhatIf).length, 0);
       whatIf = card({ title: "What a lower hedge would do", sub: "an estimate from these runs: a call slower than the hedge is asked again of a copy that answers in that shard's median time",
         body: h("div", { class: "stack" },
-          h("div", { class: "row", style: { gap: "10px" } }, h("span", { class: "small muted" }, "Ask another copy after"), seg(opts.map((v) => [v, v === hedge ? `${fmt.ms(v)} (now)` : fmt.ms(v)]), hedgeWhatIf, (v) => { hedgeWhatIf = v; draw(); })),
-          h("div", { class: "grid g3" },
+          h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, h("span", { class: "small muted" }, "Ask another copy after"), seg(opts.map((v) => [v, v === hedge ? `${fmt.ms(v)} (now)` : fmt.ms(v)]), hedgeWhatIf, (v) => { hedgeWhatIf = v; draw(); }, { class: "seg wl-segwrap" })),
+          h("div", { class: "grid g3 qp-kpis" },
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "p99 now"), h("div", { class: "val" }, fmt.ms(quant(took, 0.99)))),
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, `p99 hedged after ${fmt.ms(hedgeWhatIf)}`), h("div", { class: "val" }, fmt.ms(quant(est, 0.99)))),
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "Extra calls"), h("div", { class: "val" }, fmt.pct(asked / Math.max(1, runs.length * run.calls.length), 0)), h("div", { class: "delta" }, "of the shard calls, asked twice"))),
           h("div", { class: "small muted" }, hedge != null ? `The coordinator hedges after ${fmt.ms(hedge)} now (strata-server --hedge-ms). ${hedgesBefore != null && hedgesAfter != null ? `It hedged ${fmt.plural(Math.max(0, hedgesAfter - hedgesBefore), "time")} during these runs.` : ""}` : "")) });
     }
 
+    const keepScroll = out.querySelector(".qp-runs")?.scrollLeft;
     clear(out,
-      h("div", { class: "grid g4", style: { marginBottom: "14px" } },
+      h("div", { class: "grid g4 wl-kpis qp-kpis", style: { marginBottom: "14px" } },
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "The query, p50 / p99"), h("div", { class: "val" }, `${fmt.ms(median(took))}`, h("small", {}, ` / ${fmt.ms(quant(took, 0.99))}`)), h("div", { class: "delta" }, `over ${fmt.plural(runs.length, "run")}`)) }),
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "One shard, p50 / p99"), h("div", { class: "val" }, fmt.ms(shardMed), h("small", {}, ` / ${fmt.ms(shardP99)}`)), h("div", { class: "delta" }, `${fmt.plural(shards, "shard")} asked each time`)) }),
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "Waiting for the last"), h("div", { class: "val" }, fmt.ms(median(waitLast))), h("div", { class: "delta" }, "after the median shard answered")) }),
@@ -244,7 +366,12 @@ function render(page) {
           card({ title: "Each shard, over the runs", sub: "a dot per run; the selected run outlined", body: spread(shards) }),
           card({ title: "The last to answer", sub: "how often each shard was the one the query waited for", body: h("div", { class: "stack", style: { gap: "4px" } }, ranked.slice(0, 8).map(([id, k]) => h("div", { class: "row nw small", style: { gap: "8px" } }, h("span", { style: { width: "64px" } }, "shard " + id), h("div", { class: "grow", style: { height: "8px", background: "var(--surface-3)", borderRadius: "4px", overflow: "hidden" } }, h("div", { style: { width: (k / runs.length) * 100 + "%", height: "100%", background: "var(--s2)" } })), h("span", { class: "num", style: { width: "40px" } }, fmt.pct(k / runs.length, 0))))) }),
           whatIf)));
+    // The selected run stays in view in a strip that scrolls.
+    const rs = out.querySelector(".qp-runs");
+    const b = rs?.querySelector(".sel");
+    if (rs && keepScroll != null) rs.scrollLeft = keepScroll;
+    if (rs && b && (b.offsetLeft < rs.scrollLeft || b.offsetLeft + b.offsetWidth > rs.scrollLeft + rs.clientWidth)) rs.scrollLeft = b.offsetLeft - rs.clientWidth / 2;
   }
 
-  return () => { stop = true; };
+  return () => { stop = true; route = null; offCluster?.(); };
 }

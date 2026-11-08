@@ -8,10 +8,10 @@ use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
-use strata::db::{Db, PreparedWrite, Source};
+use strata::db::{Db, Footprints, PreparedWrite, Source};
 use strata::embed::Embedder;
 use strata::ingest::{Format, Rows};
-use strata::query::exec::{Engine, ExecOptions, Leaf, ResultSet};
+use strata::query::exec::{Engine, ExecOptions, Expansions, Leaf, ResultSet};
 use strata::query::memory::MemoryBudget;
 use strata::query::stats::TermStats;
 use strata::query::ir::Plan;
@@ -41,11 +41,15 @@ use crate::keys::{self, Audit, Keys, Principal, Scope};
 use crate::telemetry::{self, LiveQueries, QueryLog, Sample, Series};
 use crate::{json as js, obs, pb, ApiError};
 
+pub(crate) mod arrivals;
 mod failover;
+pub mod feed;
 mod moving;
+mod switch;
 
 pub use failover::tuned as failover_tuned;
 pub(crate) use moving::Moving;
+pub use feed::MARK;
 pub use moving::FREEZE_TTL;
 
 tokio::task_local! {
@@ -53,6 +57,105 @@ tokio::task_local! {
     /// [`Service::check_epoch`] checked it (0: none): a read takes its
     /// version and a write checks its keys against the map then.
     pub static ROUTED: std::cell::Cell<u64>;
+}
+
+/// A snapshot kept for the queries that name its lease, until `until`,
+/// and the typo expansions they found on it.
+struct Lease {
+    snap: Snapshot,
+    until: Instant,
+    expansions: Arc<Expansions>,
+}
+
+/// The deadline a request asked for (`timeout_ms`), when shorter than the
+/// server's default, and whether it passed while a shard was asked: a
+/// coordinator then neither avoids the copies it asked nor counts their
+/// failure, and the request is logged as the client's deadline, not a
+/// fault ([`client_deadline`]).
+#[derive(Default)]
+pub struct Deadline {
+    asked_ms: std::cell::Cell<Option<u64>>,
+    passed: std::cell::Cell<bool>,
+    /// A shard's part whose deadline is the client's own, as the
+    /// coordinator says ([`CLIENT_DEADLINE`]).
+    clients: bool,
+}
+
+/// The gRPC metadata by which a coordinator says that a shard's part runs
+/// to its client's own deadline (`timeout_ms` below the server's default),
+/// so that the shard counts and logs a deadline that passes as the
+/// client's, not as its own failure.
+pub const CLIENT_DEADLINE: &str = "x-strata-deadline";
+
+impl Deadline {
+    /// A shard's part's deadline, its client's own when `clients`.
+    pub fn of_part(clients: bool) -> Deadline {
+        Deadline { clients, ..Default::default() }
+    }
+}
+
+/// Whether the shard's part being served runs to its client's own
+/// deadline ([`CLIENT_DEADLINE`]).
+pub fn part_of_clients_deadline() -> bool {
+    DEADLINE.try_with(|d| d.clients).unwrap_or(false)
+}
+
+tokio::task_local! {
+    /// The request's [`Deadline`] (HTTP requests run in one).
+    pub static DEADLINE: Deadline;
+}
+
+tokio::task_local! {
+    /// The cluster whose changes the request writes, when a follow process
+    /// sends it ([`FOLLOW_HEADER`], with the cluster's token): a cluster
+    /// that follows that one takes them ([`Service::follows`]).
+    pub static FOLLOW: Option<Arc<str>>;
+}
+
+tokio::task_local! {
+    /// Whether the request is the cluster's own (its token: a coordinator's
+    /// call to its shards, a follow process's write, or the server's own
+    /// work), which may write the server's own marks
+    /// ([`feed::own_mark`]: a hold of its writes, a promotion).
+    pub static OWN: bool;
+}
+
+/// Whether the request being served is the cluster's own ([`OWN`]).
+pub fn own() -> bool {
+    OWN.try_with(|o| *o).unwrap_or(false)
+}
+
+/// The header (and gRPC metadata key) by which a follow process names
+/// the cluster it follows ([`FOLLOW`]); a coordinator passes it on to its
+/// shards.
+pub const FOLLOW_HEADER: &str = "x-strata-follow";
+
+/// The cluster the request being served writes the changes of
+/// ([`FOLLOW`]).
+pub fn following() -> Option<Arc<str>> {
+    FOLLOW.try_with(Clone::clone).ok().flatten()
+}
+
+/// Whether `name` may name a cluster to follow: 1 to 64 letters, digits,
+/// `.`, `_` or `-`.
+pub fn follow_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+/// The client's own deadline in ms, when the request being served asked
+/// for one below the server's default.
+pub fn client_deadline() -> Option<u64> {
+    DEADLINE.try_with(|d| d.asked_ms.get()).ok().flatten()
+}
+
+/// Notes that the client's own deadline passed.
+pub fn deadline_passed() {
+    let _ = DEADLINE.try_with(|d| d.passed.set(true));
+}
+
+/// Whether the request's own deadline passed, and that deadline.
+pub fn deadline_of_request() -> Option<u64> {
+    DEADLINE.try_with(|d| d.passed.get().then(|| d.asked_ms.get()).flatten()).ok().flatten()
 }
 
 /// The epoch the request being served routes by ([`ROUTED`]).
@@ -127,6 +230,19 @@ pub struct QueryReq {
     /// ([`Answer::arrow`]) when the coordinator puts its rows after the
     /// others' ([`strata::cluster::concatenates`]).
     pub arrow: Option<usize>,
+    /// Count the answer's rows as retrievals of their documents
+    /// ([`crate::reads`]): a client's query, which a coordinator counts by
+    /// the replica that answered each row.
+    pub reads: bool,
+    /// `stats` are of this server's version `stats_version`
+    /// ([`Service::stats_version`]), which a coordinator kept: run only on
+    /// that version, else answer [`Answer::stale`]. 0: any version.
+    pub stats_version: u64,
+    /// From a coordinator that fuses a rank-safe boost from the rows each
+    /// shard's bound found alone ([`crate::grpc::BOOSTS_PROTOCOL`]): the
+    /// shard leaves out the boost's inputs' top rows
+    /// ([`ExecOptions::boost_inputs`]). False answers them, for any other.
+    pub boosts_alone: bool,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -177,6 +293,14 @@ pub struct Answer {
     /// A shard's rows as an Arrow IPC stream ([`QueryReq::arrow`],
     /// `QueryResponse.arrow`), `rs` then holding none; empty otherwise.
     pub arrow: Vec<u8>,
+    /// The query did not run: its [`QueryReq::stats_version`] is not the
+    /// version it would read.
+    pub stale: bool,
+}
+
+/// An answer of no rows, of a query that did not run.
+fn no_rows() -> ResultSet {
+    ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }
 }
 
 /// An embedded VECTOR field ([`strata::Embed`]) and its model, which
@@ -217,11 +341,124 @@ pub struct AgentConfig {
     pub base_url: String,
 }
 
+/// The cluster a server is of, as people name it (`--cluster-name`,
+/// `--environment`), and where its command center is (`--public-url`),
+/// for links.
+#[derive(Clone, Debug, Default)]
+pub struct Identity {
+    pub name: Option<String>,
+    pub environment: Option<String>,
+    pub public_url: Option<String>,
+}
+
+impl Identity {
+    pub fn json(&self) -> Json {
+        json!({"name": self.name, "environment": self.environment, "public_url": self.public_url})
+    }
+}
+
+/// The service levels fleet health checks against (`--slo-error-ratio`,
+/// `--slo-p99-ms`).
+#[derive(Clone, Copy, Debug)]
+pub struct Slo {
+    pub error_ratio: f64,
+    pub p99_ms: f64,
+}
+
+impl Default for Slo {
+    fn default() -> Slo {
+        Slo { error_ratio: 0.01, p99_ms: 250.0 }
+    }
+}
+
+/// Where a server runs: its name if given (`--node-name`), the machine
+/// and zone (`STRATA_NODE` or `NODE_NAME`, `STRATA_ZONE`), and its image
+/// (`STRATA_IMAGE`, which the operator sets; its digest when it pins one,
+/// or `STRATA_IMAGE_DIGEST`).
+#[derive(Clone, Debug, Default)]
+pub struct Place {
+    pub name: Option<String>,
+    pub node: Option<String>,
+    pub zone: Option<String>,
+    pub image: Option<String>,
+    pub digest: Option<String>,
+}
+
+impl Place {
+    /// From the environment, with `name` given or not.
+    pub fn from_env(name: Option<String>) -> Place {
+        let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let image = var("STRATA_IMAGE");
+        let digest = var("STRATA_IMAGE_DIGEST").or_else(|| image.as_deref().and_then(crate::operator::upgrade::digest_of));
+        // On Kubernetes the operator names the pod (`STRATA_POD`).
+        Place { name: name.or_else(|| var("STRATA_POD")), node: var("STRATA_NODE").or_else(|| var("NODE_NAME")), zone: var("STRATA_ZONE"), image, digest }
+    }
+
+    /// Its version: this build's, and the image's.
+    pub fn version(&self) -> Json {
+        let mut v = json!({"version": env!("CARGO_PKG_VERSION")});
+        if let Some(i) = &self.image {
+            v["image"] = json!(i);
+        }
+        if let Some(d) = &self.digest {
+            v["digest"] = json!(d);
+        }
+        v
+    }
+}
+
+/// The log filter as last set ([`Service::set_log_level`]).
+#[derive(Clone, Debug, Default)]
+pub struct LogLevel {
+    /// The filter to go back to, when this one expires.
+    pub previous: Option<String>,
+    pub set_by: Option<String>,
+    pub set_ms: Option<u64>,
+    pub expires_ms: Option<u64>,
+    pub generation: u64,
+}
+
+/// How long a log filter set holds by default: 30 minutes.
+pub const LOG_FILTER_S: u64 = 1800;
+
 pub struct Service {
     pub backend: Backend,
     pub schema: Schema,
     pub metrics: Metrics,
     pub agent: AgentConfig,
+    // ----- core: identity, service levels, place (command center rebuild)
+    pub identity: Identity,
+    pub slo: Slo,
+    pub place: Place,
+    /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
+    /// addresses and prefix lengths.
+    pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
+    /// The apps the command center shows (`--app`), which `/v1/apps/<name>`
+    /// reaches ([`crate::apps`]).
+    pub apps: crate::apps::Apps,
+    /// Fleet health's memory ([`crate::fleet`]).
+    pub fleet: crate::fleet::Fleet,
+    /// The coordinators this server knows ([`crate::peers`]).
+    pub peers: crate::peers::Peers,
+    /// The repository the version picker lists (`--image-repository`).
+    pub image_repository: String,
+    /// The rollout the coordinator watches run: its version, when it saw
+    /// it start, and how many copies were stale then.
+    pub rollout_seen: std::sync::Mutex<Option<(String, u64, u64)>>,
+    /// The last rollout's pace: seconds a copy.
+    pub rollout_pace_s: std::sync::Mutex<Option<f64>>,
+    /// The log filter set for a while: the filter before it, who set it,
+    /// until when, and a number each change takes
+    /// ([`Self::set_log_level`]).
+    pub log_level: Arc<std::sync::Mutex<LogLevel>>,
+    /// `GET /v1/index/tables`'s answer, and when ([`crate::inspect::tables`]).
+    pub tables_kept: tokio::sync::Mutex<Option<(std::time::Instant, Json)>>,
+    /// Each table's counts at the looks of the last minutes, for its rates
+    /// ([`crate::inspect::tables`]).
+    pub tables_counts: std::sync::Mutex<crate::inspect::Counts>,
+    /// What happened, in order ([`crate::events`]).
+    pub events: Arc<crate::events::Events>,
+    // ----- end core
     /// The `StrataCluster` that runs this coordinator on Kubernetes, if one
     /// does ([`crate::operator::kube::Link`]).
     pub kube: Option<crate::operator::kube::Link>,
@@ -229,6 +466,9 @@ pub struct Service {
     pub live: Arc<LiveQueries>,
     /// The latest and slow queries, and statistics per statement.
     pub query_log: QueryLog,
+    /// How often each table's documents are retrieved and its keys asked
+    /// for ([`crate::reads`]).
+    pub reads: crate::reads::Reads,
     /// Rates and gauges every few seconds ([`Self::sample`]).
     pub series: Series,
     /// When the server started.
@@ -238,6 +478,10 @@ pub struct Service {
     pub keys: Arc<Keys>,
     pub audit: Audit,
     pub alerts: Alerts,
+    /// Contain rules, applied at admission ([`crate::contain`]): alerts agent.
+    pub contain: crate::contain::Contain,
+    /// The on-call agent's proposals, waiting for an admin ([`crate::oncall`]).
+    pub oncall: crate::oncall::Desk,
     /// The cloud view's AWS credentials and machine catalogues ([`crate::aws`]).
     pub aws: Arc<crate::aws::Aws>,
     /// The cloud view's DigitalOcean token and size catalogues
@@ -246,6 +490,9 @@ pub struct Service {
     /// The clusters the cloud view made, and the loop that sees each one
     /// through ([`crate::cloud::clusters`]).
     pub clouds: Arc<crate::cloud::clusters::Clusters>,
+    /// The other clusters this server's command center reaches, with
+    /// their keys ([`crate::hub`]).
+    pub hub: Arc<crate::hub::Hub>,
     /// The server's log store ([`crate::logstore`]): its log lines and the
     /// queries it answered, in a Strata database of their own (`None`:
     /// `--log-store off`, or a coordinator without one).
@@ -305,8 +552,15 @@ pub struct Service {
     /// may have, in bytes; other routes take [`SMALL_BODY`].
     pub max_body: usize,
     pub lease_ttl: Duration,
-    leases: Mutex<HashMap<u64, (Snapshot, Instant)>>,
+    leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
+    /// Random for each run of the server: what a snapshot's statistics
+    /// version is drawn from with its txn ([`Self::stats_version`]), so
+    /// that versions from before a restart are not taken for later ones.
+    stats_nonce: u64,
+    /// Queries that did not run, sent statistics of another version
+    /// ([`QueryReq::stats_version`]).
+    stale_stats: AtomicU64,
     /// Queries allowed to run at once; the rest wait until their deadline.
     admission: Arc<Semaphore>,
     pub max_concurrent: usize,
@@ -336,6 +590,8 @@ pub struct Service {
     slots_file: tokio::sync::Mutex<Option<PathBuf>>,
     /// Its part in moving slots between shards ([`moving`]).
     pub(crate) moving: Moving,
+    /// The cluster it follows, as last read ([`Self::follows`]).
+    follows: feed::Follows,
     /// Its part in replication ([`crate::replication`]), which a replica's
     /// promotion changes ([`Self::promote`]).
     replication: RwLock<Replication>,
@@ -350,6 +606,9 @@ pub struct Service {
     /// its shard's other copies to elect it (`--failover-after-ms`; zero:
     /// never), as [`Self::start_failover`] does.
     pub failover_after: Duration,
+    /// The command center's Simulator: its test run and the reports kept
+    /// ([`crate::traffic::run`]).
+    pub simulator: crate::traffic::run::Simulator,
 }
 
 /// A server's part in replication.
@@ -376,6 +635,12 @@ impl Service {
             crate::heap::watch();
         }
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        // core: a coordinator's events come from its cluster snapshots.
+        let events = Arc::new(crate::events::Events::new());
+        if let Backend::Cluster(c) = &backend {
+            let ev = events.clone();
+            c.observe(move |before, after| ev.observe(before, after));
+        }
         let idempotency = Arc::new(idem::Keys::default());
         let writer_state = Arc::new(WriterState::default());
         let writes = match &backend {
@@ -392,17 +657,35 @@ impl Service {
             schema,
             metrics: Metrics::default(),
             agent,
+            identity: Identity::default(),
+            slo: Slo::default(),
+            place: Place::from_env(None),
+            trusted_proxies: Vec::new(),
+            apps: Default::default(),
+            fleet: Default::default(),
+            peers: Default::default(),
+            image_repository: crate::operator::upgrade::REPOSITORY.into(),
+            rollout_seen: Default::default(),
+            rollout_pace_s: Default::default(),
+            tables_kept: Default::default(),
+            tables_counts: Default::default(),
+            log_level: Default::default(),
+            events,
             kube: None,
             live: Arc::new(LiveQueries::default()),
             query_log: QueryLog::default(),
+            reads: crate::reads::Reads::default(),
             series: Series::default(),
             started: std::time::SystemTime::now(),
             keys: Arc::new(Keys::memory()),
             audit: Audit::new(None).expect("an audit log in memory"),
             alerts: Alerts::new(None, None).expect("the default alert rules"),
+            contain: Default::default(),
+            oncall: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
+            hub: Arc::new(crate::hub::Hub::memory()),
             log_store: None,
             models: RwLock::new(Arc::new(Vec::new())),
             models_dir: None,
@@ -426,6 +709,8 @@ impl Service {
             lease_ttl: Duration::from_secs(60),
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
+            stats_nonce: std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), (std::process::id(), Instant::now())),
+            stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
             embedding: Arc::new(Semaphore::new(cores)),
@@ -441,11 +726,13 @@ impl Service {
             slots_since: AtomicU64::new(0),
             slots_file: tokio::sync::Mutex::new(None),
             moving: Moving::default(),
+            follows: feed::Follows::default(),
             replication: RwLock::new(Replication::None),
             promote_options: None,
             promoting: tokio::sync::Mutex::new(()),
             replication_file: None,
             failover_after: Duration::ZERO,
+            simulator: Default::default(),
         }
     }
 
@@ -478,33 +765,78 @@ impl Service {
     }
 
     /// Refuses a client's write on a replica (409), and one a primary may
-    /// not apply now ([`Self::admit_write`]).
-    fn writable(&self) -> Result<(), ApiError> {
+    /// not apply now ([`Self::admit_write`]); answers who took it.
+    fn writable(&self) -> Result<Admitted, ApiError> {
         self.takes_writes()?;
         self.admit_write()
     }
 
-    /// Refuses a client's write on a replica (409).
+    /// Refuses a client's write on a replica, and on a shard of a cluster
+    /// that follows another but from its follow process (409).
     fn takes_writes(&self) -> Result<(), ApiError> {
+        self.is_writer()?;
+        self.not_following(None, None)
+    }
+
+    /// Refuses a write on a replica (409): its writes are its primary's.
+    pub(super) fn is_writer(&self) -> Result<(), ApiError> {
         match &self.replication() {
             Replication::Replica(_) => Err(conflict("this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into())),
             _ => Ok(()),
         }
     }
 
-    /// Refuses a write a primary may not apply now ([`Primary::admit`]).
-    fn admit_write(&self) -> Result<(), ApiError> {
+    /// Refuses a write a primary may not apply now ([`Primary::admit`]);
+    /// answers who took it.
+    fn admit_write(&self) -> Result<Admitted, ApiError> {
         match &self.replication() {
-            Replication::Primary(p) => p.admit(),
-            _ => Ok(()),
+            Replication::Primary(p) => {
+                let f = p.admit()?;
+                Ok(Admitted(Some(self.term()), Some(f)))
+            }
+            _ => Ok(Admitted(None, None)),
+        }
+    }
+
+    /// The term its database numbers writes under: a primary's (0 when
+    /// none).
+    fn term(&self) -> u64 {
+        self.local().and_then(|db| db.storage().numbering()).map_or(0, |n| n.term)
+    }
+
+    /// Who takes a write now, unasked whether it may be applied: a
+    /// statement that changes tables, and a retry of a write applied.
+    fn admitted(&self) -> Admitted {
+        match &self.replication() {
+            Replication::Primary(_) => Admitted(Some(self.term()), None),
+            _ => Admitted(None, None),
         }
     }
 
     /// Answers a committed write once the copies `--write-acks` asks for
-    /// hold it, waiting up to `timeout` ([`Primary::acknowledged`]).
-    async fn replicated(&self, w: Written, timeout: Duration) -> Result<Written, ApiError> {
-        if let (Replication::Primary(p), Some(seq)) = (&self.replication(), w.seq_no) {
-            p.acknowledged(seq, Instant::now() + timeout).await?;
+    /// hold it, waiting up to `timeout` ([`Primary::acknowledged`]), on the
+    /// primary that took it (`by`). One that stepped down since, as a
+    /// primary does when it votes for another copy in a handover
+    /// ([`Self::step_down`]), answers it in doubt (409), as it answers a
+    /// write it applied when another replaced it before its copies held it
+    /// ([`Primary::acknowledged`]): the new primary may not hold it, and
+    /// this server, a replica now, waits for no copy.
+    async fn replicated(&self, w: Written, timeout: Duration, by: Admitted) -> Result<Written, ApiError> {
+        // Applied: a primary asked to hand its shard over waits no more
+        // for it.
+        let Admitted(by, applied) = by;
+        drop(applied);
+        let Some(seq) = w.seq_no else { return Ok(w) };
+        match (&self.replication(), by) {
+            // Taken by this primary, or on a server of its own, which was
+            // made one since.
+            (Replication::Primary(p), term) if term.is_none_or(|t| t == self.term()) => p.acknowledged(seq, Instant::now() + timeout).await?,
+            (_, Some(term)) => {
+                return Err(conflict(format!(
+                    "the write is durable on this server as sequence number {seq}, but it stopped being the primary of term {term} before it was acknowledged, and the new primary may not hold it: write to the new primary"
+                )))
+            }
+            _ => {}
         }
         Ok(w)
     }
@@ -556,6 +888,43 @@ impl Service {
             }
             Replication::None => Err(conflict("this server is not a replica (--replica): it has no rows of a primary's to compare".into())),
         }
+    }
+
+    /// [`Self::verify_replicas`], every comparison made by this call: an
+    /// answer holding one from before the call began (a replica that just
+    /// joined, say) asks again, up to twice; one still older answers
+    /// `compared: false` and why. Each says when it was made
+    /// (`compared_ms`), and the answer when it was asked (`asked_ms`).
+    pub async fn verify_fresh(&self, timeout: Duration) -> Result<Json, ApiError> {
+        let start = telemetry::now_ms();
+        let deadline = Instant::now() + timeout;
+        let made = |r: &Json, now: u64| r["ms_ago"].as_u64().map(|a| now.saturating_sub(a));
+        let mut j = Json::Null;
+        for _ in 0..3 {
+            j = self.verify_replicas(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))).await?;
+            let now = telemetry::now_ms();
+            let old = j["replicas"].as_array().into_iter().flatten().any(|r| r["in_sync"] == true && made(r, now).is_none_or(|at| at < start));
+            if !old || Instant::now() >= deadline {
+                break;
+            }
+        }
+        let now = telemetry::now_ms();
+        for r in j["replicas"].as_array_mut().into_iter().flatten() {
+            let at = made(r, now);
+            r["compared_ms"] = json!(at);
+            match at {
+                Some(at) if at < start => {
+                    r["compared"] = json!(false);
+                    r["why"] = json!(format!("no comparison was made in time: the last one is {} s old, from before this call", now.saturating_sub(at) / 1000));
+                }
+                None if r["compared"] != true => {
+                    r["why"] = json!(if r["in_sync"] == true { "no comparison was made in time" } else { "out of sync: a replica is compared once it is in sync" });
+                }
+                _ => {}
+            }
+        }
+        j["asked_ms"] = json!(start);
+        Ok(j)
     }
 
     /// Compares each replica's rows with this primary's now
@@ -749,6 +1118,11 @@ impl Service {
 
     /// The coordinator this server is, for the calls that change the
     /// cluster; a database refuses them (400).
+    /// The cores this server may use.
+    pub fn cores(&self) -> usize {
+        self.cores
+    }
+
     pub fn coordinator(&self) -> Result<&Arc<Coordinator>, ApiError> {
         match &self.backend {
             Backend::Cluster(c) => Ok(c),
@@ -799,8 +1173,8 @@ impl Service {
             core::Take::Keep { since, check_rows } => (since, check_rows),
         };
         if check_rows {
-            let m = map.clone();
-            let elsewhere = tokio::task::spawn_blocking(move || rows_elsewhere(&db, &m, shard)).await.map_err(ApiError::internal)??;
+            let (d, m) = (db.clone(), map.clone());
+            let elsewhere = tokio::task::spawn_blocking(move || rows_elsewhere(&d, &m, shard)).await.map_err(ApiError::internal)??;
             if let Some((n, key)) = elsewhere {
                 let other = map.shard_of(&key);
                 return Err(conflict(format!(
@@ -809,6 +1183,20 @@ impl Service {
                     js::to_json(&key),
                     slots::slot(&key)
                 )));
+            }
+        }
+        // The slots that change hands here are marked in the log before
+        // the map lets a write reach them, so that a cluster following this
+        // one orders the writes on either side ([`feed`]), and the stream
+        // offsets they arrive with are kept for them ([`arrivals`]).
+        if let Some((old, s)) = held.as_ref().filter(|(_, s)| writer && *s == shard) {
+            let marks = match db.storage().numbering() {
+                Some(_) => feed::flip_marks(old, &map, *s),
+                None => Vec::new(),
+            };
+            if !marks.is_empty() || !old.same_slots(&map, shard) {
+                let (d, old, new, deadline) = (db.clone(), old.clone(), map.clone(), Instant::now() + self.timeout);
+                tokio::task::spawn_blocking(move || wait_for_writer(deadline, || write_flip(&d, &marks, &old, &new, shard))).await.map_err(ApiError::internal)??;
             }
         }
         if let Some(path) = &*file {
@@ -964,8 +1352,12 @@ impl Service {
         // A field with a model it did not have: its rows may lack vectors.
         let opened = |l: &[FieldModel]| l.iter().filter(|m| m.model.is_ok()).map(|m| (m.table.to_lowercase(), m.field.clone(), m.spec.clone())).collect::<Vec<_>>();
         let gained = opened(&list).iter().any(|m| !opened(&old).contains(m));
+        // A field new here whose model did not open (a table created or
+        // altered since): its model may be one to fetch.
+        let same = |a: &FieldModel, b: &FieldModel| a.table.eq_ignore_ascii_case(&b.table) && a.field == b.field && a.spec == b.spec;
+        let wants = list.iter().any(|m| m.model.is_err() && !old.iter().any(|o| same(o, m)));
         *self.models.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(list);
-        if gained {
+        if gained || wants {
             self.models_changed.send_modify(|n| *n += 1);
         }
     }
@@ -1065,7 +1457,7 @@ impl Service {
                 let (t, f, chunk) = (table.to_string(), field.to_string(), chunk.to_vec());
                 let guard = self.statement_guard(0, Arc::new(Mutex::new(None)));
                 let prepare = move |db: &Db| db.prepare_backfill(&t, &f, chunk).map(|p| Some(p.guarded(guard)));
-                match self.write_local(db, prepare, 0).await {
+                match self.write_local(db, prepare, 0, None).await {
                     // The queue is full: clients' writes come first.
                     Err(e) if e.status == 429 && busy < 600 => {
                         busy += 1;
@@ -1160,7 +1552,7 @@ impl Service {
         let now = strata::timestamp::now();
         let t0 = Instant::now();
         let mut n = 0;
-        let first = db.schema().table.clone();
+        let first = strata::db::default_table(&db.catalog()).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
         for schema in db.catalog() {
             let wanted: Vec<usize> = models.iter().filter(|m| m.model.is_ok() && m.table.eq_ignore_ascii_case(&schema.table)).filter_map(|m| schema.field_index(&m.field)).collect();
             let media: Vec<usize> = (0..schema.fields.len()).filter(|&f| schema.fields[f].media.is_some()).collect();
@@ -1296,7 +1688,7 @@ impl Service {
     /// 429 when [`Self::max_queued_writes`] requests hold one.
     fn enqueue(&self) -> Result<InQueue, ApiError> {
         InQueue::start(&self.writer_state, self.max_queued_writes)
-            .ok_or_else(|| ApiError { status: 429, message: format!("{} writes are queued, the most this server takes; try again", self.max_queued_writes) })
+            .ok_or_else(|| ApiError { status: 429, message: format!("{} writes are queued, the most this server takes, so the write was not applied; send it again in a second", self.max_queued_writes) })
     }
 
     /// Hands a write to the writer thread and waits for its commit. The
@@ -1307,8 +1699,14 @@ impl Service {
     /// holds the move's gate until it commits ([`Self::pass_gate`]).
     async fn write(&self, job: WriteJob, deadline: Instant, key: Option<String>, queued: InQueue, moved: Moved) -> Result<Written, ApiError> {
         let tx = self.writes.as_ref().ok_or_else(|| ApiError::internal("no writer for a coordinator"))?;
-        // Counted in before it looks at the map, which a move may change.
+        // Counted in before it looks at the map, which a move may change,
+        // and before it looks for a hold of the shard's writes, which waits
+        // for it: a client's write either commits before the hold or is
+        // refused. A slot move's own writes go on, and the hold's.
         let entry = self.moving.enter();
+        if matches!(moved, Moved::No) && !matches!(&job, WriteJob::Ops(ops) if ops.iter().any(feed::marks_hold)) {
+            self.not_held()?;
+        }
         let pass = if self.slots().is_none() {
             moving::Pass::Entry(entry)
         } else {
@@ -1330,7 +1728,12 @@ impl Service {
         };
         let (reply, rx) = tokio::sync::oneshot::channel();
         let keys = self.idempotency.clone();
-        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass) }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
+        let mark = match moved {
+            Moved::No => None,
+            Moved::Copy => Some((feed::MOVE_COPY, self.slot_epoch() as i64)),
+            Moved::Cleanup => Some((feed::MOVE_CLEANUP, self.slot_epoch() as i64)),
+        };
+        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass), mark, epoch: routed() }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
         rx.await.map_err(|_| ApiError::internal("the writer thread stopped"))?
     }
 
@@ -1362,6 +1765,24 @@ impl Service {
         self.catalog().into_iter().next().unwrap_or_else(|| Arc::new(self.schema.clone()))
     }
 
+    /// The table a request that names none reads or writes: the first
+    /// table, or on a database made with no tables (`strata-server --db`
+    /// on a new path, [`strata::db::Db::create_empty`]) the first one made
+    /// after its placeholder. An error while there is none.
+    pub fn default_table(&self) -> Result<Arc<Schema>, ApiError> {
+        let first = self.first_table();
+        if !first.is_placeholder() {
+            return Ok(first);
+        }
+        strata::db::default_table(&self.catalog()).ok_or_else(|| ApiError::bad(NO_TABLES))
+    }
+
+    /// The tables people made, the first first: [`Self::catalog_now`]
+    /// without the placeholder of a database made with no tables.
+    pub async fn tables_listed(&self) -> Vec<Arc<Schema>> {
+        self.catalog_now().await.into_iter().filter(|t| !t.is_placeholder()).collect()
+    }
+
     /// The table named `name` (any case). A coordinator that does not know
     /// it asks its shards again first.
     pub async fn table(&self, name: &str) -> Result<Arc<Schema>, ApiError> {
@@ -1375,6 +1796,14 @@ impl Service {
             }
         }
         Err(ApiError::bad(format!("query error: no such table: {name}")))
+    }
+
+    /// The tables as they are now: a coordinator asks its shards again
+    /// first (at most once a second), so that a table another coordinator
+    /// created is listed ([`Self::learn_tables`]).
+    pub async fn catalog_now(&self) -> Vec<Arc<Schema>> {
+        self.learn_tables(false).await;
+        self.catalog()
     }
 
     /// A coordinator asks its shards for their tables and rank profiles
@@ -1437,13 +1866,33 @@ impl Service {
     fn lease_of(&self, snap: Snapshot, ttl: Duration) -> Result<u64, ApiError> {
         let mut l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        l.retain(|_, (_, t)| *t > now);
+        l.retain(|_, x| x.until > now);
         if l.len() >= MAX_LEASES {
             return Err(ApiError { status: 429, message: format!("{MAX_LEASES} snapshot leases are held; try again when some expire") });
         }
         let id = self.next_lease.fetch_add(1, Ordering::Relaxed);
-        l.insert(id, (snap, now + ttl));
+        l.insert(id, Lease { snap, until: now + ttl, expansions: Arc::default() });
         Ok(id)
+    }
+
+    /// The version of `snap`'s BM25 statistics: of its txn, which every
+    /// write, flush and merge moves on, and of this run of the server.
+    /// Never 0, which a query sends for any version.
+    pub fn stats_version(&self, snap: &Snapshot) -> u64 {
+        match self.stats_nonce ^ snap.txn() {
+            0 => 1,
+            v => v,
+        }
+    }
+
+    /// The typo expansions found on lease `lease`'s snapshot so far, which
+    /// the queries reading it share (a coordinator's statistics round,
+    /// then its query round): `None` for no lease, or one unknown.
+    fn lease_expansions(&self, lease: u64) -> Option<Arc<Expansions>> {
+        if lease == 0 {
+            return None;
+        }
+        self.leases.lock().unwrap_or_else(|e| e.into_inner()).get(&lease).map(|x| x.expansions.clone())
     }
 
     /// Ends `leases` before they expire, and releases the versions only
@@ -1472,7 +1921,7 @@ impl Service {
     pub fn sweep_leases(&self) -> usize {
         let mut l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        l.retain(|_, (_, t)| *t > now);
+        l.retain(|_, x| x.until > now);
         l.len()
     }
 
@@ -1480,7 +1929,11 @@ impl Service {
     /// or the default.
     pub fn timeout_of(&self, timeout_ms: u64) -> Duration {
         if timeout_ms > 0 {
-            Duration::from_millis(timeout_ms).min(self.max_timeout)
+            let t = Duration::from_millis(timeout_ms).min(self.max_timeout);
+            if t < self.timeout {
+                let _ = DEADLINE.try_with(|d| d.asked_ms.set(Some(t.as_millis() as u64)));
+            }
+            t
         } else {
             self.timeout
         }
@@ -1490,7 +1943,7 @@ impl Service {
     fn leased(&self, lease: u64) -> Result<Snapshot, ApiError> {
         let l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         match l.get(&lease) {
-            Some((s, t)) if *t > Instant::now() => Ok(s.clone()),
+            Some(x) if x.until > Instant::now() => Ok(x.snap.clone()),
             _ => Err(ApiError::bad(format!("snapshot lease {lease} is unknown or expired"))),
         }
     }
@@ -1698,6 +2151,8 @@ impl Service {
     /// changed since (through another coordinator, or on that shard), the
     /// coordinator asks again and plans once more.
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
+        // alerts agent: Contain rules, at admission ([`crate::contain`]).
+        let _turn = self.contained(&req).await?;
         let again = (matches!(self.backend, Backend::Cluster(_)) && req.plan.is_none() && req.sql.to_ascii_lowercase().contains("rank_profile")).then(|| req.clone());
         match (self.query_once(req).await, again) {
             (Err(e), Some(req)) if profile::is_stale(&e.message) => {
@@ -1715,7 +2170,8 @@ impl Service {
         if req.plan.is_none() {
             if let Some(call) = Call::of_sql(&req.sql)? {
                 let res = self.json_paths(&call, &req.params, &req.after, req.timeout_ms).await.map(|p| (p.to_result(), Vec::new()));
-                return self.done(&req.sql, "paths", t0, None, req.shard, (false, req.quiet), res);
+                let meta = self.meta(&req);
+                return self.done(&req.sql, "paths", t0, None, req.shard, (false, req.quiet), &meta, res);
             }
         }
         let timeout = self.timeout_of(req.timeout_ms);
@@ -1759,9 +2215,10 @@ impl Service {
             Ok((schema, select)) => self.select(req, schema, select, t0, timeout).await,
             Err(e) => {
                 let secs = t0.elapsed().as_secs_f64();
-                self.metrics.query("invalid", "error", secs);
+                let outcome = telemetry::outcome_of(e.status, false);
+                self.metrics.query("invalid", outcome, secs);
                 // Kept with its error, as a query that ran and failed is.
-                self.query_log.add(&req.sql, "invalid", "error", secs, 0, req.shard, Some(&e.message), false, None, false);
+                self.query_log.add(&req.sql, "invalid", outcome, secs, 0, req.shard, Some(&e.message), false, None, false, &self.meta(&req));
                 Err(e)
             }
         }
@@ -1845,7 +2302,7 @@ impl Service {
             let Backend::Local(db) = &self.backend else {
                 return Err(ApiError::bad("a coordinator takes writes as SQL; its shards do not take write plans yet"));
             };
-            let w = self.write_local(db, move |db| db.prepare_plan(&plan).map(Some), timeout_ms).await;
+            let w = self.write_local(db, move |db| db.prepare_plan(&plan).map(Some), timeout_ms, None).await;
             let w = self.wrote(w, t0, Some(&text))?;
             return Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
         }
@@ -1857,10 +2314,17 @@ impl Service {
     /// shards.
     async fn select(self: &Arc<Self>, mut req: QueryReq, schema: Arc<Schema>, select: Select, t0: Instant, timeout: Duration) -> Result<Answer, ApiError> {
         let kind = metrics::kind(&select);
+        // A client's answer counts its rows' documents as retrieved; a
+        // shard's to a coordinator, which counts them, does not.
+        req.reads = !req.shard && !req.quiet && self.reads.on();
+        let mut served = Vec::new();
         let mut lease = 0;
+        // The statistics the query was sent are not of the version it reads.
+        let mut stale = false;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
-        let live = self.live.start(&req.sql, kind, req.shard);
+        let meta = self.meta(&req);
+        let live = self.live.start(&req.sql, kind, req.shard, &meta);
         // A shard's answer to a coordinator's leaf, as Arrow columns.
         let mut arrow = Vec::new();
         let res = match &self.backend {
@@ -1874,6 +2338,10 @@ impl Service {
                     if req.after != After::Any {
                         telemetry::record("wait for writes", tw, "ok");
                     }
+                    if req.stats_version != 0 && req.stats_version != self.stats_version(&snap) {
+                        stale = true;
+                        return Ok((no_rows(), Vec::new()));
+                    }
                     let ta = Instant::now();
                     let permit = self.admit(timeout).await.ok_or_else(too_many);
                     telemetry::record("admission", ta, if permit.is_ok() { "ok" } else { "rejected" });
@@ -1886,6 +2354,9 @@ impl Service {
                     // segments (as engram's recall does).
                     let opts = ExecOptions {
                         stats,
+                        // A query round on the lease of a statistics round
+                        // reuses its typo expansions.
+                        expansions: self.lease_expansions(req.snapshot),
                         shard: req.shard,
                         threads: (self.cores / n).max(1),
                         deadline: Some(t0 + timeout),
@@ -1897,6 +2368,7 @@ impl Service {
                         max_groups: self.max_groups,
                         memory: self.query_memory.clone(),
                         profile: req.profile,
+                        boost_inputs: db.exec.boost_inputs && !req.boosts_alone,
                         ..db.exec.clone()
                     };
                     let db = db.clone();
@@ -1941,7 +2413,10 @@ impl Service {
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
                     let r = match self.max_rows.filter(|&m| reach > m) {
                         Some(m) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
-                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| (m.rs, m.missing)),
+                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
+                            served = m.served;
+                            (m.rs, m.missing)
+                        }),
                     };
                     drop(permit);
                     r
@@ -1950,8 +2425,25 @@ impl Service {
             }
         };
         drop(live);
+        // Not a query that ran: the coordinator sends it again with the
+        // statistics of this version.
+        if stale {
+            self.stale_stats.fetch_add(1, Ordering::Relaxed);
+            return Ok(Answer { rs: no_rows(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind, missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: true });
+        }
+        if req.reads {
+            match (&res, &self.backend) {
+                (Ok((rs, _)), Backend::Local(_)) => self.reads.retrieved(&schema.table, crate::reads::At::here(), &rs.keys),
+                (Ok(_), Backend::Cluster(_)) => {
+                    for s in served {
+                        self.reads.retrieved(&schema.table, s.at, &s.keys);
+                    }
+                }
+                _ => {}
+            }
+        }
         // A shard's answer to a coordinator is not a client's.
-        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), res);
+        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), &meta, res);
         // A lease made for a query that failed holds nothing to fetch.
         let made = (lease != req.snapshot).then_some(lease).filter(|_| a.is_err());
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
@@ -1960,11 +2452,24 @@ impl Service {
         a.map(|a| Answer { lease, arrow, ..a })
     }
 
+    /// What the query log keeps of a query besides its text: who sent it
+    /// ([`telemetry::caller`]), its parameters, its deadline, and whether
+    /// that is the client's own.
+    pub fn meta(&self, req: &QueryReq) -> telemetry::Meta {
+        let deadline = self.timeout_of(req.timeout_ms);
+        telemetry::Meta {
+            caller: telemetry::caller(),
+            params: telemetry::params_json(&req.params),
+            deadline_ms: deadline.as_millis() as u64,
+            client_deadline: (!req.shard || part_of_clients_deadline()) && req.timeout_ms > 0 && deadline < self.timeout,
+        }
+    }
+
     /// Counts a query's outcome, logs it if it was slow, and makes its
     /// answer. One with more rows than `window` (a compound query's, or a
     /// coordinator's without a LIMIT) fails.
     #[allow(clippy::too_many_arguments)]
-    fn done(&self, sql: &str, kind: &'static str, t0: Instant, window: Option<usize>, shard: bool, (profiled, quiet): (bool, bool), res: Result<(ResultSet, Vec<String>), ApiError>) -> Result<Answer, ApiError> {
+    fn done(&self, sql: &str, kind: &'static str, t0: Instant, window: Option<usize>, shard: bool, (profiled, quiet): (bool, bool), meta: &telemetry::Meta, res: Result<(ResultSet, Vec<String>), ApiError>) -> Result<Answer, ApiError> {
         let mut res = match (res, window) {
             (Ok((rs, _)), Some(m)) if rs.rows.len() > m => Err(ApiError::bad(format!("query error: the query matches more than {m} rows, the most a query returns; add a LIMIT"))),
             (r, _) => r,
@@ -1976,14 +2481,12 @@ impl Service {
             steps::rebase(&mut rs.stats.steps, steps::us_at(start));
         }
         let secs = t0.elapsed().as_secs_f64();
+        // Out of query memory (429), or a shard was; a client's own
+        // deadline that passed is not the server's failure.
         let outcome = match &res {
             Ok((_, missing)) if !missing.is_empty() => "partial",
             Ok(_) => "ok",
-            Err(e) if e.status == 504 => "timeout",
-            // Out of query memory, or a shard was.
-            Err(e) if e.status == 429 => "rejected",
-            Err(e) if e.status == 499 => "cancelled",
-            Err(_) => "error",
+            Err(e) => telemetry::outcome_of(e.status, meta.client_deadline),
         };
         self.metrics.query(kind, outcome, secs);
         let rows = res.as_ref().map_or(0, |(rs, _)| rs.rows.len());
@@ -1993,9 +2496,9 @@ impl Service {
             tracing::warn!(kind, outcome, secs, rows, sql = %obs::truncate(sql, 2000), "slow query");
         }
         if !quiet {
-            self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled);
+            self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled, meta);
         }
-        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new() })
+        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new(), stale: false })
     }
 
     /// A compound query ([`compound`]): its plan's leaves run on one
@@ -2008,14 +2511,15 @@ impl Service {
         let catalog = self.catalog();
         let deadline = t0 + timeout;
         let req_sql = req.sql.clone();
-        let live = self.live.start(&req.sql, kind, req.shard);
+        let meta = self.meta(&req);
+        let live = self.live.start(&req.sql, kind, req.shard, &meta);
         let r = LiveQueries::run(&live, self.compound_run(req, plan, catalog, t0, timeout)).await;
         drop(live);
         let res = match r {
             Err(_) if Instant::now() > deadline => Err(ApiError { status: 504, message: format!("the query ran past its {} ms deadline", timeout.as_millis()) }),
             r => r,
         };
-        self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), res)
+        self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), &meta, res)
     }
 
     /// The work of [`Self::compound`]; [`Self::done`] counts it.
@@ -2117,8 +2621,29 @@ impl Service {
     }
 
     /// Counts a query refused for want of a slot, and says so (429).
+    /// Admits a client's query by the Contain rules ([`crate::contain`]),
+    /// or refuses it (429 naming the rule), counted and kept as refused.
+    /// A coordinator's call as a shard was admitted by the coordinator.
+    async fn contained(self: &Arc<Self>, req: &QueryReq) -> Result<Option<crate::contain::Admitted>, ApiError> {
+        if req.shard || self.contain.is_empty() {
+            return Ok(None);
+        }
+        let t0 = Instant::now();
+        let caller = telemetry::caller();
+        let (key, key_id) = (caller.as_ref().and_then(|c| c.key.as_deref()), caller.as_ref().and_then(|c| c.key_id.as_deref()));
+        match self.contain.admit(&telemetry::fingerprint(&req.sql), key, key_id, self.timeout_of(req.timeout_ms)).await {
+            Ok(a) => Ok(Some(a)),
+            Err(e) => {
+                let secs = t0.elapsed().as_secs_f64();
+                self.metrics.query("contained", "refused", secs);
+                self.query_log.add(&req.sql, "contained", "refused", secs, 0, false, Some(&e.message), false, None, false, &self.meta(req));
+                Err(e)
+            }
+        }
+    }
+
     fn rejected(&self, kind: &'static str, t0: Instant) -> ApiError {
-        self.metrics.query(kind, "rejected", t0.elapsed().as_secs_f64());
+        self.metrics.query(kind, "refused", t0.elapsed().as_secs_f64());
         too_many()
     }
 
@@ -2149,12 +2674,13 @@ impl Service {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// The statistics `sql` scores with, and a lease on the snapshot they
-    /// came from (0 from a coordinator, which sums its shards'). The lease
-    /// lasts for the query round that follows: the request's deadline
-    /// (`timeout_ms`, or the default) and a second. The snapshot holds the
-    /// writes `after` names ([`After`]).
-    pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64), ApiError> {
+    /// The statistics `sql` scores with, a lease on the snapshot they
+    /// came from (0 from a coordinator, which sums its shards'), and the
+    /// snapshot's statistics version ([`Self::stats_version`]; 0 from a
+    /// coordinator). The lease lasts for the query round that follows: the
+    /// request's deadline (`timeout_ms`, or the default) and a second. The
+    /// snapshot holds the writes `after` names ([`After`]).
+    pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
             None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
@@ -2171,18 +2697,21 @@ impl Service {
         match &self.backend {
             Backend::Local(db) => {
                 let snap = self.read_snapshot(db, 0, after, Instant::now() + timeout).await?;
+                let version = self.stats_version(&snap);
                 let lease = self.lease_of(snap.clone(), self.lease_ttl.min(timeout + Duration::from_secs(1)))?;
                 let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
                 let db = db.clone();
-                let opts = ExecOptions { synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()), ..db.exec.clone() };
+                // The query round on the lease finds the typo expansions
+                // these statistics were found with.
+                let opts = ExecOptions { synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()), expansions: self.lease_expansions(lease), ..db.exec.clone() };
                 let stats = tokio::task::spawn_blocking(move || db.term_stats_with(&view, &select, &opts)).await.map_err(ApiError::internal)??;
-                Ok((stats, lease))
+                Ok((stats, lease, version))
             }
             Backend::Cluster(c) => {
                 // A query by a rank profile reaches the shards written
                 // out, and one by a model with the model's hash.
                 let given = plan.filter(|_| !bound.root.has_models()).or((bound.root.has_profiles() || bound.root.has_models()).then_some(&bound));
-                Ok((c.term_stats(sql, &schema, given, params, after, Instant::now() + timeout).await?.0, 0))
+                Ok((c.term_stats(sql, &schema, given, params, after, Instant::now() + timeout).await?.0, 0, 0))
             }
         }
     }
@@ -2277,18 +2806,25 @@ impl Service {
     /// read without SQL ([`Db::get_many_at`]): per key, its live row as
     /// `SELECT *` answers it and the number of the write that last changed
     /// it, or none. A coordinator asks each key's shard. At most
-    /// [`MAX_GET_KEYS`] keys.
-    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64) -> Result<KeyRows, ApiError> {
+    /// [`MAX_GET_KEYS`] keys. With `columns`, of those columns alone, in
+    /// that order ([`Db::get_columns_at`]); a coordinator reads the
+    /// shards' whole rows and keeps those columns.
+    /// With `count`, a client's read, its keys count as asked for
+    /// ([`crate::reads`]).
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, columns: Option<Vec<String>>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
         let t0 = Instant::now();
         if keys.len() > MAX_GET_KEYS {
             return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
         }
         let schema = match table {
             Some(t) => self.table(t).await?,
-            None => self.first_table(),
+            None => self.default_table()?,
         };
         let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| strata::db::key_value(&schema, pk, k)).collect::<strata::Result<_>>()?;
+        if let Some(c) = &columns {
+            Db::key_read_fields(&schema, c)?;
+        }
         let timeout = self.timeout_of(timeout_ms);
         let deadline = t0 + timeout;
         let r = match &self.backend {
@@ -2298,16 +2834,43 @@ impl Service {
                 let Some(permit) = self.admit(timeout).await else { return Err(self.rejected("get", t0)) };
                 let db = db.clone();
                 let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
+                let asked = if count && self.reads.on() { keys.clone() } else { Vec::new() };
                 let r = tokio::task::spawn_blocking(move || {
-                    let columns = Db::get_columns(view.schema());
-                    db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
+                    let s = view.schema();
+                    let (names, rows) = match &columns {
+                        None => (Db::get_columns(s), db.get_many_at(&view, &keys, &opts)),
+                        Some(c) => (Db::key_read_fields(s, c)?.into_iter().map(|i| s.fields[i].name.clone()).collect(), db.get_columns_at(&view, &keys, c, &opts)),
+                    };
+                    rows.map(|rows| KeyRows { table: s.table.clone(), columns: names, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
                 })
                 .await
                 .map_err(ApiError::internal)?;
                 drop(permit);
+                if let Ok(got) = &r {
+                    let found: Vec<bool> = got.rows.iter().map(Option::is_some).collect();
+                    self.reads.asked(&schema.table, crate::reads::At::here(), &asked, &found);
+                }
                 r.map_err(ApiError::from)
             }
-            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|rows| KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|(rows, served)| {
+                if count && self.reads.on() {
+                    for s in served {
+                        self.reads.asked(&schema.table, s.at, &s.keys, &s.found);
+                    }
+                }
+                match &columns {
+                    None => Ok(KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+                    Some(c) => {
+                        // The shards answer every column `SELECT *` does.
+                        let star: Vec<usize> = strata::query::sql::star_fields(&schema).collect();
+                        let fields = Db::key_read_fields(&schema, c)?;
+                        let at: Vec<usize> = fields.iter().map(|f| star.iter().position(|s| s == f).expect("a column of a read by key")).collect();
+                        let rows = rows.into_iter().map(|r| r.map(|(row, n)| (at.iter().map(|&j| row.get(j).cloned().unwrap_or(Value::Null)).collect(), n))).collect();
+                        Ok(KeyRows { table: schema.table.clone(), columns: fields.iter().map(|&i| schema.fields[i].name.clone()).collect(), rows })
+                    }
+                }
+            })
+            .and_then(|r: Result<KeyRows, ApiError>| r),
         };
         telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
         r
@@ -2342,16 +2905,20 @@ impl Service {
     /// The statement needs the scope of its kind ([`command_scope`]), which
     /// `who` must have; a table's or rank profile's statement is audited.
     pub async fn sql(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
-        self.sql_in(who, sql, params, after, timeout_ms, None).await
+        self.sql_in(who, sql, params, after, timeout_ms, None, None).await
     }
 
     /// [`Self::sql`]; with `slots`, an UPDATE or DELETE over the rows of
     /// those slots alone, as a coordinator sends one again to the shard
-    /// slots moved to while it ran.
-    pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>) -> Result<SqlAnswer, ApiError> {
+    /// slots moved to while it ran. With an idempotency `key`, a write
+    /// statement sent again after it committed answers its first answer
+    /// rather than applying again; through a coordinator, each shard's part
+    /// is kept under the key ([`Coordinator::sql`]).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         let need = command_scope(&command);
-        who.may(need, &format!("a {} statement", match need { Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
+        who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
         if need == Scope::Admin {
             keys::note(obs::truncate(sql, 500).into_owned());
         }
@@ -2381,6 +2948,7 @@ impl Service {
             (_, true) => self.ddl(sql, params, timeout_ms).await,
             (Backend::Local(db), false) => {
                 let (text, p) = (sql.to_string(), params.clone());
+                let slots_hashed = slots.clone();
                 let only = slots.map(|s| moving::mask_outside(&s));
                 let refused = Arc::new(Mutex::new(None));
                 let guard = self.statement_guard(routed(), refused.clone());
@@ -2392,14 +2960,14 @@ impl Service {
                     };
                     Ok(Some(w.guarded(guard)))
                 };
-                let r = self.write_local(db, prepare, timeout_ms).await;
+                let r = self.write_local(db, prepare, timeout_ms, key.map(|k| (k, statement_hash(sql, params, slots_hashed.as_deref())))).await;
                 let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
                 match refusal {
                     Some(e) if r.is_err() => Err(e),
                     _ => r,
                 }
             }
-            (Backend::Cluster(c), false) => c.sql(sql, params).await,
+            (Backend::Cluster(c), false) => c.sql(sql, params, key).await,
         };
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
@@ -2416,6 +2984,10 @@ impl Service {
         let r = match &self.backend {
             Backend::Local(db) => {
                 self.takes_writes()?;
+                // Counted in until it commits, as a write is ([`Self::write`]).
+                let _entry = self.moving.enter();
+                self.not_held()?;
+                let by = self.admitted();
                 let timeout = self.timeout_of(timeout_ms);
                 let (db, sql, params) = (db.clone(), sql.to_string(), params.clone());
                 let w = tokio::task::spawn_blocking(move || {
@@ -2428,7 +3000,7 @@ impl Service {
                 .await
                 .map_err(ApiError::internal)?;
                 match w {
-                    Ok(w) => self.replicated(w, timeout).await,
+                    Ok(w) => self.replicated(w, timeout, by).await,
                     e => e,
                 }
             }
@@ -2439,32 +3011,65 @@ impl Service {
         r
     }
 
+    /// Applies write operations from a client (`/v1/write`, gRPC `Write`):
+    /// [`Self::write_ops`], under a key of its own through a coordinator
+    /// when it has none and may span shards ([`Coordinator::keyed`]).
+    pub async fn write_request(self: &Arc<Self>, ops: Vec<Json>, key: Option<String>) -> Result<Written, ApiError> {
+        let key = match &self.backend {
+            Backend::Cluster(c) => c.keyed(&ops, key),
+            Backend::Local(_) => key,
+        };
+        self.write_ops(ops, key).await
+    }
+
     /// A write `prepare` binds (`None`: not a write), queued for the writer
     /// thread. It is bound, and its vectors computed, before it queues:
-    /// models run on a core of their own, not in the writer thread.
-    async fn write_local<F>(self: &Arc<Self>, db: &Arc<Db>, prepare: F, timeout_ms: u64) -> Result<Written, ApiError>
+    /// models run on a core of their own, not in the writer thread. With
+    /// an idempotency key (and the hash of what it names), a retry of a
+    /// write that committed answers its first answer, as
+    /// [`Self::write_ops`] does.
+    async fn write_local<F>(self: &Arc<Self>, db: &Arc<Db>, prepare: F, timeout_ms: u64, key: Option<(String, u64)>) -> Result<Written, ApiError>
     where
         F: FnOnce(&Db) -> strata::Result<Option<PreparedWrite>> + Send + 'static,
     {
-        self.writable()?;
+        let by = self.writable()?;
         self.backpressure(db).await?;
         let q = self.enqueue()?;
-        let core = match self.embeds() {
-            true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
-            false => None,
-        };
-        let db = db.clone();
-        let prepared = tokio::task::spawn_blocking(move || {
-            let _core = core;
-            prepare(&db)
-        })
-        .await
-        .map_err(ApiError::internal)??
-        .ok_or_else(|| ApiError::bad("not a write statement"))?;
-        // The deadline bounds the wait for the writer, not the embedding.
-        let deadline = Instant::now() + self.timeout_of(timeout_ms);
-        let w = self.write(WriteJob::Sql(Box::new(prepared)), deadline, None, q, Moved::No).await?;
-        self.replicated(w, self.timeout_of(timeout_ms)).await
+        if let Some((k, hash)) = &key {
+            match self.idempotency.begin(k, *hash) {
+                idem::Begin::New => {}
+                idem::Begin::Done(n) => {
+                    self.metrics.replay();
+                    return self.replicated(n, self.timeout_of(timeout_ms), self.admitted()).await;
+                }
+                idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
+                idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for a different statement".into() }),
+            }
+        }
+        let key = key.map(|(k, _)| k);
+        let r = async {
+            let core = match self.embeds() {
+                true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
+                false => None,
+            };
+            let db = db.clone();
+            let prepared = tokio::task::spawn_blocking(move || {
+                let _core = core;
+                prepare(&db)
+            })
+            .await
+            .map_err(ApiError::internal)??
+            .ok_or_else(|| ApiError::bad("not a write statement"))?;
+            // The deadline bounds the wait for the writer, not the embedding.
+            let deadline = Instant::now() + self.timeout_of(timeout_ms);
+            self.write(WriteJob::Sql(Box::new(prepared)), deadline, key.clone(), q, Moved::No).await
+        }
+        .await;
+        if let (Err(_), Some(k)) = (&r, &key) {
+            // Not committed (the writer reports a commit as Ok).
+            self.idempotency.finish(k, None);
+        }
+        self.replicated(r?, self.timeout_of(timeout_ms), by).await
     }
 
     /// Applies write operations (see the proto's WriteRequest) in one
@@ -2480,11 +3085,24 @@ impl Service {
     /// ([`Self::write`]).
     pub async fn write_ops_as(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
+        own_marks_ok(&ops)?;
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
-                // flushes, or a full queue refuses the request.
-                let admitted = match self.takes_writes() {
+                // flushes, or a full queue refuses the request; and a
+                // client's on a follower (a move's copies and deletes are
+                // the cluster's own).
+                let own = ops.iter().any(feed::marks_own);
+                let carried = following().filter(|_| own).and_then(|n| feed::carried_follows(&ops, &n));
+                let copy = following().and_then(|n| feed::carried_copy(&ops, &n));
+                // A promotion's own writes end following ([`Self::promote_follower`]).
+                let promoting = own && crate::service::own() && ops.iter().any(feed::marks_promoted);
+                let writer = match moved {
+                    Moved::No if promoting => self.is_writer(),
+                    Moved::No => self.is_writer().and_then(|()| self.not_following(carried, copy)),
+                    _ => self.is_writer(),
+                };
+                let admitted = match writer {
                     Ok(()) => self.backpressure(db).await.and_then(|_| self.enqueue()),
                     Err(e) => Err(e),
                 };
@@ -2499,16 +3117,25 @@ impl Service {
                             self.metrics.replay();
                             // A retry after a write its copies did not all
                             // acknowledge waits for them again.
-                            return self.replicated(n, self.timeout).await;
+                            return self.replicated(n, self.timeout, self.admitted()).await;
                         }
                         idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
                         idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for different operations".into() }),
                     }
                 }
+                // A hold of the shard's writes: from here on it takes no
+                // other, and it commits once those under way did.
+                let _holding = feed::carried_hold(&ops).filter(|h| h % 2 == 1).map(|_| self.hold_pending());
+                if _holding.is_some() && !self.moving.drained(tokio::time::Instant::now() + self.timeout).await {
+                    if let Some(k) = &key {
+                        self.idempotency.finish(k, None);
+                    }
+                    return self.wrote(Err(ApiError { status: 503, message: format!("the writes under way did not commit within {} s, so the writes are not held: try again", self.timeout.as_secs()) }), t0, None);
+                }
                 let r = async {
                     // Not a retry of a write applied: a primary may refuse
                     // it before applying it.
-                    self.admit_write()?;
+                    let by = self.admit_write()?;
                     if self.embeds() || self.has_media() {
                         // Queued writes wait for a core to embed on.
                         let core = self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?;
@@ -2527,7 +3154,7 @@ impl Service {
                     for &ts in &w.stamps {
                         self.metrics.lag(now.saturating_sub(ts) as f64 / 1e6);
                     }
-                    Ok(w)
+                    Ok((w, by))
                 }
                 .await;
                 if let (Err(_), Some(k)) = (&r, &key) {
@@ -2537,8 +3164,13 @@ impl Service {
                 // Committed: a retry with its key answers it, whatever its
                 // copies say.
                 match r {
-                    Ok(w) => self.replicated(w, self.timeout).await,
-                    e => e,
+                    Ok((w, by)) => {
+                        if own {
+                            self.follows.forget();
+                        }
+                        self.replicated(w, self.timeout, by).await
+                    }
+                    Err(e) => Err(e),
                 }
             }
             Backend::Cluster(c) => c.write_ops(ops, key).await,
@@ -2587,7 +3219,7 @@ impl Service {
         let until = Instant::now() + BACKLOG_WAIT;
         while db.storage().backlogged() {
             if Instant::now() >= until {
-                return Err(ApiError { status: 429, message: "the database is behind on flushing writes to disk; try again in a second".into() });
+                return Err(ApiError { status: 429, message: "the database is behind on flushing writes to disk, so the write was not applied; send it again in a second".into() });
             }
             tokio::time::sleep(STREAM_POLL).await;
         }
@@ -2599,11 +3231,39 @@ impl Service {
     /// stream resumes ([`Coordinator::sources`]).
     pub async fn sources(&self) -> Result<Vec<Source>, ApiError> {
         match &self.backend {
+            // Without the marks of the server's own transactions, but those
+            // of its state: the cluster it follows, a hold of its writes, a
+            // promotion ([`feed::own_mark`]); and at the least offset of
+            // each source's slots ([`arrivals::folded`]).
             Backend::Local(db) => {
                 let db = db.clone();
-                tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)?.map_err(Into::into)
+                let all = tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)??;
+                Ok(arrivals::folded(all, MARK))
             }
             Backend::Cluster(c) => c.sources().await,
+        }
+    }
+
+    /// Each stream source's offset for the slots moving from this shard,
+    /// which the move carries to the shard they go to
+    /// ([`arrivals::of_slots`]): asked by the coordinator moving them while
+    /// it holds their writes, once their last changes are copied.
+    pub async fn moving_offsets(&self) -> Result<Vec<Source>, ApiError> {
+        let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator holds no slots"))?;
+        let mv = match self.slots() {
+            Some((m, shard)) => m.moving().filter(|mv| mv.from == shard).cloned(),
+            None => None,
+        };
+        let mv = mv.ok_or_else(|| conflict("no slots are moving from this shard".into()))?;
+        let all = tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)??;
+        Ok(arrivals::of_slots(all, &mv.slots, MARK).into_iter().map(|(name, offset)| Source { name, offset, updated: None }).collect())
+    }
+
+    /// Each shard's stream sources, in shard order: a server's own alone.
+    pub async fn sources_by_shard(&self) -> Result<Vec<Vec<Source>>, ApiError> {
+        match &self.backend {
+            Backend::Local(_) => Ok(vec![self.sources().await?]),
+            Backend::Cluster(c) => c.sources_by_shard().await,
         }
     }
 
@@ -2637,10 +3297,10 @@ impl Service {
     pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format) -> Result<(u64, Vec<String>), ApiError> {
         let schema = match table {
             Some(t) => self.table(t).await?,
-            None => self.first_table(),
+            None => self.default_table()?,
         };
         // Rows of the first table name none, as before there were tables.
-        let named = table.map(|_| schema.table.clone());
+        let named = (table.is_some() || self.first_table().is_placeholder()).then(|| schema.table.clone());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<strata::Result<Vec<Json>>>(1);
         let reader = tokio::task::spawn_blocking(move || -> strata::Result<Vec<String>> {
             let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?;
@@ -2775,6 +3435,112 @@ impl Service {
         Ok(out.to_json())
     }
 
+    /// Imports the Parquet file `body` into one table, as
+    /// [`Self::import_sqlite`] imports a SQLite file's: into the table
+    /// `opts.table` names (else the one an export kept in the file),
+    /// created from the file's columns when missing
+    /// ([`strata::parquet::Source::plan_over`]), the rows checked before any
+    /// is written and then written through the writer (or routed to the
+    /// shards) [`IMPORT_OPS`] a request. With `plan_only`, returns the plan
+    /// ([`strata::parquet::Plan::to_json`]) and writes nothing; otherwise
+    /// what was written ([`strata::parquet::Imported::to_json`]). Rows need
+    /// a write key, and an import that creates the table an admin key.
+    #[cfg(feature = "parquet")]
+    pub async fn import_parquet(self: &Arc<Self>, who: &Principal, body: axum::body::Bytes, opts: strata::parquet::ImportOptions, plan_only: bool, timeout_ms: u64) -> Result<Json, ApiError> {
+        who.may(Scope::Write, "an import")?;
+        let catalog = self.catalog();
+        let checked = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("upload.parquet");
+            std::fs::write(&path, &body).map_err(ApiError::internal)?;
+            let shown = path.display().to_string();
+            let hide = |e: strata::Error| ApiError::bad(e.to_string().replace(&shown, "the uploaded file").replace("upload.parquet: ", ""));
+            let src = strata::parquet::Source::open(&path).map_err(hide)?;
+            if opts.table.is_none() && opts.schema.is_none() && src.kept_table().is_none() {
+                return Err(ApiError::bad("name the table the rows go to (?table=): the file keeps none"));
+            }
+            let plan = src.plan_over(&catalog, &opts).map_err(hide)?;
+            if !plan_only {
+                src.documents(&plan, |docs| {
+                    for d in docs {
+                        d?;
+                    }
+                    Ok(())
+                })
+                .map_err(hide)?;
+            }
+            Ok((dir, src, plan))
+        })
+        .await
+        .map_err(ApiError::internal)??;
+        let (dir, src, plan) = checked;
+        if plan_only {
+            return Ok(plan.to_json());
+        }
+        if !plan.exists {
+            who.may(Scope::Admin, &format!("an import that creates a table ({})", plan.schema.table))?;
+            keys::note(format!("Parquet import created table {}", plan.schema.table));
+            self.create_table(plan.schema.clone(), timeout_ms).await?;
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<strata::Result<Vec<Json>>>(1);
+        let p = plan.clone();
+        let reader = tokio::task::spawn_blocking(move || {
+            let _dir = dir;
+            let op = if p.schema.primary_key.is_some() { "upsert" } else { "insert" };
+            src.documents(&p, |docs| loop {
+                let chunk: strata::Result<Vec<Json>> = (&mut *docs).take(IMPORT_OPS).map(|d| d.map(|d| json!({"op": op, "table": p.schema.table, "doc": js::document_json(&p.schema, &d)}))).collect();
+                let last = chunk.as_ref().map_or(true, |c| c.len() < IMPORT_OPS);
+                if tx.blocking_send(chunk).is_err() {
+                    return Err(strata::Error::Query("stopped".into()));
+                }
+                if last {
+                    return Ok(());
+                }
+            })
+            .map(|((), nonfinite)| nonfinite)
+        });
+        let mut out = strata::parquet::Imported { table: plan.schema.table.clone(), files: plan.files, created: !plan.exists, skipped: plan.skipped.clone(), notes: plan.notes.clone(), ..Default::default() };
+        while let Some(ops) = rx.recv().await {
+            let ops = ops?;
+            if !ops.is_empty() {
+                out.rows += self.write_ops(ops, None).await?.rows;
+            }
+        }
+        if let Ok(Ok(nonfinite)) = reader.await {
+            out.notes.extend(strata::parquet::nonfinite_notes(&plan.schema, &nonfinite));
+        }
+        Ok(out.to_json())
+    }
+
+    /// Writes one table (the server's only one, or `table`) to a Parquet
+    /// file, from one snapshot ([`strata::parquet::export`]), as
+    /// [`Self::export_sqlite`] writes a SQLite file.
+    #[cfg(feature = "parquet")]
+    pub async fn export_parquet(self: &Arc<Self>, table: Option<String>, meta: bool) -> Result<(tempfile::TempDir, PathBuf, strata::parquet::Exported), ApiError> {
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("a coordinator holds no rows: export from each shard's server, or with strata-server export"));
+        };
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || {
+            let table = match table {
+                Some(t) => t,
+                None => {
+                    let all = db.catalog();
+                    match all.as_slice() {
+                        [one] => one.table.clone(),
+                        _ => return Err(ApiError::bad(format!("a Parquet file holds one table: name it (?tables=), one of {}", all.iter().map(|s| s.table.as_str()).collect::<Vec<_>>().join(", ")))),
+                    }
+                }
+            };
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("export.parquet");
+            let r = strata::parquet::export(&db, &path, &strata::parquet::ExportOptions { tables: vec![table], meta })?;
+            Ok((dir, path, r))
+        })
+        .await
+        .map_err(ApiError::internal)?
+    }
+
     /// Creates a table, as `CREATE TABLE` does ([`Self::ddl`]): on a local
     /// database, once no write holds the writer; a primary ships it with
     /// the rows. A coordinator creates tables only through `CREATE TABLE`.
@@ -2783,6 +3549,8 @@ impl Service {
             return Err(ApiError::bad(format!("a coordinator imports into the tables its shards have: create table {} first (CREATE TABLE through the coordinator), or import on each shard", schema.table)));
         };
         self.takes_writes()?;
+        let _entry = self.moving.enter();
+        self.not_held()?;
         let deadline = Instant::now() + self.timeout_of(timeout_ms);
         let db = db.clone();
         tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.create_table(schema.clone())?))).await.map_err(ApiError::internal)??;
@@ -2818,6 +3586,12 @@ impl Service {
             Backend::Local(db) => {
                 let s = db.snapshot();
                 let mut h = json!({"status": "ok", "role": "shard", "docs": s.n_live_docs(), "segments": s.segments().len(), "txn": s.txn()});
+                // cluster2: the rows of every table (`docs` counts the first
+                // only), which a move or a new copy sends: plans and moves
+                // count these.
+                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != strata::storage::SOURCES).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
+                h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
+                h["tables"] = Json::Object(tables);
                 if let Some((m, shard)) = self.slots() {
                     h["slots"] = json!({"epoch": m.epoch, "shard": shard, "of": m.shards()});
                 }
@@ -2870,6 +3644,7 @@ impl Service {
     pub fn sample(&self) -> Sample {
         let mut s = Sample { at: Some(Instant::now()), ts_ms: telemetry::now_ms(), ..Default::default() };
         self.metrics.totals(&mut s);
+        s.query_max_s = self.metrics.take_query_max();
         let (rss, cpu) = telemetry::process_usage();
         s.cpu_s = cpu;
         let heap = crate::heap::stats();
@@ -2884,6 +3659,12 @@ impl Service {
         }
         g.insert("running", self.running() as f64);
         g.insert("live", self.live.len() as f64);
+        // A cluster that follows another: its follow processes' lag.
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            g.insert("follow_lag_s", lags.iter().map(|l| l.1).fold(0.0, f64::max));
+            g.insert("follow_behind", lags.iter().map(|l| l.2).fold(0.0, f64::max));
+        }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
             g.insert("query_memory_bytes", b.used() as f64);
@@ -2994,14 +3775,163 @@ impl Service {
     /// coordinator asks every replica of every shard
     /// ([`Coordinator::cluster`]).
     pub async fn cluster(self: &Arc<Self>) -> Json {
-        match &self.backend {
-            Backend::Local(_) => json!({"role": self.role().as_str_name().to_lowercase(), "node": self.detail().await}),
+        let mut j = match &self.backend {
+            Backend::Local(_) => json!({"role": self.role().as_str_name().to_lowercase(), "node": self.detail().await, "at_ms": telemetry::now_ms()}),
             Backend::Cluster(c) => {
-                let mut j = c.cluster().await;
-                j["coordinator"] = json!({"load": self.series.last().map(|p| (*p).clone()), "health": {"retries": j["retries"], "hedges": j["hedges"]}});
+                let mut j = (*c.snapshot().await).clone();
+                j["coordinator"] = json!({"load": self.series.last().map(|p| (*p).clone()), "health": {"retries": j["retries"], "hedges": j["hedges"]}, "version": self.place.version(), "name": self.place.name, "node": self.place.node});
                 j
             }
+        };
+        j["cluster"] = self.identity.json();
+        j
+    }
+
+    /// Keeps an audit entry ([`Audit::add`]).
+    pub fn audit_add(&self, e: keys::Entry) {
+        self.audit_keep(e, true);
+    }
+
+    /// Keeps an audit entry; a change is a `change` event too when
+    /// `event`, which is false when its request made its own event of it
+    /// (an alert acknowledged, a log level set: alerts agent).
+    pub fn audit_keep(&self, e: keys::Entry, event: bool) {
+        if let Some(s) = &self.log_store {
+            s.keep_audit(&e);
         }
+        if event && e.kind() == keys::CHANGE {
+            self.events.add(crate::events::of_change(&e));
+        }
+        self.audit.add(e);
+    }
+
+    /// What this server can do for its shard now: serve reads and take
+    /// writes, and why not (a coordinator reads it from each copy's
+    /// detail, [`Coordinator::cluster`]). A primary serves no reads
+    /// without a majority of its copies (with failover), and takes no
+    /// writes without enough of them in sync; a replica takes none from
+    /// clients.
+    pub fn capability(&self) -> Json {
+        let Backend::Local(_) = &self.backend else { return Json::Null };
+        let (reads, writes): (Result<(), String>, Result<(), String>) = match self.replication() {
+            Replication::None => (Ok(()), Ok(())),
+            // Whether it would take a write now: the write's flight ends at once.
+            Replication::Primary(p) => (p.readable().map_err(|e| e.message), p.admit().map(drop).map_err(|e| e.message)),
+            Replication::Replica(f) => (
+                match f.serves_reads() {
+                    true => Ok(()),
+                    false => Err("this replica serves no reads while it catches up with its primary, or has not heard from it".into()),
+                },
+                Err("a replica takes no writes from clients".into()),
+            ),
+        };
+        let writes = match self.failing() {
+            Some(why) => Err(why),
+            None => writes,
+        };
+        let mut j = json!({"serves_reads": reads.is_ok(), "takes_writes": writes.is_ok(), "failover_after_ms": self.failover_after.as_millis() as u64});
+        if let Err(e) = reads {
+            j["no_reads"] = json!(e);
+        }
+        if let Err(e) = writes {
+            j["no_writes"] = json!(e);
+        }
+        j
+    }
+
+    /// Sets the log filter (`debug`, `info,strata_server::coord=debug`)
+    /// for `expires_s` seconds ([`LOG_FILTER_S`] by default; 0: until it
+    /// is set again), then back to the one before; each change, and the
+    /// way back, is an event (`log_level`).
+    pub fn set_log_level(&self, filter: &str, expires_s: Option<u64>, by: &str) -> Result<Json, ApiError> {
+        let before = crate::obs::log_filter();
+        crate::obs::set_log_filter(filter).map_err(ApiError::bad)?;
+        let now = telemetry::now_ms();
+        let secs = expires_s.unwrap_or(LOG_FILTER_S);
+        let expires_ms = (secs > 0).then(|| now + secs * 1000);
+        let generation = {
+            let mut l = self.log_level.lock().unwrap_or_else(|e| e.into_inner());
+            // The filter to go back to is the one before the first of a run
+            // of changes that expire.
+            let previous = match (&l.expires_ms, expires_ms) {
+                (Some(_), Some(_)) => l.previous.clone(),
+                (_, Some(_)) => before.clone(),
+                (_, None) => None,
+            };
+            *l = LogLevel { previous, set_by: Some(by.to_string()), set_ms: Some(now), expires_ms, generation: l.generation + 1 };
+            l.generation
+        };
+        tracing::info!(filter, by, expires_s = secs, "log filter changed");
+        let until = expires_ms.map_or(String::new(), |_| format!(" for {} min", secs.div_ceil(60)));
+        self.events.add(crate::events::Event {
+            kind: "log_level".into(),
+            severity: "info".into(),
+            title: format!("Logs at {filter}{until}"),
+            detail: json!({"filter": filter, "before": before, "expires_ms": expires_ms}),
+            where_: Json::Null,
+            who: Some(by.to_string()),
+        });
+        if let Some(at) = expires_ms {
+            let (level, events) = (self.log_level.clone(), self.events.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(at.saturating_sub(telemetry::now_ms()))).await;
+                let mut l = level.lock().unwrap_or_else(|e| e.into_inner());
+                if l.generation != generation {
+                    return;
+                }
+                let back = l.previous.clone().unwrap_or_else(|| "info".into());
+                if let Err(e) = crate::obs::set_log_filter(&back) {
+                    tracing::warn!(error = %e, "the log filter could not go back");
+                    return;
+                }
+                *l = LogLevel { generation: l.generation + 1, ..LogLevel::default() };
+                drop(l);
+                tracing::info!(filter = %back, "log filter back, its time over");
+                events.add(crate::events::Event { kind: "log_level".into(), severity: "info".into(), title: format!("Logs back at {back}: the change expired"), detail: json!({"filter": back, "expired": true}), where_: Json::Null, who: None });
+            });
+        }
+        Ok(self.log_filter_json())
+    }
+
+    /// The log filter, and until when and by whom it was set.
+    pub fn log_filter_json(&self) -> Json {
+        let l = self.log_level.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        json!({"filter": crate::obs::log_filter(), "expires_ms": l.expires_ms, "set_by": l.set_by, "set_ms": l.set_ms, "previous": l.previous})
+    }
+
+    /// Fleet health (`GET /v1/health/fleet`, [`crate::fleet`]): of the
+    /// cluster on a coordinator, of this server on a shard server.
+    pub async fn fleet_health(self: &Arc<Self>) -> Json {
+        let now = telemetry::now_ms();
+        let (cluster, partial, coordinator) = match &self.backend {
+            Backend::Cluster(c) => {
+                let me = match crate::peers::this(self) {
+                    Some(p) => json!({"url": p.url, "name": p.name}),
+                    None => json!({"url": self.identity.public_url, "name": self.place.name.clone().or_else(|| self.place.node.clone())}),
+                };
+                ((*c.snapshot().await).clone(), c.opts.partial, Some(me))
+            }
+            Backend::Local(_) => (crate::fleet::local_shard(&self.detail().await), false, None),
+        };
+        let history = self.series.since(now.saturating_sub(3_600_000));
+        let from = now.saturating_sub(crate::fleet::WINDOW_S * 1000);
+        let points: Vec<Arc<Json>> = history.iter().filter(|p| p["t"].as_u64().unwrap_or(0) > from).cloned().collect();
+        // fleet: the alerts firing that nobody silenced, each rule once, as the bell counts them
+        // (alerts2: nor a cause holds back).
+        let alerts: Vec<Json> = self.alerts.json()["states"].as_array().map_or_else(Vec::new, |v| v.iter().filter(|s| s["state"] == "firing" && s["silenced"].is_null() && s["held_by"].is_null()).cloned().collect());
+        self.fleet.judge(crate::fleet::Inputs {
+            cluster: &cluster,
+            points: &points,
+            history: &history,
+            slo_error_ratio: self.slo.error_ratio,
+            slo_p99_ms: self.slo.p99_ms,
+            alerts,
+            partial,
+            coordinator,
+            peers: crate::peers::windows(self),
+            gone: if matches!(self.backend, Backend::Cluster(_)) { crate::peers::gone(self) } else { Vec::new() },
+            now_ms: now,
+        })
     }
 
     /// This server's health and latest point, as a coordinator's
@@ -3016,8 +3946,22 @@ impl Service {
         });
         json!({
             "health": health, "load": load, "minute": minute,
-            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores},
+            // The Simulator reads `cpu_seconds` (the process's CPU so far) before and after a test.
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "cpu_seconds": telemetry::process_usage().1, "memory_limit_bytes": strata::storage::memory_limit()},
             "running": self.live.len(), "log_store": log_store,
+            // core: what a coordinator's /v1/cluster shows of each copy.
+            "capability": self.capability(),
+            // cluster2: the flags it runs with, for Settings (NEW-cluster-admin-5).
+            "limits": {"slow_ms": self.slow_after().map(|d| d.as_millis() as u64), "max_concurrent": self.max_concurrent, "max_rows": self.max_rows, "timeout_ms": self.timeout.as_millis() as u64},
+            "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
+            "version": self.place.version(),
+            "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
+            "cluster": self.identity.json(),
+            // alerts agent: the alerts firing here, and this copy's states of
+            // the each_copy rules, which a coordinator gathers.
+            "alerts": self.alerts.summary(),
+            // fleet: the coordinators that named themselves here ([`crate::peers`]).
+            "coordinators": self.peers.heard_json(),
         })
     }
 
@@ -3035,7 +3979,36 @@ impl Service {
             },
         };
         let shard = self.slots().map(|(_, s)| s);
-        Some(crate::logstore::Load { ts_ms: now_ms, role: role.into(), shard, qps, cpu, cores: self.cores, p99_ms, disk_used_ratio })
+        // core: what the command center charts past the hour in memory.
+        let w = crate::fleet::Window::of(&points);
+        let secs = w.secs.max(1e-3);
+        let per_s = |k: &str, rate: &str| {
+            let n: Option<f64> = points.iter().map(|p| p[k].as_f64().or_else(|| p[rate].as_f64().map(|r| r * p["secs"].as_f64().unwrap_or(2.0)))).sum();
+            n.map(|n| n / secs)
+        };
+        let mean = |k: &str| {
+            let v: Vec<f64> = points.iter().filter_map(|p| p[k].as_f64()).collect();
+            (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+        };
+        let p50_ms = (w.hist.iter().sum::<u64>() > 0).then(|| telemetry::quantile(&crate::metrics::BUCKETS, &w.hist, 0.5).map(|s| s * 1e3)).flatten();
+        Some(crate::logstore::Load {
+            ts_ms: now_ms,
+            role: role.into(),
+            shard,
+            qps,
+            cpu,
+            cores: self.cores,
+            p99_ms,
+            disk_used_ratio,
+            error_ratio: w.error_ratio(),
+            errors_s: Some(w.failures / secs),
+            client_errors_s: per_s("client_errors", "http_4xx_s"),
+            timeouts_s: per_s("timeouts", "timeouts_s"),
+            rejected_s: mean("rejected_s"),
+            p50_ms,
+            writes_s: mean("writes_s"),
+            mem_bytes: points.iter().rev().find_map(|p| p["rss_bytes"].as_u64()),
+        })
     }
 
     /// The metrics (`GET /metrics`). A coordinator does not ask its shards
@@ -3047,6 +4020,14 @@ impl Service {
             Family { name: "strata_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
             one("strata_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
         ];
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
+            more.extend([
+                family("strata_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
+                family("strata_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
+            ]);
+        }
         if let Some(s) = &self.log_store {
             more.extend(s.metrics());
         }
@@ -3091,6 +4072,7 @@ impl Service {
                     one("strata_free_bytes", "gauge", "Bytes of the database file free for reuse (0 in the directory layout).", (f.free_pages * strata::storage::pager::PAGE) as f64),
                     one("strata_wal_bytes", "gauge", "Bytes of the write-ahead log.", f.wal_bytes as f64),
                     one("strata_snapshot_leases", "gauge", "Snapshot leases held.", self.sweep_leases() as f64),
+                    one("strata_stale_stats_total", "counter", "Queries a coordinator sent with kept BM25 statistics of an older version, answered without running.", self.stale_stats.load(Ordering::Relaxed) as f64),
                     one("strata_failing", "gauge", "1 when the database cannot write until the server restarts.", self.failing().is_some() as u8 as f64),
                     one("strata_flush_failing", "gauge", "1 while flushes fail (a full disk).", db.storage().flush_error().is_some() as u8 as f64),
                     one("strata_write_queue_requests", "gauge", "Write requests in the write path: embedding, waiting for the writer, or being applied.", w.queued.load(Ordering::Relaxed) as f64),
@@ -3119,6 +4101,12 @@ pub enum SqlAnswer {
     Rows(Answer),
     Written { w: Written, took_ms: f64 },
 }
+
+/// The term of the primary that took a write ([`Service::admit_write`]),
+/// which answers it once its copies hold it ([`Service::replicated`]):
+/// `None` on a server of its own. And the write counted as taken until it
+/// is applied or refused ([`crate::replication::Flight`]).
+struct Admitted(Option<u64>, Option<crate::replication::Flight>);
 
 /// What a write did: the rows it wrote and, in a database that numbers
 /// its writes (`--seq-no`), its transaction's sequence number. Through a
@@ -3165,6 +4153,14 @@ pub const SMALL_BODY: usize = 16 << 20;
 /// writes. Loaders must split documents the same way.
 pub fn shard_of(key: &Value, n: usize) -> usize {
     slots::shard_of(key, n.max(1))
+}
+
+/// What an idempotency key of a write statement names: its text, its
+/// parameters (by name) and the slots it is limited to.
+fn statement_hash(sql: &str, params: &Params, slots: Option<&[usize]>) -> u64 {
+    let mut named: Vec<(&String, String)> = params.0.iter().map(|(k, v)| (k, format!("{v:?}"))).collect();
+    named.sort();
+    idem::hash_ops(&[json!(sql), json!(named), json!(slots)])
 }
 
 fn conflict(message: String) -> ApiError {
@@ -3243,9 +4239,13 @@ fn save_slots(path: &Path, map: &SlotMap, shard: usize, since: u64) -> std::io::
 }
 
 /// Writes `j` to `path` and syncs it, through a new file renamed over the
-/// old one, so that a crash leaves one or the other.
+/// old one, so that a crash leaves one or the other. One at a time: two at
+/// once would write the same new file (a primary's vote kept as a call of
+/// the new primary fences it), and leave it torn or gone.
 pub(crate) fn save_json(path: &Path, j: &Json) -> std::io::Result<()> {
     use std::io::Write as _;
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let body = serde_json::to_vec_pretty(j).map_err(std::io::Error::other)?;
@@ -3271,10 +4271,29 @@ fn op_table<'a>(op: &'a Json, first: &'a str) -> Result<&'a str, ApiError> {
 /// The table of `catalog` (the database's tables, the first first) that an
 /// operation writes ([`op_table`]).
 pub fn op_schema<'a>(catalog: &'a [Arc<Schema>], op: &Json) -> Result<&'a Arc<Schema>, ApiError> {
-    let first = catalog.first().ok_or_else(|| ApiError::internal("a database without tables"))?;
+    let first = op_default(catalog)?;
     let name = op_table(op, &first.table)?;
-    catalog.iter().find(|t| t.table.eq_ignore_ascii_case(name)).ok_or_else(|| ApiError::bad(format!("query error: no such table: {name}")))
+    let t = catalog.iter().find(|t| t.table.eq_ignore_ascii_case(name)).ok_or_else(|| ApiError::bad(format!("query error: no such table: {name}")))?;
+    if t.is_placeholder() {
+        return Err(ApiError::bad(NO_TABLES));
+    }
+    Ok(t)
 }
+
+/// The table of `catalog` an operation that names none writes: the first,
+/// or on a database made with no tables the first made after its
+/// placeholder ([`Service::default_table`]).
+fn op_default(catalog: &[Arc<Schema>]) -> Result<&Arc<Schema>, ApiError> {
+    let first = catalog.first().ok_or_else(|| ApiError::internal("a database without tables"))?;
+    if !first.is_placeholder() {
+        return Ok(first);
+    }
+    Ok(catalog.iter().find(|t| !t.is_placeholder()).unwrap_or(first))
+}
+
+/// What a request that names no table is told on a database made with no
+/// tables, before its first ([`Service::default_table`]).
+pub const NO_TABLES: &str = "this database has no tables yet: create one (CREATE TABLE, POST /v1/tables, or an import that creates it), then name it";
 
 /// What places the row an operation writes on a shard: its key, or for a
 /// table placed by a column ([`Schema::with_shard_by`]) that column's
@@ -3327,6 +4346,14 @@ struct Queued {
     /// Held until the write commits, for a hold on writes to moving slots
     /// to wait for ([`Service::pass_gate`]).
     pass: Option<moving::Pass>,
+    /// The offset its transaction writes in `_sources` to mark it as a
+    /// slot move's ([`feed::MOVE_COPY`], [`feed::MOVE_CLEANUP`]): such a
+    /// request shares its transaction only with others of the same mark,
+    /// so that a shard's feed leaves out the move's rows and only them.
+    mark: Option<(&'static str, i64)>,
+    /// The epoch of the cluster map the request was routed by (0: none),
+    /// which says which slots its stream events cover ([`arrivals`]).
+    epoch: u64,
 }
 
 impl Queued {
@@ -3435,36 +4462,48 @@ impl Drop for Cancel {
     }
 }
 
-/// Operations one shared transaction takes at most.
-const GROUP_OPS: usize = 4096;
+/// Operations one shared transaction takes at most (an SQL write counts
+/// its rows or keys, [`PreparedWrite::weight`]).
+const GROUP_OPS: usize = strata::db::GROUP_OPS;
 
 /// The writer of a local database: one thread applying write requests in
-/// the order they arrive. Requests of operations that wait together share
-/// one transaction, so one commit and one disk flush serve them all (group
+/// the order they arrive. Requests that wait together share one
+/// transaction, so one commit and one disk flush serve them all (group
 /// commit); if one of them fails, each runs again alone, so that only it
-/// fails. SQL writes find their rows by reading the database, which does
-/// not show a transaction's own changes, so they commit alone. A group
-/// that panics is answered with errors and the writer goes on.
+/// fails. Operations (`/v1/write`) group with operations. SQL writes find
+/// their rows by reading the database, which does not show a
+/// transaction's own changes, so they group with SQL writes that touch
+/// other rows ([`Footprints`]): an INSERT, or an UPDATE or DELETE by key,
+/// of keys no other in the group has. A group that panics is answered
+/// with errors and the writer goes on.
 fn writer(db: &Db, rx: mpsc::Receiver<Queued>, state: &WriterState) {
     let _alive = Alive(state);
     let mut next = None;
     loop {
         let Some(first) = next.take().or_else(|| rx.recv().ok()) else { return };
+        let mut n = first.weight();
+        let mut prints = Footprints::default();
+        if let WriteJob::Sql(p) = &first.job {
+            prints.admit(p);
+        }
+        let ops = matches!(first.job, WriteJob::Ops(_));
+        let mark = first.mark;
         let mut group = vec![first];
-        if matches!(group[0].job, WriteJob::Ops(_)) {
-            let mut n = group[0].ops().len();
-            while n < GROUP_OPS {
-                match rx.try_recv() {
-                    Ok(q) if matches!(q.job, WriteJob::Ops(_)) => {
-                        n += q.ops().len();
-                        group.push(q);
-                    }
-                    Ok(q) => {
-                        next = Some(q);
-                        break;
-                    }
-                    Err(_) => break,
+        while n < GROUP_OPS {
+            match rx.try_recv() {
+                Ok(q) if ops && matches!(q.job, WriteJob::Ops(_)) && q.mark == mark => {
+                    n += q.weight();
+                    group.push(q);
                 }
+                Ok(q) if matches!(&q.job, WriteJob::Sql(p) if !ops && n + p.weight() <= GROUP_OPS && prints.admit(p)) => {
+                    n += q.weight();
+                    group.push(q);
+                }
+                Ok(q) => {
+                    next = Some(q);
+                    break;
+                }
+                Err(_) => break,
             }
         }
         // The requests a panic leaves unanswered are answered as they drop.
@@ -3486,13 +4525,27 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         q.answer(Err(ApiError { status: 503, message: "the deadline passed while waiting for the writer".into() }));
     }
     let Some(deadline) = group.iter().map(|q| q.deadline).max() else { return };
-    if let [Queued { job: WriteJob::Sql(p), .. }] = &group[..] {
-        let r = wait_for_writer(deadline, || db.write_prepared_seq(p).map(|(rows, seq_no)| Written { rows, seq_no, ..Default::default() }).map_err(ApiError::from));
-        group.into_iter().next().expect("one").answer(r);
+    let sql: Vec<&PreparedWrite> = group.iter().filter_map(|q| q.sql()).collect();
+    if !sql.is_empty() {
+        let alone = |p: &PreparedWrite, deadline: Instant| wait_for_writer(deadline, || db.write_prepared_seq(p).map(|(rows, seq_no)| Written { rows, seq_no, ..Default::default() }).map_err(ApiError::from));
+        let answers: Vec<Result<Written, ApiError>> = match &sql[..] {
+            [p] => vec![alone(p, deadline)],
+            _ => match wait_for_writer(deadline, || db.write_prepared_group(&sql).map_err(ApiError::from)) {
+                Ok((rows, seq_no)) => rows.into_iter().map(|rows| Ok(Written { rows, seq_no, ..Default::default() })).collect(),
+                // A failed commit wrote nothing: each runs again alone.
+                Err(_) => group.iter().zip(&sql).map(|(q, p)| alone(p, q.deadline)).collect(),
+            },
+        };
+        drop(sql);
+        for (q, r) in group.into_iter().zip(answers) {
+            q.answer(r);
+        }
         return;
     }
-    let requests: Vec<&[Json]> = group.iter().map(|q| q.ops()).collect();
-    match wait_for_writer(deadline, || apply_requests(db, &requests)) {
+    let requests: Vec<(&[Json], u64)> = group.iter().map(|q| (q.ops(), q.epoch)).collect();
+    // A group shares one mark ([`writer`]).
+    let mark = group[0].mark;
+    match wait_for_writer(deadline, || apply_requests(db, &requests, mark)) {
         Ok((applied, seq_no)) => {
             for (q, a) in group.into_iter().zip(applied) {
                 q.answer(Ok(a.written(seq_no)));
@@ -3505,7 +4558,7 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         // as Ok), so each request can run again alone.
         Err(_) => {
             for q in group {
-                let r = wait_for_writer(q.deadline, || apply_ops(db, q.ops()));
+                let r = wait_for_writer(q.deadline, || apply_requests(db, &[(q.ops(), q.epoch)], q.mark).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
                 q.answer(r);
             }
         }
@@ -3517,6 +4570,21 @@ impl Queued {
         match &self.job {
             WriteJob::Ops(ops) => ops,
             WriteJob::Sql(..) => &[],
+        }
+    }
+
+    fn sql(&self) -> Option<&PreparedWrite> {
+        match &self.job {
+            WriteJob::Ops(..) => None,
+            WriteJob::Sql(p) => Some(p),
+        }
+    }
+
+    /// How much of a group it takes ([`GROUP_OPS`]).
+    fn weight(&self) -> usize {
+        match &self.job {
+            WriteJob::Ops(ops) => ops.len(),
+            WriteJob::Sql(p) => p.weight(),
         }
     }
 }
@@ -3540,9 +4608,35 @@ pub(crate) fn wait_for_writer<T>(deadline: Instant, mut write: impl FnMut() -> R
     }
 }
 
+/// The transaction a shard writes as it takes cluster map `new` in place
+/// of `old`, before the map lets a write reach the slots that change hands
+/// here: their marks for a cluster following this one ([`feed::flip_marks`],
+/// each an offset `new.epoch` that `_sources` does not keep), and the stream
+/// offsets of the slots that arrive ([`arrivals::flip`]). Nothing when
+/// neither has anything to write.
+fn write_flip(db: &Db, marks: &[String], old: &SlotMap, new: &SlotMap, shard: usize) -> Result<(), ApiError> {
+    let offsets = new.moving().is_some_and(|m| m.to == shard && !m.offsets.is_empty());
+    if marks.is_empty() && !offsets && db.sources()?.is_empty() {
+        return Ok(());
+    }
+    db.storage().ensure_sources()?;
+    let mut t = db.storage().begin()?;
+    let now = strata::timestamp::now();
+    for m in marks {
+        t.mark_source(m, new.epoch as i64, now)?;
+    }
+    let kept = arrivals::flip(db, &mut t, old, new, shard, now)?;
+    if marks.is_empty() && !kept {
+        t.rollback();
+        return Ok(());
+    }
+    t.commit_seq()?;
+    Ok(())
+}
+
 /// Applies `ops` to `db` in one transaction.
 pub fn apply_ops(db: &Db, ops: &[Json]) -> Result<Written, ApiError> {
-    let (mut applied, seq_no) = apply_requests(db, &[ops])?;
+    let (mut applied, seq_no) = apply_requests(db, &[(ops, 0)], None)?;
     Ok(applied.remove(0).written(seq_no))
 }
 
@@ -3560,22 +4654,49 @@ impl Applied {
     }
 }
 
-/// Applies several requests' operations in one transaction; returns what
-/// each did, and the transaction's sequence number in a database that
-/// numbers its writes.
-fn apply_requests(db: &Db, requests: &[&[Json]]) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
+/// Applies several requests' operations, each with the epoch of the
+/// cluster map it was routed by, in one transaction; returns what each
+/// did, and the transaction's sequence number in a database that numbers
+/// its writes. With `mark`, the transaction also writes that offset of a
+/// source of the server's own ([`feed::MARK`]).
+fn apply_requests(db: &Db, requests: &[(&[Json], u64)], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
     let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
-    if requests.iter().flat_map(|ops| ops.iter()).any(has_source) {
+    if mark.is_some() || requests.iter().flat_map(|(ops, _)| ops.iter()).any(has_source) {
         db.storage().ensure_sources()?;
     }
     let mut t = db.storage().begin()?;
     let mut applied = Vec::with_capacity(requests.len());
-    for ops in requests {
-        applied.push(apply_into(&catalog, &mut t, ops)?);
+    let mut arrived = arrivals::Group::new(db);
+    for (ops, epoch) in requests {
+        applied.push(apply_into(&catalog, &mut t, ops, *epoch, &mut arrived)?);
+    }
+    if let Some((name, offset)) = mark {
+        t.mark_source(name, offset, strata::timestamp::now())?;
     }
     let seq_no = t.commit_seq()?;
     Ok((applied, seq_no))
+}
+
+/// Refuses a request whose operations carry the mark of a cluster
+/// followed ([`feed::FOLLOWS`]) unless that cluster's follow process sends
+/// it ([`following`]), or another of the server's own marks
+/// ([`feed::own_mark`]) unless the cluster's own does ([`own`]): checked
+/// as the request comes, before the writer thread, which knows no
+/// request's sender, applies it.
+pub(crate) fn own_marks_ok(ops: &[Json]) -> Result<(), ApiError> {
+    let sender = following();
+    for op in ops {
+        let Some(name) = op.pointer("/source/name").and_then(Json::as_str) else { continue };
+        let theirs = match name.strip_prefix(feed::FOLLOWS) {
+            Some(n) => sender.as_deref() == Some(n),
+            None => !feed::own_mark(name) || own(),
+        };
+        if !theirs {
+            return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
+        }
+    }
+    Ok(())
 }
 
 /// Where an operation's event came from (its `"source"`): a stream's
@@ -3624,6 +4745,11 @@ pub fn op_source(op: &Json) -> Result<Option<Mark>, ApiError> {
         .and_then(|n| n.as_str())
         .filter(|n| !n.is_empty() && n.len() <= SOURCE_NAME)
         .ok_or_else(|| ApiError::bad(format!("an operation's source has a \"name\" of 1 to {SOURCE_NAME} bytes")))?;
+    // But for the marks of the server's state, which a request may carry
+    // only from the cluster's own ([`own_marks_ok`]).
+    if name.starts_with(MARK) && !feed::own_mark(name) {
+        return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
+    }
     let offset = s.get("offset").and_then(|o| o.as_i64()).ok_or_else(|| ApiError::bad(format!("source {name}: the \"offset\" is a whole number")))?;
     let ts = match s.get("ts") {
         None | Some(Json::Null) => None,
@@ -3743,12 +4869,16 @@ fn key_text(key: &Value) -> String {
 /// reached already, as the transaction finds it when the request starts,
 /// is a replay's and is skipped; afterwards each source's highest offset
 /// is kept, in the same transaction ([`WriteTxn::set_source`]). So a
-/// stream resumed from its sources' offsets applies each event once.
-fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> Result<Applied, ApiError> {
+/// stream resumed from its sources' offsets applies each event once. An
+/// operation in slots that arrived from another shard at another offset
+/// is checked against theirs ([`arrivals`]), which the request, routed by
+/// the map of `epoch`, moves on.
+fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json], epoch: u64, arrived: &mut arrivals::Group<'_>) -> Result<Applied, ApiError> {
     let mut a = Applied::default();
     let now = strata::timestamp::now();
-    // Each source's offset when the request started, and its highest here.
-    let mut sources: Vec<(String, Option<i64>, i64)> = Vec::new();
+    // Each source's offset when the request started, its highest applied
+    // here, and the highest it names here.
+    let mut sources: Vec<(String, Option<i64>, i64, i64)> = Vec::new();
     // The event last stamped: its operations follow one another.
     let mut stamped = None;
     for op in ops {
@@ -3757,15 +4887,26 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
                 Some(i) => i,
                 None => {
                     let stored = txn.source_offset(&m.name)?;
-                    sources.push((m.name.clone(), stored, i64::MIN));
+                    sources.push((m.name.clone(), stored, i64::MIN, i64::MIN));
                     sources.len() - 1
                 }
             };
-            let (_, stored, top) = &mut sources[i];
-            if stored.is_some_and(|s| m.offset <= s) {
+            let stored = sources[i].1;
+            sources[i].3 = sources[i].3.max(m.offset);
+            // An event's operation in slots that arrived at another offset
+            // is checked against theirs.
+            let reached = match is_mark(op) || arrived.of(txn, &m.name)?.is_empty() {
+                true => stored,
+                false => {
+                    let schema = &**op_schema(catalog, op)?;
+                    arrived.threshold(txn, &m.name, slots::slot(&op_place(schema, op)?), stored)?
+                }
+            };
+            if reached.is_some_and(|s| m.offset <= s) {
                 a.skipped += !is_mark(op) as u64;
                 continue;
             }
+            let (_, _, top, _) = &mut sources[i];
             *top = (*top).max(m.offset);
             if m.ts.is_some() && stamped != Some((i, m.offset)) {
                 a.stamps.extend(m.ts);
@@ -3839,10 +4980,15 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
         };
         a.rows += wrote as u64;
     }
-    for (name, stored, top) in sources {
-        if top > i64::MIN && stored.is_none_or(|s| top > s) {
-            txn.set_source(&name, top, now)?;
-        }
+    for (name, stored, top, seen) in sources {
+        let kept = match top > i64::MIN && stored.is_none_or(|s| top > s) {
+            true => {
+                txn.set_source(&name, top, now)?;
+                Some(top)
+            }
+            false => stored,
+        };
+        arrived.after(txn, &name, epoch, seen, kept, now)?;
     }
     Ok(a)
 }
@@ -3851,6 +4997,85 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A batch's part for the shard slots move to, routed by the map before
+    // their flip, reached it after the flip and moved its offset past an
+    // event of the slots that the shard they left still held (theirs and
+    // its own were equal at the flip, so it kept no arrival): when the
+    // event came by the new map, it was skipped as a replay, and lost.
+    // Both on a shard that holds slots and on one that held none.
+    #[test]
+    fn a_late_request_of_the_old_map_does_not_hide_an_arrived_event() {
+        let schema = Schema::from_json(r#"{"table": "events", "key": "id", "fields": [{"name": "id", "type": "keyword"}]}"#).unwrap();
+        let key = (0..).map(|i| format!("e{i}")).find(|k| SlotMap::even(2, 1).owner(slots::slot(&Value::Str(k.clone()))) == 0).unwrap();
+        let y = slots::slot(&Value::Str(key.clone()));
+        let mark = |o: i64| json!({"op": "source", "source": {"name": "s", "offset": o}});
+        let event = json!({"op": "upsert", "table": "events", "doc": {"id": key}, "source": {"name": "s", "offset": 11}});
+        for base in [SlotMap::even(2, 1), SlotMap::even(1, 1).with_replicas(vec![vec!["http://a".into()]]).unwrap().add_shard(vec!["http://new".into()]).unwrap()] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = Db::create(&dir.path().join("t.strata"), schema.clone(), strata::storage::DbOptions::default()).unwrap();
+            let old = base.start_move(&[y], 1).unwrap();
+            let new = old.flip_move_with(std::collections::BTreeMap::from([("s".to_string(), 10)])).unwrap();
+            apply_requests(&db, &[(&[mark(10)], old.epoch)], None).unwrap();
+            write_flip(&db, &[], &old, &new, 1).unwrap();
+            // The late part: no events of the slots, the batch's offset.
+            apply_requests(&db, &[(&[mark(11)], old.epoch)], None).unwrap();
+            // The event the shard they left held, by the new map.
+            let (a, _) = apply_requests(&db, &[(&[event.clone(), mark(11)], new.epoch)], None).unwrap();
+            assert_eq!((a[0].rows, a[0].skipped), (1, 0), "held none: {}", base.count(1) == 0);
+            // Once: sent again, it is skipped, and the arrival is gone.
+            let (a, _) = apply_requests(&db, &[(&[event.clone(), mark(11)], new.epoch)], None).unwrap();
+            assert_eq!((a[0].rows, a[0].skipped), (0, 1));
+            let left: Vec<(String, i64)> = db.sources().unwrap().into_iter().map(|s| (s.name, s.offset)).collect();
+            assert_eq!(left, vec![("s".to_string(), 11)]);
+        }
+    }
+
+    // A table created after the server started, naming a model the models
+    // directory lacked, did not wake `keep_models`, which then fetched only
+    // at start: the field had no model, and its rows no vectors, until the
+    // server was started again.
+    #[tokio::test]
+    async fn a_table_naming_a_model_to_fetch_wakes_the_fetcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), strata::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 16, Duration::from_secs(10));
+        svc.open_models(&dir.path().join("models"));
+        let svc = Arc::new(svc);
+        let mut changed = svc.models_changed.subscribe();
+        changed.borrow_and_update();
+        let ddl = "CREATE TABLE listings (id KEYWORD PRIMARY KEY, title TEXT, emb VECTOR OPTIONS(embed = 'title', model = 'potion-base-8M'))";
+        svc.sql(&Principal::open(), ddl, &Params::new(), After::Any, 0).await.unwrap();
+        assert!(changed.has_changed().unwrap(), "the fetcher was not woken");
+        let models = svc.models();
+        assert!(models.len() == 1 && models[0].model.as_ref().is_err_and(|e| e.contains("fetch it first")), "{:?}", models.iter().map(|m| m.model.as_ref().err()).collect::<Vec<_>>());
+        // Opening it again after a fetch that failed wakes it no more.
+        changed.borrow_and_update();
+        svc.reopen_models();
+        assert!(!changed.has_changed().unwrap());
+    }
+
+    // A primary fenced by a call of the new primary as it kept its vote
+    // for it wrote its replication file twice at once, through one new
+    // file: one rename failed (no such file), and the file was left with
+    // the end of the longer write after the shorter, which no later step
+    // down or start could read.
+    #[test]
+    fn json_saved_at_once_by_two_threads_is_one_or_the_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kept.json");
+        let bodies: Vec<Json> = (0..8).map(|i| json!({"i": i, "pad": "x".repeat(1 + i * 300)})).collect();
+        for _ in 0..50 {
+            std::thread::scope(|s| {
+                for b in &bodies {
+                    s.spawn(|| save_json(&path, b).unwrap());
+                }
+            });
+            let j: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(bodies.contains(&j), "{j}");
+        }
+    }
 
     // OPS-6: a panic in the writer thread ended it, and every later write
     // failed with health still "ok". The writer now catches it; the
@@ -3861,7 +5086,7 @@ mod tests {
         assert_eq!(keys.begin("k", 1), idem::Begin::New);
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let state = WriterState::default();
-        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some("k".into()), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None };
+        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some("k".into()), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None, epoch: 0 };
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _held = q;
             panic!("a bug while applying a write");

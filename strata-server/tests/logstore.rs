@@ -47,7 +47,7 @@ async fn grpc(svc: Arc<Service>) -> String {
 }
 
 async fn post(base: &str, path: &str, body: Json) -> (u16, Json) {
-    let r = reqwest::Client::new().post(format!("{base}{path}")).json(&body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}{path}")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 
@@ -106,23 +106,23 @@ async fn a_server_keeps_its_lines_and_queries_but_not_its_reading_of_them() {
     let j = logs_query(&base, "SELECT fingerprint, outcome, error, n_rows FROM queries ORDER BY ts DESC LIMIT 20").await;
     let rows = j["rows"].as_array().unwrap();
     assert_eq!(rows.iter().filter(|r| r[0] == "SELECT id FROM products WHERE price > ? LIMIT ?").count(), 5, "{j}");
-    assert!(rows.iter().any(|r| r[1] == "error" && r[2].as_str().unwrap_or("").contains("nope")), "{j}");
+    assert!(rows.iter().any(|r| r[1] == "client_error" && r[2].as_str().unwrap_or("").contains("nope")), "a bad column is the client's error: {j}");
     let j = logs_query(&base, "SELECT fingerprint, COUNT(*) AS n, AVG(ms) FROM queries GROUP BY fingerprint ORDER BY n DESC LIMIT 1").await;
     assert_eq!(j["rows"][0][1], 5, "{j}");
     // A join of the two tables, on one server.
-    let j = logs_query(&base, "SELECT q.sql, l.route FROM queries q JOIN logs l ON q.request_id = l.request_id WHERE q.outcome = 'error' LIMIT 5").await;
+    let j = logs_query(&base, "SELECT q.sql, l.route FROM queries q JOIN logs l ON q.request_id = l.request_id WHERE q.outcome = 'client_error' LIMIT 5").await;
     assert_eq!(j["rows"][0][1], "/v1/query", "{j}");
 
-    let r = reqwest::get(format!("{base}/v1/logs/store")).await.unwrap();
+    let r = strata_server::http_client().build().unwrap().get(format!("{base}/v1/logs/store")).send().await.unwrap();
     let j: Json = r.json().await.unwrap();
     assert_eq!(j["schemas"][0]["table"], "logs", "{j}");
     let st = &j["store"];
     assert_eq!(st["node"], "a:7700");
     assert!(st["tables"]["logs"]["rows"].as_u64().unwrap() > 5, "{st}");
     assert!(st["written"]["queries"].as_u64().unwrap() >= 6, "{st}");
-    let m = reqwest::get(format!("{base}/metrics")).await.unwrap().text().await.unwrap();
+    let m = strata_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(m.contains("strata_log_store_rows{table=\"logs\"}"), "{m}");
-    let cluster: Json = reqwest::get(format!("{base}/v1/cluster")).await.unwrap().json().await.unwrap();
+    let cluster: Json = strata_server::http_client().build().unwrap().get(format!("{base}/v1/cluster")).send().await.unwrap().json().await.unwrap();
     assert_eq!(cluster["node"]["log_store"]["node"], "a:7700", "{cluster}");
 
     let (s, j) = post(&base, "/v1/logs/query", json!({"sql": "SELECT * FROM products LIMIT 1"})).await;
@@ -180,7 +180,7 @@ async fn a_coordinator_searches_every_servers_logs() {
     let coord2 = server::service(&o).await.unwrap();
     assert!(coord2.log_store.is_none());
     let base2 = http(coord2).await;
-    let j: Json = reqwest::get(format!("{base2}/v1/logs/store")).await.unwrap().json().await.unwrap();
+    let j: Json = strata_server::http_client().build().unwrap().get(format!("{base2}/v1/logs/store")).send().await.unwrap().json().await.unwrap();
     assert!(j["store"].is_null(), "{j}");
     let stores: Vec<&Json> = j["nodes"].as_array().unwrap().iter().map(|n| &n["store"]).collect();
     assert_eq!(stores.iter().filter(|s| s["node"].is_string()).count(), 2, "{j}");

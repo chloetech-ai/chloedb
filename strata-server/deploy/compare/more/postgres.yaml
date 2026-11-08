@@ -1,0 +1,53 @@
+# Postgres 17 from the ParadeDB image (pg_search and pgvector), as paradedb-0 or postgres-0; trust authentication.
+# One node with the whole budget of the other engines' two data pods (3
+# CPUs, 6 GiB; compare.sh fills in __CPU__ and __MEM__), its data on the
+# node's own disk (emptyDir). compare.sh writes it from this file.
+apiVersion: v1
+kind: Service
+metadata:
+  name: __ROLE__
+  namespace: __NS__
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: __ROLE__}
+  ports:
+    - {name: api, port: 5432}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __ROLE__-0
+  namespace: __NS__
+  labels: {app: __ROLE__, engine: __ROLE__}
+spec:
+  hostname: __ROLE__-0
+  subdomain: __ROLE__
+  nodeName: __NODE__
+  containers:
+    - name: __ROLE__
+      image: paradedb/paradedb:0.26.4-pg17
+      imagePullPolicy: IfNotPresent
+      env:
+        - {name: POSTGRES_HOST_AUTH_METHOD, value: trust}
+        - {name: PGDATA, value: /var/lib/postgresql/data/pg}
+      # A quarter of the memory for shared buffers; index builds get 2.5 GB, which a
+      # parallel HNSW build keeps in shared memory (/dev/shm, so its limit is 3 GiB).
+      args: [postgres, -c, shared_buffers=__PG_SHARED__, -c, effective_cache_size=__PG_CACHE__, -c, maintenance_work_mem=__PG_MAINT__, -c, work_mem=64MB,
+             -c, max_parallel_workers_per_gather=__PG_PAR__, -c, max_parallel_maintenance_workers=__PG_PAR__, -c, max_worker_processes=__PG_WORKERS__, -c, max_wal_size=8GB]
+      readinessProbe:
+        exec: {command: [pg_isready, -U, postgres]}
+        periodSeconds: 2
+      ports:
+        - {name: api, containerPort: 5432}
+      resources:
+        requests: {cpu: __CPU__, memory: __MEM__}
+        limits: {cpu: __CPU__, memory: __MEM__}
+      volumeMounts:
+        - {name: data, mountPath: /var/lib/postgresql/data}
+        - {name: shm, mountPath: /dev/shm}
+  volumes:
+    - name: data
+      emptyDir: {}
+    - name: shm
+      emptyDir: {medium: Memory, sizeLimit: 3Gi}

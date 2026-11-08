@@ -5,14 +5,15 @@
 // what to do with it. The designer builds a new table by dragging types
 // into it, checks it with the server as you go, and creates it.
 
-import { h, s, icon, clear, fmt, api, store, toast, copy, drawer, confirm, empty, seg, sqlBlock, debounce, failure, showTip, hideTip } from "../core.js";
+import { h, s, icon, clear, fmt, api, store, toast, copy, drawer, confirm, empty, seg, sqlBlock, debounce, failure, showTip, hideTip, gate } from "../core.js";
+import { isProduction } from "../data.js";
 import { tables, invalidate, cached, table as tableOf, TYPES, typeMeta, typeBadge, links } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
-import { viewport, draggable } from "./topology.js";
+import { viewport, draggable } from "../pan.js";
 import { SERIES } from "../charts.js";
 import { pathTree } from "../paths.js";
 
-export default { id: "schema", title: "Schema", icon: "schema", group: "Data", full: true, keywords: "tables fields diagram er entity relationship references edges embeddings create table designer ddl drop", render, onParams };
+export default { id: "schema", title: "Schema", icon: "schema", group: "Data", full: true, range: false, keywords: "tables fields diagram er entity relationship references edges embeddings create table designer ddl drop", render, onParams };
 
 let pick = null;
 function onParams(r) { if (pick) pick(r); }
@@ -90,7 +91,7 @@ function diagram(host, bar, { openDesigner }) {
   const controls = h("div", { class: "controls" },
     h("button", { class: "btn icon sm", title: "Zoom in", onclick: () => vp?.zoom(1.25) }, icon("zin")),
     h("button", { class: "btn icon sm", title: "Zoom out", onclick: () => vp?.zoom(0.8) }, icon("zout")),
-    h("button", { class: "btn icon sm", title: "Fit", onclick: () => vp?.fit() }, icon("fit")));
+    h("button", { class: "btn icon sm", title: "Fit", onclick: () => vp?.fit(30, legend.offsetHeight + 10) }, icon("fit")));
   const legend = h("div", { class: "legend-box" }, Object.entries(KIND).filter(([k]) => k !== "edges").map(([k, v]) => h("span", { class: "row nw", style: { gap: "5px" } },
     h("span", { style: { width: "18px", borderTop: `2px ${k === "graph" ? "dashed" : "solid"} ${v.color}` } }), v.label)), h("span", { class: "muted" }, "drag tables · scroll to zoom · click for details"));
   wrap.append(canvas, controls, legend);
@@ -164,7 +165,7 @@ function diagram(host, bar, { openDesigner }) {
       for (const [n, g] of Object.entries(cards)) g.classList.toggle("hot", on && (n === name || ls.some((l) => (l.from.table === name && l.to.table === n) || (l.to.table === name && l.from.table === n))));
     }
     if (old && !fit) vp.state = old;
-    else requestAnimationFrame(() => vp.fit(30));
+    else requestAnimationFrame(() => vp.fit(30, legend.offsetHeight + 10));
   }
 
   function rowY(table, field) {
@@ -259,8 +260,10 @@ function diagram(host, bar, { openDesigner }) {
           h("a", { class: "btn primary", href: "#/sql?q=" + encodeURIComponent(`SELECT * FROM ${quoteName(t.table)} LIMIT 20;`), onclick: () => d.close() }, icon("sql"), "Query it"),
           h("a", { class: "btn", href: "#/builder?table=" + encodeURIComponent(t.table), onclick: () => d.close() }, icon("builder"), "Build a query"),
           h("button", { class: "btn", title: "Start a new table from this one", onclick: () => { d.close(); openDesigner({ ...JSON.parse(JSON.stringify(sh)), table: sh.table + "_copy" }); } }, icon("copy"), "Use as a template"),
+          gate(h("a", { class: "btn", href: "#/sql?q=" + encodeURIComponent(`-- Add, rename or drop columns while the table holds rows.\n-- (A coordinator refuses DROP COLUMN.)\nALTER TABLE ${quoteName(t.table)} ADD COLUMN new_field KEYWORD;`), title: "ALTER TABLE in the SQL workbench, where it is checked before it runs", onclick: () => d.close() }, icon("edit"), "Change columns"), "admin"),
+          h("a", { class: "btn ghost", href: "#/inspector?table=" + encodeURIComponent(t.table), onclick: () => d.close(), title: "Bytes by field, freshness, reads, shards" }, icon("layers"), "Storage"),
           h("span", { class: "sep" }),
-          h("button", { class: "btn ghost danger", disabled: first, title: first ? "The first table of a database cannot be dropped" : `DROP TABLE ${t.table}`, onclick: () => drop(t, d) }, icon("trash"), "Drop")),
+          first ? h("button", { class: "btn ghost danger", disabled: true, title: "The first table of a database cannot be dropped" }, icon("trash"), "Drop") : gate(h("button", { class: "btn ghost danger", title: `DROP TABLE ${t.table}`, onclick: () => drop(t, d) }, icon("trash"), "Drop"), "admin")),
         optsLine(sh) ? h("div", { class: "row", style: { gap: "6px" } }, [sh.edges && h("span", { class: "badge accent" }, `edges ${sh.edges}`), sh.shard_by && h("span", { class: "badge" }, `shard by ${sh.shard_by}`), sh.cluster_by && h("span", { class: "badge" }, `cluster by ${sh.cluster_by}`), sh.retain && h("span", { class: "badge" }, `keeps ${sh.retain}${sh.retain_by ? ` by ${sh.retain_by}` : ""}`)]) : null,
         h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Fields"), h("span", { class: "sub" }, fmt.plural((sh.fields || []).length, "field"))),
           h("div", { class: "bd flush" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "field"), h("th", {}, "type"), h("th", {}, "notes"))),
@@ -286,31 +289,47 @@ function diagram(host, bar, { openDesigner }) {
       ],
     });
   }
+  // A drop names what goes (rows and bytes, every shard), wants the table's
+  // name typed and, on production, a reason the audit log keeps.
   async function drop(t, d) {
     const refs = links(ts).filter((l) => l.kind === "ref" && l.to.table === t.table && l.from.table !== t.table).map((l) => l.from.table);
-    const ok = await confirm({ title: `Drop ${t.table}?`, danger: true, ok: "Drop the table",
-      body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { style: { margin: 0 } }, `Every row of ${t.table} is deleted, and it cannot be undone.`), refs.length ? h("p", { class: "small dim", style: { margin: 0 } }, `${[...new Set(refs)].join(", ")} reference it: CASCADE removes those references.`) : null, sqlBlock(`DROP TABLE ${quoteName(t.table)}${refs.length ? " CASCADE" : ""};`)) });
+    const sz = sizes[t.table] || await rowsOf(t.table);
+    const what = sz?.rows != null ? `${fmt.plural(sz.rows, "row")}${sz.bytes ? `, ${fmt.bytes(sz.bytes)} on disk` : ""}` : "every row";
+    const ok = await confirm({ title: `Drop ${t.table}?`, danger: true, ok: "Drop the table", typed: t.table, reason: isProduction() ? "Why: kept in the audit log with the drop" : false,
+      body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { style: { margin: 0 } }, h("b", {}, `${what} of ${t.table} are deleted`), `, on every shard and its copies. There is no undo: only a backup brings it back.`), refs.length ? h("p", { class: "small dim", style: { margin: 0 } }, `${[...new Set(refs)].join(", ")} reference it: CASCADE removes those references.`) : null, sqlBlock(`DROP TABLE ${quoteName(t.table)}${refs.length ? " CASCADE" : ""};`)) });
     if (!ok) return;
-    try { await api("/v1/sql", { body: { sql: `DROP TABLE ${quoteName(t.table)}${refs.length ? " CASCADE" : ""}` } }); toast(`${t.table} dropped`, "ok"); d.close(); invalidate(); ts = await tables(true); paint(false); }
+    try { await api("/v1/sql", { body: { sql: `DROP TABLE ${quoteName(t.table)}${refs.length ? " CASCADE" : ""}` }, reason: ok.reason || undefined }); toast(`${t.table} dropped`, "ok"); d.close(); invalidate(); ts = await tables(true); paint(false); }
     catch (e) { toast(e.message, "bad", 8000); }
   }
   return () => { hideTip(); host.openTable = null; };
 }
 
-/** Rows, bytes and segments of each table: the storage stats where the server has them, else COUNT(*). */
+/**
+ * Rows, bytes and segments of each table, without a COUNT(*) a table (on a
+ * coordinator each is a fan-out to every shard): the table sizes the server
+ * lists (GET /v1/index/tables, cached there 30 s), else a server's own
+ * storage stats. A coordinator without the list shows no sizes; a table's
+ * rows are counted when it is about to be dropped.
+ */
 async function tableSizes(ts) {
   const out = {};
   try {
+    const j = await api("/v1/index/tables");
+    for (const t of Array.isArray(j) ? j : j.tables || []) out[t.table] = { rows: t.docs, bytes: t.bytes, segments: t.segments };
+    return out;
+  } catch { /* an older server */ }
+  try {
     const st = await api("/v1/stats");
     for (const sg of st.storage?.segments || []) {
-      const o = (out[sg.table || ts[0].table] ||= { rows: 0, bytes: 0, segments: 0 });
+      const o = (out[sg.table || ts[0]?.table] ||= { rows: 0, bytes: 0, segments: 0 });
       o.rows += sg.n_docs - sg.n_deleted; o.bytes += sg.bytes; o.segments++;
     }
   } catch { /* a coordinator has no storage of its own */ }
-  await Promise.all(ts.map(async (t) => {
-    try { const j = await api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${quoteName(t.table)}` } }); (out[t.table] ||= { bytes: 0, segments: 0 }).rows = j.rows[0][0]; } catch { /* left without a count */ }
-  }));
   return out;
+}
+/** One table's rows, counted (once, before a drop). */
+async function rowsOf(name) {
+  try { const j = await api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${quoteName(name)}` } }); return { rows: j.rows[0][0] }; } catch { return null; }
 }
 
 // Rows stored without a vector while the model was not open, filled in
@@ -532,7 +551,7 @@ function designer(host, bar, { seed, onCreated }) {
 
   function drawRight() {
     const exists = ts.some((t) => t.table.toLowerCase() === (d.table || "").toLowerCase());
-    const create = h("button", { class: "btn primary", disabled: !checked?.ok || exists, onclick: go }, icon("plus"), "Create table");
+    const create = gate(h("button", { class: "btn primary", disabled: !checked?.ok || exists, onclick: go }, icon("plus"), "Create table"), "admin");
     clear(right,
       h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "The server's check"), h("div", { class: "tools" }, checked?.ok ? h("span", { class: "pill ok" }, icon("okc"), "valid") : checked?.error ? h("span", { class: "pill bad" }, icon("bad"), "not yet") : h("span", { class: "pill" }, "checking"))),
         h("div", { class: "bd stack", style: { gap: "10px" } },
@@ -540,11 +559,18 @@ function designer(host, bar, { seed, onCreated }) {
           exists ? h("div", { class: "small note-warn" }, icon("warn"), `${d.table} exists: name the new table something else.`) : null,
           checked?.ok ? [h("div", { class: "small muted" }, "The statement that creates it:"), sqlBlock(checked.j.sql, { style: { maxHeight: "46vh" } })] : null),
         h("div", { class: "ft" }, create, h("button", { class: "btn ghost", disabled: !checked?.ok, onclick: () => copy(checked.j.sql, "CREATE TABLE copied") }, icon("copy"), "Copy SQL"))),
-      h("div", { class: "small muted", style: { padding: "0 4px" } }, "Tables cannot be altered yet: a field added later means a new table. References are recorded, not enforced."));
+      h("div", { class: "small muted", style: { padding: "0 4px" } }, "Once created, ALTER TABLE adds, renames and drops its columns while it holds rows (a coordinator refuses DROP COLUMN): Change columns on the table opens it in the SQL workbench. References are recorded, not enforced."));
   }
   async function go() {
+    // NEW-data-tools-8: on production a table's statement says why, as the workbench's writes do.
+    let reason = null;
+    if (isProduction()) {
+      const ok = await confirm({ title: `Create ${d.table}?`, body: "This cluster counts as production: the table is made on every shard, and the audit log keeps the statement with your reason.", ok: "Create it", reason: true });
+      if (!ok) return;
+      reason = ok.reason;
+    }
     try {
-      await api("/v1/sql", { body: { sql: checked.j.sql } });
+      await api("/v1/sql", { body: { sql: checked.j.sql }, reason });
       toast(`${d.table} created`, "ok");
       store.del("schema.draft");
       invalidate(); await tables(true);

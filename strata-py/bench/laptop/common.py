@@ -49,9 +49,34 @@ def summary(ms: Sequence[float], seconds: float | None = None) -> dict:
     return out
 
 
-def timed_passes(fn: Callable[[Any], Any], items: Sequence[Any], seconds: float, threads: int = 1) -> dict:
-    """Runs `fn(item)` over `items` round-robin from `threads` threads for
-    `seconds` (each thread at least one pass over its share)."""
+PASSES = 3  # timed passes per cell: their spread says which gaps are real
+
+
+def timed_passes(fn: Callable[[Any], Any], items: Sequence[Any], seconds: float, threads: int = 1, passes: int | None = None) -> dict:
+    """Runs `fn(item)` over `items` round-robin from `threads` threads in
+    `passes` (PASSES) timed passes of `seconds / passes` each (each thread at
+    least one pass over its share). The summary is over every pass, with
+    each pass's p50, p99 and rate and their ranges (`p50_ms_range`, ...)."""
+    passes = max(1, passes or PASSES)
+    runs = [_timed(fn, items, seconds / passes, threads) for _ in range(passes)]
+    lat = [x for r in runs for x in r["lat"]]
+    out = summary(lat, sum(r["wall"] for r in runs))
+    out["threads"] = threads
+    errors = [e for r in runs for e in r["errors"]]
+    out["errors"] = len(errors)
+    if errors:
+        out["first_error"] = errors[0]
+    if passes > 1:
+        each = [summary(r["lat"], r["wall"]) for r in runs]
+        out["passes"] = [{k: e[k] for k in ("p50_ms", "p99_ms", "qps")} for e in each]
+        for k in ("p50_ms", "p99_ms", "qps"):
+            vs = [e[k] for e in each if e.get(k) is not None]
+            out[f"{k}_range"] = [min(vs), max(vs)] if vs else None
+    return out
+
+
+def _timed(fn: Callable[[Any], Any], items: Sequence[Any], seconds: float, threads: int) -> dict:
+    """One pass of [`timed_passes`]: latencies in ms, wall seconds, errors."""
     lat: list[list[float]] = [[] for _ in range(threads)]
     errors: list[str] = []
     deadline = time.perf_counter() + seconds
@@ -82,13 +107,7 @@ def timed_passes(fn: Callable[[Any], Any], items: Sequence[Any], seconds: float,
             t.start()
         for t in ts:
             t.join()
-    wall = time.perf_counter() - t0
-    out = summary([x for l in lat for x in l], wall)
-    out["threads"] = threads
-    out["errors"] = len(errors)
-    if errors:
-        out["first_error"] = errors[0]
-    return out
+    return {"lat": [x for l in lat for x in l], "wall": time.perf_counter() - t0, "errors": errors}
 
 
 def timed_once(fn: Callable[[Any], Any], items: Sequence[Any], seconds: float) -> dict:
@@ -132,6 +151,10 @@ def machine() -> dict:
                     break
     except Exception:  # noqa: BLE001 - best effort
         pass
+    # On a cloud node (do_part_a.sh sets these): the size it was rented as.
+    for env, key in (("NODE_SIZE", "node_size"), ("NODE_REGION", "node_region")):
+        if os.environ.get(env):
+            info[key] = os.environ[env]
     return info
 
 
@@ -141,6 +164,51 @@ def rss_bytes() -> int:
 
     r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return r if sys.platform == "darwin" else r * 1024
+
+
+def rss_now_bytes() -> int | None:
+    """This process's resident memory now (Linux; None elsewhere)."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError):
+        return None
+
+
+def memory(base: int | None = None) -> dict:
+    """Resident memory now and at its peak, in MB, and now less `base` (the
+    process before the system was built: the collection's own arrays)."""
+    now = rss_now_bytes()
+    out = {"rss_mb": None if now is None else now / 1e6, "peak_rss_mb": rss_bytes() / 1e6}
+    if now is not None and base is not None:
+        out["rss_over_base_mb"] = (now - base) / 1e6
+    return out
+
+
+def evict(paths: Iterable[str | os.PathLike]) -> bool:
+    """Drops the files under `paths` from the page cache (Linux, files no
+    process maps), so that the next reads come from the disk: a cold start
+    without root. False where it cannot."""
+    if not hasattr(os, "posix_fadvise"):
+        return False
+    done = False
+    for p in paths:
+        p = Path(p)
+        files = [p] if p.is_file() else [Path(r) / f for r, _, fs in os.walk(p) for f in fs]
+        for f in files:
+            try:
+                fd = os.open(f, os.O_RDONLY)
+            except OSError:
+                continue
+            try:
+                os.fsync(fd)
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                done = True
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
+    return done
 
 
 def path_bytes(p: str | os.PathLike) -> int:
@@ -234,8 +302,31 @@ def words(text: str) -> list[str]:
     return [w.lower() for w in WORD.findall(text)]
 
 
+def strata_stopwords() -> set[str]:
+    """The words Strata's ranked queries drop (QUERY_STOPWORDS, NLTK's
+    English list), read from strata/src/text/analyzer.rs in this checkout."""
+    src = Path(__file__).resolve().parents[3] / "strata" / "src" / "text" / "analyzer.rs"
+    m = re.search(r"pub const QUERY_STOPWORDS: \[&str; (\d+)\] = \[(.*?)\];", src.read_text(), re.S)
+    if m is None:
+        raise SystemExit(f"no QUERY_STOPWORDS in {src}")
+    ws = re.findall(r'"([^"]+)"', m.group(2))
+    assert len(ws) == int(m.group(1)), (len(ws), m.group(1))
+    return set(ws)
+
+
+# The words kept() drops from a query for the systems whose queries the app
+# builds (Tantivy, SQLite): Lucene's classic 33 unless use_stopwords("strata")
+# makes them Strata's own, so that speed and nDCG compare the same queries.
+QUERY_STOPWORDS: set[str] = CLASSIC_STOPWORDS
+
+
+def use_stopwords(which: str) -> None:
+    global QUERY_STOPWORDS
+    QUERY_STOPWORDS = {"classic": CLASSIC_STOPWORDS, "strata": strata_stopwords()}[which]
+
+
 def kept(text: str) -> list[str]:
-    return [w for w in words(text) if w not in CLASSIC_STOPWORDS and len(w) > 1]
+    return [w for w in words(text) if w not in QUERY_STOPWORDS and len(w) > 1]
 
 
 def phrase_of(text: str) -> tuple[str, str] | None:

@@ -1,0 +1,1894 @@
+service/qdrant created
+pod/qdrant-0 created
+pod/qdrant-0 condition met
+job.batch/load-qdrant created
+qdrant: average body length 127.9 terms (20.5 s)
+qdrant: index created in 0.2 s
+qdrant: 25000 documents sent, 6 s
+qdrant: 50000 documents sent, 12 s
+qdrant: 75000 documents sent, 17 s
+qdrant: 100000 documents sent, 23 s
+qdrant: 125000 documents sent, 33 s
+qdrant: 150000 documents sent, 42 s
+qdrant: 175000 documents sent, 51 s
+qdrant: 200000 documents sent, 60 s
+qdrant: 225000 documents sent, 65 s
+qdrant: 250000 documents sent, 72 s
+qdrant: 275000 documents sent, 80 s
+qdrant: 300000 documents sent, 85 s
+qdrant: 325000 documents sent, 90 s
+qdrant: 350000 documents sent, 95 s
+qdrant: 375000 documents sent, 100 s
+qdrant: 400000 documents sent, 105 s
+qdrant: 425000 documents sent, 109 s
+qdrant: 450000 documents sent, 115 s
+qdrant: 475000 documents sent, 126 s
+qdrant: 500000 documents sent, 137 s
+qdrant: 525000 documents sent, 148 s
+qdrant: 550000 documents sent, 158 s
+qdrant: 575000 documents sent, 168 s
+qdrant: 600000 documents sent, 178 s
+qdrant: 625000 documents sent, 189 s
+qdrant: 650000 documents sent, 199 s
+qdrant: 675000 documents sent, 210 s
+qdrant: 700000 documents sent, 219 s
+qdrant: 725000 documents sent, 229 s
+qdrant: 750000 documents sent, 239 s
+qdrant: 775000 documents sent, 250 s
+qdrant: 800000 documents sent, 261 s
+qdrant: 825000 documents sent, 271 s
+qdrant: 850000 documents sent, 281 s
+qdrant: 875000 documents sent, 292 s
+qdrant: 900000 documents sent, 301 s
+qdrant: 925000 documents sent, 310 s
+qdrant: 950000 documents sent, 320 s
+qdrant: 975000 documents sent, 330 s
+qdrant: 1000000 documents sent, 340 s
+qdrant: 1000000 documents (13.3 GB) sent in 339.9 s
+read tcp 127.0.0.1:52094->127.0.0.1:45545: read: connection reset by peer
+error: read tcp 127.0.0.1:52094->127.0.0.1:45545: read: connection reset by peer
+qdrant: index_s in 3548.6 s
+qdrant: indexed 3548.6 s after the last write; 3888.6 s in all
+wrote /data/compare/load-qdrant.json
+job.batch/run-qdrant created
+qdrant    bm25                     warm-up: p50 2.143, 2.168 ms
+qdrant    bm25                     c=1        596 q/s  p50   1.627 ms  p90   2.673 ms  p99   3.535 ms  errors 0
+qdrant    bm25                     c=4       1785 q/s  p50   2.157 ms  p90   3.473 ms  p99   4.677 ms  errors 0
+qdrant    bm25                     c=16      2461 q/s  p50   6.081 ms  p90   9.192 ms  p99  16.146 ms  errors 0
+qdrant    bm25 + filter            warm-up: p50 2.333, 2.339 ms
+qdrant    bm25 + filter            c=1        535 q/s  p50   1.779 ms  p90   2.825 ms  p99   4.138 ms  errors 0
+qdrant    bm25 + filter            c=4       1643 q/s  p50   2.320 ms  p90   3.618 ms  p99   5.406 ms  errors 0
+qdrant    bm25 + filter            c=16      2213 q/s  p50   6.785 ms  p90  10.417 ms  p99  16.824 ms  errors 0
+qdrant    vector                   warm-up: p50 2.619, 2.669 ms
+qdrant    vector                   c=1        576 q/s  p50   1.683 ms  p90   2.047 ms  p99   2.529 ms  errors 0
+qdrant    vector                   c=4       1432 q/s  p50   2.683 ms  p90   3.530 ms  p99   4.637 ms  errors 0
+qdrant    vector                   c=16      1939 q/s  p50   7.733 ms  p90  11.668 ms  p99  17.437 ms  errors 0
+qdrant    vector + filter          warm-up: p50 4.681, 4.692 ms
+qdrant    vector + filter          c=1        288 q/s  p50   3.429 ms  p90   4.151 ms  p99   5.231 ms  errors 0
+qdrant    vector + filter          c=4        846 q/s  p50   4.652 ms  p90   5.728 ms  p99   7.375 ms  errors 0
+qdrant    vector + filter          c=16       973 q/s  p50  15.783 ms  p90  21.832 ms  p99  27.212 ms  errors 0
+qdrant    hybrid (RRF)             warm-up: p50 11.738, 12.105 ms
+qdrant    hybrid (RRF)             c=1        108 q/s  p50   8.663 ms  p90  12.213 ms  p99  14.912 ms  errors 0
+qdrant    hybrid (RRF)             c=4        317 q/s  p50  12.188 ms  p90  16.642 ms  p99  20.787 ms  errors 0
+qdrant    hybrid (RRF)             c=16       372 q/s  p50  41.700 ms  p90  54.578 ms  p99  70.860 ms  errors 0
+qdrant    hybrid (weighted)        warm-up: p50 12.064, 12.256 ms
+qdrant    hybrid (weighted)        c=1        108 q/s  p50   8.763 ms  p90  12.144 ms  p99  14.761 ms  errors 0
+qdrant    hybrid (weighted)        c=4        318 q/s  p50  12.134 ms  p90  16.366 ms  p99  20.596 ms  errors 0
+qdrant    hybrid (weighted)        c=16       371 q/s  p50  41.822 ms  p90  54.991 ms  p99  68.659 ms  errors 0
+qdrant    boosted (bm25 × decay)   warm-up: p50 2.545, 2.500 ms
+qdrant    boosted (bm25 × decay)   c=1        504 q/s  p50   1.952 ms  p90   2.986 ms  p99   3.875 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=4       1530 q/s  p50   2.548 ms  p90   3.873 ms  p99   5.017 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=16      2155 q/s  p50   7.118 ms  p90  10.779 ms  p99  15.466 ms  errors 0
+qdrant    facet                    warm-up: p50 59.082, 53.996 ms
+qdrant    facet                    c=1         57 q/s  p50  12.432 ms  p90  38.707 ms  p99  53.394 ms  errors 0
+qdrant    facet                    c=4         68 q/s  p50  54.926 ms  p90 104.642 ms  p99 153.693 ms  errors 0
+qdrant    facet                    c=16        68 q/s  p50 235.219 ms  p90 307.196 ms  p99 388.314 ms  errors 0
+qdrant    key lookup               warm-up: p50 0.324, 0.317 ms
+qdrant    key lookup               c=1       3364 q/s  p50   0.288 ms  p90   0.352 ms  p99   0.463 ms  errors 0
+qdrant    key lookup               c=4      11790 q/s  p50   0.330 ms  p90   0.402 ms  p99   0.500 ms  errors 0
+qdrant    key lookup               c=16     30941 q/s  p50   0.491 ms  p90   0.683 ms  p99   0.984 ms  errors 0
+qdrant    phrase                   warm-up: p50 1.386, 1.361 ms
+qdrant    phrase                   c=1        486 q/s  p50   0.956 ms  p90   3.815 ms  p99  20.353 ms  errors 0
+qdrant    phrase                   c=4       1423 q/s  p50   1.300 ms  p90   5.443 ms  p99  28.115 ms  errors 0
+qdrant    phrase                   c=16      1771 q/s  p50   7.600 ms  p90  15.514 ms  p99  36.673 ms  errors 0
+qdrant    typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant    prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant    similar items            warm-up: p50 10.849, 10.760 ms
+qdrant    similar items            c=1        112 q/s  p50   8.934 ms  p90  11.109 ms  p99  13.862 ms  errors 0
+qdrant    similar items            c=4        364 q/s  p50  11.077 ms  p90  13.591 ms  p99  15.822 ms  errors 0
+qdrant    similar items            c=16       413 q/s  p50  37.954 ms  p90  49.391 ms  p99  56.277 ms  errors 0
+qdrant    sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant.json
+job.batch/run-qdrant-pass2 created
+qdrant-pass2 bm25                     warm-up: p50 2.157, 2.149 ms
+qdrant-pass2 bm25                     c=1        593 q/s  p50   1.627 ms  p90   2.659 ms  p99   3.654 ms  errors 0
+qdrant-pass2 bm25                     c=4       1755 q/s  p50   2.190 ms  p90   3.557 ms  p99   4.775 ms  errors 0
+qdrant-pass2 bm25                     c=16      2474 q/s  p50   6.180 ms  p90   9.454 ms  p99  13.632 ms  errors 0
+qdrant-pass2 bm25 + filter            warm-up: p50 2.293, 2.289 ms
+qdrant-pass2 bm25 + filter            c=1        535 q/s  p50   1.788 ms  p90   2.854 ms  p99   4.091 ms  errors 0
+qdrant-pass2 bm25 + filter            c=4       1644 q/s  p50   2.301 ms  p90   3.605 ms  p99   5.434 ms  errors 0
+qdrant-pass2 bm25 + filter            c=16      2234 q/s  p50   6.776 ms  p90  10.428 ms  p99  15.310 ms  errors 0
+qdrant-pass2 vector                   warm-up: p50 2.668, 2.702 ms
+qdrant-pass2 vector                   c=1        568 q/s  p50   1.708 ms  p90   2.073 ms  p99   2.575 ms  errors 0
+qdrant-pass2 vector                   c=4       1436 q/s  p50   2.689 ms  p90   3.472 ms  p99   4.456 ms  errors 0
+qdrant-pass2 vector                   c=16      1890 q/s  p50   7.896 ms  p90  11.761 ms  p99  18.772 ms  errors 0
+qdrant-pass2 vector + filter          warm-up: p50 4.792, 4.647 ms
+qdrant-pass2 vector + filter          c=1        285 q/s  p50   3.438 ms  p90   4.310 ms  p99   5.081 ms  errors 0
+qdrant-pass2 vector + filter          c=4        813 q/s  p50   4.822 ms  p90   6.016 ms  p99   7.821 ms  errors 0
+qdrant-pass2 vector + filter          c=16       956 q/s  p50  15.815 ms  p90  23.353 ms  p99  29.328 ms  errors 0
+qdrant-pass2 hybrid (RRF)             warm-up: p50 12.229, 12.254 ms
+qdrant-pass2 hybrid (RRF)             c=1        106 q/s  p50   8.862 ms  p90  12.506 ms  p99  15.188 ms  errors 0
+qdrant-pass2 hybrid (RRF)             c=4        316 q/s  p50  12.167 ms  p90  16.643 ms  p99  20.388 ms  errors 0
+qdrant-pass2 hybrid (RRF)             c=16       362 q/s  p50  42.794 ms  p90  56.560 ms  p99  70.933 ms  errors 0
+qdrant-pass2 hybrid (weighted)        warm-up: p50 12.167, 12.279 ms
+qdrant-pass2 hybrid (weighted)        c=1        107 q/s  p50   8.821 ms  p90  12.384 ms  p99  14.443 ms  errors 0
+qdrant-pass2 hybrid (weighted)        c=4        315 q/s  p50  12.161 ms  p90  16.908 ms  p99  21.352 ms  errors 0
+qdrant-pass2 hybrid (weighted)        c=16       371 q/s  p50  41.773 ms  p90  54.372 ms  p99  69.412 ms  errors 0
+qdrant-pass2 boosted (bm25 × decay)   warm-up: p50 2.560, 2.577 ms
+qdrant-pass2 boosted (bm25 × decay)   c=1        499 q/s  p50   1.952 ms  p90   3.032 ms  p99   3.866 ms  errors 0
+qdrant-pass2 boosted (bm25 × decay)   c=4       1527 q/s  p50   2.548 ms  p90   3.836 ms  p99   5.069 ms  errors 0
+qdrant-pass2 boosted (bm25 × decay)   c=16      2134 q/s  p50   7.145 ms  p90  10.942 ms  p99  16.026 ms  errors 0
+qdrant-pass2 facet                    warm-up: p50 56.359, 57.034 ms
+qdrant-pass2 facet                    c=1         57 q/s  p50  12.491 ms  p90  37.744 ms  p99  53.453 ms  errors 0
+qdrant-pass2 facet                    c=4         67 q/s  p50  56.667 ms  p90 108.686 ms  p99 148.148 ms  errors 0
+qdrant-pass2 facet                    c=16        68 q/s  p50 234.300 ms  p90 314.058 ms  p99 392.749 ms  errors 0
+qdrant-pass2 key lookup               warm-up: p50 0.339, 0.331 ms
+qdrant-pass2 key lookup               c=1       3516 q/s  p50   0.277 ms  p90   0.322 ms  p99   0.459 ms  errors 0
+qdrant-pass2 key lookup               c=4      12228 q/s  p50   0.319 ms  p90   0.382 ms  p99   0.469 ms  errors 0
+qdrant-pass2 key lookup               c=16     30273 q/s  p50   0.503 ms  p90   0.689 ms  p99   0.987 ms  errors 0
+qdrant-pass2 phrase                   warm-up: p50 1.320, 1.348 ms
+qdrant-pass2 phrase                   c=1        479 q/s  p50   0.979 ms  p90   3.886 ms  p99  20.195 ms  errors 0
+qdrant-pass2 phrase                   c=4       1421 q/s  p50   1.337 ms  p90   5.533 ms  p99  28.779 ms  errors 0
+qdrant-pass2 phrase                   c=16      1771 q/s  p50   7.528 ms  p90  15.703 ms  p99  39.156 ms  errors 0
+qdrant-pass2 typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant-pass2 prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant-pass2 similar items            warm-up: p50 10.817, 11.040 ms
+qdrant-pass2 similar items            c=1        114 q/s  p50   8.772 ms  p90  10.691 ms  p99  13.130 ms  errors 0
+qdrant-pass2 similar items            c=4        371 q/s  p50  10.814 ms  p90  13.384 ms  p99  15.672 ms  errors 0
+qdrant-pass2 similar items            c=16       418 q/s  p50  37.566 ms  p90  48.996 ms  p99  59.245 ms  errors 0
+qdrant-pass2 sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant-pass2.json
+job.batch/run-qdrant-pass3 created
+qdrant-pass3 bm25                     warm-up: p50 2.161, 2.163 ms
+qdrant-pass3 bm25                     c=1        580 q/s  p50   1.674 ms  p90   2.721 ms  p99   3.565 ms  errors 0
+qdrant-pass3 bm25                     c=4       1810 q/s  p50   2.127 ms  p90   3.404 ms  p99   4.575 ms  errors 0
+qdrant-pass3 bm25                     c=16      2471 q/s  p50   6.196 ms  p90   9.359 ms  p99  13.445 ms  errors 0
+qdrant-pass3 bm25 + filter            warm-up: p50 2.354, 2.333 ms
+qdrant-pass3 bm25 + filter            c=1        531 q/s  p50   1.811 ms  p90   2.823 ms  p99   4.142 ms  errors 0
+qdrant-pass3 bm25 + filter            c=4       1605 q/s  p50   2.364 ms  p90   3.720 ms  p99   5.677 ms  errors 0
+qdrant-pass3 bm25 + filter            c=16      2205 q/s  p50   6.798 ms  p90  10.446 ms  p99  16.954 ms  errors 0
+qdrant-pass3 vector                   warm-up: p50 2.679, 2.668 ms
+qdrant-pass3 vector                   c=1        543 q/s  p50   1.770 ms  p90   2.228 ms  p99   2.655 ms  errors 0
+qdrant-pass3 vector                   c=4       1436 q/s  p50   2.687 ms  p90   3.510 ms  p99   4.552 ms  errors 0
+qdrant-pass3 vector                   c=16      1910 q/s  p50   7.908 ms  p90  11.995 ms  p99  16.418 ms  errors 0
+qdrant-pass3 vector + filter          warm-up: p50 4.625, 4.731 ms
+qdrant-pass3 vector + filter          c=1        295 q/s  p50   3.326 ms  p90   4.100 ms  p99   5.164 ms  errors 0
+qdrant-pass3 vector + filter          c=4        834 q/s  p50   4.700 ms  p90   5.863 ms  p99   7.446 ms  errors 0
+qdrant-pass3 vector + filter          c=16       991 q/s  p50  15.316 ms  p90  22.394 ms  p99  27.295 ms  errors 0
+qdrant-pass3 hybrid (RRF)             warm-up: p50 12.022, 11.948 ms
+qdrant-pass3 hybrid (RRF)             c=1        108 q/s  p50   8.736 ms  p90  12.232 ms  p99  14.492 ms  errors 0
+qdrant-pass3 hybrid (RRF)             c=4        320 q/s  p50  12.009 ms  p90  16.524 ms  p99  20.784 ms  errors 0
+qdrant-pass3 hybrid (RRF)             c=16       368 q/s  p50  41.967 ms  p90  55.554 ms  p99  69.887 ms  errors 0
+qdrant-pass3 hybrid (weighted)        warm-up: p50 12.183, 11.956 ms
+qdrant-pass3 hybrid (weighted)        c=1        108 q/s  p50   8.719 ms  p90  12.509 ms  p99  14.775 ms  errors 0
+qdrant-pass3 hybrid (weighted)        c=4        313 q/s  p50  12.271 ms  p90  16.476 ms  p99  20.846 ms  errors 0
+qdrant-pass3 hybrid (weighted)        c=16       370 q/s  p50  41.747 ms  p90  55.418 ms  p99  69.723 ms  errors 0
+qdrant-pass3 boosted (bm25 × decay)   warm-up: p50 2.592, 2.600 ms
+qdrant-pass3 boosted (bm25 × decay)   c=1        500 q/s  p50   1.954 ms  p90   3.036 ms  p99   3.954 ms  errors 0
+qdrant-pass3 boosted (bm25 × decay)   c=4       1520 q/s  p50   2.566 ms  p90   3.893 ms  p99   5.164 ms  errors 0
+qdrant-pass3 boosted (bm25 × decay)   c=16      2147 q/s  p50   7.080 ms  p90  10.852 ms  p99  16.391 ms  errors 0
+qdrant-pass3 facet                    warm-up: p50 54.967, 56.802 ms
+qdrant-pass3 facet                    c=1         57 q/s  p50  12.529 ms  p90  38.634 ms  p99  54.341 ms  errors 0
+qdrant-pass3 facet                    c=4         67 q/s  p50  60.007 ms  p90 105.469 ms  p99 146.272 ms  errors 0
+qdrant-pass3 facet                    c=16        68 q/s  p50 235.160 ms  p90 309.060 ms  p99 394.220 ms  errors 0
+qdrant-pass3 key lookup               warm-up: p50 0.329, 0.312 ms
+qdrant-pass3 key lookup               c=1       3663 q/s  p50   0.267 ms  p90   0.311 ms  p99   0.432 ms  errors 0
+qdrant-pass3 key lookup               c=4      11802 q/s  p50   0.329 ms  p90   0.399 ms  p99   0.496 ms  errors 0
+qdrant-pass3 key lookup               c=16     28746 q/s  p50   0.509 ms  p90   0.760 ms  p99   1.186 ms  errors 0
+qdrant-pass3 phrase                   warm-up: p50 1.343, 1.319 ms
+qdrant-pass3 phrase                   c=1        479 q/s  p50   0.983 ms  p90   3.902 ms  p99  20.117 ms  errors 0
+qdrant-pass3 phrase                   c=4       1411 q/s  p50   1.360 ms  p90   5.435 ms  p99  28.452 ms  errors 0
+qdrant-pass3 phrase                   c=16      1797 q/s  p50   7.481 ms  p90  15.482 ms  p99  38.222 ms  errors 0
+qdrant-pass3 typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant-pass3 prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant-pass3 similar items            warm-up: p50 10.361, 10.253 ms
+qdrant-pass3 similar items            c=1        121 q/s  p50   8.344 ms  p90  10.065 ms  p99  11.482 ms  errors 0
+qdrant-pass3 similar items            c=4        389 q/s  p50  10.342 ms  p90  12.686 ms  p99  15.061 ms  errors 0
+qdrant-pass3 similar items            c=16       424 q/s  p50  37.041 ms  p90  48.035 ms  p99  56.875 ms  errors 0
+qdrant-pass3 sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant-pass3.json
+pod "qdrant-0" deleted from one-1m namespace
+service/meili created
+pod/meili-0 created
+pod/meili-0 condition met
+job.batch/load-meili created
+meili: index created in 0.6 s
+meili: 25000 documents sent, 3 s
+meili: 50000 documents sent, 5 s
+meili: 75000 documents sent, 8 s
+meili: 100000 documents sent, 10 s
+meili: 125000 documents sent, 13 s
+meili: 150000 documents sent, 15 s
+meili: 175000 documents sent, 18 s
+meili: 200000 documents sent, 21 s
+meili: 225000 documents sent, 23 s
+meili: 250000 documents sent, 26 s
+meili: 275000 documents sent, 28 s
+meili: 300000 documents sent, 31 s
+meili: 325000 documents sent, 33 s
+meili: 350000 documents sent, 36 s
+meili: 375000 documents sent, 39 s
+meili: 400000 documents sent, 41 s
+meili: 425000 documents sent, 44 s
+meili: 450000 documents sent, 46 s
+meili: 475000 documents sent, 49 s
+meili: 500000 documents sent, 51 s
+meili: 525000 documents sent, 54 s
+meili: 550000 documents sent, 56 s
+meili: 575000 documents sent, 59 s
+meili: 600000 documents sent, 61 s
+meili: 625000 documents sent, 64 s
+meili: 650000 documents sent, 66 s
+meili: 675000 documents sent, 69 s
+meili: 700000 documents sent, 71 s
+meili: 725000 documents sent, 74 s
+meili: 750000 documents sent, 77 s
+meili: 775000 documents sent, 80 s
+meili: 800000 documents sent, 82 s
+meili: 825000 documents sent, 85 s
+meili: 850000 documents sent, 87 s
+meili: 875000 documents sent, 89 s
+meili: 900000 documents sent, 92 s
+meili: 925000 documents sent, 94 s
+meili: 950000 documents sent, 97 s
+meili: 975000 documents sent, 99 s
+meili: 1000000 documents sent, 102 s
+meili: 1000000 documents (10.8 GB) sent in 101.7 s
+meili: index_s in 1512.4 s
+meili: indexed 1512.4 s after the last write; 1614.1 s in all
+wrote /data/compare/load-meili.json
+job.batch/run-meili created
+meili     bm25                     warm-up: p50 6.486, 6.502 ms
+meili     bm25                     c=1        160 q/s  p50   5.918 ms  p90  10.351 ms  p99  14.267 ms  errors 0
+meili     bm25                     c=4        578 q/s  p50   6.374 ms  p90  11.654 ms  p99  17.536 ms  errors 0
+meili     bm25                     c=16       758 q/s  p50  18.840 ms  p90  37.254 ms  p99  54.949 ms  errors 0
+meili     bm25 + filter            warm-up: p50 9.975, 9.785 ms
+meili     bm25 + filter            c=1        115 q/s  p50   8.254 ms  p90  12.742 ms  p99  16.161 ms  errors 0
+meili     bm25 + filter            c=4        372 q/s  p50  10.048 ms  p90  16.476 ms  p99  21.712 ms  errors 0
+meili     bm25 + filter            c=16       578 q/s  p50  25.974 ms  p90  45.433 ms  p99  61.596 ms  errors 0
+meili     vector                   warm-up: p50 5.597, 5.545 ms
+meili     vector                   c=1        218 q/s  p50   4.543 ms  p90   5.366 ms  p99   6.197 ms  errors 0
+meili     vector                   c=4        685 q/s  p50   5.619 ms  p90   7.579 ms  p99  10.004 ms  errors 0
+meili     vector                   c=16      1116 q/s  p50  13.739 ms  p90  21.454 ms  p99  28.575 ms  errors 0
+meili     vector + filter          warm-up: p50 15.113, 14.703 ms
+meili     vector + filter          c=1         80 q/s  p50  12.418 ms  p90  14.860 ms  p99  16.887 ms  errors 0
+meili     vector + filter          c=4        275 q/s  p50  14.279 ms  p90  18.314 ms  p99  21.919 ms  errors 0
+meili     vector + filter          c=16       443 q/s  p50  35.346 ms  p90  52.045 ms  p99  67.995 ms  errors 0
+meili     hybrid (RRF)             warm-up: p50 11.102, 11.179 ms
+meili     hybrid (RRF)             c=1        107 q/s  p50   9.200 ms  p90  14.207 ms  p99  18.000 ms  errors 0
+meili     hybrid (RRF)             c=4        341 q/s  p50  11.245 ms  p90  18.075 ms  p99  24.853 ms  errors 0
+meili     hybrid (RRF)             c=16       528 q/s  p50  28.293 ms  p90  50.635 ms  p99  71.506 ms  errors 0
+meili     hybrid (weighted)        warm-up: p50 12.083, 12.016 ms
+meili     hybrid (weighted)        c=1         95 q/s  p50  10.193 ms  p90  14.940 ms  p99  19.488 ms  errors 0
+meili     hybrid (weighted)        c=4        313 q/s  p50  12.124 ms  p90  18.964 ms  p99  24.508 ms  errors 0
+meili     hybrid (weighted)        c=16       486 q/s  p50  30.897 ms  p90  51.551 ms  p99  75.019 ms  errors 0
+meili     boosted (bm25 × decay)   unavailable: no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance
+meili     facet                    warm-up: p50 3.582, 3.537 ms
+meili     facet                    c=1        333 q/s  p50   2.958 ms  p90   5.250 ms  p99   9.129 ms  errors 0
+meili     facet                    c=4       1078 q/s  p50   3.525 ms  p90   6.515 ms  p99  10.268 ms  errors 0
+meili     facet                    c=16      1689 q/s  p50   8.553 ms  p90  16.897 ms  p99  25.505 ms  errors 0
+meili     key lookup               warm-up: p50 0.346, 0.346 ms
+meili     key lookup               c=1       3393 q/s  p50   0.283 ms  p90   0.349 ms  p99   0.492 ms  errors 0
+meili     key lookup               c=4      11173 q/s  p50   0.348 ms  p90   0.424 ms  p99   0.528 ms  errors 0
+meili     key lookup               c=16     19397 q/s  p50   0.808 ms  p90   1.050 ms  p99   1.450 ms  errors 0
+meili     phrase                   warm-up: p50 2.443, 2.504 ms
+meili     phrase                   c=1        328 q/s  p50   1.926 ms  p90   7.449 ms  p99  12.018 ms  errors 0
+meili     phrase                   c=4       1035 q/s  p50   2.458 ms  p90   9.328 ms  p99  16.082 ms  errors 0
+meili     phrase                   c=16      1599 q/s  p50   7.144 ms  p90  22.560 ms  p99  39.634 ms  errors 0
+meili     typo                     warm-up: p50 7.244, 7.076 ms
+meili     typo                     c=1        153 q/s  p50   6.169 ms  p90  10.585 ms  p99  14.591 ms  errors 0
+meili     typo                     c=4        514 q/s  p50   7.057 ms  p90  13.278 ms  p99  18.928 ms  errors 0
+meili     typo                     c=16       776 q/s  p50  18.645 ms  p90  35.700 ms  p99  55.217 ms  errors 0
+meili     prefix                   warm-up: p50 6.919, 6.802 ms
+meili     prefix                   c=1        178 q/s  p50   5.207 ms  p90   8.978 ms  p99  13.288 ms  errors 0
+meili     prefix                   c=4        544 q/s  p50   6.748 ms  p90  12.152 ms  p99  17.923 ms  errors 0
+meili     prefix                   c=16       856 q/s  p50  16.973 ms  p90  32.225 ms  p99  47.405 ms  errors 0
+meili     similar items            warm-up: p50 10.283, 10.343 ms
+meili     similar items            c=1        114 q/s  p50   8.776 ms  p90  10.707 ms  p99  11.988 ms  errors 0
+meili     similar items            c=4        375 q/s  p50  10.406 ms  p90  13.681 ms  p99  16.869 ms  errors 0
+meili     similar items            c=16       614 q/s  p50  25.303 ms  p90  38.145 ms  p99  49.629 ms  errors 0
+meili     sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats give a numeric field's minimum and maximum only
+wrote /data/compare/run-meili.json
+job.batch/run-meili-pass2 created
+meili-pass2 bm25                     warm-up: p50 6.601, 6.269 ms
+meili-pass2 bm25                     c=1        160 q/s  p50   5.983 ms  p90  10.442 ms  p99  14.386 ms  errors 0
+meili-pass2 bm25                     c=4        582 q/s  p50   6.342 ms  p90  11.656 ms  p99  18.239 ms  errors 0
+meili-pass2 bm25                     c=16       767 q/s  p50  18.419 ms  p90  37.391 ms  p99  56.666 ms  errors 0
+meili-pass2 bm25 + filter            warm-up: p50 10.156, 10.050 ms
+meili-pass2 bm25 + filter            c=1        114 q/s  p50   8.372 ms  p90  12.716 ms  p99  16.551 ms  errors 0
+meili-pass2 bm25 + filter            c=4        378 q/s  p50   9.956 ms  p90  15.990 ms  p99  21.197 ms  errors 0
+meili-pass2 bm25 + filter            c=16       589 q/s  p50  25.432 ms  p90  44.085 ms  p99  60.323 ms  errors 0
+meili-pass2 vector                   warm-up: p50 5.632, 5.674 ms
+meili-pass2 vector                   c=1        219 q/s  p50   4.506 ms  p90   5.362 ms  p99   6.145 ms  errors 0
+meili-pass2 vector                   c=4        685 q/s  p50   5.599 ms  p90   7.686 ms  p99  10.059 ms  errors 0
+meili-pass2 vector                   c=16      1104 q/s  p50  13.916 ms  p90  21.530 ms  p99  29.025 ms  errors 0
+meili-pass2 vector + filter          warm-up: p50 14.447, 14.590 ms
+meili-pass2 vector + filter          c=1         80 q/s  p50  12.522 ms  p90  14.861 ms  p99  16.531 ms  errors 0
+meili-pass2 vector + filter          c=4        273 q/s  p50  14.312 ms  p90  18.488 ms  p99  23.414 ms  errors 0
+meili-pass2 vector + filter          c=16       442 q/s  p50  35.425 ms  p90  51.896 ms  p99  68.268 ms  errors 0
+meili-pass2 hybrid (RRF)             warm-up: p50 11.225, 11.205 ms
+meili-pass2 hybrid (RRF)             c=1        102 q/s  p50   9.674 ms  p90  14.887 ms  p99  19.093 ms  errors 0
+meili-pass2 hybrid (RRF)             c=4        338 q/s  p50  11.205 ms  p90  18.416 ms  p99  25.184 ms  errors 0
+meili-pass2 hybrid (RRF)             c=16       529 q/s  p50  28.231 ms  p90  50.051 ms  p99  69.855 ms  errors 0
+meili-pass2 hybrid (weighted)        warm-up: p50 12.010, 11.749 ms
+meili-pass2 hybrid (weighted)        c=1         95 q/s  p50  10.239 ms  p90  15.168 ms  p99  18.139 ms  errors 0
+meili-pass2 hybrid (weighted)        c=4        322 q/s  p50  11.768 ms  p90  18.294 ms  p99  23.952 ms  errors 0
+meili-pass2 hybrid (weighted)        c=16       481 q/s  p50  31.208 ms  p90  53.146 ms  p99  75.965 ms  errors 0
+meili-pass2 boosted (bm25 × decay)   unavailable: no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance
+meili-pass2 facet                    warm-up: p50 3.479, 3.517 ms
+meili-pass2 facet                    c=1        327 q/s  p50   3.035 ms  p90   5.312 ms  p99   9.281 ms  errors 0
+meili-pass2 facet                    c=4       1068 q/s  p50   3.543 ms  p90   6.577 ms  p99  10.670 ms  errors 0
+meili-pass2 facet                    c=16      1682 q/s  p50   8.642 ms  p90  16.947 ms  p99  26.187 ms  errors 0
+meili-pass2 key lookup               warm-up: p50 0.355, 0.345 ms
+meili-pass2 key lookup               c=1       3281 q/s  p50   0.296 ms  p90   0.346 ms  p99   0.458 ms  errors 0
+meili-pass2 key lookup               c=4      11008 q/s  p50   0.353 ms  p90   0.430 ms  p99   0.543 ms  errors 0
+meili-pass2 key lookup               c=16     19262 q/s  p50   0.811 ms  p90   1.055 ms  p99   1.448 ms  errors 0
+meili-pass2 phrase                   warm-up: p50 2.527, 2.552 ms
+meili-pass2 phrase                   c=1        324 q/s  p50   1.927 ms  p90   7.478 ms  p99  11.816 ms  errors 0
+meili-pass2 phrase                   c=4       1015 q/s  p50   2.519 ms  p90   9.471 ms  p99  15.977 ms  errors 0
+meili-pass2 phrase                   c=16      1602 q/s  p50   7.112 ms  p90  22.242 ms  p99  39.926 ms  errors 0
+meili-pass2 typo                     warm-up: p50 7.315, 7.333 ms
+meili-pass2 typo                     c=1        156 q/s  p50   6.035 ms  p90  10.720 ms  p99  14.657 ms  errors 0
+meili-pass2 typo                     c=4        507 q/s  p50   7.125 ms  p90  13.355 ms  p99  19.334 ms  errors 0
+meili-pass2 typo                     c=16       770 q/s  p50  18.759 ms  p90  36.646 ms  p99  54.482 ms  errors 0
+meili-pass2 prefix                   warm-up: p50 6.430, 6.761 ms
+meili-pass2 prefix                   c=1        173 q/s  p50   5.355 ms  p90   9.172 ms  p99  13.244 ms  errors 0
+meili-pass2 prefix                   c=4        539 q/s  p50   6.709 ms  p90  12.527 ms  p99  17.876 ms  errors 0
+meili-pass2 prefix                   c=16       865 q/s  p50  16.861 ms  p90  31.930 ms  p99  48.673 ms  errors 0
+meili-pass2 similar items            warm-up: p50 10.315, 10.437 ms
+meili-pass2 similar items            c=1        114 q/s  p50   8.756 ms  p90  10.716 ms  p99  12.269 ms  errors 0
+meili-pass2 similar items            c=4        382 q/s  p50  10.327 ms  p90  13.408 ms  p99  16.135 ms  errors 0
+meili-pass2 similar items            c=16       623 q/s  p50  24.883 ms  p90  37.783 ms  p99  48.555 ms  errors 0
+meili-pass2 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats give a numeric field's minimum and maximum only
+wrote /data/compare/run-meili-pass2.json
+job.batch/run-meili-pass3 created
+meili-pass3 bm25                     warm-up: p50 6.552, 6.336 ms
+meili-pass3 bm25                     c=1        157 q/s  p50   6.096 ms  p90  10.486 ms  p99  14.446 ms  errors 0
+meili-pass3 bm25                     c=4        555 q/s  p50   6.465 ms  p90  12.296 ms  p99  18.929 ms  errors 0
+meili-pass3 bm25                     c=16       769 q/s  p50  18.658 ms  p90  36.924 ms  p99  56.030 ms  errors 0
+meili-pass3 bm25 + filter            warm-up: p50 10.071, 10.330 ms
+meili-pass3 bm25 + filter            c=1        112 q/s  p50   8.430 ms  p90  13.039 ms  p99  16.790 ms  errors 0
+meili-pass3 bm25 + filter            c=4        377 q/s  p50  10.048 ms  p90  16.017 ms  p99  21.634 ms  errors 0
+meili-pass3 bm25 + filter            c=16       574 q/s  p50  25.949 ms  p90  45.410 ms  p99  62.182 ms  errors 0
+meili-pass3 vector                   warm-up: p50 5.397, 5.516 ms
+meili-pass3 vector                   c=1        217 q/s  p50   4.542 ms  p90   5.380 ms  p99   6.349 ms  errors 0
+meili-pass3 vector                   c=4        708 q/s  p50   5.465 ms  p90   7.089 ms  p99   9.448 ms  errors 0
+meili-pass3 vector                   c=16      1109 q/s  p50  13.784 ms  p90  21.501 ms  p99  28.797 ms  errors 0
+meili-pass3 vector + filter          warm-up: p50 13.892, 14.433 ms
+meili-pass3 vector + filter          c=1         79 q/s  p50  12.508 ms  p90  14.988 ms  p99  16.859 ms  errors 0
+meili-pass3 vector + filter          c=4        271 q/s  p50  14.583 ms  p90  18.561 ms  p99  22.503 ms  errors 0
+meili-pass3 vector + filter          c=16       444 q/s  p50  35.561 ms  p90  52.397 ms  p99  67.898 ms  errors 0
+meili-pass3 hybrid (RRF)             warm-up: p50 11.545, 11.408 ms
+meili-pass3 hybrid (RRF)             c=1        102 q/s  p50   9.628 ms  p90  14.956 ms  p99  18.295 ms  errors 0
+meili-pass3 hybrid (RRF)             c=4        335 q/s  p50  11.541 ms  p90  18.277 ms  p99  24.694 ms  errors 0
+meili-pass3 hybrid (RRF)             c=16       524 q/s  p50  28.334 ms  p90  50.276 ms  p99  71.765 ms  errors 0
+meili-pass3 hybrid (weighted)        warm-up: p50 12.072, 12.478 ms
+meili-pass3 hybrid (weighted)        c=1         96 q/s  p50  10.111 ms  p90  14.779 ms  p99  18.135 ms  errors 0
+meili-pass3 hybrid (weighted)        c=4        311 q/s  p50  12.220 ms  p90  18.827 ms  p99  24.767 ms  errors 0
+meili-pass3 hybrid (weighted)        c=16       485 q/s  p50  30.798 ms  p90  53.380 ms  p99  74.107 ms  errors 0
+meili-pass3 boosted (bm25 × decay)   unavailable: no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance
+meili-pass3 facet                    warm-up: p50 3.518, 3.518 ms
+meili-pass3 facet                    c=1        335 q/s  p50   2.967 ms  p90   5.162 ms  p99   9.129 ms  errors 0
+meili-pass3 facet                    c=4       1062 q/s  p50   3.554 ms  p90   6.574 ms  p99  10.264 ms  errors 0
+meili-pass3 facet                    c=16      1675 q/s  p50   8.690 ms  p90  16.825 ms  p99  26.159 ms  errors 0
+meili-pass3 key lookup               warm-up: p50 0.350, 0.347 ms
+meili-pass3 key lookup               c=1       3298 q/s  p50   0.294 ms  p90   0.351 ms  p99   0.491 ms  errors 0
+meili-pass3 key lookup               c=4      11088 q/s  p50   0.351 ms  p90   0.423 ms  p99   0.526 ms  errors 0
+meili-pass3 key lookup               c=16     19696 q/s  p50   0.794 ms  p90   1.026 ms  p99   1.433 ms  errors 0
+meili-pass3 phrase                   warm-up: p50 2.365, 2.303 ms
+meili-pass3 phrase                   c=1        319 q/s  p50   2.012 ms  p90   7.607 ms  p99  12.329 ms  errors 0
+meili-pass3 phrase                   c=4       1097 q/s  p50   2.256 ms  p90   8.976 ms  p99  15.388 ms  errors 0
+meili-pass3 phrase                   c=16      1571 q/s  p50   7.346 ms  p90  22.447 ms  p99  41.669 ms  errors 0
+meili-pass3 typo                     warm-up: p50 7.451, 7.714 ms
+meili-pass3 typo                     c=1        158 q/s  p50   5.922 ms  p90  10.458 ms  p99  14.391 ms  errors 0
+meili-pass3 typo                     c=4        489 q/s  p50   7.487 ms  p90  13.660 ms  p99  19.948 ms  errors 0
+meili-pass3 typo                     c=16       780 q/s  p50  18.560 ms  p90  35.961 ms  p99  53.837 ms  errors 0
+meili-pass3 prefix                   warm-up: p50 6.971, 6.683 ms
+meili-pass3 prefix                   c=1        167 q/s  p50   5.552 ms  p90   9.366 ms  p99  13.914 ms  errors 0
+meili-pass3 prefix                   c=4        524 q/s  p50   7.105 ms  p90  12.493 ms  p99  17.894 ms  errors 0
+meili-pass3 prefix                   c=16       863 q/s  p50  16.846 ms  p90  31.919 ms  p99  46.914 ms  errors 0
+meili-pass3 similar items            warm-up: p50 10.574, 10.775 ms
+meili-pass3 similar items            c=1        112 q/s  p50   8.945 ms  p90  10.870 ms  p99  12.259 ms  errors 0
+meili-pass3 similar items            c=4        364 q/s  p50  10.785 ms  p90  14.138 ms  p99  17.883 ms  errors 0
+meili-pass3 similar items            c=16       614 q/s  p50  24.996 ms  p90  38.751 ms  p99  50.683 ms  errors 0
+meili-pass3 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats give a numeric field's minimum and maximum only
+wrote /data/compare/run-meili-pass3.json
+pod "meili-0" deleted from one-1m namespace
+service/postgres created
+pod/postgres-0 created
+pod/postgres-0 condition met
+job.batch/load-postgres created
+postgres: index created in 0.0 s
+postgres: 25000 documents sent, 3 s
+postgres: 50000 documents sent, 5 s
+postgres: 75000 documents sent, 8 s
+postgres: 100000 documents sent, 10 s
+postgres: 125000 documents sent, 13 s
+postgres: 150000 documents sent, 15 s
+postgres: 175000 documents sent, 18 s
+postgres: 200000 documents sent, 20 s
+postgres: 225000 documents sent, 22 s
+postgres: 250000 documents sent, 25 s
+postgres: 275000 documents sent, 27 s
+postgres: 300000 documents sent, 30 s
+postgres: 325000 documents sent, 32 s
+postgres: 350000 documents sent, 35 s
+postgres: 375000 documents sent, 37 s
+postgres: 400000 documents sent, 39 s
+postgres: 425000 documents sent, 42 s
+postgres: 450000 documents sent, 44 s
+postgres: 475000 documents sent, 47 s
+postgres: 500000 documents sent, 49 s
+postgres: 525000 documents sent, 52 s
+postgres: 550000 documents sent, 54 s
+postgres: 575000 documents sent, 57 s
+postgres: 600000 documents sent, 59 s
+postgres: 625000 documents sent, 62 s
+postgres: 650000 documents sent, 64 s
+postgres: 675000 documents sent, 67 s
+postgres: 700000 documents sent, 69 s
+postgres: 725000 documents sent, 72 s
+postgres: 750000 documents sent, 74 s
+postgres: 775000 documents sent, 77 s
+postgres: 800000 documents sent, 79 s
+postgres: 825000 documents sent, 81 s
+postgres: 850000 documents sent, 84 s
+postgres: 875000 documents sent, 86 s
+postgres: 900000 documents sent, 89 s
+postgres: 925000 documents sent, 91 s
+postgres: 950000 documents sent, 94 s
+postgres: 975000 documents sent, 96 s
+postgres: 1000000 documents sent, 98 s
+postgres: 1000000 documents (10.7 GB) sent in 98.4 s
+postgres: primary_key_s in 3.6 s
+postgres: gin_index_s in 56.8 s
+postgres: hnsw_index_s in 1050.0 s
+postgres: analyze_s in 0.9 s
+postgres: indexed 1111.3 s after the last write; 1209.6 s in all
+wrote /data/compare/load-postgres.json
+job.batch/run-postgres created
+postgres  bm25                     warm-up: p50 562.188, 604.271 ms
+postgres  bm25                     c=1          4 q/s  p50 255.232 ms  p90 855.923 ms  p99 878.203 ms  errors 0
+postgres  bm25                     c=4          5 q/s  p50 655.813 ms  p90 1656.030 ms  p99 2819.090 ms  errors 0
+postgres  bm25                     c=16         5 q/s  p50 1576.038 ms  p90 5244.732 ms  p99 8890.016 ms  errors 0
+postgres  bm25 + filter            warm-up: p50 335.218, 225.362, 266.422, 327.160, 339.581 ms
+postgres  bm25 + filter            c=1          5 q/s  p50 108.773 ms  p90 739.420 ms  p99 771.098 ms  errors 0
+postgres  bm25 + filter            c=4          6 q/s  p50 298.201 ms  p90 1677.345 ms  p99 2464.654 ms  errors 0
+postgres  bm25 + filter            c=16         7 q/s  p50 1006.744 ms  p90 6024.936 ms  p99 9700.440 ms  errors 0
+postgres  vector                   warm-up: p50 3.254, 3.332 ms
+postgres  vector                   c=1        309 q/s  p50   3.082 ms  p90   4.188 ms  p99   6.220 ms  errors 0
+postgres  vector                   c=4       1233 q/s  p50   3.080 ms  p90   4.238 ms  p99   6.852 ms  errors 0
+postgres  vector                   c=16      1566 q/s  p50   8.263 ms  p90  20.322 ms  p99  33.526 ms  errors 0
+postgres  vector + filter          warm-up: p50 3.351, 3.398 ms
+postgres  vector + filter          c=1        277 q/s  p50   3.214 ms  p90   4.708 ms  p99   8.358 ms  errors 0
+postgres  vector + filter          c=4       1094 q/s  p50   3.232 ms  p90   4.899 ms  p99   8.338 ms  errors 0
+postgres  vector + filter          c=16      1342 q/s  p50   9.034 ms  p90  22.559 ms  p99  39.296 ms  errors 0
+postgres  hybrid (RRF)             warm-up: p50 607.047, 642.057 ms
+postgres  hybrid (RRF)             c=1          4 q/s  p50 210.769 ms  p90 867.275 ms  p99 909.499 ms  errors 0
+postgres  hybrid (RRF)             c=4          4 q/s  p50 635.471 ms  p90 1875.103 ms  p99 5752.313 ms  errors 0
+postgres  hybrid (RRF)             c=16         5 q/s  p50 1533.853 ms  p90 5380.476 ms  p99 6784.774 ms  errors 0
+postgres  hybrid (weighted)        warm-up: p50 443.946, 539.688, 541.930 ms
+postgres  hybrid (weighted)        c=1          4 q/s  p50 222.393 ms  p90 860.809 ms  p99 914.655 ms  errors 0
+postgres  hybrid (weighted)        c=4          5 q/s  p50 596.824 ms  p90 1833.703 ms  p99 2371.136 ms  errors 0
+postgres  hybrid (weighted)        c=16         5 q/s  p50 1904.887 ms  p90 6091.950 ms  p99 7218.942 ms  errors 0
+postgres  boosted (bm25 × decay)   warm-up: p50 856.478, 841.071 ms
+postgres  boosted (bm25 × decay)   c=1          3 q/s  p50 303.291 ms  p90 458.832 ms  p99 1271.985 ms  errors 0
+postgres  boosted (bm25 × decay)   c=4          4 q/s  p50 800.051 ms  p90 2665.703 ms  p99 3366.350 ms  errors 0
+postgres  boosted (bm25 × decay)   c=16         3 q/s  p50 2027.919 ms  p90 8676.274 ms  p99 12156.217 ms  errors 0
+postgres  facet                    warm-up: p50 6.226, 6.080 ms
+postgres  facet                    c=1         46 q/s  p50   5.381 ms  p90  56.561 ms  p99 147.923 ms  errors 0
+postgres  facet                    c=4        119 q/s  p50   6.041 ms  p90  72.767 ms  p99 320.689 ms  errors 0
+postgres  facet                    c=16       127 q/s  p50  28.451 ms  p90 314.152 ms  p99 827.965 ms  errors 0
+postgres  key lookup               warm-up: p50 0.254, 0.246 ms
+postgres  key lookup               c=1       4696 q/s  p50   0.208 ms  p90   0.248 ms  p99   0.329 ms  errors 0
+postgres  key lookup               c=4      16048 q/s  p50   0.248 ms  p90   0.303 ms  p99   0.357 ms  errors 0
+postgres  key lookup               c=16     32242 q/s  p50   0.413 ms  p90   0.629 ms  p99   1.063 ms  errors 0
+postgres  phrase                   warm-up: p50 4.903, 4.777 ms
+postgres  phrase                   c=1         95 q/s  p50   4.240 ms  p90  23.452 ms  p99  90.394 ms  errors 0
+postgres  phrase                   c=4        370 q/s  p50   4.540 ms  p90  24.039 ms  p99  93.907 ms  errors 0
+postgres  phrase                   c=16       372 q/s  p50  15.566 ms  p90  98.717 ms  p99 364.975 ms  errors 0
+postgres  typo                     unavailable: no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)
+postgres  prefix                   warm-up: p50 442.144, 419.639 ms
+postgres  prefix                   c=1          3 q/s  p50 268.553 ms  p90 600.617 ms  p99 923.060 ms  errors 0
+postgres  prefix                   c=4          7 q/s  p50 422.530 ms  p90 937.011 ms  p99 1947.411 ms  errors 0
+postgres  prefix                   c=16         5 q/s  p50 2026.577 ms  p90 4588.296 ms  p99 6778.368 ms  errors 0
+postgres  similar items            warm-up: p50 2.994, 2.997 ms
+postgres  similar items            c=1        338 q/s  p50   2.805 ms  p90   3.781 ms  p99   5.464 ms  errors 0
+postgres  similar items            c=4       1350 q/s  p50   2.790 ms  p90   3.828 ms  p99   6.460 ms  errors 0
+postgres  similar items            c=16      1730 q/s  p50   7.571 ms  p90  18.531 ms  p99  30.825 ms  errors 0
+postgres  sql aggregate            warm-up: p50 646.595, 658.338 ms
+postgres  sql aggregate            c=1          5 q/s  p50 210.963 ms  p90 230.357 ms  p99 279.882 ms  errors 0
+postgres  sql aggregate            c=4          5 q/s  p50 634.072 ms  p90 1062.632 ms  p99 2208.689 ms  errors 0
+postgres  sql aggregate            c=16         6 q/s  p50 2474.648 ms  p90 4439.166 ms  p99 4758.144 ms  errors 0
+wrote /data/compare/run-postgres.json
+job.batch/run-postgres-pass2 created
+postgres-pass2 bm25                     warm-up: p50 646.393, 595.672 ms
+postgres-pass2 bm25                     c=1          4 q/s  p50 236.969 ms  p90 841.684 ms  p99 877.168 ms  errors 0
+postgres-pass2 bm25                     c=4          5 q/s  p50 628.721 ms  p90 2086.402 ms  p99 2385.434 ms  errors 0
+postgres-pass2 bm25                     c=16         5 q/s  p50 1682.956 ms  p90 5881.840 ms  p99 7693.952 ms  errors 0
+postgres-pass2 bm25 + filter            warm-up: p50 330.665, 280.922, 280.505 ms
+postgres-pass2 bm25 + filter            c=1          5 q/s  p50 106.396 ms  p90 722.780 ms  p99 766.077 ms  errors 0
+postgres-pass2 bm25 + filter            c=4          7 q/s  p50 324.885 ms  p90 1738.269 ms  p99 2357.891 ms  errors 0
+postgres-pass2 bm25 + filter            c=16         6 q/s  p50 1096.574 ms  p90 6759.637 ms  p99 9188.940 ms  errors 0
+postgres-pass2 vector                   warm-up: p50 3.154, 3.376 ms
+postgres-pass2 vector                   c=1        306 q/s  p50   3.133 ms  p90   4.277 ms  p99   6.446 ms  errors 0
+postgres-pass2 vector                   c=4       1179 q/s  p50   3.246 ms  p90   4.442 ms  p99   6.536 ms  errors 0
+postgres-pass2 vector                   c=16      1525 q/s  p50   8.315 ms  p90  21.449 ms  p99  36.446 ms  errors 0
+postgres-pass2 vector + filter          warm-up: p50 3.527, 3.580 ms
+postgres-pass2 vector + filter          c=1        266 q/s  p50   3.329 ms  p90   4.886 ms  p99   8.744 ms  errors 0
+postgres-pass2 vector + filter          c=4       1026 q/s  p50   3.467 ms  p90   5.211 ms  p99   8.442 ms  errors 0
+postgres-pass2 vector + filter          c=16      1298 q/s  p50   9.254 ms  p90  23.194 ms  p99  42.965 ms  errors 0
+postgres-pass2 hybrid (RRF)             warm-up: p50 635.532, 535.474, 592.661, 560.085 ms
+postgres-pass2 hybrid (RRF)             c=1          4 q/s  p50 225.757 ms  p90 390.320 ms  p99 954.996 ms  errors 0
+postgres-pass2 hybrid (RRF)             c=4          4 q/s  p50 574.626 ms  p90 2012.727 ms  p99 5755.113 ms  errors 0
+postgres-pass2 hybrid (RRF)             c=16         5 q/s  p50 1382.768 ms  p90 5701.864 ms  p99 10384.912 ms  errors 0
+postgres-pass2 hybrid (weighted)        warm-up: p50 622.875, 612.530 ms
+postgres-pass2 hybrid (weighted)        c=1          4 q/s  p50 222.516 ms  p90 854.098 ms  p99 906.274 ms  errors 0
+postgres-pass2 hybrid (weighted)        c=4          4 q/s  p50 560.885 ms  p90 1775.679 ms  p99 5620.713 ms  errors 0
+postgres-pass2 hybrid (weighted)        c=16         5 q/s  p50 1452.886 ms  p90 6585.712 ms  p99 9571.759 ms  errors 0
+postgres-pass2 boosted (bm25 × decay)   warm-up: p50 816.486, 809.311 ms
+postgres-pass2 boosted (bm25 × decay)   c=1          3 q/s  p50 341.885 ms  p90 469.044 ms  p99 1215.289 ms  errors 0
+postgres-pass2 boosted (bm25 × decay)   c=4          3 q/s  p50 813.975 ms  p90 2370.017 ms  p99 5489.575 ms  errors 0
+postgres-pass2 boosted (bm25 × decay)   c=16         3 q/s  p50 2204.073 ms  p90 7840.165 ms  p99 12204.524 ms  errors 0
+postgres-pass2 facet                    warm-up: p50 6.707, 6.719 ms
+postgres-pass2 facet                    c=1         46 q/s  p50   5.696 ms  p90  54.553 ms  p99 138.784 ms  errors 0
+postgres-pass2 facet                    c=4        119 q/s  p50   6.402 ms  p90  73.938 ms  p99 374.822 ms  errors 0
+postgres-pass2 facet                    c=16       127 q/s  p50  26.374 ms  p90 306.990 ms  p99 885.069 ms  errors 0
+postgres-pass2 key lookup               warm-up: p50 0.241, 0.227 ms
+postgres-pass2 key lookup               c=1       5123 q/s  p50   0.187 ms  p90   0.227 ms  p99   0.301 ms  errors 0
+postgres-pass2 key lookup               c=4      15733 q/s  p50   0.258 ms  p90   0.308 ms  p99   0.371 ms  errors 0
+postgres-pass2 key lookup               c=16     31931 q/s  p50   0.421 ms  p90   0.624 ms  p99   1.068 ms  errors 0
+postgres-pass2 phrase                   warm-up: p50 4.709, 4.476 ms
+postgres-pass2 phrase                   c=1         94 q/s  p50   4.282 ms  p90  23.366 ms  p99  92.201 ms  errors 0
+postgres-pass2 phrase                   c=4        342 q/s  p50   4.725 ms  p90  26.488 ms  p99  94.926 ms  errors 0
+postgres-pass2 phrase                   c=16       374 q/s  p50  15.696 ms  p90  97.572 ms  p99 365.898 ms  errors 0
+postgres-pass2 typo                     unavailable: no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)
+postgres-pass2 prefix                   warm-up: p50 436.692, 430.683 ms
+postgres-pass2 prefix                   c=1          3 q/s  p50 269.316 ms  p90 597.530 ms  p99 922.916 ms  errors 0
+postgres-pass2 prefix                   c=4          7 q/s  p50 407.512 ms  p90 1068.902 ms  p99 1996.456 ms  errors 0
+postgres-pass2 prefix                   c=16         5 q/s  p50 1903.320 ms  p90 4373.825 ms  p99 7335.759 ms  errors 0
+postgres-pass2 similar items            warm-up: p50 2.956, 2.943 ms
+postgres-pass2 similar items            c=1        344 q/s  p50   2.755 ms  p90   3.707 ms  p99   5.172 ms  errors 0
+postgres-pass2 similar items            c=4       1360 q/s  p50   2.785 ms  p90   3.785 ms  p99   5.891 ms  errors 0
+postgres-pass2 similar items            c=16      1746 q/s  p50   7.518 ms  p90  18.023 ms  p99  30.112 ms  errors 0
+postgres-pass2 sql aggregate            warm-up: p50 669.266, 673.581 ms
+postgres-pass2 sql aggregate            c=1          5 q/s  p50 205.470 ms  p90 225.251 ms  p99 279.793 ms  errors 0
+postgres-pass2 sql aggregate            c=4          5 q/s  p50 622.855 ms  p90 1071.467 ms  p99 2406.743 ms  errors 0
+postgres-pass2 sql aggregate            c=16         6 q/s  p50 2222.312 ms  p90 4320.998 ms  p99 5021.383 ms  errors 0
+wrote /data/compare/run-postgres-pass2.json
+job.batch/run-postgres-pass3 created
+postgres-pass3 bm25                     warm-up: p50 607.098, 645.798 ms
+postgres-pass3 bm25                     c=1          4 q/s  p50 258.711 ms  p90 393.606 ms  p99 915.133 ms  errors 0
+postgres-pass3 bm25                     c=4          5 q/s  p50 610.568 ms  p90 1876.328 ms  p99 2370.512 ms  errors 0
+postgres-pass3 bm25                     c=16         5 q/s  p50 1893.345 ms  p90 5155.322 ms  p99 8996.610 ms  errors 0
+postgres-pass3 bm25 + filter            warm-up: p50 291.213, 285.012 ms
+postgres-pass3 bm25 + filter            c=1          5 q/s  p50 108.715 ms  p90 724.981 ms  p99 865.720 ms  errors 0
+postgres-pass3 bm25 + filter            c=4          7 q/s  p50 268.016 ms  p90 1908.030 ms  p99 2887.861 ms  errors 0
+postgres-pass3 bm25 + filter            c=16         7 q/s  p50 1068.320 ms  p90 6876.159 ms  p99 9456.087 ms  errors 0
+postgres-pass3 vector                   warm-up: p50 3.208, 3.250 ms
+postgres-pass3 vector                   c=1        306 q/s  p50   3.110 ms  p90   4.248 ms  p99   6.180 ms  errors 0
+postgres-pass3 vector                   c=4       1227 q/s  p50   3.104 ms  p90   4.327 ms  p99   6.217 ms  errors 0
+postgres-pass3 vector                   c=16      1572 q/s  p50   8.377 ms  p90  19.450 ms  p99  31.875 ms  errors 0
+postgres-pass3 vector + filter          warm-up: p50 3.360, 3.483 ms
+postgres-pass3 vector + filter          c=1        278 q/s  p50   3.204 ms  p90   4.669 ms  p99   8.489 ms  errors 0
+postgres-pass3 vector + filter          c=4       1069 q/s  p50   3.277 ms  p90   5.004 ms  p99   8.980 ms  errors 0
+postgres-pass3 vector + filter          c=16      1345 q/s  p50   9.149 ms  p90  22.136 ms  p99  38.827 ms  errors 0
+postgres-pass3 hybrid (RRF)             warm-up: p50 488.092, 518.560 ms
+postgres-pass3 hybrid (RRF)             c=1          4 q/s  p50 214.789 ms  p90 849.865 ms  p99 919.407 ms  errors 0
+postgres-pass3 hybrid (RRF)             c=4          4 q/s  p50 605.366 ms  p90 1875.148 ms  p99 5797.477 ms  errors 0
+postgres-pass3 hybrid (RRF)             c=16         5 q/s  p50 1842.159 ms  p90 5053.997 ms  p99 8956.795 ms  errors 0
+postgres-pass3 hybrid (weighted)        warm-up: p50 574.528, 548.605 ms
+postgres-pass3 hybrid (weighted)        c=1          4 q/s  p50 223.924 ms  p90 851.305 ms  p99 913.728 ms  errors 0
+postgres-pass3 hybrid (weighted)        c=4          5 q/s  p50 681.998 ms  p90 1929.060 ms  p99 2333.874 ms  errors 0
+postgres-pass3 hybrid (weighted)        c=16         5 q/s  p50 1615.028 ms  p90 6331.708 ms  p99 9418.061 ms  errors 0
+postgres-pass3 boosted (bm25 × decay)   warm-up: p50 815.556, 777.475 ms
+postgres-pass3 boosted (bm25 × decay)   c=1          3 q/s  p50 288.458 ms  p90 458.395 ms  p99 1179.905 ms  errors 0
+postgres-pass3 boosted (bm25 × decay)   c=4          4 q/s  p50 733.736 ms  p90 2468.963 ms  p99 3282.758 ms  errors 0
+postgres-pass3 boosted (bm25 × decay)   c=16         3 q/s  p50 2349.074 ms  p90 7187.086 ms  p99 12200.832 ms  errors 0
+postgres-pass3 facet                    warm-up: p50 5.869, 6.134 ms
+postgres-pass3 facet                    c=1         46 q/s  p50   5.605 ms  p90  57.198 ms  p99 140.895 ms  errors 0
+postgres-pass3 facet                    c=4        118 q/s  p50   6.155 ms  p90  76.378 ms  p99 335.990 ms  errors 0
+postgres-pass3 facet                    c=16       125 q/s  p50  26.945 ms  p90 324.939 ms  p99 740.043 ms  errors 0
+postgres-pass3 key lookup               warm-up: p50 0.234, 0.224 ms
+postgres-pass3 key lookup               c=1       4175 q/s  p50   0.231 ms  p90   0.278 ms  p99   0.360 ms  errors 0
+postgres-pass3 key lookup               c=4      16734 q/s  p50   0.233 ms  p90   0.295 ms  p99   0.354 ms  errors 0
+postgres-pass3 key lookup               c=16     31584 q/s  p50   0.425 ms  p90   0.637 ms  p99   1.102 ms  errors 0
+postgres-pass3 phrase                   warm-up: p50 4.688, 4.552 ms
+postgres-pass3 phrase                   c=1         95 q/s  p50   4.228 ms  p90  23.110 ms  p99  90.241 ms  errors 0
+postgres-pass3 phrase                   c=4        358 q/s  p50   4.628 ms  p90  25.269 ms  p99  88.579 ms  errors 0
+postgres-pass3 phrase                   c=16       365 q/s  p50  15.829 ms  p90  96.885 ms  p99 368.609 ms  errors 0
+postgres-pass3 typo                     unavailable: no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)
+postgres-pass3 prefix                   warm-up: p50 449.614, 446.350 ms
+postgres-pass3 prefix                   c=1          3 q/s  p50 269.813 ms  p90 598.851 ms  p99 938.999 ms  errors 0
+postgres-pass3 prefix                   c=4          8 q/s  p50 428.136 ms  p90 997.710 ms  p99 1748.102 ms  errors 0
+postgres-pass3 prefix                   c=16         6 q/s  p50 1945.141 ms  p90 3891.893 ms  p99 5378.672 ms  errors 0
+postgres-pass3 similar items            warm-up: p50 2.953, 2.890 ms
+postgres-pass3 similar items            c=1        335 q/s  p50   2.836 ms  p90   3.821 ms  p99   5.526 ms  errors 0
+postgres-pass3 similar items            c=4       1363 q/s  p50   2.781 ms  p90   3.768 ms  p99   5.915 ms  errors 0
+postgres-pass3 similar items            c=16      1759 q/s  p50   7.492 ms  p90  17.166 ms  p99  28.981 ms  errors 0
+postgres-pass3 sql aggregate            warm-up: p50 662.288, 661.889 ms
+postgres-pass3 sql aggregate            c=1          5 q/s  p50 208.009 ms  p90 223.205 ms  p99 280.108 ms  errors 0
+postgres-pass3 sql aggregate            c=4          5 q/s  p50 594.416 ms  p90 965.209 ms  p99 2394.167 ms  errors 0
+postgres-pass3 sql aggregate            c=16         6 q/s  p50 2274.896 ms  p90 4254.952 ms  p99 4960.289 ms  errors 0
+wrote /data/compare/run-postgres-pass3.json
+pod "postgres-0" deleted from one-1m namespace
+service/redis created
+pod/redis-0 created
+pod/redis-0 condition met
+job.batch/load-redis created
+redis: index created in 0.0 s
+redis: 25000 documents sent, 7 s
+redis: 50000 documents sent, 15 s
+redis: 75000 documents sent, 24 s
+redis: 100000 documents sent, 33 s
+redis: 125000 documents sent, 42 s
+redis: 150000 documents sent, 51 s
+redis: 175000 documents sent, 61 s
+redis: 200000 documents sent, 70 s
+redis: 225000 documents sent, 78 s
+redis: 250000 documents sent, 85 s
+redis: 275000 documents sent, 93 s
+redis: 300000 documents sent, 103 s
+redis: 325000 documents sent, 113 s
+redis: 350000 documents sent, 122 s
+redis: 375000 documents sent, 131 s
+redis: 400000 documents sent, 138 s
+redis: 425000 documents sent, 147 s
+redis: 450000 documents sent, 156 s
+redis: 475000 documents sent, 169 s
+redis: 500000 documents sent, 179 s
+redis: 525000 documents sent, 189 s
+redis: 550000 documents sent, 199 s
+redis: 575000 documents sent, 209 s
+redis: 600000 documents sent, 219 s
+redis: 625000 documents sent, 228 s
+redis: 650000 documents sent, 238 s
+redis: 675000 documents sent, 248 s
+redis: 700000 documents sent, 256 s
+redis: 725000 documents sent, 266 s
+redis: 750000 documents sent, 276 s
+redis: 775000 documents sent, 287 s
+redis: 800000 documents sent, 297 s
+redis: 825000 documents sent, 307 s
+redis: 850000 documents sent, 318 s
+redis: 875000 documents sent, 329 s
+redis: 900000 documents sent, 339 s
+redis: 925000 documents sent, 351 s
+redis: 950000 documents sent, 361 s
+redis: 975000 documents sent, 373 s
+redis: 1000000 documents sent, 383 s
+redis: 1000000 documents (2.8 GB) sent in 382.6 s
+redis: index_s in 0.0 s
+redis: indexed 0.0 s after the last write; 382.6 s in all
+wrote /data/compare/load-redis.json
+job.batch/run-redis created
+redis     bm25                     warm-up: p50 78.930, 80.924 ms
+redis     bm25                     c=1         13 q/s  p50  68.140 ms  p90 133.160 ms  p99 176.301 ms  errors 0
+redis     bm25                     c=4         44 q/s  p50  82.135 ms  p90 160.467 ms  p99 213.887 ms  errors 0
+redis     bm25                     c=16        65 q/s  p50 230.397 ms  p90 341.478 ms  p99 442.287 ms  errors 0
+redis     bm25 + filter            warm-up: p50 88.663, 97.236 ms
+redis     bm25 + filter            c=1         13 q/s  p50  72.692 ms  p90 117.462 ms  p99 137.809 ms  errors 0
+redis     bm25 + filter            c=4         42 q/s  p50  90.785 ms  p90 146.793 ms  p99 185.431 ms  errors 0
+redis     bm25 + filter            c=16        59 q/s  p50 264.485 ms  p90 350.225 ms  p99 407.960 ms  errors 0
+redis     vector                   warm-up: p50 1.275, 1.258 ms
+redis     vector                   c=1        942 q/s  p50   1.035 ms  p90   1.296 ms  p99   1.659 ms  errors 0
+redis     vector                   c=4       3001 q/s  p50   1.287 ms  p90   1.698 ms  p99   2.238 ms  errors 0
+redis     vector                   c=16      4365 q/s  p50   3.416 ms  p90   5.088 ms  p99   6.295 ms  errors 0
+redis     vector + filter          warm-up: p50 2.127, 2.063 ms
+redis     vector + filter          c=1        507 q/s  p50   1.897 ms  p90   2.708 ms  p99   3.466 ms  errors 0
+redis     vector + filter          c=4       1759 q/s  p50   2.157 ms  p90   3.173 ms  p99   4.374 ms  errors 0
+redis     vector + filter          c=16      3269 q/s  p50   4.688 ms  p90   6.246 ms  p99   9.779 ms  errors 0
+redis     hybrid (RRF)             warm-up: p50 83.198, 83.770 ms
+redis     hybrid (RRF)             c=1         13 q/s  p50  68.131 ms  p90 135.072 ms  p99 168.306 ms  errors 0
+redis     hybrid (RRF)             c=4         44 q/s  p50  78.340 ms  p90 152.723 ms  p99 236.964 ms  errors 0
+redis     hybrid (RRF)             c=16        35 q/s  p50 453.533 ms  p90 585.301 ms  p99 723.497 ms  errors 0
+redis     hybrid (weighted)        warm-up: p50 83.429, 88.306 ms
+redis     hybrid (weighted)        c=1         13 q/s  p50  67.283 ms  p90 134.539 ms  p99 171.415 ms  errors 0
+redis     hybrid (weighted)        c=4         44 q/s  p50  79.152 ms  p90 162.911 ms  p99 215.539 ms  errors 0
+redis     hybrid (weighted)        c=16        35 q/s  p50 443.765 ms  p90 565.486 ms  p99 705.372 ms  errors 0
+redis     boosted (bm25 × decay)   warm-up: p50 1510.501, 1591.938 ms
+redis     boosted (bm25 × decay)   c=1          2 q/s  p50 787.311 ms  p90 973.462 ms  p99 1528.398 ms  errors 0
+redis     boosted (bm25 × decay)   c=4          2 q/s  p50 1672.084 ms  p90 3164.584 ms  p99 3782.020 ms  errors 0
+redis     boosted (bm25 × decay)   c=16         2 q/s  p50 6051.418 ms  p90 7387.980 ms  p99 8544.277 ms  errors 0
+redis     facet                    warm-up: p50 103.964, 89.594, 73.817, 114.601, 118.459 ms
+redis     facet                    c=1         18 q/s  p50   9.857 ms  p90 115.776 ms  p99 499.435 ms  errors 0
+redis     facet                    c=4         26 q/s  p50 121.131 ms  p90 393.975 ms  p99 769.155 ms  errors 0
+redis     facet                    c=16        27 q/s  p50 509.958 ms  p90 998.453 ms  p99 1501.488 ms  errors 0
+redis     key lookup               warm-up: p50 0.103, 0.101 ms
+redis     key lookup               c=1      10714 q/s  p50   0.090 ms  p90   0.105 ms  p99   0.131 ms  errors 0
+redis     key lookup               c=4      38153 q/s  p50   0.099 ms  p90   0.128 ms  p99   0.167 ms  errors 0
+redis     key lookup               c=16     87556 q/s  p50   0.173 ms  p90   0.248 ms  p99   0.326 ms  errors 0
+redis     phrase                   warm-up: p50 0.733, 0.742 ms
+redis     phrase                   c=1       1106 q/s  p50   0.600 ms  p90   1.900 ms  p99   4.503 ms  errors 0
+redis     phrase                   c=4       3655 q/s  p50   0.734 ms  p90   2.311 ms  p99   5.670 ms  errors 0
+redis     phrase                   c=16      5777 q/s  p50   2.345 ms  p90   4.315 ms  p99   7.819 ms  errors 0
+redis     typo                     warm-up: p50 207.281, 203.858 ms
+redis     typo                     c=1          5 q/s  p50 208.868 ms  p90 297.880 ms  p99 327.256 ms  errors 0
+redis     typo                     c=4         17 q/s  p50 209.870 ms  p90 359.504 ms  p99 541.745 ms  errors 0
+redis     typo                     c=16        25 q/s  p50 600.356 ms  p90 826.253 ms  p99 1021.232 ms  errors 0
+redis     prefix                   warm-up: p50 7.170, 7.220 ms
+redis     prefix                   c=1         90 q/s  p50   6.841 ms  p90  23.414 ms  p99  66.220 ms  errors 0
+redis     prefix                   c=4        325 q/s  p50   7.190 ms  p90  24.965 ms  p99  80.018 ms  errors 0
+redis     prefix                   c=16       495 q/s  p50  26.722 ms  p90  51.264 ms  p99 112.809 ms  errors 0
+redis     similar items            warm-up: p50 2.129, 2.112 ms
+redis     similar items            c=1        507 q/s  p50   1.889 ms  p90   2.718 ms  p99   3.582 ms  errors 0
+redis     similar items            c=4       1793 q/s  p50   2.107 ms  p90   3.145 ms  p99   4.283 ms  errors 0
+redis     similar items            c=16      3093 q/s  p50   5.018 ms  p90   6.987 ms  p99   8.210 ms  errors 0
+redis     sql aggregate            warm-up: p50 6615.436, 6659.685 ms
+redis     sql aggregate            c=1          0 q/s  p50 2058.907 ms  p90 2128.484 ms  p99 2128.484 ms  errors 0
+redis     sql aggregate            c=4          1 q/s  p50 6584.605 ms  p90 8303.060 ms  p99 8303.060 ms  errors 0
+redis     sql aggregate            c=16         0 q/s  p50 11403.675 ms  p90 11403.825 ms  p99 17372.470 ms  errors 10
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+wrote /data/compare/run-redis.json
+job.batch/run-redis-pass2 created
+redis-pass2 bm25                     warm-up: p50 79.765, 80.909 ms
+redis-pass2 bm25                     c=1         13 q/s  p50  67.552 ms  p90 131.503 ms  p99 166.594 ms  errors 0
+redis-pass2 bm25                     c=4         44 q/s  p50  82.258 ms  p90 159.700 ms  p99 233.063 ms  errors 0
+redis-pass2 bm25                     c=16        65 q/s  p50 232.716 ms  p90 332.798 ms  p99 413.817 ms  errors 0
+redis-pass2 bm25 + filter            warm-up: p50 88.707, 91.412 ms
+redis-pass2 bm25 + filter            c=1         12 q/s  p50  73.997 ms  p90 122.582 ms  p99 140.607 ms  errors 0
+redis-pass2 bm25 + filter            c=4         42 q/s  p50  91.305 ms  p90 151.518 ms  p99 206.514 ms  errors 0
+redis-pass2 bm25 + filter            c=16        58 q/s  p50 268.714 ms  p90 346.977 ms  p99 413.005 ms  errors 0
+redis-pass2 vector                   warm-up: p50 1.333, 1.279 ms
+redis-pass2 vector                   c=1        935 q/s  p50   1.043 ms  p90   1.306 ms  p99   1.645 ms  errors 0
+redis-pass2 vector                   c=4       2990 q/s  p50   1.293 ms  p90   1.689 ms  p99   2.248 ms  errors 0
+redis-pass2 vector                   c=16      4515 q/s  p50   3.281 ms  p90   4.977 ms  p99   5.906 ms  errors 0
+redis-pass2 vector + filter          warm-up: p50 2.113, 2.135 ms
+redis-pass2 vector + filter          c=1        496 q/s  p50   1.927 ms  p90   2.739 ms  p99   3.635 ms  errors 0
+redis-pass2 vector + filter          c=4       1826 q/s  p50   2.081 ms  p90   3.039 ms  p99   4.089 ms  errors 0
+redis-pass2 vector + filter          c=16      3296 q/s  p50   4.577 ms  p90   6.321 ms  p99  12.753 ms  errors 0
+redis-pass2 hybrid (RRF)             warm-up: p50 85.791, 75.443, 87.059, 78.593 ms
+redis-pass2 hybrid (RRF)             c=1         13 q/s  p50  68.746 ms  p90 132.937 ms  p99 167.188 ms  errors 0
+redis-pass2 hybrid (RRF)             c=4         42 q/s  p50  85.005 ms  p90 165.854 ms  p99 238.607 ms  errors 0
+redis-pass2 hybrid (RRF)             c=16        34 q/s  p50 467.060 ms  p90 572.468 ms  p99 726.178 ms  errors 0
+redis-pass2 hybrid (weighted)        warm-up: p50 76.315, 73.768 ms
+redis-pass2 hybrid (weighted)        c=1         13 q/s  p50  67.715 ms  p90 132.290 ms  p99 174.148 ms  errors 0
+redis-pass2 hybrid (weighted)        c=4         44 q/s  p50  78.053 ms  p90 160.201 ms  p99 246.817 ms  errors 0
+redis-pass2 hybrid (weighted)        c=16        35 q/s  p50 447.764 ms  p90 566.787 ms  p99 693.085 ms  errors 0
+redis-pass2 boosted (bm25 × decay)   warm-up: p50 1428.647, 1441.181 ms
+redis-pass2 boosted (bm25 × decay)   c=1          2 q/s  p50 748.355 ms  p90 944.426 ms  p99 1554.247 ms  errors 0
+redis-pass2 boosted (bm25 × decay)   c=4          2 q/s  p50 1609.451 ms  p90 3144.795 ms  p99 4480.683 ms  errors 0
+redis-pass2 boosted (bm25 × decay)   c=16         2 q/s  p50 6769.680 ms  p90 7351.816 ms  p99 10135.788 ms  errors 0
+redis-pass2 facet                    warm-up: p50 87.972, 103.910, 108.287 ms
+redis-pass2 facet                    c=1         18 q/s  p50   9.817 ms  p90 145.202 ms  p99 492.744 ms  errors 0
+redis-pass2 facet                    c=4         26 q/s  p50 116.926 ms  p90 449.744 ms  p99 714.121 ms  errors 0
+redis-pass2 facet                    c=16        27 q/s  p50 520.413 ms  p90 1052.052 ms  p99 1428.051 ms  errors 0
+redis-pass2 key lookup               warm-up: p50 0.095, 0.099 ms
+redis-pass2 key lookup               c=1      10859 q/s  p50   0.088 ms  p90   0.104 ms  p99   0.137 ms  errors 0
+redis-pass2 key lookup               c=4      38699 q/s  p50   0.098 ms  p90   0.126 ms  p99   0.166 ms  errors 0
+redis-pass2 key lookup               c=16     82778 q/s  p50   0.185 ms  p90   0.257 ms  p99   0.335 ms  errors 0
+redis-pass2 phrase                   warm-up: p50 0.757, 0.737 ms
+redis-pass2 phrase                   c=1       1078 q/s  p50   0.618 ms  p90   1.956 ms  p99   4.613 ms  errors 0
+redis-pass2 phrase                   c=4       3691 q/s  p50   0.720 ms  p90   2.284 ms  p99   5.619 ms  errors 0
+redis-pass2 phrase                   c=16      6011 q/s  p50   2.259 ms  p90   4.201 ms  p99   7.776 ms  errors 0
+redis-pass2 typo                     warm-up: p50 220.265, 218.299 ms
+redis-pass2 typo                     c=1          5 q/s  p50 200.115 ms  p90 290.188 ms  p99 327.419 ms  errors 0
+redis-pass2 typo                     c=4         17 q/s  p50 200.380 ms  p90 380.306 ms  p99 481.359 ms  errors 0
+redis-pass2 typo                     c=16        25 q/s  p50 598.865 ms  p90 813.162 ms  p99 1005.024 ms  errors 0
+redis-pass2 prefix                   warm-up: p50 7.136, 7.094 ms
+redis-pass2 prefix                   c=1         92 q/s  p50   6.771 ms  p90  21.675 ms  p99  63.790 ms  errors 0
+redis-pass2 prefix                   c=4        330 q/s  p50   7.198 ms  p90  24.146 ms  p99  74.065 ms  errors 0
+redis-pass2 prefix                   c=16       495 q/s  p50  26.649 ms  p90  50.622 ms  p99 112.971 ms  errors 0
+redis-pass2 similar items            warm-up: p50 2.071, 2.096 ms
+redis-pass2 similar items            c=1        504 q/s  p50   1.880 ms  p90   2.749 ms  p99   3.585 ms  errors 0
+redis-pass2 similar items            c=4       1771 q/s  p50   2.124 ms  p90   3.185 ms  p99   4.390 ms  errors 0
+redis-pass2 similar items            c=16      2967 q/s  p50   5.310 ms  p90   7.014 ms  p99   8.384 ms  errors 0
+redis-pass2 sql aggregate            warm-up: p50 6592.649, 6664.262 ms
+redis-pass2 sql aggregate            c=1          0 q/s  p50 2110.851 ms  p90 2142.909 ms  p99 2142.909 ms  errors 0
+redis-pass2 sql aggregate            c=4          1 q/s  p50 6570.110 ms  p90 6836.457 ms  p99 6836.457 ms  errors 0
+redis-pass2 sql aggregate            c=16         0 q/s  p50 13040.960 ms  p90 18356.009 ms  p99 18510.184 ms  errors 8
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+wrote /data/compare/run-redis-pass2.json
+job.batch/run-redis-pass3 created
+redis-pass3 bm25                     warm-up: p50 81.092, 75.191 ms
+redis-pass3 bm25                     c=1         13 q/s  p50  67.660 ms  p90 132.693 ms  p99 171.923 ms  errors 0
+redis-pass3 bm25                     c=4         44 q/s  p50  80.683 ms  p90 164.436 ms  p99 236.037 ms  errors 0
+redis-pass3 bm25                     c=16        66 q/s  p50 234.105 ms  p90 325.867 ms  p99 424.269 ms  errors 0
+redis-pass3 bm25 + filter            warm-up: p50 97.441, 96.012 ms
+redis-pass3 bm25 + filter            c=1         13 q/s  p50  74.531 ms  p90 121.327 ms  p99 137.610 ms  errors 0
+redis-pass3 bm25 + filter            c=4         42 q/s  p50  88.317 ms  p90 154.499 ms  p99 207.441 ms  errors 0
+redis-pass3 bm25 + filter            c=16        58 q/s  p50 266.394 ms  p90 353.570 ms  p99 433.340 ms  errors 0
+redis-pass3 vector                   warm-up: p50 1.281, 1.306 ms
+redis-pass3 vector                   c=1        920 q/s  p50   1.061 ms  p90   1.328 ms  p99   1.667 ms  errors 0
+redis-pass3 vector                   c=4       2964 q/s  p50   1.302 ms  p90   1.716 ms  p99   2.273 ms  errors 0
+redis-pass3 vector                   c=16      4460 q/s  p50   3.359 ms  p90   4.995 ms  p99   6.046 ms  errors 0
+redis-pass3 vector + filter          warm-up: p50 2.072, 2.145 ms
+redis-pass3 vector + filter          c=1        495 q/s  p50   1.943 ms  p90   2.770 ms  p99   3.578 ms  errors 0
+redis-pass3 vector + filter          c=4       1790 q/s  p50   2.125 ms  p90   3.101 ms  p99   4.141 ms  errors 0
+redis-pass3 vector + filter          c=16      3234 q/s  p50   4.609 ms  p90   6.341 ms  p99  13.894 ms  errors 0
+redis-pass3 hybrid (RRF)             warm-up: p50 86.119, 75.950, 78.789 ms
+redis-pass3 hybrid (RRF)             c=1         13 q/s  p50  68.435 ms  p90 134.182 ms  p99 166.618 ms  errors 0
+redis-pass3 hybrid (RRF)             c=4         42 q/s  p50  85.049 ms  p90 171.291 ms  p99 238.617 ms  errors 0
+redis-pass3 hybrid (RRF)             c=16        34 q/s  p50 452.419 ms  p90 560.337 ms  p99 693.571 ms  errors 0
+redis-pass3 hybrid (weighted)        warm-up: p50 73.730, 75.975 ms
+redis-pass3 hybrid (weighted)        c=1         13 q/s  p50  68.524 ms  p90 133.404 ms  p99 163.643 ms  errors 0
+redis-pass3 hybrid (weighted)        c=4         47 q/s  p50  75.516 ms  p90 148.272 ms  p99 237.614 ms  errors 0
+redis-pass3 hybrid (weighted)        c=16        34 q/s  p50 463.084 ms  p90 589.547 ms  p99 700.169 ms  errors 0
+read tcp 127.0.0.1:60682->127.0.0.1:45545: read: connection reset by peer
+error: read tcp 127.0.0.1:60682->127.0.0.1:45545: read: connection reset by peer
+redis-pass3 boosted (bm25 × decay)   warm-up: p50 1454.381, 1591.784 ms
+redis-pass3 boosted (bm25 × decay)   c=1          2 q/s  p50 751.480 ms  p90 924.968 ms  p99 1488.387 ms  errors 0
+redis-pass3 boosted (bm25 × decay)   c=4          2 q/s  p50 1740.034 ms  p90 2848.491 ms  p99 4285.081 ms  errors 0
+redis-pass3 boosted (bm25 × decay)   c=16         2 q/s  p50 5936.316 ms  p90 8195.578 ms  p99 9966.112 ms  errors 0
+redis-pass3 facet                    warm-up: p50 117.478, 70.899, 71.901 ms
+redis-pass3 facet                    c=1         18 q/s  p50   9.304 ms  p90 145.770 ms  p99 490.390 ms  errors 0
+redis-pass3 facet                    c=4         25 q/s  p50  94.095 ms  p90 435.300 ms  p99 746.712 ms  errors 0
+redis-pass3 facet                    c=16        28 q/s  p50 487.370 ms  p90 1078.468 ms  p99 1297.855 ms  errors 0
+redis-pass3 key lookup               warm-up: p50 0.096, 0.102 ms
+redis-pass3 key lookup               c=1      11027 q/s  p50   0.087 ms  p90   0.103 ms  p99   0.129 ms  errors 0
+redis-pass3 key lookup               c=4      37887 q/s  p50   0.099 ms  p90   0.129 ms  p99   0.173 ms  errors 0
+redis-pass3 key lookup               c=16     77363 q/s  p50   0.200 ms  p90   0.270 ms  p99   0.358 ms  errors 0
+redis-pass3 phrase                   warm-up: p50 0.727, 0.712 ms
+redis-pass3 phrase                   c=1       1085 q/s  p50   0.616 ms  p90   1.944 ms  p99   4.548 ms  errors 0
+redis-pass3 phrase                   c=4       3655 q/s  p50   0.735 ms  p90   2.303 ms  p99   5.646 ms  errors 0
+redis-pass3 phrase                   c=16      5903 q/s  p50   2.299 ms  p90   4.263 ms  p99   7.688 ms  errors 0
+redis-pass3 typo                     warm-up: p50 218.572, 211.109 ms
+redis-pass3 typo                     c=1          5 q/s  p50 208.213 ms  p90 292.827 ms  p99 324.957 ms  errors 0
+redis-pass3 typo                     c=4         17 q/s  p50 207.768 ms  p90 373.361 ms  p99 534.523 ms  errors 0
+redis-pass3 typo                     c=16        25 q/s  p50 593.143 ms  p90 783.334 ms  p99 992.938 ms  errors 0
+redis-pass3 prefix                   warm-up: p50 7.333, 6.995 ms
+redis-pass3 prefix                   c=1         92 q/s  p50   6.790 ms  p90  21.905 ms  p99  63.820 ms  errors 0
+redis-pass3 prefix                   c=4        324 q/s  p50   7.055 ms  p90  24.921 ms  p99  72.967 ms  errors 0
+redis-pass3 prefix                   c=16       501 q/s  p50  26.285 ms  p90  49.040 ms  p99 111.556 ms  errors 0
+redis-pass3 similar items            warm-up: p50 2.102, 2.110 ms
+redis-pass3 similar items            c=1        506 q/s  p50   1.882 ms  p90   2.731 ms  p99   3.606 ms  errors 0
+redis-pass3 similar items            c=4       1791 q/s  p50   2.108 ms  p90   3.149 ms  p99   4.190 ms  errors 0
+redis-pass3 similar items            c=16      3114 q/s  p50   4.977 ms  p90   6.924 ms  p99   8.128 ms  errors 0
+redis-pass3 sql aggregate            warm-up: p50 6620.239, 6560.976 ms
+redis-pass3 sql aggregate            c=1          0 q/s  p50 2093.595 ms  p90 2215.724 ms  p99 2215.724 ms  errors 0
+redis-pass3 sql aggregate            c=4          1 q/s  p50 6552.267 ms  p90 6811.896 ms  p99 6811.896 ms  errors 0
+redis-pass3 sql aggregate            c=16         0 q/s  p50 11390.222 ms  p90 11390.442 ms  p99 17147.199 ms  errors 10
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+wrote /data/compare/run-redis-pass3.json
+pod "redis-0" deleted from one-1m namespace
+service/weaviate created
+pod/weaviate-0 created
+pod/weaviate-0 condition met
+job.batch/load-weaviate created
+weaviate: index created in 0.3 s
+weaviate: 25000 documents sent, 10 s
+weaviate: 50000 documents sent, 22 s
+weaviate: 75000 documents sent, 34 s
+weaviate: 100000 documents sent, 46 s
+weaviate: 125000 documents sent, 59 s
+weaviate: 150000 documents sent, 72 s
+weaviate: 175000 documents sent, 86 s
+weaviate: 200000 documents sent, 99 s
+weaviate: 225000 documents sent, 112 s
+weaviate: 250000 documents sent, 123 s
+weaviate: 275000 documents sent, 136 s
+weaviate: 300000 documents sent, 149 s
+weaviate: 325000 documents sent, 163 s
+weaviate: 350000 documents sent, 176 s
+weaviate: 375000 documents sent, 190 s
+weaviate: 400000 documents sent, 201 s
+weaviate: 425000 documents sent, 213 s
+weaviate: 450000 documents sent, 226 s
+weaviate: 475000 documents sent, 241 s
+weaviate: 500000 documents sent, 257 s
+weaviate: 525000 documents sent, 271 s
+weaviate: 550000 documents sent, 284 s
+weaviate: 575000 documents sent, 298 s
+weaviate: 600000 documents sent, 311 s
+weaviate: 625000 documents sent, 324 s
+weaviate: 650000 documents sent, 338 s
+weaviate: 675000 documents sent, 353 s
+weaviate: 700000 documents sent, 365 s
+weaviate: 725000 documents sent, 380 s
+weaviate: 750000 documents sent, 394 s
+weaviate: 775000 documents sent, 409 s
+weaviate: 800000 documents sent, 423 s
+weaviate: 825000 documents sent, 436 s
+weaviate: 850000 documents sent, 450 s
+weaviate: 875000 documents sent, 467 s
+weaviate: 900000 documents sent, 482 s
+weaviate: 925000 documents sent, 497 s
+weaviate: 950000 documents sent, 511 s
+weaviate: 975000 documents sent, 525 s
+weaviate: 1000000 documents sent, 538 s
+weaviate: 1000000 documents (10.8 GB) sent in 538.5 s
+weaviate: indexed 0.0 s after the last write; 538.5 s in all
+wrote /data/compare/load-weaviate.json
+job.batch/run-weaviate created
+weaviate  bm25                     warm-up: p50 3.703, 3.693 ms
+weaviate  bm25                     c=1        305 q/s  p50   2.683 ms  p90   5.335 ms  p99  12.490 ms  errors 0
+weaviate  bm25                     c=4        931 q/s  p50   3.305 ms  p90   7.352 ms  p99  18.253 ms  errors 0
+weaviate  bm25                     c=16      1104 q/s  p50  11.255 ms  p90  28.892 ms  p99  50.753 ms  errors 0
+weaviate  bm25 + filter            warm-up: p50 4.511, 4.674 ms
+weaviate  bm25 + filter            c=1        238 q/s  p50   3.659 ms  p90   6.425 ms  p99  12.558 ms  errors 0
+weaviate  bm25 + filter            c=4        802 q/s  p50   4.188 ms  p90   7.978 ms  p99  16.784 ms  errors 0
+weaviate  bm25 + filter            c=16      1175 q/s  p50  11.400 ms  p90  24.606 ms  p99  43.632 ms  errors 0
+weaviate  vector                   warm-up: p50 6.653, 6.678 ms
+weaviate  vector                   c=1        184 q/s  p50   5.223 ms  p90   5.860 ms  p99   9.867 ms  errors 0
+weaviate  vector                   c=4        560 q/s  p50   6.735 ms  p90   8.661 ms  p99  13.062 ms  errors 0
+weaviate  vector                   c=16       739 q/s  p50  17.288 ms  p90  40.024 ms  p99  75.118 ms  errors 0
+weaviate  vector + filter          warm-up: p50 9.625, 9.377 ms
+weaviate  vector + filter          c=1        131 q/s  p50   7.498 ms  p90   8.448 ms  p99  11.088 ms  errors 0
+weaviate  vector + filter          c=4        402 q/s  p50   9.561 ms  p90  12.257 ms  p99  17.483 ms  errors 0
+weaviate  vector + filter          c=16       548 q/s  p50  24.746 ms  p90  51.663 ms  p99  85.317 ms  errors 0
+weaviate  hybrid (RRF)             warm-up: p50 11.448, 11.463 ms
+weaviate  hybrid (RRF)             c=1        114 q/s  p50   7.693 ms  p90  11.498 ms  p99  22.852 ms  errors 0
+weaviate  hybrid (RRF)             c=4        307 q/s  p50  11.392 ms  p90  19.372 ms  p99  36.105 ms  errors 0
+weaviate  hybrid (RRF)             c=16       343 q/s  p50  41.950 ms  p90  70.987 ms  p99 132.574 ms  errors 0
+weaviate  hybrid (weighted)        warm-up: p50 11.258, 11.537 ms
+weaviate  hybrid (weighted)        c=1        114 q/s  p50   7.776 ms  p90  11.955 ms  p99  21.980 ms  errors 0
+weaviate  hybrid (weighted)        c=4        303 q/s  p50  11.452 ms  p90  20.125 ms  p99  36.385 ms  errors 0
+weaviate  hybrid (weighted)        c=16       348 q/s  p50  40.608 ms  p90  73.310 ms  p99 129.930 ms  errors 0
+weaviate  boosted (bm25 × decay)   unavailable: no function scores
+weaviate  facet                    warm-up: p50 25.422, 24.344 ms
+weaviate  facet                    c=1         18 q/s  p50  13.693 ms  p90 108.131 ms  p99 721.025 ms  errors 0
+weaviate  facet                    c=4         32 q/s  p50  29.059 ms  p90 238.780 ms  p99 1232.122 ms  errors 0
+weaviate  facet                    c=16        36 q/s  p50 256.702 ms  p90 1000.945 ms  p99 2519.056 ms  errors 0
+weaviate  key lookup               warm-up: p50 0.325, 0.328 ms
+weaviate  key lookup               c=1       3205 q/s  p50   0.300 ms  p90   0.378 ms  p99   0.507 ms  errors 0
+weaviate  key lookup               c=4      11884 q/s  p50   0.324 ms  p90   0.419 ms  p99   0.550 ms  errors 0
+weaviate  key lookup               c=16     32331 q/s  p50   0.442 ms  p90   0.685 ms  p99   1.233 ms  errors 0
+weaviate  phrase                   unavailable: no phrase queries
+weaviate  typo                     unavailable: no fuzzy matching
+weaviate  prefix                   warm-up: p50 6.366, 6.384 ms
+weaviate  prefix                   c=1        170 q/s  p50   5.156 ms  p90   9.916 ms  p99  16.723 ms  errors 0
+weaviate  prefix                   c=4        530 q/s  p50   6.375 ms  p90  13.195 ms  p99  23.454 ms  errors 0
+weaviate  prefix                   c=16       732 q/s  p50  18.790 ms  p90  40.773 ms  p99  67.547 ms  errors 0
+weaviate  similar items            warm-up: p50 10.655, 10.426 ms
+weaviate  similar items            c=1        118 q/s  p50   8.254 ms  p90   9.077 ms  p99  16.161 ms  errors 0
+weaviate  similar items            c=4        358 q/s  p50  10.624 ms  p90  13.757 ms  p99  20.609 ms  errors 0
+weaviate  similar items            c=16       481 q/s  p50  27.814 ms  p90  60.969 ms  p99  97.867 ms  errors 0
+weaviate  sql aggregate            warm-up: p50 9231.378, 9269.748 ms
+weaviate  sql aggregate            c=1          0 q/s  p50 3552.170 ms  p90 3552.170 ms  p99 3552.170 ms  errors 0
+weaviate  sql aggregate            c=4          0 q/s  p50 9376.762 ms  p90 9407.725 ms  p99 9407.725 ms  errors 0
+weaviate  sql aggregate            c=16         1 q/s  p50 28687.119 ms  p90 29523.930 ms  p99 29588.239 ms  errors 0
+wrote /data/compare/run-weaviate.json
+job.batch/run-weaviate-pass2 created
+weaviate-pass2 bm25                     warm-up: p50 2.701, 2.686 ms
+weaviate-pass2 bm25                     c=1        335 q/s  p50   2.374 ms  p90   4.823 ms  p99  12.473 ms  errors 0
+weaviate-pass2 bm25                     c=4       1143 q/s  p50   2.667 ms  p90   5.793 ms  p99  16.200 ms  errors 0
+weaviate-pass2 bm25                     c=16      1762 q/s  p50   7.399 ms  p90  17.384 ms  p99  30.757 ms  errors 0
+weaviate-pass2 bm25 + filter            warm-up: p50 4.099, 4.001 ms
+weaviate-pass2 bm25 + filter            c=1        260 q/s  p50   3.328 ms  p90   5.990 ms  p99  10.775 ms  errors 0
+weaviate-pass2 bm25 + filter            c=4        855 q/s  p50   3.938 ms  p90   7.379 ms  p99  15.454 ms  errors 0
+weaviate-pass2 bm25 + filter            c=16      1217 q/s  p50  11.019 ms  p90  23.625 ms  p99  42.892 ms  errors 0
+weaviate-pass2 vector                   warm-up: p50 6.705, 6.559 ms
+weaviate-pass2 vector                   c=1        190 q/s  p50   5.116 ms  p90   5.655 ms  p99   7.981 ms  errors 0
+weaviate-pass2 vector                   c=4        567 q/s  p50   6.654 ms  p90   8.665 ms  p99  13.162 ms  errors 0
+weaviate-pass2 vector                   c=16       765 q/s  p50  17.263 ms  p90  38.076 ms  p99  71.152 ms  errors 0
+weaviate-pass2 vector + filter          warm-up: p50 9.168, 9.084 ms
+weaviate-pass2 vector + filter          c=1        135 q/s  p50   7.245 ms  p90   8.262 ms  p99  13.621 ms  errors 0
+weaviate-pass2 vector + filter          c=4        415 q/s  p50   9.143 ms  p90  11.997 ms  p99  17.526 ms  errors 0
+weaviate-pass2 vector + filter          c=16       572 q/s  p50  23.376 ms  p90  49.399 ms  p99  87.542 ms  errors 0
+weaviate-pass2 hybrid (RRF)             warm-up: p50 11.462, 11.373 ms
+weaviate-pass2 hybrid (RRF)             c=1        114 q/s  p50   7.751 ms  p90  11.773 ms  p99  22.310 ms  errors 0
+weaviate-pass2 hybrid (RRF)             c=4        311 q/s  p50  11.337 ms  p90  19.292 ms  p99  33.199 ms  errors 0
+weaviate-pass2 hybrid (RRF)             c=16       347 q/s  p50  41.086 ms  p90  69.725 ms  p99 134.075 ms  errors 0
+weaviate-pass2 hybrid (weighted)        warm-up: p50 11.229, 11.224 ms
+weaviate-pass2 hybrid (weighted)        c=1        114 q/s  p50   7.803 ms  p90  11.860 ms  p99  22.736 ms  errors 0
+weaviate-pass2 hybrid (weighted)        c=4        314 q/s  p50  11.265 ms  p90  19.042 ms  p99  33.300 ms  errors 0
+weaviate-pass2 hybrid (weighted)        c=16       347 q/s  p50  41.218 ms  p90  70.955 ms  p99 120.004 ms  errors 0
+weaviate-pass2 boosted (bm25 × decay)   unavailable: no function scores
+weaviate-pass2 facet                    warm-up: p50 23.440, 23.307 ms
+weaviate-pass2 facet                    c=1         18 q/s  p50  13.453 ms  p90 113.655 ms  p99 701.428 ms  errors 0
+weaviate-pass2 facet                    c=4         33 q/s  p50  31.122 ms  p90 233.727 ms  p99 1309.794 ms  errors 0
+weaviate-pass2 facet                    c=16        36 q/s  p50 231.845 ms  p90 1037.619 ms  p99 2304.392 ms  errors 0
+weaviate-pass2 key lookup               warm-up: p50 0.331, 0.333 ms
+weaviate-pass2 key lookup               c=1       3003 q/s  p50   0.321 ms  p90   0.401 ms  p99   0.532 ms  errors 0
+weaviate-pass2 key lookup               c=4      11466 q/s  p50   0.337 ms  p90   0.430 ms  p99   0.559 ms  errors 0
+weaviate-pass2 key lookup               c=16     33038 q/s  p50   0.435 ms  p90   0.668 ms  p99   1.204 ms  errors 0
+weaviate-pass2 phrase                   unavailable: no phrase queries
+weaviate-pass2 typo                     unavailable: no fuzzy matching
+weaviate-pass2 prefix                   warm-up: p50 6.228, 6.258 ms
+weaviate-pass2 prefix                   c=1        170 q/s  p50   5.175 ms  p90   9.846 ms  p99  16.697 ms  errors 0
+weaviate-pass2 prefix                   c=4        537 q/s  p50   6.327 ms  p90  12.736 ms  p99  22.423 ms  errors 0
+weaviate-pass2 prefix                   c=16       747 q/s  p50  18.315 ms  p90  39.897 ms  p99  67.812 ms  errors 0
+weaviate-pass2 similar items            warm-up: p50 10.246, 10.094 ms
+weaviate-pass2 similar items            c=1        126 q/s  p50   7.780 ms  p90   8.571 ms  p99  11.353 ms  errors 0
+weaviate-pass2 similar items            c=4        369 q/s  p50  10.214 ms  p90  13.723 ms  p99  19.970 ms  errors 0
+weaviate-pass2 similar items            c=16       490 q/s  p50  26.537 ms  p90  61.467 ms  p99 106.750 ms  errors 0
+weaviate-pass2 sql aggregate            warm-up: p50 9198.666, 9294.810 ms
+weaviate-pass2 sql aggregate            c=1          0 q/s  p50 3524.724 ms  p90 3524.724 ms  p99 3524.724 ms  errors 0
+read tcp 127.0.0.1:47396->127.0.0.1:45545: read: connection reset by peer
+error: read tcp 127.0.0.1:47396->127.0.0.1:45545: read: connection reset by peer
+weaviate-pass2 sql aggregate            c=4          0 q/s  p50 9330.919 ms  p90 9392.345 ms  p99 9392.345 ms  errors 0
+weaviate-pass2 sql aggregate            c=16         1 q/s  p50 29133.060 ms  p90 29575.480 ms  p99 29606.099 ms  errors 0
+wrote /data/compare/run-weaviate-pass2.json
+job.batch/run-weaviate-pass3 created
+weaviate-pass3 bm25                     warm-up: p50 2.712, 2.644 ms
+weaviate-pass3 bm25                     c=1        334 q/s  p50   2.364 ms  p90   4.830 ms  p99  12.831 ms  errors 0
+weaviate-pass3 bm25                     c=4       1124 q/s  p50   2.720 ms  p90   6.030 ms  p99  16.124 ms  errors 0
+weaviate-pass3 bm25                     c=16      1727 q/s  p50   7.460 ms  p90  17.614 ms  p99  31.336 ms  errors 0
+weaviate-pass3 bm25 + filter            warm-up: p50 4.050, 4.134 ms
+weaviate-pass3 bm25 + filter            c=1        245 q/s  p50   3.546 ms  p90   6.144 ms  p99  11.610 ms  errors 0
+weaviate-pass3 bm25 + filter            c=4        830 q/s  p50   4.056 ms  p90   7.587 ms  p99  15.913 ms  errors 0
+weaviate-pass3 bm25 + filter            c=16      1233 q/s  p50  10.939 ms  p90  22.962 ms  p99  41.677 ms  errors 0
+weaviate-pass3 vector                   warm-up: p50 6.496, 6.684 ms
+weaviate-pass3 vector                   c=1        188 q/s  p50   5.131 ms  p90   5.700 ms  p99   8.328 ms  errors 0
+weaviate-pass3 vector                   c=4        568 q/s  p50   6.627 ms  p90   8.541 ms  p99  13.251 ms  errors 0
+weaviate-pass3 vector                   c=16       749 q/s  p50  17.535 ms  p90  38.407 ms  p99  68.563 ms  errors 0
+weaviate-pass3 vector + filter          warm-up: p50 9.241, 9.312 ms
+weaviate-pass3 vector + filter          c=1        136 q/s  p50   7.187 ms  p90   8.091 ms  p99  12.527 ms  errors 0
+weaviate-pass3 vector + filter          c=4        412 q/s  p50   9.256 ms  p90  11.987 ms  p99  17.477 ms  errors 0
+weaviate-pass3 vector + filter          c=16       567 q/s  p50  23.840 ms  p90  49.047 ms  p99  90.731 ms  errors 0
+weaviate-pass3 hybrid (RRF)             warm-up: p50 11.382, 11.195 ms
+weaviate-pass3 hybrid (RRF)             c=1        114 q/s  p50   7.820 ms  p90  11.954 ms  p99  22.602 ms  errors 0
+weaviate-pass3 hybrid (RRF)             c=4        311 q/s  p50  11.225 ms  p90  19.096 ms  p99  31.804 ms  errors 0
+weaviate-pass3 hybrid (RRF)             c=16       350 q/s  p50  40.375 ms  p90  73.837 ms  p99 122.670 ms  errors 0
+weaviate-pass3 hybrid (weighted)        warm-up: p50 11.399, 11.273 ms
+weaviate-pass3 hybrid (weighted)        c=1        114 q/s  p50   7.757 ms  p90  12.022 ms  p99  22.602 ms  errors 0
+weaviate-pass3 hybrid (weighted)        c=4        317 q/s  p50  11.104 ms  p90  18.627 ms  p99  34.160 ms  errors 0
+weaviate-pass3 hybrid (weighted)        c=16       346 q/s  p50  40.625 ms  p90  70.860 ms  p99 142.410 ms  errors 0
+weaviate-pass3 boosted (bm25 × decay)   unavailable: no function scores
+weaviate-pass3 facet                    warm-up: p50 26.098, 26.722 ms
+weaviate-pass3 facet                    c=1         18 q/s  p50  13.015 ms  p90 103.796 ms  p99 703.201 ms  errors 0
+weaviate-pass3 facet                    c=4         33 q/s  p50  26.135 ms  p90 233.568 ms  p99 1352.930 ms  errors 0
+weaviate-pass3 facet                    c=16        35 q/s  p50 233.428 ms  p90 967.075 ms  p99 2927.562 ms  errors 0
+weaviate-pass3 key lookup               warm-up: p50 0.324, 0.326 ms
+weaviate-pass3 key lookup               c=1       3088 q/s  p50   0.313 ms  p90   0.384 ms  p99   0.527 ms  errors 0
+weaviate-pass3 key lookup               c=4      11779 q/s  p50   0.328 ms  p90   0.420 ms  p99   0.548 ms  errors 0
+weaviate-pass3 key lookup               c=16     33228 q/s  p50   0.434 ms  p90   0.661 ms  p99   1.188 ms  errors 0
+weaviate-pass3 phrase                   unavailable: no phrase queries
+weaviate-pass3 typo                     unavailable: no fuzzy matching
+weaviate-pass3 prefix                   warm-up: p50 6.372, 6.171 ms
+weaviate-pass3 prefix                   c=1        172 q/s  p50   5.112 ms  p90   9.954 ms  p99  16.722 ms  errors 0
+weaviate-pass3 prefix                   c=4        541 q/s  p50   6.261 ms  p90  12.777 ms  p99  22.102 ms  errors 0
+weaviate-pass3 prefix                   c=16       746 q/s  p50  18.384 ms  p90  39.531 ms  p99  68.257 ms  errors 0
+weaviate-pass3 similar items            warm-up: p50 10.295, 10.321 ms
+weaviate-pass3 similar items            c=1        124 q/s  p50   7.899 ms  p90   8.738 ms  p99  12.199 ms  errors 0
+weaviate-pass3 similar items            c=4        367 q/s  p50  10.273 ms  p90  13.226 ms  p99  20.229 ms  errors 0
+weaviate-pass3 similar items            c=16       495 q/s  p50  26.549 ms  p90  60.141 ms  p99 103.131 ms  errors 0
+weaviate-pass3 sql aggregate            warm-up: p50 9098.584, 9420.659 ms
+weaviate-pass3 sql aggregate            c=1          0 q/s  p50 3524.083 ms  p90 3524.083 ms  p99 3524.083 ms  errors 0
+weaviate-pass3 sql aggregate            c=4          0 q/s  p50 9298.354 ms  p90 9428.025 ms  p99 9428.025 ms  errors 0
+weaviate-pass3 sql aggregate            c=16         1 q/s  p50 28791.287 ms  p90 29545.759 ms  p99 29572.723 ms  errors 0
+wrote /data/compare/run-weaviate-pass3.json
+pod "weaviate-0" deleted from one-1m namespace
+service/manticore created
+pod/manticore-0 created
+pod/manticore-0 condition met
+job.batch/load-manticore created
+manticore: index created in 0.0 s
+manticore: 25000 documents sent, 10 s
+manticore: 50000 documents sent, 20 s
+manticore: 75000 documents sent, 30 s
+manticore: 100000 documents sent, 43 s
+manticore: 125000 documents sent, 57 s
+manticore: 150000 documents sent, 70 s
+manticore: 175000 documents sent, 85 s
+manticore: 200000 documents sent, 99 s
+manticore: 225000 documents sent, 113 s
+manticore: 250000 documents sent, 130 s
+manticore: 275000 documents sent, 146 s
+manticore: 300000 documents sent, 163 s
+manticore: 325000 documents sent, 182 s
+manticore: 350000 documents sent, 196 s
+manticore: 375000 documents sent, 213 s
+manticore: 400000 documents sent, 227 s
+manticore: 425000 documents sent, 243 s
+manticore: 450000 documents sent, 258 s
+manticore: 475000 documents sent, 274 s
+manticore: 500000 documents sent, 290 s
+manticore: 525000 documents sent, 307 s
+manticore: 550000 documents sent, 324 s
+manticore: 575000 documents sent, 338 s
+manticore: 600000 documents sent, 356 s
+manticore: 625000 documents sent, 372 s
+manticore: 650000 documents sent, 386 s
+manticore: 675000 documents sent, 401 s
+manticore: 700000 documents sent, 418 s
+manticore: 725000 documents sent, 434 s
+manticore: 750000 documents sent, 450 s
+manticore: 775000 documents sent, 464 s
+manticore: 800000 documents sent, 481 s
+manticore: 825000 documents sent, 496 s
+manticore: 850000 documents sent, 512 s
+manticore: 875000 documents sent, 529 s
+manticore: 900000 documents sent, 545 s
+manticore: 925000 documents sent, 561 s
+manticore: 950000 documents sent, 576 s
+manticore: 975000 documents sent, 593 s
+manticore: 1000000 documents sent, 606 s
+manticore: 1000000 documents (10.8 GB) sent in 606.2 s
+manticore: flush_s in 4.4 s
+manticore: merge_s in 1250.1 s
+manticore: indexed 1254.5 s after the last write; 1860.7 s in all
+wrote /data/compare/load-manticore.json
+job.batch/run-manticore created
+manticore bm25                     warm-up: p50 13.563, 13.733 ms
+manticore bm25                     c=1        133 q/s  p50   5.517 ms  p90  18.104 ms  p99  33.578 ms  errors 0
+manticore bm25                     c=4        154 q/s  p50  13.821 ms  p90  59.336 ms  p99 168.349 ms  errors 0
+manticore bm25                     c=16       150 q/s  p50  47.407 ms  p90 367.190 ms  p99 810.221 ms  errors 0
+manticore bm25 + filter            warm-up: p50 13.034, 13.559 ms
+manticore bm25 + filter            c=1        159 q/s  p50   6.462 ms  p90  10.958 ms  p99  17.355 ms  errors 0
+manticore bm25 + filter            c=4        223 q/s  p50  12.655 ms  p90  39.113 ms  p99  91.919 ms  errors 0
+manticore bm25 + filter            c=16       221 q/s  p50  42.678 ms  p90  81.301 ms  p99 1169.756 ms  errors 0
+manticore vector                   warm-up: p50 1.499, 1.511 ms
+manticore vector                   c=1        733 q/s  p50   1.350 ms  p90   1.678 ms  p99   2.012 ms  errors 0
+manticore vector                   c=4       2564 q/s  p50   1.497 ms  p90   2.037 ms  p99   2.916 ms  errors 0
+manticore vector                   c=16      4602 q/s  p50   3.023 ms  p90   3.752 ms  p99  15.886 ms  errors 0
+manticore vector + filter          warm-up: p50 12.300, 12.219 ms
+manticore vector + filter          c=1         95 q/s  p50  10.476 ms  p90  11.754 ms  p99  12.680 ms  errors 0
+manticore vector + filter          c=4        321 q/s  p50  12.145 ms  p90  15.526 ms  p99  17.864 ms  errors 0
+manticore vector + filter          c=16       465 q/s  p50  32.053 ms  p90  44.220 ms  p99  49.233 ms  errors 0
+manticore hybrid (RRF)             warm-up: p50 21.506, 21.338 ms
+manticore hybrid (RRF)             c=1         40 q/s  p50  17.006 ms  p90  65.017 ms  p99 130.447 ms  errors 0
+manticore hybrid (RRF)             c=4        121 q/s  p50  21.525 ms  p90  83.825 ms  p99 156.834 ms  errors 0
+manticore hybrid (RRF)             c=16       147 q/s  p50  87.656 ms  p90 188.766 ms  p99 410.704 ms  errors 0
+manticore hybrid (weighted)        unavailable: its hybrid search fuses by RRF only (fusion_method='rrf')
+manticore boosted (bm25 × decay)   warm-up: p50 15.509, 17.770, 15.437, 15.901 ms
+manticore boosted (bm25 × decay)   c=1        121 q/s  p50   6.173 ms  p90  19.698 ms  p99  35.235 ms  errors 0
+manticore boosted (bm25 × decay)   c=4        143 q/s  p50  15.470 ms  p90  67.809 ms  p99 171.680 ms  errors 0
+manticore boosted (bm25 × decay)   c=16       140 q/s  p50  50.638 ms  p90 387.836 ms  p99 759.211 ms  errors 0
+manticore facet                    warm-up: p50 2.242, 2.212 ms
+manticore facet                    c=1        402 q/s  p50   1.655 ms  p90   5.142 ms  p99   9.083 ms  errors 0
+manticore facet                    c=4        856 q/s  p50   2.241 ms  p90  10.839 ms  p99  34.534 ms  errors 0
+manticore facet                    c=16       970 q/s  p50   9.522 ms  p90  28.860 ms  p99  64.060 ms  errors 0
+manticore key lookup               warm-up: p50 0.494, 0.497 ms
+manticore key lookup               c=1       2144 q/s  p50   0.450 ms  p90   0.541 ms  p99   0.671 ms  errors 0
+manticore key lookup               c=4       7644 q/s  p50   0.497 ms  p90   0.646 ms  p99   0.912 ms  errors 0
+manticore key lookup               c=16     19140 q/s  p50   0.733 ms  p90   0.935 ms  p99   3.085 ms  errors 0
+manticore phrase                   warm-up: p50 2.764, 2.715 ms
+manticore phrase                   c=1        479 q/s  p50   1.567 ms  p90   3.998 ms  p99   8.427 ms  errors 0
+manticore phrase                   c=4        808 q/s  p50   2.841 ms  p90  11.753 ms  p99  28.122 ms  errors 0
+manticore phrase                   c=16       777 q/s  p50  15.064 ms  p90  36.396 ms  p99  82.144 ms  errors 0
+manticore typo                     warm-up: p50 66.249, 62.709 ms
+manticore typo                     c=1         18 q/s  p50  49.688 ms  p90  94.135 ms  p99 133.552 ms  errors 0
+manticore typo                     c=4         55 q/s  p50  69.318 ms  p90 117.967 ms  p99 178.791 ms  errors 0
+manticore typo                     c=16        75 q/s  p50 196.932 ms  p90 318.443 ms  p99 566.663 ms  errors 0
+manticore prefix                   warm-up: p50 35.327, 37.537 ms
+manticore prefix                   c=1         51 q/s  p50  12.768 ms  p90  40.472 ms  p99 160.576 ms  errors 0
+manticore prefix                   c=4         57 q/s  p50  32.412 ms  p90 147.304 ms  p99 541.635 ms  errors 0
+manticore prefix                   c=16        55 q/s  p50  89.448 ms  p90 579.145 ms  p99 2926.406 ms  errors 0
+manticore similar items            warm-up: p50 3.531, 3.570 ms
+manticore similar items            c=1        284 q/s  p50   3.392 ms  p90   5.189 ms  p99   6.188 ms  errors 0
+manticore similar items            c=4       1081 q/s  p50   3.486 ms  p90   5.575 ms  p99   7.100 ms  errors 0
+manticore similar items            c=16      1767 q/s  p50   7.944 ms  p90  11.665 ms  p99  24.700 ms  errors 0
+manticore sql aggregate            warm-up: p50 112.850, 94.707, 94.372 ms
+manticore sql aggregate            c=1         29 q/s  p50  33.677 ms  p90  48.753 ms  p99  61.241 ms  errors 0
+manticore sql aggregate            c=4         33 q/s  p50  85.140 ms  p90 264.832 ms  p99 357.160 ms  errors 0
+manticore sql aggregate            c=16        39 q/s  p50 402.659 ms  p90 620.854 ms  p99 825.708 ms  errors 0
+wrote /data/compare/run-manticore.json
+job.batch/run-manticore-pass2 created
+manticore-pass2 bm25                     warm-up: p50 13.934, 14.096 ms
+manticore-pass2 bm25                     c=1        132 q/s  p50   5.472 ms  p90  17.943 ms  p99  36.334 ms  errors 0
+manticore-pass2 bm25                     c=4        154 q/s  p50  14.821 ms  p90  61.597 ms  p99 157.088 ms  errors 0
+manticore-pass2 bm25                     c=16       151 q/s  p50  45.338 ms  p90 368.793 ms  p99 788.491 ms  errors 0
+manticore-pass2 bm25 + filter            warm-up: p50 13.500, 12.376 ms
+manticore-pass2 bm25 + filter            c=1        156 q/s  p50   6.621 ms  p90  11.006 ms  p99  18.076 ms  errors 0
+manticore-pass2 bm25 + filter            c=4        224 q/s  p50  13.962 ms  p90  37.219 ms  p99  90.573 ms  errors 0
+manticore-pass2 bm25 + filter            c=16       221 q/s  p50  42.274 ms  p90  83.284 ms  p99 1144.167 ms  errors 0
+manticore-pass2 vector                   warm-up: p50 1.541, 1.543 ms
+manticore-pass2 vector                   c=1        694 q/s  p50   1.434 ms  p90   1.784 ms  p99   2.071 ms  errors 0
+manticore-pass2 vector                   c=4       2574 q/s  p50   1.505 ms  p90   1.996 ms  p99   2.812 ms  errors 0
+manticore-pass2 vector                   c=16      4561 q/s  p50   3.043 ms  p90   3.740 ms  p99  16.112 ms  errors 0
+manticore-pass2 vector + filter          warm-up: p50 12.309, 12.064 ms
+manticore-pass2 vector + filter          c=1         95 q/s  p50  10.493 ms  p90  11.847 ms  p99  12.877 ms  errors 0
+manticore-pass2 vector + filter          c=4        320 q/s  p50  12.230 ms  p90  15.353 ms  p99  17.614 ms  errors 0
+manticore-pass2 vector + filter          c=16       458 q/s  p50  31.896 ms  p90  45.334 ms  p99  50.081 ms  errors 0
+manticore-pass2 hybrid (RRF)             warm-up: p50 22.005, 20.574 ms
+manticore-pass2 hybrid (RRF)             c=1         40 q/s  p50  16.871 ms  p90  64.432 ms  p99 131.481 ms  errors 0
+manticore-pass2 hybrid (RRF)             c=4        120 q/s  p50  21.521 ms  p90  79.253 ms  p99 183.416 ms  errors 0
+manticore-pass2 hybrid (RRF)             c=16       146 q/s  p50  88.944 ms  p90 198.658 ms  p99 398.897 ms  errors 0
+manticore-pass2 hybrid (weighted)        unavailable: its hybrid search fuses by RRF only (fusion_method='rrf')
+manticore-pass2 boosted (bm25 × decay)   warm-up: p50 15.583, 15.829 ms
+manticore-pass2 boosted (bm25 × decay)   c=1        121 q/s  p50   6.196 ms  p90  19.407 ms  p99  35.793 ms  errors 0
+manticore-pass2 boosted (bm25 × decay)   c=4        142 q/s  p50  15.209 ms  p90  67.791 ms  p99 206.230 ms  errors 0
+manticore-pass2 boosted (bm25 × decay)   c=16       139 q/s  p50  50.774 ms  p90 385.197 ms  p99 753.156 ms  errors 0
+manticore-pass2 facet                    warm-up: p50 2.306, 2.278 ms
+manticore-pass2 facet                    c=1        394 q/s  p50   1.699 ms  p90   5.238 ms  p99   8.971 ms  errors 0
+manticore-pass2 facet                    c=4        839 q/s  p50   2.369 ms  p90  11.244 ms  p99  33.963 ms  errors 0
+manticore-pass2 facet                    c=16       975 q/s  p50   9.203 ms  p90  29.235 ms  p99  64.581 ms  errors 0
+manticore-pass2 key lookup               warm-up: p50 0.497, 0.502 ms
+manticore-pass2 key lookup               c=1       2084 q/s  p50   0.460 ms  p90   0.571 ms  p99   0.728 ms  errors 0
+manticore-pass2 key lookup               c=4       7589 q/s  p50   0.496 ms  p90   0.662 ms  p99   0.968 ms  errors 0
+manticore-pass2 key lookup               c=16     18914 q/s  p50   0.745 ms  p90   0.952 ms  p99   4.179 ms  errors 0
+manticore-pass2 phrase                   warm-up: p50 2.766, 2.777 ms
+manticore-pass2 phrase                   c=1        482 q/s  p50   1.567 ms  p90   3.926 ms  p99   8.084 ms  errors 0
+manticore-pass2 phrase                   c=4        811 q/s  p50   2.828 ms  p90  11.288 ms  p99  28.374 ms  errors 0
+manticore-pass2 phrase                   c=16       774 q/s  p50  16.517 ms  p90  36.647 ms  p99  79.505 ms  errors 0
+manticore-pass2 typo                     warm-up: p50 63.889, 65.404 ms
+manticore-pass2 typo                     c=1         18 q/s  p50  50.506 ms  p90  94.867 ms  p99 131.580 ms  errors 0
+manticore-pass2 typo                     c=4         55 q/s  p50  68.787 ms  p90 116.402 ms  p99 197.715 ms  errors 0
+manticore-pass2 typo                     c=16        74 q/s  p50 191.869 ms  p90 323.299 ms  p99 592.541 ms  errors 0
+manticore-pass2 prefix                   warm-up: p50 27.294, 34.429, 38.740, 33.746, 37.397, 32.243, 36.688, 33.856 ms
+manticore-pass2 prefix                   c=1         49 q/s  p50  13.263 ms  p90  41.443 ms  p99 163.917 ms  errors 0
+manticore-pass2 prefix                   c=4         56 q/s  p50  34.358 ms  p90 148.339 ms  p99 556.190 ms  errors 0
+manticore-pass2 prefix                   c=16        55 q/s  p50  93.705 ms  p90 694.719 ms  p99 2793.858 ms  errors 0
+manticore-pass2 similar items            warm-up: p50 3.585, 3.639 ms
+manticore-pass2 similar items            c=1        284 q/s  p50   3.430 ms  p90   5.168 ms  p99   6.157 ms  errors 0
+manticore-pass2 similar items            c=4       1065 q/s  p50   3.581 ms  p90   5.636 ms  p99   7.071 ms  errors 0
+manticore-pass2 similar items            c=16      1741 q/s  p50   8.243 ms  p90  13.486 ms  p99  22.819 ms  errors 0
+manticore-pass2 sql aggregate            warm-up: p50 91.439, 93.529 ms
+manticore-pass2 sql aggregate            c=1         29 q/s  p50  34.275 ms  p90  49.842 ms  p99  63.603 ms  errors 0
+manticore-pass2 sql aggregate            c=4         33 q/s  p50  83.376 ms  p90 264.535 ms  p99 349.701 ms  errors 0
+manticore-pass2 sql aggregate            c=16        37 q/s  p50 427.684 ms  p90 674.770 ms  p99 797.325 ms  errors 0
+wrote /data/compare/run-manticore-pass2.json
+job.batch/run-manticore-pass3 created
+manticore-pass3 bm25                     warm-up: p50 13.997, 13.792 ms
+manticore-pass3 bm25                     c=1        131 q/s  p50   5.671 ms  p90  18.062 ms  p99  35.510 ms  errors 0
+manticore-pass3 bm25                     c=4        153 q/s  p50  14.726 ms  p90  62.130 ms  p99 187.099 ms  errors 0
+manticore-pass3 bm25                     c=16       151 q/s  p50  46.412 ms  p90 367.626 ms  p99 767.512 ms  errors 0
+manticore-pass3 bm25 + filter            warm-up: p50 13.200, 13.451 ms
+manticore-pass3 bm25 + filter            c=1        155 q/s  p50   6.715 ms  p90  10.976 ms  p99  17.893 ms  errors 0
+manticore-pass3 bm25 + filter            c=4        223 q/s  p50  13.255 ms  p90  37.829 ms  p99  89.074 ms  errors 0
+manticore-pass3 bm25 + filter            c=16       219 q/s  p50  46.006 ms  p90  85.617 ms  p99 1139.818 ms  errors 0
+manticore-pass3 vector                   warm-up: p50 1.544, 1.538 ms
+manticore-pass3 vector                   c=1        696 q/s  p50   1.415 ms  p90   1.792 ms  p99   2.112 ms  errors 0
+manticore-pass3 vector                   c=4       2507 q/s  p50   1.538 ms  p90   2.068 ms  p99   2.887 ms  errors 0
+manticore-pass3 vector                   c=16      4523 q/s  p50   3.060 ms  p90   3.769 ms  p99  16.523 ms  errors 0
+manticore-pass3 vector + filter          warm-up: p50 12.206, 12.214 ms
+manticore-pass3 vector + filter          c=1         94 q/s  p50  10.587 ms  p90  11.944 ms  p99  12.810 ms  errors 0
+manticore-pass3 vector + filter          c=4        318 q/s  p50  12.207 ms  p90  15.651 ms  p99  17.798 ms  errors 0
+manticore-pass3 vector + filter          c=16       460 q/s  p50  33.916 ms  p90  42.719 ms  p99  48.995 ms  errors 0
+manticore-pass3 hybrid (RRF)             warm-up: p50 21.632, 22.704 ms
+manticore-pass3 hybrid (RRF)             c=1         41 q/s  p50  16.933 ms  p90  63.417 ms  p99 129.134 ms  errors 0
+manticore-pass3 hybrid (RRF)             c=4        120 q/s  p50  21.317 ms  p90  80.900 ms  p99 170.408 ms  errors 0
+manticore-pass3 hybrid (RRF)             c=16       145 q/s  p50  89.415 ms  p90 190.755 ms  p99 401.167 ms  errors 0
+manticore-pass3 hybrid (weighted)        unavailable: its hybrid search fuses by RRF only (fusion_method='rrf')
+manticore-pass3 boosted (bm25 × decay)   warm-up: p50 15.633, 16.211 ms
+manticore-pass3 boosted (bm25 × decay)   c=1        120 q/s  p50   6.144 ms  p90  19.714 ms  p99  37.040 ms  errors 0
+manticore-pass3 boosted (bm25 × decay)   c=4        142 q/s  p50  15.713 ms  p90  68.703 ms  p99 176.054 ms  errors 0
+manticore-pass3 boosted (bm25 × decay)   c=16       139 q/s  p50  50.765 ms  p90 382.822 ms  p99 765.060 ms  errors 0
+manticore-pass3 facet                    warm-up: p50 2.231, 2.332 ms
+manticore-pass3 facet                    c=1        404 q/s  p50   1.629 ms  p90   5.290 ms  p99   9.075 ms  errors 0
+manticore-pass3 facet                    c=4        851 q/s  p50   2.230 ms  p90  11.313 ms  p99  36.836 ms  errors 0
+manticore-pass3 facet                    c=16       973 q/s  p50   9.310 ms  p90  28.778 ms  p99  63.973 ms  errors 0
+manticore-pass3 key lookup               warm-up: p50 0.509, 0.499 ms
+manticore-pass3 key lookup               c=1       2037 q/s  p50   0.479 ms  p90   0.565 ms  p99   0.678 ms  errors 0
+manticore-pass3 key lookup               c=4       7597 q/s  p50   0.499 ms  p90   0.642 ms  p99   0.942 ms  errors 0
+manticore-pass3 key lookup               c=16     18559 q/s  p50   0.753 ms  p90   0.937 ms  p99   3.074 ms  errors 0
+manticore-pass3 phrase                   warm-up: p50 2.757, 2.877 ms
+manticore-pass3 phrase                   c=1        462 q/s  p50   1.639 ms  p90   4.056 ms  p99   8.183 ms  errors 0
+manticore-pass3 phrase                   c=4        813 q/s  p50   2.835 ms  p90  11.079 ms  p99  27.767 ms  errors 0
+manticore-pass3 phrase                   c=16       782 q/s  p50  15.786 ms  p90  36.011 ms  p99  75.509 ms  errors 0
+manticore-pass3 typo                     warm-up: p50 64.076, 65.785 ms
+manticore-pass3 typo                     c=1         18 q/s  p50  51.295 ms  p90  93.718 ms  p99 132.978 ms  errors 0
+manticore-pass3 typo                     c=4         55 q/s  p50  66.494 ms  p90 121.026 ms  p99 176.601 ms  errors 0
+manticore-pass3 typo                     c=16        75 q/s  p50 187.975 ms  p90 312.990 ms  p99 648.253 ms  errors 0
+manticore-pass3 prefix                   warm-up: p50 34.716, 31.653 ms
+manticore-pass3 prefix                   c=1         49 q/s  p50  13.155 ms  p90  41.517 ms  p99 164.084 ms  errors 0
+manticore-pass3 prefix                   c=4         58 q/s  p50  30.458 ms  p90 147.043 ms  p99 510.068 ms  errors 0
+manticore-pass3 prefix                   c=16        56 q/s  p50  88.444 ms  p90 646.861 ms  p99 2802.717 ms  errors 0
+manticore-pass3 similar items            warm-up: p50 3.603, 3.564 ms
+manticore-pass3 similar items            c=1        280 q/s  p50   3.444 ms  p90   5.254 ms  p99   6.105 ms  errors 0
+manticore-pass3 similar items            c=4       1066 q/s  p50   3.604 ms  p90   5.620 ms  p99   7.123 ms  errors 0
+manticore-pass3 similar items            c=16      1750 q/s  p50   8.274 ms  p90  14.389 ms  p99  21.432 ms  errors 0
+manticore-pass3 sql aggregate            warm-up: p50 87.490, 84.185 ms
+manticore-pass3 sql aggregate            c=1         29 q/s  p50  33.668 ms  p90  49.646 ms  p99  62.468 ms  errors 0
+manticore-pass3 sql aggregate            c=4         33 q/s  p50  85.854 ms  p90 255.161 ms  p99 334.005 ms  errors 0
+manticore-pass3 sql aggregate            c=16        38 q/s  p50 407.200 ms  p90 596.523 ms  p99 796.890 ms  errors 0
+wrote /data/compare/run-manticore-pass3.json
+pod "manticore-0" deleted from one-1m namespace
+service/paradedb created
+pod/paradedb-0 created
+pod/paradedb-0 condition met
+job.batch/load-paradedb created
+paradedb: index created in 0.0 s
+paradedb: 25000 documents sent, 3 s
+paradedb: 50000 documents sent, 5 s
+paradedb: 75000 documents sent, 8 s
+paradedb: 100000 documents sent, 10 s
+paradedb: 125000 documents sent, 13 s
+paradedb: 150000 documents sent, 15 s
+paradedb: 175000 documents sent, 18 s
+paradedb: 200000 documents sent, 20 s
+paradedb: 225000 documents sent, 23 s
+paradedb: 250000 documents sent, 25 s
+paradedb: 275000 documents sent, 27 s
+paradedb: 300000 documents sent, 30 s
+paradedb: 325000 documents sent, 32 s
+paradedb: 350000 documents sent, 35 s
+paradedb: 375000 documents sent, 37 s
+paradedb: 400000 documents sent, 39 s
+paradedb: 425000 documents sent, 42 s
+paradedb: 450000 documents sent, 45 s
+paradedb: 475000 documents sent, 47 s
+paradedb: 500000 documents sent, 49 s
+paradedb: 525000 documents sent, 52 s
+paradedb: 550000 documents sent, 54 s
+paradedb: 575000 documents sent, 57 s
+paradedb: 600000 documents sent, 59 s
+paradedb: 625000 documents sent, 62 s
+paradedb: 650000 documents sent, 64 s
+paradedb: 675000 documents sent, 66 s
+paradedb: 700000 documents sent, 69 s
+paradedb: 725000 documents sent, 71 s
+paradedb: 750000 documents sent, 74 s
+paradedb: 775000 documents sent, 76 s
+paradedb: 800000 documents sent, 79 s
+paradedb: 825000 documents sent, 81 s
+paradedb: 850000 documents sent, 84 s
+paradedb: 875000 documents sent, 86 s
+paradedb: 900000 documents sent, 88 s
+paradedb: 925000 documents sent, 91 s
+paradedb: 950000 documents sent, 93 s
+paradedb: 975000 documents sent, 96 s
+paradedb: 1000000 documents sent, 98 s
+paradedb: 1000000 documents (10.7 GB) sent in 98.3 s
+paradedb: primary_key_s in 3.6 s
+paradedb: search_index_s in 97.1 s
+paradedb: analyze_s in 0.8 s
+paradedb: indexed 101.5 s after the last write; 199.7 s in all
+wrote /data/compare/load-paradedb.json
+job.batch/run-paradedb created
+paradedb  bm25                     warm-up: p50 30.823, 29.174 ms
+paradedb  bm25                     c=1         71 q/s  p50  16.454 ms  p90  18.562 ms  p99  20.225 ms  errors 0
+paradedb  bm25                     c=4        154 q/s  p50  29.863 ms  p90  40.671 ms  p99  48.927 ms  errors 0
+paradedb  bm25                     c=16       478 q/s  p50  24.453 ms  p90  72.617 ms  p99  99.169 ms  errors 0
+paradedb  bm25 + filter            warm-up: p50 35.055, 35.192 ms
+paradedb  bm25 + filter            c=1         61 q/s  p50  18.283 ms  p90  20.462 ms  p99  23.071 ms  errors 0
+paradedb  bm25 + filter            c=4        129 q/s  p50  35.172 ms  p90  46.072 ms  p99  56.390 ms  errors 0
+paradedb  bm25 + filter            c=16       303 q/s  p50  45.837 ms  p90  90.649 ms  p99 126.167 ms  errors 0
+paradedb  vector                   warm-up: p50 36.546, 36.447 ms
+paradedb  vector                   c=1         54 q/s  p50  18.418 ms  p90  21.044 ms  p99  23.631 ms  errors 0
+paradedb  vector                   c=4        107 q/s  p50  36.872 ms  p90  47.878 ms  p99  55.669 ms  errors 0
+paradedb  vector                   c=16       200 q/s  p50  79.259 ms  p90 107.609 ms  p99 145.028 ms  errors 0
+paradedb  vector + filter          warm-up: p50 67.977, 67.728 ms
+paradedb  vector + filter          c=1         34 q/s  p50  29.512 ms  p90  32.274 ms  p99  34.399 ms  errors 0
+paradedb  vector + filter          c=4         61 q/s  p50  65.542 ms  p90  79.704 ms  p99  92.687 ms  errors 0
+paradedb  vector + filter          c=16        89 q/s  p50 172.610 ms  p90 226.570 ms  p99 306.286 ms  errors 0
+paradedb  hybrid (RRF)             warm-up: p50 81.915, 80.288 ms
+paradedb  hybrid (RRF)             c=1         26 q/s  p50  40.082 ms  p90  44.161 ms  p99  48.353 ms  errors 0
+paradedb  hybrid (RRF)             c=4         50 q/s  p50  81.773 ms  p90 101.308 ms  p99 111.194 ms  errors 0
+paradedb  hybrid (RRF)             c=16        83 q/s  p50 187.412 ms  p90 252.704 ms  p99 315.669 ms  errors 0
+paradedb  hybrid (weighted)        warm-up: p50 87.860, 86.491 ms
+paradedb  hybrid (weighted)        c=1         25 q/s  p50  41.717 ms  p90  46.311 ms  p99  51.028 ms  errors 0
+paradedb  hybrid (weighted)        c=4         47 q/s  p50  86.657 ms  p90 107.789 ms  p99 118.567 ms  errors 0
+paradedb  hybrid (weighted)        c=16        80 q/s  p50 194.399 ms  p90 255.355 ms  p99 331.850 ms  errors 0
+read tcp 127.0.0.1:57974->127.0.0.1:45545: read: connection reset by peer
+error: read tcp 127.0.0.1:57974->127.0.0.1:45545: read: connection reset by peer
+paradedb  boosted (bm25 × decay)   warm-up: p50 1439.231, 1220.825, 1259.477 ms
+paradedb  boosted (bm25 × decay)   c=1          1 q/s  p50 705.735 ms  p90 1476.368 ms  p99 1508.555 ms  errors 0
+paradedb  boosted (bm25 × decay)   c=4          3 q/s  p50 1212.868 ms  p90 1832.329 ms  p99 2528.322 ms  errors 0
+paradedb  boosted (bm25 × decay)   c=16         3 q/s  p50 4256.682 ms  p90 7999.418 ms  p99 9127.345 ms  errors 0
+paradedb  facet                    warm-up: p50 4.306, 4.328 ms
+paradedb  facet                    c=1        202 q/s  p50   4.232 ms  p90   6.619 ms  p99  16.655 ms  errors 0
+paradedb  facet                    c=4        756 q/s  p50   4.341 ms  p90   7.825 ms  p99  17.447 ms  errors 0
+paradedb  facet                    c=16       901 q/s  p50  14.428 ms  p90  31.374 ms  p99  72.358 ms  errors 0
+paradedb  key lookup               warm-up: p50 0.317, 0.311 ms
+paradedb  key lookup               c=1       3250 q/s  p50   0.300 ms  p90   0.351 ms  p99   0.438 ms  errors 0
+paradedb  key lookup               c=4      11902 q/s  p50   0.326 ms  p90   0.405 ms  p99   0.481 ms  errors 0
+paradedb  key lookup               c=16     21648 q/s  p50   0.657 ms  p90   0.881 ms  p99   5.013 ms  errors 0
+paradedb  phrase                   warm-up: p50 3.921, 3.849 ms
+paradedb  phrase                   c=1        228 q/s  p50   3.777 ms  p90   6.391 ms  p99  11.722 ms  errors 0
+paradedb  phrase                   c=4        800 q/s  p50   4.221 ms  p90   7.573 ms  p99  17.236 ms  errors 0
+paradedb  phrase                   c=16      1025 q/s  p50  12.833 ms  p90  28.692 ms  p99  60.194 ms  errors 0
+paradedb  typo                     warm-up: p50 217.349, 205.444 ms
+paradedb  typo                     c=1         14 q/s  p50  70.254 ms  p90 102.442 ms  p99 122.460 ms  errors 0
+paradedb  typo                     c=4         17 q/s  p50 213.295 ms  p90 330.347 ms  p99 637.268 ms  errors 0
+paradedb  typo                     c=16        17 q/s  p50 735.787 ms  p90 1539.071 ms  p99 2416.644 ms  errors 0
+paradedb  prefix                   warm-up: p50 42.014, 42.383 ms
+paradedb  prefix                   c=1         52 q/s  p50  18.554 ms  p90  22.643 ms  p99  27.263 ms  errors 0
+paradedb  prefix                   c=4         94 q/s  p50  41.735 ms  p90  55.141 ms  p99  64.788 ms  errors 0
+paradedb  prefix                   c=16       185 q/s  p50  83.498 ms  p90 133.792 ms  p99 217.838 ms  errors 0
+paradedb  similar items            warm-up: p50 429.371, 460.982 ms
+paradedb  similar items            c=1          6 q/s  p50 168.062 ms  p90 185.258 ms  p99 211.905 ms  errors 0
+paradedb  similar items            c=4          8 q/s  p50 454.231 ms  p90 599.900 ms  p99 1319.953 ms  errors 0
+paradedb  similar items            c=16        10 q/s  p50 1350.673 ms  p90 2766.417 ms  p99 2931.012 ms  errors 0
+paradedb  sql aggregate            warm-up: p50 41.256, 43.202 ms
+paradedb  sql aggregate            c=1         23 q/s  p50  43.042 ms  p90  58.411 ms  p99  82.704 ms  errors 0
+paradedb  sql aggregate            c=4         82 q/s  p50  41.675 ms  p90  87.982 ms  p99 124.412 ms  errors 0
+read tcp 127.0.0.1:41536->127.0.0.1:45545: read: connection reset by peer
+error: read tcp 127.0.0.1:41536->127.0.0.1:45545: read: connection reset by peer
+paradedb  sql aggregate            c=16        80 q/s  p50 182.492 ms  p90 332.594 ms  p99 479.452 ms  errors 1
+  first error: ERROR XX000: DataFusion aggregate execution failed: Execution error: transport receiver detached before this channel's EOF; the producer went away
+wrote /data/compare/run-paradedb.json
+job.batch/run-paradedb-pass2 created
+paradedb-pass2 bm25                     warm-up: p50 30.538, 31.013 ms
+paradedb-pass2 bm25                     c=1         69 q/s  p50  16.999 ms  p90  19.133 ms  p99  20.888 ms  errors 0
+paradedb-pass2 bm25                     c=4        153 q/s  p50  30.851 ms  p90  41.530 ms  p99  50.536 ms  errors 0
+paradedb-pass2 bm25                     c=16       474 q/s  p50  25.665 ms  p90  73.251 ms  p99  98.973 ms  errors 0
+paradedb-pass2 bm25 + filter            warm-up: p50 35.378, 34.945 ms
+paradedb-pass2 bm25 + filter            c=1         60 q/s  p50  19.023 ms  p90  20.960 ms  p99  23.099 ms  errors 0
+paradedb-pass2 bm25 + filter            c=4        125 q/s  p50  35.783 ms  p90  47.117 ms  p99  56.717 ms  errors 0
+paradedb-pass2 bm25 + filter            c=16       300 q/s  p50  46.733 ms  p90  92.028 ms  p99 119.484 ms  errors 0
+paradedb-pass2 vector                   warm-up: p50 38.327, 38.330 ms
+paradedb-pass2 vector                   c=1         52 q/s  p50  19.008 ms  p90  21.636 ms  p99  24.844 ms  errors 0
+paradedb-pass2 vector                   c=4        106 q/s  p50  37.317 ms  p90  47.514 ms  p99  55.247 ms  errors 0
+paradedb-pass2 vector                   c=16       195 q/s  p50  81.801 ms  p90 109.433 ms  p99 139.466 ms  errors 0
+paradedb-pass2 vector + filter          warm-up: p50 66.756, 67.834 ms
+paradedb-pass2 vector + filter          c=1         33 q/s  p50  29.633 ms  p90  32.815 ms  p99  35.040 ms  errors 0
+paradedb-pass2 vector + filter          c=4         58 q/s  p50  68.205 ms  p90  81.514 ms  p99  95.927 ms  errors 0
+paradedb-pass2 vector + filter          c=16        88 q/s  p50 175.612 ms  p90 229.942 ms  p99 319.968 ms  errors 0
+paradedb-pass2 hybrid (RRF)             warm-up: p50 83.762, 82.996 ms
+paradedb-pass2 hybrid (RRF)             c=1         26 q/s  p50  41.038 ms  p90  44.477 ms  p99  48.405 ms  errors 0
+paradedb-pass2 hybrid (RRF)             c=4         49 q/s  p50  82.960 ms  p90 102.769 ms  p99 122.607 ms  errors 0
+paradedb-pass2 hybrid (RRF)             c=16        82 q/s  p50 188.831 ms  p90 254.522 ms  p99 306.425 ms  errors 0
+paradedb-pass2 hybrid (weighted)        warm-up: p50 88.570, 88.488 ms
+paradedb-pass2 hybrid (weighted)        c=1         25 q/s  p50  41.892 ms  p90  47.440 ms  p99  49.493 ms  errors 0
+paradedb-pass2 hybrid (weighted)        c=4         47 q/s  p50  85.860 ms  p90 106.313 ms  p99 118.991 ms  errors 0
+paradedb-pass2 hybrid (weighted)        c=16        79 q/s  p50 197.483 ms  p90 253.859 ms  p99 308.236 ms  errors 0
+paradedb-pass2 boosted (bm25 × decay)   warm-up: p50 1230.295, 1347.246 ms
+paradedb-pass2 boosted (bm25 × decay)   c=1          1 q/s  p50 698.746 ms  p90 1489.887 ms  p99 1502.622 ms  errors 0
+paradedb-pass2 boosted (bm25 × decay)   c=4          3 q/s  p50 1230.219 ms  p90 2355.245 ms  p99 2578.965 ms  errors 0
+paradedb-pass2 boosted (bm25 × decay)   c=16         3 q/s  p50 4624.097 ms  p90 6857.357 ms  p99 8787.790 ms  errors 0
+paradedb-pass2 facet                    warm-up: p50 4.419, 4.287 ms
+paradedb-pass2 facet                    c=1        201 q/s  p50   4.199 ms  p90   6.789 ms  p99  16.620 ms  errors 0
+paradedb-pass2 facet                    c=4        783 q/s  p50   4.214 ms  p90   7.489 ms  p99  16.977 ms  errors 0
+paradedb-pass2 facet                    c=16       930 q/s  p50  13.756 ms  p90  31.477 ms  p99  68.382 ms  errors 0
+paradedb-pass2 key lookup               warm-up: p50 0.313, 0.350, 0.354 ms
+paradedb-pass2 key lookup               c=1       3237 q/s  p50   0.299 ms  p90   0.362 ms  p99   0.454 ms  errors 0
+paradedb-pass2 key lookup               c=4      12239 q/s  p50   0.308 ms  p90   0.404 ms  p99   0.464 ms  errors 0
+paradedb-pass2 key lookup               c=16     21862 q/s  p50   0.644 ms  p90   0.873 ms  p99   3.595 ms  errors 0
+paradedb-pass2 phrase                   warm-up: p50 3.947, 3.810 ms
+paradedb-pass2 phrase                   c=1        232 q/s  p50   3.687 ms  p90   6.220 ms  p99  11.110 ms  errors 0
+paradedb-pass2 phrase                   c=4        907 q/s  p50   3.725 ms  p90   6.371 ms  p99  15.691 ms  errors 0
+paradedb-pass2 phrase                   c=16      1017 q/s  p50  12.843 ms  p90  28.655 ms  p99  57.362 ms  errors 0
+paradedb-pass2 typo                     warm-up: p50 214.770, 206.781 ms
+paradedb-pass2 typo                     c=1         13 q/s  p50  70.953 ms  p90 112.868 ms  p99 122.182 ms  errors 0
+paradedb-pass2 typo                     c=4         17 q/s  p50 217.499 ms  p90 346.201 ms  p99 692.854 ms  errors 0
+paradedb-pass2 typo                     c=16        18 q/s  p50 675.414 ms  p90 1766.209 ms  p99 2516.705 ms  errors 0
+paradedb-pass2 prefix                   warm-up: p50 42.521, 41.443 ms
+paradedb-pass2 prefix                   c=1         54 q/s  p50  17.835 ms  p90  21.734 ms  p99  26.485 ms  errors 0
+paradedb-pass2 prefix                   c=4         96 q/s  p50  41.416 ms  p90  53.031 ms  p99  61.991 ms  errors 0
+paradedb-pass2 prefix                   c=16       188 q/s  p50  83.596 ms  p90 130.951 ms  p99 202.076 ms  errors 0
+paradedb-pass2 similar items            warm-up: p50 486.560, 436.310, 444.929 ms
+paradedb-pass2 similar items            c=1          6 q/s  p50 154.848 ms  p90 192.380 ms  p99 204.394 ms  errors 0
+paradedb-pass2 similar items            c=4          8 q/s  p50 459.984 ms  p90 586.839 ms  p99 742.470 ms  errors 0
+paradedb-pass2 similar items            c=16         9 q/s  p50 1454.701 ms  p90 2585.502 ms  p99 3625.605 ms  errors 0
+paradedb-pass2 sql aggregate            warm-up: p50 41.543, 40.647 ms
+paradedb-pass2 sql aggregate            c=1         23 q/s  p50  42.606 ms  p90  60.223 ms  p99  86.733 ms  errors 0
+paradedb-pass2 sql aggregate            c=4         86 q/s  p50  39.921 ms  p90  83.017 ms  p99 124.248 ms  errors 0
+paradedb-pass2 sql aggregate            c=16        84 q/s  p50 178.373 ms  p90 299.918 ms  p99 442.420 ms  errors 0
+wrote /data/compare/run-paradedb-pass2.json
+job.batch/run-paradedb-pass3 created
+paradedb-pass3 bm25                     warm-up: p50 29.505, 29.869 ms
+paradedb-pass3 bm25                     c=1         73 q/s  p50  16.169 ms  p90  18.071 ms  p99  20.226 ms  errors 0
+paradedb-pass3 bm25                     c=4        159 q/s  p50  29.479 ms  p90  39.525 ms  p99  48.341 ms  errors 0
+paradedb-pass3 bm25                     c=16       496 q/s  p50  24.387 ms  p90  70.348 ms  p99  98.611 ms  errors 0
+paradedb-pass3 bm25 + filter            warm-up: p50 35.267, 35.062 ms
+paradedb-pass3 bm25 + filter            c=1         63 q/s  p50  17.782 ms  p90  19.808 ms  p99  22.383 ms  errors 0
+paradedb-pass3 bm25 + filter            c=4        129 q/s  p50  34.425 ms  p90  46.684 ms  p99  55.562 ms  errors 0
+paradedb-pass3 bm25 + filter            c=16       305 q/s  p50  45.413 ms  p90  91.680 ms  p99 120.223 ms  errors 0
+paradedb-pass3 vector                   warm-up: p50 36.036, 37.127 ms
+paradedb-pass3 vector                   c=1         54 q/s  p50  18.325 ms  p90  20.558 ms  p99  24.298 ms  errors 0
+paradedb-pass3 vector                   c=4        109 q/s  p50  36.463 ms  p90  46.528 ms  p99  53.754 ms  errors 0
+paradedb-pass3 vector                   c=16       202 q/s  p50  78.221 ms  p90 108.019 ms  p99 154.148 ms  errors 0
+paradedb-pass3 vector + filter          warm-up: p50 66.565, 67.546 ms
+paradedb-pass3 vector + filter          c=1         35 q/s  p50  28.684 ms  p90  31.402 ms  p99  35.305 ms  errors 0
+paradedb-pass3 vector + filter          c=4         61 q/s  p50  66.198 ms  p90  79.505 ms  p99  90.519 ms  errors 0
+paradedb-pass3 vector + filter          c=16        90 q/s  p50 173.642 ms  p90 223.499 ms  p99 318.023 ms  errors 0
+paradedb-pass3 hybrid (RRF)             warm-up: p50 79.238, 79.775 ms
+paradedb-pass3 hybrid (RRF)             c=1         27 q/s  p50  39.599 ms  p90  43.257 ms  p99  46.767 ms  errors 0
+paradedb-pass3 hybrid (RRF)             c=4         49 q/s  p50  82.576 ms  p90 103.177 ms  p99 119.100 ms  errors 0
+paradedb-pass3 hybrid (RRF)             c=16        85 q/s  p50 183.160 ms  p90 246.906 ms  p99 300.718 ms  errors 0
+paradedb-pass3 hybrid (weighted)        warm-up: p50 82.967, 84.509 ms
+paradedb-pass3 hybrid (weighted)        c=1         26 q/s  p50  40.422 ms  p90  45.127 ms  p99  48.884 ms  errors 0
+paradedb-pass3 hybrid (weighted)        c=4         49 q/s  p50  82.105 ms  p90 103.588 ms  p99 120.204 ms  errors 0
+paradedb-pass3 hybrid (weighted)        c=16        82 q/s  p50 191.775 ms  p90 241.672 ms  p99 293.133 ms  errors 0
+paradedb-pass3 boosted (bm25 × decay)   warm-up: p50 1530.115, 1197.404, 1298.106 ms
+paradedb-pass3 boosted (bm25 × decay)   c=1          1 q/s  p50 699.840 ms  p90 1448.638 ms  p99 1484.624 ms  errors 0
+paradedb-pass3 boosted (bm25 × decay)   c=4          3 q/s  p50 1223.720 ms  p90 2307.077 ms  p99 2548.855 ms  errors 0
+paradedb-pass3 boosted (bm25 × decay)   c=16         3 q/s  p50 4645.371 ms  p90 6106.041 ms  p99 9072.750 ms  errors 0
+paradedb-pass3 facet                    warm-up: p50 4.236, 4.678, 4.842 ms
+paradedb-pass3 facet                    c=1        206 q/s  p50   4.124 ms  p90   6.591 ms  p99  16.197 ms  errors 0
+paradedb-pass3 facet                    c=4        816 q/s  p50   4.056 ms  p90   7.025 ms  p99  16.230 ms  errors 0
+paradedb-pass3 facet                    c=16       972 q/s  p50  13.424 ms  p90  29.686 ms  p99  67.891 ms  errors 0
+paradedb-pass3 key lookup               warm-up: p50 0.310, 0.348, 0.299, 0.352, 0.328 ms
+paradedb-pass3 key lookup               c=1       3507 q/s  p50   0.271 ms  p90   0.337 ms  p99   0.427 ms  errors 0
+paradedb-pass3 key lookup               c=4      12312 q/s  p50   0.307 ms  p90   0.403 ms  p99   0.483 ms  errors 0
+paradedb-pass3 key lookup               c=16     22513 q/s  p50   0.640 ms  p90   0.851 ms  p99   3.988 ms  errors 0
+paradedb-pass3 phrase                   warm-up: p50 3.732, 3.896 ms
+paradedb-pass3 phrase                   c=1        237 q/s  p50   3.639 ms  p90   6.075 ms  p99  10.927 ms  errors 0
+paradedb-pass3 phrase                   c=4        820 q/s  p50   4.152 ms  p90   7.403 ms  p99  16.536 ms  errors 0
+paradedb-pass3 phrase                   c=16      1062 q/s  p50  12.309 ms  p90  27.416 ms  p99  56.718 ms  errors 0
+paradedb-pass3 typo                     warm-up: p50 206.715, 196.058 ms
+paradedb-pass3 typo                     c=1         14 q/s  p50  69.247 ms  p90 100.885 ms  p99 120.415 ms  errors 0
+paradedb-pass3 typo                     c=4         18 q/s  p50 205.412 ms  p90 334.906 ms  p99 464.432 ms  errors 0
+paradedb-pass3 typo                     c=16        18 q/s  p50 733.555 ms  p90 1532.788 ms  p99 2739.813 ms  errors 0
+paradedb-pass3 prefix                   warm-up: p50 40.641, 39.302 ms
+paradedb-pass3 prefix                   c=1         55 q/s  p50  17.546 ms  p90  21.552 ms  p99  25.838 ms  errors 0
+paradedb-pass3 prefix                   c=4         98 q/s  p50  40.092 ms  p90  52.691 ms  p99  64.856 ms  errors 0
+paradedb-pass3 prefix                   c=16       197 q/s  p50  80.167 ms  p90 122.528 ms  p99 178.868 ms  errors 0
+paradedb-pass3 similar items            warm-up: p50 423.526, 424.032 ms
+paradedb-pass3 similar items            c=1          6 q/s  p50 149.556 ms  p90 167.995 ms  p99 194.336 ms  errors 0
+paradedb-pass3 similar items            c=4          8 q/s  p50 456.613 ms  p90 563.333 ms  p99 1037.932 ms  errors 0
+paradedb-pass3 similar items            c=16        10 q/s  p50 1331.966 ms  p90 2568.409 ms  p99 3043.134 ms  errors 0
+paradedb-pass3 sql aggregate            warm-up: p50 38.403, 39.939 ms
+paradedb-pass3 sql aggregate            c=1         24 q/s  p50  41.626 ms  p90  58.640 ms  p99  71.820 ms  errors 0
+paradedb-pass3 sql aggregate            c=4         83 q/s  p50  40.652 ms  p90  84.243 ms  p99 126.448 ms  errors 0
+paradedb-pass3 sql aggregate            c=16        86 q/s  p50 158.279 ms  p90 336.452 ms  p99 572.837 ms  errors 0
+wrote /data/compare/run-paradedb-pass3.json
+pod "paradedb-0" deleted from one-1m namespace
+service/typesense created
+pod/typesense-0 created
+pod/typesense-0 condition met
+job.batch/load-typesense created
+typesense: index created in 0.0 s
+typesense: 25000 documents sent, 24 s
+typesense: 50000 documents sent, 52 s
+typesense: 75000 documents sent, 84 s
+typesense: 100000 documents sent, 114 s
+typesense: 125000 documents sent, 144 s
+typesense: 150000 documents sent, 175 s
+typesense: 175000 documents sent, 208 s
+typesense: 200000 documents sent, 241 s
+typesense: 225000 documents sent, 269 s
+typesense: 250000 documents sent, 297 s
+typesense: 275000 documents sent, 327 s
+typesense: 300000 documents sent, 359 s
+typesense: 325000 documents sent, 393 s
+typesense: 350000 documents sent, 424 s
+typesense: 375000 documents sent, 455 s
+typesense: 400000 documents sent, 482 s
+typesense: 425000 documents sent, 512 s
+typesense: 450000 documents sent, 545 s
+typesense: 475000 documents sent, 578 s
+typesense: 500000 documents sent, 614 s
+typesense: 525000 documents sent, 648 s
+typesense: 550000 documents sent, 681 s
+typesense: 575000 documents sent, 713 s
+typesense: 600000 documents sent, 746 s
+typesense: 625000 documents sent, 778 s
+typesense: 650000 documents sent, 811 s
+typesense: 675000 documents sent, 844 s
+typesense: 700000 documents sent, 876 s
+typesense: 725000 documents sent, 910 s
+typesense: 750000 documents sent, 943 s
+typesense: 775000 documents sent, 977 s
+typesense: 800000 documents sent, 1011 s
+typesense: 825000 documents sent, 1046 s
+typesense: 850000 documents sent, 1080 s
+typesense: 875000 documents sent, 1116 s
+typesense: 900000 documents sent, 1150 s
+typesense: 925000 documents sent, 1188 s
+typesense: 950000 documents sent, 1222 s
+typesense: 975000 documents sent, 1258 s
+typesense: 1000000 documents sent, 1291 s
+typesense: 1000000 documents (10.8 GB) sent in 1291.3 s
+typesense: indexed 0.0 s after the last write; 1291.3 s in all
+wrote /data/compare/load-typesense.json
+job.batch/run-typesense created
+typesense bm25                     warm-up: p50 5.667, 5.722 ms
+typesense bm25                     c=1        140 q/s  p50   4.426 ms  p90  15.001 ms  p99  49.943 ms  errors 0
+typesense bm25                     c=4        445 q/s  p50   5.647 ms  p90  19.172 ms  p99  62.725 ms  errors 0
+typesense bm25                     c=16       654 q/s  p50  15.320 ms  p90  48.561 ms  p99 163.207 ms  errors 0
+typesense bm25 + filter            warm-up: p50 56.267, 57.010 ms
+typesense bm25 + filter            c=1         20 q/s  p50  48.706 ms  p90  54.938 ms  p99  94.357 ms  errors 0
+typesense bm25 + filter            c=4         66 q/s  p50  56.995 ms  p90  77.867 ms  p99 135.660 ms  errors 0
+typesense bm25 + filter            c=16        90 q/s  p50 178.262 ms  p90 230.555 ms  p99 342.705 ms  errors 0
+typesense vector                   warm-up: p50 5.370, 5.274 ms
+typesense vector                   c=1        224 q/s  p50   4.421 ms  p90   4.822 ms  p99   5.749 ms  errors 0
+typesense vector                   c=4        704 q/s  p50   5.403 ms  p90   7.305 ms  p99   9.749 ms  errors 0
+typesense vector                   c=16      1052 q/s  p50  13.923 ms  p90  24.946 ms  p99  34.729 ms  errors 0
+typesense vector + filter          warm-up: p50 31.102, 30.367 ms
+typesense vector + filter          c=1         38 q/s  p50  26.202 ms  p90  27.433 ms  p99  28.721 ms  errors 0
+typesense vector + filter          c=4        127 q/s  p50  30.162 ms  p90  38.962 ms  p99  43.443 ms  errors 0
+typesense vector + filter          c=16       175 q/s  p50  96.009 ms  p90 134.976 ms  p99 163.707 ms  errors 0
+typesense hybrid (RRF)             warm-up: p50 8.190, 8.107 ms
+typesense hybrid (RRF)             c=1        104 q/s  p50   6.418 ms  p90  17.496 ms  p99  53.105 ms  errors 0
+typesense hybrid (RRF)             c=4        331 q/s  p50   8.397 ms  p90  21.471 ms  p99  72.855 ms  errors 0
+typesense hybrid (RRF)             c=16       505 q/s  p50  22.376 ms  p90  56.399 ms  p99 172.099 ms  errors 0
+typesense hybrid (weighted)        warm-up: p50 8.109, 8.274 ms
+typesense hybrid (weighted)        c=1        105 q/s  p50   6.374 ms  p90  17.146 ms  p99  53.713 ms  errors 0
+typesense hybrid (weighted)        c=4        343 q/s  p50   8.192 ms  p90  20.499 ms  p99  65.575 ms  errors 0
+typesense hybrid (weighted)        c=16       501 q/s  p50  22.555 ms  p90  54.947 ms  p99 175.244 ms  errors 0
+typesense boosted (bm25 × decay)   unavailable: no function scores: decay functions only sort (before or after the text match), they do not multiply it
+typesense facet                    warm-up: p50 5.961, 6.180 ms
+typesense facet                    c=1         98 q/s  p50   3.870 ms  p90  22.508 ms  p99  98.886 ms  errors 0
+typesense facet                    c=4        269 q/s  p50   5.781 ms  p90  34.974 ms  p99 144.042 ms  errors 0
+typesense facet                    c=16       368 q/s  p50  23.490 ms  p90  95.412 ms  p99 331.892 ms  errors 0
+typesense key lookup               warm-up: p50 0.676, 0.676 ms
+typesense key lookup               c=1       1831 q/s  p50   0.523 ms  p90   0.636 ms  p99   0.860 ms  errors 0
+typesense key lookup               c=4       5615 q/s  p50   0.674 ms  p90   1.003 ms  p99   1.402 ms  errors 0
+typesense key lookup               c=16     11108 q/s  p50   1.348 ms  p90   2.079 ms  p99   2.888 ms  errors 0
+typesense phrase                   warm-up: p50 0.464, 0.473 ms
+typesense phrase                   c=1        491 q/s  p50   0.445 ms  p90   4.460 ms  p99  23.695 ms  errors 0
+typesense phrase                   c=4       1545 q/s  p50   0.464 ms  p90   6.377 ms  p99  29.830 ms  errors 0
+typesense phrase                   c=16      2645 q/s  p50   1.743 ms  p90  13.612 ms  p99  59.345 ms  errors 0
+typesense typo                     warm-up: p50 8.103, 8.166 ms
+typesense typo                     c=1         60 q/s  p50   6.021 ms  p90  51.376 ms  p99 135.693 ms  errors 0
+typesense typo                     c=4        187 q/s  p50   7.917 ms  p90  67.686 ms  p99 157.267 ms  errors 0
+typesense typo                     c=16       266 q/s  p50  27.001 ms  p90 144.399 ms  p99 498.419 ms  errors 0
+typesense prefix                   warm-up: p50 9.929, 9.942 ms
+typesense prefix                   c=1         84 q/s  p50   7.920 ms  p90  22.640 ms  p99  67.497 ms  errors 0
+typesense prefix                   c=4        267 q/s  p50  10.034 ms  p90  28.867 ms  p99  92.602 ms  errors 0
+typesense prefix                   c=16       385 q/s  p50  28.621 ms  p90  80.302 ms  p99 247.015 ms  errors 0
+typesense similar items            warm-up: p50 113.657, 114.740 ms
+typesense similar items            c=1         10 q/s  p50  99.867 ms  p90 103.846 ms  p99 107.733 ms  errors 0
+typesense similar items            c=4         34 q/s  p50 114.124 ms  p90 141.086 ms  p99 159.470 ms  errors 0
+typesense similar items            c=16        47 q/s  p50 353.304 ms  p90 503.175 ms  p99 567.607 ms  errors 0
+typesense sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats cover the whole result, not each group
+wrote /data/compare/run-typesense.json
+job.batch/run-typesense-pass2 created
+typesense-pass2 bm25                     warm-up: p50 5.782, 5.690 ms
+typesense-pass2 bm25                     c=1        141 q/s  p50   4.404 ms  p90  14.953 ms  p99  50.804 ms  errors 0
+typesense-pass2 bm25                     c=4        449 q/s  p50   5.594 ms  p90  18.983 ms  p99  62.101 ms  errors 0
+typesense-pass2 bm25                     c=16       670 q/s  p50  14.983 ms  p90  46.958 ms  p99 152.143 ms  errors 0
+typesense-pass2 bm25 + filter            warm-up: p50 54.832, 60.452, 56.131 ms
+typesense-pass2 bm25 + filter            c=1         20 q/s  p50  47.941 ms  p90  54.984 ms  p99  90.659 ms  errors 0
+typesense-pass2 bm25 + filter            c=4         67 q/s  p50  56.871 ms  p90  75.540 ms  p99 117.237 ms  errors 0
+typesense-pass2 bm25 + filter            c=16        91 q/s  p50 179.507 ms  p90 226.879 ms  p99 332.400 ms  errors 0
+typesense-pass2 vector                   warm-up: p50 5.337, 5.415 ms
+typesense-pass2 vector                   c=1        223 q/s  p50   4.462 ms  p90   4.808 ms  p99   5.519 ms  errors 0
+typesense-pass2 vector                   c=4        709 q/s  p50   5.342 ms  p90   7.281 ms  p99   9.659 ms  errors 0
+typesense-pass2 vector                   c=16      1039 q/s  p50  14.331 ms  p90  24.670 ms  p99  34.353 ms  errors 0
+typesense-pass2 vector + filter          warm-up: p50 31.578, 29.991 ms
+typesense-pass2 vector + filter          c=1         38 q/s  p50  26.307 ms  p90  28.141 ms  p99  29.804 ms  errors 0
+typesense-pass2 vector + filter          c=4        126 q/s  p50  30.712 ms  p90  39.243 ms  p99  45.099 ms  errors 0
+typesense-pass2 vector + filter          c=16       171 q/s  p50  98.814 ms  p90 117.368 ms  p99 137.146 ms  errors 0
+typesense-pass2 hybrid (RRF)             warm-up: p50 8.126, 8.257 ms
+typesense-pass2 hybrid (RRF)             c=1        104 q/s  p50   6.467 ms  p90  17.612 ms  p99  54.839 ms  errors 0
+typesense-pass2 hybrid (RRF)             c=4        343 q/s  p50   8.169 ms  p90  20.773 ms  p99  64.208 ms  errors 0
+typesense-pass2 hybrid (RRF)             c=16       497 q/s  p50  22.801 ms  p90  57.560 ms  p99 178.627 ms  errors 0
+typesense-pass2 hybrid (weighted)        warm-up: p50 8.135, 8.218 ms
+typesense-pass2 hybrid (weighted)        c=1        104 q/s  p50   6.433 ms  p90  17.055 ms  p99  52.990 ms  errors 0
+typesense-pass2 hybrid (weighted)        c=4        343 q/s  p50   8.200 ms  p90  20.568 ms  p99  66.652 ms  errors 0
+typesense-pass2 hybrid (weighted)        c=16       500 q/s  p50  22.964 ms  p90  57.127 ms  p99 162.253 ms  errors 0
+typesense-pass2 boosted (bm25 × decay)   unavailable: no function scores: decay functions only sort (before or after the text match), they do not multiply it
+typesense-pass2 facet                    warm-up: p50 5.705, 6.019 ms
+typesense-pass2 facet                    c=1         98 q/s  p50   3.855 ms  p90  22.876 ms  p99  96.171 ms  errors 0
+typesense-pass2 facet                    c=4        268 q/s  p50   6.054 ms  p90  34.972 ms  p99 134.397 ms  errors 0
+typesense-pass2 facet                    c=16       369 q/s  p50  24.080 ms  p90  90.928 ms  p99 333.694 ms  errors 0
+typesense-pass2 key lookup               warm-up: p50 0.673, 0.674 ms
+typesense-pass2 key lookup               c=1       1851 q/s  p50   0.519 ms  p90   0.622 ms  p99   0.804 ms  errors 0
+typesense-pass2 key lookup               c=4       5636 q/s  p50   0.671 ms  p90   0.994 ms  p99   1.405 ms  errors 0
+typesense-pass2 key lookup               c=16     11186 q/s  p50   1.335 ms  p90   2.071 ms  p99   2.832 ms  errors 0
+typesense-pass2 phrase                   warm-up: p50 0.471, 0.463 ms
+typesense-pass2 phrase                   c=1        477 q/s  p50   0.467 ms  p90   4.607 ms  p99  23.365 ms  errors 0
+typesense-pass2 phrase                   c=4       1569 q/s  p50   0.458 ms  p90   6.218 ms  p99  29.999 ms  errors 0
+typesense-pass2 phrase                   c=16      2665 q/s  p50   1.603 ms  p90  13.710 ms  p99  62.033 ms  errors 0
+typesense-pass2 typo                     warm-up: p50 7.939, 8.149 ms
+typesense-pass2 typo                     c=1         60 q/s  p50   6.121 ms  p90  53.053 ms  p99 128.794 ms  errors 0
+typesense-pass2 typo                     c=4        189 q/s  p50   7.914 ms  p90  64.875 ms  p99 168.493 ms  errors 0
+typesense-pass2 typo                     c=16       263 q/s  p50  26.717 ms  p90 175.084 ms  p99 429.714 ms  errors 0
+typesense-pass2 prefix                   warm-up: p50 9.982, 9.880 ms
+typesense-pass2 prefix                   c=1         84 q/s  p50   7.939 ms  p90  22.291 ms  p99  71.905 ms  errors 0
+typesense-pass2 prefix                   c=4        269 q/s  p50   9.923 ms  p90  28.939 ms  p99  86.350 ms  errors 0
+typesense-pass2 prefix                   c=16       392 q/s  p50  26.961 ms  p90  80.361 ms  p99 230.993 ms  errors 0
+typesense-pass2 similar items            warm-up: p50 112.261, 109.467 ms
+typesense-pass2 similar items            c=1         10 q/s  p50  99.020 ms  p90 103.826 ms  p99 106.331 ms  errors 0
+typesense-pass2 similar items            c=4         34 q/s  p50 109.792 ms  p90 139.378 ms  p99 158.677 ms  errors 0
+typesense-pass2 similar items            c=16        47 q/s  p50 362.093 ms  p90 409.480 ms  p99 459.720 ms  errors 0
+typesense-pass2 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats cover the whole result, not each group
+wrote /data/compare/run-typesense-pass2.json
+job.batch/run-typesense-pass3 created
+typesense-pass3 bm25                     warm-up: p50 5.455, 5.596 ms
+typesense-pass3 bm25                     c=1        140 q/s  p50   4.458 ms  p90  15.021 ms  p99  50.536 ms  errors 0
+typesense-pass3 bm25                     c=4        445 q/s  p50   5.640 ms  p90  19.348 ms  p99  65.827 ms  errors 0
+typesense-pass3 bm25                     c=16       673 q/s  p50  14.921 ms  p90  46.214 ms  p99 172.746 ms  errors 0
+typesense-pass3 bm25 + filter            warm-up: p50 59.141, 54.669 ms
+typesense-pass3 bm25 + filter            c=1         20 q/s  p50  47.958 ms  p90  54.129 ms  p99  89.009 ms  errors 0
+typesense-pass3 bm25 + filter            c=4         65 q/s  p50  58.913 ms  p90  77.343 ms  p99 108.475 ms  errors 0
+typesense-pass3 bm25 + filter            c=16        92 q/s  p50 174.748 ms  p90 224.949 ms  p99 324.313 ms  errors 0
+typesense-pass3 vector                   warm-up: p50 5.218, 5.411 ms
+typesense-pass3 vector                   c=1        225 q/s  p50   4.425 ms  p90   4.753 ms  p99   5.365 ms  errors 0
+typesense-pass3 vector                   c=4        706 q/s  p50   5.373 ms  p90   7.275 ms  p99   9.777 ms  errors 0
+typesense-pass3 vector                   c=16      1045 q/s  p50  14.251 ms  p90  24.751 ms  p99  33.492 ms  errors 0
+typesense-pass3 vector + filter          warm-up: p50 33.093, 30.982 ms
+typesense-pass3 vector + filter          c=1         38 q/s  p50  26.258 ms  p90  27.838 ms  p99  30.123 ms  errors 0
+typesense-pass3 vector + filter          c=4        126 q/s  p50  30.374 ms  p90  39.197 ms  p99  45.010 ms  errors 0
+typesense-pass3 vector + filter          c=16       172 q/s  p50  98.702 ms  p90 114.486 ms  p99 132.519 ms  errors 0
+typesense-pass3 hybrid (RRF)             warm-up: p50 8.110, 8.101 ms
+typesense-pass3 hybrid (RRF)             c=1        106 q/s  p50   6.323 ms  p90  17.259 ms  p99  52.210 ms  errors 0
+typesense-pass3 hybrid (RRF)             c=4        343 q/s  p50   8.093 ms  p90  20.831 ms  p99  66.800 ms  errors 0
+typesense-pass3 hybrid (RRF)             c=16       505 q/s  p50  22.352 ms  p90  54.688 ms  p99 176.396 ms  errors 0
+typesense-pass3 hybrid (weighted)        warm-up: p50 8.013, 8.286 ms
+typesense-pass3 hybrid (weighted)        c=1        104 q/s  p50   6.415 ms  p90  17.364 ms  p99  53.208 ms  errors 0
+typesense-pass3 hybrid (weighted)        c=4        343 q/s  p50   8.315 ms  p90  20.528 ms  p99  68.044 ms  errors 0
+typesense-pass3 hybrid (weighted)        c=16       502 q/s  p50  22.747 ms  p90  55.204 ms  p99 172.400 ms  errors 0
+typesense-pass3 boosted (bm25 × decay)   unavailable: no function scores: decay functions only sort (before or after the text match), they do not multiply it
+typesense-pass3 facet                    warm-up: p50 5.851, 5.886 ms
+typesense-pass3 facet                    c=1         99 q/s  p50   3.780 ms  p90  22.608 ms  p99  97.965 ms  errors 0
+typesense-pass3 facet                    c=4        267 q/s  p50   6.104 ms  p90  34.913 ms  p99 137.626 ms  errors 0
+typesense-pass3 facet                    c=16       371 q/s  p50  24.063 ms  p90  92.475 ms  p99 329.241 ms  errors 0
+typesense-pass3 key lookup               warm-up: p50 0.679, 0.674 ms
+typesense-pass3 key lookup               c=1       1842 q/s  p50   0.519 ms  p90   0.638 ms  p99   0.800 ms  errors 0
+typesense-pass3 key lookup               c=4       5602 q/s  p50   0.675 ms  p90   0.998 ms  p99   1.415 ms  errors 0
+typesense-pass3 key lookup               c=16     11185 q/s  p50   1.337 ms  p90   2.073 ms  p99   2.828 ms  errors 0
+typesense-pass3 phrase                   warm-up: p50 0.462, 0.459 ms
+typesense-pass3 phrase                   c=1        484 q/s  p50   0.461 ms  p90   4.643 ms  p99  23.484 ms  errors 0
+typesense-pass3 phrase                   c=4       1555 q/s  p50   0.466 ms  p90   6.217 ms  p99  30.344 ms  errors 0
+typesense-pass3 phrase                   c=16      2636 q/s  p50   1.630 ms  p90  13.918 ms  p99  60.503 ms  errors 0
+typesense-pass3 typo                     warm-up: p50 8.115, 8.325 ms
+typesense-pass3 typo                     c=1         60 q/s  p50   6.022 ms  p90  50.731 ms  p99 133.403 ms  errors 0
+typesense-pass3 typo                     c=4        192 q/s  p50   7.946 ms  p90  63.764 ms  p99 151.244 ms  errors 0
+typesense-pass3 typo                     c=16       261 q/s  p50  26.762 ms  p90 175.866 ms  p99 444.504 ms  errors 0
+typesense-pass3 prefix                   warm-up: p50 9.948, 9.966 ms
+typesense-pass3 prefix                   c=1         84 q/s  p50   7.899 ms  p90  22.336 ms  p99  72.392 ms  errors 0
+typesense-pass3 prefix                   c=4        271 q/s  p50   9.944 ms  p90  28.821 ms  p99  84.875 ms  errors 0
+typesense-pass3 prefix                   c=16       392 q/s  p50  28.096 ms  p90  77.596 ms  p99 249.340 ms  errors 0
+typesense-pass3 similar items            warm-up: p50 112.248, 113.968 ms
+typesense-pass3 similar items            c=1         10 q/s  p50 100.136 ms  p90 103.728 ms  p99 105.903 ms  errors 0
+typesense-pass3 similar items            c=4         35 q/s  p50 112.157 ms  p90 136.061 ms  p99 147.716 ms  errors 0
+typesense-pass3 similar items            c=16        47 q/s  p50 351.900 ms  p90 521.912 ms  p99 605.230 ms  errors 0
+typesense-pass3 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats cover the whole result, not each group
+wrote /data/compare/run-typesense-pass3.json
+pod "typesense-0" deleted from one-1m namespace
+configmap/milvus-config created
+service/milvus created
+pod/milvus-0 created
+pod/milvus-0 condition met
+job.batch/load-milvus created
+milvus: index created in 0.1 s
+milvus: 25000 documents sent, 5 s
+milvus: 50000 documents sent, 9 s
+milvus: 75000 documents sent, 15 s
+milvus: 100000 documents sent, 22 s
+milvus: 125000 documents sent, 30 s
+milvus: 150000 documents sent, 37 s
+milvus: 175000 documents sent, 45 s
+milvus: 200000 documents sent, 53 s
+milvus: 225000 documents sent, 59 s
+milvus: 250000 documents sent, 66 s
+milvus: 275000 documents sent, 73 s
+milvus: 300000 documents sent, 78 s
+milvus: 325000 documents sent, 86 s
+milvus: 350000 documents sent, 92 s
+milvus: 375000 documents sent, 98 s
+milvus: 400000 documents sent, 106 s
+milvus: 425000 documents sent, 113 s
+milvus: 450000 documents sent, 120 s
+milvus: 475000 documents sent, 129 s
+milvus: 500000 documents sent, 136 s
+milvus: 525000 documents sent, 144 s
+milvus: 550000 documents sent, 151 s
+milvus: 575000 documents sent, 158 s
+milvus: 600000 documents sent, 164 s
+milvus: 625000 documents sent, 170 s
+milvus: 650000 documents sent, 176 s
+milvus: 675000 documents sent, 181 s
+milvus: 700000 documents sent, 187 s
+milvus: 725000 documents sent, 192 s
+milvus: 750000 documents sent, 198 s
+milvus: 775000 documents sent, 203 s
+milvus: 800000 documents sent, 209 s
+milvus: 825000 documents sent, 215 s
+milvus: 850000 documents sent, 221 s
+milvus: 875000 documents sent, 226 s
+milvus: 900000 documents sent, 231 s
+milvus: 925000 documents sent, 236 s
+milvus: 950000 documents sent, 243 s
+milvus: 975000 documents sent, 251 s
+milvus: 1000000 documents sent, 257 s
+milvus: 1000000 documents (10.8 GB) sent in 257.1 s
+milvus: flush_s in 1.5 s
+milvus: index_s in 161.9 s
+milvus: load_s in 0.0 s
+milvus: indexed 163.4 s after the last write; 420.5 s in all
+wrote /data/compare/load-milvus.json
+job.batch/run-milvus created
+milvus    bm25                     warm-up: p50 12.429, 12.822 ms
+milvus    bm25                     c=1        165 q/s  p50   5.065 ms  p90   7.838 ms  p99  24.985 ms  errors 0
+milvus    bm25                     c=4        290 q/s  p50  12.652 ms  p90  19.738 ms  p99  35.654 ms  errors 0
+milvus    bm25                     c=16       300 q/s  p50  51.943 ms  p90  70.185 ms  p99  93.133 ms  errors 0
+milvus    bm25 + filter            warm-up: p50 20.114, 23.804, 23.430 ms
+milvus    bm25 + filter            c=1        114 q/s  p50   8.523 ms  p90  10.580 ms  p99  14.700 ms  errors 0
+milvus    bm25 + filter            c=4        193 q/s  p50  19.984 ms  p90  28.183 ms  p99  41.097 ms  errors 0
+milvus    bm25 + filter            c=16       260 q/s  p50  59.679 ms  p90  76.935 ms  p99  94.535 ms  errors 0
+milvus    vector                   warm-up: p50 26.085, 26.569 ms
+milvus    vector                   c=1        109 q/s  p50   8.970 ms  p90  10.355 ms  p99  13.520 ms  errors 0
+milvus    vector                   c=4        153 q/s  p50  25.797 ms  p90  34.038 ms  p99  43.797 ms  errors 0
+milvus    vector                   c=16       162 q/s  p50  97.494 ms  p90 111.636 ms  p99 129.067 ms  errors 0
+milvus    vector + filter          warm-up: p50 40.085, 39.355 ms
+milvus    vector + filter          c=1         77 q/s  p50  12.798 ms  p90  14.680 ms  p99  18.113 ms  errors 0
+milvus    vector + filter          c=4         95 q/s  p50  42.086 ms  p90  46.915 ms  p99  58.908 ms  errors 0
+milvus    vector + filter          c=16       107 q/s  p50 148.982 ms  p90 160.137 ms  p99 173.584 ms  errors 0
+milvus    hybrid (RRF)             warm-up: p50 97.601, 83.628, 71.798, 68.914 ms
+milvus    hybrid (RRF)             c=1         37 q/s  p50  21.609 ms  p90  35.277 ms  p99 166.282 ms  errors 0
+milvus    hybrid (RRF)             c=4         38 q/s  p50  97.549 ms  p90 133.909 ms  p99 210.143 ms  errors 0
+milvus    hybrid (RRF)             c=16        56 q/s  p50 279.273 ms  p90 313.334 ms  p99 341.649 ms  errors 0
+milvus    hybrid (weighted)        warm-up: p50 80.533, 84.061 ms
+milvus    hybrid (weighted)        c=1         40 q/s  p50  24.614 ms  p90  27.985 ms  p99  33.599 ms  errors 0
+milvus    hybrid (weighted)        c=4         46 q/s  p50  86.496 ms  p90  96.573 ms  p99 103.793 ms  errors 0
+milvus    hybrid (weighted)        c=16        57 q/s  p50 282.175 ms  p90 297.367 ms  p99 310.759 ms  errors 0
+milvus    boosted (bm25 × decay)   warm-up: p50 12.529, 11.180, 12.973, 13.814 ms
+milvus    boosted (bm25 × decay)   c=1        127 q/s  p50   7.140 ms  p90   9.888 ms  p99  21.469 ms  errors 0
+milvus    boosted (bm25 × decay)   c=4        241 q/s  p50  15.698 ms  p90  23.339 ms  p99  32.366 ms  errors 0
+milvus    boosted (bm25 × decay)   c=16       322 q/s  p50  48.078 ms  p90  66.010 ms  p99  87.135 ms  errors 0
+milvus    facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus    key lookup               warm-up: p50 1.742, 1.671 ms
+milvus    key lookup               c=1        693 q/s  p50   1.421 ms  p90   1.787 ms  p99   2.283 ms  errors 0
+milvus    key lookup               c=4       2332 q/s  p50   1.606 ms  p90   2.239 ms  p99   3.275 ms  errors 0
+milvus    key lookup               c=16      3723 q/s  p50   3.947 ms  p90   6.328 ms  p99  10.485 ms  errors 0
+milvus    phrase                   warm-up: p50 8.089, 7.849 ms
+milvus    phrase                   c=1        216 q/s  p50   4.467 ms  p90   5.748 ms  p99   8.033 ms  errors 0
+milvus    phrase                   c=4        478 q/s  p50   7.946 ms  p90  11.433 ms  p99  16.878 ms  errors 0
+milvus    phrase                   c=16       529 q/s  p50  29.428 ms  p90  39.598 ms  p99  52.338 ms  errors 0
+milvus    typo                     unavailable: no fuzzy matching
+milvus    prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus    similar items            warm-up: p50 26.322, 25.214 ms
+milvus    similar items            c=1        124 q/s  p50   7.507 ms  p90   8.878 ms  p99  18.942 ms  errors 0
+milvus    similar items            c=4        201 q/s  p50  18.337 ms  p90  26.095 ms  p99  55.790 ms  errors 0
+milvus    similar items            c=16       170 q/s  p50  80.750 ms  p90 115.435 ms  p99 423.104 ms  errors 0
+milvus    sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus.json
+job.batch/run-milvus-pass2 created
+milvus-pass2 bm25                     warm-up: p50 8.736, 8.391 ms
+milvus-pass2 bm25                     c=1        203 q/s  p50   4.668 ms  p90   6.094 ms  p99   9.301 ms  errors 0
+milvus-pass2 bm25                     c=4        390 q/s  p50   9.459 ms  p90  15.496 ms  p99  23.174 ms  errors 0
+milvus-pass2 bm25                     c=16       490 q/s  p50  32.044 ms  p90  43.818 ms  p99  60.875 ms  errors 0
+milvus-pass2 bm25 + filter            warm-up: p50 15.783, 12.937, 11.973 ms
+milvus-pass2 bm25 + filter            c=1        150 q/s  p50   6.419 ms  p90   7.970 ms  p99  10.232 ms  errors 0
+milvus-pass2 bm25 + filter            c=4        265 q/s  p50  14.580 ms  p90  20.432 ms  p99  27.745 ms  errors 0
+milvus-pass2 bm25 + filter            c=16       446 q/s  p50  34.853 ms  p90  45.977 ms  p99  63.463 ms  errors 0
+milvus-pass2 vector                   warm-up: p50 16.812, 17.123 ms
+milvus-pass2 vector                   c=1        164 q/s  p50   5.657 ms  p90   7.470 ms  p99  13.085 ms  errors 0
+milvus-pass2 vector                   c=4        257 q/s  p50  12.588 ms  p90  20.496 ms  p99  81.460 ms  errors 0
+milvus-pass2 vector                   c=16       274 q/s  p50  53.005 ms  p90  78.713 ms  p99 145.057 ms  errors 0
+milvus-pass2 vector + filter          warm-up: p50 17.535, 20.498, 19.296 ms
+milvus-pass2 vector + filter          c=1        110 q/s  p50   8.884 ms  p90  10.279 ms  p99  13.190 ms  errors 0
+milvus-pass2 vector + filter          c=4        196 q/s  p50  19.885 ms  p90  26.849 ms  p99  33.754 ms  errors 0
+milvus-pass2 vector + filter          c=16       209 q/s  p50  75.259 ms  p90  85.709 ms  p99 108.073 ms  errors 0
+milvus-pass2 hybrid (RRF)             warm-up: p50 46.013, 52.858, 51.609 ms
+milvus-pass2 hybrid (RRF)             c=1         61 q/s  p50  15.997 ms  p90  18.511 ms  p99  22.106 ms  errors 0
+milvus-pass2 hybrid (RRF)             c=4         82 q/s  p50  49.024 ms  p90  58.503 ms  p99  67.875 ms  errors 0
+milvus-pass2 hybrid (RRF)             c=16       105 q/s  p50 151.627 ms  p90 166.883 ms  p99 174.207 ms  errors 0
+milvus-pass2 hybrid (weighted)        warm-up: p50 51.457, 50.327 ms
+milvus-pass2 hybrid (weighted)        c=1         59 q/s  p50  16.659 ms  p90  20.015 ms  p99  25.428 ms  errors 0
+milvus-pass2 hybrid (weighted)        c=4         74 q/s  p50  53.383 ms  p90  64.248 ms  p99  85.245 ms  errors 0
+milvus-pass2 hybrid (weighted)        c=16        91 q/s  p50 176.446 ms  p90 193.004 ms  p99 221.915 ms  errors 0
+milvus-pass2 boosted (bm25 × decay)   warm-up: p50 9.076, 8.280 ms
+milvus-pass2 boosted (bm25 × decay)   c=1        201 q/s  p50   4.478 ms  p90   6.130 ms  p99  16.971 ms  errors 0
+milvus-pass2 boosted (bm25 × decay)   c=4        466 q/s  p50   7.805 ms  p90  11.581 ms  p99  22.329 ms  errors 0
+milvus-pass2 boosted (bm25 × decay)   c=16       512 q/s  p50  28.288 ms  p90  44.574 ms  p99  86.839 ms  errors 0
+milvus-pass2 facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus-pass2 key lookup               warm-up: p50 1.365, 1.587, 1.672 ms
+milvus-pass2 key lookup               c=1        717 q/s  p50   1.206 ms  p90   1.757 ms  p99   2.848 ms  errors 0
+milvus-pass2 key lookup               c=4       3078 q/s  p50   1.238 ms  p90   1.597 ms  p99   2.288 ms  errors 0
+milvus-pass2 key lookup               c=16      5136 q/s  p50   2.933 ms  p90   4.310 ms  p99   6.819 ms  errors 0
+milvus-pass2 phrase                   warm-up: p50 3.180, 3.195 ms
+milvus-pass2 phrase                   c=1        471 q/s  p50   2.068 ms  p90   2.631 ms  p99   3.306 ms  errors 0
+milvus-pass2 phrase                   c=4       1201 q/s  p50   3.184 ms  p90   4.478 ms  p99   6.289 ms  errors 0
+milvus-pass2 phrase                   c=16      1490 q/s  p50  10.328 ms  p90  14.429 ms  p99  20.777 ms  errors 0
+milvus-pass2 typo                     unavailable: no fuzzy matching
+milvus-pass2 prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus-pass2 similar items            warm-up: p50 6.881, 6.924 ms
+milvus-pass2 similar items            c=1        262 q/s  p50   3.713 ms  p90   4.274 ms  p99   5.647 ms  errors 0
+milvus-pass2 similar items            c=4        569 q/s  p50   6.765 ms  p90   8.831 ms  p99  12.307 ms  errors 0
+milvus-pass2 similar items            c=16       655 q/s  p50  23.702 ms  p90  29.678 ms  p99  39.423 ms  errors 0
+milvus-pass2 sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus-pass2.json
+job.batch/run-milvus-pass3 created
+milvus-pass3 bm25                     warm-up: p50 3.456, 3.422 ms
+milvus-pass3 bm25                     c=1        437 q/s  p50   2.134 ms  p90   2.936 ms  p99   4.287 ms  errors 0
+milvus-pass3 bm25                     c=4       1089 q/s  p50   3.418 ms  p90   5.107 ms  p99   7.564 ms  errors 0
+milvus-pass3 bm25                     c=16      1554 q/s  p50   9.858 ms  p90  14.442 ms  p99  19.975 ms  errors 0
+milvus-pass3 bm25 + filter            warm-up: p50 5.977, 5.968 ms
+milvus-pass3 bm25 + filter            c=1        298 q/s  p50   3.269 ms  p90   3.891 ms  p99   4.911 ms  errors 0
+milvus-pass3 bm25 + filter            c=4        638 q/s  p50   6.048 ms  p90   8.142 ms  p99  10.955 ms  errors 0
+milvus-pass3 bm25 + filter            c=16       931 q/s  p50  16.640 ms  p90  22.734 ms  p99  30.225 ms  errors 0
+milvus-pass3 vector                   warm-up: p50 4.936, 4.981 ms
+milvus-pass3 vector                   c=1        335 q/s  p50   2.912 ms  p90   3.335 ms  p99   4.444 ms  errors 0
+milvus-pass3 vector                   c=4        783 q/s  p50   4.894 ms  p90   6.445 ms  p99   9.051 ms  errors 0
+milvus-pass3 vector                   c=16      1045 q/s  p50  14.525 ms  p90  20.824 ms  p99  29.661 ms  errors 0
+milvus-pass3 vector + filter          warm-up: p50 7.012, 6.973 ms
+milvus-pass3 vector + filter          c=1        264 q/s  p50   3.708 ms  p90   4.216 ms  p99   5.350 ms  errors 0
+milvus-pass3 vector + filter          c=4        545 q/s  p50   7.071 ms  p90   9.300 ms  p99  12.610 ms  errors 0
+milvus-pass3 vector + filter          c=16       695 q/s  p50  22.162 ms  p90  29.842 ms  p99  40.504 ms  errors 0
+milvus-pass3 hybrid (RRF)             warm-up: p50 14.928, 14.882 ms
+milvus-pass3 hybrid (RRF)             c=1        145 q/s  p50   6.724 ms  p90   7.826 ms  p99  10.258 ms  errors 0
+milvus-pass3 hybrid (RRF)             c=4        261 q/s  p50  14.910 ms  p90  19.474 ms  p99  23.644 ms  errors 0
+milvus-pass3 hybrid (RRF)             c=16       297 q/s  p50  53.193 ms  p90  63.406 ms  p99  77.633 ms  errors 0
+milvus-pass3 hybrid (weighted)        warm-up: p50 14.924, 14.857 ms
+milvus-pass3 hybrid (weighted)        c=1        144 q/s  p50   6.808 ms  p90   7.934 ms  p99   9.641 ms  errors 0
+milvus-pass3 hybrid (weighted)        c=4        261 q/s  p50  14.767 ms  p90  19.581 ms  p99  25.896 ms  errors 0
+milvus-pass3 hybrid (weighted)        c=16       295 q/s  p50  53.135 ms  p90  63.420 ms  p99  79.855 ms  errors 0
+milvus-pass3 boosted (bm25 × decay)   warm-up: p50 5.147, 5.091 ms
+milvus-pass3 boosted (bm25 × decay)   c=1        300 q/s  p50   3.141 ms  p90   4.125 ms  p99   6.193 ms  errors 0
+milvus-pass3 boosted (bm25 × decay)   c=4        735 q/s  p50   5.143 ms  p90   7.401 ms  p99  10.702 ms  errors 0
+milvus-pass3 boosted (bm25 × decay)   c=16       981 q/s  p50  15.574 ms  p90  22.427 ms  p99  32.612 ms  errors 0
+milvus-pass3 facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus-pass3 key lookup               warm-up: p50 1.225, 1.208 ms
+milvus-pass3 key lookup               c=1        977 q/s  p50   0.999 ms  p90   1.144 ms  p99   1.441 ms  errors 0
+milvus-pass3 key lookup               c=4       3188 q/s  p50   1.208 ms  p90   1.520 ms  p99   2.034 ms  errors 0
+milvus-pass3 key lookup               c=16      5167 q/s  p50   2.925 ms  p90   4.240 ms  p99   6.646 ms  errors 0
+milvus-pass3 phrase                   warm-up: p50 3.158, 3.140 ms
+milvus-pass3 phrase                   c=1        470 q/s  p50   2.072 ms  p90   2.641 ms  p99   3.479 ms  errors 0
+milvus-pass3 phrase                   c=4       1223 q/s  p50   3.137 ms  p90   4.403 ms  p99   6.014 ms  errors 0
+milvus-pass3 phrase                   c=16      1493 q/s  p50  10.332 ms  p90  14.368 ms  p99  20.442 ms  errors 0
+milvus-pass3 typo                     unavailable: no fuzzy matching
+milvus-pass3 prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus-pass3 similar items            warm-up: p50 6.845, 6.889 ms
+milvus-pass3 similar items            c=1        264 q/s  p50   3.691 ms  p90   4.220 ms  p99   5.207 ms  errors 0
+milvus-pass3 similar items            c=4        563 q/s  p50   6.819 ms  p90   8.987 ms  p99  11.964 ms  errors 0
+milvus-pass3 similar items            c=16       648 q/s  p50  23.915 ms  p90  30.229 ms  p99  39.695 ms  errors 0
+milvus-pass3 sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus-pass3.json
+pod "milvus-0" deleted from one-1m namespace

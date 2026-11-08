@@ -162,6 +162,98 @@ def test_numpy_values(db):
     assert db.query("SELECT year FROM books WHERE id = 'n'").scalar() == 2001
 
 
+def test_numpy_vectors_are_read_from_their_bytes(tmp_path):
+    np = pytest.importorskip("numpy")
+    schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": 4}]}
+    m = np.arange(24, dtype=np.float64).reshape(4, 6) / 10
+    rows = {
+        "f4": np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
+        "f8": np.array([0.1, 0.2, 0.3, 0.4]),
+        "list": [0.1, 0.2, 0.3, 0.4],
+        # A strided view, a big-endian array and integers: copied in C order,
+        # or read through tolist().
+        "view": m[:, 1],
+        "be": np.array([1, 2, 3, 4], dtype=">f4"),
+        "int": np.array([1, 0, 0, 1], dtype=np.int32),
+    }
+    with strata.open(tmp_path / "n.strata", schema) as db:
+        db.insert([{"id": k, "emb": v} for k, v in rows.items()])
+        emb = lambda k: db.query("SELECT emb FROM t WHERE id = :k", k=k).scalar()  # noqa: E731
+        for k, v in rows.items():
+            assert emb(k) == [float(np.float32(x)) for x in np.asarray(v, dtype=np.float64)], k
+        with pytest.raises(strata.StrataError):
+            db.insert({"id": "short", "emb": np.zeros(3, dtype=np.float32)})
+        with pytest.raises(strata.StrataError):
+            db.insert({"id": "nan", "emb": np.array([0.0, np.nan, 0.0, 1.0], dtype=np.float32)})
+        db.upsert([{"id": "f4", "emb": np.ones(4, dtype=np.float32)}])
+        assert emb("f4") == [1.0] * 4
+        assert db.query("SELECT id FROM t ORDER BY similarity(emb, :v) DESC LIMIT 1", v=np.array([0, 0, 0, 1.0])).keys == ["be"]
+
+
+def test_inserts_gather_in_memory_until_a_segment_fills(tmp_path):
+    # Inserts below 10,000 rows go to the memtable, which flushes into a
+    # segment once it fills; optimize() writes the rest out.
+    schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}, {"name": "body", "type": "text"}]}
+    path = tmp_path / "g.strata"
+    with strata.open(path, schema) as db:
+        for b in range(13):
+            db.insert([{"id": f"r{b}-{i}", "n": b, "body": f"batch {b} row {i}"} for i in range(1_000)])
+            assert len(db) == 1_000 * (b + 1)
+        assert db.query("SELECT count(*) FROM t WHERE n = 12").scalar() == 1_000
+        db.optimize()
+        assert db.query("SELECT count(*) FROM t WHERE MATCH(body, 'batch')").scalar() == 13_000
+        db.insert([{"id": f"big{i}", "n": -1, "body": "bulk"} for i in range(10_000)])
+    with strata.open(path) as db:
+        assert len(db) == 23_000 and db.get("r12-999")["n"] == 12 and db.get("big9999")["n"] == -1
+
+
+def test_optimize_leaves_one_segment_and_a_compact_file(tmp_path):
+    # Several bulk segments and two tables merge into one segment each;
+    # deleted rows are dropped and the file shrinks to about its live data.
+    schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "body", "type": "text"}]}
+    path = tmp_path / "o.strata"
+    with strata.open(path, schema) as db:
+        db.sql("CREATE TABLE u (id KEYWORD PRIMARY KEY, n INT)")
+        for b in range(4):
+            db.insert([{"id": f"r{b}-{i}", "body": f"batch {b} row {i} " * 4} for i in range(10_000)])
+            db.insert([{"id": f"u{b}-{i}", "n": i} for i in range(10_000)], table="u")
+        db.sql("DELETE FROM t WHERE id LIKE 'r2-%' OR id LIKE 'r3-%'")
+        before = path.stat().st_size
+        db.optimize()
+        after = path.stat().st_size
+        assert after < before
+        assert db.vacuum() == 0
+        assert len(db) == 20_000 and db.query("SELECT count(*) FROM u").scalar() == 40_000
+        plan = db.query("SELECT id FROM t WHERE MATCH(body, 'batch') ORDER BY bm25(body, 'batch') DESC LIMIT 1").stats
+        assert all(s.get("seg", 0) == 0 for s in plan.get("steps", []))
+    with strata.open(path) as db:
+        assert len(db) == 20_000 and db.get("r1-9999") is not None and db.get("r3-0") is None
+
+
+def test_a_table_rewritten_crawl_after_crawl_closes_near_its_size(tmp_path):
+    # A price tracker's writes: each crawl adds a snapshot of every item and
+    # rewrites every listing whole. Segments merge in the background as the
+    # crawls add them, and close() gives back the space merges freed: the
+    # file it leaves is about what optimize() makes of it, and it opens
+    # again at once.
+    schema = {"table": "listings", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}, {"name": "total", "type": "float"}]}
+    path = tmp_path / "c.strata"
+    crawls, items = 60, 1_000
+    with strata.open(path, schema) as db:
+        db.sql("CREATE TABLE snapshots (item KEYWORD NOT NULL, ts TIMESTAMP NOT NULL, total FLOAT) OPTIONS(cluster_by = 'item')")
+        for c in range(crawls):
+            ts = f"2026-09-{1 + c // 6:02d}T{c % 6 * 4:02d}:00:00Z"
+            db.insert([{"item": f"v{i}", "ts": ts, "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)], table="snapshots")
+            db.upsert([{"id": f"v{i}", "title": f"vintage camera lens {i}, boxed and tested", "status": "ACTIVE", "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)])
+    closed = path.stat().st_size
+    with strata.open(path) as db:
+        assert len(db) == items and db.query("SELECT count(*) FROM snapshots").scalar() == crawls * items
+        assert db.get("v7")["total"] == (7 * 31 + (crawls - 1) * 7) % 500 + 0.5
+        db.optimize()
+        optimized = path.stat().st_size
+    assert closed < optimized * 3 // 2, (closed, optimized)
+
+
 def test_search(db):
     text = db.search("dragon", mode="text", limit=5)
     assert len(text) == 5 and all("dragon" in (r["title"] + r["description"]) for r in text)
@@ -220,6 +312,33 @@ def test_threads_and_close(tmp_path, db):
     assert db.closed and "closed" in repr(db)
     with pytest.raises(strata.StrataError, match="closed"):
         db.query("SELECT id FROM books")
+
+
+def test_threads_write_at_once(tmp_path):
+    # Threads that write at once wait for each other and share commits;
+    # none fails as busy, and no increment is lost.
+    schema = {"table": "c", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}]}
+    with strata.Database.create(tmp_path / "w.strata", schema) as db:
+        db.insert([{"id": f"k{k}", "n": 0} for k in range(4)])
+        errors = []
+
+        def work(t):
+            try:
+                for i in range(50):
+                    db.insert({"id": f"t{t}-{i}", "n": 0})
+                    db.write([{"op": "add", "key": f"k{i % 4}", "field": "n", "value": 1}])
+                    assert db.sql("UPDATE c SET n = n + 1 WHERE id = :k", k="k0") == 1
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=work, args=(t,)) for t in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, errors
+        assert len(db) == 4 + 8 * 50
+        assert db.sql("SELECT SUM(n) FROM c").scalar() == 2 * 8 * 50
 
 
 TASKS = {

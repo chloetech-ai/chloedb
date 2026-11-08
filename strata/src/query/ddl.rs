@@ -372,9 +372,9 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     let bad = |m: String| err(format!("column {name}: {m}"));
     let (ty, multi, dim) = column_type(ty).map_err(bad)?;
     let allowed: &[&str] = match ty {
-        "text" => &["positions", "stored", "indexed", "from", "analyzer", "derive", "model"],
+        "text" => &["positions", "stored", "indexed", "from", "analyzer", "derive", "model", "prompt"],
         "vector" if multi => &["indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "embed", "model"],
-        "vector" => &["stored", "indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "embed", "model"],
+        "vector" => &["stored", "indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "embed", "model", "partition_by", "partition_bounds"],
         "media" => &["stored", "indexed", "kind"],
         "keyword" if multi => &["stored", "indexed", "semantic_id", "codebook"],
         "json" => &["stored", "indexed", "text", "analyzer"],
@@ -384,7 +384,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
         return Err(bad("semantic_id and codebook are options of a KEYWORD[] column".into()));
     }
     if let Some(k) = opts.keys().find(|k| !allowed.contains(&k.as_str())) {
-        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive", "text"];
+        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive", "prompt", "text", "partition_by", "partition_bounds"];
         return Err(bad(if known.contains(&k.as_str()) {
             format!("{k} is not an option of a {} column (its options: {})", ty.to_uppercase(), allowed.join(", "))
         } else {
@@ -432,19 +432,39 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     if nlist.is_some() && kind.as_deref() != Some("ivf") {
         return Err(bad("nlist is an option of index = 'ivf'".into()));
     }
+    let prompt = opts.remove("prompt");
     match (opts.remove("embed"), opts.remove("derive"), opts.remove("model")) {
-        (None, None, None) => {}
-        (Some(from), None, Some(model)) if model.is_string() => {
+        (None, None, None) if prompt.is_none() => {}
+        (Some(from), None, Some(model)) if model.is_string() && prompt.is_none() => {
             f.insert("embed".into(), json!({"from": names(&from).map_err(|m| bad(format!("embed {m}")))?, "model": model}));
         }
-        (None, Some(J::String(from)), Some(model)) if model.is_string() => {
-            f.insert("derive".into(), json!({"from": from, "model": model}));
+        (None, Some(J::String(from)), Some(model)) if model.is_string() && prompt.as_ref().is_none_or(J::is_string) => {
+            let mut d = json!({"from": from, "model": model});
+            if let Some(p) = prompt {
+                d["prompt"] = p;
+            }
+            f.insert("derive".into(), d);
         }
-        _ if ty == "text" => return Err(bad("a derived text takes derive = 'media column' and model = 'name'".into())),
+        _ if ty == "text" => return Err(bad("a derived text takes derive = 'media column' and model = 'name', or derive = 'text column', a language model and prompt = 'what to make of it'".into())),
         _ => return Err(bad("an embedded vector takes embed = 'fields' and model = 'name'".into())),
     }
     if let Some(from) = opts.remove("from") {
         f.insert("from".into(), json!(names(&from).map_err(|m| bad(format!("from {m}")))?));
+    }
+    match (opts.remove("partition_by"), opts.remove("partition_bounds")) {
+        (None, None) => {}
+        (Some(J::String(by)), bounds) => {
+            let bounds: Vec<f64> = match bounds {
+                None => Vec::new(),
+                Some(J::String(b)) => b.split(',').map(|x| x.trim().parse::<f64>().map_err(|_| bad(format!("partition_bounds: {x:?} is not a number")))).collect::<Result<_>>()?,
+                Some(J::Array(xs)) => xs.iter().map(|x| x.as_f64().ok_or_else(|| bad(format!("partition_bounds: {x} is not a number")))).collect::<Result<_>>()?,
+                Some(J::Number(n)) => vec![n.as_f64().unwrap_or(f64::NAN)],
+                Some(other) => return Err(bad(format!("partition_bounds lists numbers, such as '1, 2, 3, 4', not {other}"))),
+            };
+            f.insert("partition".into(), json!({"by": by, "bounds": bounds}));
+        }
+        (Some(_), _) => return Err(bad("partition_by names a column, such as 'rating'".into())),
+        (None, Some(_)) => return Err(bad("partition_bounds goes with partition_by".into())),
     }
     match (opts.remove("semantic_id"), opts.remove("codebook")) {
         (None, None) => {}
@@ -605,6 +625,33 @@ pub fn create_sql(s: &Schema) -> String {
     format!("CREATE TABLE {} (\n  {}\n){opts};", name_sql(&s.table), columns.join(",\n  "))
 }
 
+/// The `ALTER TABLE` statement that changes table `was` into `now`, the
+/// same table after `ADD`, `DROP` and `RENAME COLUMN` (fields matched by
+/// their ids, [`crate::schema::Field::id`]): its drops, then its renames,
+/// then its additions. `None` when no column changed.
+pub fn alter_sql(was: &Schema, now: &Schema) -> Option<String> {
+    let j = now.to_short_json();
+    let key = j.get("key").and_then(J::as_str);
+    let mut parts = Vec::new();
+    for f in &was.fields {
+        if !now.fields.iter().any(|n| n.id == f.id) {
+            parts.push(format!("DROP COLUMN {}", name_sql(&f.name)));
+        }
+    }
+    for f in &was.fields {
+        if let Some(n) = now.fields.iter().find(|n| n.id == f.id && n.name != f.name) {
+            parts.push(format!("RENAME COLUMN {} TO {}", name_sql(&f.name), name_sql(&n.name)));
+        }
+    }
+    for n in &now.fields {
+        if !was.fields.iter().any(|f| f.id == n.id) {
+            let short = j["fields"].as_array().into_iter().flatten().find(|f| f["name"].as_str() == Some(n.name.as_str()))?;
+            parts.push(format!("ADD COLUMN {}", column_sql(short, key)));
+        }
+    }
+    (!parts.is_empty()).then(|| format!("ALTER TABLE {} {};", name_sql(&was.table), parts.join(", ")))
+}
+
 /// A field of the short JSON form as a column of `CREATE TABLE`.
 fn column_sql(f: &J, key: Option<&str>) -> String {
     let name = f["name"].as_str().unwrap_or_default();
@@ -644,10 +691,21 @@ fn column_sql(f: &J, key: Option<&str>) -> String {
             ("embed" | "derive", J::Object(o)) => {
                 opts.push(format!("{k} = {}", list_sql(&o["from"])));
                 opts.push(format!("model = {}", value_sql(&o["model"])));
+                if let Some(p) = o.get("prompt").filter(|p| p.as_str().is_some_and(|p| !p.is_empty())) {
+                    opts.push(format!("prompt = {}", value_sql(p)));
+                }
             }
             ("semantic_id", J::Object(o)) => {
                 opts.push(format!("semantic_id = {}", value_sql(&o["from"])));
                 opts.push(format!("codebook = {}", value_sql(&o["codebook"])));
+            }
+            ("partition", J::Object(o)) => {
+                opts.push(format!("partition_by = {}", value_sql(&o["by"])));
+                if let Some(b) = o.get("bounds").and_then(J::as_array).filter(|b| !b.is_empty()) {
+                    // f64's Display writes 4 for 4.0, as the option was likely written.
+                    let list: Vec<String> = b.iter().map(|x| x.as_f64().map_or_else(|| x.to_string(), |f| f.to_string())).collect();
+                    opts.push(format!("partition_bounds = {}", lit(&list.join(", "))));
+                }
             }
             ("from", v) => opts.push(format!("from = {}", list_sql(v))),
             (k, v) => opts.push(format!("{k} = {}", value_sql(v))),
@@ -753,6 +811,9 @@ mod tests {
             "CREATE TABLE cooc (id KEYWORD PRIMARY KEY, src KEYWORD NOT NULL REFERENCES papers, dst KEYWORD NOT NULL REFERENCES papers, w FLOAT DEFAULT 0) OPTIONS(edges = 'src, dst, w')",
             "CREATE TABLE \"select\" (\"order\" INT PRIMARY KEY, \"doc no\" KEYWORD, \"say \"\"hi\"\"\" TEXT, \"Mixed\" FLOAT, name TEXT, \"a,b\" TEXT, c TEXT OPTIONS(from = ARRAY['a,b', 'name']))",
             "CREATE TABLE log (line TEXT)",
+            "CREATE TABLE items (id KEYWORD PRIMARY KEY, rating FLOAT, n INT, cat KEYWORD,
+               emb VECTOR(8) OPTIONS(partition_by = 'rating', partition_bounds = '1, 2.5, 4'), e2 VECTOR(8) OPTIONS(m = 8, partition_by = 'cat'),
+               e3 VECTOR(8) OPTIONS(partition_by = 'n', partition_bounds = ARRAY[10, 20]))",
         ] {
             let (s, _) = create(text, &[&p]).unwrap();
             let sql = create_sql(&s);
@@ -764,6 +825,44 @@ mod tests {
         // A column a line, defaults left out, names quoted only where needed.
         let (s, _) = create("CREATE TABLE \"order\" (id KEYWORD PRIMARY KEY, name TEXT, \"from\" INT NOT NULL)", &[]).unwrap();
         assert_eq!(create_sql(&s), "CREATE TABLE \"order\" (\n  id KEYWORD PRIMARY KEY,\n  name TEXT,\n  \"from\" INT NOT NULL\n);");
+    }
+
+    #[test]
+    fn alter_sql_changes_a_table_into_another() {
+        let alter = |s: &Schema, text: &str| -> Schema {
+            let stmts = parse(text).unwrap();
+            let (_, changes) = alter_table(&stmts[0], &[s]).unwrap_or_else(|e| panic!("{text}: {e}")).unwrap();
+            changes.iter().fold(s.clone(), |t, a| t.altered(a).unwrap())
+        };
+        let (was, _) = create("CREATE TABLE t (id KEYWORD PRIMARY KEY, a TEXT, b INT, c FLOAT)", &[]).unwrap();
+        assert_eq!(alter_sql(&was, &was), None);
+        for change in [
+            "ALTER TABLE t ADD COLUMN d KEYWORD NOT NULL DEFAULT 'x'",
+            "ALTER TABLE t DROP COLUMN b",
+            "ALTER TABLE t RENAME COLUMN a TO body",
+            "ALTER TABLE t DROP COLUMN c, RENAME COLUMN a TO c, ADD COLUMN v VECTOR(4) OPTIONS(index = 'flat'), ADD a INT",
+        ] {
+            let now = alter(&was, change);
+            let sql = alter_sql(&was, &now).unwrap();
+            assert_eq!(alter(&was, &sql), now, "{change} as {sql}");
+        }
+    }
+
+    #[test]
+    fn partition_options_are_checked() {
+        let bad = |cols: &str| match create(&format!("CREATE TABLE t (id KEYWORD PRIMARY KEY, rating FLOAT, cat KEYWORD, tags KEYWORD[], {cols})"), &[]) {
+            Ok(_) => panic!("{cols}: expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'rating')").contains("needs partition_bounds"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'cat', partition_bounds = '1')").contains("without partition_bounds"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'rating', partition_bounds = '2, 1')").contains("increase"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'rating', partition_bounds = 'x')").contains("not a number"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'nope')").contains("names no column"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'tags')").contains("single-valued"));
+        assert!(bad("emb VECTOR(8) OPTIONS(index = 'ivf', nlist = 4, partition_by = 'cat')").contains("index = 'hnsw'"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_bounds = '1')").contains("goes with partition_by"));
+        assert!(bad("emb VECTOR(8)[] OPTIONS(partition_by = 'cat')").contains("not an option"));
     }
 
     #[test]
@@ -812,10 +911,10 @@ mod tests {
     fn derived_text_names_its_file_and_model() {
         let (s, _) = create("CREATE TABLE photos (id KEYWORD PRIMARY KEY, image MEDIA OPTIONS(kind = 'image'), caption TEXT OPTIONS(derive = 'image', model = 'blip-image-captioning-base'), emb VECTOR(8) OPTIONS(embed = 'caption', model = 'hash:8'))", &[]).unwrap();
         let f = s.field("caption").unwrap();
-        assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into() }));
+        assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into(), prompt: String::new() }));
         assert!(f.stored && matches!(f.ty, FieldType::Text { .. }));
         assert_eq!(s.derives_from(2), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys"]);
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "caption", "type": "text", "derive": {"from": "image", "model": "blip-image-captioning-base"}}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
@@ -841,7 +940,7 @@ mod tests {
         assert_eq!((f("image").media, f("any_file").media, f("scan").media), (Some(MediaKind::Image), Some(MediaKind::Any), Some(MediaKind::Pdf)));
         assert!(f("image").ty == FieldType::Keyword && f("image").stored && f("image").indexed && !f("scan").indexed);
         assert_eq!(f("image").type_name(), "MEDIA");
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "media", "media"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "media", "media", "compact_keys"]);
         assert_eq!(s.to_short_json()["fields"][1], serde_json::json!({"name": "image", "type": "media", "kind": "image"}));
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "any_file", "type": "media"}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
@@ -868,7 +967,7 @@ mod tests {
         let (s, _) = create("CREATE TABLE events (id INT PRIMARY KEY, usr KEYWORD NOT NULL, ts INT) OPTIONS(shard_by = 'USR')", &[]).unwrap();
         assert_eq!(s.shard_by.as_deref(), Some("usr"));
         assert_eq!(s.shard_by_field(), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["not_null", "shard_by"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["not_null", "shard_by", "compact_keys"]);
         assert_eq!(s.to_short_json()["shard_by"], "usr");
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);

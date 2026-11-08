@@ -1,0 +1,58 @@
+05:01:50 one-1m: waiting for its nodes
+05:02:53 one-1m: nodes one-1m-d-a1-3e2yd3 one-1m-d-a1-3e2yd3 and one-1m-c-a1-3e2yd7
+05:04:47 one-1m: step 1: compare.sh up qdrant
+05:04:54 one-1m: step 2: compare.sh load qdrant
+06:10:19 one-1m: step 3: compare.sh run qdrant
+06:15:20 one-1m: step 4: compare.sh run qdrant --label qdrant-pass2
+06:20:16 one-1m: step 5: compare.sh run qdrant --label qdrant-pass3
+06:25:13 one-1m: step 6: compare.sh down qdrant
+06:25:15 one-1m: step 7: compare.sh up meili
+06:25:23 one-1m: step 8: compare.sh load meili
+06:52:32 one-1m: step 9: compare.sh run meili
+06:57:59 one-1m: step 10: compare.sh run meili --label meili-pass2
+07:03:25 one-1m: step 11: compare.sh run meili --label meili-pass3
+07:08:52 one-1m: step 12: compare.sh down meili
+07:08:55 one-1m: step 13: compare.sh up postgres
+07:09:14 one-1m: step 14: compare.sh load postgres
+07:29:38 one-1m: step 15: compare.sh run postgres
+07:46:30 one-1m: step 16: compare.sh run postgres --label postgres-pass2
+08:03:21 one-1m: step 17: compare.sh run postgres --label postgres-pass3
+08:19:54 one-1m: step 18: compare.sh down postgres
+08:19:58 one-1m: step 19: compare.sh up redis
+08:20:03 one-1m: step 20: compare.sh load redis
+08:26:40 one-1m: step 21: compare.sh run redis
+08:46:58 one-1m: step 22: compare.sh run redis --label redis-pass2
+09:07:19 one-1m: step 23: compare.sh run redis --label redis-pass3
+09:27:36 one-1m: step 24: compare.sh down redis
+09:27:37 one-1m: step 25: compare.sh up weaviate
+09:27:44 one-1m: step 26: compare.sh load weaviate
+09:36:58 one-1m: step 27: compare.sh run weaviate
+09:53:27 one-1m: step 28: compare.sh run weaviate --label weaviate-pass2
+10:09:41 one-1m: step 29: compare.sh run weaviate --label weaviate-pass3
+10:26:02 one-1m: step 30: compare.sh down weaviate
+10:26:05 one-1m: step 31: compare.sh up manticore
+10:26:16 one-1m: step 32: compare.sh load manticore
+10:57:32 one-1m: step 33: compare.sh run manticore
+11:04:04 one-1m: step 34: compare.sh run manticore --label manticore-pass2
+11:10:45 one-1m: step 35: compare.sh run manticore --label manticore-pass3
+11:17:07 one-1m: step 36: compare.sh down manticore
+11:17:10 one-1m: step 37: compare.sh up paradedb
+11:17:14 one-1m: step 38: compare.sh load paradedb
+11:20:49 one-1m: step 39: compare.sh run paradedb
+11:35:33 one-1m: step 40: compare.sh run paradedb --label paradedb-pass2
+11:50:29 one-1m: step 41: compare.sh run paradedb --label paradedb-pass3
+12:05:25 one-1m: step 42: compare.sh down paradedb
+12:05:29 one-1m: step 43: compare.sh up typesense
+12:05:47 one-1m: step 44: compare.sh load typesense
+12:27:35 one-1m: step 45: compare.sh run typesense
+12:33:55 one-1m: step 46: compare.sh run typesense --label typesense-pass2
+12:40:18 one-1m: step 47: compare.sh run typesense --label typesense-pass3
+12:46:37 one-1m: step 48: compare.sh down typesense
+12:46:42 one-1m: step 49: compare.sh up milvus
+12:46:58 one-1m: step 50: compare.sh load milvus
+12:54:14 one-1m: step 51: compare.sh run milvus
+12:59:19 one-1m: step 52: compare.sh run milvus --label milvus-pass2
+13:04:10 one-1m: step 53: compare.sh run milvus --label milvus-pass3
+13:08:36 one-1m: step 54: compare.sh down milvus
+13:08:47 one-1m: reports fetched (45 files)
+13:08:49 one-1m: done after 29219 s

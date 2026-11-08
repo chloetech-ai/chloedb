@@ -1,0 +1,23 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "docs": 1000000,
+  "engine": "milvus",
+  "engine_stats": {
+    "rowCount": 1000000
+  },
+  "ingest_s": 234.749414186,
+  "merge_s": 273.739795288,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 10752673541,
+  "searchable_docs": 1000000,
+  "setup_s": 0.041453292,
+  "steps": {
+    "flush_s": 1.506473985,
+    "index_s": 272.229899874,
+    "load_s": 0.003356972
+  },
+  "total_s": 508.48923072
+}

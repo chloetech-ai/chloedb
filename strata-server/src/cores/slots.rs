@@ -346,7 +346,8 @@ enum Stage {
 /// [`CHANGE_TRIES`] times at most. A map the coordinator gave in a change
 /// that failed, which a server may hold though none said so
 /// ([`Change::in_doubt`]), is given again first, and the change made from
-/// it once a server takes it.
+/// it once a server takes it; the coordinator then routes by it, whatever
+/// comes of that change ([`Change::redone`]).
 #[derive(Clone, Debug)]
 pub struct Change {
     first: Vec<String>,
@@ -367,7 +368,7 @@ pub struct Change {
     doubt: Option<SlotMap>,
     /// Whether `next` is the map in doubt, given again.
     redoing: bool,
-    /// The map in doubt, once a server took it.
+    /// The map in doubt, once a server took it ([`Self::redone`]).
     base: Option<SlotMap>,
     /// Makes the next change from the map synced to although a server may
     /// hold a newer one the coordinator gave, as the server did before the
@@ -382,6 +383,11 @@ pub struct Change {
     /// with the others, as the server did before the simulator found that
     /// the map then forks ([`crate::sim::cluster::Bug::ChangesAroundTheSource`]).
     pub skips_source: bool,
+    /// Forgets the map in doubt that a server took when given again, once
+    /// the change made from it fails, as the server did before the
+    /// simulator found that the next change then forks the map
+    /// ([`crate::sim::cluster::Bug::ForgetsAMapGivenAgain`]).
+    pub forgets_redone: bool,
 }
 
 impl Change {
@@ -408,6 +414,7 @@ impl Change {
             forgets_doubt: false,
             keeps_untaken: false,
             skips_source: false,
+            forgets_redone: false,
         };
         (c, ChangeStep::Sync)
     }
@@ -423,6 +430,18 @@ impl Change {
     /// learned of).
     pub fn in_doubt(&self) -> Option<SlotMap> {
         self.doubt.clone().filter(|_| !self.forgets_doubt)
+    }
+
+    /// The map in doubt, given again and taken by a server: it is made,
+    /// whatever comes of the change then made from it, and once the change
+    /// ends the coordinator routes by it (unless by a newer one), as by
+    /// any change made. Forgotten when the change made from it fails (`f`
+    /// refuses the map, no server takes the next one, another change came
+    /// first), the next change would be made from the map before, at the
+    /// epoch the server holds: a fork of the map, if that server does not
+    /// answer the sync.
+    pub fn redone(&self) -> Option<&SlotMap> {
+        self.base.as_ref().filter(|_| !self.forgets_redone)
     }
 
     /// The newest epoch a server said it holds at the sync just made: the
@@ -670,7 +689,7 @@ impl Edit {
         match self {
             Edit::Start { slots, to } => m.start_move(slots, *to),
             Edit::Flip(mv) => match moving(mv) {
-                Some(x) if x.state == MoveState::Copying => m.flip_move(),
+                Some(x) if x.state == MoveState::Copying => m.flip_move_with(mv.offsets.clone()),
                 _ => Err("the move changed while its rows were copied".into()),
             },
             Edit::Abort(mv) => match moving(mv) {
@@ -1225,6 +1244,47 @@ mod tests {
         let ChangeStep::Give { map: y, .. } = c.synced(Some(&m1), &g, &no_source) else { panic!() };
         assert_eq!(y.epoch, x.epoch);
         assert_eq!(take(Some((&x, 0)), 1, &y, 0).unwrap_err().status, 409);
+    }
+
+    #[test]
+    fn a_map_given_again_and_taken_is_made_though_the_change_made_from_it_fails() {
+        let m1 = map(2);
+        let f = |m: &SlotMap| m.start_move(&[0], 1);
+        let g = |m: &SlotMap| m.set_servers(1, vec!["s1".into()]);
+        let none = |_: &SlotMap| Err::<SlotMap, String>("no shard is empty".into());
+        let (mut c, _) = Change::new(&[], None);
+        let ChangeStep::Give { map: x, .. } = c.synced(Some(&m1), &f, &no_source) else { panic!() };
+        c.answered("s0", Given::Missed("no answer".into()));
+        let Some(ChangeStep::Done(Err(_))) = c.answered("s1", Given::Missed("no answer".into())) else { panic!() };
+        let doubt = c.in_doubt();
+        assert!(doubt.is_some() && c.redone().is_none());
+        // Given again, s1 takes it (s0 still does not answer), and the map
+        // asked for cannot be made from it: the map given again is made.
+        let (mut c, _) = Change::new(&[], doubt.clone());
+        let ChangeStep::Give { map, .. } = c.synced(Some(&m1), &none, &no_source) else { panic!() };
+        assert_eq!(map, x);
+        assert!(c.answered("s0", Given::Missed("no answer".into())).is_none());
+        let Some(ChangeStep::Sync) = c.answered("s1", Given::Took) else { panic!() };
+        let ChangeStep::Done(Err(e)) = c.synced(Some(&m1), &none, &no_source) else { panic!() };
+        assert!(e.status == 400 && c.redone() == Some(&x) && c.in_doubt().is_none(), "{e:?}");
+        // Or the map made from it reaches no server: still made.
+        let (mut c, _) = Change::new(&[], doubt.clone());
+        c.synced(Some(&m1), &g, &no_source);
+        c.answered("s0", Given::Took);
+        c.answered("s1", Given::Took);
+        let ChangeStep::Give { map: y, .. } = c.synced(Some(&m1), &g, &no_source) else { panic!() };
+        assert_eq!(y, g(&x).unwrap());
+        c.answered("s0", Given::Refused("no".into()));
+        let Some(ChangeStep::Done(Err(_))) = c.answered("s1", Given::Refused("no".into())) else { panic!() };
+        assert!(c.redone() == Some(&x) && c.in_doubt().is_none());
+        // As the server made it before: forgotten, so that the next change
+        // is made from the map before, at the epoch s1 holds.
+        c.forgets_redone = true;
+        assert!(c.redone().is_none());
+        let (mut c, _) = Change::new(&[], c.in_doubt());
+        let ChangeStep::Give { map: z, .. } = c.synced(Some(&m1), &g, &no_source) else { panic!() };
+        assert_eq!(z.epoch, x.epoch);
+        assert_eq!(take(Some((&x, 1)), 1, &z, 1).unwrap_err().status, 409);
     }
 
     #[test]

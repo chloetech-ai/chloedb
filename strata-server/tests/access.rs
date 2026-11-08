@@ -36,7 +36,7 @@ async fn listen() -> (TcpListener, String) {
 /// Sends `method path body` with `auth` as the bearer credential; the
 /// status and the answer.
 async fn call(base: &str, method: &str, path: &str, auth: Option<&str>, body: Option<Json>) -> (u16, Json) {
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let mut r = match method {
         "GET" => c.get(format!("{base}{path}")),
         "DELETE" => c.delete(format!("{base}{path}")),
@@ -97,20 +97,31 @@ async fn keys_have_scopes_and_the_audit_log_keeps_what_they_did() {
     assert_eq!(call(&base, "POST", "/v1/profile/heap", w, Some(json!({"seconds": 0.1}))).await.0, 403);
     // The token may do it all; a table's statement is audited.
     assert_eq!(call(&base, "POST", "/v1/sql", root, Some(create)).await.0, 200);
+    // A profile's entry says of which server, at what rate, for how long
+    // (taken or not: 501 where the system cannot sample).
+    let sql = "SELECT id FROM products LIMIT 1";
+    assert!([200, 501].contains(&call(&base, "POST", "/v1/profile/cpu", root, Some(json!({"seconds": 0.2, "hz": 199, "sql": sql, "clients": 2}))).await.0));
+    assert!([200, 501].contains(&call(&base, "POST", "/v1/profile/heap", root, Some(json!({"seconds": 0.2}))).await.0));
 
     let (status, audit) = call(&base, "GET", "/v1/admin/audit", root, None).await;
     assert_eq!(status, 200);
     let entries = audit["entries"].as_array().unwrap();
     let find = |who: &str, route: &str, status: u64| entries.iter().any(|e| e["who"] == who && e["route"] == route && e["status"] == status);
-    assert!(find("token", "/v1/sql", 200), "{audit}");
+    assert!(find("root token", "/v1/sql", 200), "{audit}");
     assert!(entries.iter().any(|e| e["detail"].as_str().is_some_and(|d| d.starts_with("CREATE TABLE notes"))), "{audit}");
     assert!(find("dashboards", "/v1/admin/vacuum", 403), "{audit}");
     assert!(find("dashboards", "/v1/sql", 403), "{audit}");
     assert!(find("ingest", "/v1/admin/keys", 403), "{audit}");
     assert!(find("unknown", "/v1/query", 401), "{audit}");
-    assert!(find("token", "/v1/admin/keys", 200), "{audit}");
+    assert!(find("root token", "/v1/admin/keys", 200), "{audit}");
     // Plain reads and writes are not audited.
     assert!(!entries.iter().any(|e| e["route"] == "/v1/query" && e["status"] == 200), "{audit}");
+    let cpu = entries.iter().find(|e| e["route"] == "/v1/profile/cpu" && e["who"] == "root token").expect("the CPU profile is audited");
+    assert_eq!(cpu["detail"], "a CPU profile of this server: 0.2 s at 199 Hz, of a query run in a loop by 2 callers", "{cpu}");
+    assert_eq!(cpu["object"], "CPU profile of this server", "{cpu}");
+    assert_eq!(cpu["after"], json!({"node": "this server", "seconds": 0.2, "hz": 199, "sql": sql, "clients": 2}), "{cpu}");
+    let heap = entries.iter().find(|e| e["route"] == "/v1/profile/heap" && e["who"] == "root token").expect("the allocation profile is audited");
+    assert_eq!(heap["detail"], format!("an allocation profile of this server: 0.2 s at a sample every {} bytes", 2 << 20), "{heap}");
 
     // The keys, without secrets; revoked, a key is refused.
     let (_, keys) = call(&base, "GET", "/v1/admin/keys", root, None).await;
@@ -248,7 +259,7 @@ async fn a_request_s_statements_and_options_need_their_scope_over_http_and_grpc(
     let import = |auth: &str, q: &str| {
         let (base, bytes, auth, q) = (base.clone(), bytes.clone(), auth.to_string(), q.to_string());
         async move {
-            let r = reqwest::Client::new().post(format!("{base}/v1/import?format=sqlite{q}")).bearer_auth(auth).header("content-type", "application/vnd.sqlite3").body(bytes).send().await.unwrap();
+            let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/import?format=sqlite{q}")).bearer_auth(auth).header("content-type", "application/vnd.sqlite3").body(bytes).send().await.unwrap();
             (r.status().as_u16(), r.json::<Json>().await.unwrap())
         }
     };
@@ -321,13 +332,52 @@ async fn an_open_server_s_first_key_closes_it() {
     assert_eq!(call(&base, "GET", "/v1/stats", None, None).await.0, 401);
     assert_eq!(call(&base, "GET", "/v1/stats", Some(&admin), None).await.0, 200);
     // The UI and health stay open.
-    assert_eq!(reqwest::get(format!("{base}/v1/health")).await.unwrap().status(), 200);
+    assert_eq!(strata_server::http_client().build().unwrap().get(format!("{base}/v1/health")).send().await.unwrap().status(), 200);
     // Its last admin key cannot be revoked: no one could manage it.
     let id = j["key"]["id"].as_str().unwrap();
     assert_eq!(call(&base, "DELETE", &format!("/v1/admin/keys/{id}"), Some(&admin), None).await.0, 409);
     // The keys file keeps it.
     let again = Keys::open(dir.path().join("a.strata.keys.json")).unwrap();
     assert!(again.resolve(None, None, Some(&format!("Bearer {admin}"))).is_some());
+}
+
+/// A follow process's header and its status reports take the cluster's
+/// token: an admin key may read where a follower is, stop it and promote
+/// it (as the hub does), not write as its follow process nor report as it.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_token_writes_as_a_follow_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let (l, base) = listen().await;
+    let access = Access { token: Some(Secret::new("root-token")), ..Default::default() };
+    tokio::spawn(server::serve_http(svc.clone(), l, access));
+    let admin = new_key(&base, Some("root-token"), "ops", "admin").await;
+    let write = |auth: &str, follow: &str| {
+        let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/write")).bearer_auth(auth).header("x-strata-follow", follow);
+        async move {
+            let r = r.json(&json!({"ops": [{"op": "upsert", "table": "products", "doc": {"id": "f-1", "title": "A lamp", "price": 1.0}}]})).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap_or(Json::Null))
+        }
+    };
+    let (status, j) = write(&admin, "east").await;
+    assert_eq!(status, 403, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("x-strata-follow"), "{j}");
+    let (status, j) = write("root-token", "not a name!").await;
+    assert_eq!(status, 400, "{j}");
+    let (status, j) = write("root-token", "east").await;
+    assert_eq!(status, 200, "{j}");
+    // Reading where it is, stopping and promoting take an admin key;
+    // telling how the follow process stands, the token.
+    assert_eq!(call(&base, "GET", "/v1/admin/follow", Some(&admin), None).await.0, 200);
+    assert_eq!(call(&base, "POST", "/v1/admin/follow/status", Some(&admin), Some(json!({"name": "east"}))).await.0, 403);
+    let reader = new_key(&base, Some("root-token"), "look", "read").await;
+    for path in ["/v1/admin/follow/stop", "/v1/admin/follow/promote"] {
+        assert_eq!(call(&base, "POST", path, Some(&reader), Some(json!({"name": "east"}))).await.0, 403, "{path}");
+        for auth in [admin.as_str(), "root-token"] {
+            let (status, j) = call(&base, "POST", path, Some(auth), Some(json!({"name": "east"}))).await;
+            assert_eq!(status, 404, "{path}: it never followed east: {j}");
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -357,23 +407,23 @@ async fn alert_rules_fire_on_points_and_post_to_the_webhook() {
 
     let (_, a) = call(&base, "GET", "/v1/alerts", None, None).await;
     assert!(a["rules"].as_array().unwrap().iter().any(|r| r["id"] == "failing"), "{a}");
-    let rule = Rule { id: "rows".into(), name: "Many rows".into(), metric: "docs".into(), op: ">".into(), threshold: 10.0, for_s: 0, severity: "critical".into(), enabled: true, description: String::new() };
+    let rule: Rule = serde_json::from_value(json!({"id": "rows", "name": "Many rows", "metric": "docs", "op": ">", "threshold": 10.0, "severity": "critical", "eval": "max", "window_s": 1})).unwrap();
     let (status, j) = call(&base, "PUT", "/v1/alerts/rules", None, Some(json!({"rules": [rule]}))).await;
     assert_eq!(status, 200, "{j}");
     assert_eq!(call(&base, "PUT", "/v1/alerts/rules", None, Some(json!({"rules": [{"id": "x", "name": "x", "metric": "docs", "op": "~", "threshold": 1}]}))).await.0, 400);
 
     svc.series.add(svc.sample());
     let p = svc.series.add(svc.sample()).unwrap();
-    let changes = svc.alerts.check(&p);
+    let changes = svc.alerts.check(&svc.series.since(0), p["t"].as_u64().unwrap());
     assert_eq!(changes.len(), 1);
     svc.alerts.notify(&changes).await;
     let (_, a) = call(&base, "GET", "/v1/alerts", None, None).await;
-    assert_eq!(a["firing"][0]["id"], "rows", "{a}");
+    assert_eq!((a["firing"].as_u64(), a["states"][0]["rule"].as_str()), (Some(1), Some("rows")), "{a}");
     assert_eq!(a["events"][0]["state"], "firing");
     let sent = got.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
     assert!(sent[0]["text"].as_str().unwrap().contains("Many rows"), "{sent:?}");
-    let metrics = reqwest::get(format!("{base}/metrics")).await.unwrap().text().await.unwrap();
+    let metrics = strata_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(metrics.contains("strata_alerts_firing{severity=\"critical\"} 1"), "{metrics}");
     // Kept in the file.
     assert_eq!(Alerts::new(Some(dir.path().join("alerts.json")), None).unwrap().rules()[0].id, "rows");

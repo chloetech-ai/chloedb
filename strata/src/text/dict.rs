@@ -270,6 +270,22 @@ impl Dict {
         None
     }
 
+    /// The entry of the term of rank `ord`, `None` past the last: a decode
+    /// of its block up to it.
+    pub fn info_at(&self, ord: usize) -> Option<TermInfo> {
+        if ord >= self.n_terms as usize {
+            return None;
+        }
+        let mut found = None;
+        self.scan_block(ord / DICT_BLOCK, |_, info| {
+            if info.ord as usize == ord {
+                found = Some(info);
+            }
+            found.is_none()
+        });
+        found
+    }
+
     /// Up to `limit` terms starting with `prefix`, in order.
     pub fn prefix(&self, prefix: &str, limit: usize) -> Vec<(String, TermInfo)> {
         let mut out = Vec::new();
@@ -431,10 +447,19 @@ impl DictCursor<'_> {
         self.lengths();
     }
 
-    /// Reads the current entry's lengths, after its term.
+    /// Reads the current entry's lengths, after its term: mostly a byte
+    /// each (a rare term's), read at once.
+    #[inline]
     fn lengths(&mut self) {
         let data = &self.dict.blocks[..self.end];
         self.info.ord = self.ord as u32;
+        if let Some(&[df, post, pos]) = data.get(self.at..self.at + 3) {
+            if (df | post | pos) < 0x80 {
+                (self.info.df, self.info.post_len, self.info.pos_len) = (df as u32, post as u64, pos as u64);
+                self.at += 3;
+                return;
+            }
+        }
         self.info.df = get_varint(data, &mut self.at) as u32;
         self.info.post_len = get_varint(data, &mut self.at);
         self.info.pos_len = get_varint(data, &mut self.at);
@@ -477,13 +502,66 @@ impl super::fuzzy::Sorted for DictCursor<'_> {
 
     fn seek(&mut self, t: &[u8]) {
         // The first term at or after `t` is in the last block whose first
-        // term is below `t`, or starts the next one.
-        let b = self.dict.blocks_below(t, false).saturating_sub(1);
-        if b * DICT_BLOCK > self.ord {
-            self.load(b);
+        // term is below `t`, or starts the next one: the current block
+        // when the next one starts at or after `t`, else one the index
+        // finds.
+        let n_blocks = self.dict.n_blocks;
+        let next = self.ord / DICT_BLOCK + 1;
+        if next < n_blocks && self.dict.cmp_first(next, t, key(t)) == Ordering::Less {
+            let b = self.dict.blocks_below(t, false).saturating_sub(1);
+            if b * DICT_BLOCK > self.ord {
+                self.load(b);
+            }
         }
         while super::fuzzy::Sorted::term(self).is_some_and(|cur| cur < t) {
             super::fuzzy::Sorted::next(self);
+        }
+    }
+
+    fn skip_prefix(&mut self, len: usize) {
+        // Entries sharing `len` bytes or more with the previous one start
+        // with the same `len` bytes: they are passed over by their lengths
+        // alone, and the first sharing fewer is the first term past them.
+        // A block whose first term starts with them too leaves the rest to
+        // the index.
+        let n = self.dict.n_terms as usize;
+        loop {
+            if self.ord + 1 >= n {
+                self.ord = n;
+                return;
+            }
+            self.ord += 1;
+            if self.ord.is_multiple_of(DICT_BLOCK) {
+                let b = self.ord / DICT_BLOCK;
+                let first = self.dict.first(b);
+                if first.len() >= len && first[..len] == self.term[..len] {
+                    let prefix = self.term[..len].to_vec();
+                    match super::fuzzy::past_prefix(&prefix) {
+                        Some(after) => {
+                            self.load(b);
+                            super::fuzzy::Sorted::seek(self, &after);
+                        }
+                        None => self.ord = n,
+                    }
+                } else {
+                    self.load(b);
+                }
+                return;
+            }
+            let data = &self.dict.blocks[..self.end];
+            let prefix = get_varint(data, &mut self.at) as usize;
+            let suffix = get_varint(data, &mut self.at) as usize;
+            let at = self.at;
+            self.at += suffix;
+            self.info.post_off += self.info.post_len;
+            self.info.pos_off += self.info.pos_len;
+            if prefix < len {
+                self.term.truncate(prefix);
+                self.term.extend_from_slice(data.get(at..at + suffix).unwrap_or(&[]));
+                self.lengths();
+                return;
+            }
+            self.lengths();
         }
     }
 }
@@ -573,9 +651,30 @@ mod tests {
                 at = want;
             }
         }
+        // Skipping the terms that share the current term's first bytes
+        // lands on the first that does not, with its entry.
+        for _ in 0..2000 {
+            let mut c = d.cursor();
+            let start = (next() % terms.len() as u64) as usize;
+            c.seek(terms[start].as_bytes());
+            let t = terms[start].as_bytes().to_vec();
+            let len = next() as usize % (t.len() + 1);
+            let want = start + terms[start..].iter().take_while(|x| x.as_bytes().starts_with(&t[..len])).count();
+            c.skip_prefix(len);
+            assert_eq!(c.pos(), want, "skip {len} bytes of {:?}", terms[start]);
+            assert_eq!(c.term(), terms.get(want).map(|t| t.as_bytes()));
+            if let Some(t) = c.term() {
+                assert_eq!(c.info(), d.get(std::str::from_utf8(t).unwrap()).unwrap());
+            }
+        }
         for q in ["", "a", "nod", "abcd", "ééa", "donabc", "oooooooooo"] {
             let q: Vec<char> = q.chars().collect();
             for k in 0..=2 {
+                // Prefix runs over the cursor are those over the terms in memory.
+                let (mut runs, mut want_runs) = (Vec::new(), Vec::new());
+                walk(&q, k, Match::Prefix, &mut d.cursor(), |c, r, e| runs.push((r, e, c.term().map(|t| t.to_vec()))));
+                walk(&q, k, Match::Prefix, &mut super::super::fuzzy::SliceTerms::new(&terms), |c, r, e| want_runs.push((r, e, c.term().map(|t| t.to_vec()))));
+                assert_eq!(runs, want_runs, "{q:?} prefix within {k}");
                 let want: Vec<(TermInfo, u8)> = all.iter().filter_map(|(t, i)| within(&q, std::str::from_utf8(t).unwrap(), k).map(|e| (*i, e))).collect();
                 let mut got = Vec::new();
                 walk(&q, k, Match::Whole, &mut d.cursor(), |c, _, e| got.push((c.info(), e)));

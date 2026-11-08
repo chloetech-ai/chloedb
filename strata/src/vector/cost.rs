@@ -89,7 +89,8 @@ pub struct CostModel {
     /// HNSW expansions per query ≈ `a·ef + b`.
     pub hnsw_nodes_a: f64,
     pub hnsw_nodes_b: f64,
-    /// Post-filter fetches `k · margin / selectivity` unfiltered candidates.
+    /// Post-filter fetches `max(rerank, k · margin) / selectivity` unfiltered
+    /// candidates ([`post_filter_candidates`]).
     pub post_margin: f64,
 }
 
@@ -181,7 +182,7 @@ impl CostModel {
                 w.rerank = r.min(c);
             }
             Strategy::PostFilter => {
-                let kp = (k as f64 * self.post_margin / s).ceil().max(r).min(n);
+                let kp = post_filter_candidates(k, r as usize, self.post_margin, s, n as usize) as f64;
                 let inner = SearchParams { rerank: kp as usize, ef: p.ef.max(kp as usize), nprobe: post_filter_nprobe(p.nprobe, kp as usize, r as usize), ..*p };
                 w = self.work(shape, resolve(shape, Strategy::PostFilter, false), k, None, &inner);
                 w.checks += kp;
@@ -246,8 +247,32 @@ pub fn resolve(shape: &IndexShape, s: Strategy, filtered: bool) -> Strategy {
     }
 }
 
+/// Unfiltered candidates a post-filter search fetches for a top-`k` with
+/// re-rank depth `r` under a filter of selectivity `s`, in a segment of `n`:
+/// enough that `r` members are expected among them, as many as an unfiltered
+/// search re-ranks, and at least `k · margin` (so that `k` survive and no
+/// retry is needed).
+pub fn post_filter_candidates(k: usize, r: usize, margin: f64, s: f64, n: usize) -> usize {
+    (((k as f64 * margin).max(r as f64) / s.max(1e-12)).ceil() as usize).max(r).min(n)
+}
+
 /// Clusters probed by an IVF post-filter search that needs `kp` candidates
 /// where an unfiltered search needs `r`: probes scale with the candidates.
 pub fn post_filter_nprobe(nprobe: usize, kp: usize, r: usize) -> usize {
     (nprobe.max(1) as f64 * kp as f64 / r.max(1) as f64).ceil() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Enough candidates for `rerank` members, at least `k · margin` of
+    /// them, capped by the segment.
+    #[test]
+    fn post_filter_candidates_cover_the_rerank_depth() {
+        assert_eq!(post_filter_candidates(10, 40, 2.0, 0.2, 1_000_000), 200);
+        assert_eq!(post_filter_candidates(10, 40, 2.0, 1.0, 1_000_000), 40);
+        assert_eq!(post_filter_candidates(30, 40, 2.0, 0.5, 1_000_000), 120);
+        assert_eq!(post_filter_candidates(10, 40, 2.0, 0.001, 5_000), 5_000);
+    }
 }

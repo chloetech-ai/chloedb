@@ -1,0 +1,17 @@
+service/vespa created
+pod/vespa-0 created
+pod/vespa-1 created
+pod/vespa-2 created
+pod/vespa-0 condition met
+pod/vespa-1 condition met
+pod/vespa-2 condition met
+job.batch/load-vespa created
+vespa: index created in 0.9 s
+vespa: 25000 documents sent, 96 s
+vespa: 50000 documents sent, 154 s
+vespa: 75000 documents sent, 204 s
+vespa: 100000 documents sent, 238 s
+vespa: 125000 documents sent, 272 s
+vespa: 150000 documents sent, 301 s
+error: put: 400 Bad Request: {"pathId":"/document/v1/doc/doc/docid/msmarco_v2.1_doc_00_161261386%239_282499780","message":"In document 'id:doc:doc::msmarco_v2.1_doc_00_161261386#9_282499780': Could not parse field 'body' of type string: The string field value contains illegal code point 0xB"}
+job load-vespa failed

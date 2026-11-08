@@ -46,7 +46,7 @@ from typing import Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import files_bytes, timed_passes, write_report  # noqa: E402
+from common import files_bytes, memory, timed_passes, write_report  # noqa: E402
 
 DIM = 384
 ALPHA, EPS = 0.15, 1e-4  # ppr's defaults in Strata
@@ -490,6 +490,7 @@ def main() -> None:
     work.mkdir(parents=True)
     rep = run(name, Path(a.shop), work, a.seconds, a.users, a.limit_reviews)
     rep["params"] = {"seconds": a.seconds, "users": a.users, "alpha": ALPHA, "eps": EPS, "depth": DEPTH}
+    rep["memory"] = memory()
     write_report(Path(a.out) / f"a3_{name}.json", rep)
     shutil.rmtree(work, ignore_errors=True)
 

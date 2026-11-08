@@ -506,6 +506,24 @@ pub fn decode_shipped(buf: &[u8], fits: &dyn Fn(u32, &Op) -> bool) -> Result<Wal
     }
 }
 
+/// Whether the one transaction `buf` holds, as [`decode_shipped`] reads
+/// it, changes tables ([`Op::changes_tables`]): read from its records'
+/// kinds alone, without decoding its rows.
+pub fn ships_table_changes(buf: &[u8]) -> bool {
+    let mut pos = 0;
+    while pos + 9 <= buf.len() {
+        let len = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+        if len == 0 {
+            return false;
+        }
+        if matches!(buf[pos + 8], TABLE_DEF | TABLE_ALTER) {
+            return true;
+        }
+        pos += 8 + len;
+    }
+    false
+}
+
 /// The txns of the intact commit records in `rest` (the log past the last
 /// transaction replay reached) that come after txn `last`. A commit record
 /// is 21 bytes (length 13, checksum, kind, txn, op count), or 37 in a

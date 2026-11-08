@@ -4,18 +4,25 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: strata-coordinator
-  namespace: compare
+  namespace: __NS__
   labels: {app: strata-coordinator, engine: strata}
 spec:
   nodeName: __NODE__
   containers:
     - name: strata
-      image: strata-server:compare
+      image: __IMAGE__
       imagePullPolicy: IfNotPresent
       args:
         - --listen=0.0.0.0:7700
         - --grpc=off
         - --shards=http://strata-0.strata:7701,http://strata-1.strata:7701
+        # The 30 s engine-compare's client waits for every engine, not the
+        # default of 5 s (strata.yaml).
+        - --timeout-ms=30000
+      # The cluster's random token (secret strata-token): asked of the
+      # client, and sent to the shards.
+      env:
+        - {name: STRATA_TOKEN, valueFrom: {secretKeyRef: {name: strata-token, key: token}}}
       ports:
         - {name: http, containerPort: 7700}
       readinessProbe:
@@ -29,7 +36,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: strata-coordinator
-  namespace: compare
+  namespace: __NS__
 spec:
   selector: {app: strata-coordinator}
   ports:

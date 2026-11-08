@@ -1,0 +1,4332 @@
+{
+  "es": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "match": {
+              "body": "How do solar panels convert sunlight into electricity at night?"
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "range": {
+                    "year": {
+                      "gte": 2010
+                    }
+                  }
+                },
+                {
+                  "terms": {
+                    "category": [
+                      "c00",
+                      "c01",
+                      "c02",
+                      "c03"
+                    ]
+                  }
+                }
+              ],
+              "must": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "function_score": {
+              "boost_mode": "multiply",
+              "functions": [
+                {
+                  "exp": {
+                    "year": {
+                      "decay": 0.5,
+                      "origin": 2024,
+                      "scale": 5
+                    }
+                  }
+                }
+              ],
+              "query": {
+                "match": {
+                  "body": "How do solar panels convert sunlight into electricity at night?"
+                }
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "aggs": {
+            "c": {
+              "terms": {
+                "field": "category",
+                "size": 5
+              }
+            }
+          },
+          "query": {
+            "term": {
+              "body": "electr"
+            }
+          },
+          "size": 0,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "retriever": {
+            "rrf": {
+              "rank_constant": 60,
+              "rank_window_size": 100,
+              "retrievers": [
+                {
+                  "standard": {
+                    "query": {
+                      "match": {
+                        "body": "How do solar panels convert sunlight into electricity at night?"
+                      }
+                    }
+                  }
+                },
+                {
+                  "knn": {
+                    "field": "emb",
+                    "k": 100,
+                    "num_candidates": 100,
+                    "query_vector": [
+                      0.5,
+                      -0.25,
+                      0.75,
+                      0.125
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "knn": {
+            "boost": 0.8,
+            "field": "emb",
+            "k": 100,
+            "num_candidates": 100,
+            "query_vector": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ]
+          },
+          "query": {
+            "match": {
+              "body": {
+                "boost": 0.2,
+                "query": "How do solar panels convert sunlight into electricity at night?"
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": {
+          "docs": [
+            {
+              "_id": "d42",
+              "_source": [
+                "title",
+                "year",
+                "rating"
+              ]
+            }
+          ]
+        },
+        "path": "/quora/_mget"
+      },
+      "request": {
+        "body": {
+          "_source": [
+            "title",
+            "year",
+            "rating"
+          ],
+          "query": {
+            "term": {
+              "id": "d42"
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "must": [
+                {
+                  "match_phrase": {
+                    "body": "solar panels"
+                  }
+                }
+              ],
+              "should": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "prefix": {
+                    "body": "nig"
+                  }
+                }
+              ],
+              "must": [
+                {
+                  "match": {
+                    "body": "how do solar panels convert sunlight into electricity at"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "knn": {
+            "field": "emb",
+            "filter": {
+              "bool": {
+                "filter": [
+                  {
+                    "range": {
+                      "rating": {
+                        "gte": 3
+                      }
+                    }
+                  }
+                ],
+                "must_not": [
+                  {
+                    "ids": {
+                      "values": [
+                        "d7",
+                        "d9",
+                        "d11"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "k": 10,
+            "num_candidates": 64,
+            "query_vector": [
+              0.25,
+              0.25,
+              -0.5,
+              0.75
+            ],
+            "rescore_vector": {
+              "oversample": 4
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "SELECT category, COUNT(*) AS n, AVG(rating) AS r FROM quora WHERE \"year\" >= 2001 GROUP BY category HAVING COUNT(*) > 1000 ORDER BY n DESC LIMIT 10"
+        },
+        "path": "/_sql?format=json"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "match": {
+              "body": {
+                "fuzziness": "AUTO",
+                "query": "how do solar panels convert sunlight into eelctricity at night"
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "knn": {
+            "field": "emb",
+            "k": 10,
+            "num_candidates": 64,
+            "query_vector": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ],
+            "rescore_vector": {
+              "oversample": 4
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "knn": {
+            "field": "emb",
+            "filter": {
+              "range": {
+                "rating": {
+                  "gte": 4
+                }
+              }
+            },
+            "k": 10,
+            "num_candidates": 64,
+            "query_vector": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ],
+            "rescore_vector": {
+              "oversample": 4
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    }
+  },
+  "es-paid": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "match": {
+              "body": "How do solar panels convert sunlight into electricity at night?"
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "range": {
+                    "year": {
+                      "gte": 2010
+                    }
+                  }
+                },
+                {
+                  "terms": {
+                    "category": [
+                      "c00",
+                      "c01",
+                      "c02",
+                      "c03"
+                    ]
+                  }
+                }
+              ],
+              "must": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "function_score": {
+              "boost_mode": "multiply",
+              "functions": [
+                {
+                  "exp": {
+                    "year": {
+                      "decay": 0.5,
+                      "origin": 2024,
+                      "scale": 5
+                    }
+                  }
+                }
+              ],
+              "query": {
+                "match": {
+                  "body": "How do solar panels convert sunlight into electricity at night?"
+                }
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "aggs": {
+            "c": {
+              "terms": {
+                "field": "category",
+                "size": 5
+              }
+            }
+          },
+          "query": {
+            "term": {
+              "body": "electr"
+            }
+          },
+          "size": 0,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "retriever": {
+            "rrf": {
+              "rank_constant": 60,
+              "rank_window_size": 100,
+              "retrievers": [
+                {
+                  "standard": {
+                    "query": {
+                      "match": {
+                        "body": "How do solar panels convert sunlight into electricity at night?"
+                      }
+                    }
+                  }
+                },
+                {
+                  "knn": {
+                    "field": "emb",
+                    "k": 100,
+                    "num_candidates": 100,
+                    "query_vector": [
+                      0.5,
+                      -0.25,
+                      0.75,
+                      0.125
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "retriever": {
+            "linear": {
+              "rank_window_size": 100,
+              "retrievers": [
+                {
+                  "normalizer": "minmax",
+                  "retriever": {
+                    "standard": {
+                      "query": {
+                        "match": {
+                          "body": "How do solar panels convert sunlight into electricity at night?"
+                        }
+                      }
+                    }
+                  },
+                  "weight": 0.2
+                },
+                {
+                  "normalizer": "minmax",
+                  "retriever": {
+                    "knn": {
+                      "field": "emb",
+                      "k": 100,
+                      "num_candidates": 100,
+                      "query_vector": [
+                        0.5,
+                        -0.25,
+                        0.75,
+                        0.125
+                      ]
+                    }
+                  },
+                  "weight": 0.8
+                }
+              ]
+            }
+          },
+          "size": 10
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": {
+          "docs": [
+            {
+              "_id": "d42",
+              "_source": [
+                "title",
+                "year",
+                "rating"
+              ]
+            }
+          ]
+        },
+        "path": "/quora/_mget"
+      },
+      "request": {
+        "body": {
+          "_source": [
+            "title",
+            "year",
+            "rating"
+          ],
+          "query": {
+            "term": {
+              "id": "d42"
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "must": [
+                {
+                  "match_phrase": {
+                    "body": "solar panels"
+                  }
+                }
+              ],
+              "should": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "prefix": {
+                    "body": "nig"
+                  }
+                }
+              ],
+              "must": [
+                {
+                  "match": {
+                    "body": "how do solar panels convert sunlight into electricity at"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "knn": {
+            "field": "emb",
+            "filter": {
+              "bool": {
+                "filter": [
+                  {
+                    "range": {
+                      "rating": {
+                        "gte": 3
+                      }
+                    }
+                  }
+                ],
+                "must_not": [
+                  {
+                    "ids": {
+                      "values": [
+                        "d7",
+                        "d9",
+                        "d11"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "k": 10,
+            "num_candidates": 64,
+            "query_vector": [
+              0.25,
+              0.25,
+              -0.5,
+              0.75
+            ],
+            "rescore_vector": {
+              "oversample": 4
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "SELECT category, COUNT(*) AS n, AVG(rating) AS r FROM quora WHERE \"year\" >= 2001 GROUP BY category HAVING COUNT(*) > 1000 ORDER BY n DESC LIMIT 10"
+        },
+        "path": "/_sql?format=json"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "match": {
+              "body": {
+                "fuzziness": "AUTO",
+                "query": "how do solar panels convert sunlight into eelctricity at night"
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "knn": {
+            "field": "emb",
+            "k": 10,
+            "num_candidates": 64,
+            "query_vector": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ],
+            "rescore_vector": {
+              "oversample": 4
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "knn": {
+            "field": "emb",
+            "filter": {
+              "range": {
+                "rating": {
+                  "gte": 4
+                }
+              }
+            },
+            "k": 10,
+            "num_candidates": 64,
+            "query_vector": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ],
+            "rescore_vector": {
+              "oversample": 4
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    }
+  },
+  "manticore": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20weight%28%29%20s%20FROM%20docs%20WHERE%20MATCH%28%27%22how%20do%20solar%20panels%20convert%20sunlight%20into%20electricity%20at%20night%22%2F1%27%29%20ORDER%20BY%20s%20DESC%20LIMIT%2010%20OPTION%20ranker%3Dexpr%28%2710000%2Abm25a%281.2%2C0.75%29%27%29%2C%20idf%3D%27plain%2Ctfidf_unnormalized%27",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20weight%28%29%20s%20FROM%20docs%20WHERE%20MATCH%28%27%22how%20do%20solar%20panels%20convert%20sunlight%20into%20electricity%20at%20night%22%2F1%27%29%20AND%20year%20%3E%3D%202010%20AND%20category%20IN%20%28%27c00%27%2C%20%27c01%27%2C%20%27c02%27%2C%20%27c03%27%29%20ORDER%20BY%20s%20DESC%20LIMIT%2010%20OPTION%20ranker%3Dexpr%28%2710000%2Abm25a%281.2%2C0.75%29%27%29%2C%20idf%3D%27plain%2Ctfidf_unnormalized%27",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20weight%28%29%20%2A%20exp%28-0.13862943611198905%20%2A%20abs%28year%20-%202024%29%29%20s%20FROM%20docs%20WHERE%20MATCH%28%27%22how%20do%20solar%20panels%20convert%20sunlight%20into%20electricity%20at%20night%22%2F1%27%29%20ORDER%20BY%20s%20DESC%20LIMIT%2010%20OPTION%20ranker%3Dexpr%28%2710000%2Abm25a%281.2%2C0.75%29%27%29%2C%20idf%3D%27plain%2Ctfidf_unnormalized%27",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20category%2C%20COUNT%28%2A%29%20n%20FROM%20docs%20WHERE%20MATCH%28%27electricity%27%29%20GROUP%20BY%20category%20ORDER%20BY%20n%20DESC%20LIMIT%205",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20hybrid_score%28%29%20s%20FROM%20docs%20WHERE%20MATCH%28%27%22how%20do%20solar%20panels%20convert%20sunlight%20into%20electricity%20at%20night%22%2F1%27%29%20AND%20knn%28emb%2C%20100%2C%20%280.5%2C-0.25%2C0.75%2C0.125%29%2C%20%7Bef%3D100%2C%20rescore%3D1%2C%20oversampling%3D4.0%7D%29%20LIMIT%2010%20OPTION%20fusion_method%3D%27rrf%27%2C%20rank_constant%3D60%2C%20window_size%3D100%2C%20ranker%3Dexpr%28%2710000%2Abm25a%281.2%2C0.75%29%27%29%2C%20idf%3D%27plain%2Ctfidf_unnormalized%27",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": null,
+      "unsupported": "its hybrid search fuses by RRF only (fusion_method='rrf')"
+    },
+    "key lookup": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20title%2C%20year%2C%20rating%20FROM%20docs%20WHERE%20id%20%3D%2042",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20weight%28%29%20s%20FROM%20docs%20WHERE%20MATCH%28%27%22solar%20panels%22%20MAYBE%20%28how%20%7C%20do%20%7C%20solar%20%7C%20panels%20%7C%20convert%20%7C%20sunlight%20%7C%20into%20%7C%20electricity%20%7C%20at%20%7C%20night%29%27%29%20ORDER%20BY%20s%20DESC%20LIMIT%2010%20OPTION%20ranker%3Dexpr%28%2710000%2Abm25a%281.2%2C0.75%29%27%29%2C%20idf%3D%27plain%2Ctfidf_unnormalized%27",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20weight%28%29%20s%20FROM%20docs%20WHERE%20MATCH%28%27nig%2A%20MAYBE%20%28how%20%7C%20do%20%7C%20solar%20%7C%20panels%20%7C%20convert%20%7C%20sunlight%20%7C%20into%20%7C%20electricity%20%7C%20at%29%27%29%20ORDER%20BY%20s%20DESC%20LIMIT%2010%20OPTION%20ranker%3Dexpr%28%2710000%2Abm25a%281.2%2C0.75%29%27%29%2C%20idf%3D%27plain%2Ctfidf_unnormalized%27",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20knn_dist%28%29%20d%20FROM%20docs%20WHERE%20knn%28emb%2C%2010%2C%20%280.25%2C0.25%2C-0.5%2C0.75%29%2C%20%7Bef%3D64%2C%20rescore%3D1%2C%20oversampling%3D4.0%7D%29%20AND%20rating%20%3E%3D%203%20AND%20key%20NOT%20IN%20%28%27d7%27%2C%20%27d9%27%2C%20%27d11%27%29%20LIMIT%2010",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20category%2C%20COUNT%28%2A%29%20n%2C%20AVG%28rating%29%20r%20FROM%20docs%20WHERE%20year%20%3E%3D%202001%20GROUP%20BY%20category%20HAVING%20n%20%3E%201000%20ORDER%20BY%20n%20DESC%20LIMIT%2010",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20weight%28%29%20s%20FROM%20docs%20WHERE%20MATCH%28%27how%20do%20solar%20panels%20convert%20sunlight%20into%20eelctricity%20at%20night%27%29%20ORDER%20BY%20s%20DESC%20LIMIT%2010%20OPTION%20fuzzy%3D1%2C%20distance%3D2%2C%20preserve%3D1%2C%20ranker%3Dexpr%28%2710000%2Abm25a%281.2%2C0.75%29%27%29%2C%20idf%3D%27plain%2Ctfidf_unnormalized%27",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20knn_dist%28%29%20d%20FROM%20docs%20WHERE%20knn%28emb%2C%2010%2C%20%280.5%2C-0.25%2C0.75%2C0.125%29%2C%20%7Bef%3D64%2C%20rescore%3D1%2C%20oversampling%3D4.0%7D%29%20LIMIT%2010",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": "query=SELECT%20key%2C%20knn_dist%28%29%20d%20FROM%20docs%20WHERE%20knn%28emb%2C%2010%2C%20%280.5%2C-0.25%2C0.75%2C0.125%29%2C%20%7Bef%3D64%2C%20rescore%3D1%2C%20oversampling%3D4.0%7D%29%20AND%20rating%20%3E%3D%204%20LIMIT%2010",
+        "ctype": "application/x-www-form-urlencoded",
+        "method": "POST",
+        "url": "http://engine:1/sql?mode=raw"
+      },
+      "unsupported": null
+    }
+  },
+  "meili": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "limit": 10,
+          "q": "How do solar panels convert sunlight into electricity at night?",
+          "showRankingScore": true
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "filter": "year >= 2010 AND category IN [c00, c01, c02, c03]",
+          "limit": 10,
+          "q": "How do solar panels convert sunlight into electricity at night?",
+          "showRankingScore": true
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": null,
+      "unsupported": "no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance"
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "facets": [
+            "category"
+          ],
+          "limit": 0,
+          "q": "\"electricity\""
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "hybrid": {
+            "embedder": "default",
+            "semanticRatio": 0.5
+          },
+          "limit": 10,
+          "q": "How do solar panels convert sunlight into electricity at night?",
+          "showRankingScore": true,
+          "vector": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "hybrid": {
+            "embedder": "default",
+            "semanticRatio": 0.8
+          },
+          "limit": 10,
+          "q": "How do solar panels convert sunlight into electricity at night?",
+          "showRankingScore": true,
+          "vector": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": [
+            "id",
+            "title",
+            "year",
+            "rating"
+          ],
+          "ids": [
+            "d42"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/documents/fetch"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "limit": 10,
+          "q": "\"solar panels\" how do solar panels convert sunlight into electricity at night",
+          "showRankingScore": true
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "limit": 10,
+          "q": "how do solar panels convert sunlight into electricity at nig",
+          "showRankingScore": true
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "filter": "rating >= 3 AND id NOT IN ['d7', 'd9', 'd11']",
+          "hybrid": {
+            "embedder": "default",
+            "semanticRatio": 1.0
+          },
+          "limit": 10,
+          "q": "",
+          "showRankingScore": true,
+          "vector": [
+            0.25,
+            0.25,
+            -0.5,
+            0.75
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": null,
+      "unsupported": "no grouped aggregates: facets count values, and facet stats give a numeric field's minimum and maximum only"
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "limit": 10,
+          "q": "how do solar panels convert sunlight into eelctricity at night",
+          "showRankingScore": true
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "hybrid": {
+            "embedder": "default",
+            "semanticRatio": 1.0
+          },
+          "limit": 10,
+          "q": "",
+          "showRankingScore": true,
+          "vector": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "attributesToRetrieve": [
+            "id"
+          ],
+          "filter": "rating >= 4",
+          "hybrid": {
+            "embedder": "default",
+            "semanticRatio": 1.0
+          },
+          "limit": 10,
+          "q": "",
+          "showRankingScore": true,
+          "vector": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/indexes/docs/search"
+      },
+      "unsupported": null
+    }
+  },
+  "milvus": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "annsField": "sparse",
+          "collectionName": "docs",
+          "data": [
+            "How do solar panels convert sunlight into electricity at night?"
+          ],
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/search"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "annsField": "sparse",
+          "collectionName": "docs",
+          "data": [
+            "How do solar panels convert sunlight into electricity at night?"
+          ],
+          "filter": "year >= 2010 and category in [\"c00\", \"c01\", \"c02\", \"c03\"]",
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/search"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "annsField": "sparse",
+          "collectionName": "docs",
+          "data": [
+            "How do solar panels convert sunlight into electricity at night?"
+          ],
+          "functionScore": {
+            "functions": [
+              {
+                "inputFieldNames": [
+                  "year"
+                ],
+                "name": "decay",
+                "params": {
+                  "decay": 0.5,
+                  "function": "exp",
+                  "offset": 0,
+                  "origin": 2024,
+                  "reranker": "decay",
+                  "scale": 5
+                },
+                "type": "Rerank"
+              }
+            ]
+          },
+          "limit": 100,
+          "outputFields": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/search"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": null,
+      "unsupported": "no aggregations: a query counts the rows of a filter, not of each value"
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "collectionName": "docs",
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ],
+          "rerank": {
+            "params": {
+              "k": 60
+            },
+            "strategy": "rrf"
+          },
+          "search": [
+            {
+              "annsField": "sparse",
+              "data": [
+                "How do solar panels convert sunlight into electricity at night?"
+              ],
+              "limit": 100
+            },
+            {
+              "annsField": "emb",
+              "data": [
+                [
+                  0.5,
+                  -0.25,
+                  0.75,
+                  0.125
+                ]
+              ],
+              "limit": 100,
+              "params": {
+                "ef": 100,
+                "refine_k": 4
+              },
+              "searchParams": {
+                "params": {
+                  "ef": 100,
+                  "refine_k": 4
+                }
+              }
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/hybrid_search"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "collectionName": "docs",
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ],
+          "rerank": {
+            "params": {
+              "norm_score": true,
+              "weights": [
+                0.2,
+                0.8
+              ]
+            },
+            "strategy": "weighted"
+          },
+          "search": [
+            {
+              "annsField": "sparse",
+              "data": [
+                "How do solar panels convert sunlight into electricity at night?"
+              ],
+              "limit": 100
+            },
+            {
+              "annsField": "emb",
+              "data": [
+                [
+                  0.5,
+                  -0.25,
+                  0.75,
+                  0.125
+                ]
+              ],
+              "limit": 100,
+              "params": {
+                "ef": 100,
+                "refine_k": 4
+              },
+              "searchParams": {
+                "params": {
+                  "ef": 100,
+                  "refine_k": 4
+                }
+              }
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/hybrid_search"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": null,
+      "request": {
+        "body": {
+          "collectionName": "docs",
+          "id": [
+            "d42"
+          ],
+          "outputFields": [
+            "key",
+            "title",
+            "year",
+            "rating"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/get"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "annsField": "sparse",
+          "collectionName": "docs",
+          "data": [
+            "How do solar panels convert sunlight into electricity at night?"
+          ],
+          "filter": "PHRASE_MATCH(body, \"solar panels\")",
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/search"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": null,
+      "unsupported": "no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string"
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "annsField": "emb",
+          "collectionName": "docs",
+          "data": [
+            [
+              0.25,
+              0.25,
+              -0.5,
+              0.75
+            ]
+          ],
+          "filter": "rating >= 3 and key not in [\"d7\", \"d9\", \"d11\"]",
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ],
+          "searchParams": {
+            "params": {
+              "ef": 64,
+              "refine_k": 4
+            }
+          }
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/search"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": null,
+      "unsupported": "no GROUP BY"
+    },
+    "typo": {
+      "native": null,
+      "request": null,
+      "unsupported": "no fuzzy matching"
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "annsField": "emb",
+          "collectionName": "docs",
+          "data": [
+            [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ]
+          ],
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ],
+          "searchParams": {
+            "params": {
+              "ef": 64,
+              "refine_k": 4
+            }
+          }
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/search"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "annsField": "emb",
+          "collectionName": "docs",
+          "data": [
+            [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ]
+          ],
+          "filter": "rating >= 4",
+          "limit": 10,
+          "outputFields": [
+            "key"
+          ],
+          "searchParams": {
+            "params": {
+              "ef": 64,
+              "refine_k": 4
+            }
+          }
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v2/vectordb/entities/search"
+      },
+      "unsupported": null
+    }
+  },
+  "os": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "match": {
+              "body": "How do solar panels convert sunlight into electricity at night?"
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "range": {
+                    "year": {
+                      "gte": 2010
+                    }
+                  }
+                },
+                {
+                  "terms": {
+                    "category": [
+                      "c00",
+                      "c01",
+                      "c02",
+                      "c03"
+                    ]
+                  }
+                }
+              ],
+              "must": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "function_score": {
+              "boost_mode": "multiply",
+              "functions": [
+                {
+                  "exp": {
+                    "year": {
+                      "decay": 0.5,
+                      "origin": 2024,
+                      "scale": 5
+                    }
+                  }
+                }
+              ],
+              "query": {
+                "match": {
+                  "body": "How do solar panels convert sunlight into electricity at night?"
+                }
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "aggs": {
+            "c": {
+              "terms": {
+                "field": "category",
+                "size": 5
+              }
+            }
+          },
+          "query": {
+            "term": {
+              "body": "electr"
+            }
+          },
+          "size": 0,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "hybrid": {
+              "pagination_depth": 100,
+              "queries": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                },
+                {
+                  "knn": {
+                    "emb": {
+                      "k": 100,
+                      "method_parameters": {
+                        "ef_search": 100
+                      },
+                      "vector": [
+                        0.5,
+                        -0.25,
+                        0.75,
+                        0.125
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false&search_pipeline=rrf"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "hybrid": {
+              "pagination_depth": 100,
+              "queries": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                },
+                {
+                  "knn": {
+                    "emb": {
+                      "k": 100,
+                      "method_parameters": {
+                        "ef_search": 100
+                      },
+                      "vector": [
+                        0.5,
+                        -0.25,
+                        0.75,
+                        0.125
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false&search_pipeline=minmax"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": {
+          "docs": [
+            {
+              "_id": "d42",
+              "_source": [
+                "title",
+                "year",
+                "rating"
+              ]
+            }
+          ]
+        },
+        "path": "/quora/_mget"
+      },
+      "request": {
+        "body": {
+          "_source": [
+            "title",
+            "year",
+            "rating"
+          ],
+          "query": {
+            "term": {
+              "id": "d42"
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "must": [
+                {
+                  "match_phrase": {
+                    "body": "solar panels"
+                  }
+                }
+              ],
+              "should": [
+                {
+                  "match": {
+                    "body": "How do solar panels convert sunlight into electricity at night?"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "prefix": {
+                    "body": "nig"
+                  }
+                }
+              ],
+              "must": [
+                {
+                  "match": {
+                    "body": "how do solar panels convert sunlight into electricity at"
+                  }
+                }
+              ]
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "knn": {
+              "emb": {
+                "filter": {
+                  "bool": {
+                    "filter": [
+                      {
+                        "range": {
+                          "rating": {
+                            "gte": 3
+                          }
+                        }
+                      }
+                    ],
+                    "must_not": [
+                      {
+                        "ids": {
+                          "values": [
+                            "d7",
+                            "d9",
+                            "d11"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "k": 10,
+                "method_parameters": {
+                  "ef_search": 64
+                },
+                "rescore": {
+                  "oversample_factor": 4
+                },
+                "vector": [
+                  0.25,
+                  0.25,
+                  -0.5,
+                  0.75
+                ]
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "SELECT category, COUNT(*) AS n, AVG(rating) AS r FROM quora WHERE year >= 2001 GROUP BY category HAVING COUNT(*) > 1000 ORDER BY n DESC LIMIT 10"
+        },
+        "path": "/_plugins/_sql"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "match": {
+              "body": {
+                "fuzziness": "AUTO",
+                "query": "how do solar panels convert sunlight into eelctricity at night"
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "knn": {
+              "emb": {
+                "k": 10,
+                "method_parameters": {
+                  "ef_search": 64
+                },
+                "rescore": {
+                  "oversample_factor": 4
+                },
+                "vector": [
+                  0.5,
+                  -0.25,
+                  0.75,
+                  0.125
+                ]
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "_source": false,
+          "query": {
+            "knn": {
+              "emb": {
+                "filter": {
+                  "range": {
+                    "rating": {
+                      "gte": 4
+                    }
+                  }
+                },
+                "k": 10,
+                "method_parameters": {
+                  "ef_search": 64
+                },
+                "rescore": {
+                  "oversample_factor": 4
+                },
+                "vector": [
+                  0.5,
+                  -0.25,
+                  0.75,
+                  0.125
+                ]
+              }
+            }
+          },
+          "size": 10,
+          "track_total_hits": false
+        },
+        "path": "/quora/_search?request_cache=false"
+      },
+      "unsupported": null
+    }
+  },
+  "paradedb": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, pdb.score(key) s FROM docs WHERE body ||| 'how do solar panels convert sunlight into electricity at night' ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, pdb.score(key) s FROM docs WHERE body ||| 'how do solar panels convert sunlight into electricity at night' AND year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03') ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, pdb.score(key) * exp(-0.13862943611198905 * abs(year - 2024)) s FROM docs WHERE body ||| 'how do solar panels convert sunlight into electricity at night' ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "sql": "SELECT category, COUNT(*) n FROM docs WHERE body ||| 'electricity' GROUP BY category ORDER BY n DESC LIMIT 5",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "sql": "WITH t AS (SELECT key, row_number() OVER (ORDER BY s DESC, key) r FROM (SELECT key, pdb.score(key) s FROM docs WHERE body ||| 'how do solar panels convert sunlight into electricity at night' ORDER BY s DESC LIMIT 100) x), v AS (SELECT key, row_number() OVER (ORDER BY d, key) r FROM (SELECT key, emb <#> '[0.5,-0.25,0.75,0.125]' d FROM docs WHERE key @@@ pdb.all() ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 100) y) SELECT key, COALESCE(1.0 / (60 + t.r), 0) + COALESCE(1.0 / (60 + v.r), 0) s FROM t FULL OUTER JOIN v USING (key) ORDER BY s DESC, key LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "sql": "WITH t AS (SELECT key, pdb.score(key) s FROM docs WHERE body ||| 'how do solar panels convert sunlight into electricity at night' ORDER BY s DESC LIMIT 100), v AS (SELECT key, -(emb <#> '[0.5,-0.25,0.75,0.125]') s FROM docs WHERE key @@@ pdb.all() ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 100), tn AS (SELECT key, (s - min(s) OVER ()) / NULLIF(max(s) OVER () - min(s) OVER (), 0) n FROM t), vn AS (SELECT key, (s - min(s) OVER ()) / NULLIF(max(s) OVER () - min(s) OVER (), 0) n FROM v) SELECT key, 0.2 * COALESCE(tn.n, 0) + 0.8 * COALESCE(vn.n, 0) s FROM tn FULL OUTER JOIN vn USING (key) ORDER BY s DESC, key LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, title, year, rating FROM docs WHERE key = 'd42'",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, pdb.score(key) s FROM docs WHERE body ||| 'how do solar panels convert sunlight into electricity at night' AND body ### 'solar panels' ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, pdb.score(key) s FROM docs WHERE body @@@ pdb.regex('nig.*') AND body ||| 'how do solar panels convert sunlight into electricity at' ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, emb <#> '[0.25,0.25,-0.5,0.75]' d FROM docs WHERE key @@@ pdb.all() AND rating >= 3 AND key NOT IN ('d7', 'd9', 'd11') ORDER BY emb <#> '[0.25,0.25,-0.5,0.75]' LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "sql": "SELECT category, COUNT(*) n, AVG(rating)::float8 r FROM docs WHERE year >= 2001 GROUP BY category HAVING COUNT(*) > 1000 ORDER BY n DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, pdb.score(key) s FROM docs WHERE (body === 'how'::pdb.fuzzy(1, f, t) OR body ||| 'do' OR body === 'solar'::pdb.fuzzy(1, f, t) OR body === 'panels'::pdb.fuzzy(2, f, t) OR body === 'convert'::pdb.fuzzy(2, f, t) OR body === 'sunlight'::pdb.fuzzy(2, f, t) OR body === 'into'::pdb.fuzzy(1, f, t) OR body === 'eelctricity'::pdb.fuzzy(2, f, t) OR body ||| 'at' OR body === 'night'::pdb.fuzzy(1, f, t)) ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, emb <#> '[0.5,-0.25,0.75,0.125]' d FROM docs WHERE key @@@ pdb.all() ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, emb <#> '[0.5,-0.25,0.75,0.125]' d FROM docs WHERE key @@@ pdb.all() AND rating >= 4 ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    }
+  },
+  "postgres": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, ts_rank(tsv, to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night')) s FROM docs WHERE tsv @@ to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night') ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, ts_rank(tsv, to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night')) s FROM docs WHERE tsv @@ to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night') AND year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03') ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, ts_rank(tsv, to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night')) * exp(-0.13862943611198905 * abs(year - 2024)) s FROM docs WHERE tsv @@ to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night') ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "sql": "SELECT category, COUNT(*) n FROM docs WHERE tsv @@ to_tsquery('english', 'electricity') GROUP BY category ORDER BY n DESC LIMIT 5",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "sql": "WITH t AS (SELECT key, row_number() OVER (ORDER BY s DESC, key) r FROM (SELECT key, ts_rank(tsv, to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night')) s FROM docs WHERE tsv @@ to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night') ORDER BY s DESC LIMIT 100) x), v AS (SELECT key, row_number() OVER (ORDER BY d, key) r FROM (SELECT key, emb <#> '[0.5,-0.25,0.75,0.125]' d FROM docs  ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 100) y) SELECT key, COALESCE(1.0 / (60 + t.r), 0) + COALESCE(1.0 / (60 + v.r), 0) s FROM t FULL OUTER JOIN v USING (key) ORDER BY s DESC, key LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "sql": "WITH t AS (SELECT key, ts_rank(tsv, to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night')) s FROM docs WHERE tsv @@ to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night') ORDER BY s DESC LIMIT 100), v AS (SELECT key, -(emb <#> '[0.5,-0.25,0.75,0.125]') s FROM docs  ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 100), tn AS (SELECT key, (s - min(s) OVER ()) / NULLIF(max(s) OVER () - min(s) OVER (), 0) n FROM t), vn AS (SELECT key, (s - min(s) OVER ()) / NULLIF(max(s) OVER () - min(s) OVER (), 0) n FROM v) SELECT key, 0.2 * COALESCE(tn.n, 0) + 0.8 * COALESCE(vn.n, 0) s FROM tn FULL OUTER JOIN vn USING (key) ORDER BY s DESC, key LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, title, year, rating FROM docs WHERE key = 'd42'",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, ts_rank(tsv, to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night')) s FROM docs WHERE tsv @@ to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at | night') AND tsv @@ phraseto_tsquery('english', 'solar panels') ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, ts_rank(tsv, to_tsquery('english', 'how | do | solar | panels | convert | sunlight | into | electricity | at')) s FROM docs WHERE tsv @@ to_tsquery('english', 'nig:*') ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, emb <#> '[0.25,0.25,-0.5,0.75]' d FROM docs WHERE rating >= 3 AND key NOT IN ('d7', 'd9', 'd11') ORDER BY emb <#> '[0.25,0.25,-0.5,0.75]' LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "sql": "SELECT category, COUNT(*) n, AVG(rating)::float8 r FROM docs WHERE year >= 2001 GROUP BY category HAVING COUNT(*) > 1000 ORDER BY n DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, pdb.score(key) s FROM docs WHERE (body === 'how'::pdb.fuzzy(1, f, t) OR body ||| 'do' OR body === 'solar'::pdb.fuzzy(1, f, t) OR body === 'panels'::pdb.fuzzy(2, f, t) OR body === 'convert'::pdb.fuzzy(2, f, t) OR body === 'sunlight'::pdb.fuzzy(2, f, t) OR body === 'into'::pdb.fuzzy(1, f, t) OR body === 'eelctricity'::pdb.fuzzy(2, f, t) OR body ||| 'at' OR body === 'night'::pdb.fuzzy(1, f, t)) ORDER BY s DESC LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": "no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)"
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, emb <#> '[0.5,-0.25,0.75,0.125]' d FROM docs ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "sql": "SELECT key, emb <#> '[0.5,-0.25,0.75,0.125]' d FROM docs WHERE rating >= 4 ORDER BY emb <#> '[0.5,-0.25,0.75,0.125]' LIMIT 10",
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    }
+  },
+  "qdrant": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "limit": 10,
+          "query": {
+            "indices": [
+              510383162,
+              1321581116,
+              3208966983,
+              3421486907,
+              3495007025,
+              3969925019
+            ],
+            "values": [
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "using": "bm25",
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "filter": {
+            "must": [
+              {
+                "key": "year",
+                "range": {
+                  "gte": 2010
+                }
+              },
+              {
+                "key": "category",
+                "match": {
+                  "any": [
+                    "c00",
+                    "c01",
+                    "c02",
+                    "c03"
+                  ]
+                }
+              }
+            ]
+          },
+          "limit": 10,
+          "query": {
+            "indices": [
+              510383162,
+              1321581116,
+              3208966983,
+              3421486907,
+              3495007025,
+              3969925019
+            ],
+            "values": [
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "using": "bm25",
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "limit": 10,
+          "prefetch": {
+            "limit": 100,
+            "query": {
+              "indices": [
+                510383162,
+                1321581116,
+                3208966983,
+                3421486907,
+                3495007025,
+                3969925019
+              ],
+              "values": [
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            "using": "bm25"
+          },
+          "query": {
+            "formula": {
+              "mult": [
+                "$score",
+                {
+                  "exp_decay": {
+                    "midpoint": 0.5,
+                    "scale": 5,
+                    "target": 2024,
+                    "x": "year"
+                  }
+                }
+              ]
+            }
+          },
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "exact": true,
+          "filter": {
+            "must": [
+              {
+                "key": "body",
+                "match": {
+                  "text": "electricity"
+                }
+              }
+            ]
+          },
+          "key": "category",
+          "limit": 5
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/facet"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "limit": 10,
+          "prefetch": [
+            {
+              "limit": 100,
+              "query": {
+                "indices": [
+                  510383162,
+                  1321581116,
+                  3208966983,
+                  3421486907,
+                  3495007025,
+                  3969925019
+                ],
+                "values": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "using": "bm25"
+            },
+            {
+              "limit": 100,
+              "params": {
+                "hnsw_ef": 64,
+                "quantization": {
+                  "oversampling": 4,
+                  "rescore": true
+                }
+              },
+              "query": [
+                0.5,
+                -0.25,
+                0.75,
+                0.125
+              ],
+              "using": "emb"
+            }
+          ],
+          "query": {
+            "rrf": {
+              "k": 60
+            }
+          },
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "limit": 10,
+          "prefetch": [
+            {
+              "limit": 100,
+              "query": {
+                "indices": [
+                  510383162,
+                  1321581116,
+                  3208966983,
+                  3421486907,
+                  3495007025,
+                  3969925019
+                ],
+                "values": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "using": "bm25"
+            },
+            {
+              "limit": 100,
+              "params": {
+                "hnsw_ef": 64,
+                "quantization": {
+                  "oversampling": 4,
+                  "rescore": true
+                }
+              },
+              "query": [
+                0.5,
+                -0.25,
+                0.75,
+                0.125
+              ],
+              "using": "emb"
+            }
+          ],
+          "query": {
+            "fusion": "dbsf"
+          },
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": {
+          "ids": [
+            41
+          ],
+          "with_payload": [
+            "key",
+            "title",
+            "year",
+            "rating"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points"
+      },
+      "request": {
+        "body": {
+          "filter": {
+            "must": [
+              {
+                "key": "key",
+                "match": {
+                  "value": "d42"
+                }
+              }
+            ]
+          },
+          "limit": 10,
+          "with_payload": [
+            "key",
+            "title",
+            "year",
+            "rating"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/scroll"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "filter": {
+            "must": [
+              {
+                "key": "body",
+                "match": {
+                  "phrase": "solar panels"
+                }
+              }
+            ]
+          },
+          "limit": 10,
+          "query": {
+            "indices": [
+              510383162,
+              1321581116,
+              3208966983,
+              3421486907,
+              3495007025,
+              3969925019
+            ],
+            "values": [
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "using": "bm25",
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": null,
+      "unsupported": "prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field"
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "filter": {
+            "must": [
+              {
+                "key": "rating",
+                "range": {
+                  "gte": 3
+                }
+              }
+            ],
+            "must_not": [
+              {
+                "key": "key",
+                "match": {
+                  "any": [
+                    "d7",
+                    "d9",
+                    "d11"
+                  ]
+                }
+              }
+            ]
+          },
+          "limit": 10,
+          "params": {
+            "hnsw_ef": 64,
+            "quantization": {
+              "oversampling": 4,
+              "rescore": true
+            }
+          },
+          "query": [
+            0.25,
+            0.25,
+            -0.5,
+            0.75
+          ],
+          "using": "emb",
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": null,
+      "unsupported": "no grouped aggregates: its facet API counts values only"
+    },
+    "typo": {
+      "native": null,
+      "request": null,
+      "unsupported": "no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)"
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "limit": 10,
+          "params": {
+            "hnsw_ef": 64,
+            "quantization": {
+              "oversampling": 4,
+              "rescore": true
+            }
+          },
+          "query": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ],
+          "using": "emb",
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "filter": {
+            "must": [
+              {
+                "key": "rating",
+                "range": {
+                  "gte": 4
+                }
+              }
+            ]
+          },
+          "limit": 10,
+          "params": {
+            "hnsw_ef": 64,
+            "quantization": {
+              "oversampling": 4,
+              "rescore": true
+            }
+          },
+          "query": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ],
+          "using": "emb",
+          "with_payload": [
+            "key"
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/collections/docs/points/query"
+      },
+      "unsupported": null
+    }
+  },
+  "redis": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "@body:(how|do|solar|panels|convert|sunlight|into|electricity|at|night)",
+            "WITHSCORES",
+            "SCORER",
+            "BM25STD",
+            "NOCONTENT",
+            "LIMIT",
+            "0",
+            "10",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "@body:(how|do|solar|panels|convert|sunlight|into|electricity|at|night) @year:[2010 +inf] @category:{c00|c01|c02|c03}",
+            "WITHSCORES",
+            "SCORER",
+            "BM25STD",
+            "NOCONTENT",
+            "LIMIT",
+            "0",
+            "10",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.AGGREGATE",
+            "idx",
+            "@body:(how|do|solar|panels|convert|sunlight|into|electricity|at|night)",
+            "ADDSCORES",
+            "SCORER",
+            "BM25STD",
+            "LOAD",
+            "2",
+            "@__key",
+            "@year",
+            "APPLY",
+            "@__score * exp(-0.13862943611198905 * abs(@year - 2024))",
+            "AS",
+            "s",
+            "SORTBY",
+            "2",
+            "@s",
+            "DESC",
+            "MAX",
+            "10",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.AGGREGATE",
+            "idx",
+            "@body:electricity",
+            "GROUPBY",
+            "1",
+            "@category",
+            "REDUCE",
+            "COUNT",
+            "0",
+            "AS",
+            "n",
+            "SORTBY",
+            "2",
+            "@n",
+            "DESC",
+            "MAX",
+            "5",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.HYBRID",
+            "idx",
+            "SEARCH",
+            "@body:(how|do|solar|panels|convert|sunlight|into|electricity|at|night)",
+            "SCORER",
+            "BM25STD",
+            "VSIM",
+            "@emb",
+            "$v",
+            "KNN",
+            "4",
+            "K",
+            "100",
+            "EF_RUNTIME",
+            "100",
+            "COMBINE",
+            "RRF",
+            "4",
+            "WINDOW",
+            "100",
+            "CONSTANT",
+            "60",
+            "LIMIT",
+            "0",
+            "10",
+            "PARAMS",
+            "2",
+            "v",
+            "hex:003800b4003a0030"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.HYBRID",
+            "idx",
+            "SEARCH",
+            "@body:(how|do|solar|panels|convert|sunlight|into|electricity|at|night)",
+            "SCORER",
+            "BM25STD",
+            "VSIM",
+            "@emb",
+            "$v",
+            "KNN",
+            "4",
+            "K",
+            "100",
+            "EF_RUNTIME",
+            "100",
+            "COMBINE",
+            "LINEAR",
+            "6",
+            "ALPHA",
+            "0.2",
+            "BETA",
+            "0.8",
+            "WINDOW",
+            "100",
+            "LIMIT",
+            "0",
+            "10",
+            "PARAMS",
+            "2",
+            "v",
+            "hex:003800b4003a0030"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "HMGET",
+            "d:d42",
+            "key",
+            "title",
+            "year",
+            "rating"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "@body:\"solar panels\" @body:(how|do|solar|panels|convert|sunlight|into|electricity|at|night)",
+            "WITHSCORES",
+            "SCORER",
+            "BM25STD",
+            "NOCONTENT",
+            "LIMIT",
+            "0",
+            "10",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "@body:nig* ~@body:(how|do|solar|panels|convert|sunlight|into|electricity|at)",
+            "WITHSCORES",
+            "SCORER",
+            "BM25STD",
+            "NOCONTENT",
+            "LIMIT",
+            "0",
+            "10",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "(@rating:[3 +inf] -@key:{d7|d9|d11})=>[KNN 10 @emb $v EF_RUNTIME 64 AS d]",
+            "SORTBY",
+            "d",
+            "RETURN",
+            "1",
+            "d",
+            "LIMIT",
+            "0",
+            "10",
+            "PARAMS",
+            "2",
+            "v",
+            "hex:0034003400b8003a",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.AGGREGATE",
+            "idx",
+            "@year:[2001 +inf]",
+            "GROUPBY",
+            "1",
+            "@category",
+            "REDUCE",
+            "COUNT",
+            "0",
+            "AS",
+            "n",
+            "REDUCE",
+            "AVG",
+            "1",
+            "@rating",
+            "AS",
+            "r",
+            "FILTER",
+            "@n > 1000",
+            "SORTBY",
+            "2",
+            "@n",
+            "DESC",
+            "MAX",
+            "10",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "@body:(%how%|do|%solar%|%%panels%%|%%convert%%|%%sunlight%%|%into%|%%eelctricity%%|at|%night%)",
+            "WITHSCORES",
+            "SCORER",
+            "BM25STD",
+            "NOCONTENT",
+            "LIMIT",
+            "0",
+            "10",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "(*)=>[KNN 10 @emb $v EF_RUNTIME 64 AS d]",
+            "SORTBY",
+            "d",
+            "RETURN",
+            "1",
+            "d",
+            "LIMIT",
+            "0",
+            "10",
+            "PARAMS",
+            "2",
+            "v",
+            "hex:003800b4003a0030",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "cmds": [
+          [
+            "FT.SEARCH",
+            "idx",
+            "(@rating:[4 +inf])=>[KNN 10 @emb $v EF_RUNTIME 64 AS d]",
+            "SORTBY",
+            "d",
+            "RETURN",
+            "1",
+            "d",
+            "LIMIT",
+            "0",
+            "10",
+            "PARAMS",
+            "2",
+            "v",
+            "hex:003800b4003a0030",
+            "DIALECT",
+            "2"
+          ]
+        ],
+        "url": "http://engine:1"
+      },
+      "unsupported": null
+    }
+  },
+  "solr": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "limit": 10,
+          "params": {
+            "minExactCount": 10
+          },
+          "query": "{!lucene df=body q.op=OR}how do solar panels convert sunlight into electricity at night"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "filter": [
+            "year:[2010 TO *]",
+            "{!terms f=category}c00,c01,c02,c03"
+          ],
+          "limit": 10,
+          "params": {
+            "minExactCount": 10
+          },
+          "query": "{!lucene df=body q.op=OR}how do solar panels convert sunlight into electricity at night"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "limit": 10,
+          "params": {
+            "decay": "exp(mul(-0.13862943611198905,abs(sub(year,2024))))",
+            "lexq": "{!lucene df=body q.op=OR}how do solar panels convert sunlight into electricity at night",
+            "minExactCount": 10
+          },
+          "query": "{!boost b=$decay v=$lexq}"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "facet": {
+            "c": {
+              "field": "category",
+              "limit": 5,
+              "refine": true,
+              "type": "terms"
+            }
+          },
+          "limit": 0,
+          "query": "{!term f=body}electr"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "limit": 10,
+          "params": {
+            "combiner": true,
+            "combiner.algorithm": "rrf",
+            "combiner.query": [
+              "lex",
+              "vec"
+            ],
+            "combiner.rrf.k": 60
+          },
+          "queries": {
+            "lex": {
+              "lucene": {
+                "df": "body",
+                "q.op": "OR",
+                "query": "how do solar panels convert sunlight into electricity at night"
+              }
+            },
+            "vec": {
+              "knn": {
+                "f": "emb",
+                "query": "[0.5,-0.25,0.75,0.125]",
+                "topK": 100
+              }
+            }
+          }
+        },
+        "path": "/solr/quora/hybrid"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "limit": 10,
+          "params": {
+            "lexq": "{!lucene df=body q.op=OR}how do solar panels convert sunlight into electricity at night",
+            "lexw": "{!boost b=0.44 v=$lexq}",
+            "minExactCount": 10,
+            "vecq": "{!knn f=emb topK=100}[0.5,-0.25,0.75,0.125]",
+            "vecw": "{!boost b=0.8 v=$vecq}"
+          },
+          "query": "{!bool should=$lexw should=$vecw}"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": {},
+        "path": "/solr/quora/get?ids=d42&fl=id,title,year,rating"
+      },
+      "request": {
+        "body": {
+          "fields": "id,title,year,rating",
+          "limit": 10,
+          "query": "{!term f=id}d42"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "limit": 10,
+          "params": {
+            "minExactCount": 10
+          },
+          "query": "{!lucene df=body q.op=OR}+\"solar panels\" how do solar panels convert sunlight into electricity at night"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "filter": [
+            "body:nig*"
+          ],
+          "limit": 10,
+          "params": {
+            "minExactCount": 10
+          },
+          "query": "{!lucene df=body q.op=OR}how do solar panels convert sunlight into electricity at"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "filter": [
+            "rating:[3 TO *]",
+            "-id:(\"d7\" OR \"d9\" OR \"d11\")"
+          ],
+          "limit": 10,
+          "query": "{!knn f=emb topK=64}[0.25,0.25,-0.5,0.75]"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": {
+          "stmt": "SELECT category, COUNT(*), AVG(rating) FROM quora WHERE `year` >= 2001 GROUP BY category HAVING COUNT(*) > 1000 ORDER BY COUNT(*) DESC LIMIT 10"
+        },
+        "path": "/solr/quora/sql"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "limit": 10,
+          "params": {
+            "minExactCount": 10
+          },
+          "query": "{!lucene df=body q.op=OR}how~1 do solar~1 panels~2 convert~2 sunlight~2 into~1 eelctricity~2 at night~1"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "limit": 10,
+          "query": "{!knn f=emb topK=64}[0.5,-0.25,0.75,0.125]"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "fields": "id,score",
+          "filter": [
+            "rating:[4 TO *]"
+          ],
+          "limit": 10,
+          "query": "{!knn f=emb topK=64}[0.5,-0.25,0.75,0.125]"
+        },
+        "path": "/solr/quora/query"
+      },
+      "unsupported": null
+    }
+  },
+  "strata": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "t": "How do solar panels convert sunlight into electricity at night?"
+          },
+          "sql": "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "t": "How do solar panels convert sunlight into electricity at night?"
+          },
+          "sql": "SELECT id, score() FROM docs WHERE year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03') ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "t": "How do solar panels convert sunlight into electricity at night?"
+          },
+          "sql": "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') * decay(year, 2024, 5) DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "w": "electricity"
+          },
+          "sql": "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, :w) GROUP BY category ORDER BY 2 DESC LIMIT 5"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "t": "How do solar panels convert sunlight into electricity at night?",
+            "v": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ]
+          },
+          "sql": "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t, syntax => 'plain'), similarity(emb, :v)) DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "t": "How do solar panels convert sunlight into electricity at night?",
+            "v": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ]
+          },
+          "sql": "SELECT id, score() FROM docs ORDER BY 0.2 * minmax(bm25(body, :t, syntax => 'plain')) + 0.8 * minmax(similarity(emb, :v)) DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": null,
+      "request": {
+        "body": {
+          "keys": [
+            "d42"
+          ],
+          "table": "docs"
+        },
+        "path": "/v1/kv/get"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "p": "+\"solar panels\" how do solar panels convert sunlight into electricity at night"
+          },
+          "sql": "SELECT id, score() FROM docs ORDER BY bm25(body, :p) DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "before": "how do solar panels convert sunlight into electricity at",
+            "pre": "nig*"
+          },
+          "sql": "SELECT id, score() FROM docs WHERE MATCH(body, :pre) ORDER BY bm25(body, :before, syntax => 'plain') DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "i": [
+              0.25,
+              0.25,
+              -0.5,
+              0.75
+            ]
+          },
+          "sql": "SELECT id, score() FROM docs WHERE rating >= 3 AND id NOT IN ('d7', 'd9', 'd11') ORDER BY similarity(emb, :i) DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {},
+          "sql": "SELECT category, COUNT(*), AVG(rating) FROM docs WHERE year >= 2001 GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "x": "how do solar panels convert sunlight into eelctricity at night"
+          },
+          "sql": "SELECT id, score() FROM docs ORDER BY bm25(body, :x, syntax => 'plain', fuzzy => 'auto') DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "v": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ]
+          },
+          "sql": "SELECT id, score() FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "params": {
+            "v": [
+              0.5,
+              -0.25,
+              0.75,
+              0.125
+            ]
+          },
+          "sql": "SELECT id, score() FROM docs WHERE rating >= 4 ORDER BY similarity(emb, :v) DESC LIMIT 10"
+        },
+        "path": "/v1/query"
+      },
+      "unsupported": null
+    }
+  },
+  "typesense": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "include_fields": "id",
+              "num_typos": 0,
+              "per_page": 10,
+              "prefix": false,
+              "q": "How do solar panels convert sunlight into electricity at night?",
+              "query_by": "body",
+              "stopwords": "query"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "filter_by": "year:>=2010 && category:[c00,c01,c02,c03]",
+              "include_fields": "id",
+              "num_typos": 0,
+              "per_page": 10,
+              "prefix": false,
+              "q": "How do solar panels convert sunlight into electricity at night?",
+              "query_by": "body",
+              "stopwords": "query"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": null,
+      "unsupported": "no function scores: decay functions only sort (before or after the text match), they do not multiply it"
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "drop_tokens_threshold": 0,
+              "facet_by": "category",
+              "max_facet_values": 5,
+              "num_typos": 0,
+              "per_page": 0,
+              "prefix": false,
+              "q": "electricity",
+              "query_by": "body"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "include_fields": "id",
+              "num_typos": 0,
+              "per_page": 10,
+              "prefix": false,
+              "q": "How do solar panels convert sunlight into electricity at night?",
+              "query_by": "body",
+              "stopwords": "query",
+              "vector_query": "emb:([0.5,-0.25,0.75,0.125], k:100, alpha:0.5)"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "include_fields": "id",
+              "num_typos": 0,
+              "per_page": 10,
+              "prefix": false,
+              "q": "How do solar panels convert sunlight into electricity at night?",
+              "query_by": "body",
+              "stopwords": "query",
+              "vector_query": "emb:([0.5,-0.25,0.75,0.125], k:100, alpha:0.8)"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": "",
+        "ctype": "application/json",
+        "method": "GET",
+        "url": "http://engine:1/collections/docs/documents/d42?include_fields=id,title,year,rating"
+      },
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "filter_by": "id:=`d42`",
+              "include_fields": "id,title,year,rating",
+              "per_page": 10,
+              "q": "*"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "include_fields": "id",
+              "num_typos": 0,
+              "per_page": 10,
+              "prefix": false,
+              "q": "\"solar panels\" how do solar panels convert sunlight into electricity at night",
+              "query_by": "body",
+              "stopwords": "query"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "include_fields": "id",
+              "num_typos": 0,
+              "per_page": 10,
+              "prefix": true,
+              "q": "how do solar panels convert sunlight into electricity at nig",
+              "query_by": "body",
+              "stopwords": "query"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "filter_by": "rating:>=3 && id:!=[`d7`,`d9`,`d11`]",
+              "include_fields": "id",
+              "per_page": 10,
+              "q": "*",
+              "vector_query": "emb:([0.25,0.25,-0.5,0.75], k:10, ef:64)"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": null,
+      "unsupported": "no grouped aggregates: facets count values, and facet stats cover the whole result, not each group"
+    },
+    "typo": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "include_fields": "id",
+              "num_typos": 2,
+              "per_page": 10,
+              "prefix": false,
+              "q": "how do solar panels convert sunlight into eelctricity at night",
+              "query_by": "body",
+              "stopwords": "query"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "include_fields": "id",
+              "per_page": 10,
+              "q": "*",
+              "vector_query": "emb:([0.5,-0.25,0.75,0.125], k:10, ef:64)"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "searches": [
+            {
+              "collection": "docs",
+              "filter_by": "rating:>=4",
+              "include_fields": "id",
+              "per_page": 10,
+              "q": "*",
+              "vector_query": "emb:([0.5,-0.25,0.75,0.125], k:10, ef:64)"
+            }
+          ]
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/multi_search"
+      },
+      "unsupported": null
+    }
+  },
+  "vespa": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "model.defaultIndex": "body",
+          "model.type": "weakAnd",
+          "presentation.summary": "minimal",
+          "query": "how do solar panels convert sunlight into electricity at night",
+          "ranking": "bm25",
+          "timeout": "10s",
+          "yql": "select * from doc where userQuery()"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "model.defaultIndex": "body",
+          "model.type": "weakAnd",
+          "presentation.summary": "minimal",
+          "query": "how do solar panels convert sunlight into electricity at night",
+          "ranking": "bm25",
+          "timeout": "10s",
+          "yql": "select * from doc where userQuery() and year >= 2010 and category in (\"c00\", \"c01\", \"c02\", \"c03\")"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "model.defaultIndex": "body",
+          "model.type": "weakAnd",
+          "presentation.summary": "minimal",
+          "query": "how do solar panels convert sunlight into electricity at night",
+          "ranking": "boosted",
+          "timeout": "10s",
+          "yql": "select * from doc where userQuery()"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 0,
+          "presentation.summary": "minimal",
+          "timeout": "10s",
+          "yql": "select * from doc where body contains \"electricity\" limit 0 | all(group(category) max(5) precision(17) order(-count()) each(output(count())))"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "input.query(v)": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ],
+          "model.defaultIndex": "body",
+          "model.type": "weakAnd",
+          "presentation.summary": "minimal",
+          "query": "how do solar panels convert sunlight into electricity at night",
+          "ranking": "hybrid_rrf",
+          "timeout": "10s",
+          "yql": "select * from doc where userQuery() or ({targetHits:100}nearestNeighbor(emb, v))"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "input.query(v)": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ],
+          "model.defaultIndex": "body",
+          "model.type": "weakAnd",
+          "presentation.summary": "minimal",
+          "query": "how do solar panels convert sunlight into electricity at night",
+          "ranking": "hybrid_weighted",
+          "timeout": "10s",
+          "yql": "select * from doc where userQuery() or ({targetHits:100}nearestNeighbor(emb, v))"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": null,
+        "path": "/document/v1/doc/doc/docid/d42?fieldSet=doc:id,title,year,rating&timeout=10s"
+      },
+      "request": {
+        "body": {
+          "hits": 10,
+          "presentation.summary": "lookup",
+          "ranking": "unranked",
+          "timeout": "10s",
+          "yql": "select * from doc where id contains \"d42\""
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "model.defaultIndex": "body",
+          "model.type": "weakAnd",
+          "presentation.summary": "minimal",
+          "query": "how do solar panels convert sunlight into electricity at night",
+          "ranking": "bm25",
+          "timeout": "10s",
+          "yql": "select * from doc where userQuery() and body contains phrase(\"solar\", \"panels\")"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "prefix": {
+      "native": null,
+      "request": null,
+      "unsupported": "Vespa matches prefixes on attributes only, not on indexed text fields (n-gram fields are its way)"
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "input.query(i)": [
+            0.25,
+            0.25,
+            -0.5,
+            0.75
+          ],
+          "presentation.summary": "minimal",
+          "ranking": "similar",
+          "timeout": "10s",
+          "yql": "select * from doc where {targetHits:10, hnsw.exploreAdditionalHits:54}nearestNeighbor(emb, i) and rating >= 3 and !(id in (\"d7\", \"d9\", \"d11\"))"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 0,
+          "presentation.summary": "minimal",
+          "timeout": "10s",
+          "yql": "select * from doc where year >= 2001 limit 0 | all(group(category) max(10) precision(1000) order(-count()) each(output(count(), avg(rating))))"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": null,
+      "unsupported": "Vespa matches typos (fuzzy) on attributes only, not on indexed text fields"
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "input.query(v)": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ],
+          "presentation.summary": "minimal",
+          "ranking": "vector",
+          "timeout": "10s",
+          "yql": "select * from doc where {targetHits:10, hnsw.exploreAdditionalHits:54}nearestNeighbor(emb, v)"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "hits": 10,
+          "input.query(v)": [
+            0.5,
+            -0.25,
+            0.75,
+            0.125
+          ],
+          "presentation.summary": "minimal",
+          "ranking": "vector",
+          "timeout": "10s",
+          "yql": "select * from doc where {targetHits:10, hnsw.exploreAdditionalHits:54}nearestNeighbor(emb, v) and rating >= 4"
+        },
+        "path": "/search/"
+      },
+      "unsupported": null
+    }
+  },
+  "weaviate": {
+    "bm25": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, bm25: {query: \"How do solar panels convert sunlight into electricity at night?\", properties: [\"body\"]}) { key _additional { score } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "bm25 + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, bm25: {query: \"How do solar panels convert sunlight into electricity at night?\", properties: [\"body\"]}, where: {operator: And, operands: [{path: [\"year\"], operator: GreaterThanEqual, valueInt: 2010}, {path: [\"category\"], operator: ContainsAny, valueText: [\"c00\", \"c01\", \"c02\", \"c03\"]}]}) { key _additional { score } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "boosted (bm25 × decay)": {
+      "native": null,
+      "request": null,
+      "unsupported": "no function scores"
+    },
+    "facet": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Aggregate { Doc(groupBy: [\"category\"], where: {path: [\"body\"], operator: ContainsAny, valueText: [\"electricity\"]}) { groupedBy { value } meta { count } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "hybrid (RRF)": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, hybrid: {query: \"How do solar panels convert sunlight into electricity at night?\", vector: [0.5,-0.25,0.75,0.125], alpha: 0.5, fusionType: rankedFusion, properties: [\"body\"]}) { key _additional { score } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "hybrid (weighted)": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, hybrid: {query: \"How do solar panels convert sunlight into electricity at night?\", vector: [0.5,-0.25,0.75,0.125], alpha: 0.8, fusionType: relativeScoreFusion, properties: [\"body\"]}) { key _additional { score } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "key lookup": {
+      "native": {
+        "body": "",
+        "ctype": "application/json",
+        "method": "GET",
+        "url": "http://engine:1/v1/objects/Doc/450fa561-a74c-8f27-a007-7d560b2d63d3"
+      },
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, where: {path: [\"key\"], operator: Equal, valueText: \"d42\"}) { key title year rating } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "phrase": {
+      "native": null,
+      "request": null,
+      "unsupported": "no phrase queries"
+    },
+    "prefix": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, bm25: {query: \"how do solar panels convert sunlight into electricity at\", properties: [\"body\"]}, where: {path: [\"body\"], operator: Like, valueText: \"nig*\"}) { key _additional { score } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "similar items": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, nearVector: {vector: [0.25,0.25,-0.5,0.75]}, where: {operator: And, operands: [{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: 3}, {path: [\"key\"], operator: NotEqual, valueText: \"d7\"}, {path: [\"key\"], operator: NotEqual, valueText: \"d9\"}, {path: [\"key\"], operator: NotEqual, valueText: \"d11\"}]}) { key _additional { distance } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "sql aggregate": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Aggregate { Doc(groupBy: [\"category\"], where: {path: [\"year\"], operator: GreaterThanEqual, valueInt: 2001}) { groupedBy { value } meta { count } rating { mean } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "typo": {
+      "native": null,
+      "request": null,
+      "unsupported": "no fuzzy matching"
+    },
+    "vector": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, nearVector: {vector: [0.5,-0.25,0.75,0.125]}) { key _additional { distance } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    },
+    "vector + filter": {
+      "native": null,
+      "request": {
+        "body": {
+          "query": "{ Get { Doc(limit: 10, nearVector: {vector: [0.5,-0.25,0.75,0.125]}, where: {path: [\"rating\"], operator: GreaterThanEqual, valueNumber: 4}) { key _additional { distance } } } }"
+        },
+        "ctype": "application/json",
+        "method": "POST",
+        "url": "http://engine:1/v1/graphql"
+      },
+      "unsupported": null
+    }
+  }
+}

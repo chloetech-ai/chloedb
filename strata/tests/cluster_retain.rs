@@ -71,7 +71,7 @@ fn clustered_segments_hold_each_value_in_one_run() {
     let opts = DbOptions { memtable_max_docs: usize::MAX, ..DbOptions::default() };
     let db = Db::create(&dir.path().join("c.strata"), events(r#""cluster_by": "usr","#), opts.clone()).unwrap();
     let plain = Db::create(&dir.path().join("p.strata"), events(""), opts).unwrap();
-    assert_eq!(db.schema().features().collect::<Vec<_>>(), ["timestamp", "cluster_by"]);
+    assert_eq!(db.schema().features().collect::<Vec<_>>(), ["timestamp", "cluster_by", "compact_keys"]);
     for b in 0..6 {
         for d in [&db, &plain] {
             write(d, (b * 500..b * 500 + 500).map(|i| row(i, &usr(i), Some(i))));

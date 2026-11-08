@@ -147,7 +147,7 @@ async fn query(svc: &Arc<Service>, s: &str) -> Json {
 
 /// Queries of every table, and across them: those whose order is total
 /// (`true`) answer in the same order, the others with the same rows.
-const QUERIES: [(&str, bool); 27] = [
+const QUERIES: [(&str, bool); 31] = [
     ("SELECT item, action, ts FROM events WHERE usr = 'u3' ORDER BY ts DESC, id LIMIT 50", true),
     ("SELECT COUNT(*) FROM events", true),
     ("SELECT usr, COUNT(*) FROM events GROUP BY usr LIMIT 100", false),
@@ -157,6 +157,10 @@ const QUERIES: [(&str, bool); 27] = [
     ("SELECT id, price FROM items WHERE id IN (SELECT item FROM events WHERE usr = 'u5' AND action = 'buy') ORDER BY price DESC LIMIT 100", true),
     ("SELECT e.id, e.ts, i.title FROM events e JOIN items i ON e.item = i.id WHERE e.usr = 'u7' ORDER BY e.ts DESC, e.id LIMIT 20", true),
     ("SELECT u.country, COUNT(*) FROM events e JOIN users u ON e.usr = u.id WHERE e.action = 'buy' GROUP BY u.country", false),
+    // Groups of the other table's rows, the events grouped in their scan
+    // before the join.
+    ("SELECT u.id, u.country, COUNT(*) AS n, MAX(e.ts) FROM events e JOIN users u ON e.usr = u.id GROUP BY u.id, u.country ORDER BY n DESC, u.id LIMIT 20", true),
+    ("SELECT i.id, COUNT(*), COUNT(DISTINCT e.usr), AVG(e.ts) FROM events e JOIN items i ON e.item = i.id WHERE e.action = 'buy' GROUP BY i.id ORDER BY i.id", true),
     ("WITH h AS (SELECT item FROM events WHERE usr = 'u9' ORDER BY ts DESC LIMIT 30) SELECT id, cat FROM items WHERE id IN (SELECT item FROM h) AND cat <> 'c1' ORDER BY price LIMIT 30", true),
     ("SELECT id, score() FROM items WHERE MATCH(title, 'kettle') ORDER BY bm25(title, 'kettle') DESC LIMIT 10", true),
     // The first row of each group: of a column that places rows, of one
@@ -169,6 +173,10 @@ const QUERIES: [(&str, bool); 27] = [
     ("SELECT usr, id, ts FROM events ORDER BY ts DESC, id MAX 2 PER usr LIMIT 20", true),
     ("SELECT item, id, ts FROM events WHERE action = 'buy' ORDER BY ts DESC, id MAX 3 PER item LIMIT 15 OFFSET 2", true),
     ("SELECT id, cat, score() FROM items WHERE MATCH(title, 'kettle rope') ORDER BY bm25(title, 'kettle rope') DESC MAX 2 PER cat LIMIT 8", true),
+    // A rank-safe boost, each shard sending its own top k: capped, and
+    // past an OFFSET.
+    ("SELECT id, cat, score() FROM items ORDER BY bm25(title, 'kettle rope') * (1 + price / 1000) DESC MAX 2 PER cat LIMIT 8", true),
+    ("SELECT id, score() FROM items ORDER BY bm25(title, 'kettle rope') * (1 + price / 1000) DESC LIMIT 10 OFFSET 3", true),
     ("SELECT e.id, e.ts, i.cat FROM events e JOIN items i ON e.item = i.id ORDER BY e.ts DESC, e.id MAX 2 PER i.cat LIMIT 12", true),
     // Window functions over the shards' rows, groups and joins.
     ("SELECT id, usr, ROW_NUMBER() OVER (PARTITION BY usr ORDER BY ts DESC, id) AS r, COUNT(*) OVER (PARTITION BY action) FROM events QUALIFY r <= 2 ORDER BY usr, r", true),
@@ -240,6 +248,45 @@ async fn three_shards_answer_like_one_database() {
     for (q, ordered) in QUERIES {
         same(q, ordered, &query(&whole, q).await, &query(&coord, q).await);
     }
+
+    // The coordinator refuses a graph query, saying what to do instead. A
+    // walk from the application, a round of reads by key per hop, finds
+    // the rows the whole database's walk does.
+    let walk = |seed: &str| format!("SELECT id FROM items WHERE REACHABLE(cooc, '{seed}', hops => 2) ORDER BY id LIMIT 1000");
+    let e = coord.query(QueryReq { sql: walk("i1"), ..Default::default() }).await.err().unwrap();
+    assert!(e.status == 400 && e.message.contains("not supported through a coordinator") && e.message.contains("On a cluster"), "{}", e.message);
+    let ids = |j: Json| j["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect::<std::collections::BTreeSet<String>>();
+    let mut seeds = 0;
+    for i in 0..ITEMS {
+        let seed = format!("i{i}");
+        let want = ids(query(&whole, &walk(&seed)).await);
+        if want.len() < 3 {
+            continue;
+        }
+        let mut seen = std::collections::BTreeSet::from([seed.clone()]);
+        let mut frontier = vec![seed.clone()];
+        for _ in 0..2 {
+            let keys = frontier.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+            let rows = query(&coord, &format!("SELECT id, cooc FROM items WHERE id IN ({keys}) LIMIT 1000")).await;
+            frontier.clear();
+            for r in rows["rows"].as_array().unwrap() {
+                // An EDGES column comes as its JSON text.
+                let edges: Vec<String> = serde_json::from_str(r[1].as_str().unwrap()).unwrap();
+                for to in edges {
+                    if seen.insert(to.clone()) {
+                        frontier.push(to);
+                    }
+                }
+            }
+        }
+        seen.remove(&seed);
+        assert_eq!(seen, want, "two hops from {seed}");
+        seeds += 1;
+        if seeds == 5 {
+            break;
+        }
+    }
+    assert_eq!(seeds, 5);
 
     // A user's events are on one shard: the one holding their slot.
     let map = slots::SlotMap::even(3, 1);
@@ -351,7 +398,7 @@ async fn on_datafusion_three_shards_answer_like_one_database() {
     // All but the single-table queries and the IN subquery, which the
     // operators answer as one leaf; the same ones on both.
     assert_eq!(on_datafusion[0], on_datafusion[1]);
-    assert_eq!(on_datafusion[1].len(), QUERIES.len() - 8, "{:#?}", on_datafusion[1]);
+    assert_eq!(on_datafusion[1].len(), QUERIES.len() - 9, "{:#?}", on_datafusion[1]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -359,7 +406,7 @@ async fn every_table_over_http_and_grpc() {
     let dir = tempfile::tempdir().unwrap();
     let svc = local(dir.path(), "one.strata");
     let (h, g) = (http(svc.clone()).await, grpc(svc.clone()).await);
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let post = |path: &str, body: Json| {
         let (c, url) = (c.clone(), format!("{h}{path}"));
         async move {
@@ -399,6 +446,19 @@ async fn every_table_over_http_and_grpc() {
     assert_eq!((count("items").await, count("users").await, count("events").await), (ITEMS as u64, USERS as u64, EVENTS as u64));
     let (_, a) = post("/v1/query", json!({"sql": "SELECT SUM(n_events) FROM users"})).await;
     assert_eq!(a["rows"][0][0], EVENTS, "{a}");
+    // Rows as objects keyed by column, on asking: a name two columns
+    // share keys the second by its place.
+    let join = "SELECT e.id, i.id, e.usr AS who, e.item AS who FROM events e JOIN items i ON e.item = i.id ORDER BY e.id LIMIT 2";
+    let (_, lists) = post("/v1/sql", json!({"sql": join})).await;
+    for path in ["/v1/sql", "/v1/query"] {
+        let (status, a) = post(path, json!({"sql": join, "objects": true})).await;
+        assert_eq!(status, 200, "{a}");
+        assert_eq!(a["columns"], lists["columns"], "{a}");
+        let want: Vec<Json> = lists["rows"].as_array().unwrap().iter().map(|r| json!({"e.id": r[0], "i.id": r[1], "who": r[2], "who_2": r[3]})).collect();
+        assert_eq!(a["rows"], json!(want), "{a}");
+    }
+    let (status, a) = post("/v1/query", json!({"sql": join, "objects": "yes"})).await;
+    assert!(status == 400 && a["error"].as_str().unwrap().contains("objects is true or false"), "{a}");
     let (status, a) = post("/v1/write", json!({"ops": [{"op": "upsert", "table": "nope", "doc": {"id": 1}}]})).await;
     assert!(status == 400 && a["error"].as_str().unwrap().contains("no such table: nope"), "{a}");
     let (_, a) = post("/v1/explain", json!({"sql": QUERIES[0].0})).await;

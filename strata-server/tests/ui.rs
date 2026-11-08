@@ -51,7 +51,7 @@ async fn the_command_center_is_served_with_every_module_it_imports() {
     let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
     tokio::spawn(server::serve_http(svc, l, Default::default()));
 
-    let page = reqwest::get(format!("{base}/")).await.unwrap().text().await.unwrap();
+    let page = strata_server::http_client().build().unwrap().get(format!("{base}/")).send().await.unwrap().text().await.unwrap();
     assert!(page.contains("/ui/main.js") && page.contains("/ui/app.css"), "{page}");
 
     // Every module reachable from main.js, and the stylesheet.
@@ -61,23 +61,38 @@ async fn the_command_center_is_served_with_every_module_it_imports() {
         if !seen.insert(p.clone()) {
             continue;
         }
-        let r = reqwest::get(format!("{base}/ui/{p}")).await.unwrap();
+        let r = strata_server::http_client().build().unwrap().get(format!("{base}/ui/{p}")).send().await.unwrap();
         assert_eq!(r.status(), 200, "/ui/{p}");
         assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/javascript"), "/ui/{p}");
         let js = r.text().await.unwrap();
         todo.extend(imports(&p, &js));
     }
-    let css = reqwest::get(format!("{base}/ui/app.css")).await.unwrap();
+    let css = strata_server::http_client().build().unwrap().get(format!("{base}/ui/app.css")).send().await.unwrap();
     assert!(css.headers()["content-type"].to_str().unwrap().starts_with("text/css"));
     // Each served file is used, and each view is among them.
     let served: BTreeSet<String> = ui::FILES.iter().map(|(p, ..)| p.to_string()).filter(|p| p.ends_with(".js")).collect();
     assert_eq!(seen, served, "the modules main.js reaches, and those the server serves");
-    for v in ["overview", "topology", "fleet", "querypath", "control", "rollout", "autoscale", "cloud", "cluster", "performance", "alerts", "queries", "logs", "sql", "builder", "schema", "import", "relevance", "recsys", "sid", "autocomplete", "media", "graph", "access", "system"] {
+    for v in ["overview", "timeline", "querypath", "tables", "statement", "rollout", "autoscale", "cloud", "cluster", "performance", "alerts", "queries", "logs", "sql", "builder", "schema", "inspector", "import", "relevance", "recsys", "sid", "autocomplete", "media", "graph", "access", "system"] {
         assert!(seen.contains(&format!("views/{v}.js")), "{v}");
     }
 
-    assert_eq!(reqwest::get(format!("{base}/ui/nope.js")).await.unwrap().status(), 404);
-    assert_eq!(reqwest::get(format!("{base}/ui/../src/ui.rs")).await.unwrap().status(), 404);
-    let classic = reqwest::get(format!("{base}/classic")).await.unwrap().text().await.unwrap();
+    assert_eq!(strata_server::http_client().build().unwrap().get(format!("{base}/ui/nope.js")).send().await.unwrap().status(), 404);
+    assert_eq!(strata_server::http_client().build().unwrap().get(format!("{base}/ui/../src/ui.rs")).send().await.unwrap().status(), 404);
+    let classic = strata_server::http_client().build().unwrap().get(format!("{base}/classic")).send().await.unwrap().text().await.unwrap();
     assert!(classic.contains("Strata query console"));
+
+    // SH-11: gzip for a client that asks, of JSON and the UI's files; not
+    // for one that does not, nor for event streams.
+    let c = strata_server::http_client().build().unwrap();
+    let gz = |path: &'static str| {
+        let c = c.clone();
+        let base = base.clone();
+        async move { c.get(format!("{base}{path}")).header("accept-encoding", "gzip").send().await.unwrap() }
+    };
+    for path in ["/ui/main.js", "/v1/schema", "/v1/alerts"] {
+        let r = gz(path).await;
+        assert_eq!((r.status().as_u16(), r.headers().get("content-encoding").map(|v| v.to_str().unwrap().to_string())), (200, Some("gzip".into())), "{path}");
+    }
+    let plain = c.get(format!("{base}/ui/main.js")).send().await.unwrap();
+    assert!(plain.headers().get("content-encoding").is_none() && plain.text().await.unwrap().contains("import"));
 }

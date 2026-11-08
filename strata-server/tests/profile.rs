@@ -50,12 +50,12 @@ async fn grpc(svc: Arc<Service>) -> String {
 }
 
 async fn get(base: &str, path: &str) -> (u16, Json) {
-    let r = reqwest::get(format!("{base}{path}")).await.unwrap();
+    let r = strata_server::http_client().build().unwrap().get(format!("{base}{path}")).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 
 async fn send(method: reqwest::Method, base: &str, path: &str, body: Json) -> (u16, Json) {
-    let r = reqwest::Client::new().request(method, format!("{base}{path}")).json(&body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().request(method, format!("{base}{path}")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 

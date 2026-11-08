@@ -1,0 +1,142 @@
+Name:             build-s0-qzzzw
+Namespace:        strata-b
+Priority:         0
+Service Account:  default
+Node:             strata-b-d-a1-3eetty/10.120.0.36
+Start Time:       Tue, 03 Nov 2026 04:53:05 +0000
+Labels:           batch.kubernetes.io/controller-uid=78f091f2-d738-4518-ace9-70a5bc388e63
+                  batch.kubernetes.io/job-name=build-s0
+                  controller-uid=78f091f2-d738-4518-ace9-70a5bc388e63
+                  job-name=build-s0
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.10.111
+IPs:
+  IP:           10.121.10.111
+Controlled By:  Job/build-s0
+Containers:
+  compare:
+    Container ID:  containerd://0635b21dfa12dfd363b601ce7afb36ff2f2227ea4bbe989fe31d7c41df7248dc
+    Image:         ghcr.io/chloetech-ai/strata-server:e4b76809a7529518d38e33af6716ef09dcc7b435
+    Image ID:      ghcr.io/chloetech-ai/strata-server@sha256:e78911374796127e17b88d54f2edc0460c4a0353bdd068c06d023251a12e390e
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      build
+      --shard
+      0
+      --of
+      2
+      --out
+      /local/msmarco-1000k.shard0of2.strata
+      --threads
+      4
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Tue, 03 Nov 2026 04:53:05 +0000
+      Finished:     Tue, 03 Nov 2026 04:55:49 +0000
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      cpu:     3400m
+      memory:  26Gi
+    Requests:
+      cpu:     3400m
+      memory:  26Gi
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-88shv (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-88shv:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:                      cat-87652152
+Namespace:                 strata-b
+Priority:                  0
+Service Account:           default
+Node:                      strata-b-d-a1-3eetty/10.120.0.36
+Start Time:                Tue, 03 Nov 2026 04:55:57 +0000
+Labels:                    topology.kubernetes.io/region=sfo2
+Annotations:               <none>
+Status:                    Terminating (lasts <invalid>)
+Termination Grace Period:  30s
+IP:                        10.121.10.42
+IPs:
+  IP:  10.121.10.42
+Containers:
+  c:
+    Container ID:  containerd://050935a0a04f9854c2fcb05da5d0c59accf66e3f16c5151ac858417011893319
+    Image:         ghcr.io/chloetech-ai/strata-server:e4b76809a7529518d38e33af6716ef09dcc7b435
+    Image ID:      ghcr.io/chloetech-ai/strata-server@sha256:e78911374796127e17b88d54f2edc0460c4a0353bdd068c06d023251a12e390e
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      sleep
+      600
+    State:          Running
+      Started:      Tue, 03 Nov 2026 04:55:58 +0000
+    Ready:          True
+    Restart Count:  0
+    Environment:    <none>
+    Mounts:
+      /f from f (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-hvsb2 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  f:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  
+  kube-api-access-hvsb2:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists

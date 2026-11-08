@@ -427,3 +427,126 @@ fn plans_snapshots_and_refusals() {
     assert!(fails(&db, "SELECT p.id FROM papers p JOIN nope n ON p.venue = n.id").contains("no such table: nope"));
     assert!(fails(&db, "SELECT id FROM papers WHERE venue IN (SELECT id FROM nope)").contains("no such table: nope"));
 }
+
+/// Reviews of papers by key (some of papers that are not rows, some of
+/// none), with NULL scores.
+fn reviews(db: &Db) -> Vec<(i64, Option<String>, i64, Option<f64>)> {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(3);
+    let reviews: Vec<(i64, Option<String>, i64, Option<f64>)> = (0..2000)
+        .map(|i| {
+            let paper = match rng.gen_range(0..20) {
+                0 => None,
+                1 => Some(format!("x{}", rng.gen_range(0..5))),
+                // The first papers have most reviews.
+                _ => Some(format!("p{:03}", rng.gen_range(0..N).min(rng.gen_range(0..N)))),
+            };
+            // Quarters add up exactly, in any order.
+            let score = (rng.gen_range(0..10) != 0).then(|| rng.gen_range(0..40) as f64 / 4.0);
+            (i, paper, rng.gen_range(1..=5), score)
+        })
+        .collect();
+    sql(db, "CREATE TABLE reviews (id INT PRIMARY KEY, paper KEYWORD, stars INT, score FLOAT)");
+    db.load_into("reviews", reviews.iter().map(|(i, p, s, x)| vec![Value::Int(*i), p.clone().map_or(Value::Null, Value::Str), Value::Int(*s), x.map_or(Value::Null, Value::Float)])).unwrap();
+    reviews
+}
+
+fn explain(db: &Db, q: &str) -> String {
+    match sql(db, &format!("EXPLAIN {q}")) {
+        SqlResult::Rows(r) => r.rows.iter().map(|r| text(&r[0])).collect::<Vec<_>>().join("\n"),
+        SqlResult::Written(_) => panic!("EXPLAIN gives rows"),
+    }
+}
+
+#[test]
+fn groups_by_the_other_tables_key_group_before_the_join() {
+    let d = data();
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path(), &d);
+    let reviews = reviews(&db);
+
+    // Per paper: reviews, stars summed, the scores' average, the fewest
+    // stars, the best score, the scores, and the distinct stars.
+    struct Per {
+        n: i64,
+        stars: i64,
+        least: i64,
+        scores: Vec<f64>,
+        kinds: BTreeSet<i64>,
+    }
+    let mut per: BTreeMap<&str, Per> = BTreeMap::new();
+    for (_, p, s, x) in &reviews {
+        let Some(paper) = d.papers.iter().find(|q| Some(&q.id) == p.as_ref()) else { continue };
+        let e = per.entry(paper.id.as_str()).or_insert(Per { n: 0, stars: 0, least: i64::MAX, scores: Vec::new(), kinds: BTreeSet::new() });
+        e.n += 1;
+        e.stars += s;
+        e.least = e.least.min(*s);
+        e.scores.extend(x);
+        e.kinds.insert(*s);
+    }
+    let year = |id: &str| d.papers.iter().find(|p| p.id == id).unwrap().year;
+    let line = |id: &str, e: &Per| {
+        let avg = if e.scores.is_empty() { "NULL".to_string() } else { (e.scores.iter().sum::<f64>() / e.scores.len() as f64).to_string() };
+        let best = e.scores.iter().copied().reduce(f64::max).map_or("NULL".to_string(), |x| x.to_string());
+        let n = e.scores.len().to_string();
+        row(&[id, &year(id).to_string(), &e.n.to_string(), &e.stars.to_string(), &avg, &e.least.to_string(), &best, &n, &e.kinds.len().to_string()])
+    };
+    let mut want: Vec<(i64, &str)> = per.iter().map(|(id, e)| (-e.n, *id)).collect();
+    want.sort();
+    let want: Vec<Vec<String>> = want.iter().take(25).map(|(_, id)| line(id, &per[id])).collect();
+    assert!(per.len() > 100 && want[0][2] != want[24][2]);
+    let q = "SELECT p.id, p.year, COUNT(*) AS n, SUM(r.stars), AVG(r.score), MIN(r.stars), MAX(r.score), COUNT(r.score), COUNT(DISTINCT r.stars) \
+             FROM reviews r JOIN papers p ON r.paper = p.id GROUP BY p.id, p.year ORDER BY n DESC, p.id LIMIT 25";
+    assert_eq!(list(&rows(&db, q)), want);
+    // The reviews are grouped by their paper in their own scan, and the
+    // join reads a row per paper reviewed.
+    let plan = explain(&db, q);
+    assert!(plan.contains("Aggregate by paper"), "{plan}");
+
+    // Conditions on both sides, HAVING, and the groups of the left's key.
+    let mut want: BTreeMap<&str, i64> = BTreeMap::new();
+    for (_, p, s, _) in &reviews {
+        if let Some(paper) = d.papers.iter().find(|q| Some(&q.id) == p.as_ref()).filter(|q| q.year < 2015 && *s >= 2) {
+            *want.entry(paper.id.as_str()).or_default() += 1;
+        }
+    }
+    let want: Vec<Vec<String>> = want.iter().filter(|(_, n)| **n >= 3).map(|(id, n)| row(&[id, &n.to_string()])).collect();
+    assert!(want.len() > 10);
+    for q in [
+        "SELECT p.id, COUNT(*) FROM reviews r JOIN papers p ON r.paper = p.id WHERE r.stars >= 2 AND p.year < 2015 GROUP BY p.id HAVING COUNT(*) >= 3 ORDER BY p.id",
+        "SELECT r.paper, COUNT(*) FROM reviews r JOIN papers p ON r.paper = p.id WHERE r.stars >= 2 AND p.year < 2015 GROUP BY r.paper HAVING COUNT(*) >= 3 ORDER BY r.paper",
+    ] {
+        assert_eq!(list(&rows(&db, q)), want, "{q}");
+        assert!(explain(&db, q).contains("Aggregate by paper"), "{q}");
+    }
+
+    // INT keys, and the default order (the largest groups first, then by
+    // the columns), which the key's column makes one order.
+    let mut want: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
+    for p in &d.papers {
+        if d.venue(p.venue).is_some() {
+            let e = want.entry(p.venue).or_default();
+            e.0 += 1;
+            e.1 += p.year;
+        }
+    }
+    let mut want: Vec<(i64, i64, i64)> = want.iter().map(|(v, (n, y))| (-n, *v, *y)).collect();
+    want.sort();
+    let want: Vec<Vec<String>> = want.iter().map(|(n, v, y)| row(&[&v.to_string(), &format!("venue{v}"), &(-n).to_string(), &y.to_string()])).collect();
+    let q = "SELECT v.id, v.name, COUNT(*), SUM(p.year) FROM papers p JOIN venues v ON p.venue = v.id GROUP BY v.id, v.name";
+    assert_eq!(list(&rows(&db, q)), want);
+    assert!(explain(&db, q).contains("Aggregate by venue"), "{}", explain(&db, q));
+
+    // Groups whose order would rest on ties are left as they are: their
+    // rows come in the order of the groups' first rows.
+    for q in [
+        "SELECT p.id, COUNT(*) AS n FROM reviews r JOIN papers p ON r.paper = p.id GROUP BY p.id ORDER BY n DESC LIMIT 1000",
+        "SELECT p.year, COUNT(*) FROM reviews r JOIN papers p ON r.paper = p.id GROUP BY p.year ORDER BY p.year",
+        "SELECT p.id, COUNT(*) FROM reviews r LEFT JOIN papers p ON r.paper = p.id GROUP BY p.id ORDER BY p.id",
+        "SELECT p.id, SUM(r.stars * 2) FROM reviews r JOIN papers p ON r.paper = p.id GROUP BY p.id ORDER BY p.id",
+        "SELECT p.id, COUNT(*) FROM reviews r JOIN papers p ON r.paper = p.id AND r.stars > p.year - 2010 GROUP BY p.id ORDER BY p.id",
+    ] {
+        let plan = explain(&db, q);
+        assert!(!plan.contains("Aggregate by paper"), "{q}: {plan}");
+        assert!(!rows(&db, q).is_empty(), "{q}");
+    }
+}

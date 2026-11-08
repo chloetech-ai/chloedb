@@ -94,10 +94,23 @@ const QUERIES: &[&str] = &[
     "SELECT COUNT(*), SUM(p.weight), AVG(p.year) FROM papers p JOIN venues v ON p.venue = v.id WHERE v.rank > 100",
     "SELECT v.field, a.country, COUNT(*) FROM papers p JOIN venues v ON p.venue = v.id JOIN authors a ON p.author = a.id GROUP BY v.field, a.country ORDER BY 3 DESC, 1, 2",
     "SELECT p.year % 5 AS b, COUNT(*) FROM papers p JOIN venues v ON p.venue = v.id GROUP BY b ORDER BY b",
+    // Groups of the other table's rows, by its key: the papers grouped in
+    // their scan before the join.
+    "SELECT v.id, v.name, COUNT(*) AS n, SUM(p.cites), AVG(p.weight), MIN(p.year), MAX(p.weight), COUNT(DISTINCT p.author) FROM papers p JOIN venues v ON p.venue = v.id GROUP BY v.id, v.name ORDER BY n DESC, v.id",
+    "SELECT a.id, COUNT(*), COUNT(p.year) FROM papers p JOIN authors a ON p.author = a.id WHERE p.year > 2000 GROUP BY a.id HAVING COUNT(*) > 2 ORDER BY a.id",
     // WITH and derived tables.
     "WITH top AS (SELECT id, venue FROM papers ORDER BY bm25(title, 'graph') DESC LIMIT 50) SELECT v.field, COUNT(*) FROM top t JOIN venues v ON t.venue = v.id GROUP BY v.field",
     "WITH old AS (SELECT id, author, year FROM papers WHERE year < 2000) SELECT a.id, b.id FROM old a JOIN old b ON a.author = b.author WHERE a.id < b.id",
     "SELECT field, n FROM (SELECT v.field AS field, COUNT(*) AS n FROM papers p JOIN venues v ON p.venue = v.id GROUP BY v.field) AS t WHERE n > 10 ORDER BY n DESC",
+    // Columns qualified inside a WITH or a derived table, named by their own names.
+    "WITH last AS (SELECT p.id, p.author, ROW_NUMBER() OVER (PARTITION BY p.author ORDER BY p.year DESC, p.id) AS rn FROM papers p) SELECT l.id, a.name FROM last l JOIN authors a ON l.author = a.id WHERE l.rn = 1",
+    "SELECT t.id, v.name FROM (SELECT p.id, p.venue FROM papers p WHERE p.year > 2000) AS t JOIN venues v ON t.venue = v.id",
+    // `*` over a WITH result: its columns, not its table's.
+    "WITH old AS (SELECT id, author FROM papers WHERE year < 2000) SELECT * FROM old o JOIN authors a ON o.author = a.id",
+    "WITH top AS (SELECT id, score() AS s FROM papers ORDER BY bm25(title, 'graph') DESC LIMIT 50) SELECT * FROM top t JOIN papers p ON p.id = t.id",
+    // UNION: the rows named as the first query's.
+    "SELECT id, year FROM papers WHERE year < 1995 UNION ALL SELECT id, year FROM papers WHERE year > 2015",
+    "WITH old AS (SELECT id, venue FROM papers WHERE year < 2000) SELECT * FROM old UNION SELECT id, venue FROM papers WHERE year > 2015",
     // DISTINCT and DISTINCT ON.
     "SELECT DISTINCT v.field, a.country FROM papers p JOIN venues v ON p.venue = v.id JOIN authors a ON p.author = a.id",
     "SELECT DISTINCT p.year FROM papers p JOIN venues v ON p.venue = v.id ORDER BY p.year DESC NULLS FIRST",

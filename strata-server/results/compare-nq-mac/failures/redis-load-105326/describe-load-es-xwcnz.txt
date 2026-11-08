@@ -1,0 +1,80 @@
+Name:             load-es-xwcnz
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker3/172.19.0.5
+Start Time:       Sun, 01 Nov 2026 21:45:13 -0800
+Labels:           batch.kubernetes.io/controller-uid=c9e4fcd4-7916-4209-9348-95f2458159e8
+                  batch.kubernetes.io/job-name=load-es
+                  controller-uid=c9e4fcd4-7916-4209-9348-95f2458159e8
+                  job-name=load-es
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.244.1.3
+IPs:
+  IP:           10.244.1.3
+Controlled By:  Job/load-es
+Containers:
+  compare:
+    Container ID:  containerd://e9264e480cdc63059bb6938a093a8ace1d8f3e7f233e33ac3227bbd9d74f5e86
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:558ed7893b0b5b27fdb3d8f76b47c88199cb97a642ae8bcb4d61e041afbbdeda
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --collection
+      nq-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Sun, 01 Nov 2026 21:45:13 -0800
+      Finished:     Sun, 01 Nov 2026 21:57:09 -0800
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:  /beir
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-8ssd6 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  Directory
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-8ssd6:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>

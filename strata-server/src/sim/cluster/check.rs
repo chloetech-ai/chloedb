@@ -164,7 +164,15 @@ impl History {
         for &(s, i) in &members {
             match &servers[s].map {
                 Some((m, k)) if *m == newest && *k == i => {}
-                other => self.violation(format!("the cluster did not settle: s{s} holds map epoch {}, the newest is {}", other.as_ref().map_or(0, |(m, _)| m.epoch), newest.epoch)),
+                other => {
+                    let why = match other {
+                        None => format!("holds no map, the newest is epoch {}", newest.epoch),
+                        Some((m, k)) if *m == newest => format!("holds the newest map, epoch {}, as shard {k}, not {i}", m.epoch),
+                        Some((m, _)) if m.epoch == newest.epoch => format!("holds another map of epoch {} ({} shards, the newest {}): the map forked", m.epoch, m.shards(), newest.shards()),
+                        Some((m, _)) => format!("holds map epoch {}, the newest is {}", m.epoch, newest.epoch),
+                    };
+                    self.violation(format!("the cluster did not settle: s{s} {why}"));
+                }
             }
         }
         self.stats.orphans = (0..servers.len()).filter(|&s| !members.iter().any(|&(k, _)| k == s) && servers[s].map.as_ref().is_some_and(|(m, _)| m.epoch > newest.epoch)).count() as u64;

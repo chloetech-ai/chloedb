@@ -1,0 +1,2 @@
+sharded-1m-d-a1 m-4vcpu-32gb sharded-1m-d-a1-3e2ydj sharded-1m-d-a1-3e2ydo
+sharded-1m-c-a1 c-8 sharded-1m-c-a1-3e2yd2

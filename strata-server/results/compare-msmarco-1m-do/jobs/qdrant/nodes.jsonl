@@ -1,0 +1,2 @@
+{"node": "qdrant-d-a1-3eeyhe", "cpu": "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz", "vcpus": 8, "mem_kb": 65853640, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.496, "sha256_1g_x_vcpus_s": 11.2, "disk_write_2g_s": 0.71, "copy_ms": 0, "time": 1793675708, "size": "m-8vcpu-64gb"}
+{"node": "qdrant-c-a1-3eeyha", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382188, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.328, "sha256_1g_x_vcpus_s": 10.608, "disk_write_2g_s": 1.095, "copy_ms": 100585, "time": 1793675807, "size": "c-8"}

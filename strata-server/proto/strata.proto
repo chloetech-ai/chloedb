@@ -117,6 +117,15 @@ service Strata {
   // serve, which it hides: those left on the shard the slots moved from,
   // or those a move given up sent to the shard they were to move to.
   rpc CleanupSlots(CleanupRequest) returns (CleanupResponse);
+  // Protocol 13: this shard's feed, from its primary: the changes of its
+  // numbered transactions from one on, as lines of JSON (GET /v1/feed),
+  // for another cluster to follow. Chunks may split a line: their bytes
+  // are the lines in order. A call between the servers of a cluster.
+  rpc Feed(FeedRequest) returns (stream FeedChunk);
+  // Protocol 15: the shard's keys as a follower's sweep compares them with
+  // its source's: their digests by slot, or the keys of some slots, of the
+  // rows it serves. A call between the servers of a cluster.
+  rpc FeedKeys(FeedKeysRequest) returns (FeedKeysResponse);
   // Replication: a primary (--replicas) ships its numbered transactions to
   // a replica (--replica), which applies them in order under the
   // primary's term and numbers.
@@ -379,6 +388,50 @@ message ExportSlotsChunk {
   bool frozen = 5;
 }
 
+message FeedRequest {
+  // The first transaction to read (0: the first).
+  uint64 from = 1;
+  // The term of transaction from - 1 as the reader holds it (0: not
+  // checked). When the shard's differs, the feed says it diverged.
+  uint64 after_term = 2;
+  // Protocol 14: first the shard's rows at a version every replica in
+  // sync holds (its tables, then its rows as upserts), and then the feed
+  // from the transaction after that version; `from` is not read. A
+  // follower's first start.
+  bool copy = 3;
+  // Protocol 15, with copy: only the rows a transaction after this one
+  // last wrote (0: every row), for a follower that fell behind the log;
+  // after_term is then the term of that transaction as the follower holds
+  // it.
+  uint64 since = 4;
+  // Protocol 15, with copy: the copy's last line carries the digests of
+  // the shard's keys by slot, which a follower compares with its own.
+  bool digests = 5;
+  // Protocol 15, with since: but every row of these tables (those that
+  // changed while the follower was behind).
+  repeated string whole = 6;
+}
+
+message FeedKeysRequest {
+  // The tables whose keys, by name.
+  repeated string tables = 1;
+  // With keys: the slots whose keys (of the value that places each row).
+  repeated uint32 slots = 2;
+  // The keys of `slots`; else the digests of every slot's keys.
+  bool keys = 3;
+}
+
+message FeedKeysResponse {
+  // JSON: {"digests": [[slot, count, "sum in hex"], ...]} or {"keys":
+  // [{"table", "key", "place"?}, ...]}.
+  bytes json = 1;
+}
+
+message FeedChunk {
+  // Bytes of the feed's lines of JSON, each line ending with a newline.
+  bytes lines = 1;
+}
+
 message FreezeRequest {
   uint64 epoch = 1;
   // How long the hold lasts unless asked again (0: 30 s).
@@ -528,6 +581,11 @@ message QueryRequest {
   // answer its rows as Arrow columns (QueryResponse.arrow) where they can
   // be, and as rows otherwise.
   bool arrow = 16;
+  // Protocol 12: stats_json holds the statistics of this server's version
+  // `stats_version` (TermStatsResponse.version), which a coordinator kept:
+  // run the query only on that version, and otherwise answer stale
+  // (QueryResponse.stale) without running it. 0: any version.
+  uint64 stats_version = 17;
 }
 
 // A plan (strata::query::ir): a statement as a tree of operators over typed
@@ -643,6 +701,8 @@ message Agg {
   AggFn func = 1;
   // Absent: COUNT(*).
   Expr arg = 2;
+  // A percentile's fraction, from 0 to 1 (plan feature "percentiles").
+  double fraction = 3;
 }
 
 enum AggFn {
@@ -652,6 +712,10 @@ enum AggFn {
   AGG_FN_MIN = 3;
   AGG_FN_MAX = 4;
   AGG_FN_COUNT_DISTINCT = 5;
+  // PERCENTILE_CONT and PERCENTILE_DISC of Agg.fraction (plan feature
+  // "percentiles"); an aggregate of groups only, not of a window.
+  AGG_FN_PERCENTILE_CONT = 6;
+  AGG_FN_PERCENTILE_DISC = 7;
 }
 
 message Filter {
@@ -1092,6 +1156,11 @@ enum Func {
   // json_extract(field, 'path' [, 'string' | 'number' | 'bool']): the
   // values at a path of a JSON field (plan feature "json").
   FUNC_JSON_EXTRACT = 18;
+  // date_trunc('unit', t), date_part('part', t) and strftime('format', t)
+  // of a TIMESTAMP (plan feature "dates").
+  FUNC_DATE_TRUNC = 19;
+  FUNC_DATE_PART = 20;
+  FUNC_STRFTIME = 21;
 }
 
 message Match {
@@ -1231,11 +1300,19 @@ message QueryResponse {
   // then empty. Empty when the rows are answered as rows: none, or values of
   // several types in a column.
   bytes arrow = 9;
+  // Protocol 12: the query named a stats_version that is not the version
+  // it would read: it did not run, and the answer holds nothing else.
+  bool stale = 10;
 }
 
 message TermStatsResponse {
   bytes stats_json = 1;
   uint64 snapshot = 2;
+  // Protocol 12: the version the statistics are of, which changes with
+  // every write, flush and merge, and with the server's restart (0: none
+  // to keep, as a coordinator's). A query naming it in stats_version runs
+  // only on that version.
+  uint64 version = 3;
 }
 
 // A guard's loosest level, `need`, and the rows each level from it up to
@@ -1318,7 +1395,12 @@ message WriteResponse {
   map<string, int64> offsets = 5;
 }
 
-message SourcesRequest {}
+message SourcesRequest {
+  // Protocol 16: each source's offset for the slots moving from this shard
+  // (its cluster map's move), which the move carries to the shard they go
+  // to; the slots that arrived here at other offsets count theirs.
+  bool moving = 1;
+}
 
 message SourcesResponse {
   repeated Source sources = 1;

@@ -144,6 +144,7 @@ impl Tail {
         if let Some(s) = lock(&self.cache).as_ref().filter(|s| (s.gen, s.chunk, s.len) == (p.gen, p.chunk, p.len)) {
             return s.clone();
         }
+        TAIL_BUILDS.with(|n| n.set(n.get() + 1));
         let seg = build_memseg(schema, &self.opts, p, next_mem_id());
         *lock(&self.cache) = Some(seg.clone());
         seg
@@ -153,6 +154,19 @@ impl Tail {
     fn live(&self, j: usize) -> bool {
         self.part.live.as_ref().is_none_or(|l| l.contains(j as DocId))
     }
+}
+
+thread_local! {
+    static TAIL_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has built a memtable's last chunk as a
+/// segment ([`Snapshot::segments`] and what reads through it, once per
+/// chunk as it stands): what tests count to check that writes and reads
+/// by key build none.
+#[doc(hidden)]
+pub fn tail_builds() -> u64 {
+    TAIL_BUILDS.with(|n| n.get())
 }
 
 /// Ids of in-memory segments have this bit set.
@@ -168,9 +182,10 @@ pub(crate) fn next_mem_id() -> u64 {
 /// Where a snapshot found the live row of a primary key ([`Snapshot::find`]).
 pub enum Found<'a> {
     /// In the memtable's last chunk, not built: the document as written,
-    /// with values set in place since applied, and its sequence number (0
-    /// unnumbered).
-    Memtable { doc: Document, seq: u64 },
+    /// with values set in place since applied, its sequence number (0
+    /// unnumbered), and the segment ordinal and docID it has in the
+    /// chunk's segment once built (the last of [`Snapshot::segments`]).
+    Memtable { doc: Document, seq: u64, at: (usize, DocId) },
     /// Document `doc` of segment `seg` (an ordinal of
     /// [`Snapshot::segments`]), whose stored fields are read from `view`.
     Segment { seg: usize, doc: DocId, view: &'a SegmentView },
@@ -334,7 +349,7 @@ impl Snapshot {
                     Some(s) => crate::storage::state::mem_seq(p.updates.as_deref().unwrap_or(&Updates::default()), s, j as u32),
                     None => 0,
                 };
-                return Some(Found::Memtable { doc, seq });
+                return Some(Found::Memtable { doc, seq, at: (slot.base.segments.len(), j as DocId) });
             }
         }
         let v = &slot.base;
@@ -457,6 +472,34 @@ impl Snapshot {
         Ok(out)
     }
 
+    /// Calls `f` with the primary key of each live row `mask` hides, and
+    /// the value that places it (its shard_by value, or else the key), in
+    /// the order of [`Snapshot::covered`]. A table without a primary key
+    /// has none. A follower compares its keys with its source's by them.
+    pub fn each_covered_key(&self, mask: &Mask, mut f: impl FnMut(&Value, &Value)) -> Result<()> {
+        let v = self.view();
+        if v.schema.primary_key.is_none() {
+            return Ok(());
+        }
+        let by = v.schema.shard_by_field();
+        let mut values: Option<(usize, Vec<Value>)> = None;
+        for (s, d) in self.covered(mask, None)? {
+            let pk = v.pks[s].as_ref().ok_or_else(|| Error::Corrupt(format!("table {}: segment {} has no primary-key index", v.schema.table, v.segments[s].id)))?;
+            let key = pk.key(d);
+            match by {
+                None => f(&key, &key),
+                Some(field) => {
+                    if values.as_ref().is_none_or(|(i, _)| *i != s) {
+                        values = Some((s, crate::forward::DocStore::open(&v.segments[s].file, &v.schema)?.field_values(field)?));
+                    }
+                    let place = values.as_ref().and_then(|(_, vs)| vs.get(d as usize)).unwrap_or(&Value::Null);
+                    f(&key, place)
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The rows `mask` hides in `prev`, an earlier snapshot of the same
     /// table, that this one no longer holds where `mask` hides them:
     /// deleted since, or replaced by a row of the same key that `mask`
@@ -482,7 +525,7 @@ impl Snapshot {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => e.insert(crate::forward::DocStore::open(&view.segments[s].file, &view.schema)?),
             };
-            Ok(store.get_fields(d, &[f]).pop().unwrap_or(Value::Null))
+            Ok(store.get_fields(d, &[f])?.pop().unwrap_or(Value::Null))
         };
         let mut out = Vec::new();
         for (s, d) in prev.covered(mask, None)? {
@@ -599,7 +642,7 @@ impl Mask {
             let pk = pk.ok_or_else(|| Error::Corrupt(format!("table {}: segment {} has no primary-key index", schema.table, seg.id)))?;
             docs.extend((0..n).filter(|&d| (self.hide)(schema, &pk.key(d))));
         } else {
-            let values = crate::forward::DocStore::open(&seg.file, schema)?.field_values(place);
+            let values = crate::forward::DocStore::open(&seg.file, schema)?.field_values(place)?;
             docs.extend((0..n).filter(|&d| (self.hide)(schema, &values[d as usize])));
         }
         let h = (!docs.is_empty()).then(|| Arc::new(crate::segment::DocSet::from_sorted(docs, n)));

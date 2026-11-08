@@ -1,0 +1,213 @@
+service/solr created
+pod/solr-0 created
+pod/solr-0 condition met
+pod/solr-1 created
+pod/solr-1 condition met
+job.batch/load-solr created
+solr: index created in 4.8 s
+solr: 25000 documents sent, 12 s
+solr: 50000 documents sent, 23 s
+solr: 75000 documents sent, 33 s
+solr: 100000 documents sent, 47 s
+solr: 125000 documents sent, 59 s
+solr: 150000 documents sent, 69 s
+solr: 175000 documents sent, 81 s
+solr: 200000 documents sent, 93 s
+solr: 225000 documents sent, 105 s
+solr: 250000 documents sent, 115 s
+solr: 275000 documents sent, 127 s
+solr: 300000 documents sent, 138 s
+solr: 325000 documents sent, 152 s
+solr: 350000 documents sent, 167 s
+solr: 375000 documents sent, 178 s
+solr: 400000 documents sent, 187 s
+solr: 425000 documents sent, 198 s
+solr: 450000 documents sent, 211 s
+solr: 475000 documents sent, 223 s
+solr: 500000 documents sent, 236 s
+solr: 525000 documents sent, 248 s
+solr: 550000 documents sent, 262 s
+solr: 575000 documents sent, 275 s
+solr: 600000 documents sent, 289 s
+solr: 625000 documents sent, 302 s
+solr: 650000 documents sent, 316 s
+solr: 675000 documents sent, 330 s
+solr: 700000 documents sent, 343 s
+solr: 725000 documents sent, 358 s
+solr: 750000 documents sent, 373 s
+solr: 775000 documents sent, 387 s
+solr: 800000 documents sent, 401 s
+solr: 825000 documents sent, 417 s
+solr: 850000 documents sent, 433 s
+solr: 875000 documents sent, 452 s
+solr: 900000 documents sent, 468 s
+solr: 925000 documents sent, 482 s
+solr: 950000 documents sent, 496 s
+solr: 975000 documents sent, 513 s
+solr: 1000000 documents sent, 527 s
+solr: 1000000 documents (11.8 GB of JSON) sent in 527.0 s
+solr: searchable after 1.5 s more, merged in 689.2 s; 1217.7 s in all
+wrote /data/compare/load-solr.json
+job.batch/run-solr created
+solr     bm25                     c=1        126 q/s  p50   7.305 ms  p90  11.081 ms  p99  16.675 ms  errors 0
+solr     bm25                     c=4        268 q/s  p50  13.191 ms  p90  25.310 ms  p99  41.283 ms  errors 0
+solr     bm25                     c=16       529 q/s  p50  26.000 ms  p90  51.709 ms  p99 142.888 ms  errors 0
+solr     bm25 + filter            c=1        124 q/s  p50   7.282 ms  p90  11.765 ms  p99  18.571 ms  errors 0
+solr     bm25 + filter            c=4        306 q/s  p50  10.719 ms  p90  22.337 ms  p99  41.944 ms  errors 0
+solr     bm25 + filter            c=16       539 q/s  p50  25.073 ms  p90  53.228 ms  p99 126.232 ms  errors 0
+solr     vector                   c=1         57 q/s  p50  16.449 ms  p90  21.152 ms  p99  26.758 ms  errors 0
+solr     vector                   c=4        128 q/s  p50  29.898 ms  p90  44.365 ms  p99  55.452 ms  errors 0
+solr     vector                   c=16       164 q/s  p50  95.092 ms  p90 137.340 ms  p99 210.825 ms  errors 0
+solr     vector + filter          c=1         23 q/s  p50  40.791 ms  p90  53.119 ms  p99  56.648 ms  errors 0
+solr     vector + filter          c=4         93 q/s  p50  20.345 ms  p90  93.603 ms  p99 122.438 ms  errors 0
+solr     vector + filter          c=16       342 q/s  p50  43.651 ms  p90  69.353 ms  p99 103.979 ms  errors 0
+solr     hybrid (RRF)             c=1        129 q/s  p50   7.145 ms  p90  10.969 ms  p99  15.080 ms  errors 0
+solr     hybrid (RRF)             c=4        272 q/s  p50  13.693 ms  p90  22.114 ms  p99  34.060 ms  errors 0
+solr     hybrid (RRF)             c=16       391 q/s  p50  36.958 ms  p90  65.892 ms  p99 105.158 ms  errors 0
+solr     hybrid (weighted)        c=1        105 q/s  p50   8.398 ms  p90  15.829 ms  p99  25.852 ms  errors 0
+solr     hybrid (weighted)        c=4        247 q/s  p50  13.957 ms  p90  26.999 ms  p99  46.040 ms  errors 0
+solr     hybrid (weighted)        c=16       271 q/s  p50  48.164 ms  p90 107.163 ms  p99 205.717 ms  errors 0
+solr     boosted (bm25 × decay)   c=1        112 q/s  p50   7.056 ms  p90  19.438 ms  p99  31.360 ms  errors 0
+solr     boosted (bm25 × decay)   c=4        267 q/s  p50  11.904 ms  p90  31.560 ms  p99  53.507 ms  errors 0
+solr     boosted (bm25 × decay)   c=16       302 q/s  p50  36.670 ms  p90 121.623 ms  p99 214.664 ms  errors 0
+solr     facet                    c=1        282 q/s  p50   2.980 ms  p90   5.485 ms  p99  11.778 ms  errors 0
+solr     facet                    c=4        876 q/s  p50   3.736 ms  p90   7.606 ms  p99  19.421 ms  errors 0
+solr     facet                    c=16      1243 q/s  p50  10.037 ms  p90  24.186 ms  p99  56.663 ms  errors 0
+solr     key lookup               c=1        389 q/s  p50   2.525 ms  p90   3.030 ms  p99   4.325 ms  errors 0
+solr     key lookup               c=4       1201 q/s  p50   3.191 ms  p90   4.304 ms  p99   6.052 ms  errors 0
+solr     key lookup               c=16      2097 q/s  p50   7.229 ms  p90  11.253 ms  p99  16.131 ms  errors 0
+solr     phrase                   c=1        378 q/s  p50   2.421 ms  p90   3.566 ms  p99   5.928 ms  errors 0
+solr     phrase                   c=4       1165 q/s  p50   3.094 ms  p90   5.096 ms  p99   8.456 ms  errors 0
+solr     phrase                   c=16      1864 q/s  p50   7.544 ms  p90  14.020 ms  p99  25.630 ms  errors 0
+solr     typo                     c=1         50 q/s  p50  19.151 ms  p90  30.545 ms  p99  42.000 ms  errors 0
+solr     typo                     c=4        123 q/s  p50  30.449 ms  p90  49.707 ms  p99  81.915 ms  errors 0
+solr     typo                     c=16       131 q/s  p50 107.350 ms  p90 207.628 ms  p99 352.697 ms  errors 0
+solr     prefix                   c=1        380 q/s  p50   2.490 ms  p90   3.484 ms  p99   5.073 ms  errors 0
+solr     prefix                   c=4       1111 q/s  p50   3.355 ms  p90   5.152 ms  p99   7.617 ms  errors 0
+solr     prefix                   c=16      1749 q/s  p50   8.237 ms  p90  14.635 ms  p99  24.477 ms  errors 0
+solr     similar items            c=1        113 q/s  p50   8.194 ms  p90  10.150 ms  p99  14.348 ms  errors 0
+solr     similar items            c=4        327 q/s  p50  11.147 ms  p90  15.382 ms  p99  35.288 ms  errors 0
+solr     similar items            c=16       428 q/s  p50  34.113 ms  p90  52.061 ms  p99  83.111 ms  errors 0
+solr     sql aggregate            c=1         14 q/s  p50  72.024 ms  p90  87.593 ms  p99 100.123 ms  errors 0
+solr     sql aggregate            c=4         37 q/s  p50 107.752 ms  p90 139.554 ms  p99 175.424 ms  errors 0
+solr     sql aggregate            c=16        47 q/s  p50 330.994 ms  p90 487.326 ms  p99 616.506 ms  errors 0
+wrote /data/compare/run-solr.json
+job.batch/run-solr-pass2 created
+solr-pass2 bm25                     c=1        385 q/s  p50   2.397 ms  p90   3.522 ms  p99   5.691 ms  errors 0
+solr-pass2 bm25                     c=4       1136 q/s  p50   3.273 ms  p90   5.122 ms  p99   7.783 ms  errors 0
+solr-pass2 bm25                     c=16      1563 q/s  p50   8.789 ms  p90  17.170 ms  p99  32.767 ms  errors 0
+solr-pass2 bm25 + filter            c=1        400 q/s  p50   2.340 ms  p90   3.323 ms  p99   5.344 ms  errors 0
+solr-pass2 bm25 + filter            c=4       1006 q/s  p50   3.683 ms  p90   5.824 ms  p99   8.938 ms  errors 0
+solr-pass2 bm25 + filter            c=16      1479 q/s  p50   9.493 ms  p90  18.073 ms  p99  31.605 ms  errors 0
+solr-pass2 vector                   c=1        230 q/s  p50   4.285 ms  p90   4.799 ms  p99   6.520 ms  errors 0
+solr-pass2 vector                   c=4        540 q/s  p50   7.054 ms  p90   9.637 ms  p99  12.912 ms  errors 0
+solr-pass2 vector                   c=16       727 q/s  p50  20.502 ms  p90  33.570 ms  p99  50.262 ms  errors 0
+solr-pass2 vector + filter          c=1        126 q/s  p50   7.335 ms  p90   8.589 ms  p99  38.097 ms  errors 0
+solr-pass2 vector + filter          c=4        281 q/s  p50  13.266 ms  p90  18.567 ms  p99  43.449 ms  errors 0
+solr-pass2 vector + filter          c=16       358 q/s  p50  42.297 ms  p90  63.638 ms  p99 101.972 ms  errors 0
+solr-pass2 hybrid (RRF)             c=1        119 q/s  p50   7.437 ms  p90  13.900 ms  p99  20.573 ms  errors 0
+solr-pass2 hybrid (RRF)             c=4        274 q/s  p50  12.953 ms  p90  23.765 ms  p99  35.600 ms  errors 0
+solr-pass2 hybrid (RRF)             c=16       368 q/s  p50  37.769 ms  p90  76.103 ms  p99 125.698 ms  errors 0
+solr-pass2 hybrid (weighted)        c=1         93 q/s  p50   9.160 ms  p90  18.904 ms  p99  28.500 ms  errors 0
+solr-pass2 hybrid (weighted)        c=4        223 q/s  p50  15.042 ms  p90  32.424 ms  p99  52.132 ms  errors 0
+solr-pass2 hybrid (weighted)        c=16       243 q/s  p50  52.063 ms  p90 125.310 ms  p99 233.212 ms  errors 0
+solr-pass2 boosted (bm25 × decay)   c=1         95 q/s  p50   8.077 ms  p90  22.036 ms  p99  36.840 ms  errors 0
+solr-pass2 boosted (bm25 × decay)   c=4        232 q/s  p50  13.705 ms  p90  36.768 ms  p99  63.414 ms  errors 0
+solr-pass2 boosted (bm25 × decay)   c=16       270 q/s  p50  40.913 ms  p90 140.294 ms  p99 245.688 ms  errors 0
+solr-pass2 facet                    c=1        302 q/s  p50   2.620 ms  p90   5.315 ms  p99  13.024 ms  errors 0
+solr-pass2 facet                    c=4        957 q/s  p50   3.332 ms  p90   7.008 ms  p99  19.533 ms  errors 0
+solr-pass2 facet                    c=16      1341 q/s  p50   9.239 ms  p90  22.534 ms  p99  52.281 ms  errors 0
+solr-pass2 key lookup               c=1        452 q/s  p50   2.179 ms  p90   2.496 ms  p99   3.046 ms  errors 0
+solr-pass2 key lookup               c=4       1319 q/s  p50   2.924 ms  p90   3.805 ms  p99   4.853 ms  errors 0
+solr-pass2 key lookup               c=16      2278 q/s  p50   6.689 ms  p90   9.926 ms  p99  13.971 ms  errors 0
+solr-pass2 phrase                   c=1        482 q/s  p50   1.871 ms  p90   2.806 ms  p99   4.191 ms  errors 0
+solr-pass2 phrase                   c=4       1265 q/s  p50   2.851 ms  p90   4.588 ms  p99   7.212 ms  errors 0
+solr-pass2 phrase                   c=16      1921 q/s  p50   7.300 ms  p90  13.570 ms  p99  24.725 ms  errors 0
+solr-pass2 typo                     c=1         54 q/s  p50  17.485 ms  p90  27.463 ms  p99  40.383 ms  errors 0
+solr-pass2 typo                     c=4        130 q/s  p50  28.469 ms  p90  48.461 ms  p99  72.860 ms  errors 0
+solr-pass2 typo                     c=16       137 q/s  p50 104.563 ms  p90 192.601 ms  p99 337.765 ms  errors 0
+solr-pass2 prefix                   c=1        407 q/s  p50   2.192 ms  p90   3.554 ms  p99   5.957 ms  errors 0
+solr-pass2 prefix                   c=4       1174 q/s  p50   3.213 ms  p90   4.795 ms  p99   6.812 ms  errors 0
+solr-pass2 prefix                   c=16      1731 q/s  p50   8.287 ms  p90  14.773 ms  p99  25.578 ms  errors 0
+read tcp 127.0.0.1:38018->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:38018->127.0.0.1:36661: read: connection reset by peer
+solr-pass2 similar items            c=1         82 q/s  p50  11.849 ms  p90  13.070 ms  p99  15.455 ms  errors 0
+solr-pass2 similar items            c=4        350 q/s  p50  10.481 ms  p90  13.925 ms  p99  27.022 ms  errors 0
+solr-pass2 similar items            c=16       445 q/s  p50  32.446 ms  p90  50.614 ms  p99  81.622 ms  errors 0
+solr-pass2 sql aggregate            c=1         16 q/s  p50  64.218 ms  p90  80.865 ms  p99  89.155 ms  errors 0
+solr-pass2 sql aggregate            c=4         41 q/s  p50  98.847 ms  p90 123.101 ms  p99 142.340 ms  errors 0
+solr-pass2 sql aggregate            c=16        48 q/s  p50 329.993 ms  p90 482.594 ms  p99 601.216 ms  errors 0
+wrote /data/compare/run-solr-pass2.json
+job.batch/run-solr-pass3 created
+solr-pass3 bm25                     c=1        388 q/s  p50   2.435 ms  p90   3.326 ms  p99   5.162 ms  errors 0
+solr-pass3 bm25                     c=4       1087 q/s  p50   3.389 ms  p90   5.298 ms  p99   8.517 ms  errors 0
+solr-pass3 bm25                     c=16      1673 q/s  p50   8.495 ms  p90  15.735 ms  p99  26.707 ms  errors 0
+solr-pass3 bm25 + filter            c=1        352 q/s  p50   2.671 ms  p90   3.780 ms  p99   5.838 ms  errors 0
+solr-pass3 bm25 + filter            c=4       1002 q/s  p50   3.711 ms  p90   5.773 ms  p99   8.896 ms  errors 0
+solr-pass3 bm25 + filter            c=16      1467 q/s  p50   9.668 ms  p90  18.158 ms  p99  31.148 ms  errors 0
+solr-pass3 vector                   c=1        240 q/s  p50   4.045 ms  p90   4.626 ms  p99   6.350 ms  errors 0
+solr-pass3 vector                   c=4        574 q/s  p50   6.682 ms  p90   9.006 ms  p99  12.002 ms  errors 0
+solr-pass3 vector                   c=16       687 q/s  p50  21.849 ms  p90  35.780 ms  p99  50.111 ms  errors 0
+solr-pass3 vector + filter          c=1        127 q/s  p50   7.325 ms  p90   8.595 ms  p99  37.862 ms  errors 0
+solr-pass3 vector + filter          c=4        296 q/s  p50  12.507 ms  p90  17.614 ms  p99  45.778 ms  errors 0
+solr-pass3 vector + filter          c=16       346 q/s  p50  43.705 ms  p90  66.902 ms  p99 102.112 ms  errors 0
+solr-pass3 hybrid (RRF)             c=1        112 q/s  p50   8.128 ms  p90  13.845 ms  p99  19.448 ms  errors 0
+solr-pass3 hybrid (RRF)             c=4        293 q/s  p50  12.385 ms  p90  21.428 ms  p99  31.177 ms  errors 0
+solr-pass3 hybrid (RRF)             c=16       327 q/s  p50  42.353 ms  p90  84.941 ms  p99 137.036 ms  errors 0
+solr-pass3 hybrid (weighted)        c=1         89 q/s  p50   9.333 ms  p90  19.907 ms  p99  33.390 ms  errors 0
+solr-pass3 hybrid (weighted)        c=4        222 q/s  p50  15.328 ms  p90  31.737 ms  p99  53.600 ms  errors 0
+solr-pass3 hybrid (weighted)        c=16       242 q/s  p50  52.250 ms  p90 128.525 ms  p99 229.344 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   c=1         97 q/s  p50   7.868 ms  p90  22.082 ms  p99  38.083 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   c=4        240 q/s  p50  12.968 ms  p90  36.600 ms  p99  60.912 ms  errors 0
+solr-pass3 boosted (bm25 × decay)   c=16       281 q/s  p50  38.550 ms  p90 132.097 ms  p99 254.953 ms  errors 0
+solr-pass3 facet                    c=1        334 q/s  p50   2.295 ms  p90   4.888 ms  p99  12.456 ms  errors 0
+solr-pass3 facet                    c=4        995 q/s  p50   3.125 ms  p90   6.895 ms  p99  19.242 ms  errors 0
+solr-pass3 facet                    c=16      1590 q/s  p50   7.808 ms  p90  18.606 ms  p99  46.605 ms  errors 0
+solr-pass3 key lookup               c=1        450 q/s  p50   2.178 ms  p90   2.495 ms  p99   3.211 ms  errors 0
+solr-pass3 key lookup               c=4       1306 q/s  p50   2.985 ms  p90   3.860 ms  p99   4.900 ms  errors 0
+solr-pass3 key lookup               c=16      2320 q/s  p50   6.589 ms  p90   9.546 ms  p99  13.230 ms  errors 0
+solr-pass3 phrase                   c=1        475 q/s  p50   1.907 ms  p90   2.817 ms  p99   4.186 ms  errors 0
+solr-pass3 phrase                   c=4       1246 q/s  p50   2.906 ms  p90   4.722 ms  p99   7.490 ms  errors 0
+solr-pass3 phrase                   c=16      1944 q/s  p50   7.294 ms  p90  13.289 ms  p99  24.070 ms  errors 0
+solr-pass3 typo                     c=1         56 q/s  p50  16.761 ms  p90  26.180 ms  p99  42.153 ms  errors 0
+solr-pass3 typo                     c=4        132 q/s  p50  28.564 ms  p90  47.175 ms  p99  71.061 ms  errors 0
+solr-pass3 typo                     c=16       142 q/s  p50  99.753 ms  p90 197.029 ms  p99 313.412 ms  errors 0
+solr-pass3 prefix                   c=1        419 q/s  p50   2.257 ms  p90   3.131 ms  p99   4.427 ms  errors 0
+solr-pass3 prefix                   c=4       1163 q/s  p50   3.222 ms  p90   4.899 ms  p99   6.968 ms  errors 0
+solr-pass3 prefix                   c=16      1781 q/s  p50   8.157 ms  p90  14.292 ms  p99  23.679 ms  errors 0
+solr-pass3 similar items            c=1        112 q/s  p50   8.536 ms  p90   9.373 ms  p99  13.025 ms  errors 0
+solr-pass3 similar items            c=4        356 q/s  p50  10.239 ms  p90  13.831 ms  p99  24.810 ms  errors 0
+solr-pass3 similar items            c=16       445 q/s  p50  32.559 ms  p90  50.665 ms  p99  75.899 ms  errors 0
+solr-pass3 sql aggregate            c=1         18 q/s  p50  57.481 ms  p90  68.393 ms  p99  79.370 ms  errors 0
+solr-pass3 sql aggregate            c=4         49 q/s  p50  82.862 ms  p90 104.527 ms  p99 118.648 ms  errors 0
+solr-pass3 sql aggregate            c=16        57 q/s  p50 278.892 ms  p90 380.705 ms  p99 430.234 ms  errors 0
+wrote /data/compare/run-solr-pass3.json
+job.batch/writes-solr created
+solr     insert one     c=1        532 docs/s  p50    1.733 ms  p90    2.458 ms  p99    3.966 ms  errors 0
+solr     insert one     c=4       1578 docs/s  p50    2.104 ms  p90    3.514 ms  p99    6.173 ms  errors 0
+solr     insert one     c=16      2516 docs/s  p50    5.231 ms  p90   11.071 ms  p99   21.488 ms  errors 0
+solr     insert batch   c=1       1479 docs/s  p50   38.548 ms  p90   96.779 ms  p99  162.379 ms  errors 0
+solr     insert batch   c=4       3363 docs/s  p50   79.109 ms  p90  150.542 ms  p99  396.586 ms  errors 0
+solr     insert batch   c=16      3621 docs/s  p50  385.239 ms  p90  590.038 ms  p99  896.125 ms  errors 0
+solr     update one     c=1        482 docs/s  p50    1.852 ms  p90    2.851 ms  p99    4.591 ms  errors 0
+solr     update one     c=4       1348 docs/s  p50    2.493 ms  p90    4.541 ms  p99    8.008 ms  errors 0
+solr     update one     c=16      2207 docs/s  p50    5.738 ms  p90   13.126 ms  p99   23.655 ms  errors 0
+solr     visible        written in p50 3.0 ms, found after p50 1013.5 ms  p90 1020.6 ms  max 1511.5 ms
+wrote /data/compare/writes-solr.json
+solr     deleted 80430 written documents and put back 20000 ratings in 14.0 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-solr created
+solr     topic docs-solr-1793678425, 4 partitions; 1000000 documents before
+solr     250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 21 ms  p90 30 ms  p99 36 ms  max 69 ms (read p50 19 ms)
+solr     500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 19 ms  p90 29 ms  p99 34 ms  max 54 ms (read p50 16 ms)
+solr     1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 21 ms  p90 31 ms  p99 40 ms  max 291 ms (read p50 16 ms)
+solr     2000/s           produced 60000 in 30.0 s; written 60000 in 30.1 s (1996/s); lag p50 33 ms  p90 83 ms  p99 308 ms  max 542 ms (read p50 20 ms)
+solr     flat out         produced 20000 in 0.7 s; written 20000 in 6.2 s (3242/s); lag p50 3237 ms  p90 5193 ms  p99 5402 ms  max 5429 ms (read p50 2426 ms)
+solr     before the crash produced 10000 in 6.2 s; written 5032 in 6.2 s (812/s); lag p50 29 ms  p90 50 ms  p99 223 ms  max 262 ms (read p50 19 ms)
+solr     after the crash   resumed in 2.9 s: 107 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-solr.json
+solr     deleted 142500 streamed documents in 2.1 s
+pod "solr-0" deleted from solr namespace
+pod "solr-1" deleted from solr namespace

@@ -1,0 +1,488 @@
+service/qdrant created
+pod/qdrant-0 created
+pod/qdrant-0 condition met
+job.batch/load-qdrant created
+qdrant: average body length 127.4 terms (233.7 s)
+qdrant: index created in 0.5 s
+qdrant: 25000 documents sent, 6 s
+qdrant: 50000 documents sent, 12 s
+qdrant: 75000 documents sent, 21 s
+qdrant: 100000 documents sent, 28 s
+qdrant: 125000 documents sent, 35 s
+qdrant: 150000 documents sent, 41 s
+qdrant: 175000 documents sent, 51 s
+qdrant: 200000 documents sent, 60 s
+qdrant: 225000 documents sent, 69 s
+qdrant: 250000 documents sent, 78 s
+qdrant: 275000 documents sent, 87 s
+qdrant: 300000 documents sent, 96 s
+qdrant: 325000 documents sent, 106 s
+qdrant: 350000 documents sent, 117 s
+qdrant: 375000 documents sent, 127 s
+qdrant: 400000 documents sent, 135 s
+qdrant: 425000 documents sent, 143 s
+qdrant: 450000 documents sent, 153 s
+qdrant: 475000 documents sent, 163 s
+qdrant: 500000 documents sent, 171 s
+qdrant: 525000 documents sent, 178 s
+qdrant: 550000 documents sent, 184 s
+qdrant: 575000 documents sent, 190 s
+qdrant: 600000 documents sent, 196 s
+qdrant: 625000 documents sent, 202 s
+qdrant: 650000 documents sent, 208 s
+qdrant: 675000 documents sent, 214 s
+qdrant: 700000 documents sent, 220 s
+qdrant: 725000 documents sent, 227 s
+qdrant: 750000 documents sent, 233 s
+qdrant: 775000 documents sent, 240 s
+qdrant: 800000 documents sent, 245 s
+qdrant: 825000 documents sent, 252 s
+qdrant: 850000 documents sent, 259 s
+qdrant: 875000 documents sent, 265 s
+qdrant: 900000 documents sent, 271 s
+qdrant: 925000 documents sent, 278 s
+qdrant: 950000 documents sent, 290 s
+qdrant: 975000 documents sent, 304 s
+qdrant: 1000000 documents sent, 317 s
+qdrant: 1025000 documents sent, 331 s
+qdrant: 1050000 documents sent, 342 s
+qdrant: 1075000 documents sent, 354 s
+qdrant: 1100000 documents sent, 365 s
+qdrant: 1125000 documents sent, 376 s
+qdrant: 1150000 documents sent, 387 s
+qdrant: 1175000 documents sent, 397 s
+qdrant: 1200000 documents sent, 408 s
+qdrant: 1225000 documents sent, 419 s
+qdrant: 1250000 documents sent, 431 s
+qdrant: 1275000 documents sent, 442 s
+qdrant: 1300000 documents sent, 453 s
+qdrant: 1325000 documents sent, 465 s
+qdrant: 1350000 documents sent, 476 s
+qdrant: 1375000 documents sent, 488 s
+qdrant: 1400000 documents sent, 500 s
+qdrant: 1425000 documents sent, 510 s
+qdrant: 1450000 documents sent, 522 s
+qdrant: 1475000 documents sent, 533 s
+qdrant: 1500000 documents sent, 545 s
+qdrant: 1525000 documents sent, 558 s
+qdrant: 1550000 documents sent, 570 s
+qdrant: 1575000 documents sent, 581 s
+qdrant: 1600000 documents sent, 592 s
+qdrant: 1625000 documents sent, 603 s
+qdrant: 1650000 documents sent, 614 s
+qdrant: 1675000 documents sent, 624 s
+qdrant: 1700000 documents sent, 636 s
+qdrant: 1725000 documents sent, 648 s
+qdrant: 1750000 documents sent, 659 s
+qdrant: 1775000 documents sent, 671 s
+qdrant: 1800000 documents sent, 682 s
+qdrant: 1825000 documents sent, 693 s
+qdrant: 1850000 documents sent, 705 s
+qdrant: 1875000 documents sent, 716 s
+qdrant: 1900000 documents sent, 730 s
+qdrant: 1925000 documents sent, 744 s
+qdrant: 1950000 documents sent, 758 s
+qdrant: 1975000 documents sent, 773 s
+qdrant: 2000000 documents sent, 786 s
+qdrant: 2025000 documents sent, 800 s
+qdrant: 2050000 documents sent, 814 s
+qdrant: 2075000 documents sent, 829 s
+qdrant: 2100000 documents sent, 842 s
+qdrant: 2125000 documents sent, 854 s
+qdrant: 2150000 documents sent, 866 s
+qdrant: 2175000 documents sent, 878 s
+qdrant: 2200000 documents sent, 891 s
+qdrant: 2225000 documents sent, 902 s
+qdrant: 2250000 documents sent, 913 s
+qdrant: 2275000 documents sent, 924 s
+qdrant: 2300000 documents sent, 939 s
+qdrant: 2325000 documents sent, 950 s
+qdrant: 2350000 documents sent, 961 s
+qdrant: 2375000 documents sent, 971 s
+qdrant: 2400000 documents sent, 982 s
+qdrant: 2425000 documents sent, 992 s
+qdrant: 2450000 documents sent, 1003 s
+qdrant: 2475000 documents sent, 1015 s
+qdrant: 2500000 documents sent, 1025 s
+qdrant: 2525000 documents sent, 1037 s
+qdrant: 2550000 documents sent, 1049 s
+qdrant: 2575000 documents sent, 1060 s
+qdrant: 2600000 documents sent, 1071 s
+qdrant: 2625000 documents sent, 1083 s
+qdrant: 2650000 documents sent, 1095 s
+qdrant: 2675000 documents sent, 1107 s
+qdrant: 2700000 documents sent, 1120 s
+qdrant: 2725000 documents sent, 1132 s
+qdrant: 2750000 documents sent, 1145 s
+qdrant: 2775000 documents sent, 1155 s
+qdrant: 2800000 documents sent, 1169 s
+qdrant: 2825000 documents sent, 1180 s
+qdrant: 2850000 documents sent, 1190 s
+qdrant: 2875000 documents sent, 1203 s
+qdrant: 2900000 documents sent, 1214 s
+qdrant: 2925000 documents sent, 1227 s
+qdrant: 2950000 documents sent, 1239 s
+qdrant: 2975000 documents sent, 1251 s
+qdrant: 3000000 documents sent, 1263 s
+qdrant: 3025000 documents sent, 1275 s
+qdrant: 3050000 documents sent, 1287 s
+qdrant: 3075000 documents sent, 1299 s
+qdrant: 3100000 documents sent, 1309 s
+qdrant: 3125000 documents sent, 1321 s
+qdrant: 3150000 documents sent, 1334 s
+qdrant: 3175000 documents sent, 1347 s
+qdrant: 3200000 documents sent, 1361 s
+qdrant: 3225000 documents sent, 1373 s
+qdrant: 3250000 documents sent, 1386 s
+qdrant: 3275000 documents sent, 1399 s
+qdrant: 3300000 documents sent, 1410 s
+qdrant: 3325000 documents sent, 1421 s
+qdrant: 3350000 documents sent, 1433 s
+qdrant: 3375000 documents sent, 1444 s
+qdrant: 3400000 documents sent, 1457 s
+qdrant: 3425000 documents sent, 1468 s
+qdrant: 3450000 documents sent, 1478 s
+qdrant: 3475000 documents sent, 1491 s
+qdrant: 3500000 documents sent, 1504 s
+qdrant: 3525000 documents sent, 1516 s
+qdrant: 3550000 documents sent, 1527 s
+read tcp 127.0.0.1:51182->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:51182->127.0.0.1:36447: read: connection reset by peer
+qdrant: 3575000 documents sent, 1537 s
+qdrant: 3600000 documents sent, 1548 s
+qdrant: 3625000 documents sent, 1560 s
+qdrant: 3650000 documents sent, 1571 s
+qdrant: 3675000 documents sent, 1583 s
+qdrant: 3700000 documents sent, 1594 s
+qdrant: 3725000 documents sent, 1606 s
+qdrant: 3750000 documents sent, 1618 s
+qdrant: 3775000 documents sent, 1630 s
+qdrant: 3800000 documents sent, 1642 s
+qdrant: 3825000 documents sent, 1652 s
+qdrant: 3850000 documents sent, 1664 s
+qdrant: 3875000 documents sent, 1676 s
+qdrant: 3900000 documents sent, 1689 s
+qdrant: 3925000 documents sent, 1702 s
+qdrant: 3950000 documents sent, 1713 s
+qdrant: 3975000 documents sent, 1725 s
+qdrant: 4000000 documents sent, 1737 s
+qdrant: 4025000 documents sent, 1748 s
+qdrant: 4050000 documents sent, 1760 s
+qdrant: 4075000 documents sent, 1772 s
+qdrant: 4100000 documents sent, 1785 s
+qdrant: 4125000 documents sent, 1796 s
+qdrant: 4150000 documents sent, 1808 s
+qdrant: 4175000 documents sent, 1819 s
+qdrant: 4200000 documents sent, 1832 s
+qdrant: 4225000 documents sent, 1843 s
+qdrant: 4250000 documents sent, 1854 s
+qdrant: 4275000 documents sent, 1867 s
+qdrant: 4300000 documents sent, 1879 s
+qdrant: 4325000 documents sent, 1891 s
+qdrant: 4350000 documents sent, 1903 s
+qdrant: 4375000 documents sent, 1916 s
+qdrant: 4400000 documents sent, 1929 s
+qdrant: 4425000 documents sent, 1941 s
+qdrant: 4450000 documents sent, 1953 s
+qdrant: 4475000 documents sent, 1965 s
+qdrant: 4500000 documents sent, 1974 s
+qdrant: 4525000 documents sent, 1981 s
+qdrant: 4550000 documents sent, 1991 s
+qdrant: 4575000 documents sent, 2003 s
+qdrant: 4600000 documents sent, 2014 s
+qdrant: 4625000 documents sent, 2027 s
+qdrant: 4650000 documents sent, 2038 s
+qdrant: 4675000 documents sent, 2051 s
+qdrant: 4700000 documents sent, 2061 s
+qdrant: 4725000 documents sent, 2072 s
+qdrant: 4750000 documents sent, 2082 s
+qdrant: 4775000 documents sent, 2092 s
+qdrant: 4800000 documents sent, 2105 s
+qdrant: 4825000 documents sent, 2115 s
+qdrant: 4850000 documents sent, 2124 s
+qdrant: 4875000 documents sent, 2132 s
+qdrant: 4900000 documents sent, 2139 s
+qdrant: 4925000 documents sent, 2154 s
+qdrant: 4950000 documents sent, 2166 s
+qdrant: 4975000 documents sent, 2182 s
+qdrant: 5000000 documents sent, 2195 s
+qdrant: 5025000 documents sent, 2205 s
+qdrant: 5050000 documents sent, 2215 s
+qdrant: 5075000 documents sent, 2225 s
+qdrant: 5100000 documents sent, 2236 s
+qdrant: 5125000 documents sent, 2247 s
+qdrant: 5150000 documents sent, 2255 s
+qdrant: 5175000 documents sent, 2266 s
+qdrant: 5200000 documents sent, 2275 s
+qdrant: 5225000 documents sent, 2285 s
+qdrant: 5250000 documents sent, 2294 s
+qdrant: 5275000 documents sent, 2304 s
+qdrant: 5300000 documents sent, 2311 s
+qdrant: 5325000 documents sent, 2318 s
+qdrant: 5350000 documents sent, 2325 s
+qdrant: 5375000 documents sent, 2332 s
+qdrant: 5400000 documents sent, 2341 s
+qdrant: 5425000 documents sent, 2347 s
+qdrant: 5450000 documents sent, 2355 s
+qdrant: 5475000 documents sent, 2362 s
+qdrant: 5500000 documents sent, 2369 s
+qdrant: 5525000 documents sent, 2377 s
+qdrant: 5550000 documents sent, 2385 s
+qdrant: 5575000 documents sent, 2392 s
+qdrant: 5600000 documents sent, 2399 s
+qdrant: 5625000 documents sent, 2413 s
+qdrant: 5650000 documents sent, 2427 s
+qdrant: 5675000 documents sent, 2440 s
+qdrant: 5700000 documents sent, 2454 s
+qdrant: 5725000 documents sent, 2467 s
+qdrant: 5750000 documents sent, 2482 s
+qdrant: 5775000 documents sent, 2495 s
+qdrant: 5800000 documents sent, 2506 s
+qdrant: 5825000 documents sent, 2519 s
+qdrant: 5850000 documents sent, 2532 s
+qdrant: 5875000 documents sent, 2544 s
+qdrant: 5900000 documents sent, 2557 s
+qdrant: 5925000 documents sent, 2569 s
+qdrant: 5950000 documents sent, 2580 s
+qdrant: 5975000 documents sent, 2593 s
+qdrant: 6000000 documents sent, 2604 s
+qdrant: 6025000 documents sent, 2616 s
+qdrant: 6050000 documents sent, 2629 s
+qdrant: 6075000 documents sent, 2640 s
+qdrant: 6100000 documents sent, 2652 s
+qdrant: 6125000 documents sent, 2663 s
+qdrant: 6150000 documents sent, 2676 s
+qdrant: 6175000 documents sent, 2692 s
+qdrant: 6200000 documents sent, 2705 s
+qdrant: 6225000 documents sent, 2717 s
+qdrant: 6250000 documents sent, 2729 s
+qdrant: 6275000 documents sent, 2741 s
+qdrant: 6300000 documents sent, 2753 s
+qdrant: 6325000 documents sent, 2764 s
+qdrant: 6350000 documents sent, 2775 s
+qdrant: 6375000 documents sent, 2787 s
+qdrant: 6400000 documents sent, 2798 s
+qdrant: 6425000 documents sent, 2813 s
+qdrant: 6450000 documents sent, 2824 s
+qdrant: 6475000 documents sent, 2836 s
+qdrant: 6500000 documents sent, 2849 s
+qdrant: 6525000 documents sent, 2863 s
+qdrant: 6550000 documents sent, 2875 s
+qdrant: 6575000 documents sent, 2886 s
+qdrant: 6600000 documents sent, 2897 s
+qdrant: 6625000 documents sent, 2911 s
+qdrant: 6650000 documents sent, 2923 s
+qdrant: 6675000 documents sent, 2935 s
+qdrant: 6700000 documents sent, 2947 s
+qdrant: 6725000 documents sent, 2959 s
+qdrant: 6750000 documents sent, 2971 s
+qdrant: 6775000 documents sent, 2985 s
+qdrant: 6800000 documents sent, 3001 s
+qdrant: 6825000 documents sent, 3013 s
+qdrant: 6850000 documents sent, 3027 s
+qdrant: 6875000 documents sent, 3040 s
+qdrant: 6900000 documents sent, 3052 s
+qdrant: 6925000 documents sent, 3067 s
+qdrant: 6950000 documents sent, 3079 s
+qdrant: 6975000 documents sent, 3094 s
+qdrant: 7000000 documents sent, 3108 s
+qdrant: 7025000 documents sent, 3119 s
+qdrant: 7050000 documents sent, 3133 s
+qdrant: 7075000 documents sent, 3146 s
+qdrant: 7100000 documents sent, 3158 s
+qdrant: 7125000 documents sent, 3170 s
+qdrant: 7150000 documents sent, 3179 s
+qdrant: 7175000 documents sent, 3187 s
+qdrant: 7200000 documents sent, 3196 s
+qdrant: 7225000 documents sent, 3205 s
+qdrant: 7250000 documents sent, 3214 s
+qdrant: 7275000 documents sent, 3223 s
+qdrant: 7300000 documents sent, 3233 s
+qdrant: 7325000 documents sent, 3242 s
+qdrant: 7350000 documents sent, 3251 s
+qdrant: 7375000 documents sent, 3260 s
+qdrant: 7400000 documents sent, 3271 s
+qdrant: 7425000 documents sent, 3281 s
+qdrant: 7450000 documents sent, 3290 s
+qdrant: 7475000 documents sent, 3299 s
+qdrant: 7500000 documents sent, 3307 s
+qdrant: 7525000 documents sent, 3316 s
+qdrant: 7550000 documents sent, 3325 s
+qdrant: 7575000 documents sent, 3333 s
+qdrant: 7600000 documents sent, 3343 s
+qdrant: 7625000 documents sent, 3353 s
+qdrant: 7650000 documents sent, 3363 s
+qdrant: 7675000 documents sent, 3372 s
+qdrant: 7700000 documents sent, 3383 s
+qdrant: 7725000 documents sent, 3391 s
+qdrant: 7750000 documents sent, 3400 s
+qdrant: 7775000 documents sent, 3409 s
+qdrant: 7800000 documents sent, 3418 s
+qdrant: 7825000 documents sent, 3428 s
+qdrant: 7850000 documents sent, 3438 s
+qdrant: 7875000 documents sent, 3448 s
+qdrant: 7900000 documents sent, 3459 s
+qdrant: 7925000 documents sent, 3469 s
+qdrant: 7950000 documents sent, 3479 s
+qdrant: 7975000 documents sent, 3488 s
+qdrant: 8000000 documents sent, 3498 s
+qdrant: 8025000 documents sent, 3507 s
+qdrant: 8050000 documents sent, 3517 s
+qdrant: 8075000 documents sent, 3526 s
+qdrant: 8100000 documents sent, 3536 s
+qdrant: 8125000 documents sent, 3549 s
+qdrant: 8150000 documents sent, 3564 s
+qdrant: 8175000 documents sent, 3579 s
+qdrant: 8200000 documents sent, 3593 s
+qdrant: 8225000 documents sent, 3608 s
+qdrant: 8250000 documents sent, 3619 s
+qdrant: 8275000 documents sent, 3631 s
+qdrant: 8300000 documents sent, 3647 s
+qdrant: 8325000 documents sent, 3656 s
+qdrant: 8350000 documents sent, 3666 s
+qdrant: 8375000 documents sent, 3677 s
+qdrant: 8400000 documents sent, 3689 s
+qdrant: 8425000 documents sent, 3699 s
+qdrant: 8450000 documents sent, 3709 s
+qdrant: 8475000 documents sent, 3721 s
+qdrant: 8500000 documents sent, 3733 s
+qdrant: 8525000 documents sent, 3746 s
+qdrant: 8550000 documents sent, 3758 s
+qdrant: 8575000 documents sent, 3774 s
+qdrant: 8600000 documents sent, 3788 s
+qdrant: 8625000 documents sent, 3800 s
+qdrant: 8650000 documents sent, 3811 s
+qdrant: 8675000 documents sent, 3823 s
+qdrant: 8700000 documents sent, 3834 s
+qdrant: 8725000 documents sent, 3845 s
+qdrant: 8750000 documents sent, 3858 s
+qdrant: 8775000 documents sent, 3872 s
+qdrant: 8800000 documents sent, 3883 s
+qdrant: 8825000 documents sent, 3895 s
+qdrant: 8850000 documents sent, 3908 s
+qdrant: 8875000 documents sent, 3919 s
+qdrant: 8900000 documents sent, 3931 s
+qdrant: 8925000 documents sent, 3943 s
+qdrant: 8950000 documents sent, 3956 s
+qdrant: 8975000 documents sent, 3970 s
+qdrant: 9000000 documents sent, 3983 s
+qdrant: 9025000 documents sent, 3997 s
+qdrant: 9050000 documents sent, 4009 s
+qdrant: 9075000 documents sent, 4021 s
+qdrant: 9100000 documents sent, 4033 s
+qdrant: 9125000 documents sent, 4046 s
+qdrant: 9150000 documents sent, 4058 s
+qdrant: 9175000 documents sent, 4073 s
+qdrant: 9200000 documents sent, 4085 s
+qdrant: 9225000 documents sent, 4098 s
+qdrant: 9250000 documents sent, 4110 s
+qdrant: 9275000 documents sent, 4123 s
+qdrant: 9300000 documents sent, 4135 s
+qdrant: 9325000 documents sent, 4147 s
+qdrant: 9350000 documents sent, 4158 s
+qdrant: 9375000 documents sent, 4171 s
+qdrant: 9400000 documents sent, 4183 s
+qdrant: 9425000 documents sent, 4198 s
+qdrant: 9450000 documents sent, 4213 s
+qdrant: 9475000 documents sent, 4226 s
+qdrant: 9500000 documents sent, 4240 s
+qdrant: 9525000 documents sent, 4251 s
+qdrant: 9550000 documents sent, 4258 s
+qdrant: 9575000 documents sent, 4269 s
+qdrant: 9600000 documents sent, 4279 s
+qdrant: 9625000 documents sent, 4290 s
+qdrant: 9650000 documents sent, 4303 s
+qdrant: 9675000 documents sent, 4314 s
+qdrant: 9700000 documents sent, 4326 s
+qdrant: 9725000 documents sent, 4339 s
+qdrant: 9750000 documents sent, 4351 s
+qdrant: 9775000 documents sent, 4363 s
+qdrant: 9800000 documents sent, 4376 s
+qdrant: 9825000 documents sent, 4387 s
+qdrant: 9850000 documents sent, 4399 s
+qdrant: 9875000 documents sent, 4414 s
+qdrant: 9900000 documents sent, 4427 s
+qdrant: 9925000 documents sent, 4439 s
+qdrant: 9950000 documents sent, 4452 s
+qdrant: 9975000 documents sent, 4466 s
+qdrant: 10000000 documents sent, 4477 s
+qdrant: 10000000 documents (132.7 GB) sent in 4477.4 s
+read tcp 127.0.0.1:50670->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:50670->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:36158->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:36158->127.0.0.1:36447: read: connection reset by peer
+unexpected EOF
+error: unexpected EOF
+http2: server sent GOAWAY and closed the connection; LastStreamID=5, ErrCode=NO_ERROR, debug=""
+error: http2: server sent GOAWAY and closed the connection; LastStreamID=5, ErrCode=NO_ERROR, debug=""
+unexpected EOF
+error: unexpected EOF
+unexpected EOF
+error: unexpected EOF
+read tcp 127.0.0.1:42904->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:42904->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:38532->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:38532->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:50128->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:50128->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:43662->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:43662->127.0.0.1:36447: read: connection reset by peer
+unexpected EOF
+error: unexpected EOF
+read tcp 127.0.0.1:56658->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:56658->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:54850->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:54850->127.0.0.1:36447: read: connection reset by peer
+qdrant: index_s in 41602.3 s
+qdrant: indexed 41602.3 s after the last write; 46079.7 s in all
+wrote /data/compare/load-qdrant.json
+job.batch/run-qdrant created
+qdrant    bm25                     warm-up: p50 14.639, 14.801 ms
+qdrant    bm25                     c=1        187 q/s  p50   5.072 ms  p90   9.106 ms  p99  11.822 ms  errors 0
+qdrant    bm25                     c=4        259 q/s  p50  15.339 ms  p90  22.742 ms  p99  28.928 ms  errors 0
+qdrant    bm25                     c=16       267 q/s  p50  58.350 ms  p90  75.424 ms  p99  98.683 ms  errors 0
+qdrant    bm25 + filter            warm-up: p50 16.079, 16.672 ms
+qdrant    bm25 + filter            c=1        163 q/s  p50   5.890 ms  p90   9.951 ms  p99  13.538 ms  errors 0
+qdrant    bm25 + filter            c=4        234 q/s  p50  16.622 ms  p90  24.463 ms  p99  32.278 ms  errors 0
+qdrant    bm25 + filter            c=16       235 q/s  p50  65.599 ms  p90  88.175 ms  p99 110.151 ms  errors 0
+qdrant    vector                   warm-up: p50 18.023, 18.217 ms
+qdrant    vector                   c=1        144 q/s  p50   6.841 ms  p90   7.555 ms  p99   8.609 ms  errors 0
+qdrant    vector                   c=4        215 q/s  p50  17.968 ms  p90  23.774 ms  p99  27.858 ms  errors 0
+qdrant    vector                   c=16       214 q/s  p50  72.095 ms  p90  88.538 ms  p99 108.735 ms  errors 0
+qdrant    vector + filter          warm-up: p50 41.985, 41.339 ms
+qdrant    vector + filter          c=1         72 q/s  p50  13.862 ms  p90  15.120 ms  p99  16.766 ms  errors 0
+qdrant    vector + filter          c=4         95 q/s  p50  41.871 ms  p90  54.499 ms  p99  58.193 ms  errors 0
+qdrant    vector + filter          c=16        96 q/s  p50 158.205 ms  p90 196.251 ms  p99 284.973 ms  errors 0
+qdrant    hybrid (RRF)             warm-up: p50 95.232, 77.354, 75.051 ms
+qdrant    hybrid (RRF)             c=1         31 q/s  p50  26.201 ms  p90  47.048 ms  p99 131.503 ms  errors 0
+qdrant    hybrid (RRF)             c=4         50 q/s  p50  78.909 ms  p90 100.198 ms  p99 114.625 ms  errors 0
+qdrant    hybrid (RRF)             c=16        52 q/s  p50 287.252 ms  p90 345.748 ms  p99 518.865 ms  errors 0
+qdrant    hybrid (weighted)        warm-up: p50 75.059, 74.087 ms
+qdrant    hybrid (weighted)        c=1         39 q/s  p50  25.337 ms  p90  29.433 ms  p99  33.911 ms  errors 0
+qdrant    hybrid (weighted)        c=4         53 q/s  p50  75.113 ms  p90  98.306 ms  p99 104.829 ms  errors 0
+qdrant    hybrid (weighted)        c=16        53 q/s  p50 287.177 ms  p90 343.444 ms  p99 518.156 ms  errors 0
+qdrant    boosted (bm25 × decay)   warm-up: p50 16.307, 16.157 ms
+qdrant    boosted (bm25 × decay)   c=1        166 q/s  p50   5.859 ms  p90   9.862 ms  p99  12.548 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=4        240 q/s  p50  16.262 ms  p90  24.332 ms  p99  31.665 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=16       247 q/s  p50  64.321 ms  p90  80.823 ms  p99  94.768 ms  errors 0
+qdrant    facet                    warm-up: p50 1138.117, 998.591, 1035.025 ms
+qdrant    facet                    c=1          5 q/s  p50 259.965 ms  p90 437.046 ms  p99 480.756 ms  errors 0
+qdrant    facet                    c=4          5 q/s  p50 754.679 ms  p90 1332.569 ms  p99 1520.478 ms  errors 0
+qdrant    facet                    c=16         5 q/s  p50 2563.841 ms  p90 4022.818 ms  p99 4592.751 ms  errors 0
+qdrant    key lookup               warm-up: p50 0.523, 0.508 ms
+qdrant    key lookup               c=1       2112 q/s  p50   0.466 ms  p90   0.518 ms  p99   0.603 ms  errors 0
+qdrant    key lookup               c=4       7491 q/s  p50   0.522 ms  p90   0.603 ms  p99   0.728 ms  errors 0
+qdrant    key lookup               c=16     22102 q/s  p50   0.696 ms  p90   0.911 ms  p99   1.254 ms  errors 0
+qdrant    phrase                   warm-up: p50 12.951, 13.178 ms
+qdrant    phrase                   c=1        126 q/s  p50   3.611 ms  p90  18.904 ms  p99  63.557 ms  errors 0
+qdrant    phrase                   c=4        187 q/s  p50  13.888 ms  p90  53.619 ms  p99  92.528 ms  errors 0
+qdrant    phrase                   c=16       191 q/s  p50  77.774 ms  p90 131.102 ms  p99 169.215 ms  errors 0
+qdrant    typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant    prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant    similar items            warm-up: p50 112.291, 103.308 ms
+qdrant    similar items            c=1         30 q/s  p50  34.160 ms  p90  39.837 ms  p99  44.300 ms  errors 0
+qdrant    similar items            c=4         38 q/s  p50 107.051 ms  p90 137.024 ms  p99 151.969 ms  errors 0
+qdrant    similar items            c=16        38 q/s  p50 401.131 ms  p90 473.139 ms  p99 729.504 ms  errors 0
+qdrant    sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant.json
+pod "qdrant-0" deleted from qdrant namespace

@@ -156,3 +156,22 @@ fn array_of(name: &str, values: Vec<Value>) -> strata::Result<ArrayRef> {
     }
     column_of(values).map_err(|m| strata::Error::Query(format!("column {name}: {}; an Arrow column holds values of one type (query() answers it)", m.0)))
 }
+
+/// The Arrow stream `data` gives through the Arrow PyCapsule interface
+/// (`__arrow_c_stream__`): a pyarrow Table, RecordBatch or
+/// RecordBatchReader, a polars DataFrame, a DuckDB relation, a
+/// `query_arrow` answer..
+#[cfg(feature = "parquet")]
+pub fn stream_of(data: &Bound<'_, PyAny>) -> PyResult<arrow_array::ffi_stream::ArrowArrayStreamReader> {
+    use pyo3::exceptions::PyTypeError;
+    if !data.hasattr("__arrow_c_stream__")? {
+        return Err(PyTypeError::new_err(format!("{} gives no Arrow stream (__arrow_c_stream__): pass a pyarrow Table, RecordBatch or RecordBatchReader, a polars DataFrame or a DuckDB relation", data.get_type().name()?)));
+    }
+    let capsule = data.call_method1("__arrow_c_stream__", (data.py().None(),))?;
+    let capsule = capsule.cast::<PyCapsule>().map_err(|_| PyTypeError::new_err("__arrow_c_stream__ gave no capsule"))?;
+    let ptr = capsule.pointer_checked(Some(STREAM))?.as_ptr().cast::<FFI_ArrowArrayStream>();
+    // The stream is moved out, and the capsule left a released one, which
+    // its destructor does nothing with (as arrow's pyarrow module does).
+    let stream = unsafe { FFI_ArrowArrayStream::from_raw(ptr) };
+    arrow_array::ffi_stream::ArrowArrayStreamReader::try_new(stream).map_err(|e| StrataError::new_err(format!("the Arrow stream: {e}")))
+}
