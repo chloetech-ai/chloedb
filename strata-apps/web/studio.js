@@ -76,8 +76,9 @@ const S = {
 
 let KIT = '';
 let FRAME = '';
+let SCREEN = '';
 async function assets() {
-  if (!KIT) [KIT, FRAME] = await Promise.all([fetch('/kit.css').then((r) => r.text()), fetch('/frame.js').then((r) => r.text())]);
+  if (!KIT) [KIT, FRAME, SCREEN] = await Promise.all([fetch('/kit.css').then((r) => r.text()), fetch('/frame.js').then((r) => r.text()), fetch('/screen.js').then((r) => r.text())]);
 }
 
 // ---- live updates
@@ -300,8 +301,8 @@ function whereFrom(d) {
   if (d.decision === 'copy') return f.starter ? 'built-in starter, copied as it is' : `copied from another app: ${f.title}`;
   if (d.decision === 'fork') return `forked from ${f.starter ? 'the built-in starter ' : ''}${f.title}`;
   if (d.decision === 'version') return `new version of the shared ${d.kind} (${f.author === 'builtin' ? 'built-in' : 'from another app'})`;
-  if (d.decision === 'change') return d.kind === 'table' ? d.detail : 'rewritten';
-  if (d.decision === 'new') return d.kind === 'table' ? d.detail : 'written from scratch';
+  if (d.decision === 'change') return d.kind === 'table' ? d.detail : d.screen ? 'rewritten, as a screen (data, no code)' : 'rewritten';
+  if (d.decision === 'new') return d.kind === 'table' ? d.detail : d.screen ? 'written from scratch as a screen (data, no code)' : 'written from scratch';
   if (d.decision === 'upgrade') return 'moved to a newer version';
   return DECISION[d.decision]?.[1] || '';
 }
@@ -551,8 +552,35 @@ function switchView(slug, params) {
 
 const noClose = (code) => String(code).replace(/<\/(script)/gi, '<\\/$1');
 
+// A screen (a view written as data) is compiled here, before the frame loads:
+// each "=expression" becomes a function in a script of its own (so one that
+// does not parse breaks only itself), and each code block likewise.
+function compileScreen(text) {
+  let spec;
+  try { spec = JSON.parse(text); } catch (e) { return { error: `the screen is not JSON: ${e.message}` }; }
+  const exprs = [];
+  const codes = [];
+  const walk = (v, key) => {
+    if (key === 'code' && typeof v === 'string') { codes.push(v); return { $c: codes.length - 1 }; }
+    if (typeof v === 'string' && v.startsWith('=')) { exprs.push(v.slice(1)); return { $e: exprs.length - 1 }; }
+    if (Array.isArray(v)) return v.map((x) => walk(x));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, k)]));
+    return v;
+  };
+  const compiled = walk(spec);
+  const scripts = [
+    `<script>window.__SA_EXPR = []; window.__SA_CODE = []; window.__SA_EXPR_SRC = ${JSON.stringify(exprs).replace(/</g, '\\u003c')};</script>`,
+    ...exprs.map((e, i) => `<script>__SA_EXPR[${i}] = function (s) { with (s) { return (${noClose(e)}\n); } };</script>`),
+    ...codes.map((c, i) => `<script>__SA_CODE[${i}] = function () {\n${noClose(c)}\n;return typeof render === 'function' ? render : null; };</script>`),
+  ];
+  return { spec: compiled, scripts: scripts.join('\n') };
+}
+
 function srcdoc(view, params, components, helpers) {
-  const code = noClose(view.code);
+  const screen = view.spec && view.spec.screen ? compileScreen(view.code) : null;
+  const code = screen
+    ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
+    : noClose(view.code);
   const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {} }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
@@ -566,6 +594,7 @@ ${noClose(c.code)}
 <style>${KIT}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
+${screen ? `<script>${SCREEN}</script>\n${screen.scripts || ''}` : ''}
 ${libs}
 ${comps}
 <script>

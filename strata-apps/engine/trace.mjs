@@ -74,7 +74,7 @@ export function planDecisions({ plan, view, library, shared, pinned, written, co
       const decision = item.forked_from ? 'fork' : before ? 'change' : 'new';
       out.push({ t: at, decision, kind, name: item.slug, title: item.title || item.slug, detail: item.description || item.spec || '',
         from: item.forked_from ? { id: item.forked_from, title: src?.title || item.forked_from, starter: src?.app === 'lib' } : before ? { id: before.id, title: before.title } : null,
-        piece: item.slug, chars: (code[item.slug] || '').length });
+        piece: item.slug, chars: (code[item.slug] || '').length, ...(item.screen ? { screen: true } : {}) });
     }
   }
   for (const r of plan.reuse || []) {

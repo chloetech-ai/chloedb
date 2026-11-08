@@ -9,7 +9,7 @@ import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical } fr
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
 
-export const SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
+const BASE_SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
 - table: the data the app keeps.
 - view: a screen of the app, shown as a tab. JavaScript that runs in the browser, in a sandboxed frame.
@@ -165,6 +165,144 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 - suggestions: 3 changes the person might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked, or to what they did as recorded above; never claim a habit the record does not show. Make them specific to this app, small enough to build in one step, and new: not what the app does already, not what was just asked, and not one of the suggestions made before (listed above with what became of them).
 - An app has one to five views. Do not split what belongs together across views.`;
 
+// Screens: views written as data (web/screen.js draws them). On unless
+// STRATA_APPS_SCREENS=off, which keeps every view as code.
+export const SCREENS = process.env.STRATA_APPS_SCREENS !== 'off';
+
+const SCREENS_DOC = `# Screens: views written as data
+
+Write each view as a screen unless it needs something a screen cannot say. A screen is JSON, given in the view's plan entry as "screen", with no code block: the runtime fetches its data from Strata, draws its blocks with the shared components, runs its queries again after every write, and redraws when its state changes. A screen is a fraction of the code of a view and has none of its wiring to get wrong, so it is the default. Example:
+
+{
+  "state": {"filter": "all", "editing": null},
+  "data": {
+    "guests": "SELECT * FROM guests ORDER BY name LIMIT 500",
+    "meals": {"sql": "SELECT meal, COUNT(*) AS n FROM guests WHERE rsvp = :r GROUP BY meal", "params": {"r": "yes"}}
+  },
+  "let": {"shown": "=guests.filter(g => state.filter === 'all' || g.rsvp === state.filter)"},
+  "body": [
+    {"h": "Guests"},
+    {"kpis": [{"label": "Coming", "value": "=guests.filter(g => g.rsvp === 'yes').length"}, {"label": "Waiting", "value": "=guests.filter(g => g.rsvp === 'waiting').length"}]},
+    {"form": "guests", "fields": [{"name": "name", "required": true}, {"name": "rsvp", "label": "RSVP", "type": "select", "options": ["yes", "no", "waiting"]}, {"name": "table_no", "label": "Table", "type": "number"}],
+     "submit": "Add guest", "edit": "=state.editing", "after": "=() => set({editing: null})", "cancel": "=() => set({editing: null})"},
+    {"chips": "filter", "options": ["all", "yes", "no", "waiting"]},
+    {"table": "=shown", "columns": [{"key": "name"}, {"key": "rsvp", "label": "RSVP", "badge": true}, {"key": "table_no", "label": "Table"}],
+     "actions": [{"label": "Edit", "do": "=g => set({editing: g})"}, {"label": "Delete", "do": "=g => app.remove('guests', g.id)", "confirm": "Delete this guest?"}],
+     "empty": "No guests yet: add the first one above."},
+    {"ui": "barChart", "props": {"items": "=meals.map(m => ({label: m.meal, value: m.n}))"}}
+  ]
+}
+
+Values: a string that starts with "=" is a JavaScript expression; anything else is taken as it is. An expression sees each "data" entry by name (its rows), each "let" by name (computed in order, after the data), state, set(changes) (merges into state and redraws), app (as in a view: app.insert, app.update, app.remove, app.call, app.open, app.toast, app.fmt, app.today(), app.me()...), lib (the helpers), ui, h, params (app.params), today, and, inside "each", the item by its name. A handler is an expression that gives a function ("=g => app.remove('guests', g.id)"); after it finishes the screen fetches its data again. Callbacks in a component's props are handlers too.
+
+data: name -> a SELECT (as for app.sql), or {"sql": "...", "params": {"name": value}} (values may be expressions, such as "=state.month": the data is fetched again when the state changes), or "=expression" for anything else (a Promise is awaited: "=app.call('totals', {month: state.month})", "=app.people()").
+
+Blocks, in "body" and in every block that holds blocks:
+- a plain string (a paragraph); {"h": "text", "level": 1 | 2 | 3}; {"text": "...", "muted": true, "small": true}
+- {"ui": "name", "props": {...}}: a shared component, with its props as the library lists them
+- {"row": [blocks]}, {"col": [blocks]}, {"grid": [blocks]} (cards that wrap), {"split": [blocks]} (two columns, stacked on phones), {"card": [blocks], "title": "..."}, {"section": [blocks], "title": "..."}
+- {"if": "=expr", "then": [blocks], "else": [blocks]}
+- {"each": "=list", "as": "item", "body": [blocks], "empty": "text when the list is empty", "class": "list" | "grid" | "row"}
+- {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers
+- {"chips": "stateKey", "options": [...]}: picks one value of state (options: strings or {"value", "label"}); {"input": "stateKey", "type": "search" | "text" | "select" | "date" | "number" | "checkbox", "placeholder": "...", "options": [...], "label": "..."}: an input bound to state
+- {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small", "confirm": "a question to confirm first"}
+- {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value"}], "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col"}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
+- {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
+- {"code": "async function render(root, ctx) { ... }"}: for a part the blocks cannot say, JavaScript as in a view (h, svg, app, ui, lib), drawn again whenever the screen redraws; ctx holds state, set, refresh() and the data and lets by name.
+
+Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a function, and logic another app could use in a helper. Write a code view (a code block, no "screen") only when most of the screen would be "code" blocks: a game, a drawing surface, an editor of its own.`;
+
+const SCREEN_PLAN = `
+- views: a screen view carries its whole screen in the plan entry ("screen": {...}) and has no code block. A code view has no "screen" and a code block of its slug.`;
+
+export const SYSTEM = SCREENS
+  ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n# Components (shared by every app)`)
+    .replace('"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],', '"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1, "screen": {"data": {}, "body": []}}],')
+    .replace('- An app has one to five views.', `${SCREEN_PLAN.trim()}\n- An app has one to five views.`)
+    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)')
+  : BASE_SYSTEM;
+
+// Columns of a table, as the app has it and as the plan adds to it.
+function columnsFor(view, plan) {
+  return (name) => {
+    const t = view.tables.find((x) => x.spec.name === name);
+    const p = (plan.tables || []).find((x) => x.name === name);
+    if (!t && !p) return null;
+    return new Set(['id', 'created', ...(t?.spec.columns || []).map((c) => c.name), ...(p?.columns || []).map((c) => c.name)]);
+  };
+}
+
+// A plan's screens become the code of their views (JSON text), so the rest
+// of the forge handles them as it handles code.
+export function screensToCode(plan, code) {
+  for (const v of plan?.views || []) {
+    if (!v) continue;
+    if (!(v.screen && typeof v.screen === 'object') && typeof code[v.slug] === 'string' && code[v.slug].trim().startsWith('{')) {
+      try { v.screen = JSON.parse(code[v.slug]); } catch { /* checked as code */ }
+    }
+    if (v.screen && typeof v.screen === 'object') code[v.slug] = JSON.stringify(v.screen, null, 1);
+    else delete v.screen;
+  }
+  return code;
+}
+
+const SCREEN_BLOCKS = ['h', 'text', 'ui', 'row', 'col', 'grid', 'split', 'card', 'section', 'if', 'each', 'kpis', 'chips', 'input', 'button', 'form', 'table', 'code'];
+const NESTED = { row: 'row', col: 'col', grid: 'grid', split: 'split', card: 'card', section: 'section', then: 'then', else: 'else', body: 'body' };
+
+// Checks a screen: its shape, that every expression parses, that its SQL is a
+// SELECT, and that its forms write tables and columns the app has.
+export function checkScreen(screen, columnsOf = () => null) {
+  const problems = [];
+  if (!screen || typeof screen !== 'object' || Array.isArray(screen)) return ['the screen must be a JSON object with "body"'];
+  if (!Array.isArray(screen.body)) problems.push('the screen has no "body" list');
+  const expr = (v, where) => {
+    if (typeof v !== 'string' || !v.startsWith('=')) return;
+    try { new Function('s', `with (s) { return (${v.slice(1)}\n); }`); } catch (e) { problems.push(`${where}: the expression ${JSON.stringify(v.slice(0, 120))} does not parse (${e.message})`); }
+  };
+  const walkValues = (v, where) => {
+    if (typeof v === 'string') expr(v, where);
+    else if (Array.isArray(v)) v.forEach((x, i) => walkValues(x, `${where}[${i}]`));
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (k !== 'code') walkValues(x, `${where}.${k}`);
+  };
+  for (const [name, q] of Object.entries(screen.data || {})) {
+    const sql = typeof q === 'string' ? q : q && q.sql;
+    if (typeof sql !== 'string') { problems.push(`data.${name}: give a SELECT, {"sql", "params"} or an "=expression"`); continue; }
+    if (sql.startsWith('=')) expr(sql, `data.${name}`);
+    else if (!/^\s*(select|with)\b/i.test(sql)) problems.push(`data.${name}: only SELECT (or WITH) queries; write with app.insert, app.update and app.remove`);
+  }
+  walkValues(screen.state || {}, 'state');
+  walkValues(screen.let || {}, 'let');
+  const walk = (list, path) => {
+    if (list == null) return;
+    if (!Array.isArray(list)) list = [list];
+    list.forEach((b, i) => {
+      const where = `${path}[${i}]`;
+      if (b == null || typeof b === 'string') { if (typeof b === 'string') expr(b, where); return; }
+      if (typeof b !== 'object' || Array.isArray(b)) { problems.push(`${where}: a block is an object or a string`); return; }
+      const kind = SCREEN_BLOCKS.find((k) => b[k] !== undefined);
+      if (!kind) { problems.push(`${where}: unknown block ${JSON.stringify(Object.keys(b))}; blocks are ${SCREEN_BLOCKS.join(', ')}`); return; }
+      if (kind === 'code') {
+        if (typeof b.code !== 'string' || !/\bfunction\s+render\s*\(/.test(b.code)) problems.push(`${where}: a code block defines async function render(root, ctx)`);
+        else { try { new vm.Script(`(async function () {\n${b.code}\n})`); } catch (e) { problems.push(`${where}: code: ${e.message}`); } }
+        return;
+      }
+      if (kind === 'form') {
+        const cols = columnsOf(b.form);
+        if (!cols) problems.push(`${where}: the form writes table ${JSON.stringify(b.form)}, which the app does not have`);
+        else for (const f of b.fields || []) { const n = typeof f === 'string' ? f : f && f.name; if (n && !cols.has(n)) problems.push(`${where}: the form's field ${n} is not a column of ${b.form} (add it in "tables")`); }
+      }
+      for (const [k, v] of Object.entries(b)) {
+        if (NESTED[k] && k !== kind && !['then', 'else', 'body'].includes(k)) continue;
+        if (['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else', 'body'].includes(k) && Array.isArray(v)) walk(v, `${where}.${k}`);
+        else walkValues(v, `${where}.${k}`);
+      }
+    });
+  };
+  walk(screen.body, 'body');
+  if (JSON.stringify(screen).length > 120 * 1024) problems.push('the screen is longer than 120 KiB');
+  return problems;
+}
+
 // Words of SQL that Strata's parser takes as keywords, so tables and columns
 // cannot be named after them.
 const RESERVED = new Set(('key index unique primary foreign check constraint references default select from where group order by limit offset ' +
@@ -227,8 +365,8 @@ export async function buildContext(engine, appId, request) {
     }
     parts.push(`## Tables\n${tables.join('\n') || '(none)'}`);
     const views = view.views.slice().sort((a, b) => (a.spec.order ?? 99) - (b.spec.order ?? 99))
-      .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}">\n${v.code}\n</view>`);
-    parts.push(`## Views\n${views.join('\n\n') || '(none)'}`);
+      .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.screen ? ' format="screen"' : ''}>\n${v.code}\n</view>`);
+    parts.push(`## Views\n${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen (JSON). To change it, give its whole screen, changed, in its plan entry ("screen"); to turn it into a code view, give a code block and no "screen".\n\n' : ''}${views.join('\n\n') || '(none)'}`);
     const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}">\n${f.description ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
     parts.push(`## Functions\n${fns.join('\n\n') || '(none)'}`);
     const mine = view.shared.map((c) => {
@@ -421,6 +559,10 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       if (!SLUG_RE.test(item.slug || '')) { problems.push(`${kind} slug ${JSON.stringify(item.slug)}: lowercase letters, digits and dashes`); continue; }
       if (slugs.has(item.slug)) problems.push(`${item.slug} is given twice`);
       slugs.add(item.slug);
+      if (kind === 'view' && item.screen) {
+        for (const x of checkScreen(item.screen, columnsFor(view, plan))) problems.push(`view ${item.slug}: ${x}`);
+        continue;
+      }
       const src = code[item.slug];
       if (!src || !src.trim()) { problems.push(`${kind} ${item.slug} has no <code slug="${item.slug}"> block`); continue; }
       const p = kind === 'view' ? checkView(src) : await checkFunction(src);
@@ -517,7 +659,7 @@ Answer with the <plan> alone this time, and no code blocks. Each view, function,
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary", "seed" and "suggestions" as always.`;
+- Keep "summary", "seed" and "suggestions" as always.${SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}`;
 
 const pieceStep = (what, slug) => `# This step: write ${what}
 
@@ -526,7 +668,7 @@ Write the code of ${what} alone, as the plan above and its spec say: what the sp
 // The pieces a plan says to write, each with the slug of its code block.
 function planPieces(plan) {
   const out = [];
-  for (const v of plan.views || []) out.push({ what: `the view ${v.slug}`, label: `view ${v.slug}`, slug: v.slug, item: v });
+  for (const v of plan.views || []) if (!v.screen) out.push({ what: `the view ${v.slug}`, label: `view ${v.slug}`, slug: v.slug, item: v });
   for (const f of plan.functions || []) out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f });
   for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
     for (const c of plan[plural] || []) out.push({ what: `the shared ${kind} ${c.name}`, label: `${kind} ${c.name}`, slug: `${ns}:${c.name}`, item: c });
@@ -559,6 +701,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress,
     await tr.span('check', 'Check the plan', async (c) => {
       try {
         ({ plan } = parseAnswer(answer.text));
+        screensToCode(plan, {});
         completePlan(plan, view, library);
         problems = (await validate(plan, {}, view, library, shared)).filter((p) => !/has no <code slug=/.test(p));
       } catch (e) { problems = [e.message]; }
@@ -569,7 +712,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress,
   }
   if (problems.length) return { plan, code: {}, cost, problems, decidedAt };
   const pieces = planPieces(plan);
-  const code = {};
+  const code = screensToCode(plan, {});
   const planText = `# The plan, decided\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>`;
   const write = async (pieces, notes = new Map()) => {
     const seen = new Map();
@@ -657,6 +800,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     await tr.span('check', 'Check the code', async (c) => {
       try {
         ({ plan, code } = parseAnswer(answer.text));
+        screensToCode(plan, code);
         completePlan(plan, view, library);
         problems = await validate(plan, code, view, library, shared);
       } catch (e) {
@@ -699,7 +843,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   }
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
-      const spec = kind === 'view' ? { order: item.order ?? 50 } : { on: item.on || null };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true } : {}) } : { on: item.on || null };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);

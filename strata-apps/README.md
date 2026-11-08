@@ -134,6 +134,8 @@ cd strata-apps
 
 A first version of a small app takes 50 seconds to a minute; a bigger one takes 2 to 4 minutes (a CRM with a pipeline board 110 s, a course on linked lists with lessons, a playground and a quiz 216 s; written in one answer, that course took 7.5 to 9 minutes). The studio shows how far the model has got while it writes. A change takes 20 seconds to 2 minutes.
 
+**Screens.** Most views are written as data instead of code: a screen is JSON (its state, the SELECTs it reads, values derived from them, and a body of blocks such as forms, tables, number tiles, chips, lists, shared components by name, and small `code` blocks for what blocks cannot say), and `web/screen.js` draws it, fetches its data again after every write and redraws when its state changes. The model writes a screen inside the plan, so a first version with only screens takes one call and no writers; the forge checks each screen (its shape, that every `=expression` parses, that its SQL is a SELECT, that its forms name tables and columns the app has). Views that are mostly code (a game, a drawing surface) stay code. `STRATA_APPS_SCREENS=off` turns screens off.
+
 Each build keeps its timeline. Under Versions, **Timeline** on a version shows what took the time (reading Strata, the model planning, each piece's writer, the checks, a second try, storing), what each model call cost and read, and what was decided for every piece of the app and when: used from the library as it is, copied from a starter, forked, rewritten, written from scratch, a new version of a shared piece, or kept. The top of the tab sums up every build of the app.
 
 ## What is where

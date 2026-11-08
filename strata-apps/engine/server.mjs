@@ -229,6 +229,7 @@ const STATIC = {
   '/studio.js': ['web/studio.js', 'text/javascript; charset=utf-8'],
   '/studio.css': ['web/studio.css', 'text/css; charset=utf-8'],
   '/frame.js': ['web/frame.js', 'text/javascript; charset=utf-8'],
+  '/screen.js': ['web/screen.js', 'text/javascript; charset=utf-8'],
   '/graph.js': ['web/graph.js', 'text/javascript; charset=utf-8'],
   '/kit.css': ['web/kit.css', 'text/css; charset=utf-8'],
 };

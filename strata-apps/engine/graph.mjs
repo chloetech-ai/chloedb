@@ -38,6 +38,8 @@ export function sharedRefs(code) {
     const re = new RegExp(`(?<![\\w$.])${ns}\\s*(?:\\.\\s*([a-z][a-zA-Z0-9]*)|\\[\\s*['"]([a-z][a-zA-Z0-9]*)['"]\\s*\\])`, 'g');
     for (const m of String(code || '').matchAll(re)) out.add(`${kind}/${m[1] || m[2]}`);
   }
+  // A screen (a view written as JSON) names its components as "ui": "name".
+  for (const m of String(code || '').matchAll(/"ui"\s*:\s*"([a-z][a-zA-Z0-9]*)"/g)) out.add(`component/${m[1]}`);
   return out;
 }
 
