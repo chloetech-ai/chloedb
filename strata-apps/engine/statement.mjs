@@ -138,7 +138,22 @@ function fieldSpec(spec, line) {
     rest = rest.trim();
     let mm;
     if ((mm = rest.match(/^('(?:[^']|'')*'|"(?:[^"]|"")*")/))) { f.label = literal(mm[1]); rest = rest.slice(mm[1].length); continue; }
-    if (rest.startsWith('(')) { const p = parens(rest, line, `FORM ${f.name}`); f.options = splitTop(p.inside).map(literal); if (!f.type) f.type = 'select'; rest = p.rest; continue; }
+    if (rest.startsWith('(')) {
+      const p = parens(rest, line, `FORM ${f.name}`);
+      const inner = p.inside.trim().replace(/^\(([\s\S]*)\)$/, '$1').trim();
+      if (/^SELECT\b/i.test(inner)) {
+        // (SELECT id, name FROM flats): the rows of a table, said as FROM
+        const q = inner.match(/^SELECT\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*([A-Za-z_][A-Za-z0-9_]*))?\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:ORDER\s+BY\s+[\s\S]*)?$/i);
+        if (!q) fail(line, `FORM ${f.name}: a choice among a table's rows is ${f.name} FROM <table> (<value col>, <label col>)`);
+        f.from = { table: q[3], value: q[1], label: q[2] || q[1] };
+        f.type = 'select';
+      } else {
+        f.options = splitTop(p.inside).map(literal);
+        if (!f.type) f.type = 'select';
+      }
+      rest = p.rest;
+      continue;
+    }
     if ((mm = rest.match(/^DEFAULT\s+('(?:[^']|'')*'|[^\s,]+)/i))) { f.value = literal(mm[1]); rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^PLACEHOLDER\s+('(?:[^']|'')*')/i))) { f.placeholder = literal(mm[1]); rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^(NOT\s+NULL|REQUIRED)\b/i))) { f.required = true; rest = rest.slice(mm[0].length); continue; }
