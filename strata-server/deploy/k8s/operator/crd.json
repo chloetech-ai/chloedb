@@ -52,6 +52,89 @@
             "properties": {
               "spec": {
                 "properties": {
+                  "apps": {
+                    "description": "The app engine beside the cluster: strata-apps in a Deployment of one, which the command center shows under Apps. It keeps the apps it builds as rows of the cluster, calls the model with secretEnv's ANTHROPIC_API_KEY, and needs tokenSecret: its studio, at publicUrl, signs admins in with a link the command center hands out.",
+                    "properties": {
+                      "args": {
+                        "description": "More arguments of the engine.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "env": {
+                        "description": "The engine's own settings (STRATA_APPS_MODEL, ...); secrets go in secretEnv.",
+                        "items": {
+                          "properties": {
+                            "name": {
+                              "pattern": "^STRATA_APPS_[A-Z0-9_]+$",
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "image": {
+                        "description": "The engine's image (default ghcr.io/chloetech-ai/strata-apps:latest).",
+                        "type": "string"
+                      },
+                      "nodePort": {
+                        "description": "A NodePort Service's port (Kubernetes picks one when left out).",
+                        "maximum": 32767,
+                        "minimum": 30000,
+                        "type": "integer"
+                      },
+                      "paused": {
+                        "description": "No engine pod for now (the apps stay).",
+                        "type": "boolean"
+                      },
+                      "publicUrl": {
+                        "description": "Where browsers reach the studio, which Open the studio links to: a NodePort, a LoadBalancer or an Ingress of your own in front of the Service.",
+                        "pattern": "^https?://[^?# ]+$",
+                        "type": "string"
+                      },
+                      "resources": {
+                        "description": "Resources of its container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "serviceType": {
+                        "description": "The Service's type (default ClusterIP).",
+                        "enum": [
+                          "ClusterIP",
+                          "NodePort",
+                          "LoadBalancer"
+                        ],
+                        "type": "string"
+                      },
+                      "spendCapUsd": {
+                        "description": "What the model may cost, in US dollars, before every call is refused until it is raised (default 25; 0: no limit).",
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "storage": {
+                        "description": "Its volume (files, map tiles, the spend count): made once, kept when spec.apps goes, deleted with the cluster.",
+                        "properties": {
+                          "size": {
+                            "description": "Its size (default 1Gi); it only grows.",
+                            "type": "string"
+                          },
+                          "storageClassName": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "args": {
                     "description": "More arguments for every server.",
                     "items": {

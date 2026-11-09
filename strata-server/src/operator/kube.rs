@@ -448,7 +448,11 @@ impl Cluster {
 
     /// Where the coordinators reach an app beside the cluster: its Service.
     fn app_url(&self, app: &str) -> String {
-        let port = if app == super::sheets::APP { super::sheets::PORT } else { super::crawler::PORT };
+        let port = match app {
+            super::sheets::APP => super::sheets::PORT,
+            super::apps::APP => super::apps::PORT,
+            _ => super::crawler::PORT,
+        };
         format!("http://{}-{app}:{port}", self.name)
     }
 
@@ -594,6 +598,113 @@ impl Cluster {
             "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.sheets_name(), self.labels()),
             "spec": {"selector": self.sheets_labels(), "ports": [{"name": "http", "port": port, "targetPort": port}]},
         })
+    }
+
+    fn apps_name(&self) -> String {
+        format!("{}-{}", self.name, super::apps::APP)
+    }
+
+    fn apps_labels(&self) -> Json {
+        let mut labels = self.labels();
+        labels["app.kubernetes.io/component"] = json!("apps");
+        labels
+    }
+
+    fn apps_claim_path(&self) -> String {
+        format!("{}/{}", ns_path(&self.ns, "v1", "persistentvolumeclaims"), self.apps_name())
+    }
+
+    /// The app engine's Deployment ([`super::apps`]): one pod, or none
+    /// while paused, never two at once (Recreate: its volume is one
+    /// node's, and it counts what the model cost there), that keeps its
+    /// apps in the cluster through the coordinators' Service with the
+    /// admin token, which is also what the coordinators send it, and calls
+    /// the model with the cluster's `secretEnv`.
+    pub fn apps_deployment(&self, a: &super::AppsSpec) -> Json {
+        let s = &self.spec;
+        let labels = self.apps_labels();
+        let mut env = Vec::new();
+        if let Some(t) = &s.token_secret {
+            env.push(secret_env("STRATA_TOKEN", t));
+            env.push(secret_env("STRATA_APP_TOKEN", t));
+        }
+        if let Some(u) = &a.public_url {
+            env.push(json!({"name": "STRATA_APPS_PUBLIC_URL", "value": u}));
+        }
+        env.push(json!({"name": "STRATA_APPS_SPEND_CAP_USD", "value": a.spend_cap()}));
+        env.extend(a.env.iter().map(|e| json!({"name": e.name, "value": e.value})));
+        env.extend(self.from_secrets());
+        let port = super::apps::PORT;
+        let mut container = json!({
+            "name": "apps", "image": a.image(), "args": a.args(&format!("http://{}:7700", self.name)), "env": env,
+            "ports": [{"name": "http", "containerPort": port}],
+            "readinessProbe": {"httpGet": {"path": "/healthz", "port": port}, "periodSeconds": 5},
+            "volumeMounts": [{"name": "data", "mountPath": "/data"}],
+            "resources": a.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "250m", "memory": "600Mi"}, "limits": {"memory": "1536Mi"}})),
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        if let Some(p) = &s.image_pull_policy {
+            container["imagePullPolicy"] = json!(p);
+        }
+        json!({
+            "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&self.apps_name(), labels.clone()),
+            "spec": {
+                "replicas": if a.paused { 0 } else { 1 },
+                "selector": {"matchLabels": labels},
+                "strategy": {"type": "Recreate"},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "automountServiceAccountToken": false,
+                        "enableServiceLinks": false,
+                        // The image's user (node), who owns the volume.
+                        "securityContext": {"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000},
+                        "terminationGracePeriodSeconds": 30,
+                        "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": self.apps_name()}}],
+                        "containers": [container],
+                    },
+                },
+            },
+        })
+    }
+
+    /// The app engine's Service, which the coordinators forward
+    /// `/v1/apps/apps/...` to, and browsers reach the studio through (by a
+    /// node's port, a load balancer, or an Ingress of one's own).
+    pub fn apps_service(&self, a: &super::AppsSpec) -> Json {
+        let port = super::apps::PORT;
+        let mut p = json!({"name": "http", "port": port, "targetPort": port});
+        if let Some(n) = a.node_port {
+            p["nodePort"] = json!(n);
+        }
+        json!({
+            "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.apps_name(), self.labels()),
+            "spec": {"type": a.service_type, "selector": self.apps_labels(), "ports": [p]},
+        })
+    }
+
+    /// The app engine's volume: made once, owned by the cluster.
+    pub fn apps_claim(&self, a: &super::AppsSpec) -> Json {
+        let mut spec = json!({"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": a.storage.size}}});
+        if let Some(c) = &a.storage.storage_class_name {
+            spec["storageClassName"] = json!(c);
+        }
+        json!({"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": self.meta(&self.apps_name(), self.apps_labels()), "spec": spec})
+    }
+
+    /// The volume, before the pod that mounts it: made when there is none,
+    /// grown when it is asked to be larger, else left as it is (a claim's
+    /// class and modes cannot change).
+    async fn apps_volume(&self, a: &super::AppsSpec) -> Result<(), String> {
+        let path = self.apps_claim_path();
+        let Some(have) = self.kube.get(&path).await? else {
+            return self.kube.apply(&path, &self.apps_claim(a)).await.map(|_| ());
+        };
+        let has = have["spec"]["resources"]["requests"]["storage"].as_str().and_then(super::quantity).unwrap_or(0);
+        if super::quantity(&a.storage.size).is_some_and(|want| want > has) {
+            self.kube.merge(&path, &json!({"spec": {"resources": {"requests": {"storage": a.storage.size}}}})).await?;
+        }
+        Ok(())
     }
 
     fn follow_path(&self) -> String {
@@ -872,6 +983,14 @@ impl Platform for Cluster {
     async fn sheets(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
         self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), with.sheets_deployment(c)))).await
+    }
+
+    async fn apps(&self, spec: &Spec) -> Result<(), String> {
+        let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
+        if let Some(a) = &spec.apps {
+            with.apps_volume(a).await?;
+        }
+        self.beside(self.app_paths(&self.apps_name()), spec.apps.as_ref().map(|a| (with.apps_service(a), with.apps_deployment(a)))).await
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
@@ -1552,6 +1671,58 @@ mod tests {
         assert_eq!(crawler.spec.coordinator_config(), super::super::short_hash(&j));
         let paused = cluster(json!({"tokenSecret": "admin", "sheets": {"paused": true}}));
         assert_eq!(paused.sheets_deployment(paused.spec.sheets.as_ref().unwrap())["spec"]["replicas"], 0);
+    }
+
+    #[test]
+    fn the_app_engine_runs_beside_the_cluster_with_its_volume_and_the_clusters_model_key() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always",
+            "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}],
+            "apps": {"publicUrl": "https://studio.example", "serviceType": "NodePort", "nodePort": 30731, "spendCapUsd": 40, "env": [{"name": "STRATA_APPS_MODEL", "value": "m"}]}}));
+        let a = c.spec.apps.as_ref().unwrap();
+        let d = c.apps_deployment(a);
+        assert_eq!(d["metadata"]["name"], "orders-apps");
+        assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
+        assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
+        let pod = &d["spec"]["template"]["spec"];
+        assert_eq!(pod["automountServiceAccountToken"], false);
+        assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
+        assert_eq!(pod["volumes"][0]["persistentVolumeClaim"]["claimName"], "orders-apps");
+        let k = &pod["containers"][0];
+        assert_eq!(k["image"], super::super::apps::IMAGE, "an image of its own, not the cluster's");
+        assert_eq!(k["imagePullPolicy"], "Always");
+        assert_eq!(k["args"], json!(["--strata", "http://orders:7700", "--host", "0.0.0.0", "--port", "7730", "--data", "/data"]));
+        assert_eq!(k["volumeMounts"][0]["mountPath"], "/data");
+        let env = k["env"].as_array().unwrap();
+        let secret = |n: &str| env.iter().find(|e| e["name"] == n).map(|e| e["valueFrom"]["secretKeyRef"].clone()).unwrap_or_default();
+        let value = |n: &str| env.iter().find(|e| e["name"] == n).map(|e| e["value"].clone()).unwrap_or_default();
+        // The admin token keeps its apps in the cluster and is what the
+        // coordinators send it; the model key is the cluster's.
+        assert_eq!(secret("STRATA_TOKEN"), json!({"name": "admin", "key": "token"}));
+        assert_eq!(secret("STRATA_APP_TOKEN"), json!({"name": "admin", "key": "token"}));
+        assert_eq!(secret("ANTHROPIC_API_KEY"), json!({"name": "anthropic", "key": "key"}));
+        assert!(!env.iter().any(|e| e["name"] == "STRATA_CLUSTER_TOKEN"), "never the cluster's token");
+        assert_eq!((value("STRATA_APPS_PUBLIC_URL"), value("STRATA_APPS_SPEND_CAP_USD"), value("STRATA_APPS_MODEL")), (json!("https://studio.example"), json!("40"), json!("m")));
+        let s = c.apps_service(a);
+        assert_eq!(s["metadata"]["name"], "orders-apps");
+        assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
+        assert_eq!((&s["spec"]["type"], &s["spec"]["ports"][0]["port"], &s["spec"]["ports"][0]["nodePort"]), (&json!("NodePort"), &json!(7730), &json!(30731)));
+        let v = c.apps_claim(a);
+        assert_eq!((&v["metadata"]["name"], &v["spec"]["resources"]["requests"]["storage"]), (&json!("orders-apps"), &json!("1Gi")));
+        assert_eq!(v["metadata"]["ownerReferences"][0]["uid"], "u-1", "it goes with the cluster");
+        let env_of = |c: &Cluster| c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let apps = env_of(&c).iter().find(|e| e["name"] == "STRATA_APPS").map(|e| e["value"].clone());
+        assert_eq!(apps, Some(json!("apps=http://orders-apps:7730")));
+        let plain = cluster(json!({"demo": 10, "tokenSecret": "admin", "apps": {"image": "registry.example/apps:1", "paused": true, "storage": {"size": "2Gi", "storageClassName": "fast"}}}));
+        let a = plain.spec.apps.as_ref().unwrap();
+        let d = plain.apps_deployment(a);
+        assert_eq!(d["spec"]["replicas"], 0);
+        let k = &d["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(k["image"], "registry.example/apps:1");
+        assert!(k.get("imagePullPolicy").is_none());
+        assert!(!k["env"].as_array().unwrap().iter().any(|e| e["name"] == "STRATA_APPS_PUBLIC_URL"));
+        assert_eq!(plain.apps_service(a)["spec"]["type"], "ClusterIP");
+        assert!(plain.apps_service(a)["spec"]["ports"][0].get("nodePort").is_none());
+        assert_eq!(plain.apps_claim(a)["spec"]["storageClassName"], "fast");
     }
 
     #[test]

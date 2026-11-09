@@ -10,6 +10,8 @@
 // - a browser with a studio session, which it gets from a one-time link
 //   the command center asks for (POST /api/handoff, so only with an admin
 //   key): /login?code=... sets the session's cookie and opens the studio;
+// - the engine's own headless browser, which opens the apps it builds to
+//   check and draw them, with a cookie made at each start (selfCookie);
 // - anyone, for what sandboxed frames load without cookies (map tiles, and
 //   files named by ids nobody can guess), the login itself and /healthz.
 //
@@ -40,6 +42,14 @@ export class Login {
     this.log = log;
     this.codes = new Map(); // code hash -> {expires, next}
     this.sessions = new Map(); // token hash -> expires (ms)
+    this.selfToken = randomBytes(32).toString('base64url');
+    this.self = digest(this.selfToken);
+  }
+
+  // The cookie of the engine's own browser (checks.mjs), or null with no
+  // login: a session no row holds, for this process only.
+  get selfCookie() {
+    return this.on ? { name: COOKIE, value: this.selfToken } : null;
   }
 
   // Is a login needed at all: only beside a cluster.
@@ -59,6 +69,7 @@ export class Login {
   async signedIn(req) {
     const token = this.cookieOf(req);
     if (!token) return false;
+    if (timingSafeEqual(digest(token), this.self)) return true;
     const id = hex(token);
     let expires = this.sessions.get(id);
     if (expires === undefined) {

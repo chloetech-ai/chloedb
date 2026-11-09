@@ -127,6 +127,14 @@ async function emptyTables(engine, appId, tables) {
 }
 
 let playwright;
+// The cookie that lets the engine's own browser in when the studio needs a
+// login (login.mjs), set for the engine's address only.
+let selfCookie = null;
+export const useSelfCookie = (c) => { selfCookie = c; };
+export async function signInSelf(ctx, baseUrl) {
+  if (selfCookie) await ctx.addCookies([{ ...selfCookie, url: baseUrl }]);
+}
+
 export function loadPlaywright() {
   if (playwright !== undefined) return playwright;
   try { playwright = createRequire(import.meta.url)('playwright'); } catch { playwright = null; }
@@ -143,6 +151,7 @@ export async function openViews(baseUrl, appId, { wait = 1500, v = null } = {}) 
   const views = [];
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await signInSelf(page.context(), baseUrl);
     let errors = [];
     page.on('pageerror', (e) => errors.push(e.message.split('\n')[0].slice(0, 300)));
     page.on('console', (m) => { if (m.type() === 'error' && !/favicon/.test(m.text())) errors.push(m.text().split('\n')[0].slice(0, 300)); });

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Login } from './login.mjs';
+import { useSelfCookie } from './checks.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions, useCluster } from './forge.mjs';
 import { repairRequest, lookSuggestions } from './look.mjs';
@@ -60,9 +61,21 @@ if (!strataUrl) {
   process.on('SIGTERM', stop);
 }
 const db = new Strata(strataUrl, process.env.STRATA_TOKEN);
+// A Strata of its own answers before startServer returns; one named by
+// --strata may start after the engine does (a cluster's coordinators
+// beside its pod): wait for it, up to STRATA_APPS_WAIT_S (default 300 s).
+const strataHealth = await (async () => {
+  const until = Date.now() + 1000 * (Number(process.env.STRATA_APPS_WAIT_S) || (child ? 0 : 300));
+  for (let said = false; ; said = true) {
+    try { return await db.health(); } catch (e) {
+      if (Date.now() >= until) { console.error(`Strata at ${strataUrl} does not answer: ${e.message}`); process.exit(1); }
+      if (!said) log(`waiting for Strata at ${strataUrl}: ${e.message}`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+})();
 // A cluster's coordinator walks no graphs: the engine walks its own, and
 // tells the model that apps read their links a step at a time (walk.mjs).
-const strataHealth = await db.health().catch(() => ({}));
 const ON_CLUSTER = strataHealth.role === 'coordinator';
 if (ON_CLUSTER) { useCluster(true); log(`Strata at ${strataUrl} is a coordinator over ${strataHealth.shards?.length ?? '?'} shards`); }
 const engine = new Engine(db, { log });
@@ -99,6 +112,7 @@ engine.reach = reach;
 // Beside a cluster, who may use the studio (login.mjs): strata-server with
 // its app token, and browsers it hands a login to.
 const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
+useSelfCookie(login.selfCookie);
 if (login.on) log(`the studio needs a login, handed over by the command center${login.publicUrl ? `; it is reached at ${login.publicUrl}` : ' (set STRATA_APPS_PUBLIC_URL to say where browsers reach it)'}`);
 log(services.smtpUrl && services.smtpFrom ? `email goes out through ${new URL(services.smtpUrl).host}` : 'email is held in the outbox (set SMTP_URL and SMTP_FROM to send it)');
 
