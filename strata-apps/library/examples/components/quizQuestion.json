@@ -1,0 +1,45 @@
+[
+ {
+  "props": {
+   "question": "What does this print?",
+   "code": "const xs = [1, 2, 3];\nconsole.log(xs.map(x => x * 2).at(-1));",
+   "choices": [
+    "3",
+    "6",
+    "undefined",
+    "[2, 4, 6]"
+   ],
+   "answer": 1,
+   "explanation": "map doubles every item to [2, 4, 6], and at(-1) takes the last one: 6.",
+   "onAnswer": "$fn"
+  }
+ },
+ {
+  "props": {
+   "question": "Which of these are prime numbers?",
+   "multiple": true,
+   "choices": [
+    {
+     "text": "2",
+     "correct": true
+    },
+    {
+     "text": "9"
+    },
+    {
+     "text": "11",
+     "correct": true
+    },
+    {
+     "text": "15"
+    }
+   ],
+   "picked": [
+    0,
+    1
+   ],
+   "explanation": "9 = 3 × 3 and 15 = 3 × 5; only 2 and 11 have no divisors but 1 and themselves.",
+   "onAnswer": "$fn"
+  }
+ }
+]

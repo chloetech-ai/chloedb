@@ -1,0 +1,281 @@
+{
+ "cases": [
+  {
+   "call": "tally",
+   "args": [
+    [
+     "pizza",
+     "tacos",
+     "pizza",
+     "sushi",
+     "tacos",
+     "pizza"
+    ]
+   ],
+   "expect": [
+    {
+     "option": "pizza",
+     "votes": 3,
+     "pct": 50
+    },
+    {
+     "option": "tacos",
+     "votes": 2,
+     "pct": 33.3
+    },
+    {
+     "option": "sushi",
+     "votes": 1,
+     "pct": 16.7
+    }
+   ]
+  },
+  {
+   "call": "tally",
+   "args": [
+    [
+     {
+      "option": "A",
+      "weight": 2
+     },
+     {
+      "option": "B",
+      "weight": 1
+     },
+     "B",
+     {
+      "option": "C"
+     },
+     "",
+     null
+    ]
+   ],
+   "expect": [
+    {
+     "option": "A",
+     "votes": 2,
+     "pct": 40
+    },
+    {
+     "option": "B",
+     "votes": 2,
+     "pct": 40
+    },
+    {
+     "option": "C",
+     "votes": 1,
+     "pct": 20
+    }
+   ]
+  },
+  {
+   "call": "winner",
+   "args": [
+    [
+     {
+      "option": "A",
+      "votes": 2,
+      "pct": 40
+     },
+     {
+      "option": "B",
+      "votes": 2,
+      "pct": 40
+     },
+     {
+      "option": "C",
+      "votes": 1,
+      "pct": 20
+     }
+    ]
+   ],
+   "expect": null
+  },
+  {
+   "call": "winner",
+   "args": [
+    [
+     {
+      "option": "pizza",
+      "votes": 3,
+      "pct": 50
+     },
+     {
+      "option": "tacos",
+      "votes": 2,
+      "pct": 33.3
+     }
+    ]
+   ],
+   "expect": "pizza"
+  },
+  {
+   "call": "ranked",
+   "args": [
+    [
+     [
+      "A",
+      "B"
+     ],
+     [
+      "A",
+      "C"
+     ],
+     [
+      "B",
+      "C"
+     ],
+     [
+      "C",
+      "B"
+     ],
+     [
+      "C",
+      "B"
+     ]
+    ]
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "counts": [
+       {
+        "option": "A",
+        "votes": 2,
+        "pct": 40
+       },
+       {
+        "option": "C",
+        "votes": 2,
+        "pct": 40
+       },
+       {
+        "option": "B",
+        "votes": 1,
+        "pct": 20
+       }
+      ],
+      "exhausted": 0,
+      "eliminated": "B"
+     },
+     {
+      "counts": [
+       {
+        "option": "C",
+        "votes": 3,
+        "pct": 60
+       },
+       {
+        "option": "A",
+        "votes": 2,
+        "pct": 40
+       }
+      ],
+      "exhausted": 0,
+      "eliminated": null
+     }
+    ],
+    "winner": "C"
+   }
+  },
+  {
+   "call": "ranked",
+   "args": [
+    [
+     [
+      "A"
+     ],
+     [
+      "B"
+     ]
+    ]
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "counts": [
+       {
+        "option": "A",
+        "votes": 1,
+        "pct": 50
+       },
+       {
+        "option": "B",
+        "votes": 1,
+        "pct": 50
+       }
+      ],
+      "exhausted": 0,
+      "eliminated": null
+     }
+    ],
+    "winner": null
+   }
+  },
+  {
+   "call": "approval",
+   "args": [
+    [
+     [
+      "A",
+      "B"
+     ],
+     [
+      "B"
+     ],
+     [
+      "B",
+      "C",
+      "B"
+     ],
+     []
+    ]
+   ],
+   "expect": [
+    {
+     "option": "B",
+     "votes": 3,
+     "pct": 75
+    },
+    {
+     "option": "A",
+     "votes": 1,
+     "pct": 25
+    },
+    {
+     "option": "C",
+     "votes": 1,
+     "pct": 25
+    }
+   ]
+  },
+  {
+   "call": "quorum",
+   "args": [
+    12,
+    25
+   ],
+   "expect": false
+  },
+  {
+   "call": "quorum",
+   "args": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    5,
+    60
+   ],
+   "expect": true
+  },
+  {
+   "call": "tally",
+   "args": [
+    null
+   ],
+   "expect": []
+  }
+ ]
+}

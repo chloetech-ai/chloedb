@@ -1,0 +1,197 @@
+{
+ "title": "Search a table: words (forgiving typos) and, with a meaning column, meaning too; results best first, the chosen one with similar rows",
+ "about": "Notes, recipes, products, contacts, documents: a search box over a text column, ranked best first; typos are forgiven; with a meaning column the search also finds rows that mean the same in other words, and the chosen row lists the most similar ones. With an empty box it lists the newest rows.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "text": {
+   "about": "the text column searched by words",
+   "need": true
+  },
+  "meaning": {
+   "about": "a meaning column of the table (type meaning): adds search by meaning and similar rows"
+  },
+  "name": {
+   "about": "the column shown as each result's title",
+   "default": "title"
+  },
+  "sub": {
+   "about": "columns shown small under the title"
+  },
+  "show": {
+   "about": "columns shown for the chosen row: names, or {\"key\", \"label\"}",
+   "default": []
+  },
+  "where": {
+   "about": "an SQL condition on the rows (with :names from params)"
+  },
+  "params": {
+   "about": "values for :names in where, may be expressions"
+  },
+  "limit": {
+   "about": "how many results",
+   "default": 20
+  },
+  "placeholder": {
+   "about": "the search box's text",
+   "default": "Search"
+  }
+ },
+ "example": {
+  "use": "search",
+  "table": "notes",
+  "title": "Find a note",
+  "text": "body",
+  "meaning": "meaning",
+  "name": "title",
+  "sub": [
+   "paper",
+   "year"
+  ],
+  "show": [
+   "body",
+   "paper",
+   "authors",
+   "year",
+   "tags"
+  ]
+ },
+ "screen": {
+  "state": {
+   "{{key}}_q": "",
+   "{{key}}_pick": null
+  },
+  "data": {
+   "{{key}}": {
+    "sql": {
+     "$when": "meaning",
+     "$value": "=state.{{key}}_q.trim() ? 'SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY rrf(bm25({{text}}, :t), similarity({{meaning}}, :e)) DESC LIMIT {{limit}}' : 'SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY created DESC LIMIT {{limit}}'"
+    },
+    "params": {
+     "t": "=state.{{key}}_q.trim().split(/\\s+/).filter(Boolean).map(w => w.replace(/[^\\p{L}\\p{N}]/gu, '')).filter(Boolean).map(w => w.length >= 4 ? w + '~' : w).join(' OR ') || 'x'",
+     "e": "={ embed: state.{{key}}_q.trim() || 'x', field: {{meaning|json}} }"
+    }
+   },
+   "{{key}}_words": {
+    "$when": "!meaning",
+    "$value": {
+     "sql": "=state.{{key}}_q.trim() ? 'SELECT * FROM {{table}} WHERE MATCH({{text}}, :t){{where|pre: AND }} ORDER BY bm25({{text}}, :t) DESC LIMIT {{limit}}' : 'SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY created DESC LIMIT {{limit}}'",
+     "params": {
+      "t": "=state.{{key}}_q.trim().split(/\\s+/).filter(Boolean).map(w => w.replace(/[^\\p{L}\\p{N}]/gu, '')).filter(Boolean).map(w => w.length >= 4 ? w + '~' : w).join(' OR ') || 'x'"
+     }
+    }
+   },
+   "{{key}}_similar": {
+    "$when": "meaning",
+    "$value": {
+     "sql": "=state.{{key}}_pick ? 'SELECT * FROM {{table}} WHERE id != :id ORDER BY similarity({{meaning}}, :e) DESC LIMIT 5' : 'SELECT * FROM {{table}} WHERE id = :id LIMIT 1'",
+     "params": {
+      "id": "=state.{{key}}_pick ? state.{{key}}_pick.id : ''",
+      "e": "={ embed: state.{{key}}_pick ? String(state.{{key}}_pick[{{text|json}}] ?? '') || 'x' : 'x', field: {{meaning|json}} }"
+     }
+    }
+   }
+  },
+  "let": {
+   "{{key}}_found": {
+    "$when": "meaning",
+    "$value": "={{key}}"
+   },
+   "{{key}}_list": "={{meaning|json}} ? {{key}} : {{key}}_words",
+   "{{key}}_subOf": "=r => ({{sub|json}} || []).map(k => r[k]).filter(v => v != null && v !== '').map(v => Array.isArray(v) ? v.join(', ') : String(v)).join(' · ')"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "ui": "searchBox",
+    "props": {
+     "value": "=state.{{key}}_q",
+     "placeholder": "{{placeholder}}",
+     "onSearch": "=t => set({ {{key}}_q: t, {{key}}_pick: null })",
+     "count": "=state.{{key}}_q.trim() ? {{key}}_list.length : undefined"
+    }
+   },
+   {
+    "split": [
+     {
+      "each": "={{key}}_list",
+      "as": "r",
+      "empty": "=state.{{key}}_q.trim() ? 'Nothing matches: try other words.' : 'Nothing here yet.'",
+      "body": [
+       {
+        "col": [
+         {
+          "button": "=String(r[{{name|json}}] ?? 'Untitled')",
+          "class": "link",
+          "do": "=() => set({ {{key}}_pick: r })"
+         },
+         {
+          "$when": "sub",
+          "text": "={{key}}_subOf(r)",
+          "muted": true,
+          "small": true
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "if": "=state.{{key}}_pick",
+      "then": [
+       {
+        "card": [
+         {
+          "h": "=String(state.{{key}}_pick[{{name|json}}] ?? '')",
+          "level": 3
+         },
+         {
+          "ui": "keyValueList",
+          "props": {
+           "items": "={{show|json}}.map(c => typeof c === 'string' ? {key: c} : c).map(c => ({label: c.label || String(c.key).replace(/_/g, ' ').replace(/^./, x => x.toUpperCase()), value: state.{{key}}_pick[c.key] == null || state.{{key}}_pick[c.key] === '' ? null : Array.isArray(state.{{key}}_pick[c.key]) ? state.{{key}}_pick[c.key].join(', ') : String(state.{{key}}_pick[c.key])}))"
+          }
+         },
+         {
+          "$when": "meaning",
+          "h": "Similar",
+          "level": 3
+         },
+         {
+          "$when": "meaning",
+          "each": "={{key}}_similar",
+          "as": "s",
+          "empty": "Nothing close.",
+          "body": [
+           {
+            "button": "=String(s[{{name|json}}] ?? 'Untitled')",
+            "class": "link",
+            "do": "=() => set({ {{key}}_pick: s })"
+           }
+          ]
+         }
+        ]
+       }
+      ],
+      "else": [
+       {
+        "text": "Pick a result to see it here.",
+        "muted": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -1,0 +1,70 @@
+[
+ {
+  "props": {
+   "columns": 2,
+   "items": [
+    {
+     "label": "Name",
+     "value": "Maya Okafor"
+    },
+    {
+     "label": "Email",
+     "value": "maya.okafor@example.com"
+    },
+    {
+     "label": "Phone",
+     "value": "+1 415 555 0182",
+     "hint": "Mobile, prefers texts"
+    },
+    {
+     "label": "Company",
+     "value": "Fernwood Studio"
+    },
+    {
+     "label": "Status",
+     "value": {
+      "$el": "Active client"
+     }
+    },
+    {
+     "label": "Orders",
+     "value": 14
+    },
+    {
+     "label": "Birthday",
+     "value": null
+    },
+    {
+     "label": "Last contacted",
+     "value": "3 Nov 2026",
+     "hint": "Sent the autumn quote"
+    }
+   ]
+  }
+ },
+ {
+  "props": {
+   "dense": true,
+   "empty": "Not set",
+   "items": [
+    {
+     "label": "Order",
+     "value": "#1042"
+    },
+    {
+     "label": "Placed",
+     "value": "6 Nov 2026"
+    },
+    {
+     "label": "Total",
+     "value": "$184.50",
+     "hint": "Includes $12.00 shipping"
+    },
+    {
+     "label": "Tracking",
+     "value": null
+    }
+   ]
+  }
+ }
+]

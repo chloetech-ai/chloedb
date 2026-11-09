@@ -1,0 +1,81 @@
+[
+ {
+  "props": {
+   "options": [
+    {
+     "value": "italian",
+     "label": "Italian",
+     "color": "#ef4444"
+    },
+    {
+     "value": "japanese",
+     "label": "Japanese",
+     "color": "#3b82f6"
+    },
+    {
+     "value": "mexican",
+     "label": "Mexican",
+     "color": "#f59e0b"
+    },
+    {
+     "value": "indian",
+     "label": "Indian",
+     "color": "#f97316"
+    },
+    {
+     "value": "thai",
+     "label": "Thai",
+     "color": "#10b981"
+    },
+    {
+     "value": "greek",
+     "label": "Greek",
+     "color": "#6366f1"
+    },
+    {
+     "value": "korean",
+     "label": "Korean",
+     "color": "#ec4899"
+    },
+    {
+     "value": "french",
+     "label": "French",
+     "color": "#8b5cf6"
+    },
+    {
+     "value": "lebanese",
+     "label": "Lebanese",
+     "color": "#14b8a6"
+    },
+    {
+     "value": "vietnamese",
+     "label": "Vietnamese",
+     "color": "#84cc16"
+    }
+   ],
+   "value": [
+    "japanese",
+    "thai"
+   ],
+   "onChange": "$fn",
+   "placeholder": "Search cuisines",
+   "max": 3
+  }
+ },
+ {
+  "props": {
+   "options": [
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+    "Sat",
+    "Sun"
+   ],
+   "value": [],
+   "onChange": "$fn",
+   "placeholder": "Pick the days to repeat on"
+  }
+ }
+]

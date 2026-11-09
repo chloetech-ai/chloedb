@@ -1,0 +1,24 @@
+[
+ {
+  "props": {
+   "items": [
+    "Pack passport and tickets",
+    "Charge headphones",
+    "Water the plants",
+    "Take out the bins"
+   ],
+   "onChange": "$fn",
+   "placeholder": "Add something to do before leaving",
+   "max": 8,
+   "numbered": true
+  }
+ },
+ {
+  "props": {
+   "items": [],
+   "onChange": "$fn",
+   "placeholder": "Add a poll option",
+   "reorder": false
+  }
+ }
+]

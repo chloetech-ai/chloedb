@@ -1,0 +1,194 @@
+{
+ "cases": [
+  {
+   "call": "status",
+   "args": [
+    0,
+    {
+     "reorderAt": 5
+    }
+   ],
+   "expect": "out"
+  },
+  {
+   "call": "status",
+   "args": [
+    3,
+    {
+     "reorderAt": 5
+    }
+   ],
+   "expect": "low"
+  },
+  {
+   "call": "status",
+   "args": [
+    12,
+    {
+     "reorderAt": 5,
+     "max": 10
+    }
+   ],
+   "expect": "over"
+  },
+  {
+   "call": "reorderQty",
+   "args": [
+    3,
+    {
+     "reorderAt": 5,
+     "max": 20,
+     "packSize": 6
+    }
+   ],
+   "expect": 18
+  },
+  {
+   "call": "reorderQty",
+   "args": [
+    8,
+    {
+     "reorderAt": 5,
+     "max": 20
+    }
+   ],
+   "expect": 0
+  },
+  {
+   "call": "level",
+   "args": [
+    [
+     {
+      "type": "in",
+      "qty": 10
+     },
+     {
+      "type": "out",
+      "qty": 3
+     },
+     {
+      "qty": -2
+     },
+     {
+      "type": "count",
+      "qty": 4
+     },
+     {
+      "type": "in",
+      "qty": 1
+     },
+     {
+      "qty": "x"
+     }
+    ]
+   ],
+   "expect": 5
+  },
+  {
+   "call": "usage",
+   "args": [
+    [
+     {
+      "type": "out",
+      "qty": 6,
+      "date": "2026-11-02"
+     },
+     {
+      "type": "in",
+      "qty": 20,
+      "date": "2026-11-03"
+     },
+     {
+      "qty": -4,
+      "date": "2026-11-05T10:00:00Z"
+     },
+     {
+      "type": "out",
+      "qty": 5,
+      "date": "2026-10-01"
+     }
+    ],
+    {
+     "from": "2026-11-01",
+     "to": "2026-11-10"
+    }
+   ],
+   "expect": 1
+  },
+  {
+   "call": "runOut",
+   "args": [
+    10,
+    3,
+    "2026-11-08"
+   ],
+   "expect": "2026-11-11"
+  },
+  {
+   "call": "value",
+   "args": [
+    [
+     {
+      "qty": 3,
+      "cost": 1.1
+     },
+     {
+      "qty": 2,
+      "cost": 0.35
+     },
+     {
+      "qty": -1,
+      "cost": 5
+     },
+     {
+      "qty": "x",
+      "cost": 2
+     }
+    ]
+   ],
+   "expect": 4
+  },
+  {
+   "call": "expiring",
+   "args": [
+    [
+     {
+      "name": "Milk",
+      "expires": "2026-11-10"
+     },
+     {
+      "name": "Eggs",
+      "expires": "2026-11-30"
+     },
+     {
+      "name": "Yogurt",
+      "expires": "2026-11-06"
+     },
+     {
+      "name": "Salt"
+     }
+    ],
+    {
+     "today": "2026-11-08",
+     "within": 7
+    }
+   ],
+   "expect": [
+    {
+     "item": {
+      "name": "Yogurt",
+      "expires": "2026-11-06"
+     },
+     "days": -2
+    },
+    {
+     "item": {
+      "name": "Milk",
+      "expires": "2026-11-10"
+     },
+     "days": 2
+    }
+   ]
+  }
+ ]
+}

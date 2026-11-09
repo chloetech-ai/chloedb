@@ -1,0 +1,48 @@
+{
+ "rows": {
+  "events": [
+   {
+    "title": "Dinner with Maya and Tom",
+    "starts": "2026-11-09T19:00:00Z",
+    "ends": "2026-11-09T21:30:00Z",
+    "place": "Osteria Lupo, 14 Mill Street",
+    "notes": "Booked for four, under Konow."
+   },
+   {
+    "title": "Dentist check-up",
+    "starts": "2026-11-12T08:30:00Z",
+    "ends": "2026-11-12T09:15:00Z",
+    "place": "Riverside Dental",
+    "notes": null
+   },
+   {
+    "title": "Jazz night",
+    "starts": "2026-11-14T21:00:00Z",
+    "ends": "2026-11-15T00:30:00Z",
+    "place": "The Blue Room",
+    "notes": "Tickets are in the email from the venue."
+   },
+   {
+    "title": "Team offsite planning",
+    "starts": "2026-11-20T13:00:00Z",
+    "ends": "2026-11-20T16:00:00Z",
+    "place": "Office, room 3B",
+    "notes": "Bring last quarter's numbers."
+   },
+   {
+    "title": "Farmers market",
+    "starts": "2026-11-07T09:00:00Z",
+    "ends": "2026-11-07T11:00:00Z",
+    "place": "Town square",
+    "notes": null
+   },
+   {
+    "title": "Book club: The Remains of the Day",
+    "starts": "2026-11-03T18:30:00Z",
+    "ends": "2026-11-03T20:00:00Z",
+    "place": "Library reading room",
+    "notes": null
+   }
+  ]
+ }
+}

@@ -1,0 +1,19 @@
+[
+ {
+  "props": {
+   "value": "Weekend trip to Lisbon",
+   "as": "h2",
+   "placeholder": "Name this trip",
+   "onSave": "$fn",
+   "validate": "$fn"
+  }
+ },
+ {
+  "props": {
+   "value": "",
+   "multiline": true,
+   "placeholder": "Add a note about this trip",
+   "onSave": "$fn"
+  }
+ }
+]

@@ -1,0 +1,41 @@
+{
+ "rows": {
+  "bookings": [
+   {
+    "day": "2026-11-08",
+    "slot": "18:00",
+    "name": "Maya Chen",
+    "author": "",
+    "notes": "Doubles with the Thursday group"
+   },
+   {
+    "day": "2026-11-09",
+    "slot": "08:00",
+    "name": "Tom Ellis",
+    "author": "",
+    "notes": ""
+   },
+   {
+    "day": "2026-11-09",
+    "slot": "12:00",
+    "name": "Priya Nair",
+    "author": "",
+    "notes": "Lunch hour practice"
+   },
+   {
+    "day": "2026-11-10",
+    "slot": "17:00",
+    "name": "Jonas Weber",
+    "author": "",
+    "notes": "Bringing a ball machine"
+   },
+   {
+    "day": "2026-11-12",
+    "slot": "09:00",
+    "name": "Maya Chen",
+    "author": "",
+    "notes": ""
+   }
+  ]
+ }
+}

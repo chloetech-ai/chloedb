@@ -1,0 +1,73 @@
+{
+ "rows": {
+  "items": [
+   {
+    "name": "USB-C charging cable 1 m",
+    "sku": "CAB-USBC-1M",
+    "qty": 42,
+    "reorder_at": 20,
+    "cost": 3.4,
+    "location": "Shelf A2"
+   },
+   {
+    "name": "Wireless mouse, black",
+    "sku": "MOU-WL-BLK",
+    "qty": 6,
+    "reorder_at": 10,
+    "cost": 11.75,
+    "location": "Shelf A4"
+   },
+   {
+    "name": "Laptop stand, aluminium",
+    "sku": "STD-LAP-AL",
+    "qty": 0,
+    "reorder_at": 5,
+    "cost": 18.9,
+    "location": "Back room"
+   },
+   {
+    "name": "A4 copy paper, 500 sheets",
+    "sku": "PAP-A4-500",
+    "qty": 28,
+    "reorder_at": 12,
+    "cost": 4.2,
+    "location": "Storage cage"
+   },
+   {
+    "name": "Mechanical keyboard, TKL",
+    "sku": "KEY-MEC-TKL",
+    "qty": 9,
+    "reorder_at": 4,
+    "cost": 46,
+    "location": "Shelf B1"
+   }
+  ],
+  "stock_moves": [
+   {
+    "item": "MOU-WL-BLK",
+    "change": 24,
+    "reason": "Initial stock"
+   },
+   {
+    "item": "MOU-WL-BLK",
+    "change": -1,
+    "reason": "Quick adjustment"
+   },
+   {
+    "item": "STD-LAP-AL",
+    "change": -2,
+    "reason": "Count correction"
+   },
+   {
+    "item": "CAB-USBC-1M",
+    "change": 1,
+    "reason": "Quick adjustment"
+   },
+   {
+    "item": "PAP-A4-500",
+    "change": -4,
+    "reason": "Quick adjustment"
+   }
+  ]
+ }
+}

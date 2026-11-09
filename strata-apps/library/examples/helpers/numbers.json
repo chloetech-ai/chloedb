@@ -1,0 +1,81 @@
+{
+ "cases": [
+  {
+   "call": "compact",
+   "args": [
+    1234
+   ],
+   "expect": "1.2k"
+  },
+  {
+   "call": "compact",
+   "args": [
+    999950
+   ],
+   "expect": "1M"
+  },
+  {
+   "call": "ordinal",
+   "args": [
+    112
+   ],
+   "expect": "112th"
+  },
+  {
+   "call": "ordinal",
+   "args": [
+    22
+   ],
+   "expect": "22nd"
+  },
+  {
+   "call": "parse",
+   "args": [
+    "1.234,5"
+   ],
+   "expect": 1234.5
+  },
+  {
+   "call": "parse",
+   "args": [
+    "12%"
+   ],
+   "expect": 0.12
+  },
+  {
+   "call": "format",
+   "args": [
+    1234567.891,
+    2
+   ],
+   "expect": "1,234,567.89"
+  },
+  {
+   "call": "roundTo",
+   "args": [
+    1.13,
+    0.25
+   ],
+   "expect": 1.25
+  },
+  {
+   "call": "sum",
+   "args": [
+    [
+     0.1,
+     0.2,
+     "x",
+     null
+    ]
+   ],
+   "expect": 0.3
+  },
+  {
+   "call": "roman",
+   "args": [
+    1994
+   ],
+   "expect": "MCMXCIV"
+  }
+ ]
+}

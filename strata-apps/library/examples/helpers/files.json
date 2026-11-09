@@ -1,0 +1,74 @@
+{
+ "cases": [
+  {
+   "call": "size",
+   "args": [
+    1234567
+   ],
+   "expect": "1.2 MB"
+  },
+  {
+   "call": "size",
+   "args": [
+    0
+   ],
+   "expect": "0 B"
+  },
+  {
+   "call": "size",
+   "args": [
+    1048575
+   ],
+   "expect": "1 MB"
+  },
+  {
+   "call": "size",
+   "args": [
+    -5
+   ],
+   "expect": null
+  },
+  {
+   "call": "extension",
+   "args": [
+    "Report.Final.PDF"
+   ],
+   "expect": "pdf"
+  },
+  {
+   "call": "extension",
+   "args": [
+    ".bashrc"
+   ],
+   "expect": ""
+  },
+  {
+   "call": "base",
+   "args": [
+    "/docs/archive.tar.gz"
+   ],
+   "expect": "archive.tar"
+  },
+  {
+   "call": "mime",
+   "args": [
+    "photo.JPG"
+   ],
+   "expect": "image/jpeg"
+  },
+  {
+   "call": "mime",
+   "args": [
+    "notes.xyz"
+   ],
+   "expect": null
+  },
+  {
+   "call": "kind",
+   "args": [
+    "text/csv; charset=utf-8"
+   ],
+   "expect": "spreadsheet"
+  }
+ ]
+}

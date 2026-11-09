@@ -1,0 +1,46 @@
+[
+ {
+  "props": {
+   "steps": [
+    "Cart",
+    "Shipping",
+    "Payment",
+    "Review"
+   ],
+   "current": 2,
+   "onStep": "$fn"
+  }
+ },
+ {
+  "props": {
+   "steps": [
+    {
+     "id": "account",
+     "label": "Create your account",
+     "description": "Email and password"
+    },
+    {
+     "id": "profile",
+     "label": "Your profile",
+     "description": "Name, photo and time zone"
+    },
+    {
+     "id": "team",
+     "label": "Invite your team",
+     "description": "Optional, you can do it later"
+    },
+    {
+     "id": "finish",
+     "label": "Start using the app"
+    }
+   ],
+   "current": "team",
+   "done": [
+    "account",
+    "profile"
+   ],
+   "vertical": true,
+   "onStep": "$fn"
+  }
+ }
+]

@@ -1,0 +1,217 @@
+{
+ "cases": [
+  {
+   "call": "balances",
+   "args": [
+    [
+     {
+      "paidBy": "Ann",
+      "amount": 90,
+      "split": [
+       "Ann",
+       "Ben",
+       "Cat"
+      ]
+     }
+    ]
+   ],
+   "expect": {
+    "Ann": 60,
+    "Ben": -30,
+    "Cat": -30
+   }
+  },
+  {
+   "call": "perPerson",
+   "args": [
+    [
+     {
+      "paidBy": "Ann",
+      "amount": 10,
+      "split": [
+       "Ann",
+       "Ben",
+       "Cat"
+      ]
+     },
+     {
+      "paidBy": "Ann",
+      "amount": 10,
+      "split": [
+       "Ann",
+       "Ben",
+       "Cat"
+      ]
+     }
+    ]
+   ],
+   "expect": {
+    "Ann": {
+     "paid": 20,
+     "owes": 6.67,
+     "net": 13.33
+    },
+    "Ben": {
+     "paid": 0,
+     "owes": 6.67,
+     "net": -6.67
+    },
+    "Cat": {
+     "paid": 0,
+     "owes": 6.66,
+     "net": -6.66
+    }
+   }
+  },
+  {
+   "call": "balances",
+   "args": [
+    [
+     {
+      "paidBy": "Ben",
+      "amount": 100,
+      "split": {
+       "Ann": 2,
+       "Ben": 1,
+       "Cat": 1
+      }
+     }
+    ]
+   ],
+   "expect": {
+    "Ben": 75,
+    "Ann": -50,
+    "Cat": -25
+   }
+  },
+  {
+   "call": "balances",
+   "args": [
+    [
+     {
+      "paidBy": "Ann",
+      "amount": 30
+     },
+     {
+      "paidBy": "Ben",
+      "amount": 12,
+      "split": [
+       "Ben",
+       "Cat"
+      ]
+     }
+    ]
+   ],
+   "expect": {
+    "Ann": 20,
+    "Ben": -4,
+    "Cat": -16
+   }
+  },
+  {
+   "call": "settle",
+   "args": [
+    {
+     "Ann": 60,
+     "Ben": -30,
+     "Cat": -30
+    }
+   ],
+   "expect": [
+    {
+     "from": "Ben",
+     "to": "Ann",
+     "amount": 30
+    },
+    {
+     "from": "Cat",
+     "to": "Ann",
+     "amount": 30
+    }
+   ]
+  },
+  {
+   "call": "settle",
+   "args": [
+    {
+     "Ann": 30,
+     "Ben": -30,
+     "Cat": 20,
+     "Dan": -20
+    }
+   ],
+   "expect": [
+    {
+     "from": "Ben",
+     "to": "Ann",
+     "amount": 30
+    },
+    {
+     "from": "Dan",
+     "to": "Cat",
+     "amount": 20
+    }
+   ]
+  },
+  {
+   "call": "settle",
+   "args": [
+    {
+     "A": 5,
+     "B": 3,
+     "C": -4,
+     "D": -1,
+     "E": -3
+    }
+   ],
+   "expect": [
+    {
+     "from": "C",
+     "to": "A",
+     "amount": 4
+    },
+    {
+     "from": "E",
+     "to": "B",
+     "amount": 3
+    },
+    {
+     "from": "D",
+     "to": "A",
+     "amount": 1
+    }
+   ]
+  },
+  {
+   "call": "settle",
+   "args": [
+    {
+     "Ann": 0.30000000000000004,
+     "Ben": -0.3,
+     "Cat": 0
+    }
+   ],
+   "expect": [
+    {
+     "from": "Ben",
+     "to": "Ann",
+     "amount": 0.3
+    }
+   ]
+  },
+  {
+   "call": "settle",
+   "args": [
+    null
+   ],
+   "expect": []
+  },
+  {
+   "call": "balances",
+   "args": [
+    null
+   ],
+   "expect": {}
+  }
+ ]
+}

@@ -1,0 +1,117 @@
+{
+ "cases": [
+  {
+   "call": "dice",
+   "args": [
+    "3d1+2"
+   ],
+   "expect": {
+    "total": 5,
+    "rolls": [
+     1,
+     1,
+     1
+    ]
+   }
+  },
+  {
+   "call": "dice",
+   "args": [
+    "banana"
+   ],
+   "expect": null
+  },
+  {
+   "call": "int",
+   "args": [
+    4,
+    4,
+    "seed"
+   ],
+   "expect": 4
+  },
+  {
+   "call": "pick",
+   "args": [
+    []
+   ],
+   "expect": null
+  },
+  {
+   "call": "pickWeighted",
+   "args": [
+    [
+     {
+      "name": "a",
+      "weight": 0
+     },
+     {
+      "name": "b",
+      "weight": 2
+     }
+    ],
+    "weight",
+    7
+   ],
+   "expect": {
+    "name": "b",
+    "weight": 2
+   }
+  },
+  {
+   "call": "shuffle",
+   "args": [
+    null
+   ],
+   "expect": []
+  },
+  {
+   "call": "sample",
+   "args": [
+    [
+     1,
+     2,
+     3
+    ],
+    0
+   ],
+   "expect": []
+  },
+  {
+   "call": "sample",
+   "args": [
+    [
+     "x"
+    ],
+    5,
+    "seed"
+   ],
+   "expect": [
+    "x"
+   ]
+  },
+  {
+   "call": "teams",
+   "args": [
+    [],
+    3
+   ],
+   "expect": [
+    [],
+    [],
+    []
+   ]
+  },
+  {
+   "call": "daily",
+   "args": [
+    "quote",
+    "2026-11-08",
+    [
+     "Only one"
+    ]
+   ],
+   "expect": "Only one"
+  }
+ ]
+}

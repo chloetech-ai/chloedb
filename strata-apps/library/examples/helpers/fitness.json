@@ -1,0 +1,147 @@
+{
+ "cases": [
+  {
+   "call": "pace",
+   "args": [
+    5,
+    27
+   ],
+   "expect": "5:24 /km"
+  },
+  {
+   "call": "paceMiles",
+   "args": [
+    5,
+    27
+   ],
+   "expect": "8:41 /mi"
+  },
+  {
+   "call": "speed",
+   "args": [
+    5,
+    27
+   ],
+   "expect": 11.11
+  },
+  {
+   "call": "finishTime",
+   "args": [
+    10,
+    "5:30"
+   ],
+   "expect": "0:55:00"
+  },
+  {
+   "call": "oneRepMax",
+   "args": [
+    100,
+    5
+   ],
+   "expect": 116.7
+  },
+  {
+   "call": "oneRepMax",
+   "args": [
+    100,
+    5,
+    "brzycki"
+   ],
+   "expect": 112.5
+  },
+  {
+   "call": "plates",
+   "args": [
+    61,
+    20
+   ],
+   "expect": {
+    "perSide": [
+     20
+    ],
+    "total": 60,
+    "remainder": 1
+   }
+  },
+  {
+   "call": "zones",
+   "args": [
+    30
+   ],
+   "expect": [
+    {
+     "zone": 1,
+     "name": "Recovery",
+     "low": 50,
+     "high": 60,
+     "min": 95,
+     "max": 114
+    },
+    {
+     "zone": 2,
+     "name": "Endurance",
+     "low": 60,
+     "high": 70,
+     "min": 114,
+     "max": 133
+    },
+    {
+     "zone": 3,
+     "name": "Tempo",
+     "low": 70,
+     "high": 80,
+     "min": 133,
+     "max": 152
+    },
+    {
+     "zone": 4,
+     "name": "Threshold",
+     "low": 80,
+     "high": 90,
+     "min": 152,
+     "max": 171
+    },
+    {
+     "zone": 5,
+     "name": "Maximum",
+     "low": 90,
+     "high": 100,
+     "min": 171,
+     "max": 190
+    }
+   ]
+  },
+  {
+   "call": "metCalories",
+   "args": [
+    8,
+    70,
+    30
+   ],
+   "expect": 294
+  },
+  {
+   "call": "volume",
+   "args": [
+    [
+     {
+      "reps": 5,
+      "weight": 100
+     },
+     {
+      "reps": 5,
+      "weight": 100
+     },
+     {
+      "reps": 8,
+      "weight": 80
+     },
+     {
+      "reps": 10
+     }
+    ]
+   ],
+   "expect": 1640
+  }
+ ]
+}

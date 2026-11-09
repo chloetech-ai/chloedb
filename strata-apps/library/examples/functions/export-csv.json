@@ -1,0 +1,74 @@
+{
+ "tables": [
+  {
+   "name": "tasks",
+   "columns": [
+    {
+     "name": "title",
+     "type": "text"
+    },
+    {
+     "name": "status",
+     "type": "keyword"
+    },
+    {
+     "name": "tags",
+     "type": "keyword[]"
+    },
+    {
+     "name": "done",
+     "type": "bool"
+    },
+    {
+     "name": "due",
+     "type": "keyword"
+    }
+   ]
+  }
+ ],
+ "rows": {
+  "tasks": [
+   {
+    "title": "Buy milk, eggs",
+    "status": "open",
+    "tags": [
+     "home",
+     "shop"
+    ],
+    "done": false,
+    "due": "2026-11-09"
+   },
+   {
+    "title": "Call \"Dr. Lee\"",
+    "status": "open",
+    "tags": [
+     "health"
+    ],
+    "done": false,
+    "due": "2026-11-10"
+   },
+   {
+    "title": "File taxes",
+    "status": "done",
+    "tags": [],
+    "done": true,
+    "due": "2026-11-01"
+   }
+  ]
+ },
+ "input": {
+  "table": "tasks",
+  "columns": [
+   "title",
+   "status",
+   "tags",
+   "due",
+   "created"
+  ],
+  "where": "status = :s",
+  "params": {
+   "s": "open"
+  },
+  "order": "due desc"
+ }
+}

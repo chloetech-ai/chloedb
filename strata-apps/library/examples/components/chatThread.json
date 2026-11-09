@@ -1,0 +1,65 @@
+[
+ {
+  "props": {
+   "me": "u1",
+   "placeholder": "Message Maya",
+   "typing": [
+    "Maya"
+   ],
+   "height": 400,
+   "onSend": "$fn",
+   "messages": [
+    {
+     "id": "m1",
+     "author": "u2",
+     "name": "Maya",
+     "text": "Did you get a chance to look at the floor plan?",
+     "at": "2026-11-07T16:02:00Z"
+    },
+    {
+     "id": "m2",
+     "author": "u1",
+     "name": "Rafal",
+     "text": "Yes! The kitchen layout works much better now.",
+     "at": "2026-11-07T16:10:00Z"
+    },
+    {
+     "id": "m3",
+     "author": "u1",
+     "name": "Rafal",
+     "text": "One question: can the island be 20 cm shorter?",
+     "at": "2026-11-07T16:11:00Z"
+    },
+    {
+     "id": "m4",
+     "author": "u2",
+     "name": "Maya",
+     "text": "Sure, I'll redraw it tonight.",
+     "at": "2026-11-07T16:30:00Z"
+    },
+    {
+     "id": "m5",
+     "author": "u2",
+     "name": "Maya",
+     "text": "Here's the new version.\nI also moved the window seat to the left.",
+     "at": "2026-11-08T08:45:00Z"
+    },
+    {
+     "id": "m6",
+     "author": "u1",
+     "name": "Rafal",
+     "text": "Perfect, thank you 🙌",
+     "at": "2026-11-08T09:12:00Z"
+    }
+   ]
+  }
+ },
+ {
+  "props": {
+   "me": "u1",
+   "messages": [],
+   "onSend": "$fn",
+   "empty": "No messages yet. Say hello to start the conversation."
+  }
+ }
+]

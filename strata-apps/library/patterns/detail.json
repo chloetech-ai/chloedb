@@ -1,0 +1,211 @@
+{
+ "title": "One row of a table on its own screen, with its details, editing and related rows",
+ "about": "A record's page (a client, a flat, a deck): opened with app.open('<slug>', {id}) or picked from a list here; shows its columns as labelled details, edits and deletes it, and lists rows of other tables that point to it.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading for the pick list, when no row is open"
+  },
+  "noun": {
+   "about": "what one row is",
+   "default": "item"
+  },
+  "name": {
+   "about": "the column shown as the page's heading",
+   "default": "name"
+  },
+  "fields": {
+   "about": "the edit form's fields",
+   "need": true
+  },
+  "show": {
+   "about": "the details shown, as table columns {\"key\", \"label\", \"format\"} (default: the fields)",
+   "from": "fields"
+  },
+  "list": {
+   "about": "the pick list's columns (default: the fields)",
+   "from": "fields"
+  },
+  "related": {
+   "about": "rows of other tables that point to this one: [{\"table\", \"by\" (their column holding this row's id), \"title\", \"columns\" (as in a table block, no expressions), \"order\"}]"
+  },
+  "back": {
+   "about": "the slug of the view the back button opens (default: back to the pick list)"
+  },
+  "deleteLabel": {
+   "about": "the label of the delete button",
+   "default": "Delete"
+  }
+ },
+ "example": {
+  "use": "detail",
+  "table": "clients",
+  "noun": "client",
+  "name": "name",
+  "fields": [
+   {
+    "name": "name",
+    "required": true
+   },
+   {
+    "name": "email",
+    "type": "email"
+   },
+   {
+    "name": "rate",
+    "type": "number"
+   }
+  ],
+  "related": [
+   {
+    "table": "invoices",
+    "by": "client",
+    "title": "Invoices",
+    "columns": [
+     {
+      "key": "number"
+     },
+     {
+      "key": "total",
+      "format": "money"
+     },
+     {
+      "key": "status",
+      "badge": true
+     }
+    ]
+   }
+  ],
+  "back": "clients"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_id": null,
+   "{{key}}_editing": false
+  },
+  "data": {
+   "{{key}}_one": {
+    "sql": "SELECT * FROM {{table}} WHERE id = :id LIMIT 1",
+    "params": {
+     "id": "=state.{{key}}_id || params.id || ''"
+    }
+   },
+   "{{key}}_recent": "SELECT * FROM {{table}} ORDER BY created DESC LIMIT 100",
+   "{{key}}_related": {
+    "$when": "related",
+    "$value": "=Promise.all({{related|json}}.map(r => (state.{{key}}_id || params.id) ? app.sql('SELECT * FROM ' + r.table + ' WHERE ' + r.by + ' = :id ORDER BY ' + (r.order || 'created DESC') + ' LIMIT 200', {id: state.{{key}}_id || params.id}) : []))"
+   }
+  },
+  "let": {
+   "{{key}}_row": "={{key}}_one[0] || null"
+  },
+  "body": [
+   {
+    "if": "=!{{key}}_row",
+    "then": [
+     {
+      "$when": "title",
+      "h": "{{title}}"
+     },
+     {
+      "table": "={{key}}_recent",
+      "columns": "{{list}}",
+      "onRow": "=r => set({ {{key}}_id: r.id, {{key}}_editing: false })",
+      "empty": "Nothing here yet."
+     }
+    ],
+    "else": [
+     {
+      "row": [
+       {
+        "$when": "back",
+        "button": "← Back",
+        "class": "ghost small",
+        "do": "=() => app.open({{back|json}})"
+       },
+       {
+        "$when": "!back",
+        "button": "← All",
+        "class": "ghost small",
+        "do": "=() => set({ {{key}}_id: null, {{key}}_editing: false })"
+       }
+      ]
+     },
+     {
+      "h": "=String({{key}}_row[{{name|json}}] ?? '')"
+     },
+     {
+      "if": "=!state.{{key}}_editing",
+      "then": [
+       {
+        "card": [
+         {
+          "ui": "keyValueList",
+          "props": {
+           "columns": 2,
+           "items": "={{show|json}}.map(c => { const v = {{key}}_row[c.key]; return {label: c.label || String(c.key).replace(/_/g, ' ').replace(/^./, x => x.toUpperCase()), value: v == null || v === '' ? null : c.format === 'money' ? app.fmt.money(v) : c.format === 'date' ? app.fmt.date(v) : c.format === 'datetime' ? app.fmt.datetime(v) : c.format === 'bool' ? (v ? 'Yes' : 'No') : Array.isArray(v) ? v.join(', ') : String(v)}; })"
+          }
+         },
+         {
+          "row": [
+           {
+            "button": "Edit",
+            "class": "small",
+            "do": "=() => set({ {{key}}_editing: true })"
+           },
+           {
+            "button": "{{deleteLabel}}",
+            "class": "small ghost",
+            "do": "=() => app.remove({{table|json}}, {{key}}_row.id).then(() => set({ {{key}}_id: null }))"
+           }
+          ]
+         }
+        ]
+       }
+      ],
+      "else": [
+       {
+        "card": [
+         {
+          "form": "{{table}}",
+          "layout": "col",
+          "fields": "{{fields}}",
+          "edit": "={{key}}_row",
+          "after": "=() => set({ {{key}}_editing: false })",
+          "cancel": "=() => set({ {{key}}_editing: false })"
+         }
+        ],
+        "title": "Edit {{noun}}"
+       }
+      ]
+     },
+     {
+      "$when": "related",
+      "each": "={{related|json}}.map((r, i) => ({...r, rows: ({{key}}_related || [])[i] || []}))",
+      "as": "rel",
+      "class": "col",
+      "body": [
+       {
+        "section": [
+         {
+          "table": "=rel.rows",
+          "columns": "=rel.columns",
+          "empty": "=rel.empty || 'None yet.'"
+         }
+        ],
+        "title": "=rel.title || rel.table"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -1,0 +1,54 @@
+{
+ "rows": {
+  "workouts": [
+   {
+    "day": "2026-11-04",
+    "exercise": "Bench press",
+    "sets": 3,
+    "reps": 5,
+    "weight": 77.5,
+    "notes": "Last rep slow"
+   },
+   {
+    "day": "2026-11-04",
+    "exercise": "Barbell row",
+    "sets": 3,
+    "reps": 8,
+    "weight": 60,
+    "notes": null
+   },
+   {
+    "day": "2026-11-06",
+    "exercise": "Squat",
+    "sets": 5,
+    "reps": 5,
+    "weight": 100,
+    "notes": "Belt on the top set"
+   },
+   {
+    "day": "2026-11-06",
+    "exercise": "Pull-up",
+    "sets": 3,
+    "reps": 10,
+    "weight": null,
+    "notes": "Bodyweight"
+   },
+   {
+    "day": "2026-11-08",
+    "exercise": "Bench press",
+    "sets": 3,
+    "reps": 5,
+    "weight": 80,
+    "notes": "Felt strong"
+   },
+   {
+    "day": "2026-11-08",
+    "exercise": "Overhead press",
+    "sets": 3,
+    "reps": 6,
+    "weight": 45,
+    "notes": null
+   }
+  ]
+ }
+}

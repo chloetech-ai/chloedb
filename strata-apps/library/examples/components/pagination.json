@@ -1,0 +1,17 @@
+[
+ {
+  "props": {
+   "page": 6,
+   "pages": 14,
+   "onPage": "$fn"
+  }
+ },
+ {
+  "props": {
+   "page": 1,
+   "total": 87,
+   "size": 20,
+   "onPage": "$fn"
+  }
+ }
+]

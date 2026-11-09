@@ -1,0 +1,131 @@
+{
+ "cases": [
+  {
+   "call": "movingAverage",
+   "args": [
+    [
+     2,
+     4,
+     6,
+     8
+    ],
+    2
+   ],
+   "expect": [
+    2,
+    3,
+    5,
+    7
+   ]
+  },
+  {
+   "call": "movingAverage",
+   "args": [
+    [
+     1,
+     null,
+     3
+    ],
+    3
+   ],
+   "expect": [
+    1,
+    1,
+    2
+   ]
+  },
+  {
+   "call": "exponential",
+   "args": [
+    [
+     10,
+     20,
+     20
+    ],
+    0.5
+   ],
+   "expect": [
+    10,
+    15,
+    17.5
+   ]
+  },
+  {
+   "call": "exponential",
+   "args": [
+    [],
+    0.3
+   ],
+   "expect": []
+  },
+  {
+   "call": "projectTotal",
+   "args": [
+    [
+     10,
+     20,
+     30
+    ],
+    30
+   ],
+   "expect": 600
+  },
+  {
+   "call": "projectTotal",
+   "args": [
+    [],
+    30
+   ],
+   "expect": null
+  },
+  {
+   "call": "seasonal",
+   "args": [
+    [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ],
+    3
+   ],
+   "expect": [
+    2.5,
+    3.5,
+    4.5
+   ]
+  },
+  {
+   "call": "seasonal",
+   "args": [
+    [
+     5
+    ],
+    2
+   ],
+   "expect": [
+    5,
+    null
+   ]
+  },
+  {
+   "call": "growth",
+   "args": [
+    [
+     100,
+     110,
+     0,
+     50
+    ]
+   ],
+   "expect": [
+    null,
+    0.1,
+    -1,
+    null
+   ]
+  }
+ ]
+}

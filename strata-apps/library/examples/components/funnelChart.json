@@ -1,0 +1,57 @@
+[
+ {
+  "props": {
+   "stages": [
+    {
+     "label": "Visited site",
+     "value": 4820
+    },
+    {
+     "label": "Started sign-up",
+     "value": 1310
+    },
+    {
+     "label": "Confirmed email",
+     "value": 902
+    },
+    {
+     "label": "Created a project",
+     "value": 455
+    },
+    {
+     "label": "Upgraded to paid",
+     "value": 61
+    }
+   ],
+   "onSelect": "$fn"
+  }
+ },
+ {
+  "props": {
+   "stages": [
+    {
+     "label": "Leads",
+     "value": 120,
+     "color": "#6366f1"
+    },
+    {
+     "label": "Qualified",
+     "value": 48,
+     "color": "#8b5cf6"
+    },
+    {
+     "label": "Proposal sent",
+     "value": 19,
+     "color": "#a855f7"
+    },
+    {
+     "label": "Won",
+     "value": 7,
+     "color": "#22c55e"
+    }
+   ],
+   "showRate": true,
+   "format": "$fn"
+  }
+ }
+]

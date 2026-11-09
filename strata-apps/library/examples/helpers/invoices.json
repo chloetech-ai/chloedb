@@ -1,0 +1,122 @@
+{
+ "cases": [
+  {
+   "call": "lineTotal",
+   "args": [
+    {
+     "qty": 3,
+     "price": 19.99
+    }
+   ],
+   "expect": 59.97
+  },
+  {
+   "call": "lineTotal",
+   "args": [
+    {
+     "qty": 2,
+     "price": 50,
+     "discountPct": 10
+    }
+   ],
+   "expect": 90
+  },
+  {
+   "call": "lineTotal",
+   "args": [
+    {
+     "qty": 2
+    }
+   ],
+   "expect": null
+  },
+  {
+   "call": "totals",
+   "args": [
+    [
+     {
+      "qty": 2,
+      "price": 50
+     },
+     {
+      "qty": 1,
+      "price": 25.5
+     }
+    ],
+    {
+     "taxRate": 8,
+     "discount": 10,
+     "shipping": 5
+    }
+   ],
+   "expect": {
+    "subtotal": 125.5,
+    "discount": 10,
+    "tax": 9.24,
+    "shipping": 5,
+    "total": 129.74
+   }
+  },
+  {
+   "call": "totals",
+   "args": [
+    []
+   ],
+   "expect": {
+    "subtotal": 0,
+    "discount": 0,
+    "tax": 0,
+    "shipping": 0,
+    "total": 0
+   }
+  },
+  {
+   "call": "dueDate",
+   "args": [
+    "2026-11-08",
+    "net 30"
+   ],
+   "expect": "2026-12-08"
+  },
+  {
+   "call": "dueDate",
+   "args": [
+    "2026-02-10",
+    "end of month"
+   ],
+   "expect": "2026-02-28"
+  },
+  {
+   "call": "dueDate",
+   "args": [
+    "2026-11-08",
+    "due on receipt"
+   ],
+   "expect": "2026-11-08"
+  },
+  {
+   "call": "status",
+   "args": [
+    {
+     "due": "2026-11-01",
+     "paid": 0,
+     "total": 100
+    },
+    "2026-11-08"
+   ],
+   "expect": "overdue"
+  },
+  {
+   "call": "status",
+   "args": [
+    {
+     "due": "2026-12-01",
+     "paid": 40,
+     "total": 100
+    },
+    "2026-11-08"
+   ],
+   "expect": "partly paid"
+  }
+ ]
+}

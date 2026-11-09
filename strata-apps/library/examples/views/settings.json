@@ -1,0 +1,46 @@
+{
+ "rows": {
+  "settings": [
+   {
+    "name": "theme",
+    "label": "Theme",
+    "kind": "choice",
+    "choices": "{\"options\": [\"light\", \"dark\", \"system\"], \"default\": \"system\"}",
+    "value": "dark",
+    "description": "How the app looks: light, dark, or the same as your device."
+   },
+   {
+    "name": "week_start",
+    "label": "First day of the week",
+    "kind": "choice",
+    "choices": "monday, sunday",
+    "value": "monday",
+    "description": "The day calendars and weekly totals start on."
+   },
+   {
+    "name": "daily_goal",
+    "label": "Daily goal",
+    "kind": "number",
+    "choices": "{\"default\": 8}",
+    "value": "10",
+    "description": "How many a day counts as reaching your goal."
+   },
+   {
+    "name": "email_reminders",
+    "label": "Email reminders",
+    "kind": "bool",
+    "choices": "{\"default\": true}",
+    "value": "true",
+    "description": "Send a reminder email the morning something is due."
+   },
+   {
+    "name": "currency",
+    "label": "Currency",
+    "kind": "text",
+    "choices": "{\"default\": \"USD\"}",
+    "value": "EUR",
+    "description": "The three-letter code used to show amounts, such as USD or EUR."
+   }
+  ]
+ }
+}

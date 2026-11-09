@@ -1,0 +1,410 @@
+{
+ "title": "Rows of one table: add, edit, search, filter, tick off and delete",
+ "about": "The screen most apps start with: a list (a table, or cards) of a table's rows with a form to add a row and edit one, an optional search box over chosen columns, filter chips on a column, a checkbox column for a done/paid/packed flag, and big numbers above.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "noun": {
+   "about": "what one row is, for labels such as \"Delete this guest?\"",
+   "default": "item"
+  },
+  "fields": {
+   "about": "the form's fields, as in a form block",
+   "need": true
+  },
+  "columns": {
+   "about": "the table's columns, as in a table block (default: the fields)",
+   "from": "fields"
+  },
+  "card": {
+   "about": "blocks drawn for each row as a card instead of a table (the row is \"row\")"
+  },
+  "cardClass": {
+   "about": "how the cards sit: list (one under another) or grid",
+   "default": "list"
+  },
+  "search": {
+   "about": "columns the search box looks in (no search box when left out)"
+  },
+  "placeholder": {
+   "about": "the search box's text",
+   "default": "Search"
+  },
+  "filter": {
+   "about": "{\"column\", \"options\"}: chips that show only rows whose column has the picked value"
+  },
+  "toggle": {
+   "about": "a bool column ticked straight from the list (done, paid, packed)"
+  },
+  "toggleLabel": {
+   "about": "the label of the toggle",
+   "default": "Done"
+  },
+  "kpis": {
+   "about": "big numbers above the list, as in a kpis block (they may read <key> and <key>_shown)"
+  },
+  "where": {
+   "about": "an SQL condition on the rows (with :names from params)"
+  },
+  "params": {
+   "about": "values for :names in where, may be expressions"
+  },
+  "order": {
+   "about": "SQL ORDER BY",
+   "default": "created DESC"
+  },
+  "sql": {
+   "about": "the whole SELECT, when the rows need a join or computed columns (default: from table, where and order)",
+   "default": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 500"
+  },
+  "set": {
+   "about": "more columns the form stores, as in a form block"
+  },
+  "submit": {
+   "about": "the add button and form title",
+   "default": "Add {{noun}}"
+  },
+  "form": {
+   "about": "where the form goes: top, side (next to the list) or none",
+   "default": "top"
+  },
+  "actions": {
+   "about": "the row's own steps, as in a table block (\"do\": \"=row => ...\"): they come before Edit and Delete, and the first is the row's next step (its button on a phone), such as 'Mark paid' or 'Order'"
+  },
+  "deleteLabel": {
+   "about": "the label of each row's delete button",
+   "default": "Delete"
+  },
+  "export": {
+   "about": "a button's label that downloads the rows shown (searched and filtered) as a CSV file, such as 'Export CSV'"
+  },
+  "exportColumns": {
+   "about": "the columns the CSV has, [{\"key\", \"label\"}] (default every column but id)"
+  },
+  "onRow": {
+   "about": "a handler when a table row is tapped, such as \"=row => app.open('guest', {id: row.id})\""
+  },
+  "empty": {
+   "about": "the text when there are no rows",
+   "default": "Nothing here yet: add the first {{noun}}."
+  }
+ },
+ "example": {
+  "use": "crud",
+  "table": "guests",
+  "title": "Guests",
+  "noun": "guest",
+  "fields": [
+   {
+    "name": "name",
+    "required": true
+   },
+   {
+    "name": "rsvp",
+    "label": "RSVP",
+    "type": "select",
+    "options": [
+     "yes",
+     "no",
+     "waiting"
+    ]
+   },
+   {
+    "name": "table_no",
+    "label": "Table",
+    "type": "number"
+   }
+  ],
+  "search": [
+   "name"
+  ],
+  "filter": {
+   "column": "rsvp",
+   "options": [
+    "yes",
+    "no",
+    "waiting"
+   ]
+  },
+  "order": "name",
+  "kpis": [
+   {
+    "label": "Coming",
+    "value": "=guests.filter(g => g.rsvp === 'yes').length"
+   }
+  ]
+ },
+ "screen": {
+  "state": {
+   "{{key}}_q": "",
+   "{{key}}_f": "",
+   "{{key}}_editing": null,
+   "{{key}}_adding": false
+  },
+  "data": {
+   "{{key}}": {
+    "sql": "{{sql}}",
+    "params": "{{params}}"
+   }
+  },
+  "let": {
+   "{{key}}_shown": "={{key}}.filter(row => (!state.{{key}}_f || !{{filter.column|json}} || String(row[{{filter.column|json}}]) === String(state.{{key}}_f)) && (!state.{{key}}_q || ({{search|json}} || []).some(k => String(row[k] ?? '').toLowerCase().includes(String(state.{{key}}_q).toLowerCase()))))"
+  },
+  "body": [
+   {
+    "$when": "form=top",
+    "row": [
+     {
+      "$when": "title",
+      "h": "{{title}}"
+     },
+     {
+      "button": "{{submit}}",
+      "class": "primary right",
+      "do": "=() => set({ {{key}}_adding: true, {{key}}_editing: null })"
+     }
+    ]
+   },
+   {
+    "$when": "title&form!=top",
+    "h": "{{title}}"
+   },
+   {
+    "$when": "kpis",
+    "kpis": "{{kpis}}"
+   },
+   {
+    "$when": "form=top",
+    "if": "=state.{{key}}_adding || state.{{key}}_editing",
+    "then": [
+     {
+      "card": [
+       {
+        "form": "{{table}}",
+        "fields": "{{fields}}",
+        "set": "{{set}}",
+        "submit": "=state.{{key}}_editing ? 'Save' : {{submit|json}}",
+        "edit": "=state.{{key}}_editing",
+        "after": "=() => set({ {{key}}_adding: false, {{key}}_editing: null })",
+        "cancel": "=() => set({ {{key}}_adding: false, {{key}}_editing: null })",
+        "closes": true
+       }
+      ],
+      "title": "=state.{{key}}_editing ? 'Edit ' + {{noun|json}} : {{submit|json}}"
+     }
+    ]
+   },
+   {
+    "$when": "search&form!=side|filter&form!=side|export&form!=side",
+    "row": [
+     {
+      "$when": "search",
+      "input": "{{key}}_q",
+      "type": "search",
+      "placeholder": "{{placeholder}}"
+     },
+     {
+      "$when": "filter",
+      "chips": "{{key}}_f",
+      "options": [
+       {
+        "value": "",
+        "label": "All"
+       },
+       "{{...filter.options}}"
+      ]
+     },
+     {
+      "$when": "export",
+      "button": "{{export}}",
+      "class": "ghost small",
+      "do": "=() => app.download({{table|json}} + '-' + app.today() + '.csv', app.csv({{key}}_shown, {{exportColumns|json}}))"
+     }
+    ]
+   },
+   {
+    "$when": "!card&form!=side",
+    "table": "={{key}}_shown",
+    "columns": [
+     {
+      "$when": "toggle",
+      "key": "{{toggle}}",
+      "label": "{{toggleLabel}}",
+      "value": "=row => h('input', {type: 'checkbox', checked: !!row[{{toggle|json}}], onclick: (e) => e.stopPropagation(), onchange: async (e) => { await app.update({{table|json}}, row.id, { [{{toggle|json}}]: e.target.checked }); refresh(); }})"
+     },
+     "{{...columns}}"
+    ],
+    "actions": [
+     "{{...actions}}",
+     {
+      "$when": "form!=none",
+      "label": "Edit",
+      "class": "small ghost",
+      "do": "=row => set({ {{key}}_editing: row })"
+     },
+     {
+      "label": "{{deleteLabel}}",
+      "class": "small ghost",
+      "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
+     }
+    ],
+    "onRow": "{{onRow}}",
+    "empty": "=state.{{key}}_q || state.{{key}}_f ? 'Nothing matches.' : {{empty|json}}"
+   },
+   {
+    "$when": "card&form!=side",
+    "each": "={{key}}_shown",
+    "as": "row",
+    "class": "{{cardClass}}",
+    "empty": "=state.{{key}}_q || state.{{key}}_f ? 'Nothing matches.' : {{empty|json}}",
+    "body": [
+     {
+      "card": [
+       "{{...card}}",
+       {
+        "row": [
+         {
+          "$when": "toggle",
+          "button": "=row[{{toggle|json}}] ? 'Undo' : {{toggleLabel|json}}",
+          "class": "small",
+          "do": "=() => app.update({{table|json}}, row.id, { [{{toggle|json}}]: !row[{{toggle|json}}] })"
+         },
+         {
+          "$when": "form!=none",
+          "button": "Edit",
+          "class": "small ghost",
+          "do": "=() => set({ {{key}}_editing: row })"
+         },
+         {
+          "button": "{{deleteLabel}}",
+          "class": "small ghost",
+          "do": "=() => app.remove({{table|json}}, row.id)"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "$when": "form=side",
+    "split": [
+     {
+      "col": [
+       {
+        "$when": "search",
+        "input": "{{key}}_q",
+        "type": "search",
+        "placeholder": "{{placeholder}}"
+       },
+       {
+        "$when": "filter",
+        "chips": "{{key}}_f",
+        "options": [
+         {
+          "value": "",
+          "label": "All"
+         },
+         "{{...filter.options}}"
+        ]
+       },
+       {
+        "$when": "export",
+        "button": "{{export}}",
+        "class": "ghost small",
+        "do": "=() => app.download({{table|json}} + '-' + app.today() + '.csv', app.csv({{key}}_shown, {{exportColumns|json}}))"
+       },
+       {
+        "$when": "!card",
+        "table": "={{key}}_shown",
+        "columns": [
+         {
+          "$when": "toggle",
+          "key": "{{toggle}}",
+          "label": "{{toggleLabel}}",
+          "value": "=row => h('input', {type: 'checkbox', checked: !!row[{{toggle|json}}], onclick: (e) => e.stopPropagation(), onchange: async (e) => { await app.update({{table|json}}, row.id, { [{{toggle|json}}]: e.target.checked }); refresh(); }})"
+         },
+         "{{...columns}}"
+        ],
+        "actions": [
+         "{{...actions}}",
+         {
+          "$when": "form!=none",
+          "label": "Edit",
+          "class": "small ghost",
+          "do": "=row => set({ {{key}}_editing: row })"
+         },
+         {
+          "label": "{{deleteLabel}}",
+          "class": "small ghost",
+          "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
+         }
+        ],
+        "onRow": "{{onRow}}",
+        "empty": "=state.{{key}}_q || state.{{key}}_f ? 'Nothing matches.' : {{empty|json}}"
+       },
+       {
+        "$when": "card",
+        "each": "={{key}}_shown",
+        "as": "row",
+        "class": "{{cardClass}}",
+        "empty": "=state.{{key}}_q || state.{{key}}_f ? 'Nothing matches.' : {{empty|json}}",
+        "body": [
+         {
+          "card": [
+           "{{...card}}",
+           {
+            "row": [
+             {
+              "$when": "toggle",
+              "button": "=row[{{toggle|json}}] ? 'Undo' : {{toggleLabel|json}}",
+              "class": "small",
+              "do": "=() => app.update({{table|json}}, row.id, { [{{toggle|json}}]: !row[{{toggle|json}}] })"
+             },
+             {
+              "$when": "form!=none",
+              "button": "Edit",
+              "class": "small ghost",
+              "do": "=() => set({ {{key}}_editing: row })"
+             },
+             {
+              "button": "{{deleteLabel}}",
+              "class": "small ghost",
+              "do": "=() => app.remove({{table|json}}, row.id)"
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "card": [
+       {
+        "form": "{{table}}",
+        "fields": "{{fields}}",
+        "set": "{{set}}",
+        "submit": "=state.{{key}}_editing ? 'Save' : {{submit|json}}",
+        "edit": "=state.{{key}}_editing",
+        "after": "=() => set({ {{key}}_editing: null })",
+        "cancel": "=() => set({ {{key}}_editing: null })"
+       }
+      ],
+      "title": "=state.{{key}}_editing ? 'Edit ' + {{noun|json}} : {{submit|json}}"
+     }
+    ]
+   }
+  ]
+ }
+}

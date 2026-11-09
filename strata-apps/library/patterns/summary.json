@@ -1,0 +1,122 @@
+{
+ "title": "A breakdown of a table by a group: a total and a bar per group",
+ "about": "Spending by category, hours by client, requests by status: one GROUP BY query drawn as bars (or a donut), with the total and the number of groups as big numbers.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_by"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "group": {
+   "about": "the column (or SQL expression) to group by",
+   "need": true
+  },
+  "value": {
+   "about": "the SQL aggregate per group",
+   "default": "COUNT(*)"
+  },
+  "label": {
+   "about": "what the value is, for the total",
+   "default": "Total"
+  },
+  "where": {
+   "about": "an SQL condition on the rows (with :names from params)"
+  },
+  "params": {
+   "about": "values for :names in where, may be expressions such as \"=today.slice(0, 7)\""
+  },
+  "format": {
+   "about": "how values read: number or money",
+   "default": "number"
+  },
+  "chart": {
+   "about": "bars or donut",
+   "default": "bars"
+  },
+  "limit": {
+   "about": "the most groups shown",
+   "default": 20
+  }
+ },
+ "example": {
+  "use": "summary",
+  "table": "expenses",
+  "title": "Spending by category this month",
+  "group": "category",
+  "value": "SUM(amount)",
+  "label": "Spent",
+  "where": "day >= :month",
+  "params": {
+   "month": "=today.slice(0, 7) + '-01'"
+  },
+  "format": "money"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": {
+    "sql": "SELECT {{group}} AS label, {{value}} AS value FROM {{table}}{{where|pre: WHERE }} GROUP BY {{group}} ORDER BY value DESC LIMIT {{limit}}",
+    "params": "{{params}}"
+   }
+  },
+  "let": {
+   "{{key}}_items": "={{key}}.map(g => ({label: g.label == null || g.label === '' ? '\u2014' : String(g.label), value: Number(g.value) || 0}))",
+   "{{key}}_fmt": "=v => {{format|json}} === 'money' ? app.fmt.money(v) : app.fmt.number(v)"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "{{label}}",
+      "value": "={{key}}_fmt({{key}}_items.reduce((n, g) => n + g.value, 0))"
+     },
+     {
+      "label": "Groups",
+      "value": "={{key}}_items.length"
+     }
+    ]
+   },
+   {
+    "card": [
+     {
+      "if": "={{key}}_items.length === 0",
+      "then": [
+       {
+        "text": "Nothing to show yet.",
+        "muted": true
+       }
+      ],
+      "else": [
+       {
+        "$when": "chart=bars",
+        "ui": "barChart",
+        "props": {
+         "data": "={{key}}_items",
+         "horizontal": true,
+         "format": "={{key}}_fmt"
+        }
+       },
+       {
+        "$when": "chart=donut",
+        "ui": "donutChart",
+        "props": {
+         "data": "={{key}}_items",
+         "format": "={{key}}_fmt"
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

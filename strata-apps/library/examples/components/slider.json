@@ -1,0 +1,35 @@
+[
+ {
+  "props": {
+   "label": "Daily budget",
+   "value": 45,
+   "min": 0,
+   "max": 150,
+   "step": 5,
+   "format": "$fn",
+   "marks": [
+    0,
+    50,
+    100,
+    150
+   ],
+   "onChange": "$fn",
+   "onCommit": "$fn"
+  }
+ },
+ {
+  "props": {
+   "label": "How hard did it feel?",
+   "value": 7,
+   "min": 1,
+   "max": 10,
+   "step": 1,
+   "marks": [
+    1,
+    5,
+    10
+   ],
+   "onCommit": "$fn"
+  }
+ }
+]

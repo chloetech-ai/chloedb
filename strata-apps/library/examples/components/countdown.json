@@ -1,0 +1,18 @@
+[
+ {
+  "props": {
+   "to": "2026-12-24",
+   "label": "Until the holidays",
+   "onDone": "$fn"
+  }
+ },
+ {
+  "props": {
+   "to": "2026-11-08T18:30:00Z",
+   "label": "Doors open in",
+   "compact": true,
+   "doneText": "Doors are open",
+   "onDone": "$fn"
+  }
+ }
+]

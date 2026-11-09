@@ -1,0 +1,51 @@
+{
+ "rows": {
+  "contacts": [
+   {
+    "name": "Maya Okafor",
+    "email": "maya.okafor@brightlane.io",
+    "phone": "+1 415 555 0142",
+    "company": "Brightlane Studio",
+    "grp": "Work",
+    "notes": "Design lead on the spring campaign. Prefers calls before 11am.",
+    "birthday": "1988-11-21"
+   },
+   {
+    "name": "Daniel Weiss",
+    "email": "dan.weiss@gmail.com",
+    "phone": "(312) 555-0187",
+    "company": null,
+    "grp": "Friends",
+    "notes": "Met at the climbing gym. Owes me a book back.",
+    "birthday": "1991-03-04"
+   },
+   {
+    "name": "Grandma Rosa",
+    "email": null,
+    "phone": "+1 617 555 0109",
+    "company": null,
+    "grp": "Family",
+    "notes": "Call on Sundays. Loves lemon cake.",
+    "birthday": "1944-11-12"
+   },
+   {
+    "name": "Priya Raman",
+    "email": "priya@northwindlegal.com",
+    "phone": "+44 20 7946 0958",
+    "company": "Northwind Legal",
+    "grp": "Work",
+    "notes": "Handles the lease renewal; contract due by 30 Nov.",
+    "birthday": null
+   },
+   {
+    "name": "Tom Becker",
+    "email": "tom.becker@fixitplumbing.com",
+    "phone": "(503) 555-0163",
+    "company": "Fix-It Plumbing",
+    "grp": "Services",
+    "notes": "Fixed the kitchen sink on 2 Nov 2026. Fair prices.",
+    "birthday": null
+   }
+  ]
+ }
+}

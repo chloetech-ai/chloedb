@@ -1,0 +1,57 @@
+{
+ "tables": [
+  {
+   "name": "tasks",
+   "columns": [
+    {
+     "name": "title",
+     "type": "text"
+    },
+    {
+     "name": "due",
+     "type": "keyword"
+    },
+    {
+     "name": "status",
+     "type": "keyword"
+    }
+   ]
+  }
+ ],
+ "rows": {
+  "tasks": [
+   {
+    "title": "Pay electricity bill",
+    "due": "2026-11-08",
+    "status": "open"
+   },
+   {
+    "title": "Dentist appointment",
+    "due": "2026-11-09",
+    "status": "open"
+   },
+   {
+    "title": "Send quarterly report",
+    "due": "2026-11-12",
+    "status": "open"
+   },
+   {
+    "title": "Renew passport",
+    "due": "2026-11-28",
+    "status": "open"
+   },
+   {
+    "title": "Book flights",
+    "due": "2026-11-02",
+    "status": "open"
+   }
+  ]
+ },
+ "input": {
+  "table": "tasks",
+  "titleColumn": "title",
+  "dateColumn": "due",
+  "to": "rkonowkr@gmail.com",
+  "days": 7
+ }
+}

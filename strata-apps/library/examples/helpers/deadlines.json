@@ -1,0 +1,105 @@
+{
+ "cases": [
+  {
+   "call": "status",
+   "args": [
+    "2026-11-05",
+    {
+     "today": "2026-11-08"
+    }
+   ],
+   "expect": "overdue"
+  },
+  {
+   "call": "status",
+   "args": [
+    "2026-11-10",
+    {
+     "today": "2026-11-08"
+    }
+   ],
+   "expect": "soon"
+  },
+  {
+   "call": "status",
+   "args": [
+    "2026-11-12",
+    {
+     "today": "2026-11-08",
+     "soonDays": 3
+    }
+   ],
+   "expect": "later"
+  },
+  {
+   "call": "status",
+   "args": [
+    "2026-11-01",
+    {
+     "today": "2026-11-08",
+     "done": true
+    }
+   ],
+   "expect": "done"
+  },
+  {
+   "call": "status",
+   "args": [
+    "not a date",
+    {
+     "today": "2026-11-08"
+    }
+   ],
+   "expect": null
+  },
+  {
+   "call": "daysLeft",
+   "args": [
+    "2026-11-01",
+    {
+     "today": "2026-11-08"
+    }
+   ],
+   "expect": -7
+  },
+  {
+   "call": "label",
+   "args": [
+    "2026-11-07",
+    {
+     "today": "2026-11-08"
+    }
+   ],
+   "expect": "overdue by 1 day"
+  },
+  {
+   "call": "addBusinessDays",
+   "args": [
+    "2026-11-06",
+    1,
+    {
+     "holidays": [
+      "2026-11-09"
+     ]
+    }
+   ],
+   "expect": "2026-11-10"
+  },
+  {
+   "call": "addBusinessDays",
+   "args": [
+    "2026-11-09",
+    -1
+   ],
+   "expect": "2026-11-06"
+  },
+  {
+   "call": "businessDaysBetween",
+   "args": [
+    "2026-11-02",
+    "2026-11-09"
+   ],
+   "expect": 5
+  }
+ ]
+}

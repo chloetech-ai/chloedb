@@ -1,0 +1,21 @@
+[
+ {
+  "props": {
+   "value": "09:30",
+   "onChange": "$fn",
+   "step": 30,
+   "from": "08:00",
+   "to": "18:00",
+   "format": "12h",
+   "clearable": true,
+   "label": "Start time"
+  }
+ },
+ {
+  "props": {
+   "value": "",
+   "onChange": "$fn",
+   "label": "Reminder time"
+  }
+ }
+]

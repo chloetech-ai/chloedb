@@ -1,0 +1,118 @@
+{
+ "title": "Study flashcards: the cards due today one at a time, flip, grade, and the next review is scheduled",
+ "about": "Vocabulary, exam revision, any spaced repetition: a table of cards with a front, a back, a due day ('YYYY-MM-DD' keyword) and an interval in days (int). Grading Again, Hard, Good or Easy sets the next due day (spaced repetition); counts show new, learning and mastered cards. The table needs the due and interval columns.",
+ "params": {
+  "table": {
+   "about": "the table of cards",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "front": {
+   "about": "the column with the question side",
+   "default": "front"
+  },
+  "back": {
+   "about": "the column with the answer side",
+   "default": "back"
+  },
+  "due": {
+   "about": "the keyword column with the next review day, 'YYYY-MM-DD' (empty: new)",
+   "default": "due"
+  },
+  "interval": {
+   "about": "the int column with the days between reviews",
+   "default": "interval_days"
+  },
+  "where": {
+   "about": "an SQL condition on the cards (such as deck = :deck)"
+  },
+  "params": {
+   "about": "values for :names in where, may be expressions such as \"=state.deck\""
+  },
+  "mastered": {
+   "about": "the interval in days from which a card counts as mastered",
+   "default": 21
+  }
+ },
+ "example": {
+  "use": "flashcards",
+  "table": "cards",
+  "title": "Study",
+  "front": "question",
+  "back": "answer",
+  "where": "deck = :deck",
+  "params": {
+   "deck": "=state.deck || ''"
+  }
+ },
+ "screen": {
+  "state": {
+   "{{key}}_again": []
+  },
+  "data": {
+   "{{key}}": {
+    "sql": "SELECT * FROM {{table}}{{where|pre: WHERE }} LIMIT 2000",
+    "params": "{{params}}"
+   }
+  },
+  "let": {
+   "{{key}}_queue": "={{key}}.filter(c => !c[{{due|json}}] || String(c[{{due|json}}]) <= today).sort((a, b) => (state.{{key}}_again.indexOf(a.id) - state.{{key}}_again.indexOf(b.id)) || String(a[{{due|json}}] || '').localeCompare(String(b[{{due|json}}] || '')))",
+   "{{key}}_card": "={{key}}_queue[0] || null",
+   "{{key}}_grade": "=g => { const c = {{key}}_card; if (!c) return; const iv = Number(c[{{interval|json}}]) || 0; const next = g === 'again' ? 0 : g === 'hard' ? Math.max(1, Math.round(iv * 1.2)) : g === 'good' ? Math.max(1, iv ? Math.round(iv * 2.5) : 1) : Math.max(4, Math.round(iv * 3.5)); set({ {{key}}_again: g === 'again' ? [...state.{{key}}_again.filter(x => x !== c.id), c.id] : state.{{key}}_again.filter(x => x !== c.id) }); return app.update({{table|json}}, c.id, { [{{interval|json}}]: next, [{{due|json}}]: lib.dates.addDays(today, next) }); }"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "kpis": [
+     {
+      "label": "Due now",
+      "value": "={{key}}_queue.length"
+     },
+     {
+      "label": "New",
+      "value": "={{key}}.filter(c => !c[{{due|json}}]).length"
+     },
+     {
+      "label": "Learning",
+      "value": "={{key}}.filter(c => c[{{due|json}}] && (Number(c[{{interval|json}}]) || 0) < {{mastered}}).length"
+     },
+     {
+      "label": "Mastered",
+      "value": "={{key}}.filter(c => (Number(c[{{interval|json}}]) || 0) >= {{mastered}}).length"
+     }
+    ]
+   },
+   {
+    "if": "={{key}}_card",
+    "then": [
+     {
+      "ui": "flashcard",
+      "props": {
+       "front": "=String({{key}}_card[{{front|json}}] ?? '')",
+       "back": "=String({{key}}_card[{{back|json}}] ?? '')",
+       "onGrade": "={{key}}_grade"
+      }
+     }
+    ],
+    "else": [
+     {
+      "card": [
+       {
+        "text": "=({{key}}.length ? 'All caught up: no card is due. ' + ({{key}}.filter(c => c[{{due|json}}]).map(c => String(c[{{due|json}}])).sort()[0] ? 'The next review is ' + lib.dates.relative({{key}}.filter(c => c[{{due|json}}]).map(c => String(c[{{due|json}}])).sort()[0]) + '.' : '') : 'No cards yet.')"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

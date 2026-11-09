@@ -1,0 +1,154 @@
+{
+ "title": "A dashboard of a table over time: the total against the period before, a line per day, a breakdown by a group, and the newest rows",
+ "about": "Billable hours, sales, workouts, spending, sign-ups: an additive value (SUM or COUNT) over the last N days against the N days before, drawn per day as a line, split by a group as bars, with the newest rows below. The date column is a timestamp (created by default) or a 'YYYY-MM-DD' keyword (set \"day\": true).",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_dash"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "date": {
+   "about": "the column with each row's time: a timestamp, or a 'YYYY-MM-DD' keyword with day: true",
+   "default": "created"
+  },
+  "day": {
+   "about": "true when the date column is a 'YYYY-MM-DD' keyword"
+  },
+  "value": {
+   "about": "the SQL aggregate shown: SUM(column) or COUNT(*)",
+   "default": "COUNT(*)"
+  },
+  "label": {
+   "about": "what the value is",
+   "default": "Total"
+  },
+  "format": {
+   "about": "how values read: number, money or hours",
+   "default": "number"
+  },
+  "days": {
+   "about": "the period, in days",
+   "default": 30
+  },
+  "group": {
+   "about": "a keyword column to split the value by, drawn as bars"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "recent": {
+   "about": "columns of the newest rows, as in a table block (no list when left out)"
+  }
+ },
+ "example": {
+  "use": "dashboard",
+  "table": "hours",
+  "title": "Last 30 days",
+  "date": "day",
+  "day": true,
+  "value": "SUM(hours)",
+  "label": "Hours",
+  "format": "hours",
+  "group": "client",
+  "recent": [
+   {
+    "key": "day",
+    "format": "date"
+   },
+   {
+    "key": "client"
+   },
+   {
+    "key": "hours"
+   }
+  ]
+ },
+ "screen": {
+  "data": {
+   "{{key}}": {
+    "sql": "=(() => { const g = {{group|json}}; const d = {{day|json}} ? {{date|json}} : \"date_trunc('day', \" + {{date|json}} + \")\"; return 'SELECT ' + d + ' AS d' + (g ? ', ' + g + ' AS g' : '') + ', {{value}} AS v FROM {{table}}{{where|pre: WHERE }} GROUP BY ' + d + (g ? ', ' + g : '') + ' ORDER BY ' + d + ' DESC LIMIT 500'; })()"
+   },
+   "{{key}}_recent": {
+    "$when": "recent",
+    "$value": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY {{date}} DESC LIMIT 10"
+   }
+  },
+  "let": {
+   "{{key}}_from": "=lib.dates.addDays(today, -({{days}} - 1))",
+   "{{key}}_before": "=lib.dates.addDays(today, -(2 * {{days}} - 1))",
+   "{{key}}_rows": "={{key}}.map(r => ({ day: r.d == null ? '' : String(r.d).slice(0, 10), g: r.g == null || r.g === '' ? '—' : String(r.g), v: Number(r.v) || 0 }))",
+   "{{key}}_cur": "={{key}}_rows.filter(r => r.day >= {{key}}_from && r.day <= today)",
+   "{{key}}_prev": "={{key}}_rows.filter(r => r.day >= {{key}}_before && r.day < {{key}}_from)",
+   "{{key}}_sum": "=rows => rows.reduce((n, r) => n + r.v, 0)",
+   "{{key}}_fmt": "=v => {{format|json}} === 'money' ? app.fmt.money(v) : {{format|json}} === 'hours' ? (Math.round(v * 10) / 10) + ' h' : app.fmt.number(v)",
+   "{{key}}_groups": "=Object.entries({{key}}_cur.reduce((m, r) => { m[r.g] = (m[r.g] || 0) + r.v; return m; }, {})).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 12)"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "ui": "statTiles",
+    "props": {
+     "items": "=[{ label: {{label|json}} + ', last ' + {{days}} + ' days', value: {{key}}_fmt({{key}}_sum({{key}}_cur)), delta: {{key}}_sum({{key}}_prev) ? Math.round(100 * ({{key}}_sum({{key}}_cur) - {{key}}_sum({{key}}_prev)) / {{key}}_sum({{key}}_prev)) : undefined, hint: 'against the ' + {{days}} + ' days before' }, { label: 'Per day', value: {{key}}_fmt({{key}}_sum({{key}}_cur) / {{days}}) }, { label: 'Active days', value: new Set({{key}}_cur.filter(r => r.v).map(r => r.day)).size }]"
+    }
+   },
+   {
+    "card": [
+     {
+      "ui": "lineChart",
+      "props": {
+       "data": "=lib.dates.range({{key}}_from, today).map(x => ({ x, y: {{key}}_sum({{key}}_cur.filter(r => r.day === x)) }))",
+       "area": true,
+       "format": "={{key}}_fmt"
+      }
+     }
+    ],
+    "title": "={{label|json}} + ' per day'"
+   },
+   {
+    "$when": "group",
+    "card": [
+     {
+      "if": "={{key}}_groups.length",
+      "then": [
+       {
+        "ui": "barChart",
+        "props": {
+         "data": "={{key}}_groups",
+         "horizontal": true,
+         "format": "={{key}}_fmt"
+        }
+       }
+      ],
+      "else": [
+       {
+        "text": "Nothing in this period.",
+        "muted": true
+       }
+      ]
+     }
+    ],
+    "title": "={{label|json}} + ' by ' + {{group|json}}.replace(/_/g, ' ')"
+   },
+   {
+    "$when": "recent",
+    "card": [
+     {
+      "table": "={{key}}_recent",
+      "columns": "{{recent}}",
+      "empty": "Nothing yet."
+     }
+    ],
+    "title": "Newest"
+   }
+  ]
+ }
+}

@@ -1,0 +1,51 @@
+[
+ {
+  "props": {
+   "items": [
+    {
+     "id": "l1",
+     "description": "Website redesign – homepage and 4 inner pages",
+     "qty": 1,
+     "price": 2400
+    },
+    {
+     "id": "l2",
+     "description": "Copywriting (hours)",
+     "qty": 6,
+     "price": 85
+    },
+    {
+     "id": "l3",
+     "description": "Stock photo licences",
+     "qty": 3,
+     "price": 19.99
+    }
+   ],
+   "onChange": "$fn",
+   "currency": "USD",
+   "taxRate": 8.25,
+   "discount": 150
+  }
+ },
+ {
+  "props": {
+   "items": [
+    {
+     "id": "o1",
+     "description": "Oat flat white",
+     "qty": 2,
+     "price": 4.2
+    },
+    {
+     "id": "o2",
+     "description": "Almond croissant",
+     "qty": 1,
+     "price": 3.8
+    }
+   ],
+   "currency": "EUR",
+   "taxRate": 10,
+   "readOnly": true
+  }
+ }
+]

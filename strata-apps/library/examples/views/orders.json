@@ -1,0 +1,46 @@
+{
+ "rows": {
+  "orders": [
+   {
+    "customer": "Maya Patel",
+    "items": "2 × Flat white\n1 × Almond croissant",
+    "total": 13.5,
+    "status": "new",
+    "due": "2026-11-08T10:30:00Z",
+    "notes": "Oat milk in one"
+   },
+   {
+    "customer": "Tom Becker",
+    "items": "1 × Margherita pizza\n1 × Caesar salad",
+    "total": 24,
+    "status": "preparing",
+    "due": "2026-11-08T12:15:00Z",
+    "notes": null
+   },
+   {
+    "customer": "Ana Souza",
+    "items": "3 × Chicken wrap\n3 × Lemonade",
+    "total": 31.2,
+    "status": "ready",
+    "due": "2026-11-08T11:45:00Z",
+    "notes": "Pickup at the side door"
+   },
+   {
+    "customer": "Liam O'Connor",
+    "items": "1 × Birthday cake (chocolate, 8 in)",
+    "total": 42,
+    "status": "new",
+    "due": "2026-11-09T16:00:00Z",
+    "notes": "Write 'Happy 30th, Sam'"
+   },
+   {
+    "customer": "Grace Kim",
+    "items": "1 × Cappuccino\n1 × Blueberry muffin",
+    "total": 8.75,
+    "status": "done",
+    "due": null,
+    "notes": null
+   }
+  ]
+ }
+}

@@ -565,6 +565,23 @@ jobs:
           STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
           STRATA_SHEETS_NEED_SERVER: "1"
         run: cargo test --profile ci --test cluster
+      # The app engine (strata-apps, a prototype in Node): apps built from
+      # plans, stored as SQL rows in a server of this build, run, tested and
+      # searched; no model is called.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: App engine against a server
+        working-directory: strata-apps
+        env:
+          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_APPS_NEED_SERVER: "1"
+        # The library is searched by meaning too: the model its meaning
+        # column names must be there before the tests write rows.
+        run: |
+          for i in 1 2 3; do "$STRATA_SERVER_BIN" fetch-model potion-retrieval-32M && break; sleep 10; done
+          npm ci
+          npm test
 
   python:
     name: Python package on ${{ matrix.os }}

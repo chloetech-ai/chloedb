@@ -1,0 +1,158 @@
+{
+ "cases": [
+  {
+   "call": "addTax",
+   "args": [
+    100,
+    20
+   ],
+   "expect": {
+    "net": 100,
+    "tax": 20,
+    "gross": 120
+   }
+  },
+  {
+   "call": "addTax",
+   "args": [
+    19.99,
+    8.875
+   ],
+   "expect": {
+    "net": 19.99,
+    "tax": 1.77,
+    "gross": 21.76
+   }
+  },
+  {
+   "call": "removeTax",
+   "args": [
+    10,
+    7
+   ],
+   "expect": {
+    "net": 9.35,
+    "tax": 0.65,
+    "gross": 10
+   }
+  },
+  {
+   "call": "discount",
+   "args": [
+    80,
+    {
+     "pct": 25,
+     "off": 5
+    }
+   ],
+   "expect": {
+    "amount": 55,
+    "saved": 25
+   }
+  },
+  {
+   "call": "discount",
+   "args": [
+    10,
+    {
+     "off": 15
+    }
+   ],
+   "expect": {
+    "amount": 0,
+    "saved": 10
+   }
+  },
+  {
+   "call": "tip",
+   "args": [
+    47.5,
+    18
+   ],
+   "expect": 8.55
+  },
+  {
+   "call": "tipOptions",
+   "args": [
+    40
+   ],
+   "expect": [
+    {
+     "pct": 15,
+     "tip": 6,
+     "total": 46
+    },
+    {
+     "pct": 18,
+     "tip": 7.2,
+     "total": 47.2
+    },
+    {
+     "pct": 20,
+     "tip": 8,
+     "total": 48
+    }
+   ]
+  },
+  {
+   "call": "total",
+   "args": [
+    [
+     {
+      "amount": 100,
+      "taxRate": 20
+     },
+     {
+      "amount": 50,
+      "taxRate": 5
+     }
+    ],
+    {
+     "discount": {
+      "pct": 10
+     }
+    }
+   ],
+   "expect": {
+    "subtotal": 150,
+    "discount": 15,
+    "tax": 20.25,
+    "total": 155.25,
+    "byRate": [
+     {
+      "rate": 5,
+      "base": 45,
+      "tax": 2.25
+     },
+     {
+      "rate": 20,
+      "base": 90,
+      "tax": 18
+     }
+    ]
+   }
+  },
+  {
+   "call": "addTax",
+   "args": [
+    "abc",
+    10
+   ],
+   "expect": null
+  },
+  {
+   "call": "total",
+   "args": [
+    [],
+    {}
+   ],
+   "expect": {
+    "subtotal": 0,
+    "discount": 0,
+    "tax": 0,
+    "total": 0,
+    "byRate": []
+   }
+  }
+ ]
+}

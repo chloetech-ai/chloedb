@@ -1,0 +1,243 @@
+{
+ "cases": [
+  {
+   "call": "lines",
+   "args": [
+    "a\nb\nc",
+    "a\nx\nc"
+   ],
+   "expect": [
+    {
+     "type": "same",
+     "text": "a"
+    },
+    {
+     "type": "remove",
+     "text": "b"
+    },
+    {
+     "type": "add",
+     "text": "x"
+    },
+    {
+     "type": "same",
+     "text": "c"
+    }
+   ]
+  },
+  {
+   "call": "lines",
+   "args": [
+    "one\ntwo\n",
+    "one\ntwo\nthree"
+   ],
+   "expect": [
+    {
+     "type": "same",
+     "text": "one"
+    },
+    {
+     "type": "same",
+     "text": "two"
+    },
+    {
+     "type": "add",
+     "text": "three"
+    }
+   ]
+  },
+  {
+   "call": "lines",
+   "args": [
+    "Hello",
+    "hello",
+    {
+     "ignoreCase": true
+    }
+   ],
+   "expect": [
+    {
+     "type": "same",
+     "text": "hello"
+    }
+   ]
+  },
+  {
+   "call": "lines",
+   "args": [
+    null,
+    "a"
+   ],
+   "expect": [
+    {
+     "type": "add",
+     "text": "a"
+    }
+   ]
+  },
+  {
+   "call": "words",
+   "args": [
+    "the quick fox",
+    "the slow fox"
+   ],
+   "expect": [
+    {
+     "type": "same",
+     "text": "the "
+    },
+    {
+     "type": "remove",
+     "text": "quick"
+    },
+    {
+     "type": "add",
+     "text": "slow"
+    },
+    {
+     "type": "same",
+     "text": " fox"
+    }
+   ]
+  },
+  {
+   "call": "chars",
+   "args": [
+    "cat",
+    "cart"
+   ],
+   "expect": [
+    {
+     "type": "same",
+     "text": "ca"
+    },
+    {
+     "type": "add",
+     "text": "r"
+    },
+    {
+     "type": "same",
+     "text": "t"
+    }
+   ]
+  },
+  {
+   "call": "arrays",
+   "args": [
+    [
+     1,
+     2,
+     3
+    ],
+    [
+     2,
+     3,
+     4
+    ]
+   ],
+   "expect": [
+    {
+     "type": "remove",
+     "value": 1
+    },
+    {
+     "type": "same",
+     "value": 2
+    },
+    {
+     "type": "same",
+     "value": 3
+    },
+    {
+     "type": "add",
+     "value": 4
+    }
+   ]
+  },
+  {
+   "call": "fields",
+   "args": [
+    {
+     "title": "A",
+     "done": false,
+     "tags": [
+      "x"
+     ]
+    },
+    {
+     "title": "B",
+     "done": false,
+     "tags": [
+      "x"
+     ],
+     "due": "2026-11-09"
+    }
+   ],
+   "expect": [
+    {
+     "field": "title",
+     "type": "change",
+     "from": "A",
+     "to": "B"
+    },
+    {
+     "field": "due",
+     "type": "add",
+     "from": null,
+     "to": "2026-11-09"
+    }
+   ]
+  },
+  {
+   "call": "stats",
+   "args": [
+    [
+     {
+      "type": "same",
+      "text": "a"
+     },
+     {
+      "type": "remove",
+      "text": "b"
+     },
+     {
+      "type": "add",
+      "text": "x"
+     },
+     {
+      "type": "same",
+      "text": "c"
+     }
+    ]
+   ],
+   "expect": {
+    "same": 2,
+    "added": 1,
+    "removed": 1,
+    "changed": 0
+   }
+  },
+  {
+   "call": "equal",
+   "args": [
+    {
+     "a": [
+      1,
+      {
+       "b": 2
+      }
+     ]
+    },
+    {
+     "a": [
+      1,
+      {
+       "b": 2
+      }
+     ]
+    }
+   ],
+   "expect": true
+  }
+ ]
+}

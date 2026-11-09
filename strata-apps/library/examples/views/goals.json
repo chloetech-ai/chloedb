@@ -1,0 +1,70 @@
+{
+ "rows": {
+  "goals": [
+   {
+    "id": "g_run",
+    "title": "Run 100 km in November",
+    "target": 100,
+    "unit": "km",
+    "deadline": "2026-11-30",
+    "done": false
+   },
+   {
+    "id": "g_save",
+    "title": "Save for a new bike",
+    "target": 1200,
+    "unit": "€",
+    "deadline": "2027-03-01",
+    "done": false
+   },
+   {
+    "id": "g_read",
+    "title": "Read 12 books this year",
+    "target": 12,
+    "unit": "books",
+    "deadline": "2026-12-31",
+    "done": false
+   },
+   {
+    "id": "g_spanish",
+    "title": "Finish the Spanish A2 course",
+    "target": 40,
+    "unit": "lessons",
+    "deadline": "2026-11-01",
+    "done": true
+   }
+  ],
+  "goal_updates": [
+   {
+    "goal": "g_run",
+    "amount": 8.5,
+    "note": "Riverside loop"
+   },
+   {
+    "goal": "g_run",
+    "amount": 12,
+    "note": "Long Sunday run"
+   },
+   {
+    "goal": "g_save",
+    "amount": 300,
+    "note": "October paycheck"
+   },
+   {
+    "goal": "g_save",
+    "amount": 150,
+    "note": null
+   },
+   {
+    "goal": "g_read",
+    "amount": 9,
+    "note": "Caught up from the reading log"
+   },
+   {
+    "goal": "g_spanish",
+    "amount": 40,
+    "note": "Passed the final quiz"
+   }
+  ]
+ }
+}

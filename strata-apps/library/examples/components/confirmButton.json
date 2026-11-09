@@ -1,0 +1,18 @@
+[
+ {
+  "props": {
+   "label": "Delete",
+   "onConfirm": "$fn"
+  }
+ },
+ {
+  "props": {
+   "label": "Clear list",
+   "confirmLabel": "Clear all 12?",
+   "danger": false,
+   "small": true,
+   "timeout": 4000,
+   "onConfirm": "$fn"
+  }
+ }
+]

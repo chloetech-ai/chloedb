@@ -1,0 +1,19 @@
+[
+ {
+  "props": {
+   "checked": true,
+   "label": "Email reminders",
+   "description": "Get an email the morning a task is due.",
+   "onChange": "$fn"
+  }
+ },
+ {
+  "props": {
+   "checked": false,
+   "label": "Share with team",
+   "description": "Only the owner can change this.",
+   "disabled": true,
+   "onChange": "$fn"
+  }
+ }
+]

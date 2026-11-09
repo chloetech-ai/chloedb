@@ -1,0 +1,15 @@
+{
+  "name": "strata-apps",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A prototype: apps that are built from a description, changed by asking, and extend themselves, with Strata as the backbone",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node engine/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "quickjs-emscripten": "0.32.0"
+  }
+}

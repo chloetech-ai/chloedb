@@ -1,0 +1,99 @@
+{
+ "cases": [
+  {
+   "call": "parse",
+   "args": [
+    "https://www.Example.com:8080/a/b?x=1&y=two%20words&x=2#top"
+   ],
+   "expect": {
+    "protocol": "https",
+    "host": "www.example.com",
+    "port": "8080",
+    "domain": "example.com",
+    "path": "/a/b",
+    "query": {
+     "x": [
+      "1",
+      "2"
+     ],
+     "y": "two words"
+    },
+    "hash": "top"
+   }
+  },
+  {
+   "call": "parse",
+   "args": [
+    "not a url"
+   ],
+   "expect": null
+  },
+  {
+   "call": "domain",
+   "args": [
+    "http://www.news.bbc.co.uk/sport"
+   ],
+   "expect": "news.bbc.co.uk"
+  },
+  {
+   "call": "withParams",
+   "args": [
+    "https://shop.com/list?page=2&sort=price#results",
+    {
+     "page": 3,
+     "sort": null,
+     "q": "red shoes"
+    }
+   ],
+   "expect": "https://shop.com/list?page=3&q=red%20shoes#results"
+  },
+  {
+   "call": "params",
+   "args": [
+    "/search?q=caf%C3%A9&tag=a+b&empty"
+   ],
+   "expect": {
+    "q": "café",
+    "tag": "a b",
+    "empty": ""
+   }
+  },
+  {
+   "call": "normalize",
+   "args": [
+    "Example.COM/Path/?utm_source=news&id=3#top"
+   ],
+   "expect": "https://example.com/Path?id=3#top"
+  },
+  {
+   "call": "normalize",
+   "args": [
+    "https://example.com/"
+   ],
+   "expect": "https://example.com"
+  },
+  {
+   "call": "isUrl",
+   "args": [
+    "https://example"
+   ],
+   "expect": false
+  },
+  {
+   "call": "join",
+   "args": [
+    "https://api.example.com/v1/",
+    "../v2/users?limit=5"
+   ],
+   "expect": "https://api.example.com/v2/users?limit=5"
+  },
+  {
+   "call": "shorten",
+   "args": [
+    "https://www.example.com/articles/2026/11/a-very-long-title-here/photo.jpg",
+    30
+   ],
+   "expect": "example.com/article…/photo.jpg"
+  }
+ ]
+}

@@ -1,0 +1,54 @@
+{
+ "rows": {
+  "notes": [
+   {
+    "title": "Weekly planning",
+    "body": "## This week\n- [x] Send the quarterly report\n- [ ] Book dentist appointment\n- [ ] Call the landlord about the heating\n\n**Focus:** finish the garden shed plans.",
+    "tags": [
+     "planning",
+     "personal"
+    ],
+    "pinned": true,
+    "edited": "2026-11-08T08:15:00Z"
+   },
+   {
+    "title": "Product sync, 6 Nov",
+    "body": "Attendees: Maya, Jonas, Priya\n\n- Launch moved to **24 Nov**\n- Priya owns the onboarding copy\n- Open question: do we keep the free tier?\n\nNext sync on Thursday.",
+    "tags": [
+     "work",
+     "meetings"
+    ],
+    "pinned": false,
+    "edited": "2026-11-06T15:40:00Z"
+   },
+   {
+    "title": "Lentil soup",
+    "body": "1. Sweat 1 onion, 2 carrots and 2 celery sticks\n2. Add 250 g red lentils, 1 tin tomatoes, 1.2 l stock\n3. Simmer 25 min, season with cumin and lemon\n\nFreezes well.",
+    "tags": [
+     "recipes"
+    ],
+    "pinned": false,
+    "edited": "2026-11-03T19:05:00Z"
+   },
+   {
+    "title": "Books to read",
+    "body": "- *The Dispossessed* — Ursula K. Le Guin\n- *Piranesi* — Susanna Clarke\n- *A Psalm for the Wild-Built* — Becky Chambers",
+    "tags": [
+     "reading",
+     "personal"
+    ],
+    "pinned": false,
+    "edited": "2026-10-29T21:30:00Z"
+   },
+   {
+    "title": "Gift ideas",
+    "body": "Mum: a good pair of gardening gloves\nLeo: the board game he mentioned (Cascadia)\nSam: concert tickets in December",
+    "tags": [
+     "personal"
+    ],
+    "pinned": true,
+    "edited": "2026-11-07T12:20:00Z"
+   }
+  ]
+ }
+}

@@ -1,0 +1,56 @@
+[
+ {
+  "props": {
+   "options": [
+    {
+     "value": "groceries",
+     "label": "Groceries",
+     "hint": "Food & household"
+    },
+    {
+     "value": "rent",
+     "label": "Rent",
+     "hint": "Monthly"
+    },
+    {
+     "value": "transport",
+     "label": "Transport",
+     "hint": "Bus, train, fuel"
+    },
+    {
+     "value": "eating-out",
+     "label": "Eating out"
+    },
+    {
+     "value": "health",
+     "label": "Health",
+     "hint": "Pharmacy, doctor"
+    },
+    {
+     "value": "gifts",
+     "label": "Gifts"
+    }
+   ],
+   "value": "transport",
+   "onChange": "$fn",
+   "placeholder": "Choose a category",
+   "allowNew": true,
+   "onCreate": "$fn",
+   "clearable": true
+  }
+ },
+ {
+  "props": {
+   "options": [
+    "Germany",
+    "Ghana",
+    "Greece",
+    "Guatemala",
+    "Portugal",
+    "Spain"
+   ],
+   "onChange": "$fn",
+   "placeholder": "Country"
+  }
+ }
+]

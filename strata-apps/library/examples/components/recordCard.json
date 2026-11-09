@@ -1,0 +1,32 @@
+[
+ {
+  "props": {
+   "title": "Order #1042 — Maria Lopez",
+   "subtitle": "2 × Ceramic mug, 1 × Linen tea towel",
+   "meta": [
+    "8 Nov 2026",
+    "$64.00",
+    "Ships to Lisbon"
+   ],
+   "badge": {
+    "text": "Paid",
+    "tone": "ok"
+   },
+   "onClick": "$fn"
+  }
+ },
+ {
+  "props": {
+   "title": "Renew passport",
+   "subtitle": "Book an appointment at the consulate",
+   "meta": [
+    "Due 20 Nov 2026",
+    "Paperwork"
+   ],
+   "badge": {
+    "text": "Due soon",
+    "tone": "warn"
+   }
+  }
+ }
+]

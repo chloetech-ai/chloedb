@@ -1,0 +1,25 @@
+[
+ {
+  "props": {
+   "value": "2026-11-12",
+   "onChange": "$fn",
+   "label": "Due date"
+  }
+ },
+ {
+  "props": {
+   "value": "",
+   "onChange": "$fn",
+   "quick": [
+    "today",
+    "tomorrow",
+    "next week",
+    "next month"
+   ],
+   "min": "2026-11-08",
+   "max": "2027-02-28",
+   "placeholder": "Pick a delivery day",
+   "weekStart": 0
+  }
+ }
+]

@@ -1,0 +1,546 @@
+/* The stylesheet every view gets. Plain elements look right without classes;
+   the classes below are the ones the forge is told about.
+   Everything is drawn from a few design tokens (web/design.js): a design is a
+   block of these variables, set after this sheet, so switching designs
+   changes no code. The values here are the Console design's: a neutral page,
+   white outlined surfaces, small precise controls, quiet type. */
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --fg: #0f1216; --accent: #2f5bd3; --accent-fg: #ffffff;
+  --ok: #18794e; --warn: #b4560a; --bad: #c4302b; --info: #2563c9;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-title: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", Roboto, system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --radius: 10px; --radius-control: 7px; --radius-field: 7px; --radius-small: 6px;
+  --text: 14px; --space: 16px; --pad: 16px; --row: 9px; --control: 32px; --page: 1280px;
+  --card-border: var(--line); --card-shadow: 0 1px 2px rgba(16, 24, 40, .05); --field-border: var(--line-2); --field-bg: var(--card);
+  --muted: color-mix(in srgb, var(--fg) 55%, var(--bg));
+  --line: color-mix(in srgb, var(--fg) 10%, transparent);
+  --line-2: color-mix(in srgb, var(--fg) 17%, transparent);
+  --soft: color-mix(in srgb, var(--fg) 4%, transparent);
+  --fill: color-mix(in srgb, var(--fg) 5%, var(--card));
+  --head: color-mix(in srgb, var(--fg) 2.5%, var(--card));
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --seg-on: var(--card);
+  --shadow: var(--card-shadow);
+  --ease: cubic-bezier(.25, .1, .25, 1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d0f12; --card: #16181c; --fg: #eceef1; --accent: #7aa2ff; --accent-fg: #0b1430;
+    --ok: #3fcf8e; --warn: #f2a33a; --bad: #ff8a80; --info: #7cb4ff;
+    --card-shadow: none; --field-bg: color-mix(in srgb, var(--fg) 3%, var(--card));
+    --muted: color-mix(in srgb, var(--fg) 58%, var(--bg));
+    --line: color-mix(in srgb, var(--fg) 11%, transparent);
+    --line-2: color-mix(in srgb, var(--fg) 19%, transparent);
+    --soft: color-mix(in srgb, var(--fg) 6%, transparent);
+    --fill: color-mix(in srgb, var(--fg) 8%, var(--card));
+    --head: color-mix(in srgb, var(--fg) 3%, var(--card));
+    --accent-soft: color-mix(in srgb, var(--accent) 20%, transparent);
+    --seg-on: color-mix(in srgb, var(--fg) 14%, var(--card));
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+/* hidden means hidden, whatever display a class gives an element */
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); transition: background-color .35s var(--ease), color .35s var(--ease); }
+body {
+  font-family: var(--font); font-size: var(--text); line-height: 1.45; letter-spacing: -.006em;
+  padding: calc(var(--space) * 1.5) calc(var(--space) * 1.5) calc(var(--space) * 3);
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
+}
+#root { max-width: var(--page); margin: 0 auto; display: flex; flex-direction: column; gap: var(--space); }
+::selection { background: var(--accent-soft); }
+
+/* type: small, tight titles; quiet secondary text; numbers line up */
+h1, h2, h3 { margin: 0; font-family: var(--font-title); color: var(--fg); }
+h1 { font-size: calc(var(--text) * 1.6); font-weight: 650; line-height: 1.15; letter-spacing: -.02em; }
+h2 { font-size: calc(var(--text) * 1.3); font-weight: 650; line-height: 1.2; letter-spacing: -.016em; }
+h3 { font-size: var(--text); font-weight: 600; line-height: 1.3; letter-spacing: -.006em; }
+p { margin: 0; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; text-underline-offset: 2px; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+code, .mono { font-family: var(--mono); font-size: .9em; }
+small, .small { font-size: calc(var(--text) * .88); }
+.muted { color: var(--muted); } .big { font-size: calc(var(--text) * 1.3); font-weight: 650; letter-spacing: -.016em; } .title { font-weight: 600; }
+.strike { text-decoration: line-through; color: var(--muted); } .nowrap { white-space: nowrap; }
+.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.num, td.num { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* buttons: outlined by default, filled when primary, bare when ghost */
+button, input, select, textarea { font: inherit; color: inherit; letter-spacing: inherit; }
+button {
+  -webkit-appearance: none; appearance: none; cursor: pointer; white-space: nowrap;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: var(--control); padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--radius-control);
+  background: var(--card); color: var(--fg); font-weight: 500; font-size: calc(var(--text) * .93); line-height: 1.2;
+  box-shadow: 0 1px 1px rgba(16, 24, 40, .04);
+  transition: background-color .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease), transform .1s var(--ease), opacity .15s;
+}
+button:hover { background: var(--fill); }
+button:active { transform: translateY(1px); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; transform: none; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--fg)); border-color: color-mix(in srgb, var(--accent) 88%, var(--fg)); }
+button.danger { color: var(--bad); }
+button.danger:hover { background: color-mix(in srgb, var(--bad) 9%, transparent); border-color: color-mix(in srgb, var(--bad) 35%, var(--line-2)); }
+button.danger.primary { background: var(--bad); border-color: var(--bad); color: #fff; }
+button.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
+button.ghost:hover { background: var(--soft); color: var(--fg); }
+button.small { min-height: calc(var(--control) - 6px); padding: 0 9px; font-size: calc(var(--text) * .86); border-radius: max(calc(var(--radius-control) - 1px), 4px); }
+button.link { background: transparent; border: 0; box-shadow: none; min-height: 0; padding: 0; text-align: left; font-weight: 500; color: var(--fg); border-radius: 4px; justify-content: flex-start; }
+button.link:hover { background: transparent; color: var(--accent); }
+button.link:active { transform: none; }
+.lead { flex: 0 0 180px; min-width: 0; }
+button.icon { width: var(--control); padding: 0; }
+/* row actions stay quiet until the row is pointed at */
+td.right > button.ghost { color: var(--muted); }
+tr:hover td.right > button.ghost { color: var(--fg); }
+
+/* fields: hairline boxes, one height, a soft ring on focus */
+input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file])), select, textarea {
+  -webkit-appearance: none; appearance: none;
+  height: var(--control); padding: 0 10px; border: 1px solid var(--field-border); background-color: var(--field-bg); border-radius: var(--radius-field);
+  min-width: 0; outline: none; font-size: var(--text); line-height: 1.35;
+  transition: background-color .15s var(--ease), box-shadow .15s var(--ease), border-color .15s var(--ease);
+}
+input:where(:not([type=checkbox]):not([type=radio])):hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--fg) 28%, transparent); }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: .8; }
+select {
+  padding-right: 28px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a919c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+}
+input[type=search] {
+  padding-left: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24'%3E%3Ccircle cx='11' cy='11' r='7' fill='none' stroke='%238a919c' stroke-width='2'/%3E%3Cpath d='M20 20l-4-4' stroke='%238a919c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: 10px center;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input[type=color] { width: 40px; height: var(--control); padding: 2px; border: 1px solid var(--field-border); border-radius: var(--radius-field); background: var(--field-bg); }
+input[type=file] { font-size: calc(var(--text) * .88); color: var(--muted); }
+input[type=file]::file-selector-button { font: inherit; margin-right: 10px; padding: 5px 10px; border: 1px solid var(--line-2); border-radius: var(--radius-control); background: var(--card); color: var(--fg); cursor: pointer; }
+textarea { width: 100%; height: auto; min-height: 76px; padding: 8px 10px; resize: vertical; }
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; cursor: pointer; }
+input[type=range] { accent-color: var(--accent); }
+label { display: inline-flex; flex-direction: column; gap: 5px; font-size: calc(var(--text) * .86); font-weight: 500; color: var(--muted); }
+label:has(> input[type=checkbox]), label:has(> input[type=radio]) { flex-direction: row; align-items: center; gap: 8px; color: var(--fg); font-size: inherit; font-weight: 400; cursor: pointer; }
+
+/* forms: a short one is a line ([title] [due] Add); a longer one a grid of
+   labelled fields with its buttons at the end, right aligned */
+form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+form > input:not([type=checkbox]), form > textarea { flex: 1 1 180px; }
+form.wide { --gap: 12px; display: grid; gap: 14px var(--gap); align-items: end;
+  /* at most --cols columns (the form sets it), fewer where they would be narrower than 160px */
+  grid-template-columns: repeat(auto-fill, minmax(max(min(160px, 100%), calc((100% - (var(--cols, 4) - 1) * var(--gap)) / var(--cols, 4))), 1fr)); }
+form.wide > label { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+form.wide > label > :is(input, select, textarea):not([type=checkbox]) { width: 100%; }
+form.wide > label.span { grid-column: 1 / -1; }
+form.wide > .checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 20px; }
+form.wide > .checks > label.check { flex-direction: row; align-items: center; gap: 8px; min-height: var(--control); color: var(--fg); font-size: var(--text); font-weight: 400; cursor: pointer; }
+form.wide .hint { font-size: calc(var(--text) * .82); font-weight: 400; color: var(--muted); }
+form.wide .req { color: var(--bad); }
+/* a section of a form: a small heading across the grid, a hairline above it */
+form.wide > .part { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 2px; padding-top: 14px; border-top: 1px solid var(--line); font-size: calc(var(--text) * .93); font-weight: 650; color: var(--fg); }
+form.wide > .part:first-child { padding-top: 0; border-top: 0; }
+form.wide > .actions { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding-top: 2px; }
+/* a form on its own in a screen sits on a surface, like a card */
+.screen > form.wide, .screen > .section > form.wide { max-width: 960px; background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: var(--card-shadow); padding: var(--pad); }
+/* in a card, the buttons are separated from the fields by a hairline */
+.card form.wide > .actions { border-top: 1px solid var(--line); margin-top: 2px; padding-top: 12px; }
+progress { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border: 0; border-radius: 999px; background: var(--fill); overflow: hidden; accent-color: var(--accent); }
+progress::-webkit-progress-bar { background: var(--fill); border-radius: 999px; }
+progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+details > summary { cursor: pointer; color: var(--accent); font-weight: 500; }
+
+/* tables: on a framed surface, small uppercase headers, hairlines between rows */
+table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: calc(var(--text) * .96); font-variant-numeric: tabular-nums;
+  background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: var(--card-shadow); }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: calc(var(--text) * .78); text-transform: uppercase; letter-spacing: .05em;
+  padding: 9px 12px; background: var(--head); border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: var(--row) 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th:first-child, td:first-child { padding-left: 14px; } th:last-child, td:last-child { padding-right: 14px; }
+thead tr:first-child th:first-child { border-top-left-radius: calc(var(--radius) - 1px); }
+thead tr:first-child th:last-child { border-top-right-radius: calc(var(--radius) - 1px); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:last-child td:first-child { border-bottom-left-radius: calc(var(--radius) - 1px); }
+tbody tr:last-child td:last-child { border-bottom-right-radius: calc(var(--radius) - 1px); }
+tbody tr { transition: background-color .12s var(--ease); }
+tbody tr:hover td { background: var(--soft); }
+td.right { text-align: right; }
+td.right > button + button { margin-left: 2px; }
+/* in a card or a list the card is the frame */
+:is(.card, .list, .column) table { background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+:is(.card, .list, .column) th { background: transparent; }
+:is(.card, .list, .column) :is(th, td):first-child { padding-left: 2px; }
+:is(.card, .list, .column) :is(th, td):last-child { padding-right: 2px; }
+
+/* layout */
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.col { display: flex; flex-direction: column; gap: calc(var(--space) * .6); }
+.grow { flex: 1 1 0; min-width: 0; }
+.right { margin-left: auto; }
+.center { display: grid; place-items: center; text-align: center; }
+/* A layout class on a table's cell or row only aligns it: a cell stays a
+   cell (a week grid whose cells say "center" would otherwise stack its days). */
+:is(td, th):is(.row, .col, .center, .grid, .split, .section, .toolbar, .kpis, .columns) { display: table-cell; }
+:is(td, th).center { text-align: center; vertical-align: middle; }
+tr:is(.row, .col, .center, .grid, .split, .section, .toolbar, .kpis, .columns) { display: table-row; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space); align-items: start; }
+@media (max-width: 680px) { .split { grid-template-columns: minmax(0, 1fr); } body { padding: var(--space) 14px calc(var(--space) * 2); } }
+.section { display: flex; flex-direction: column; gap: calc(var(--space) * .6); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* a heading with its buttons on one line (a screen's title and "New guest") */
+.row:has(> :is(h1, h2)) { row-gap: 10px; }
+.row > :is(h1, h2) { margin-right: auto; }
+.toolbar > input[type=search], .row > input[type=search] { flex: 0 1 280px; }
+
+/* surfaces: cards and grouped lists, as the design says (outlined, lifted or grouped) */
+.card {
+  background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius); padding: var(--pad);
+  box-shadow: var(--card-shadow); display: flex; flex-direction: column; gap: calc(var(--space) * .6);
+  transition: background-color .35s var(--ease), box-shadow .35s var(--ease), border-color .35s var(--ease);
+}
+.card > h3 { font-size: calc(var(--text) * .93); font-weight: 650; }
+.list {
+  background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: var(--card-shadow);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.list > .item, .list > li { position: relative; display: flex; gap: 12px; align-items: center; padding: var(--row) var(--pad); list-style: none; min-height: 40px; }
+/* separators start where the text starts, as in a grouped list */
+.list > .item + .item::before, .list > li + li::before { content: ""; position: absolute; top: 0; left: var(--pad); right: 0; border-top: 1px solid var(--line); }
+.list > .item:hover, .list > li:hover { background: var(--soft); }
+ul.list, ol.list { margin: 0; padding: 0; }
+.empty { color: var(--muted); text-align: center; padding: calc(var(--space) * 1.75) var(--space); border: 1px dashed var(--line-2); border-radius: var(--radius); font-size: calc(var(--text) * .93); }
+
+/* badges: small pills, colored by meaning */
+.badge {
+  --c: var(--muted); display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px;
+  font-size: calc(var(--text) * .8); font-weight: 600; letter-spacing: 0; line-height: 1.55;
+  color: var(--c); background: color-mix(in srgb, var(--c) 13%, transparent); white-space: nowrap;
+}
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .85; }
+.badge.ok { --c: var(--ok); } .badge.warn { --c: var(--warn); } .badge.bad { --c: var(--bad); } .badge.info { --c: var(--info); }
+.badge.plain { --c: color-mix(in srgb, var(--fg) 70%, var(--bg)); }
+.badge.plain::before { display: none; }
+/* a set of chips reads as a segmented control */
+.chips { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; background: var(--fill); border: 1px solid var(--line); border-radius: calc(var(--radius-control) + 2px); align-self: flex-start; max-width: 100%; }
+.chip {
+  border: 0; background: transparent; color: var(--muted); border-radius: var(--radius-control); min-height: calc(var(--control) - 6px); padding: 0 11px;
+  font-size: calc(var(--text) * .88); font-weight: 500; cursor: pointer; box-shadow: none; white-space: nowrap;
+}
+.chip:hover { background: transparent; color: var(--fg); }
+.chip.on { background: var(--seg-on); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .1), 0 0 0 1px var(--line); }
+
+/* big numbers: a quiet label above, the number tabular */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.kpi {
+  background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: var(--card-shadow);
+  padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 2px; position: relative; overflow: hidden;
+}
+.kpi .label { order: -1; color: var(--muted); font-size: calc(var(--text) * .86); font-weight: 500; }
+.kpi .value { font-family: var(--font-title); font-size: calc(var(--text) * 1.75); font-weight: 650; letter-spacing: -.025em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.kpi .small { font-size: calc(var(--text) * .84); }
+/* On a phone the big numbers are one compact row (up to three across), so
+   they do not push the screen's job below the first screenful. */
+@media (max-width: 560px) {
+  .kpis { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+  .kpis > .kpi { padding: 10px 12px; gap: 2px; min-height: 0; }
+  .kpi .value { font-size: calc(var(--text) * 1.35); }
+  .kpi .label { font-size: calc(var(--text) * .8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+
+/* boards */
+.columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 6px; align-items: start; }
+.column { background: var(--soft); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 96px; }
+.column > h3 { display: flex; justify-content: space-between; align-items: center; font-size: calc(var(--text) * .78); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 2px 4px; }
+.column .card { padding: 10px 12px; border-radius: max(calc(var(--radius) - 3px), 4px); }
+
+/* scrollbars stay out of the way */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg) 22%, transparent) transparent; }
+
+.__toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 99;
+  background: color-mix(in srgb, var(--fg) 90%, transparent); color: var(--bg); padding: 8px 16px; border-radius: var(--radius-control);
+  font-size: calc(var(--text) * .92); font-weight: 500; box-shadow: 0 10px 30px rgba(0,0,0,.2);
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+  animation: __rise .3s var(--ease);
+}
+.__toast.__undo { display: flex; align-items: center; gap: 14px; padding: 6px 6px 6px 16px; max-width: calc(100vw - 32px); }
+.__toast.__undo span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.__toast.__undo button { min-height: 36px; padding: 0 14px; border: 0; background: transparent; color: var(--bg); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; box-shadow: none; }
+@media (pointer: coarse) { .__toast.__undo button { min-height: 44px; } }
+@keyframes __rise { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@media (prefers-reduced-motion: reduce) { *, *::before { transition: none !important; animation: none !important; } }
+
+/* ---- the rules every app gets, whatever its screens say */
+
+/* Touch: every control is at least 44 px tall and wide (WCAG 2.5.5). */
+@media (pointer: coarse) {
+  button:is(.small, *), select, .chip, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]) { min-height: 44px; }
+  button:not(.link):is(.small, *) { min-width: 44px; }
+  input[type=checkbox], input[type=radio] { width: 22px; height: 22px; }
+  label:has(> input[type=checkbox]), label:has(> input[type=radio]) { min-height: 44px; }
+  /* a phone zooms into a field whose text is under 16 px */
+  input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]), select, textarea { font-size: max(16px, 1em); }
+}
+/* a big number that is 0 says so quietly */
+.kpi.zero .value { color: var(--muted); font-weight: 500; }
+
+/* A form folded behind its button (screen.js folded()): on a phone only,
+   or everywhere ("fold": true). */
+.fold > .fold-open, .fold > .fold-close { display: none; }
+.fold.phone > .fold-open { display: none; }
+.fold:not(.phone):not(.open) > form { display: none; }
+.fold:not(.phone):not(.open) > .fold-open { display: inline-flex; align-self: flex-start; }
+.fold.open > .fold-close { display: inline-flex; margin-top: 6px; }
+@media (max-width: 560px) {
+  .fold.phone:not(.open) > form { display: none; }
+  .fold.phone:not(.open) > .fold-open { display: inline-flex; width: 100%; justify-content: center; }
+  .fold.phone.open > .fold-close { display: inline-flex; }
+}
+@media (min-width: 561px) { .fold.phone > .fold-close { display: none !important; } }
+
+/* A tick in a table row: a 44 px target around the box, and a row ticked
+   off reads as done. */
+td.tick { width: 1%; }
+td.tick label.tap { display: inline-grid; place-items: center; min-width: 32px; min-height: 32px; margin: -6px; cursor: pointer; }
+@media (pointer: coarse) { td.tick label.tap { min-width: 44px; min-height: 44px; } td.tick input[type=checkbox] { width: 24px; height: 24px; } }
+tr:has(> td.tick input:checked) > td:not(.tick):not(.right) { color: var(--muted); }
+tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; }
+
+/* A table of more than three columns is a list of cards on a phone: each
+   row a card, its first cell the title (beside its tick, when it has one),
+   the other cells one line under it, each its column's name and value, and
+   the buttons at the end. A card is three lines, not one per column. */
+@media (max-width: 560px) {
+  table.stack, table.stack tbody { display: block; width: 100%; }
+  table.stack { border: 0; background: transparent; box-shadow: none; }
+  table.stack thead { display: none; }
+  table.stack tr { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); padding: 10px 14px; margin-bottom: 8px; }
+  table.stack td, table.stack td:first-child, table.stack td:last-child { display: inline-flex; align-items: baseline; gap: 5px; padding: 0; border: 0; min-width: 0; width: auto; text-align: left; font-size: calc(var(--text) * .92); }
+  table.stack td::before { content: attr(data-label); color: var(--muted); font-size: calc(var(--text) * .86); }
+  table.stack td.blank { display: none; }
+  table.stack td:first-child:not(.tick), table.stack td.tick + td { flex: 1 1 100%; font-weight: 600; font-size: var(--text); }
+  table.stack td.tick { flex: none; order: -1; align-self: center; }
+  table.stack td.tick + td { flex-basis: calc(100% - 60px); align-self: center; }
+  table.stack td:first-child::before, table.stack td.tick::before, table.stack td.tick + td::before, table.stack td.right::before { content: none; }
+  table.stack td.right { flex: 1 1 100%; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+  /* a row with many steps wraps them instead of running off the card */
+  table.stack td.right.nowrap { flex-wrap: wrap; white-space: normal; align-items: center; }
+}
+
+/* checks: a check per item per day */
+.checks { display: flex; flex-direction: column; gap: calc(var(--space) * .8); }
+.checks-head { display: flex; flex-direction: column; gap: 8px; }
+.checks-count { font-size: calc(var(--text) * 1.05); }
+.checks-count b { font-size: calc(var(--text) * 1.3); font-weight: 700; letter-spacing: -.01em; }
+.checks-bar { height: 8px; border-radius: 4px; background: var(--fill); overflow: hidden; }
+.checks-bar span { display: block; height: 100%; border-radius: 4px; background: var(--accent); transition: width .35s ease; }
+.checks.all .checks-bar span { background: var(--ok); }
+.checks-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.checks-row { display: flex; align-items: center; gap: 14px; padding: 10px 12px 10px 16px; background: var(--card); border: 1px solid var(--card-border, var(--line)); box-shadow: var(--card-shadow, none); border-radius: var(--radius); }
+.checks-name { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.checks-name .title { font-weight: 600; overflow-wrap: anywhere; }
+.checks-name .streak { font-size: calc(var(--text) * .88); color: var(--fg); font-weight: 500; }
+.checks-name .streak.none { color: var(--muted); font-weight: 400; }
+.checks-days { display: flex; align-items: center; gap: 6px; flex: none; }
+.checks button.check { min-width: 0; padding: 0; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--line-2); background: transparent; color: var(--muted); }
+.checks button.check.past { width: 32px; height: 32px; min-height: 32px; font-size: calc(var(--text) * .78); font-weight: 600; }
+.checks button.check.today { width: 48px; height: 48px; min-height: 48px; border-color: var(--accent); margin-left: 6px; }
+.checks button.check.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.checks-legend { display: flex; align-items: flex-end; gap: 14px; padding: 0 13px 0 17px; margin-bottom: -4px; }
+.checks-legend .check-day { flex: none; text-align: center; font-size: calc(var(--text) * .78); font-weight: 600; color: var(--muted); white-space: nowrap; }
+.checks-legend .check-day.past { width: 32px; }
+.checks-legend .check-day.today { width: 48px; margin-left: 6px; color: var(--fg); }
+.checks button.check.past .mark { width: 10px; height: 6px; border-width: 0 0 2.5px 2.5px; }
+.checks button.check.on .mark { opacity: 1; color: var(--accent-fg); }
+.checks button.check .mark { width: 14px; height: 8px; border-left: 3px solid currentColor; border-bottom: 3px solid currentColor; transform: translateY(-2px) rotate(-45deg); opacity: .25; color: var(--accent); }
+.checks button.check.today.on .mark { opacity: 1; color: var(--accent-fg); animation: check-pop .35s ease; animation-play-state: var(--play, running); }
+@keyframes check-pop { 0% { transform: translateY(-2px) rotate(-45deg) scale(.4); } 70% { transform: translateY(-2px) rotate(-45deg) scale(1.2); } 100% { transform: translateY(-2px) rotate(-45deg) scale(1); } }
+.checks-row.done .title { color: var(--fg); }
+.checks-row.skipped .title { color: var(--muted); }
+.checks button.check.skip { border-style: dashed; border-color: var(--muted); }
+.checks button.check .dash { width: 12px; height: 2.5px; border-radius: 2px; background: var(--muted); }
+.checks .skip-today { align-self: flex-start; font-size: calc(var(--text) * .82); color: var(--muted); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
+/* On a phone: yesterday and today, both big enough to tap. */
+@media (max-width: 560px) {
+  .checks :is(button.check, .check-day).past:not([data-age="1"]) { display: none; }
+  .checks button.check.past { width: 44px; height: 44px; min-height: 44px; }
+  .checks-legend .check-day.past { width: 44px; }
+}
+@media (pointer: coarse) { .checks button.check.past { width: 44px; height: 44px; min-height: 44px; } .checks-legend .check-day.past { width: 44px; } }
+
+/* ---- the bold look (design token look: "bold"; frame.js sets data-look).
+   A page tinted by the accent, big confident type, borderless cards, pill
+   buttons; the first big numbers of a screen are a band in the deep color
+   (screen.js hero), and on a phone each row of a table is a card with its
+   number large, its state as a pill and its next step as a button
+   (screen.js rowCards). */
+:root[data-look="bold"] { --radius: 20px; --radius-control: 999px; --radius-field: 12px; --card-border: transparent; --card-shadow: 0 1px 2px rgba(16, 24, 40, .06); }
+:root[data-look="bold"] h1 { font-size: calc(var(--text) * 2); font-weight: 800; letter-spacing: -.03em; line-height: 1.05; }
+:root[data-look="bold"] h2 { font-size: calc(var(--text) * 1.5); font-weight: 800; letter-spacing: -.025em; }
+:root[data-look="bold"] h3 { font-weight: 700; }
+:root[data-look="bold"] button { font-weight: 650; border-color: transparent; background: var(--fill); box-shadow: none; padding: 0 16px; }
+:root[data-look="bold"] button:hover { background: color-mix(in srgb, var(--fg) 9%, var(--card)); }
+:root[data-look="bold"] button.primary { background: var(--deep); border-color: var(--deep); color: var(--deep-fg); font-weight: 700; }
+:root[data-look="bold"] button.primary:hover { background: color-mix(in srgb, var(--deep) 86%, var(--fg)); }
+:root[data-look="bold"] button.ghost { background: transparent; }
+:root[data-look="bold"] button.danger:not(.primary) { color: var(--bad); }
+:root[data-look="bold"] button.link { background: transparent; padding: 0; }
+:root[data-look="bold"] .card, :root[data-look="bold"] .list, :root[data-look="bold"] table, :root[data-look="bold"] .kpi, :root[data-look="bold"] .checks-row { border-color: transparent; }
+:root[data-look="bold"] .badge { padding: 3px 10px; font-size: calc(var(--text) * .86); font-weight: 700; }
+:root[data-look="bold"] .badge::before { width: 13px; height: 13px; border-radius: 0; opacity: 1; background: currentColor; -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat;
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='5' fill='black'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.ok::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m5 12.5 4.5 4.5L19 7.5' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.bad::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 7v6M12 17h.01' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='12' r='10' fill='none' stroke='black' stroke-width='2.4'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.warn::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.6'/%3E%3Cpath d='M12 7v5l3 2' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E"); }
+:root[data-look="bold"] .badge.plain::before { display: none; }
+/* filters: a row of pills, the chosen one in the deep color; on a phone they scroll sideways */
+:root[data-look="bold"] .chips { background: transparent; border: 0; padding: 0; gap: 8px; }
+:root[data-look="bold"] .chip { background: var(--card); color: var(--fg); font-weight: 700; padding: 0 15px; border-radius: 999px; box-shadow: 0 1px 2px rgba(16, 24, 40, .06); }
+:root[data-look="bold"] .chip.on { background: var(--deep); color: var(--deep-fg); box-shadow: none; }
+@media (max-width: 560px) { :root[data-look="bold"] .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; align-self: stretch; } :root[data-look="bold"] .chip { flex: none; } }
+:root[data-look="bold"] input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file])), :root[data-look="bold"] select { border-color: transparent; background-color: var(--card); box-shadow: 0 1px 2px rgba(16, 24, 40, .06); }
+:root[data-look="bold"] input:focus, :root[data-look="bold"] select:focus, :root[data-look="bold"] textarea:focus { border-color: var(--deep); box-shadow: 0 0 0 3px color-mix(in srgb, var(--deep) 18%, transparent); }
+
+/* the band: the one number that matters, large, the others small under it */
+.hero-band { background: var(--deep); color: var(--deep-fg); border-radius: 24px; padding: 22px 22px 20px; display: flex; flex-direction: column; gap: 10px; }
+.hero-big { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-family: var(--font-title); }
+.hero-big b { font-size: calc(var(--text) * 3.4); font-weight: 800; letter-spacing: -.035em; line-height: .95; font-variant-numeric: tabular-nums; }
+.hero-big span { font-size: calc(var(--text) * 1.45); font-weight: 750; letter-spacing: -.015em; color: var(--pop); }
+.hero-line { color: color-mix(in srgb, var(--deep-fg) 82%, transparent); }
+.hero-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: calc(var(--text) * .95); color: color-mix(in srgb, var(--deep-fg) 78%, transparent); }
+.hero-legend b { color: var(--deep-fg); font-weight: 750; font-variant-numeric: tabular-nums; }
+.hero-legend .zero b { font-weight: 500; }
+
+/* a row as a card (bold, on a phone) */
+.rcards { display: flex; flex-direction: column; gap: 12px; }
+.rcard { --c: var(--fg); background: var(--card); border-radius: var(--radius); box-shadow: var(--card-shadow); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.rcard.t-bad { --c: var(--bad); } .rcard.t-warn { --c: var(--warn); } .rcard.t-ok { --c: var(--ok); } .rcard.t-info { --c: var(--info); }
+.rc-head { display: flex; align-items: flex-start; gap: 12px; }
+.rc-name { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rc-title { font-size: calc(var(--text) * 1.2); font-weight: 750; letter-spacing: -.01em; line-height: 1.25; overflow-wrap: anywhere; }
+.rc-sub { color: var(--muted); font-size: calc(var(--text) * .95); overflow-wrap: anywhere; }
+.rc-fig { flex: none; text-align: right; display: flex; flex-direction: column; align-items: flex-end; max-width: 45%; }
+.rc-fig b { font-family: var(--font-title); font-size: calc(var(--text) * 2); font-weight: 800; letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; color: var(--fg); overflow-wrap: anywhere; }
+.rcard:is(.t-bad, .t-warn) .rc-fig b { color: var(--c); }
+.rc-fig small { font-size: calc(var(--text) * .82); font-weight: 700; color: var(--muted); margin-top: 4px; }
+.rc-level { position: relative; height: 8px; border-radius: 4px; background: var(--fill); }
+.rc-level i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--c); }
+.rcard.t-plain .rc-level i, .rcard:not([class*=" t-"]) .rc-level i { background: var(--deep); }
+.rc-level u { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--fg); }
+.rc-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.rc-acts { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.rc-acts > button { min-height: 44px; padding: 0 18px; }
+.rc-acts > button.rc-soft { background: var(--fill); color: var(--fg); }
+.rc-tick { display: inline-grid; place-items: center; min-width: 44px; min-height: 44px; margin: -8px 0 -8px -8px; cursor: pointer; }
+.rc-tick input[type=checkbox] { width: 24px; height: 24px; }
+.rcard.done .rc-title { text-decoration: line-through; color: var(--muted); }
+.rc-more { position: relative; }
+.rc-more > summary { list-style: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--fill); color: var(--fg); cursor: pointer; font-size: 10px; letter-spacing: 1px; }
+.rc-more > summary::-webkit-details-marker { display: none; }
+.rc-more[open] > summary { background: color-mix(in srgb, var(--fg) 12%, var(--card)); }
+.rc-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; min-width: 168px; display: flex; flex-direction: column; padding: 6px; background: var(--card); border-radius: 14px; box-shadow: 0 10px 30px rgba(16, 24, 40, .18), 0 0 0 1px var(--line); }
+.rc-menu > button { justify-content: flex-start; min-height: 44px; border-radius: 10px; color: var(--fg); }
+.rc-menu > button.danger { color: var(--bad); }
+/* rows the screen draws itself (each): cards apart, not in one box, and
+   the first words of each in the title's weight */
+:root[data-look="bold"] .list:has(> .card) { background: transparent; box-shadow: none; overflow: visible; gap: 12px; }
+:root[data-look="bold"] :is(.list, .grid) > :is(.card, .item, .col) p:not(.muted):not(.small):first-of-type { font-size: calc(var(--text) * 1.15); font-weight: 750; letter-spacing: -.01em; }
+
+/* ---- the native look (the default: design token look "native"). Like a
+   good phone app: the phone's grouped page, white cells in rounded groups
+   with no borders, a large title, the numbers in one sentence under it
+   (screen.js summary), filters as a segmented control, tinted capsule
+   buttons, and on a phone a table's rows as list cells grouped by state
+   (screen.js rowCells). An app is told apart by its tint. */
+:root[data-look="native"] { --radius: 12px; --radius-control: 999px; --radius-field: 10px; --card-border: transparent; --card-shadow: none; --line: color-mix(in srgb, var(--fg) 12%, transparent); }
+:root[data-look="native"] h1 { font-size: calc(var(--text) * 2.4); font-weight: 700; letter-spacing: -.025em; line-height: 1.1; }
+:root[data-look="native"] h2 { font-size: calc(var(--text) * 1.45); font-weight: 700; letter-spacing: -.02em; line-height: 1.2; }
+/* a screen's own title, first on it, is large */
+:root[data-look="native"] .screen > :is(h1, h2):first-child, :root[data-look="native"] .screen > .row:first-child > :is(h1, h2) { font-size: calc(var(--text) * 2.1); letter-spacing: -.025em; line-height: 1.1; }
+:root[data-look="native"] h3 { font-weight: 600; }
+:root[data-look="native"] :is(.section, .screen) > h3 { font-size: calc(var(--text) * .9); font-weight: 500; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); padding: 0 16px; }
+:root[data-look="native"] button { border: 0; box-shadow: none; font-weight: 600; background: color-mix(in srgb, var(--accent) 12%, var(--card)); color: var(--accent); padding: 0 14px; }
+:root[data-look="native"] button:hover { background: color-mix(in srgb, var(--accent) 18%, var(--card)); }
+:root[data-look="native"] button.primary { background: var(--accent); color: var(--accent-fg); }
+:root[data-look="native"] button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--fg)); }
+:root[data-look="native"] button.ghost { background: transparent; color: var(--accent); }
+:root[data-look="native"] button.ghost:hover { background: var(--soft); }
+:root[data-look="native"] button.danger:not(.primary) { color: var(--bad); }
+:root[data-look="native"] button.link { background: transparent; padding: 0; color: var(--fg); }
+:root[data-look="native"] :is(.card, .list, table, .kpi, .checks-row) { border-color: transparent; box-shadow: none; }
+:root[data-look="native"] th { background: transparent; }
+:root[data-look="native"] .badge { background: transparent; padding: 0; font-size: calc(var(--text) * .9); font-weight: 600; }
+:root[data-look="native"] .badge.plain { color: var(--muted); }
+:root[data-look="native"] input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file])), :root[data-look="native"] select, :root[data-look="native"] textarea { border-color: transparent; background-color: color-mix(in srgb, var(--fg) 7%, var(--card)); }
+:root[data-look="native"] input:focus, :root[data-look="native"] select:focus, :root[data-look="native"] textarea:focus { border-color: transparent; box-shadow: 0 0 0 3px var(--accent-soft); }
+:root[data-look="native"] .chips { background: color-mix(in srgb, var(--fg) 8%, var(--bg)); border: 0; border-radius: 10px; padding: 2px; }
+:root[data-look="native"] .chip { border-radius: 8px; color: var(--fg); background: transparent; }
+:root[data-look="native"] .chip.on { background: var(--card); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
+@media (max-width: 560px) {
+  :root[data-look="native"] .chips { align-self: stretch; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  :root[data-look="native"] .chips:not(:has(> :nth-child(5))) { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  :root[data-look="native"] .chip { flex: none; }
+}
+/* rows the screen draws itself (each): one grouped list, hairlines between */
+:root[data-look="native"] .list > .card { border-radius: 0; background: transparent; position: relative; gap: 8px; }
+/* lines of text in a row sit together; a row's buttons are tinted, filled
+   is for the one main action of a screen */
+:root[data-look="native"] .list > .card > :is(p, small, .muted, .small) + :is(p, small, .muted, .small) { margin-top: -5px; }
+:root[data-look="native"] .list > .item > .col { gap: 3px; }
+/* a row's name as a link stays a finger tall (44 px) on a phone but takes
+   no more room than its words; a tap on the lines under it reaches it */
+@media (pointer: coarse) {
+  :root[data-look="native"] .list > .item > .col > button.link:first-child { margin-block: -10px; }
+  :root[data-look="native"] .list > .item > .col > button.link:first-child ~ :is(p, small) { pointer-events: none; }
+}
+:root[data-look="native"] .list > .card button.primary { background: color-mix(in srgb, var(--accent) 12%, var(--card)); color: var(--accent); }
+:root[data-look="native"] .list > .card + .card::before { content: ""; position: absolute; top: 0; left: var(--pad); right: 0; border-top: 1px solid var(--line); }
+:root[data-look="native"] :is(.list, .grid) > :is(.card, .item, .col) p:not(.muted):not(.small):first-of-type { font-size: calc(var(--text) * 1.08); font-weight: 600; }
+
+/* the numbers in a sentence */
+.say { display: flex; flex-direction: column; gap: 2px; font-size: calc(var(--text) * 1.1); color: var(--muted); }
+.say b { color: var(--fg); font-weight: 650; }
+.say b.attn { color: var(--bad); }
+.say .zero { font-weight: 400; }
+
+/* a table's rows as list cells, grouped by state (native, on a phone) */
+.rgroups { display: flex; flex-direction: column; gap: 18px; }
+.rgroup { display: flex; flex-direction: column; gap: 6px; }
+.rgroup-t { font-size: calc(var(--text) * .9); font-weight: 500; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); padding: 0 16px; }
+.rgroup-list { background: var(--card); border-radius: var(--radius); overflow: hidden; }
+.rcell { --c: var(--muted); position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 14px; min-height: 64px; }
+.rcell.t-bad { --c: var(--bad); } .rcell.t-warn { --c: var(--warn); } .rcell.t-ok { --c: var(--ok); } .rcell.t-info { --c: var(--info); }
+.rcell + .rcell::before { content: ""; position: absolute; top: 0; left: 66px; right: 0; border-top: 1px solid var(--line); }
+.rcell.tappable { cursor: pointer; } .rcell.tappable:active { background: var(--soft); }
+.rc-icon { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; background: var(--c); color: #fff; font-weight: 700; font-size: calc(var(--text) * 1.05); }
+.rcell:not([class*=" t-"]) .rc-icon { background: color-mix(in srgb, var(--accent) 16%, var(--card)); color: var(--accent); }
+.rcell .rc-icon.rc-day { display: flex; flex-direction: column; justify-content: center; gap: 0; background: var(--card); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); line-height: 1; }
+.rc-day small { font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.rc-day b { font-size: calc(var(--text) * 1.15); font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.rcell .rc-tick { margin: -2px 0; justify-self: center; }
+.rcell .rc-name { gap: 1px; }
+.rcell .rc-title { font-size: calc(var(--text) * 1.15); font-weight: 600; letter-spacing: -.01em; }
+.rcell .rc-sub { font-size: calc(var(--text) * .95); }
+.rcell .rc-sub .lead { color: var(--c); font-weight: 600; }
+.rcell.done .rc-title { text-decoration: line-through; color: var(--muted); }
+.rc-end { display: flex; align-items: center; gap: 6px; }
+.rc-val { font-size: calc(var(--text) * 1.15); font-weight: 600; font-variant-numeric: tabular-nums; }
+.rc-end > button.rc-pill { min-height: 36px; padding: 0 14px; border-radius: 999px; font-weight: 700; }
+@media (pointer: coarse) { .rc-end > button.rc-pill { min-height: 44px; } }
+.rc-end .rc-more > summary { width: 36px; height: 36px; font-size: 9px; background: transparent; color: var(--muted); }
+/* a table row's next step and its menu (more than two steps) */
+td.acts { width: 1%; white-space: nowrap; }
+td.acts .rc-end { justify-content: flex-end; }
+td.acts .rc-pill { min-height: 30px; padding: 0 12px; font-size: calc(var(--text) * .92); }
+td.acts .rc-more > summary { width: 30px; height: 30px; }
+@media (pointer: coarse) { td.acts .rc-pill { min-height: 44px; } td.acts .rc-more > summary { width: 44px; height: 44px; } }
+@media (pointer: coarse) { .rc-end .rc-more > summary { width: 44px; height: 44px; } }
+.rc-end .chev { width: 8px; height: 8px; border-right: 2px solid color-mix(in srgb, var(--fg) 30%, transparent); border-top: 2px solid color-mix(in srgb, var(--fg) 30%, transparent); transform: rotate(45deg); margin: 0 4px 0 2px; }

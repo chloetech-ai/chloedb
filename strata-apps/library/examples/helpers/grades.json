@@ -1,0 +1,132 @@
+{
+ "cases": [
+  {
+   "call": "percent",
+   "args": [
+    17,
+    20
+   ],
+   "expect": 85
+  },
+  {
+   "call": "percent",
+   "args": [
+    5,
+    0
+   ],
+   "expect": null
+  },
+  {
+   "call": "weighted",
+   "args": [
+    [
+     {
+      "score": 90,
+      "weight": 50
+     },
+     {
+      "score": 80,
+      "weight": 30
+     },
+     {
+      "score": 70,
+      "weight": 20
+     },
+     {
+      "score": null,
+      "weight": 10
+     }
+    ]
+   ],
+   "expect": 83
+  },
+  {
+   "call": "letter",
+   "args": [
+    88,
+    {
+     "plusMinus": true
+    }
+   ],
+   "expect": "B+"
+  },
+  {
+   "call": "letter",
+   "args": [
+    81,
+    {
+     "plusMinus": true
+    }
+   ],
+   "expect": "B-"
+  },
+  {
+   "call": "letter",
+   "args": [
+    55,
+    {
+     "plusMinus": true
+    }
+   ],
+   "expect": "F"
+  },
+  {
+   "call": "gpa",
+   "args": [
+    [
+     {
+      "letter": "A",
+      "credits": 3
+     },
+     {
+      "letter": "B+",
+      "credits": 4
+     },
+     {
+      "letter": "C",
+      "credits": 2
+     }
+    ]
+   ],
+   "expect": 3.24
+  },
+  {
+   "call": "gpa",
+   "args": [
+    [
+     "A",
+     "b-",
+     "W"
+    ]
+   ],
+   "expect": 3.35
+  },
+  {
+   "call": "needed",
+   "args": [
+    85,
+    0.6,
+    90
+   ],
+   "expect": 97.5
+  },
+  {
+   "call": "curve",
+   "args": [
+    [
+     80,
+     100,
+     "x"
+    ],
+    {
+     "to": 95
+    }
+   ],
+   "expect": [
+    85,
+    100,
+    null
+   ]
+  }
+ ]
+}

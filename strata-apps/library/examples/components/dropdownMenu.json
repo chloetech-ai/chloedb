@@ -1,0 +1,53 @@
+[
+ {
+  "props": {
+   "align": "right",
+   "items": [
+    {
+     "label": "Edit",
+     "icon": "✏️",
+     "onClick": "$fn"
+    },
+    {
+     "label": "Duplicate",
+     "icon": "⧉",
+     "onClick": "$fn"
+    },
+    {
+     "label": "Export as CSV",
+     "icon": "⇩",
+     "onClick": "$fn",
+     "disabled": true
+    },
+    {
+     "divider": true
+    },
+    {
+     "label": "Delete",
+     "icon": "🗑",
+     "danger": true,
+     "onClick": "$fn"
+    }
+   ]
+  }
+ },
+ {
+  "props": {
+   "label": "Sort by ▾",
+   "items": [
+    {
+     "label": "Newest first",
+     "onClick": "$fn"
+    },
+    {
+     "label": "Oldest first",
+     "onClick": "$fn"
+    },
+    {
+     "label": "Title A–Z",
+     "onClick": "$fn"
+    }
+   ]
+  }
+ }
+]

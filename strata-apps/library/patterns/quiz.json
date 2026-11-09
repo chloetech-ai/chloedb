@@ -1,0 +1,149 @@
+{
+ "title": "A quiz: questions from a table with their choices, a score at the end, and try again in a new order",
+ "about": "Practice tests, trivia, a quiz per deck or lesson: each row is a question with its choices (a keyword[] column, or text with one choice per line) and its answer (the right choice's text, or its index from 0). The person answers each question, sees right or wrong and the explanation, then the score; Try again shuffles. A results table, when given, gets a row per finished quiz.",
+ "params": {
+  "table": {
+   "about": "the table of questions",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "question": {
+   "about": "the column with the question",
+   "default": "question"
+  },
+  "choices": {
+   "about": "the column with the choices: keyword[] or text, one per line",
+   "default": "choices"
+  },
+  "answer": {
+   "about": "the column with the right answer: the choice's text, or its index from 0",
+   "default": "answer"
+  },
+  "explanation": {
+   "about": "a column with an explanation shown once answered"
+  },
+  "count": {
+   "about": "how many questions one quiz asks",
+   "default": 10
+  },
+  "where": {
+   "about": "an SQL condition on the questions (such as deck = :deck)"
+  },
+  "params": {
+   "about": "values for :names in where, may be expressions"
+  },
+  "results": {
+   "about": "a table that gets a row {score, total} per finished quiz (its columns score and total, int)"
+  },
+  "resultExtra": {
+   "about": "more columns a result row stores, as a JavaScript object, such as \"{deck: state.deck}\""
+  }
+ },
+ "example": {
+  "use": "quiz",
+  "table": "questions",
+  "title": "Quiz",
+  "choices": "options",
+  "answer": "correct",
+  "count": 10,
+  "where": "deck = :deck",
+  "params": {
+   "deck": "=state.deck || ''"
+  },
+  "results": "quiz_results",
+  "resultExtra": "{deck: state.deck}"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_picked": {},
+   "{{key}}_seed": 1
+  },
+  "data": {
+   "{{key}}": {
+    "sql": "SELECT * FROM {{table}}{{where|pre: WHERE }} LIMIT 500",
+    "params": "{{params}}"
+   }
+  },
+  "let": {
+   "{{key}}_rank": "=id => { let h = 2166136261 ^ state.{{key}}_seed; for (const ch of String(id)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return h >>> 0; }",
+   "{{key}}_qs": "=[...{{key}}].sort((a, b) => {{key}}_rank(a.id) - {{key}}_rank(b.id)).slice(0, {{count}}).map(r => { const raw = r[{{choices|json}}]; const list = Array.isArray(raw) ? raw.map(String) : String(raw ?? '').split('\\n').map(s => s.trim()).filter(Boolean); const ans = String(r[{{answer|json}}] ?? ''); return { id: r.id, question: String(r[{{question|json}}] ?? ''), choices: list.map((c, i) => ({ text: c, correct: c === ans || String(i) === ans })), explanation: {{explanation|json}} ? r[{{explanation|json}}] || undefined : undefined }; })",
+   "{{key}}_score": "=Object.values(state.{{key}}_picked).filter(p => p.correct).length",
+   "{{key}}_done": "={{key}}_qs.length > 0 && {{key}}_qs.every(q => state.{{key}}_picked[q.id])",
+   "{{key}}_save": "=(score, total) => {{results|json}} ? app.insert({{results|json}}, { score, total{{resultExtra|pre:, ...}} }) : null"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "if": "={{key}}_qs.length === 0",
+    "then": [
+     {
+      "text": "No questions yet.",
+      "muted": true
+     }
+    ],
+    "else": [
+     {
+      "ui": "progressBar",
+      "props": {
+       "value": "=Object.keys(state.{{key}}_picked).length",
+       "max": "={{key}}_qs.length",
+       "label": "Answered"
+      }
+     },
+     {
+      "each": "={{key}}_qs",
+      "as": "q",
+      "body": [
+       {
+        "ui": "quizQuestion",
+        "props": {
+         "question": "=(index + 1) + '. ' + q.question",
+         "choices": "=q.choices",
+         "explanation": "=q.explanation",
+         "picked": "=state.{{key}}_picked[q.id] ? state.{{key}}_picked[q.id].i : undefined",
+         "onAnswer": "=(i, correct) => { if (state.{{key}}_picked[q.id]) return; const picked = { ...state.{{key}}_picked, [q.id]: { i, correct: !!correct } }; set({ {{key}}_picked: picked }); if ({{key}}_qs.every(x => picked[x.id])) return {{key}}_save(Object.values(picked).filter(p => p.correct).length, {{key}}_qs.length); }"
+        }
+       }
+      ],
+      "class": "col"
+     },
+     {
+      "if": "={{key}}_done",
+      "then": [
+       {
+        "card": [
+         {
+          "kpis": [
+           {
+            "label": "Score",
+            "value": "={{key}}_score + ' / ' + {{key}}_qs.length"
+           },
+           {
+            "label": "Right",
+            "value": "=Math.round(100 * {{key}}_score / {{key}}_qs.length) + '%'"
+           }
+          ]
+         },
+         {
+          "button": "Try again",
+          "class": "primary",
+          "do": "=() => set({ {{key}}_picked: {}, {{key}}_seed: state.{{key}}_seed + 1 })"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

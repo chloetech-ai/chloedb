@@ -1,0 +1,59 @@
+{
+ "tables": [
+  {
+   "name": "logs",
+   "columns": [
+    {
+     "name": "message",
+     "type": "text"
+    },
+    {
+     "name": "status",
+     "type": "keyword"
+    },
+    {
+     "name": "day",
+     "type": "keyword"
+    }
+   ]
+  }
+ ],
+ "rows": {
+  "logs": [
+   {
+    "message": "Nightly backup finished",
+    "status": "done",
+    "day": "2026-08-14"
+   },
+   {
+    "message": "Import of bank statement",
+    "status": "done",
+    "day": "2026-09-30"
+   },
+   {
+    "message": "Retry sync with calendar",
+    "status": "failed",
+    "day": "2026-09-02"
+   },
+   {
+    "message": "Weekly report sent",
+    "status": "done",
+    "day": "2026-11-02"
+   },
+   {
+    "message": "Cache warmed",
+    "status": "done",
+    "day": "2026-11-07"
+   }
+  ]
+ },
+ "input": {
+  "table": "logs",
+  "column": "day",
+  "days": 30,
+  "where": {
+   "status": "done"
+  },
+  "dryRun": true
+ }
+}

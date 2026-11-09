@@ -1,0 +1,40 @@
+[
+ {
+  "props": {
+   "options": [
+    {
+     "value": "open",
+     "label": "Open",
+     "count": 12
+    },
+    {
+     "value": "waiting",
+     "label": "Waiting",
+     "count": 3
+    },
+    {
+     "value": "done",
+     "label": "Done",
+     "count": 48
+    }
+   ],
+   "value": "open",
+   "onChange": "$fn",
+   "full": true,
+   "label": "Status"
+  }
+ },
+ {
+  "props": {
+   "options": [
+    "Day",
+    "Week",
+    "Month"
+   ],
+   "value": "Week",
+   "onChange": "$fn",
+   "size": "small",
+   "label": "Period"
+  }
+ }
+]

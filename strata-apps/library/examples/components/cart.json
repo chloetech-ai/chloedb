@@ -1,0 +1,49 @@
+[
+ {
+  "props": {
+   "items": [
+    {
+     "id": "a1",
+     "name": "Ceramic pour-over dripper",
+     "price": 28,
+     "qty": 1,
+     "options": {
+      "Color": "Sand"
+     },
+     "image": "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=200"
+    },
+    {
+     "id": "a2",
+     "name": "Single-origin coffee beans, 250 g",
+     "price": 14.5,
+     "qty": 3,
+     "options": [
+      "Ethiopia Guji",
+      "Whole bean"
+     ]
+    },
+    {
+     "id": "a3",
+     "name": "Paper filters (100)",
+     "price": 6.99,
+     "qty": 2
+    }
+   ],
+   "onQty": "$fn",
+   "onRemove": "$fn",
+   "onCheckout": "$fn",
+   "currency": "USD",
+   "shipping": 5.95,
+   "taxRate": 0.08,
+   "note": "Orders placed before 2 pm ship the same day.",
+   "checkoutLabel": "Check out"
+  }
+ },
+ {
+  "props": {
+   "items": [],
+   "onCheckout": "$fn",
+   "empty": "Your cart is empty. Add something from the shop to get started."
+  }
+ }
+]

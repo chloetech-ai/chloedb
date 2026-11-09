@@ -1,0 +1,95 @@
+[
+ {
+  "props": {
+   "tasks": [
+    {
+     "id": "t1",
+     "label": "Survey and measurements",
+     "start": "2026-11-02",
+     "end": "2026-11-04",
+     "progress": 1,
+     "group": "Planning"
+    },
+    {
+     "id": "t2",
+     "label": "Choose tiles and fixtures",
+     "start": "2026-11-04",
+     "end": "2026-11-10",
+     "progress": 0.6,
+     "group": "Planning"
+    },
+    {
+     "id": "t3",
+     "label": "Strip old bathroom",
+     "start": "2026-11-11",
+     "end": "2026-11-13",
+     "progress": 0,
+     "color": "#ef4444",
+     "group": "Works"
+    },
+    {
+     "id": "t4",
+     "label": "Plumbing",
+     "start": "2026-11-14",
+     "end": "2026-11-19",
+     "color": "#3b82f6",
+     "group": "Works"
+    },
+    {
+     "id": "t5",
+     "label": "Tiling",
+     "start": "2026-11-20",
+     "end": "2026-11-27",
+     "color": "#10b981",
+     "group": "Works"
+    },
+    {
+     "id": "t6",
+     "label": "Final inspection",
+     "start": "2026-11-30",
+     "end": "2026-11-30",
+     "color": "#f59e0b",
+     "group": "Works"
+    }
+   ],
+   "today": "2026-11-08",
+   "selected": "t2",
+   "onSelect": "$fn"
+  }
+ },
+ {
+  "props": {
+   "tasks": [
+    {
+     "id": "a",
+     "label": "Research",
+     "start": "2026-09-01",
+     "end": "2026-10-15",
+     "progress": 1
+    },
+    {
+     "id": "b",
+     "label": "Prototype",
+     "start": "2026-10-10",
+     "end": "2026-12-05",
+     "progress": 0.45
+    },
+    {
+     "id": "c",
+     "label": "User testing",
+     "start": "2026-12-01",
+     "end": "2027-01-20"
+    },
+    {
+     "id": "d",
+     "label": "Launch",
+     "start": "2027-02-01",
+     "end": "2027-02-14",
+     "color": "#8b5cf6"
+    }
+   ],
+   "scale": "auto",
+   "onSelect": "$fn"
+  }
+ }
+]

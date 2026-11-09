@@ -1,0 +1,20 @@
+[
+ {
+  "props": {
+   "front": "What is the capital of Australia?",
+   "back": "Canberra",
+   "frontLabel": "Geography",
+   "onFlip": "$fn",
+   "onGrade": "$fn"
+  }
+ },
+ {
+  "props": {
+   "front": "el desayuno",
+   "back": "breakfast\n(el almuerzo = lunch)",
+   "flipped": true,
+   "onFlip": "$fn",
+   "onGrade": "$fn"
+  }
+ }
+]

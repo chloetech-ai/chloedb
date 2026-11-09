@@ -1,0 +1,61 @@
+[
+ {
+  "props": {
+   "events": [
+    {
+     "id": "e1",
+     "title": "Dentist check-up",
+     "start": "2026-11-08T15:30:00Z",
+     "end": "2026-11-08T16:15:00Z",
+     "place": "Riverside Dental",
+     "color": "#0ea5e9"
+    },
+    {
+     "id": "e2",
+     "title": "Mum's birthday",
+     "start": "2026-11-09",
+     "color": "#ec4899"
+    },
+    {
+     "id": "e3",
+     "title": "Team planning",
+     "start": "2026-11-09T09:00:00Z",
+     "end": "2026-11-09T10:30:00Z",
+     "place": "Room 4B"
+    },
+    {
+     "id": "e4",
+     "title": "Yoga class",
+     "start": "2026-11-10T18:00:00Z",
+     "end": "2026-11-10T19:00:00Z",
+     "place": "Studio Lotus",
+     "color": "#22c55e"
+    },
+    {
+     "id": "e5",
+     "title": "Weekend in Lisbon",
+     "start": "2026-11-13",
+     "end": "2026-11-15",
+     "color": "#f59e0b"
+    },
+    {
+     "id": "e6",
+     "title": "Flight TP1351",
+     "start": "2026-11-13T07:40:00Z",
+     "end": "2026-11-13T10:05:00Z",
+     "place": "Terminal 2"
+    }
+   ],
+   "days": 10,
+   "onSelect": "$fn"
+  }
+ },
+ {
+  "props": {
+   "events": [],
+   "from": "2026-11-08",
+   "days": 7,
+   "empty": "No appointments this week. Add one to see it here."
+  }
+ }
+]
