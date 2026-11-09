@@ -1,7 +1,7 @@
 //! ChloeDB command-line shell: run SQL against a database file.
 //!
-//! strata <file> "SELECT ..."             run one statement
-//! strata <file> < queries.sql            run statements from stdin, one per line or ';'-terminated
+//! chloedb <file> "SELECT ..."             run one statement
+//! chloedb <file> < queries.sql            run statements from stdin, one per line or ';'-terminated
 //!   --param name=value                   bind :name (a number, a string, or a JSON array as a vector)
 //!   --plan                               print the planner's choices
 //!   --repeat N                           run each statement N times and report the median time

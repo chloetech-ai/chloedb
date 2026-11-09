@@ -4,7 +4,7 @@ name: Image
 # plans: ghcr.io/chloetech-ai/strata-server, for x86-64 and arm64 (AWS
 # Graviton) in one tag.
 #
-# A push to main that changes Strata or the server publishes it as `latest`
+# A push to main that changes ChloeDB or the server publishes it as `latest`
 # and as the commit's full sha. A pull request that changes the Dockerfile
 # or this workflow builds both images and publishes nothing, so a broken
 # image shows before it merges. A run started by hand publishes the branch
