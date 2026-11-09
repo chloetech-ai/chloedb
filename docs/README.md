@@ -94,7 +94,7 @@ flowchart TB
     subgraph agent["Claude Code"]
         direction LR
         hooks["hooks: SessionStart, UserPromptSubmit,<br/>PreToolUse, PostToolUse, Stop, Pre/PostCompact"]
-        tools["MCP: memory_search, memory_timeline,<br/>memory_sql, memory_remember, memory_forget"]
+        tools["MCP: memory_ask, memory_search, memory_timeline,<br/>memory_history, memory_sql, memory_remember, memory_forget"]
     end
     hooks -- "event out, context in<br/>(unix socket, one JSON line each way)" --> daemon
     tools -- "stdio JSON-RPC" --> daemon

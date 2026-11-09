@@ -47,7 +47,19 @@ fn a_store_from_before_field_ids_is_copied_on_first_open() {
     assert!(!strata::upgrade::needs_upgrade(&path).unwrap());
     assert!(strata::upgrade::old_path(&path).exists());
     assert_eq!(s.len(), before.len() as u64);
-    assert_eq!(rows(&s.db), before);
+    // The same rows, with the two columns that date them (0: held since
+    // written, still holds) before the vector.
+    let after: Vec<Vec<Value>> = rows(&s.db)
+        .into_iter()
+        .map(|mut r| {
+            let emb = r.pop().unwrap();
+            let validity = r.split_off(r.len() - 2);
+            assert_eq!(validity, vec![Value::Int(0), Value::Int(0)]);
+            r.push(emb);
+            r
+        })
+        .collect();
+    assert_eq!(after, before);
     // Its words and its vectors are searched as before.
     let hits = s.query("SELECT text FROM memory WHERE MATCH(body, 'semicolons') AND kind = 'decision' ORDER BY seq LIMIT 100").unwrap().rows;
     assert_eq!(hits.len(), 4, "{hits:?}");

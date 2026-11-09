@@ -76,7 +76,13 @@ enum Cmd {
         limit: usize,
         #[arg(long, value_delimiter = ',')]
         kinds: Vec<String>,
+        /// Only what held on this date (YYYY-MM-DD).
+        #[arg(long)]
+        as_of: Option<String>,
     },
+    /// How a decision, rule or fact changed: every version, with the dates
+    /// it held. Takes a note id or words naming the subject.
+    History { what: String },
     /// Answer a question about earlier work: the rules, notes, replies and
     /// messages that bear on it, found by search alone and packed for it.
     Ask {
@@ -90,11 +96,23 @@ enum Cmd {
         /// Print the JSON result (picked ids, answer, confidence, cost).
         #[arg(long)]
         json: bool,
+        /// Answer as things stood on this date (YYYY-MM-DD).
+        #[arg(long)]
+        as_of: Option<String>,
     },
     /// Run read-only SQL over the memory table.
     Sql { sql: String },
     /// Store a decision, preference, fact, todo or note.
-    Remember { kind: String, text: String },
+    Remember {
+        kind: String,
+        text: String,
+        /// Id of the note this one replaces (kept in its history).
+        #[arg(long)]
+        supersedes: Option<String>,
+        /// When it became true (YYYY-MM-DD), if not today.
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Counts and sizes.
     Stats,
     /// Copy the project's store to a new directory while Engram runs: a
@@ -198,9 +216,14 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Cmd::Search { query, limit, kinds } => text(&send(&project, json!({"op": "search", "query": query, "limit": limit, "kinds": kinds, "include_current": true}), 30)),
-        Cmd::Ask { question, deep, model, json: as_json } => {
-            let r = send(&project, json!({"op": "ask", "question": question, "deep": deep || model.is_some(), "model": model, "include_current": true}), 300);
+        Cmd::Search { query, limit, kinds, as_of } => text(&send(&project, json!({"op": "search", "query": query, "limit": limit, "kinds": kinds, "as_of": as_of, "include_current": true}), 30)),
+        Cmd::History { what } => {
+            // An id is `<session>:<seq>` or an entity; anything else names the subject.
+            let id = what.split_once(':').is_some_and(|(a, b)| !a.is_empty() && !b.contains(' ') && !a.contains(' '));
+            text(&send(&project, if id { json!({"op": "history", "id": what}) } else { json!({"op": "history", "query": what}) }, 30))
+        }
+        Cmd::Ask { question, deep, model, json: as_json, as_of } => {
+            let r = send(&project, json!({"op": "ask", "question": question, "deep": deep || model.is_some(), "model": model, "as_of": as_of, "include_current": true}), 300);
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());
             } else {
@@ -208,7 +231,7 @@ fn main() {
             }
         }
         Cmd::Sql { sql } => text(&send(&project, json!({"op": "sql", "sql": sql}), 30)),
-        Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t}), 30)),
+        Cmd::Remember { kind, text: t, supersedes, since } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "supersedes": supersedes, "since": since}), 30)),
         Cmd::Stats => println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "stats"}), 30)).unwrap()),
         Cmd::Backup { dest } => {
             let dest = std::path::absolute(&dest).unwrap_or(dest);

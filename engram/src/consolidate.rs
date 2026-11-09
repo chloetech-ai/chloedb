@@ -75,6 +75,7 @@ Rewrite them as the smallest set of notes that keeps every detail, number, name,
 - when a later note changes, reverses or replaces an earlier one, keep only the current version, and say briefly what it replaced if that helps (e.g. "30 days, changed from 14");
 - merge notes that say the same thing or parts of one thing; keep notes on different subjects separate;
 - never drop a rule, a requirement for planned work, a constraint or a reason;
+- notes marked as conflicting disagree without either saying the other changed (the user said one thing, then its opposite): the disagreement is worth keeping, so keep both, or write one note that gives both statements with when each was said and says that it is unclear which holds;
 - each note is one or two self-contained sentences that name their subject;
 - a note that merges with nothing stays as it is: keep it rather than rewording it.
 
@@ -108,11 +109,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 
 /// The live notes: not superseded or done, requirements still planned.
 pub fn live_notes(store: &Store, limit: usize) -> Result<Vec<Record>> {
-    Ok(store
-        .latest(&KNOWLEDGE, limit, &Filter::default())?
-        .into_iter()
-        .filter(|r| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned"))
-        .collect())
+    let now = crate::now();
+    Ok(store.latest(&KNOWLEDGE, limit, &Filter::default())?.into_iter().filter(|r| r.is_live(now) && r.tag != "cue").collect())
 }
 
 /// Groups of related notes (indices into `notes`), largest first, each of
@@ -219,7 +217,17 @@ pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64
         rep.groups += 1;
         let members: Vec<&Record> = g.iter().map(|&i| &notes[i]).collect();
         let ids: Vec<String> = members.iter().map(|r| r.id.clone()).collect();
-        let listed: Vec<String> = members.iter().map(|r| format!("[{}] {} ({}): {}", r.id, label(r), fmt_time(r.ts), r.text.split_whitespace().collect::<Vec<_>>().join(" "))).collect();
+        let listed: Vec<String> = members
+            .iter()
+            .map(|r| {
+                let mut line = format!("[{}] {} ({}): {}", r.id, label(r), fmt_time(r.ts), r.text.split_whitespace().collect::<Vec<_>>().join(" "));
+                let against: Vec<String> = r.linked("conflicts").filter(|o| ids.iter().any(|i| i == o)).map(|o| format!("[{o}]")).collect();
+                if !against.is_empty() {
+                    line += &format!(" (conflicts with {})", against.join(", "));
+                }
+                line
+            })
+            .collect();
         let prompt = PROMPT.replace("{notes}", &listed.join("\n"));
         let reply = match llm::complete(&cli.cli(&model, cli.timeout_secs), SYSTEM, &prompt) {
             Ok(r) => r,
@@ -250,14 +258,33 @@ pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64
                 ctx += "\n";
                 ctx += &Anchor::merge(&anchors).to_line();
             }
-            let mut d = draft.ctx(ctx);
+            // The merged note holds from when the newest thing it says
+            // began; each note it replaces closes then.
+            let since = olds.iter().map(|r| r.valid_since()).max();
+            let mut d = draft.ctx(ctx).since(since);
             d.importance = Some(olds.iter().map(|r| r.importance).fold(0.0, f64::max));
             for id in &replaces {
                 d = d.link("supersedes", id.clone());
             }
-            store.append(&newest.session, newest.turn, said, vec![d])?;
+            // Disagreements with notes outside the merge carry over to it.
+            let mut against: Vec<String> = olds.iter().flat_map(|r| r.linked("conflicts")).filter(|o| !replaces.iter().any(|i| i == o)).map(String::from).collect();
+            against.sort();
+            against.dedup();
+            for o in &against {
+                d = d.link("conflicts", o.clone());
+            }
+            let merged = store.append(&newest.session, newest.turn, said, vec![d])?;
+            let by = merged.first().map(|m| (m.id.clone(), m.valid_since()));
+            if let Some((m, _)) = &by {
+                for o in &against {
+                    store.add_link(o, "conflicts", m)?;
+                }
+            }
             for id in &replaces {
-                let _ = store.retag(id, "superseded");
+                match &by {
+                    Some((m, at)) => store.close(id, *at, Some(m), "superseded")?,
+                    None => store.close(id, now, None, "superseded")?,
+                };
             }
             rep.replaced += replaces.len();
             rep.written += 1;
@@ -325,5 +352,49 @@ mod tests {
         assert_eq!(g.len(), 1, "{g:?}");
         let texts: Vec<&str> = g[0].iter().map(|&i| live[i].text.as_str()).collect();
         assert!(texts.iter().all(|t| t.starts_with("Refunds")), "{texts:?}");
+    }
+
+    /// A merge replaces its notes from when the newest of them began: an
+    /// as-of question about the time before still finds the old ones.
+    #[test]
+    fn merged_notes_hold_from_the_newest_they_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.strata"), Arc::new(HashEmbedder { dim: 256 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        let a = s.append("a", 1, 1000, vec![Draft::new(Kind::Preference, "Refunds are allowed within 14 days of purchase").tag("distilled").entities(vec!["refund".into()])]).unwrap().remove(0);
+        let b = s.append("a", 2, 2000, vec![Draft::new(Kind::Preference, "Refunds are allowed within 30 days of purchase now").tag("distilled").entities(vec!["refund".into()])]).unwrap().remove(0);
+        // A note outside the merge that disagrees with one inside it, and two
+        // inside it that disagree with each other.
+        let c = s.append("b", 1, 2500, vec![Draft::new(Kind::Fact, "The shop said it never gives money back").tag("distilled")]).unwrap().remove(0);
+        for (x, y) in [(&b.id, &c.id), (&a.id, &b.id)] {
+            s.add_link(x, "conflicts", y).unwrap();
+            s.add_link(y, "conflicts", x).unwrap();
+        }
+        let out = dir.path().join("out.json");
+        let input = dir.path().join("in.txt");
+        let script = dir.path().join("fake-model.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat > '{}'\ncat '{}'\n", input.display(), out.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let line = serde_json::json!({"kind": "rule", "text": "Refunds are allowed within 30 days of purchase (changed from 14).", "replaces": [a.id, b.id]}).to_string();
+        std::fs::write(&out, serde_json::json!({"is_error": false, "total_cost_usd": 0.0, "result": line}).to_string()).unwrap();
+        let cli = DistillConfig { command: script.to_string_lossy().into(), ..Default::default() };
+        let cfg = ConsolidateConfig { cos: 0.99, entity_cos: 0.0, min_live: 0, ..Default::default() };
+        let rep = run(&s, &cfg, &cli, 5000).unwrap();
+        assert_eq!((rep.groups, rep.replaced, rep.written), (1, 2, 1), "{rep:?}");
+        // The model was told which of them disagree.
+        let asked = std::fs::read_to_string(&input).unwrap();
+        assert!(asked.contains(&format!("(conflicts with [{}])", b.id)), "{asked}");
+        let live: Vec<Record> = live_notes(&s, 10).unwrap().into_iter().filter(|r| r.id != c.id).collect();
+        assert_eq!(live.len(), 1);
+        let m = &live[0];
+        // The disagreement with the note outside it carries over, both ways.
+        assert_eq!(m.linked("conflicts").collect::<Vec<_>>(), vec![c.id.as_str()]);
+        assert!(s.get(&[c.id.clone()]).unwrap()[0].linked("conflicts").any(|x| x == m.id));
+        // Dated by the newest note it replaces, not by the merge (at 5000).
+        assert_eq!((m.ts, m.valid_since()), (2000, 2000));
+        let old = s.get(&[a.id.clone(), b.id.clone()]).unwrap();
+        assert!(old.iter().all(|r| r.tag == "superseded" && r.valid_to == 2000 && r.linked("superseded_by").any(|x| x == m.id)), "{old:?}");
+        // Day 1500: the 14 days held.
+        let f = Filter { as_of: Some(1500), kinds: vec![Kind::Preference], ..Default::default() };
+        assert_eq!(s.latest(&[Kind::Preference], 5, &f).unwrap().iter().map(|r| r.id.clone()).collect::<Vec<_>>(), vec![a.id.clone()]);
     }
 }

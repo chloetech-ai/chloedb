@@ -274,7 +274,15 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
         )
     });
     let (notes, messages, answers, rules) = (notes?, messages?, answers?, rules?);
-    let live = |r: &Record| r.tag != "superseded" && r.tag != "uncertain" && r.tag != "cue";
+    // In force now, or on the day asked about (the version that held then).
+    let live = |r: &Record| {
+        r.tag != "uncertain"
+            && r.tag != "cue"
+            && match filter.as_of {
+                Some(t) => r.holds_at(t) && r.tag != "done",
+                None => r.tag != "superseded",
+            }
+    };
     let rules: Vec<Record> = rules.into_iter().filter(|(r, c)| *c >= p.rule_min_cos && live(r)).map(|(r, _)| r).take(p.rules).collect();
     let notes: Vec<Record> = notes.into_iter().filter(|r| live(r) && !rules.iter().any(|x| x.id == r.id)).collect();
     // A broad question's timeline: every live note.
@@ -499,6 +507,22 @@ mod tests {
         let rule = b.text.find("rule: Always confirm").expect("the rule");
         let fact = b.text.find("fact: The user's holiday gift budget is 450").unwrap();
         assert!(rule < fact, "{}", b.text);
+    }
+
+    /// Asked about a past day, the notes are the versions that held then.
+    #[test]
+    fn as_of_shows_the_version_that_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let old = s.append("s1", 0, DAY, vec![Draft::new(Kind::Fact, "The user's holiday gift budget is 300 dollars.").tag("distilled")]).unwrap();
+        let new = s.append("s2", 0, 3 * DAY, vec![Draft::new(Kind::Fact, "The user's holiday gift budget is 450 dollars.").tag("distilled").link("supersedes", old[0].id.clone())]).unwrap();
+        s.close(&old[0].id, 3 * DAY, Some(&new[0].id), "superseded").unwrap();
+        s.flush().unwrap();
+        let q = "What is my holiday gift budget?";
+        let now = build(&s, q, &Filter::default(), &ContextParams::default()).unwrap();
+        assert!(now.text.contains("budget is 450") && !now.text.contains("\n- 1970-01-02 fact"), "{}", now.text);
+        let then = build(&s, q, &Filter { as_of: Some(2 * DAY), ..Default::default() }, &ContextParams::default()).unwrap();
+        assert!(then.text.contains("- 1970-01-02 fact: The user's holiday gift budget is 300 dollars.") && !then.text.contains("450"), "{}", then.text);
     }
 
     /// A note merged late is dated and placed by the message it came from.

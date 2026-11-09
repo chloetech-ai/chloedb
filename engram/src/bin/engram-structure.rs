@@ -827,6 +827,8 @@ fn run_unit(u: &Unit, e: &Arc<dyn Embedder>, lays: &[Layout], press: &[Pres], tm
                     text: r.text.clone(),
                     ctx: r.ctx.clone(),
                     links,
+                    valid_from: 0,
+                    valid_to: 0,
                 }
             })
             .collect();
@@ -1113,7 +1115,7 @@ fn transcript_mode(cli: &Cli, e: &Arc<dyn Embedder>) {
                     .map(|(k, r)| {
                         let t = &u.turns[r.turns[0]];
                         let kind = Kind::parse(&t.role).unwrap_or(Kind::Prompt);
-                        Record { id: format!("r{}", k + 1), session: t.session_id.clone(), kind, tag: t.turn_id.clone(), turn: r.turns[0] as i64, seq: k as i64 + 1, ts: 0, importance: kind.prior(), files: String::new(), text: r.text.clone(), ctx: r.ctx.clone(), links: Vec::new() }
+                        Record { id: format!("r{}", k + 1), session: t.session_id.clone(), kind, tag: t.turn_id.clone(), turn: r.turns[0] as i64, seq: k as i64 + 1, ts: 0, importance: kind.prior(), files: String::new(), text: r.text.clone(), ctx: r.ctx.clone(), links: Vec::new(), valid_from: 0, valid_to: 0 }
                     })
                     .collect();
                 let dense: Vec<&str> = rs.iter().map(|r| r.dense.as_str()).collect();

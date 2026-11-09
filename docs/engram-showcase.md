@@ -87,7 +87,7 @@ An agent without memory spends its time rediscovering things. It greps the repos
 The model works with Engram in two ways:
 
 - **Automatically, before it reads the prompt.** A hook runs one recall query against the project's Strata file and puts the strongest matches into the prompt. The model never has to know what to search for. In the kestrel runs this was nearly all of Engram's work: the agent called a memory tool in only 4 of 84 Engram runs.
-- **On demand, through tools.** When the model wants more, it can call `memory_search` (hybrid search), `memory_timeline` (what happened around a record), `memory_sql` (read-only SQL over the whole memory) and `memory_remember` (save a rule for later sessions).
+- **On demand, through tools.** When the model wants more, it can call `memory_search` (hybrid search), `memory_timeline` (what happened around a record), `memory_sql` (read-only SQL over the whole memory), `memory_history` (how a rule or decision changed over time) and `memory_remember` (save a rule for later sessions).
 
 Here is a real run from the benchmark. In a brand-new session the owner asked: *"For the next importer I'd like to use `match` statements. Any objection?"* Recall found a note from day 3 of the history and put it in the prompt. The agent answered with no searching and no tool calls:
 

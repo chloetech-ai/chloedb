@@ -7,7 +7,9 @@
 Each case says what a correct output holds, checked by case-insensitive
 regular expressions on the notes' text:
   expect        for each entry, some note of one of `kind` matches every pattern
-                in `all` (and replaces `replaces`, if given);
+                in `all` (and replaces `replaces`, and conflicts with
+                `conflicts`, if given);
+  keep          these noted items are not replaced;
   forbid        no note matches any of these;
   forbid_kinds  no note of that kind matches any of its patterns;
   done          these noted requirements are marked done;
@@ -32,10 +34,15 @@ def check(case, out):
             (not e.get("kind") or it["kind"] in e["kind"])
             and all(re.search(p, it["text"], re.I) for p in e["all"])
             and (not e.get("replaces") or e["replaces"] in it.get("replaces", []))
+            and (not e.get("conflicts") or e["conflicts"] in it.get("conflicts", []))
             for it in items
         )
         if not ok:
-            fails.append(f"missing {e.get('kind')} with {e['all']}" + (f" replacing {e['replaces']}" if e.get("replaces") else ""))
+            fails.append(f"missing {e.get('kind')} with {e['all']}" + (f" replacing {e['replaces']}" if e.get("replaces") else "") + (f" conflicting with {e['conflicts']}" if e.get("conflicts") else ""))
+    for k in case.get("keep", []):
+        hit = [it["text"] for it in items if k in it.get("replaces", [])]
+        if hit:
+            fails.append(f"{k} replaced by: {hit[0][:120]}")
     for p in case.get("forbid", []):
         hit = [it["text"] for it in items if re.search(p, it["text"], re.I)]
         if hit:

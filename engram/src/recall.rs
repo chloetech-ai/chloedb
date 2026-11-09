@@ -401,7 +401,8 @@ pub fn search_with(store: &Store, query: &str, tail: Option<&Tail>, filter: &Fil
     // knowing match a repeated question best and carry nothing: they would
     // inflate the gate and repeat the failure.
     let qterms: HashSet<String> = terms.iter().cloned().collect();
-    let useful = |r: &Record| r.tag != "uncertain" && r.tag != "superseded" && !same_question(r, &qterms);
+    let replaced = filter.keeps_replaced();
+    let useful = |r: &Record| r.tag != "uncertain" && (replaced || r.tag != "superseded") && !same_question(r, &qterms);
     bm.retain(|(r, _)| useful(r));
     dv.retain(|(r, _)| useful(r));
     td.retain(|(r, _)| useful(r));
@@ -694,7 +695,7 @@ pub fn fmt_recall_checked(items: &[(Record, String)], now: i64, weak: bool, mut 
         let label = match check.as_deref_mut() {
             Some(c) if r.kind.is_knowledge() => c.check_record(&r).label(),
             _ => String::new(),
-        };
+        } + &closed_label(r, now);
         s += "\n";
         s += &fmt_record_labeled(r, snip, now, &label);
         s += "\n";
@@ -770,10 +771,11 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
     }
     let idf = if terms.is_empty() { Vec::new() } else { store.idf(&terms).unwrap_or_else(|_| vec![1.0; terms.len()]) };
     let total: f64 = idf.iter().sum();
-    let todo_open = |r: &Record| r.kind != Kind::Todo || r.tag == "planned";
+    // Notes in force at the filter's time (now, unless it asks about another).
+    let at = filter.as_of.unwrap_or_else(crate::now);
     let mut out: Vec<(Record, f64, f64)> = by
         .into_values()
-        .filter(|(r, _)| !skip.contains(&r.id) && r.tag != "superseded" && r.tag != "done" && todo_open(r))
+        .filter(|(r, _)| !skip.contains(&r.id) && if filter.as_of.is_some() { r.holds_at(at) && r.tag != "done" } else { r.is_live(at) })
         .map(|(r, c)| {
             // A note's `When:` line counts: it names the requests it bears on.
             let have = analyzed(&r.key_text());
@@ -794,7 +796,8 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
 pub fn related(store: &Store, text: &str, n: usize) -> Result<Vec<Record>> {
     let store = &store.pinned();
     let f = Filter { kinds: KNOWLEDGE.to_vec(), ..Default::default() };
-    let live = |r: &Record| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned");
+    let now = crate::now();
+    let live = |r: &Record| r.is_live(now) && r.tag != "cue";
     let (bm, dv) = both(
         || if strata::text::analyze_query(text).is_empty() { Ok(Vec::new()) } else { store.bm25_top(text, n * 2, &f) },
         || store.vector_top(&store.embedder.embed_query(text)?, n * 2, &f),
@@ -811,6 +814,66 @@ pub fn related(store: &Store, text: &str, n: usize) -> Result<Vec<Record>> {
     Ok(v.into_iter().take(n).map(|x| x.0).collect())
 }
 
+/// ` [no longer holds since 2026-11-02; replaced by s:41]` for a note a
+/// later version closed by `now`; empty for anything else.
+pub fn closed_label(r: &Record, now: i64) -> String {
+    if !r.kind.is_knowledge() || r.valid_to == 0 || r.valid_to > now {
+        return String::new();
+    }
+    let by: Vec<&str> = r.linked("superseded_by").collect();
+    let by = if by.is_empty() { String::new() } else { format!("; replaced by {}", by.join(", ")) };
+    format!(" [no longer holds since {}{by}]", crate::distill::fmt_date(r.valid_to))
+}
+
+/// What a reader should know about how each live note changed: `changed
+/// 2026-11-02; was: <the version it replaced>` when it replaced another
+/// note within `days` days of `now` (merges by consolidation are not
+/// changes), and `conflicts with [id]: <text>` when a live note disagrees
+/// with it. Keyed by note id; notes with nothing to say are left out.
+pub fn change_labels(store: &Store, notes: &[&Record], now: i64, days: i64) -> HashMap<String, String> {
+    let mut want: Vec<String> = Vec::new();
+    for r in notes {
+        let merged = r.ctx.starts_with("Merged from");
+        if !merged && r.valid_since() >= now - days * 86_400 {
+            want.extend(r.linked("supersedes").map(String::from));
+        }
+        want.extend(r.linked("conflicts").map(String::from));
+    }
+    want.sort();
+    want.dedup();
+    if want.is_empty() {
+        return HashMap::new();
+    }
+    let others: HashMap<String, Record> = store.get(&want).unwrap_or_default().into_iter().map(|r| (r.id.clone(), r)).collect();
+    let short = |t: &str, n: usize| -> String {
+        let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+        if t.chars().count() > n {
+            format!("{}…", t.chars().take(n).collect::<String>())
+        } else {
+            t
+        }
+    };
+    let mut out = HashMap::new();
+    for r in notes {
+        let mut parts: Vec<String> = Vec::new();
+        if !r.ctx.starts_with("Merged from") && r.valid_since() >= now - days * 86_400 {
+            if let Some(old) = r.linked("supersedes").filter_map(|id| others.get(id)).max_by_key(|o| o.valid_since()) {
+                parts.push(format!("changed {}; was: {}", crate::distill::fmt_date(r.valid_since()), short(&old.text, 140)));
+            }
+        }
+        for o in r.linked("conflicts").filter_map(|id| others.get(id)).filter(|o| o.is_live(now)) {
+            parts.push(format!("conflicts with [{}] from {}: {}; check which holds", o.id, crate::distill::fmt_date(o.valid_since()), short(&o.text, 140)));
+        }
+        if r.valid_since() > now {
+            parts.push(format!("takes effect {}", crate::distill::fmt_date(r.valid_since())));
+        }
+        if !parts.is_empty() {
+            out.insert(r.id.clone(), format!(" ({})", parts.join("; ")));
+        }
+    }
+    out
+}
+
 fn note_label(r: &Record) -> &'static str {
     match r.kind {
         Kind::Todo => "planned",
@@ -821,17 +884,18 @@ fn note_label(r: &Record) -> &'static str {
 
 /// The knowledge block of a prompt's context.
 pub fn fmt_knowledge(items: &[(Record, f64, f64)], now: i64) -> String {
-    fmt_knowledge_checked(items, now, None)
+    fmt_knowledge_checked(items, now, None, &HashMap::new())
 }
 
 /// The knowledge block, each note labelled when the code it is anchored to
-/// changed since.
-pub fn fmt_knowledge_checked(items: &[(Record, f64, f64)], now: i64, mut check: Option<&mut Checker>) -> String {
-    let mut s = String::from("Engram notes from earlier sessions that may bear on this request (decisions, rules and requirements agreed before; check them before deciding):\n");
+/// changed since, and with how it changed ([`change_labels`]).
+pub fn fmt_knowledge_checked(items: &[(Record, f64, f64)], now: i64, mut check: Option<&mut Checker>, changes: &HashMap<String, String>) -> String {
+    let mut s = String::from("Engram notes from earlier sessions that may bear on this request (decisions, rules and requirements agreed before, in their current versions; check them before deciding):\n");
     for (r, _, _) in items {
         let t = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let fresh = check.as_deref_mut().map(|c| c.check_record(&r).label()).unwrap_or_default();
-        s += &format!("- [{}] {t} ({}, {}){fresh}\n", note_label(r), r.id, fmt_ago(r.ts, now));
+        let change = changes.get(&r.id).map(|c| c.as_str()).unwrap_or("");
+        s += &format!("- [{}] {t} ({}, {}){change}{fresh}\n", note_label(r), r.id, fmt_ago(r.ts, now));
     }
     s
 }
@@ -882,6 +946,8 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
     // Most recent first, oldest shown first; one line per record, while the budget lasts.
     let mut section = |title: &str, recs: Vec<Record>, n: usize, keep: usize, s: &mut String, stale: &mut Vec<(Record, String)>, unshown: &mut Vec<Record>| {
         let mut lines = Vec::new();
+        let recs: Vec<Record> = recs.into_iter().filter(|r| !r.kind.is_knowledge() || r.valid_to == 0 || r.valid_to > now).collect();
+        let changes = change_labels(store, &recs.iter().collect::<Vec<_>>(), now, 30);
         for r in recs {
             if r.tag == "superseded" || r.tag == "done" || (distilled && r.tag == "cue") || !seen.insert(norm(&r.text)) {
                 continue;
@@ -898,7 +964,8 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
                 unshown.push(r);
                 continue;
             }
-            lines.push((r.id.clone(), format!("- {} ({}, {}){}\n", clip(&r.text, n), r.id, fmt_ago(r.ts, now), fresh.label())));
+            let change = changes.get(&r.id).map(|c| c.as_str()).unwrap_or("");
+            lines.push((r.id.clone(), format!("- {} ({}, {}){change}{}\n", clip(&r.text, n), r.id, fmt_ago(r.ts, now), fresh.label())));
         }
         lines.reverse();
         let head = format!("\n{title}\n");

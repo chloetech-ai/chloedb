@@ -289,6 +289,14 @@ enum Cmd {
         query: bool,
         texts: Vec<String>,
     },
+    /// Prints the notes of a store (one built by `deep --notes`), one JSON
+    /// object per line, oldest first: to read what distilling wrote.
+    Notes {
+        /// The store's folder.
+        dir: PathBuf,
+        #[arg(long, default_value = "static")]
+        embedder: String,
+    },
     /// Questions about this repository's own session transcript.
     Probes {
         #[arg(long)]
@@ -434,6 +442,8 @@ fn records(u: &Unit, ctx_mode: &str) -> Vec<Record> {
                 text: c,
                 ctx: ctx.clone(),
                 links: Vec::new(),
+                valid_from: ts,
+                valid_to: 0,
             });
             seq += 1;
         }
@@ -727,6 +737,13 @@ fn main() {
             concurrency_cmd(&data, &sizes, &embedder, &out, queries, &readers, secs, write_every_ms, knowledge)
         }
         Cmd::Writes { embedder, records, clients, out } => writes_cmd(&embedder, records, &clients, &out),
+        Cmd::Notes { dir, embedder } => {
+            let store = Store::open(&engram::paths::StorePaths::new(&dir).db, open_embedder(&embedder), StoreOptions { sync: false, ..Default::default() }).expect("store");
+            let rs = store.query(&format!("SELECT {} FROM memory WHERE kind IN ('decision', 'preference', 'fact', 'todo', 'note') ORDER BY seq ASC LIMIT 1000000", engram::record::COLUMNS)).expect("query");
+            for r in rs.rows.iter().filter_map(|r| engram::store::row_record(r)) {
+                println!("{}", serde_json::to_string(&r).unwrap());
+            }
+        }
         Cmd::Probes { transcript, probes, points, embedder, project, out, cache, dump_missing, dump_probes, per_turn, max_records } => {
             let d = PackParams::default();
             let pack = PackParams { per_turn: per_turn.unwrap_or(d.per_turn), max_records: max_records.unwrap_or(d.max_records), ..d };
@@ -915,10 +932,10 @@ fn distill_cmd(cases: &Path, model: &str, repeats: usize, threads: usize, out: &
                             .collect()
                     })
                     .unwrap_or_default();
-                let row = match distill::distill(cfg, &st("request"), &st("answer"), &commands, &known, 0) {
+                let row = match distill::distill(cfg, &st("request"), &st("answer"), &commands, &known, engram::now()) {
                     Ok(d) => json!({
                         "id": st("id"), "repeat": rep, "cost_usd": d.cost_usd, "tokens": d.usage.json(),
-                        "items": d.drafts.iter().map(|x| json!({"kind": distill::label(x.kind), "text": x.text, "replaces": x.links.iter().filter(|l| l.label == "supersedes").map(|l| l.to.as_str()).collect::<Vec<_>>(), "entities": x.entities, "when": x.when})).collect::<Vec<_>>(),
+                        "items": d.drafts.iter().map(|x| json!({"kind": distill::label(x.kind), "text": x.text, "replaces": x.links.iter().filter(|l| l.label == "supersedes").map(|l| l.to.as_str()).collect::<Vec<_>>(), "conflicts": x.links.iter().filter(|l| l.label == "conflicts").map(|l| l.to.as_str()).collect::<Vec<_>>(), "entities": x.entities, "when": x.when})).collect::<Vec<_>>(),
                         "done": d.done, "error": null,
                     }),
                     Err(e) => json!({"id": st("id"), "repeat": rep, "items": [], "done": [], "error": e.to_string()}),
@@ -945,7 +962,7 @@ fn distill_cmd(cases: &Path, model: &str, repeats: usize, threads: usize, out: &
 fn reader_block(r: &Record, versions: &HashMap<String, String>) -> String {
     if r.kind.is_knowledge() {
         let label = versions.get(&r.id).map(|s| s.as_str()).unwrap_or("");
-        return format!("[{} · note]\n{}: {}{label}", recall::fmt_time(r.ts), r.kind.as_str(), r.text);
+        return format!("[{} · note]\n{}: {}{label}", recall::fmt_time(r.valid_since()), r.kind.as_str(), r.text);
     }
     let role = if r.kind == Kind::Answer { "assistant" } else { "user" };
     format!("[{} · session {}]\n{role}: {}", recall::fmt_time(r.ts), r.session, r.text)
@@ -1013,7 +1030,7 @@ fn distilled_store(u: &Unit, dir: &Path, embedder: &str, e: &Arc<dyn Embedder>) 
     let kinds = "kind IN ('decision', 'preference', 'fact', 'todo', 'insight')";
     let stats = json!({
         "unit": u.unit_id, "exchanges": n, "seconds": t0.elapsed().as_secs_f64(), "cost_usd": cost, "errors": errors,
-        "notes": count(kinds), "closed": count(&format!("{kinds} AND tag = 'superseded'")), "replaced": replaced,
+        "notes": count(kinds), "closed": count(&format!("{kinds} AND valid_to > 0")), "replaced": replaced,
         "reconcile_calls": reconciled, "consolidations": consolidations,
     });
     std::fs::write(&done, stats.to_string()).unwrap();
@@ -1284,7 +1301,7 @@ fn deep_cmd(
                 let (bp_any, bp_all) = cover(&base_pool);
                 let mut picked = String::new();
                 for (r, _) in &res.picks {
-                    picked += &reader_block(r, &HashMap::new());
+                    picked += &reader_block(r, &res.versions);
                     picked += "\n\n";
                 }
                 let reading = if res.answer.is_empty() { picked.clone() } else { format!("A first reading of these records (by a smaller model; check it against them): {}\n\n{picked}", res.answer) };

@@ -138,7 +138,7 @@ impl DeepConfig {
 }
 
 /// One search the planner asked for.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Query {
     /// text | keywords | semantic | notes | entity | file | sql
     pub kind: String,
@@ -193,6 +193,9 @@ pub struct DeepResult {
     pub usage: llm::Usage,
     pub ms: u64,
     pub error: Option<String>,
+    /// How each candidate note changed or what it conflicts with
+    /// ([`version_labels`]), shown to the ranker and in the result.
+    pub versions: HashMap<String, String>,
 }
 
 impl DeepResult {
@@ -237,7 +240,7 @@ Records found in the memory of earlier sessions (id in brackets; a label in squa
 
 {cands}
 
-Pick the records an assistant working on this request should see: those that state facts, decisions, rules, requirements or earlier results it needs, including constraints that apply although the request does not mention them. When the request asks for suggestions, recommendations or advice, also pick what the user said about their own tastes, habits, experience, plans and things they have, even when those records do not answer the request: the assistant should tailor its answer to them. Leave out records that are merely on the same topic. When two records disagree, the later one usually holds; pick it and say so. Order the picks by importance, at most {k}.
+Pick the records an assistant working on this request should see: those that state facts, decisions, rules, requirements or earlier results it needs, including constraints that apply although the request does not mention them. When the request asks for suggestions, recommendations or advice, also pick what the user said about their own tastes, habits, experience, plans and things they have, even when those records do not answer the request: the assistant should tailor its answer to them. Leave out records that are merely on the same topic. When two records give different values for the same thing (a date, number, amount, name or choice), the later one holds (a note marked as no longer holding has been replaced); pick it and say so. When they contradict in a way an update cannot explain (one says something never happened or does not exist, the other that it did), or a note is marked as conflicting with another, pick both and say that they contradict each other, so the assistant can check. Order the picks by importance, at most {k}.
 
 Output {"relevant": [{"id": "<id>", "why": "<under 20 words: what it tells the assistant>"}], "answer": "<for a question about earlier work or conversations, 1 to 3 sentences answering it from the picked records, citing ids; otherwise the one or two things the assistant must keep in mind; empty if nothing applies>", "confidence": "high" or "medium" or "low" or "none"}"#;
 
@@ -350,7 +353,8 @@ pub fn plan(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str,
 pub fn run_query(store: &Store, q: &Query, filter: &Filter, n: usize) -> Result<Vec<Record>> {
     let mut f = filter.clone();
     f.kinds = q.kinds.clone();
-    let useful = |r: &Record| r.kind != Kind::Entity && r.tag != "uncertain" && r.tag != "superseded";
+    // Replaced notes only when asked what held at some time.
+    let useful = |r: &Record| r.kind != Kind::Entity && r.tag != "uncertain" && (filter.keeps_replaced() || r.tag != "superseded");
     let out: Vec<Record> = match q.kind.as_str() {
         "text" => recall::search(store, &q.q, &f, &RankParams { n: n.max(20), ..Default::default() })?.0.into_iter().map(|h| h.record).collect(),
         "keywords" => {
@@ -470,7 +474,7 @@ fn describe(r: &Record, terms: &HashSet<String>, now: i64, label: &str, max: usi
         Kind::Preference => "rule",
         k => k.as_str(),
     };
-    let mut s = format!("[{}] {kind} · {} · {}{}", r.id, recall::fmt_time(r.ts), fmt_ago(r.ts, now), label);
+    let mut s = format!("[{}] {kind} · {} · {}{}{}", r.id, recall::fmt_time(r.ts), fmt_ago(r.ts, now), label, recall::closed_label(r, now));
     if !r.kind.is_knowledge() {
         if let Some(req) = request_of(r) {
             s += &format!("\n  (during the request: {req})");
@@ -520,28 +524,53 @@ pub fn rank(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str,
                 out.error = Some("no JSON in the ranker's reply".into());
                 return out;
             };
-            let known: HashSet<&str> = cands.iter().map(|c| c.record.id.as_str()).collect();
+            let add = |out: &mut Ranked, given: &str, why: &str| {
+                for id in pick_ids(given, cands) {
+                    if out.picks.len() < cfg.max_picks && !out.picks.iter().any(|(i, _)| *i == id) {
+                        out.picks.push((id, clip(why, 200)));
+                    }
+                }
+            };
             for p in v.get("relevant").and_then(|x| x.as_array()).into_iter().flatten() {
                 let (id, why) = match p {
-                    Json::String(s) => (s.trim().trim_matches(|c| c == '[' || c == ']').to_string(), String::new()),
-                    _ => (
-                        p.get("id").and_then(|x| x.as_str()).unwrap_or("").trim().trim_matches(|c| c == '[' || c == ']').to_string(),
-                        p.get("why").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
-                    ),
+                    Json::String(s) => (s.as_str(), ""),
+                    _ => (p.get("id").and_then(|x| x.as_str()).unwrap_or(""), p.get("why").and_then(|x| x.as_str()).unwrap_or("").trim()),
                 };
-                if known.contains(id.as_str()) && !out.picks.iter().any(|(i, _)| *i == id) {
-                    out.picks.push((id, clip(&why, 200)));
-                }
-                if out.picks.len() >= cfg.max_picks {
-                    break;
-                }
+                add(&mut out, id, why);
             }
             out.answer = clip(v.get("answer").and_then(|x| x.as_str()).unwrap_or("").trim(), 800);
+            // No picks, but a reading that cites records: those it cites.
+            if out.picks.is_empty() {
+                let cited: Vec<String> = cite_re().find_iter(&out.answer).map(|m| m.as_str().to_string()).collect();
+                for c in cited {
+                    add(&mut out, &c, "cited in the reading");
+                }
+            }
             out.confidence = v.get("confidence").and_then(|x| x.as_str()).unwrap_or("low").trim().to_lowercase();
         }
         Err(e) => out.error = Some(e.to_string()),
     }
     out
+}
+
+/// The candidate ids a pick names: its id; or, when the model wrote a
+/// session's name instead (`b2g13` for `b2g13:2478`, which ids begin with),
+/// that session's candidates, best first, at most three.
+fn pick_ids(given: &str, cands: &[Cand]) -> Vec<String> {
+    let id = given.trim().trim_matches(|c: char| c == '[' || c == ']' || c == '(' || c == ')' || c == '"' || c == ',' || c == '.');
+    if id.is_empty() {
+        return Vec::new();
+    }
+    if let Some(c) = cands.iter().find(|c| c.record.id == id) {
+        return vec![c.record.id.clone()];
+    }
+    cands.iter().filter(|c| c.record.session == id || c.record.id.split(':').next() == Some(id)).take(3).map(|c| c.record.id.clone()).collect()
+}
+
+/// What a reading cites: ids (`b2g13:2478`) or names of sessions.
+fn cite_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[A-Za-z0-9][A-Za-z0-9_.-]*(?::[0-9]+)?").unwrap())
 }
 
 /// Features the local ranker scores a candidate by, in [`FEATURES`] order.
@@ -645,28 +674,40 @@ pub fn run(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str, 
     if !errors.is_empty() && out.plan.error.is_none() {
         out.plan.error = Some(errors.join("; "));
     }
-    let mut labels = HashMap::new();
+    if cands.is_empty() {
+        out.confidence = "none".into();
+        out.ms = t0.elapsed().as_millis() as u64;
+        return out;
+    }
+    out.versions = version_labels(store, &cands, now);
+    let mut labels = out.versions.clone();
     if let Some(p) = project {
         let mut ck = Checker::new(p);
         for c in &cands {
             if c.record.kind.is_knowledge() {
                 let l = ck.check_record(&c.record).label();
                 if !l.is_empty() {
-                    labels.insert(c.record.id.clone(), l);
+                    labels.entry(c.record.id.clone()).or_default().insert_str(0, &l);
                 }
             }
         }
-    }
-    if cands.is_empty() {
-        out.confidence = "none".into();
-        out.ms = t0.elapsed().as_millis() as u64;
-        return out;
     }
     let r = rank(store, cfg, cli, request, &cands, &labels, out.plan.hard, now);
     out.adopt(r, cands);
     out.ms = t0.elapsed().as_millis() as u64;
     out
 }
+
+/// For the candidate notes, what each replaced (`changed DATE; was: ...`,
+/// however long ago: a question asked of memory wants the history) and the
+/// live notes it conflicts with ([`recall::change_labels`]).
+pub fn version_labels(store: &Store, cands: &[Cand], now: i64) -> HashMap<String, String> {
+    let notes: Vec<&Record> = cands.iter().map(|c| &c.record).filter(|r| r.kind.is_knowledge()).collect();
+    recall::change_labels(store, &notes, now, ALL_DAYS)
+}
+
+/// A window that holds every change.
+const ALL_DAYS: i64 = 1_000_000;
 
 impl DeepResult {
     /// Takes the ranker's picks (records from `cands`), reading and cost.
@@ -698,10 +739,11 @@ pub fn format(res: &DeepResult, shown: &HashSet<String>, now: i64, project: Opti
     );
     let terms: HashSet<String> = HashSet::new();
     for (r, why) in &new {
-        let label = match (&mut ck, r.kind.is_knowledge()) {
+        let mut label = match (&mut ck, r.kind.is_knowledge()) {
             (Some(c), true) => c.check_record(&r).label(),
             _ => String::new(),
         };
+        label += res.versions.get(&r.id).map(|s| s.as_str()).unwrap_or("");
         s += &format!("\n{}", describe(r, &terms, now, &label, 700));
         if !why.is_empty() {
             s += &format!("\n  Why it matters: {why}");
@@ -788,6 +830,51 @@ mod tests {
         assert_eq!(cands.len(), 3);
         // Found by several searches, so ranked first.
         assert!(cands[0].sources.len() >= 2);
+    }
+
+    #[test]
+    fn picks_show_what_they_replaced_and_conflict_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.strata"), Arc::new(HashEmbedder { dim: 64 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        let day = 86_400;
+        // Written in January, replaced a year later, and contradicted since.
+        let v1 = s.append("a", 1, 10 * day, vec![Draft::new(Kind::Preference, "Refunds are allowed within 14 days")]).unwrap().remove(0);
+        let v2 = s.append("b", 1, 400 * day, vec![Draft::new(Kind::Preference, "Refunds are allowed within 30 days").link("supersedes", v1.id.clone())]).unwrap().remove(0);
+        s.close(&v1.id, v2.valid_since(), Some(&v2.id), "superseded").unwrap();
+        let c = s.append("c", 1, 410 * day, vec![Draft::new(Kind::Fact, "The user says refunds take 7 days").link("conflicts", v2.id.clone())]).unwrap().remove(0);
+        s.add_link(&v2.id, "conflicts", &c.id).unwrap();
+        let v2 = s.get(&[v2.id.clone()]).unwrap().remove(0);
+        let cands = vec![Cand { record: v2.clone(), score: 1.0, sources: vec![] }];
+        let labels = version_labels(&s, &cands, 420 * day);
+        // However long ago the change was, a question of memory sees it.
+        let l = &labels[&v2.id];
+        assert!(l.contains("was: Refunds are allowed within 14 days") && l.contains(&format!("conflicts with [{}]", c.id)), "{l}");
+        let res = DeepResult { picks: vec![(v2.clone(), String::new())], confidence: "high".into(), versions: labels, ..Default::default() };
+        let t = format(&res, &HashSet::new(), 420 * day, None);
+        assert!(t.contains("was: Refunds are allowed within 14 days"), "{t}");
+        // Searches find the version that held at a time asked about, and
+        // only the current one otherwise.
+        let q = Query { kind: "notes".into(), q: "refunds allowed days".into(), ..Default::default() };
+        let found = |f: &Filter| run_query(&s, &q, f, 10).unwrap().into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(found(&Filter { as_of: Some(100 * day), ..Default::default() }), vec![v1.id.clone()]);
+        assert!(!found(&Filter::default()).contains(&v1.id));
+    }
+
+    /// A pick that names a session instead of a record gets that
+    /// session's candidates; a reading's citations stand in for no picks.
+    #[test]
+    fn picks_naming_a_session_are_kept() {
+        let cand = |sid: &str, seq: i64| Cand { record: Record::from_draft(Draft::new(Kind::Fact, format!("fact {seq}")), sid, 1, seq, 100), score: 1.0, sources: vec![] };
+        let cands = vec![cand("b4g4", 2679), cand("b2g13", 2478), cand("b4g4", 2680), cand("b1g6", 2272)];
+        assert_eq!(pick_ids("[b2g13:2478]", &cands), vec!["b2g13:2478"]);
+        assert_eq!(pick_ids("b4g4", &cands), vec!["b4g4:2679", "b4g4:2680"]);
+        assert!(pick_ids("b9g9", &cands).is_empty() && pick_ids("", &cands).is_empty());
+        // A long session id: its records' ids begin with its first 8 characters.
+        let long = vec![cand("8f3e2a91-77c0-4b1e", 12)];
+        assert_eq!(pick_ids("8f3e2a91", &long), vec!["8f3e2a91:12"]);
+        let cited: Vec<String> = cite_re().find_iter("Your target is 1,800 words (b4g4), replacing b1g6:2272.").map(|m| m.as_str().to_string()).collect();
+        let ids: Vec<String> = cited.iter().flat_map(|c| pick_ids(c, &cands)).collect();
+        assert_eq!(ids, vec!["b4g4:2679", "b4g4:2680", "b1g6:2272"]);
     }
 
     #[test]
