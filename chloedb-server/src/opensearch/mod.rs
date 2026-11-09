@@ -751,7 +751,7 @@ impl Os {
                 "lucene_version": "9.7.0",
                 "minimum_wire_compatibility_version": "7.10.0",
                 "minimum_index_compatibility_version": "7.0.0",
-                "strata_version": env!("CARGO_PKG_VERSION"),
+                "chloedb_version": env!("CARGO_PKG_VERSION"),
             },
             "tagline": if elastic7 { "You Know, for Search" } else { "The OpenSearch Project: https://opensearch.org/" },
         });
