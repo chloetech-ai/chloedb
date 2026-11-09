@@ -126,7 +126,22 @@ export function measure(fold) {
     }
   }
   const fields = [...document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), select, textarea')].filter((e) => { const r = shown(e); return r && r.top < H; }).length;
+  // Where the screen's main content starts: its first list, table, form or
+  // card (a front page is a page to scroll, and is not measured).
+  const front = !!document.querySelector('.screen.front');
+  let firstTop = null;
+  for (const e of document.querySelectorAll('table, .list, .checks, .rcards, .rgroups, form, .card, .empty, .board')) {
+    const r = shown(e);
+    if (r) { firstTop = Math.round(r.top + (doc.scrollTop || 0)); break; }
+  }
+  // Fields whose text a phone zooms into when tapped (under 16 px).
+  const tinyFields = [...document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]), select, textarea')]
+    .filter((e) => shown(e) && parseFloat(getComputedStyle(e).fontSize) < 15.5).length;
+  // The big numbers (data-num, web/screen.js) and the rows drawn under them.
+  const nums = [...document.querySelectorAll('[data-num]')].filter((e) => shown(e));
+  const rowsShown = [...document.querySelectorAll('.list > .item, table tbody tr, .rcards > *, .rgroup-list > *')].filter((e) => shown(e)).length;
   return {
+    front, firstTop, tinyFields, numbers: nums.length, zeros: nums.filter((e) => e.dataset.num === '0').length, rowsShown,
     width: W, scroll: doc.scrollWidth, height: doc.scrollHeight, screen: H, wide,
     small: small.slice(0, 6), smallCount: small.length, repeats: repeats.slice(0, 4), faint: faint.slice(0, 4), faintCount: faint.length,
     ids: [...ids], fieldsOnFirstScreen: fields,
@@ -145,6 +160,11 @@ export function rules(m, device) {
   if (m.faintCount) out.push({ problem: `text that is hard to read: ${m.faint.slice(0, 2).map((f) => `"${f.text}" at ${f.ratio}:1`).join(', ')} (it needs 4.5:1)`, severity: 'high' });
   if (m.ids.length) out.push({ problem: `raw ids are shown: ${m.ids.join(', ')} (show the name of the row instead)`, severity: 'high' });
   if (m.repeats.length) out.push({ problem: `buttons say the same on every row with nothing to tell them apart: ${m.repeats.join(', ')}`, severity: 'low' });
+  // Taste rules held in code (Doable): the job's content on the first
+  // screenful, fields a phone does not zoom into, numbers that count.
+  if (device === 'phone' && !m.front && m.firstTop != null && m.firstTop > m.screen - 100) out.push({ problem: `the first screenful shows no list, table or form: the main content starts ${m.firstTop} px down and the phone shows ${m.screen} px`, fix: 'put what the job needs first, and shorten or move what stands above it', severity: 'high' });
+  if (device === 'phone' && m.tinyFields) out.push({ problem: `${m.tinyFields} field${m.tinyFields === 1 ? ' has' : 's have'} text under 16 px, so the phone zooms in when one is tapped`, fix: 'give fields 16 px text on a phone', severity: 'high' });
+  if (device === 'phone' && m.numbers >= 2 && m.zeros === m.numbers && m.rowsShown >= 2) out.push({ problem: `every number at the top reads 0 while the screen lists ${m.rowsShown} rows`, fix: "count what those rows hold (check the queries' columns, states and dates), or leave out the numbers that only fill in later", severity: 'high' });
   return out;
 }
 

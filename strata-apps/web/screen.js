@@ -200,7 +200,7 @@
             return { ...k, raw, shown: v == null ? '–' : String(v) };
           });
           if (lookIs() !== 'plain' && ks.length && (heroAt === null || heroAt === path)) { heroAt = path; return bold() ? hero(ks, s, path) : summary(ks); }
-          return h('div', { class: 'kpis' }, ks.map((k) => h('div', { class: 'kpi' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null)));
+          return h('div', { class: 'kpis' }, ks.map((k) => h('div', { class: zero(k) ? 'kpi zero' : 'kpi', 'data-num': zero(k) ? '0' : '1' }, h('div', { class: 'value' }, k.shown), h('div', { class: 'label' }, k.label), k.hint ? h('div', { class: 'small muted' }, k.hint) : null)));
         }
         if (b.chips !== undefined) return chips(b, s, path);
         if (b.input !== undefined) return input(b, s, path);
@@ -512,7 +512,7 @@
       const rest = ks.filter((k) => k !== main);
       const said = (k) => `${k.shown}${k.label ? ` ${lower(String(k.label))}` : ''}`;
       return h('div', { class: 'say' },
-        h('p', null, h('b', { class: URGENT.test(String(main.label || '')) && !zero(main) ? 'attn' : null }, said(main)), rest.map((k) => h('span', { class: zero(k) ? 'zero' : null }, ` · ${said(k)}`))),
+        h('p', null, h('b', { class: URGENT.test(String(main.label || '')) && !zero(main) ? 'attn' : null, 'data-num': zero(main) ? '0' : '1' }, said(main)), rest.map((k) => h('span', { class: zero(k) ? 'zero' : null, 'data-num': zero(k) ? '0' : '1' }, ` · ${said(k)}`))),
         main.hint ? h('p', { class: 'muted' }, main.hint) : null);
     }
     function hero(ks, s, path) {
@@ -520,9 +520,9 @@
       const rest = ks.filter((k) => k !== main);
       const tone = ATTN.test(String(main.label || '')) && !zero(main) ? ' attn' : '';
       return h('section', { class: `hero-band${tone}`, 'aria-label': `${main.shown} ${main.label || ''}`.trim() },
-        h('div', { class: 'hero-big' }, h('b', null, main.shown), main.label ? h('span', null, lower(String(main.label))) : null),
+        h('div', { class: 'hero-big', 'data-num': zero(main) ? '0' : '1' }, h('b', null, main.shown), main.label ? h('span', null, lower(String(main.label))) : null),
         main.hint ? h('p', { class: 'hero-line' }, main.hint) : null,
-        rest.length ? h('div', { class: 'hero-legend' }, rest.map((k) => h('span', { class: zero(k) ? 'zero' : null }, h('b', null, k.shown), ' ', lower(String(k.label || ''))))) : null);
+        rest.length ? h('div', { class: 'hero-legend' }, rest.map((k) => h('span', { class: zero(k) ? 'zero' : null, 'data-num': zero(k) ? '0' : '1' }, h('b', null, k.shown), ' ', lower(String(k.label || ''))))) : null);
     }
 
     // A row as a card: its name and its other words, the number that matters

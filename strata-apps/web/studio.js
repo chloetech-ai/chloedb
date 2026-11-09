@@ -821,6 +821,8 @@ async function chooseDesign(i) {
   try { await api('POST', `/api/apps/${S.appId}/designs`, { chosen: i }); } catch (e) { toast(e.message); }
 }
 
+// The three looks, in a few words.
+const LOOK_WORDS = { native: 'phone lists', bold: 'bold cards', plain: 'tables and tiles' };
 // The Design tab: the three designs, each a live miniature of the view open
 // now with the app's own data, its navigation drawn around it.
 function designTab() {
@@ -836,11 +838,11 @@ function designTab() {
     const tabs = st.views.slice(0, 5).map((w) => h('span', { class: `tab${w.slug === v?.slug ? ' on' : ''}` }, w.title));
     return h('button', { class: `dcard${i === d.chosen ? ' on' : ''}`, 'data-i': String(i), type: 'button', onclick: () => chooseDesign(i), title: `Use ${x.name}` },
       h('style', null, designCss(x, `.dcard[data-i="${i}"] .mini`)),
-      h('div', { class: 'mwrap' }, h('div', { class: `mini designed nav-${x.nav}` }, h('div', { class: 'tabs' }, tabs), h('div', { class: 'mframe' }, iframe))),
+      h('div', { class: 'mwrap' }, h('div', { class: `mini designed nav-${x.nav} look-${x.look}` }, h('div', { class: 'tabs' }, tabs), h('div', { class: 'mframe' }, iframe))),
       h('div', { class: 'dmeta' },
         h('div', { class: 'dname' }, h('span', { class: 'swatch', style: `background:${x.light.accent}` }), h('span', { class: 'swatch', style: `background:${x.dark.bg}` }), h('b', x.name), h('span', { class: 'pill inuse' }, 'In use')),
         x.about ? h('div', { class: 'hint' }, x.about) : null,
-        h('div', { class: 'dtokens' }, `${x.titles} titles · ${x.corners} corners · ${x.surface} · ${x.nav} · ${x.scheme === 'auto' ? 'light and dark' : x.scheme}`)));
+        h('div', { class: 'dtokens' }, `${LOOK_WORDS[x.look] || x.look} · ${x.titles} titles · ${x.corners} corners · ${x.nav} · ${x.scheme === 'auto' ? 'light and dark' : x.scheme}`)));
   });
   const again = h('button', { class: 'btn small', onclick: async () => {
     again.disabled = true;
@@ -850,7 +852,7 @@ function designTab() {
     again.textContent = 'New alternatives';
   } }, 'New alternatives');
   return [
-    h('div', { class: 'where' }, 'Three designs for this app. Click one to use it: every view changes at once, with no rebuild. A design is a few tokens (colors, type, corners, spacing, navigation) over the same screens. People using the app on its own can pick their own under Aa.'),
+    h('div', { class: 'where' }, 'Three designs for this app, three shapes of the same screens. Click one to use it: every view changes at once, with no rebuild. A design is a few tokens (its look, colors, type, corners, spacing, navigation). People using the app on its own can pick their own under Aa.'),
     h('div', { class: 'dcards' }, cards),
     h('div', { class: 'row', style: 'display:flex;gap:8px;align-items:center' }, again, h('span', { class: 'hint' }, 'keeps the one in use, replaces the other two')),
   ];

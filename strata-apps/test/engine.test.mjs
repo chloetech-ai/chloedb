@@ -2011,3 +2011,60 @@ test('finished screens: a row never offers an action twice, a list puts its own 
   assert.ok(paletteProblems([d('#2b6cb0'), d('#2f5bd3'), d('#c2410c')], { name: 'Hours' }).some((p) => /one hue family/.test(p)));
   assert.deepEqual(paletteProblems([d('#2b6cb0'), d('#b4235a'), d('#c2410c')], { name: 'Hours' }), []);
 });
+
+test("Doable's lessons: an art direction the designs follow, three designs of different shapes, taste rules held in code", async () => {
+  const { cleanArt, briefToKeep } = await import('../engine/forge.mjs');
+  const { makeDesigns, shapeDesigns, designPrompt } = await import('../engine/designs.mjs');
+  const { tidyWords, tidyScreen, madeUp } = await import('../engine/taste.mjs');
+  const { rules } = await import('../engine/look.mjs');
+  const { checkDesign } = await import('../web/design.js');
+  // the art direction: cleaned, its type one of four, kept with the brief (and kept when a change restates only the brief)
+  const art = cleanArt({ concept: 'A coach\'s clipboard  at the side of the pitch', mood: 'brisk, clear, warm', accent: 'deep indigo, like the kit', type: 'Serif, editorial' });
+  assert.equal(art.type, 'serif');
+  assert.equal(art.imagery, 'none');
+  assert.equal(cleanArt({ mood: 'x' }), null, 'no concept, no art direction');
+  const ux = { who: 'a coach', job: 'mark who came', often: 'weekly', device: 'phone', first: 'today', glance: 'who is here' };
+  assert.deepEqual(briefToKeep({ ux, art }, null).art, art);
+  const app = { id: 'a1', name: 'Squad', description: 'Attendance for my under-10s', ux: JSON.stringify({ ...ux, art }), head: 1 };
+  assert.deepEqual(briefToKeep({ ux: { ...ux, job: 'mark attendance' } }, app).art, art);
+  assert.equal(briefToKeep({ art: { ...art, concept: 'A chalkboard' } }, app).job, 'mark who came', 'art alone keeps the brief');
+  // the designs are asked with it, and design 1 takes its type
+  const direction = { art, views: [{ title: 'Today' }], tables: ['players'] };
+  assert.match(designPrompt(app, null, direction), /Its views: Today[\s\S]*coach's clipboard[\s\S]*deep indigo/);
+  let asked = 0;
+  const same = JSON.stringify([{ name: 'A', light: { accent: '#3949ab' } }, { name: 'B', light: { accent: '#c2410c' } }, { name: 'C', light: { accent: '#b4235a' } }]);
+  const out = await makeDesigns(app, null, { direction, ask: async () => { asked++; return { text: same }; } });
+  assert.deepEqual(out.designs.map((d) => d.look), ['native', 'bold', 'native'], 'the first is native, and three alike get a bold second');
+  assert.equal(out.designs[0].titles, 'serif');
+  assert.equal(asked, 2, 'designs alike in shape are asked again');
+  assert.ok(out.problems.some((p) => /differ only in/.test(p)), out.problems.join('; '));
+  const apart = [checkDesign({ look: 'bold', titles: 'serif' }), checkDesign({ look: 'bold', nav: 'sidebar', density: 'compact' }), checkDesign({ look: 'plain', surface: 'outlined', corners: 'square' })];
+  assert.deepEqual(shapeDesigns(apart), []);
+  assert.equal(apart[0].look, 'native');
+  // words tidied where it is safe: emoji out of titles and labels, em dashes become a colon or a comma, data untouched
+  assert.equal(tidyWords('🍣 Menu — tonight', true), 'Menu: tonight');
+  assert.equal(tidyWords('No orders yet — add one above.'), 'No orders yet, add one above.');
+  assert.equal(tidyWords('© 2026 · 9–5'), '© 2026 · 9–5');
+  assert.equal(tidyWords('👍', true), '👍', 'an emoji alone stays');
+  const screen = { data: { done: "SELECT * FROM t WHERE s = '✅ — done'" }, body: [{ h: 'Today ✅' }, { table: '=rows', columns: [{ key: 'name', label: 'Player 🏃' }], empty: 'Nobody yet — add a player' }, { text: '{{row.note}} — {{row.when}}' }] };
+  const tidy = tidyScreen(screen);
+  assert.equal(tidy.data.done, screen.data.done);
+  assert.deepEqual([tidy.body[0].h, tidy.body[1].columns[0].label, tidy.body[1].empty, tidy.body[2].text], ['Today', 'Player', 'Nobody yet, add a player', '{{row.note}}, {{row.when}}']);
+  assert.equal(tidyScreen({ body: [{ h: 'Plain' }] }).body[0].h, 'Plain');
+  assert.equal(expandWith({ body: [{ h: '📦 Stock' }] }).screen.body[0].h, 'Stock', 'every screen as it runs is tidied');
+  // made-up claims and placeholder text are problems for the model
+  assert.deepEqual(madeUp({ body: [{ stats: [{ value: 4.9, label: 'average rating' }, { value: '=data.orders.length', label: 'orders' }] }, { text: 'Loved by 2,000+ happy diners' }, { quotes: [{ text: 'Great', stars: 5 }] }, 'Lorem ipsum', { text: 'todo list' }] }),
+    ['a number for "average rating" that no row holds (4.9)', 'a count ("2,000+ happy diners")', 'star ratings on quotes', 'placeholder text ("Lorem ipsum")']);
+  assert.ok(checkScreen({ body: [{ text: 'Rated 4.8 stars' }] }).some((p) => /rows do not hold: a rating/.test(p)));
+  assert.deepEqual(madeUp({ body: [{ h: 'Ratings' }, { table: '=rows', columns: [{ key: 'stars', label: 'Stars' }] }] }), []);
+  // the drawn-page rules: the main content on the first screenful, fields a phone does not zoom into, numbers that count
+  const m = { width: 390, scroll: 390, text: 50, controls: 5, smallCount: 0, faintCount: 0, ids: [], repeats: [], screen: 760, front: false, firstTop: 820, tinyFields: 2, numbers: 3, zeros: 3, rowsShown: 4 };
+  const found = rules(m, 'phone').map((r) => r.problem);
+  assert.equal(found.length, 3, found.join('; '));
+  assert.match(found[0], /first screenful shows no list/);
+  assert.match(found[1], /2 fields have text under 16 px/);
+  assert.match(found[2], /every number at the top reads 0 while the screen lists 4 rows/);
+  assert.deepEqual(rules({ ...m, firstTop: 300, tinyFields: 0, zeros: 1 }, 'phone'), []);
+  assert.deepEqual(rules({ ...m, front: true, tinyFields: 0, rowsShown: 0 }, 'phone'), [], 'a front page scrolls');
+  assert.deepEqual(rules(m, 'computer'), []);
+});

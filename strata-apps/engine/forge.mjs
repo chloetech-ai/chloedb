@@ -18,6 +18,7 @@ import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.
 import { checkRule, RULES_DOC } from './rules.mjs';
 import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
 import { LOOK, checkDrawn } from './look.mjs';
+import { madeUp, tidyTitle } from './taste.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
 export const BUDGET = { parts: 7, kpis: 4, fields: 8, code: 1000, grow: 400 };
@@ -165,6 +166,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 {
   "name": "Habits",
   "ux": {"who": "...", "job": "...", "often": "daily", "device": "phone", "first": "today", "glance": "..."},
+  "art": {"concept": "...", "mood": "...", "imagery": "none", "accent": "...", "type": "system"},
   "summary": "what this version changed, in one or two plain sentences, written to the person",
   "tables": [{"name": "tasks", "description": "what a row is", "columns": [{"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}]}],
   "views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],
@@ -180,6 +182,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 
 - name: only for a new app, or when asked to rename it: what a person would call it on their home screen, 2 to 4 words ("Habits", "Plant care", "Lunch votes"); never the request cut short.
 - ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "several times a week", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
+- art: the app's art direction, for a new app, decided with the brief and before the screens (it sets the look the app is given, and the screens follow it): the "concept", one sentence on what it should feel like, from the subject's own world ("a quiet ledger for a corner bakery's flour and butter", "a coach's clipboard at the side of the pitch"); the "mood" in three words; the "imagery", what its photos show (the dishes themselves, close up; the rooms to let) or "none" when photos do not help the job; the "accent", the one color of its buttons, named as the subject would ("deep indigo, like the club's kit", "brick red"), green or teal only when the subject itself is green; and "type", the face of its titles: "system", "serif" (editorial, food, books), "rounded" (friendly, for families and kids) or "mono" (technical). Screens keep to it: words in the subject's own terms, photos only where the imagery says, no emoji in titles, labels or buttons (the named icons instead), no em dashes in what they say, and nothing made up that the app's rows do not hold (no ratings, review counts or customer numbers).
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
 - components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
@@ -258,9 +261,9 @@ Its blocks (they work in any screen; on a front page each is a section of its ow
 - {"hero": "A headline with *one* emphasized word", "eyebrow": "a short line above", "sub": "one or two sentences", "photo": "what it shows", "look": "photo" | "split" | "gradient" | "plain", "actions": [action, action], "align": "center" | "left", "height": "full" | "tall" | "short", "badge": "a short floating note (split)", "note": "small print"}. photo: the photo fills the screen, white type over it; split: words beside the photo; gradient: the design's moving gradient (the photo, if given, rises below the words); plain: words alone. *word* draws a word in the gradient, in any title.
 - {"carousel": [{"title", "text", "photo", "price", "badge", "eyebrow", "action"}], "look": "cards" | "slides", "auto": 6}: cards is a shelf that scrolls sideways; slides fill the width, one photo at a time with its words, moving on by themselves every "auto" seconds. From rows: "carousel": "=products", "item": {"title": "=item.name", "price": "=app.fmt.money(item.price)", "src": "=item.image", "action": {"label": "Add", "do": "=() => app.insert('cart', {product: item.id})"}} (each row is "item", or the name in "as"); or "body": [blocks] to draw each card from blocks.
 - {"gallery": [{"photo", "title"}], "look": "mosaic" | "masonry" | "grid"} (or "=rows" with "item"): a photo opens large when tapped.
-- {"features": [{"icon", "title", "text", "action"}], "columns": 2 | 3 | 4, "look": "tiles" | "plain" | "photos"}: "photos" gives each a "photo" instead of an icon. Icons: check star heart bolt shield clock leaf sparkles chat calendar pin truck gift camera music cup globe lock users chart home phone mail tag cart sun moon book flame award smile card wifi arrow play dumbbell briefcase code cloud search bell rocket scissors paw tooth plane palette, or one emoji.
-- {"stats": [{"value": 1200, "label": "...", "prefix": "$", "suffix": "+"}]}: big numbers that count up (a value may be "=expression" over data).
-- {"quotes": [{"text", "name", "role", "photo", "stars": 5}], "look": "grid" | "carousel"}: what people say; a photo here is a face ("portrait woman smiling").
+- {"features": [{"icon", "title", "text", "action"}], "columns": 2 | 3 | 4, "look": "tiles" | "plain" | "photos"}: "photos" gives each a "photo" instead of an icon. Icons: check star heart bolt shield clock leaf sparkles chat calendar pin truck gift camera music cup globe lock users chart home phone mail tag cart sun moon book flame award smile card wifi arrow play dumbbell briefcase code cloud search bell rocket scissors paw tooth plane palette.
+- {"stats": [{"value": 1200, "label": "...", "prefix": "$", "suffix": "+"}]}: big numbers that count up: "=expression" over data, or facts the request gives; never made up (no customer counts, ratings or reviews the rows do not hold).
+- {"quotes": [{"text", "name", "role", "photo"}], "look": "grid" | "carousel"}: what people say, only quotes the request gives or rows the app holds (never made up, never with stars); a photo here is a face ("portrait woman smiling").
 - {"media": [blocks], "photo", "side": "left" | "right", "title", "eyebrow", "sub", "actions"}: a photo beside words; alternate the sides down the page.
 - {"band": [blocks], "look": "gradient" | "accent" | "dark" | "photo" | "tint", "photo", "title", "eyebrow", "sub", "actions", "align"}: a full-width stripe for a call to action or one strong sentence.
 - {"marquee": ["words", "*emphasized words*", ...], "look": "big"}: a strip that moves by itself (places, names, partners, a motto).
@@ -743,6 +746,8 @@ export function checkScreen(screen, columnsOf = () => null) {
     });
   };
   walk(screen.body, 'body');
+  const claims = madeUp(screen);
+  if (claims.length) problems.push(`the screen says what the app's rows do not hold: ${claims.slice(0, 3).join('; ')}. Show only what its data or the request gives: take it out, or count it from a table with an "=expression"`);
   if (JSON.stringify(screen).length > 120 * 1024) problems.push('the screen is longer than 120 KiB');
   return problems;
 }
@@ -826,6 +831,7 @@ export async function buildContext(engine, appId, request) {
     if (view.app.description) parts.push(`First described as: ${view.app.description}`);
     const brief = briefOf(view.app);
     if (brief) parts.push(`## Its UX brief\n${BRIEF.map((k) => `- ${k}: ${brief[k]}`).join('\n')}\n\nKeep to it: the first screen stays the one where the job is done, and a change goes where its use belongs (what is done as often as the job, on the first screen; looking back, on a later one; setting up, last). Give "ux" again only when the request changes who uses the app or how.`);
+    if (brief?.art) parts.push(`## Its art direction\n${ART.map((k) => `- ${k}: ${brief.art[k] || '-'}`).join('\n')}\n\nWhat you add keeps to it (its words, its photos). Give "art" again only when the request asks for another feel.`);
     const tables = [];
     for (const t of view.tables) {
       const name = physical(appId, t.spec.name);
@@ -1163,6 +1169,29 @@ export function normalizeBrief(plan) {
 const BRIEF = ['who', 'job', 'often', 'device', 'first', 'glance'];
 export { briefOf };
 
+// The art direction (plan.art), kept with the brief: what the app should feel
+// like, what its photos show, its accent and the type of its titles. Doable
+// writes one before any interface; the designs and the screens follow it.
+const ART = ['concept', 'mood', 'imagery', 'accent', 'type'];
+const TYPES_OF_TITLES = ['system', 'serif', 'rounded', 'mono'];
+export function cleanArt(a) {
+  if (!a || typeof a !== 'object' || Array.isArray(a) || typeof a.concept !== 'string' || !a.concept.trim()) return null;
+  const out = Object.fromEntries(ART.map((k) => [k, typeof a[k] === 'string' ? a[k].trim().replace(/\s+/g, ' ').slice(0, 240) : '']));
+  const t = out.type.toLowerCase();
+  out.type = TYPES_OF_TITLES.find((x) => t.includes(x)) || (/editorial|elegant|classic/.test(t) ? 'serif' : /friendly|playful|soft/.test(t) ? 'rounded' : /code|technical|terminal/.test(t) ? 'mono' : 'system');
+  if (!out.imagery) out.imagery = 'none';
+  return out;
+}
+// The brief to keep for a version: the plan's (or the app's, when the plan
+// restates only the art), with the art the plan gives or the one it had.
+export function briefToKeep(plan, app) {
+  const had = briefOf(app);
+  const art = cleanArt(plan?.art) || had?.art || null;
+  const ux = plan?.ux && typeof plan.ux === 'object' && !Array.isArray(plan.ux) ? plan.ux : (cleanArt(plan?.art) ? had : null);
+  if (!ux) return null;
+  return { ...Object.fromEntries(BRIEF.map((k) => [k, String(ux[k] ?? '').slice(0, 300)])), ...(art ? { art } : {}) };
+}
+
 export function checkBrief(plan, view) {
   const problems = [];
   const fresh = !view.comp.n;
@@ -1198,6 +1227,7 @@ export function orderByBrief(plan, view) {
 
 export function completePlan(plan, view, library) {
   if (plan) { normalizeBrief(plan); orderByBrief(plan, view); }
+  for (const v of plan?.views || []) if (v && typeof v.title === 'string') v.title = tidyTitle(v.title);
   if (!plan || !Array.isArray(plan.reuse)) return plan;
   const have = new Map(view.tables.map((t) => [t.spec.name, new Set((t.spec.columns || []).map((c) => c.name))]));
   plan.tables = Array.isArray(plan.tables) ? plan.tables : [];
@@ -1521,6 +1551,13 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     throw err;
   }
   progress('The code passed the checks; storing it in Strata', { step: 'store' });
+  // A new app's three designs are made from its art direction, beside the
+  // storing (the server's hook; the drawn-page check waits for them).
+  const art = !view.comp.n && !request.candidate ? cleanArt(plan.art) : null;
+  const designing = art && typeof engine.onDirection === 'function'
+    ? Promise.resolve(engine.onDirection(appId, { art, views: (plan.views || []).map((v) => ({ title: v.title })), tables: (plan.tables || []).map((t) => t.name) })).catch(() => null)
+    : null;
+  if (art) progress(`Art direction: ${art.concept}${art.accent ? `; accent ${art.accent}` : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}`);
   let storing = tr.start('strata', 'Store the code and the new version in Strata');
 
   // Tables first: data the new code reads must exist when it goes live.
@@ -1646,7 +1683,8 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   // The live version's name and brief are the app's.
   if (!candidate) {
     const named = typeof plan.name === 'string' && plan.name.trim() ? { name: plan.name.trim().slice(0, 32) } : {};
-    const ux = plan.ux && typeof plan.ux === 'object' ? { ux: JSON.stringify(Object.fromEntries(BRIEF.map((k) => [k, String(plan.ux[k] ?? '').slice(0, 300)]))) } : {};
+    const brief = briefToKeep(plan, view.app);
+    const ux = brief ? { ux: JSON.stringify(brief) } : {};
     if (named.name || ux.ux) await store.updateApp(appId, { ...named, ...ux });
   }
   tr.end(storing, { written: written.length });
@@ -1695,7 +1733,8 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   // computer, measured, and looked at against the brief, after the build has
   // answered; the server sends what stands in the way to the repair.
   if (LOOK && !candidate && engine.baseUrl) {
-    opening.then(() => checkDrawn(engine, appId)).then((r) => { if (r.ran) engine.emit('drawn', { app: appId, n, source: request.source || 'user', ...r }); })
+    const designed = designing ? Promise.race([designing, new Promise((ok) => setTimeout(ok, 30_000))]) : null;
+    Promise.all([opening, designed]).then(() => checkDrawn(engine, appId)).then((r) => { if (r.ran) engine.emit('drawn', { app: appId, n, source: request.source || 'user', ...r }); })
       .catch((e) => engine.log?.(`[${appId}] drawing the screens: ${e.message}`));
   }
   if (candidate) {

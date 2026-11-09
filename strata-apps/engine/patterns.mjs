@@ -24,6 +24,7 @@
 //   stands for its $value.
 // Defaults may name parameters declared before them.
 
+import { tidyScreen } from './taste.mjs';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -185,7 +186,7 @@ const HOLDERS = ['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else
 export function expandScreen(screen, patterns = PATTERNS) {
   const problems = [];
   const used = [];
-  if (!screen || typeof screen !== 'object' || !JSON.stringify(screen).includes('"use"')) return { screen, used, problems };
+  if (!screen || typeof screen !== 'object' || !JSON.stringify(screen).includes('"use"')) return { screen: tidyScreen(screen), used, problems };
   const out = { ...screen, state: { ...(screen.state || {}) }, data: { ...(screen.data || {}) } };
   const lets = {};
   const join = (into, add, what, where) => {
@@ -224,7 +225,7 @@ export function expandScreen(screen, patterns = PATTERNS) {
   for (const k of Object.keys(lets)) if (screen.let && screen.let[k] !== undefined && JSON.stringify(screen.let[k]) !== JSON.stringify(lets[k])) problems.push(`the screen has let.${k} already; give the pattern another "key"`);
   if (!Object.keys(out.state).length) delete out.state;
   if (!Object.keys(out.let).length) delete out.let;
-  return { screen: out, used, problems };
+  return { screen: tidyScreen(out), used, problems };
 }
 
 // Expands the "use" blocks of every screen in a plan; records the patterns

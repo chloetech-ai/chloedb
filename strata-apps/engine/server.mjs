@@ -276,6 +276,8 @@ async function runRequest(req, extra = {}) {
     broadcast('failed', { app: req.app, request: req.id, error: e.message, candidate: extra.candidate || null });
   } finally {
     running.delete(req.app);
+    // A first build that gave no art direction: designs from the description.
+    directions.get(req.app)?.give(null);
   }
 }
 
@@ -378,12 +380,33 @@ function send(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-function designsOf(appId, fresh = false) {
-  return ensureDesigns(engine.store, appId, { fresh, onMade: (saved, out) => {
-    console.log(`designs ${appId}: ${saved.designs.map((d) => d.name).join(', ')} (${out.source}, ${(out.ms / 1000).toFixed(1)} s${out.error ? `; ${out.error.slice(0, 120)}` : ''})`);
+function designsOf(appId, fresh = false, direction = null) {
+  // A new app's designs wait for its art direction (the first plan writes it);
+  // an ask in the meantime gets them when they are made.
+  const waiting = !fresh && !direction && directions.get(appId);
+  if (waiting) return waiting.made;
+  return ensureDesigns(engine.store, appId, { fresh, direction, onMade: (saved, out) => {
+    console.log(`designs ${appId}: ${saved.designs.map((d) => `${d.name} (${d.look})`).join(', ')} (${out.source}${out.directed ? ', from the art direction' : ''}, ${(out.ms / 1000).toFixed(1)} s${out.error ? `; ${out.error.slice(0, 120)}` : ''})`);
     broadcast('design', { app: appId, chosen: saved.chosen });
   } });
 }
+// New apps waiting for their art direction: the first plan gives it
+// (forge.mjs calls engine.onDirection once its checks pass); a first build
+// that ends without one has its designs made from the description.
+const directions = new Map();
+function awaitDirection(appId) {
+  let give;
+  const given = new Promise((ok) => { give = ok; });
+  const made = given.then((direction) => { directions.delete(appId); return designsOf(appId, false, direction); });
+  made.catch((e) => console.error(`designs ${appId}: ${e.message}`));
+  directions.set(appId, { give, made });
+}
+engine.onDirection = (appId, direction) => {
+  const w = directions.get(appId);
+  if (!w) return null;
+  w.give(direction);
+  return w.made;
+};
 
 async function appState(appId) {
   const { store } = engine;
@@ -432,9 +455,10 @@ const routes = [
     if (description.length < 5) throw Object.assign(new Error('describe the app in a sentence or more'), { status: 400 });
     const name = description.split(/[.\n]/)[0].slice(0, 40);
     const app = await engine.store.createApp({ name, description });
+    // Its three designs are made beside the first build, from the art
+    // direction its plan writes (or the description, when it has none).
+    awaitDirection(app);
     const request = await submit(app, description, 'user');
-    // Its three designs are made beside the first build, from the description.
-    designsOf(app).catch((e) => console.error(`designs ${app}: ${e.message}`));
     return { app, request: request.id };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id]) => appState(id)],

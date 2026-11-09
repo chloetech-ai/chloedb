@@ -286,7 +286,11 @@ ul.list, ol.list { margin: 0; padding: 0; }
   button:not(.link):is(.small, *) { min-width: 44px; }
   input[type=checkbox], input[type=radio] { width: 22px; height: 22px; }
   label:has(> input[type=checkbox]), label:has(> input[type=radio]) { min-height: 44px; }
+  /* a phone zooms into a field whose text is under 16 px */
+  input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]), select, textarea { font-size: max(16px, 1em); }
 }
+/* a big number that is 0 says so quietly */
+.kpi.zero .value { color: var(--muted); font-weight: 500; }
 
 /* A form folded behind its button (screen.js folded()): on a phone only,
    or everywhere ("fold": true). */
