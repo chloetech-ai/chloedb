@@ -451,7 +451,7 @@
                     "type": "string"
                   },
                   "upgrade": {
-                    "description": "Following an image tag for new versions of Strata: a new image is suggested (suggest) or rolled out (on), by its digest.",
+                    "description": "Following an image tag for new versions of ChloeDB: a new image is suggested (suggest) or rolled out (on), by its digest.",
                     "properties": {
                       "checkMinutes": {
                         "description": "Minutes between two looks at the registry (default 10).",
