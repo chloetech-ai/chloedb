@@ -42,7 +42,7 @@ Things that made me nervous:
 | models: potion-base-8M, SigLIP, BLIP | 2 s, 26 s, ~60 s | 30 MB, 778 MB and 945 MB |
 
 - **My first failure was a model that was not there yet.** The server downloads a table's embedding model when the table is created, in the background. Writes are accepted meanwhile, but a query with `{"embed": "..."}` fails until the download finishes. My test servers lived for a second, so the download never finished. `chloedb-server fetch-model potion-base-8M` took 2 seconds and fixed it. **Lesson: download the models when you build the image, never at first use.**
-- **The 28-minute build is a real cost.** CI will need prebuilt binaries or a cache. The 0.1.0 release has prebuilt servers and wheels, but this branch is far past it.
+- **I built more than I needed to.** I compiled the Python extension without first checking the releases. The 0.1.0 wheel installs in 10 seconds (`pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0`). I checked afterwards: with a 6-line alias module, all 21 test runs pass on it, in the process and against today's server and cluster. The two differences are its name (`import strata`, `StrataError`) and a newer client option it lacks (`retry_for`). The server build was needed, because neither the release binaries nor the container image include `vision`, the feature that captions and embeds pictures. **Lesson: start from the release, and build from source only for a feature it lacks.**
 
 ## Modelling a social network
 
