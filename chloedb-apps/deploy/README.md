@@ -30,7 +30,7 @@ chloedb-apps at one pushed commit of this repository.
 
 ```bash
 deploy/kube.sh --ref <full commit sha> --node <node name> \
-  --image ghcr.io/chloetech-ai/strata-server@sha256:<digest> --cap 25
+  --image ghcr.io/chloetech-ai/chloedb-server@sha256:<digest> --cap 25
 ```
 
 It expects the Secret `anthropic` (key `key`, an Anthropic API key) in the
