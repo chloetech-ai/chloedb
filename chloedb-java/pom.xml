@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Strata from Java: the package ai.chloetech.strata (src/main/java) and the
+  ChloeDB from Java: the package ai.chloetech.chloedb (src/main/java) and the
   native library it loads (the Rust crate in this directory, src/*.rs).
 
   mvn package builds both: cargo builds the library (target/release), which
@@ -16,12 +16,12 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>ai.chloetech</groupId>
-  <artifactId>strata</artifactId>
+  <artifactId>chloedb</artifactId>
   <version>0.1.0</version>
   <packaging>jar</packaging>
 
-  <name>Strata</name>
-  <description>Strata, an embedded search database with SQL, in-process from Java</description>
+  <name>ChloeDB</name>
+  <description>ChloeDB, an embedded search database with SQL, in-process from Java</description>
   <url>https://github.com/chloetech-ai/strata</url>
   <licenses>
     <license>
@@ -40,7 +40,7 @@
     <cargo>cargo</cargo>
     <!-- Set by the profile of this platform, below. -->
     <native.platform>unknown</native.platform>
-    <native.library>libstrata_jni.so</native.library>
+    <native.library>libchloedb_jni.so</native.library>
     <surefire.native.access></surefire.native.access>
     <junit.version>5.11.4</junit.version>
   </properties>
@@ -131,7 +131,7 @@
               <goal>copy-resources</goal>
             </goals>
             <configuration>
-              <outputDirectory>${project.build.outputDirectory}/ai/chloetech/strata/native/${native.platform}</outputDirectory>
+              <outputDirectory>${project.build.outputDirectory}/ai/chloetech/chloedb/native/${native.platform}</outputDirectory>
               <resources>
                 <resource>
                   <directory>${project.basedir}/target/${cargo.profile}</directory>
@@ -157,7 +157,7 @@
         <configuration>
           <archive>
             <manifestEntries>
-              <Automatic-Module-Name>ai.chloetech.strata</Automatic-Module-Name>
+              <Automatic-Module-Name>ai.chloetech.chloedb</Automatic-Module-Name>
               <!-- Java 24 and later warn when a jar loads a native library
                    unless it may (an executable jar reads this). -->
               <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
@@ -194,7 +194,7 @@
       </activation>
       <properties>
         <native.platform>macos-aarch64</native.platform>
-        <native.library>libstrata_jni.dylib</native.library>
+        <native.library>libchloedb_jni.dylib</native.library>
       </properties>
     </profile>
     <profile>
@@ -204,7 +204,7 @@
       </activation>
       <properties>
         <native.platform>macos-x86_64</native.platform>
-        <native.library>libstrata_jni.dylib</native.library>
+        <native.library>libchloedb_jni.dylib</native.library>
       </properties>
     </profile>
     <!-- Java 22 and later warn when a library is loaded without this (and

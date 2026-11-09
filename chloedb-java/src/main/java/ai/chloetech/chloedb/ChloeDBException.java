@@ -1,4 +1,4 @@
-package ai.chloetech.strata;
+package ai.chloetech.chloedb;
 
 /**
  * An error from the database: a bad schema, query, value or file, or a
@@ -7,10 +7,10 @@ package ai.chloetech.strata;
  * <p>Arguments of the wrong kind throw {@link IllegalArgumentException}, and
  * a call on a closed {@link Database} {@link IllegalStateException}.
  */
-public class StrataException extends RuntimeException {
+public class ChloeDBException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
-    public StrataException(String message) {
+    public ChloeDBException(String message) {
         super(message);
     }
 }

@@ -1,4 +1,4 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -15,7 +15,7 @@ import java.util.Map;
  * ARRAY, JSON is OTHER; a column of nulls only, or of values of different
  * types, is OTHER too.
  */
-final class StrataResultSetMetaData implements ResultSetMetaData {
+final class ChloeDBResultSetMetaData implements ResultSetMetaData {
     /** A column's type as JDBC names it. */
     static final class Kind {
         final int sqlType;
@@ -111,7 +111,7 @@ final class StrataResultSetMetaData implements ResultSetMetaData {
     private final List<String> columns;
     private final Kind[] kinds;
 
-    StrataResultSetMetaData(List<String> columns, List<List<Object>> rows) {
+    ChloeDBResultSetMetaData(List<String> columns, List<List<Object>> rows) {
         this.columns = columns;
         this.kinds = new Kind[columns.size()];
         for (int c = 0; c < kinds.length; c++) {

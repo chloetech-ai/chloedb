@@ -31,12 +31,12 @@ It needs Rust (stable) and a C compiler.
 
 ```sh
 cd chloedb-js
-npm run build                    # cargo build --release, then copies the addon to strata.node
+npm run build                    # cargo build --release, then copies the addon to chloedb.node
 cd ../my-app
 npm install ../strata/chloedb-js  # or "chloedb": "file:../strata/chloedb-js" in package.json
 ```
 
-`npm install` of the directory builds the addon itself when `strata.node` is missing. `npm run build -- --features bert` builds more of ChloeDB's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`) loads an addon from another place.
+`npm install` of the directory builds the addon itself when `chloedb.node` is missing. `npm run build -- --features bert` builds more of ChloeDB's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`) loads an addon from another place.
 
 The client alone (`chloedb/client`) is plain JavaScript with no addon: a bundler takes it into a page, and the package's `browser` and `workerd` conditions give it for `chloedb` too.
 

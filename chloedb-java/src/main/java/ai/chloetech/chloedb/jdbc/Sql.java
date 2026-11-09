@@ -1,6 +1,6 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
-import ai.chloetech.strata.StrataException;
+import ai.chloetech.chloedb.ChloeDBException;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLNonTransientConnectionException;
@@ -104,7 +104,7 @@ final class Sql {
     /** A ChloeDB error as JDBC's. */
     static SQLException error(RuntimeException e) {
         String m = e.getMessage() == null ? e.toString() : e.getMessage();
-        if (e instanceof StrataException) {
+        if (e instanceof ChloeDBException) {
             return m.startsWith("query error") ? new SQLSyntaxErrorException(m, "42000", e) : new SQLException(m, "HY000", e);
         }
         if (e instanceof IllegalStateException) {

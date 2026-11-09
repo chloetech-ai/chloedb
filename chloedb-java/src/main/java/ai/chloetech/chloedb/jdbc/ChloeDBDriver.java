@@ -1,6 +1,6 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
-import ai.chloetech.strata.Database;
+import ai.chloetech.chloedb.Database;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.nio.file.Files;
@@ -24,7 +24,7 @@ import java.util.logging.Logger;
  * does a SQLite file. No server is involved.
  *
  * <pre>{@code
- * try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
+ * try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
  *      PreparedStatement ps = c.prepareStatement("SELECT id, title FROM books ORDER BY bm25(title, ?) DESC LIMIT 5")) {
  *     ps.setString(1, "dragon");
  *     try (ResultSet rs = ps.executeQuery()) {
@@ -33,7 +33,7 @@ import java.util.logging.Logger;
  * }
  * }</pre>
  *
- * <p>Options follow a {@code ?} in the URL ({@code jdbc:strata:books.strata?threads=4})
+ * <p>Options follow a {@code ?} in the URL ({@code jdbc:chloedb:books.strata?threads=4})
  * or come as connection properties:
  * <ul>
  *   <li>{@code schema}: the path of a schema's JSON file, with which a
@@ -50,15 +50,15 @@ import java.util.logging.Logger;
  * runs: there are no transactions across statements, and
  * {@code setAutoCommit(false)} is refused.
  */
-public final class StrataDriver implements Driver {
+public final class ChloeDBDriver implements Driver {
     /** The prefix of the URLs this driver takes. */
-    public static final String PREFIX = "jdbc:strata:";
-    /** The prefix by the database's new name (it was called Strata), taken as well. */
-    public static final String NEW_PREFIX = "jdbc:chloedb:";
+    public static final String PREFIX = "jdbc:chloedb:";
+    /** The prefix by the database's old name (it was called Strata), taken as well. */
+    public static final String OLD_PREFIX = "jdbc:strata:";
 
     static {
         try {
-            DriverManager.registerDriver(new StrataDriver());
+            DriverManager.registerDriver(new ChloeDBDriver());
         } catch (SQLException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -66,7 +66,7 @@ public final class StrataDriver implements Driver {
 
     @Override
     public boolean acceptsURL(String url) {
-        return url != null && (url.startsWith(PREFIX) || url.startsWith(NEW_PREFIX));
+        return url != null && (url.startsWith(PREFIX) || url.startsWith(OLD_PREFIX));
     }
 
     @Override
@@ -74,7 +74,7 @@ public final class StrataDriver implements Driver {
         if (!acceptsURL(url)) {
             return null;
         }
-        String rest = url.substring(url.startsWith(NEW_PREFIX) ? NEW_PREFIX.length() : PREFIX.length());
+        String rest = url.substring(url.startsWith(OLD_PREFIX) ? OLD_PREFIX.length() : PREFIX.length());
         Map<String, String> options = new HashMap<>();
         if (info != null) {
             for (String k : info.stringPropertyNames()) {
@@ -124,7 +124,7 @@ public final class StrataDriver implements Driver {
         }
         String schema = options.get("schema");
         Shared.Entry db = Shared.open(file, () -> schema != null && !Files.exists(file) ? Database.create(file, Paths.get(schema), opts) : Database.open(file, opts));
-        StrataConnection c = new StrataConnection(db, url);
+        ChloeDBConnection c = new ChloeDBConnection(db, url);
         c.setReadOnly(Boolean.parseBoolean(options.get("readonly")));
         return c;
     }

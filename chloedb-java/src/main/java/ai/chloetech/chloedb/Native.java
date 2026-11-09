@@ -1,4 +1,4 @@
-package ai.chloetech.strata;
+package ai.chloetech.chloedb;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -10,14 +10,14 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * The native library, {@code libstrata_jni} (the Rust crate in this
+ * The native library, {@code libchloedb_jni} (the Rust crate in this
  * directory), and its two functions.
  *
  * <p>It is loaded from, in order: the path in the system property
  * {@code chloedb.library} (or {@code strata.library}, its old name), or
  * the environment variable {@code CHLOEDB_JNI_LIBRARY} (or
- * {@code CHLOEDB_JNI_LIBRARY}); the jar, which holds it under
- * {@code ai/chloetech/strata/native/<os>-<arch>/} for the platform it was
+ * {@code STRATA_JNI_LIBRARY}); the jar, which holds it under
+ * {@code ai/chloetech/chloedb/native/<os>-<arch>/} for the platform it was
  * built on, unpacked into a temporary directory ({@code chloedb.tmpdir} or {@code strata.tmpdir}, else
  * {@code java.io.tmpdir}, which must allow running what it holds); and
  * {@code java.library.path}.
@@ -79,14 +79,14 @@ final class Native {
             System.load(Paths.get(explicit).toAbsolutePath().toString());
             return;
         }
-        String name = System.mapLibraryName("strata_jni");
+        String name = System.mapLibraryName("chloedb_jni");
         String resource = "native/" + platform() + "/" + name;
         try (InputStream in = Native.class.getResourceAsStream(resource)) {
             if (in != null) {
                 // A file to load: removed as soon as it is loaded (the mapping
                 // stays), so that no copy is left behind, even after a crash.
                 String tmp = setting("chloedb.tmpdir", "strata.tmpdir");
-                Path dir = tmp == null || tmp.isEmpty() ? Files.createTempDirectory("strata-jni") : Files.createTempDirectory(Paths.get(tmp), "strata-jni");
+                Path dir = tmp == null || tmp.isEmpty() ? Files.createTempDirectory("chloedb-jni") : Files.createTempDirectory(Paths.get(tmp), "chloedb-jni");
                 Path lib = dir.resolve(name);
                 try {
                     Files.copy(in, lib, StandardCopyOption.REPLACE_EXISTING);
@@ -105,7 +105,7 @@ final class Native {
             throw u;
         }
         try {
-            System.loadLibrary("strata_jni");
+            System.loadLibrary("chloedb_jni");
         } catch (UnsatisfiedLinkError e) {
             UnsatisfiedLinkError u = new UnsatisfiedLinkError("ChloeDB's native library is not in this jar for " + platform() + ", nor on java.library.path: build the jar on this platform (mvn package in chloedb-java), or name the library with -Dchloedb.library=/path/to/" + name);
             u.initCause(e);

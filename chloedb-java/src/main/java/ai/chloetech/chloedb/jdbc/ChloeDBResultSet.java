@@ -1,4 +1,4 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -34,20 +34,20 @@ import java.util.Map;
  * The rows a statement answered. They all come back at once, so the result
  * set can scroll ({@code TYPE_SCROLL_INSENSITIVE}); it is read-only.
  */
-public final class StrataResultSet extends ReadOnlyResultSet {
-    private final StrataStatement statement;
+public final class ChloeDBResultSet extends ReadOnlyResultSet {
+    private final ChloeDBStatement statement;
     private final List<String> columns;
     private final List<List<Object>> rows;
     private final int type;
     private Map<String, Integer> byName;
-    private StrataResultSetMetaData meta;
+    private ChloeDBResultSetMetaData meta;
     /** The row the cursor is on: -1 before the first, rows.size() after the last. */
     private int at = -1;
     private boolean wasNull;
     private boolean closed;
     private int fetchSize;
 
-    StrataResultSet(StrataStatement statement, List<String> columns, List<List<Object>> rows) {
+    ChloeDBResultSet(ChloeDBStatement statement, List<String> columns, List<List<Object>> rows) {
         this.statement = statement;
         this.columns = columns;
         this.rows = rows;
@@ -219,7 +219,7 @@ public final class StrataResultSet extends ReadOnlyResultSet {
     public ResultSetMetaData getMetaData() throws SQLException {
         check();
         if (meta == null) {
-            meta = new StrataResultSetMetaData(columns, rows);
+            meta = new ChloeDBResultSetMetaData(columns, rows);
         }
         return meta;
     }
@@ -438,7 +438,7 @@ public final class StrataResultSet extends ReadOnlyResultSet {
     @Override
     public Array getArray(int i) throws SQLException {
         Object v = at(i);
-        return v == null ? null : new StrataArray(v);
+        return v == null ? null : new ChloeDBArray(v);
     }
 
     @Override
@@ -670,6 +670,6 @@ public final class StrataResultSet extends ReadOnlyResultSet {
 
     @Override
     public String toString() {
-        return "StrataResultSet(" + rows.size() + " rows: " + String.join(", ", columns) + ")";
+        return "ChloeDBResultSet(" + rows.size() + " rows: " + String.join(", ", columns) + ")";
     }
 }

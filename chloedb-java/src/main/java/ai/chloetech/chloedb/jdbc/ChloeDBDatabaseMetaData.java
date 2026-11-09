@@ -1,6 +1,6 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
-import ai.chloetech.strata.Database;
+import ai.chloetech.chloedb.Database;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.RowIdLifetime;
@@ -19,17 +19,17 @@ import java.util.regex.Pattern;
  * (DBeaver, IntelliJ, Spark, ...). Tables have no catalog or schema; table
  * patterns match names regardless of case, as ChloeDB's SQL does.
  */
-final class StrataDatabaseMetaData implements java.sql.DatabaseMetaData {
-    private final StrataConnection conn;
+final class ChloeDBDatabaseMetaData implements java.sql.DatabaseMetaData {
+    private final ChloeDBConnection conn;
 
-    StrataDatabaseMetaData(StrataConnection conn) {
+    ChloeDBDatabaseMetaData(ChloeDBConnection conn) {
         this.conn = conn;
     }
 
     // The result sets metadata answers.
 
     private static ResultSet rows(String[] columns, List<List<Object>> rows) {
-        return new StrataResultSet(null, Arrays.asList(columns), rows);
+        return new ChloeDBResultSet(null, Arrays.asList(columns), rows);
     }
 
     private static ResultSet none(String... columns) {

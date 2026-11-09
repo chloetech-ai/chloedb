@@ -1,4 +1,4 @@
-package ai.chloetech.strata;
+package ai.chloetech.chloedb;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -123,12 +123,12 @@ class DatabaseTest {
                 assertEquals(e.schema(), d.schema());
             }
         }
-        StrataException missing = assertThrows(StrataException.class, () -> Database.open(dir.resolve("missing.strata")));
+        ChloeDBException missing = assertThrows(ChloeDBException.class, () -> Database.open(dir.resolve("missing.strata")));
         assertTrue(missing.getMessage().contains("does not exist"), missing.getMessage());
-        StrataException dim = assertThrows(StrataException.class, () -> Database.create(dir.resolve("bad.strata"), map("table", "t", "fields", Collections.singletonList(field("v", "vector")))));
+        ChloeDBException dim = assertThrows(ChloeDBException.class, () -> Database.create(dir.resolve("bad.strata"), map("table", "t", "fields", Collections.singletonList(field("v", "vector")))));
         assertTrue(dim.getMessage().contains("dim"), dim.getMessage());
         // One process at a time: this one already has books.strata open.
-        StrataException busy = assertThrows(StrataException.class, () -> Database.open(dir.resolve("books.strata")));
+        ChloeDBException busy = assertThrows(ChloeDBException.class, () -> Database.open(dir.resolve("books.strata")));
         assertTrue(busy.getMessage().contains("busy"), busy.getMessage());
     }
 
@@ -143,7 +143,7 @@ class DatabaseTest {
             db.delete("b0001");
             assertEquals(249, r.count());
             assertFalse(db.refresh());
-            StrataException refused = assertThrows(StrataException.class, () -> r.insert(book(1000)));
+            ChloeDBException refused = assertThrows(ChloeDBException.class, () -> r.insert(book(1000)));
             assertTrue(refused.getMessage().contains("read-only"), refused.getMessage());
         }
     }
@@ -153,11 +153,11 @@ class DatabaseTest {
         assertEquals(200, db.count());
         // Small inserts go through the log, large ones are bulk-loaded; both
         // write all rows or none.
-        StrataException dup = assertThrows(StrataException.class, () -> db.insert(Arrays.asList(book(1000), book(1))));
+        ChloeDBException dup = assertThrows(ChloeDBException.class, () -> db.insert(Arrays.asList(book(1000), book(1))));
         assertTrue(dup.getMessage().contains("b0001"), dup.getMessage());
         List<Map<String, Object>> many = books(1000, 12_000);
         many.add(book(3));
-        assertThrows(StrataException.class, () -> db.insert(many));
+        assertThrows(ChloeDBException.class, () -> db.insert(many));
         assertEquals(200, db.count());
         assertEquals(11_000, db.insert(books(1000, 12_000)));
         Map<String, Object> changed = book(5);
@@ -167,9 +167,9 @@ class DatabaseTest {
         assertEquals(1, db.delete(Arrays.asList("b0005", "nope")));
         assertEquals(1, db.delete("b90000"));
         assertEquals(11_199, db.count());
-        StrataException unknown = assertThrows(StrataException.class, () -> db.insert(map("id", "x", "colour", "red")));
+        ChloeDBException unknown = assertThrows(ChloeDBException.class, () -> db.insert(map("id", "x", "colour", "red")));
         assertTrue(unknown.getMessage().contains("colour"), unknown.getMessage());
-        StrataException year = assertThrows(StrataException.class, () -> db.insert(map("id", "x", "year", "soon")));
+        ChloeDBException year = assertThrows(ChloeDBException.class, () -> db.insert(map("id", "x", "year", "soon")));
         assertTrue(year.getMessage().contains("year"), year.getMessage());
         IllegalArgumentException object = assertThrows(IllegalArgumentException.class, () -> db.insert(map("id", "x", "title", new Object())));
         assertTrue(object.getMessage().contains("cannot store"), object.getMessage());
@@ -209,7 +209,7 @@ class DatabaseTest {
             dv[i] = v[i];
         }
         assertEquals(a, db.query("SELECT id FROM books ORDER BY similarity(emb, :v) DESC LIMIT 5", map("v", dv)).keys());
-        assertThrows(StrataException.class, () -> db.query("SELECT nope FROM books"));
+        assertThrows(ChloeDBException.class, () -> db.query("SELECT nope FROM books"));
         IllegalArgumentException typo = assertThrows(IllegalArgumentException.class, () -> db.importSqlite("x.sqlite", map("table", "books")));
         assertTrue(typo.getMessage().contains("no option \"table\"") && typo.getMessage().contains("tables"), typo.getMessage());
     }
@@ -260,7 +260,7 @@ class DatabaseTest {
             assertEquals(Collections.singletonList(Arrays.asList("Re, titled", Arrays.asList("a", "b"))), d.query("SELECT title, genres FROM books WHERE id = 'b0001'").rows());
             Path bad = dir.resolve("bad.jsonl");
             Files.write(bad, "{\"id\": 1, \"year\": \"x\"}\n".getBytes(StandardCharsets.UTF_8));
-            StrataException e = assertThrows(StrataException.class, () -> d.importFile(bad.toString()));
+            ChloeDBException e = assertThrows(ChloeDBException.class, () -> d.importFile(bad.toString()));
             assertTrue(e.getMessage().contains("line 1"), e.getMessage());
         }
     }
@@ -277,7 +277,7 @@ class DatabaseTest {
             assertEquals(2, d.count());
             // Text only: the model is not open.
             assertFalse(d.search("vector").keys().isEmpty());
-            StrataException e = assertThrows(StrataException.class, () -> d.embed("x"));
+            ChloeDBException e = assertThrows(ChloeDBException.class, () -> d.embed("x"));
             assertTrue(e.getMessage().contains("model"), e.getMessage());
         }
     }
@@ -348,7 +348,7 @@ class DatabaseTest {
             try (Database d = Database.open(path)) {
                 assertEquals(1, d.count());
                 break;
-            } catch (StrataException busy) {
+            } catch (ChloeDBException busy) {
                 if (System.nanoTime() > until) {
                     throw busy;
                 }
@@ -382,7 +382,7 @@ class DatabaseTest {
             // Before 1970 too.
             d.upsert(map("id", "e", "at", Instant.parse("1969-12-31T23:59:59.999999Z")));
             assertEquals(Instant.parse("1969-12-31T23:59:59.999999Z"), d.get("e").get("at"));
-            StrataException e = assertThrows(StrataException.class, () -> d.insert(map("id", "x", "done", 2)));
+            ChloeDBException e = assertThrows(ChloeDBException.class, () -> d.insert(map("id", "x", "done", 2)));
             assertTrue(e.getMessage().contains("done"), e.getMessage());
         }
     }
@@ -427,7 +427,7 @@ class DatabaseTest {
         assertEquals("events", events.name());
         // Joins across them.
         assertEquals(1L, db.query("SELECT COUNT(*) FROM events e JOIN books b ON e.book = b.id WHERE e.id = 1").scalar());
-        StrataException e = assertThrows(StrataException.class, () -> db.table("nope").insert(map("id", 1)));
+        ChloeDBException e = assertThrows(ChloeDBException.class, () -> db.table("nope").insert(map("id", 1)));
         assertTrue(e.getMessage().contains("no such table: nope"), e.getMessage());
     }
 
@@ -444,8 +444,8 @@ class DatabaseTest {
             d.renameColumn("title", "headline");
             assertEquals(Collections.singletonList("b"), d.query("SELECT id FROM items WHERE MATCH(headline, 'pear')").keys());
             d.dropColumn("n");
-            assertThrows(StrataException.class, () -> d.query("SELECT n FROM items"));
-            StrataException pk = assertThrows(StrataException.class, () -> d.dropColumn("id"));
+            assertThrows(ChloeDBException.class, () -> d.query("SELECT n FROM items"));
+            ChloeDBException pk = assertThrows(ChloeDBException.class, () -> d.dropColumn("id"));
             assertTrue(pk.getMessage().contains("primary key"), pk.getMessage());
         }
         try (Database d = Database.open(path)) {
@@ -492,7 +492,7 @@ class DatabaseTest {
         assertEquals(7L, db.table("counters").get("c1").get("n"));
         assertEquals(2001L, db.get("b0001").get("year"));
         assertNull(db.get("b0002"));
-        StrataException e = assertThrows(StrataException.class, () -> db.write(Collections.singletonList(map("op", "explode"))));
+        ChloeDBException e = assertThrows(ChloeDBException.class, () -> db.write(Collections.singletonList(map("op", "explode"))));
         assertTrue(e.getMessage().contains("operation 1"), e.getMessage());
     }
 

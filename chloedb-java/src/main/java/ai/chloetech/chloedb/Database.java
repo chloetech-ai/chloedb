@@ -1,4 +1,4 @@
-package ai.chloetech.strata;
+package ai.chloetech.chloedb;
 
 import java.lang.ref.Cleaner;
 import java.lang.ref.Reference;
@@ -28,7 +28,7 @@ import java.util.Map;
  * }</pre>
  *
  * <p>Only one process may have a database open to write it at a time
- * (another gets a {@link StrataException}: "busy"); other processes may open
+ * (another gets a {@link ChloeDBException}: "busy"); other processes may open
  * it to read ({@link Options#readOnly}) and see each of its commits, or
  * share it through {@code chloedb-server}. Within the process a {@code Database} is safe to
  * use from many threads at once: queries run in parallel, and calls do not

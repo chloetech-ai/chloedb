@@ -1,6 +1,6 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
-import ai.chloetech.strata.Result;
+import ai.chloetech.chloedb.Result;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -11,21 +11,21 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-/** A statement run on a ChloeDB database: SQL as ChloeDB speaks it, and {@code :name} parameters through {@link StrataPreparedStatement}. */
-public class StrataStatement implements Statement {
-    final StrataConnection conn;
+/** A statement run on a ChloeDB database: SQL as ChloeDB speaks it, and {@code :name} parameters through {@link ChloeDBPreparedStatement}. */
+public class ChloeDBStatement implements Statement {
+    final ChloeDBConnection conn;
     /** The kind of result sets: forward-only, or scroll-insensitive. */
     int type = ResultSet.TYPE_FORWARD_ONLY;
     private boolean closed;
     private boolean closeOnCompletion;
-    private StrataResultSet results;
+    private ChloeDBResultSet results;
     private long updateCount = -1;
     private long maxRows;
     private int fetchSize;
     private int queryTimeout;
     private final List<String> batch = new ArrayList<>();
 
-    StrataStatement(StrataConnection conn) {
+    ChloeDBStatement(ChloeDBConnection conn) {
         this.conn = conn;
     }
 
@@ -50,7 +50,7 @@ public class StrataStatement implements Statement {
         return false;
     }
 
-    StrataResultSet select(String sql, Map<String, Object> params) throws SQLException {
+    ChloeDBResultSet select(String sql, Map<String, Object> params) throws SQLException {
         check();
         clear();
         Result r;
@@ -63,7 +63,7 @@ public class StrataStatement implements Statement {
         if (maxRows > 0 && rows.size() > maxRows) {
             rows = rows.subList(0, (int) maxRows);
         }
-        results = new StrataResultSet(this, r.columns(), rows);
+        results = new ChloeDBResultSet(this, r.columns(), rows);
         return results;
     }
 
@@ -84,7 +84,7 @@ public class StrataStatement implements Statement {
     /** Closes the results of the last statement run. */
     private void clear() throws SQLException {
         if (results != null) {
-            StrataResultSet r = results;
+            ChloeDBResultSet r = results;
             results = null;
             r.closeQuietly();
         }
@@ -92,7 +92,7 @@ public class StrataStatement implements Statement {
     }
 
     /** Called by a result set as it closes, for {@link #closeOnCompletion()}. */
-    void resultsClosed(StrataResultSet r) {
+    void resultsClosed(ChloeDBResultSet r) {
         if (r == results) {
             results = null;
         }
@@ -323,7 +323,7 @@ public class StrataStatement implements Statement {
     @Override
     public ResultSet getGeneratedKeys() throws SQLException {
         check();
-        return new StrataResultSet(this, Collections.emptyList(), Collections.emptyList());
+        return new ChloeDBResultSet(this, Collections.emptyList(), Collections.emptyList());
     }
 
     @Override

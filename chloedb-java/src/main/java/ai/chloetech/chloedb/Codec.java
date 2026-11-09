@@ -1,4 +1,4 @@
-package ai.chloetech.strata;
+package ai.chloetech.chloedb;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;

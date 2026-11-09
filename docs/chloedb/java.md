@@ -1,6 +1,8 @@
 # ChloeDB from Java
 
-The `ai.chloetech.strata` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:strata:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
+The `ai.chloetech.chloedb` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:chloedb:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
+
+Before ChloeDB was renamed, the package was `ai.chloetech.strata`, its jar `ai.chloetech:strata`, its errors `StrataException` and its driver's classes `Strata*` (`StrataDriver`, `StrataConnection`, ...). They are `ai.chloetech.chloedb`, `ai.chloetech:chloedb`, `ChloeDBException` and `ChloeDB*` now: change the imports and the dependency when you rebuild. URLs that begin `jdbc:strata:` still open a database.
 
 ## Build it
 
@@ -9,28 +11,28 @@ The package is in [`chloedb-java/`](https://github.com/chloetech-ai/strata/tree/
 ```sh
 cd chloedb-java
 mvn package          # cargo builds the library, Maven the classes; tests run against both
-mvn install          # and into ~/.m2, as ai.chloetech:strata:0.1.0
+mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.1.0
 ```
 
-The jar (`target/java/strata-0.1.0.jar`) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:
+The jar (`target/java/chloedb-0.1.0.jar`) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:
 
 ```xml
 <dependency>
   <groupId>ai.chloetech</groupId>
-  <artifactId>strata</artifactId>
+  <artifactId>chloedb</artifactId>
   <version>0.1.0</version>
 </dependency>
 ```
 
-or, with Gradle, `implementation("ai.chloetech:strata:0.1.0")` with `mavenLocal()` among the repositories.
+or, with Gradle, `implementation("ai.chloetech:chloedb:0.1.0")` with `mavenLocal()` among the repositories.
 
 `-Dcargo.profile=ci` builds the library without link-time optimisation, much faster, for a build that only runs the tests. `-Dcargo.features=bert` (comma-separated) turns on Cargo features as the Python package has them: `bert` for BERT embedding models (`accelerate` on a Mac), `onnx`, `vision`, `audio`. The library already includes DataFusion, Parquet and `s3://` URLs. `-Dcargo.skip=true` packages the library cargo built before.
 
 ## A database in your process
 
 ```java
-import ai.chloetech.strata.Database;
-import ai.chloetech.strata.Result;
+import ai.chloetech.chloedb.Database;
+import ai.chloetech.chloedb.Result;
 import java.util.List;
 import java.util.Map;
 
@@ -59,7 +61,7 @@ try (Database db = Database.open("books.strata")) {
 
 `Database.create` takes the schema as a map (the [short form](server.md#schemas) or the long one), JSON text, or the path of a JSON file. `Database.open` opens a database the file already holds. Both take `new Database.Options()`: `.directory(true)` keeps a new database as a directory of segment files, `.models(dir)` says where embedding models are, `.threads(n)` how many cores queries and index builds use (the machine's by default).
 
-Only one process may have a database open to write it at a time; another gets a `StrataException` saying the database is busy. Other processes can open it with `Database.open(path, new Database.Options().readOnly(true))` to read it while it is written: each query sees the writer's commits so far, every write fails, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). For writes from several processes, serve it with [chloedb-server](server.md). Within the process, one `Database` is safe to use from many threads at once: queries run in parallel, writes made at once wait for each other and share commits (one disk flush for all those waiting, none failing as busy), and a call into the library does not hold the JVM. Segments merge in the background as writes add them, one merge at a time. Close the database when done, with `close()` or try-with-resources, which also merges small segments and gives the file system back the space merges freed when it is an eighth of the file or more; one left open is closed when the garbage collector finds it.
+Only one process may have a database open to write it at a time; another gets a `ChloeDBException` saying the database is busy. Other processes can open it with `Database.open(path, new Database.Options().readOnly(true))` to read it while it is written: each query sees the writer's commits so far, every write fails, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). For writes from several processes, serve it with [chloedb-server](server.md). Within the process, one `Database` is safe to use from many threads at once: queries run in parallel, writes made at once wait for each other and share commits (one disk flush for all those waiting, none failing as busy), and a call into the library does not hold the JVM. Segments merge in the background as writes add them, one merge at a time. Close the database when done, with `close()` or try-with-resources, which also merges small segments and gives the file system back the space merges freed when it is an eighth of the file or more; one left open is closed when the garbage collector finds it.
 
 ## Rows and values
 
@@ -131,12 +133,12 @@ Their options are maps, with the names the [SQLite](sqlite.md) and [Parquet](par
 
 ## JDBC
 
-The jar is also a JDBC driver: `jdbc:strata:PATH` (or `jdbc:chloedb:PATH`, by the new name) opens the database at `PATH` in the process, as `jdbc:sqlite:PATH` does a SQLite file. `DriverManager` finds it by itself (the jar lists it under `META-INF/services`).
+The jar is also a JDBC driver: `jdbc:chloedb:PATH` (or `jdbc:strata:PATH`, by the old name) opens the database at `PATH` in the process, as `jdbc:sqlite:PATH` does a SQLite file. `DriverManager` finds it by itself (the jar lists it under `META-INF/services`).
 
 ```java
 import java.sql.*;
 
-try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
+try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
      PreparedStatement ps = c.prepareStatement("SELECT id, title, year FROM books WHERE year >= ? ORDER BY year LIMIT ?")) {
     ps.setInt(1, 2000);
     ps.setInt(2, 10);
@@ -148,7 +150,7 @@ try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
 }
 ```
 
-Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:strata:books.strata?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:strata:file:books.strata`.
+Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:chloedb:books.strata?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:strata:file:books.strata`.
 
 - **Statements** are ChloeDB's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
 - **Results** come back whole, so a result set can scroll if the statement is made with `ResultSet.TYPE_SCROLL_INSENSITIVE`; result sets are read-only. `getObject` gives an INT as `Long`, a FLOAT as `Double`, a TIMESTAMP as `java.sql.Timestamp`, a vector as `float[]` and a list as `List`; the getters convert (`getInt`, `getString`, `getObject(i, Instant.class)`, `getArray` for vectors). Times are in UTC.
@@ -159,7 +161,7 @@ Options follow a `?` in the URL or come as connection properties: `schema` (the 
 
 ## Errors
 
-The database's errors (a bad schema, query, value or file, a database open elsewhere) are `StrataException`s, with the message the HTTP API and the Python package give. An argument of the wrong kind is an `IllegalArgumentException`, and a call on a closed database an `IllegalStateException`.
+The database's errors (a bad schema, query, value or file, a database open elsewhere) are `ChloeDBException`s, with the message the HTTP API and the Python package give. An argument of the wrong kind is an `IllegalArgumentException`, and a call on a closed database an `IllegalStateException`.
 
 ## How it works
 
@@ -167,4 +169,4 @@ The JNI boundary is two functions: `call(handle, method, args)` runs one of the 
 
 The library is loaded from the path in the system property `chloedb.library` (or `CHLOEDB_JNI_LIBRARY`; the old names `strata.library` and `STRATA_JNI_LIBRARY` work too) if set, else from the jar, unpacked to a temporary file that is removed once loaded, else from `java.library.path`. A jar and a library built from different checkouts refuse each other. Java 22 and later warn when a library is loaded without `--enable-native-access=ALL-UNNAMED` (the jar's manifest says so for an executable jar); pass it to the JVM.
 
-The Python package's query builder (`strata.Query`), Arrow answers, client of chloedb-server and training helpers have no Java counterpart yet: queries are SQL.
+The Python package's query builder (`chloedb.Query`), Arrow answers, client of chloedb-server and training helpers have no Java counterpart yet: queries are SQL.

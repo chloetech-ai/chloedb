@@ -1,4 +1,4 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -9,8 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.chloetech.strata.Database;
-import ai.chloetech.strata.Result;
+import ai.chloetech.chloedb.Database;
+import ai.chloetech.chloedb.Result;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -94,10 +94,10 @@ class JdbcTest {
 
     @Test
     void theDriverIsFoundByItsUrl() throws Exception {
-        assertInstanceOf(StrataDriver.class, DriverManager.getDriver("jdbc:strata:any.strata"));
-        assertInstanceOf(StrataDriver.class, DriverManager.getDriver("jdbc:chloedb:any.strata"));
-        assertFalse(new StrataDriver().acceptsURL("jdbc:sqlite:any.db"));
-        assertNull(new StrataDriver().connect("jdbc:sqlite:any.db", new Properties()));
+        assertInstanceOf(ChloeDBDriver.class, DriverManager.getDriver("jdbc:strata:any.strata"));
+        assertInstanceOf(ChloeDBDriver.class, DriverManager.getDriver("jdbc:chloedb:any.strata"));
+        assertFalse(new ChloeDBDriver().acceptsURL("jdbc:sqlite:any.db"));
+        assertNull(new ChloeDBDriver().connect("jdbc:sqlite:any.db", new Properties()));
         assertEquals("ChloeDB", conn.getMetaData().getDatabaseProductName());
         assertEquals(url + "?schema=" + schema, conn.getMetaData().getURL());
     }
@@ -486,11 +486,11 @@ class JdbcTest {
         assertFalse(Sql.answersRows("INSERT INTO t VALUES (1)"));
         assertFalse(Sql.answersRows("update t set x = 1"));
         assertFalse(Sql.answersRows(""));
-        assertTrue(StrataDatabaseMetaData.like("b%", "Books"));
-        assertTrue(StrataDatabaseMetaData.like("bo_ks", "books"));
-        assertFalse(StrataDatabaseMetaData.like("bo\\_ks", "books"));
-        assertTrue(StrataDatabaseMetaData.like("bo\\_ks", "bo_ks"));
-        assertTrue(StrataDatabaseMetaData.like(null, "x"));
-        assertFalse(StrataDatabaseMetaData.like("a.c", "abc"));
+        assertTrue(ChloeDBDatabaseMetaData.like("b%", "Books"));
+        assertTrue(ChloeDBDatabaseMetaData.like("bo_ks", "books"));
+        assertFalse(ChloeDBDatabaseMetaData.like("bo\\_ks", "books"));
+        assertTrue(ChloeDBDatabaseMetaData.like("bo\\_ks", "bo_ks"));
+        assertTrue(ChloeDBDatabaseMetaData.like(null, "x"));
+        assertFalse(ChloeDBDatabaseMetaData.like("a.c", "abc"));
     }
 }

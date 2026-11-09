@@ -1,6 +1,6 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
-import ai.chloetech.strata.Database;
+import ai.chloetech.chloedb.Database;
 import java.sql.Array;
 import java.sql.Blob;
 import java.sql.CallableStatement;
@@ -26,14 +26,14 @@ import java.util.concurrent.Executor;
  * A connection to a ChloeDB database in this process. Each statement
  * commits as it runs (auto-commit, which cannot be turned off).
  */
-public final class StrataConnection implements Connection {
+public final class ChloeDBConnection implements Connection {
     private final Shared.Entry shared;
     private final String url;
     private volatile boolean closed;
     private boolean readOnly;
     private final Properties clientInfo = new Properties();
 
-    StrataConnection(Shared.Entry shared, String url) {
+    ChloeDBConnection(Shared.Entry shared, String url) {
         this.shared = shared;
         this.url = url;
     }
@@ -54,15 +54,15 @@ public final class StrataConnection implements Connection {
     }
 
     @Override
-    public StrataStatement createStatement() throws SQLException {
+    public ChloeDBStatement createStatement() throws SQLException {
         check();
-        return new StrataStatement(this);
+        return new ChloeDBStatement(this);
     }
 
     @Override
-    public StrataPreparedStatement prepareStatement(String sql) throws SQLException {
+    public ChloeDBPreparedStatement prepareStatement(String sql) throws SQLException {
         check();
-        return new StrataPreparedStatement(this, sql);
+        return new ChloeDBPreparedStatement(this, sql);
     }
 
     @Override
@@ -118,7 +118,7 @@ public final class StrataConnection implements Connection {
     @Override
     public DatabaseMetaData getMetaData() throws SQLException {
         check();
-        return new StrataDatabaseMetaData(this);
+        return new ChloeDBDatabaseMetaData(this);
     }
 
     /** {@code true} refuses statements that write, through this connection. */
@@ -185,7 +185,7 @@ public final class StrataConnection implements Connection {
      * Result sets are read-only, and forward-only or scroll-insensitive (a
      * query's rows all come back at once, so they scroll for free).
      */
-    private static <S extends StrataStatement> S kinds(S s, int type, int concurrency) throws SQLException {
+    private static <S extends ChloeDBStatement> S kinds(S s, int type, int concurrency) throws SQLException {
         if (type != ResultSet.TYPE_FORWARD_ONLY && type != ResultSet.TYPE_SCROLL_INSENSITIVE) {
             throw Sql.unsupported("TYPE_SCROLL_SENSITIVE result sets: they are TYPE_FORWARD_ONLY or TYPE_SCROLL_INSENSITIVE");
         }
@@ -355,7 +355,7 @@ public final class StrataConnection implements Connection {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("a StrataConnection unwraps to a Database, not a " + iface.getName());
+        throw new SQLException("a ChloeDBConnection unwraps to a Database, not a " + iface.getName());
     }
 
     @Override
@@ -365,6 +365,6 @@ public final class StrataConnection implements Connection {
 
     @Override
     public String toString() {
-        return "StrataConnection(" + url + ")";
+        return "ChloeDBConnection(" + url + ")";
     }
 }

@@ -1,4 +1,4 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
 import java.io.InputStream;
 import java.io.Reader;

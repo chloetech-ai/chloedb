@@ -40,7 +40,7 @@ pub enum Fail {
     Arg(String),
     /// `IllegalStateException`: the database was closed.
     Closed,
-    /// `StrataException`: the database refused (a bad schema, query, value
+    /// `ChloeDBException`: the database refused (a bad schema, query, value
     /// or file).
     Db(chloedb::Error),
 }
@@ -1093,7 +1093,7 @@ mod tests {
 
     impl Dir {
         fn new(name: &str) -> Dir {
-            let p = std::env::temp_dir().join(format!("strata-java-{name}-{}", std::process::id()));
+            let p = std::env::temp_dir().join(format!("chloedb-java-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Dir(p)

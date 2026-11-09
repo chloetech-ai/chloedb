@@ -1,4 +1,4 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
 import java.sql.Array;
 import java.sql.ResultSet;
@@ -10,12 +10,12 @@ import java.util.List;
 import java.util.Map;
 
 /** A vector (its elements are {@code Float}s) or a list, as JDBC's {@link Array}. */
-final class StrataArray implements Array {
+final class ChloeDBArray implements Array {
     private final Object[] items;
     private final boolean vector;
     private boolean freed;
 
-    StrataArray(Object v) throws SQLException {
+    ChloeDBArray(Object v) throws SQLException {
         if (v instanceof float[]) {
             float[] xs = (float[]) v;
             items = new Object[xs.length];
@@ -48,12 +48,12 @@ final class StrataArray implements Array {
         return vector ? Types.REAL : elements().sqlType;
     }
 
-    private StrataResultSetMetaData.Kind elements() {
+    private ChloeDBResultSetMetaData.Kind elements() {
         List<List<Object>> column = new ArrayList<>();
         for (Object x : items) {
             column.add(Arrays.asList(x));
         }
-        return StrataResultSetMetaData.infer(column, 0);
+        return ChloeDBResultSetMetaData.infer(column, 0);
     }
 
     @Override

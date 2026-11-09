@@ -2,7 +2,7 @@
 //
 // `Database` opens a ChloeDB file (or a directory of segment files) in this
 // process, with no server, as a SQLite library opens a SQLite file: Node,
-// Bun and Deno load the native addon (strata.node) that runs it. `Client`
+// Bun and Deno load the native addon (chloedb.node) that runs it. `Client`
 // (client.js) talks to a running chloedb-server over HTTP instead, from any
 // JavaScript runtime with fetch. Both answer queries with the same
 // `Result` and write rows the same way, so code can move from one to the
@@ -42,10 +42,10 @@ export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The native addon: `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`), else strata.node beside this
+/** The native addon: `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`), else chloedb.node beside this
  * file (`npm run build` makes it). */
 function load() {
-  const path = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON || join(here, "strata.node");
+  const path = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON || join(here, "chloedb.node");
   if (!existsSync(path)) {
     throw new ChloeDBError(`the ChloeDB addon is not built: ${path} is missing (run \`npm run build\` in chloedb-js, which needs Rust and a C compiler)`);
   }

@@ -1,5 +1,5 @@
-//! JavaScript bindings for Strata, the database in-process: a Node-API
-//! addon (`strata.node`), which `index.js` wraps in the documented API.
+//! JavaScript bindings for ChloeDB, the database in-process: a Node-API
+//! addon (`chloedb.node`), which `index.js` wraps in the documented API.
 //! Node, Bun and Deno load it.
 //!
 //! The boundary is narrow on purpose. A database answers one entry point,
@@ -839,7 +839,7 @@ fn dispatch_static(op: &str, a: Args) -> Result<Json> {
     }
 }
 
-/// Runs `f`, a panic as an error: a bug in Strata fails the call that met
+/// Runs `f`, a panic as an error: a bug in ChloeDB fails the call that met
 /// it, not the process.
 fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|p| {

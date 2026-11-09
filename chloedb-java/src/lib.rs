@@ -1,5 +1,5 @@
-//! Java bindings for Strata, the database in-process: the native library
-//! (`libstrata_jni`) under the `ai.chloetech.strata` package
+//! Java bindings for ChloeDB, the database in-process: the native library
+//! (`libchloedb_jni`) under the `ai.chloetech.chloedb` package
 //! (`src/main/java`), loaded by its class `Native`.
 //!
 //! The boundary is two functions. `call(handle, method, args)` runs one of
@@ -24,7 +24,7 @@ fn throw(env: &mut JNIEnv<'_>, f: Fail) {
     let (class, message) = match f {
         Fail::Arg(m) => ("java/lang/IllegalArgumentException", m),
         Fail::Closed => ("java/lang/IllegalStateException", "the database is closed".to_string()),
-        Fail::Db(e) => ("ai/chloetech/strata/StrataException", e.to_string()),
+        Fail::Db(e) => ("ai/chloetech/chloedb/ChloeDBException", e.to_string()),
     };
     // A failure to throw leaves the exception JNI raised pending, which
     // Java then sees.
@@ -34,7 +34,7 @@ fn throw(env: &mut JNIEnv<'_>, f: Fail) {
 /// `byte[] Native.call(long handle, String method, byte[] args)`: the
 /// handle is 0 for the calls that open a database, or need none.
 #[no_mangle]
-pub extern "system" fn Java_ai_chloetech_strata_Native_call<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong, method: JString<'l>, args: JByteArray<'l>) -> jbyteArray {
+pub extern "system" fn Java_ai_chloetech_chloedb_Native_call<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong, method: JString<'l>, args: JByteArray<'l>) -> jbyteArray {
     let out = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<u8>, Fail> {
         let method: String = env.get_string(&method).map_err(|e| Fail::Arg(format!("the method's name: {e}")))?.into();
         let args = env.convert_byte_array(&args).map_err(|e| Fail::Arg(format!("the arguments: {e}")))?;
@@ -63,7 +63,7 @@ pub extern "system" fn Java_ai_chloetech_strata_Native_call<'l>(mut env: JNIEnv<
 /// `void Native.free(long handle)`: drops a database's handle, closing the
 /// database if `close` did not.
 #[no_mangle]
-pub extern "system" fn Java_ai_chloetech_strata_Native_free<'l>(_env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong) {
+pub extern "system" fn Java_ai_chloetech_chloedb_Native_free<'l>(_env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong) {
     if handle != 0 {
         // SAFETY: as in `call`; Java frees each handle once.
         let _ = catch_unwind(|| drop(unsafe { Box::from_raw(handle as *mut Handle) }));

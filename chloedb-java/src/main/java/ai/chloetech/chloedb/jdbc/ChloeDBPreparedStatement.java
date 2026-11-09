@@ -1,4 +1,4 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -35,14 +35,14 @@ import java.util.Map;
  * given to {@link #setObject(int, Object)} is a vector; a {@code List} or an
  * array is a list; a {@code Map} is a JSON object.
  */
-public final class StrataPreparedStatement extends StrataStatement implements PreparedStatement {
+public final class ChloeDBPreparedStatement extends ChloeDBStatement implements PreparedStatement {
     private final String sql;
     private final Sql.Rewritten rewritten;
     private final Object[] values;
     private final boolean[] set;
     private final List<Object[]> batch = new ArrayList<>();
 
-    StrataPreparedStatement(StrataConnection conn, String sql) {
+    ChloeDBPreparedStatement(ChloeDBConnection conn, String sql) {
         super(conn);
         this.sql = sql;
         this.rewritten = Sql.placeholders(sql);

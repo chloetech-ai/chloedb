@@ -1,6 +1,6 @@
-package ai.chloetech.strata.jdbc;
+package ai.chloetech.chloedb.jdbc;
 
-import ai.chloetech.strata.Database;
+import ai.chloetech.chloedb.Database;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.HashMap;

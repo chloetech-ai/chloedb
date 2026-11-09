@@ -1,4 +1,4 @@
-package ai.chloetech.strata;
+package ai.chloetech.chloedb;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -196,7 +196,7 @@ public final class Table {
         List<String> scores = new ArrayList<>();
         if (mode.equals("text") || mode.equals("hybrid")) {
             if (texts.isEmpty()) {
-                throw new StrataException(s.get("table") + " has no indexed text field to search");
+                throw new ChloeDBException(s.get("table") + " has no indexed text field to search");
             }
             for (String f : texts) {
                 scores.add("bm25(" + quote(f) + ", :_q)");
@@ -204,7 +204,7 @@ public final class Table {
         }
         if (mode.equals("vector") || mode.equals("hybrid")) {
             if (vector == null) {
-                throw new StrataException(s.get("table") + " has no embedded vector field with its model open");
+                throw new ChloeDBException(s.get("table") + " has no embedded vector field with its model open");
             }
             scores.add("similarity(" + quote(vector) + ", :_v)");
         }
