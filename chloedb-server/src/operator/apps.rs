@@ -1,5 +1,5 @@
 //! The app engine beside the cluster (`spec.apps`): the operator runs
-//! strata-apps (`ghcr.io/chloetech-ai/strata-apps`, an image of its own:
+//! chloedb-apps (`ghcr.io/chloetech-ai/chloedb-apps`, an image of its own:
 //! Node, Playwright's Chromium and Claude Code) as a Deployment of one
 //! (strategy Recreate, `<cluster>-apps`) behind a Service of that name, and
 //! the coordinators list it as the app `apps` (`STRATA_APPS`), so that the
@@ -32,7 +32,7 @@ pub const APP: &str = "apps";
 /// The port the engine answers on.
 pub const PORT: u16 = 7730;
 /// The image it runs when `image` is left out.
-pub const IMAGE: &str = "ghcr.io/chloetech-ai/strata-apps:latest";
+pub const IMAGE: &str = "ghcr.io/chloetech-ai/chloedb-apps:latest";
 
 /// `spec.apps`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -192,7 +192,7 @@ impl AppsSpec {
 pub fn schema() -> Json {
     json!({
         "type": "object",
-        "description": "The app engine beside the cluster: strata-apps in a Deployment of one, which the command center shows under Apps. It keeps the apps it builds as rows of the cluster, calls the model with secretEnv's ANTHROPIC_API_KEY, and needs tokenSecret: its studio, at publicUrl, signs admins in with a link the command center hands out.",
+        "description": "The app engine beside the cluster: chloedb-apps in a Deployment of one, which the command center shows under Apps. It keeps the apps it builds as rows of the cluster, calls the model with secretEnv's ANTHROPIC_API_KEY, and needs tokenSecret: its studio, at publicUrl, signs admins in with a link the command center hands out.",
         "properties": {
             "paused": {"type": "boolean", "description": "No engine pod for now (the apps stay)."},
             "image": {"type": "string", "description": format!("The engine's image (default {IMAGE}).")},
