@@ -294,7 +294,7 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
     }
     let said = |r: &Record| -> (i64, i64) { *source.get(&(r.session.clone(), r.turn)).unwrap_or(&(r.ts, r.seq)) };
     let changes = change_labels(store, &refs, |r| said(r).0);
-    let terms: HashSet<String> = strata::text::analyze_query(question).into_iter().collect();
+    let terms: HashSet<String> = chloedb::text::analyze_query(question).into_iter().collect();
     let note_line = |r: &Record| format!("- {} {}: {}{}\n", date(said(r).0), note_kind(r), one_line(&r.text), changes.get(&r.id).map(|s| s.as_str()).unwrap_or(""));
     let excerpt = |r: &Record| {
         let role = if r.kind == Kind::Answer { "assistant" } else { "user" };

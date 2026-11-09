@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.transforms import blended_transform_factory  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-RESULTS = ROOT / "strata" / "results"
+RESULTS = ROOT / "chloedb" / "results"
 OUT = ROOT / "docs" / "showcase"
 
 BLUE, GREY, INK, INK2, GRID = "#2b78d6", "#c3c2b8", "#1a1a1a", "#555555", "#e4e4e4"

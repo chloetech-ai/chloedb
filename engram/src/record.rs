@@ -1,8 +1,8 @@
 //! Memory records and the Strata table that holds them.
 
 use serde::{Deserialize, Serialize};
-use strata::graph::{edges_value, parse_edges, Edge};
-use strata::{Field, FieldType, Schema, Value, VectorIndexKind};
+use chloedb::graph::{edges_value, parse_edges, Edge};
+use chloedb::{Field, FieldType, Schema, Value, VectorIndexKind};
 
 use crate::Result;
 

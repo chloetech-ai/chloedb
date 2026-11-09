@@ -8,4 +8,4 @@ Install a release from GitHub, where each `strata-js-v<version>` release has a p
 npm install https://github.com/chloetech-ai/strata/releases/download/strata-js-v0.1.0/strata-db-0.1.0-darwin-arm64.tgz
 ```
 
-The list of platforms is in [docs/strata/javascript.md](https://github.com/chloetech-ai/strata/blob/main/docs/strata/javascript.md). Releases will be published here later.
+The list of platforms is in [docs/strata/javascript.md](https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/javascript.md). Releases will be published here later.

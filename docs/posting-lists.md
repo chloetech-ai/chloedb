@@ -46,7 +46,7 @@ Algorithms: for two sorted arrays, merge, branch-free merge, galloping, binary s
 | Interpolative | 4.90 | 0.135 | 3.47 | 4.77 | 0.060 | 1.31 |
 | Roaring | 9.32 | 0.018 | 0.382 | 8.47 | 0.0043 | 0.069 |
 
-*Source: `strata/results/postings/`; the full table, with every codec and the uniform collection, is in [ChloeDB's posting-list notes](https://github.com/chloetech-ai/strata/blob/main/strata/notes/posting-lists.md).*
+*Source: `chloedb/results/postings/`; the full table, with every codec and the uniform collection, is in [ChloeDB's posting-list notes](https://github.com/chloetech-ai/strata/blob/main/chloedb/notes/posting-lists.md).*
 
 - **The skip structure matters more than the gap coder.** Conjunctions spend their time in `NextGEQ`. Elias-Fano's select-based jumps made PEF the fastest compressed list codec for AND on every collection, though it decodes 1.3–1.5× slower than BP128. Uncompressed arrays, galloping through plain memory, are still 1.3–2.1× faster than PEF on the M2 (on the Xeon VM that first ran this study, PEF matched them).
 - **PEF is the balanced default:** the smallest or within 1% of it everywhere, at 2.0–3.8× Roaring's AND time.
@@ -128,7 +128,7 @@ Same collections, query generator and harness as the first round, rerun together
 | **Loom** | 4.90 | **0.013** | 0.514 | 8.01 | 4.74 | 0.0067 | 0.107 |
 | **Entropic** | **4.22** | 0.066 | 0.895 | **7.60** | **4.18** | 0.028 | 0.279 |
 
-*Source: `strata/results/postings/designs/`.*
+*Source: `chloedb/results/postings/designs/`.*
 
 Loom is on all ten size/time frontiers (AND and OR on five workloads), and on four of them, AND and OR on the clustered and dense collections, every point is a new design. Roaring holds the fast end of both AND and OR on uniform and WikiText, and on the selective queries, which take microseconds, uncompressed arrays are fastest.
 
@@ -164,7 +164,7 @@ flowchart TB
     Q2 -- no --> AR["sorted array"]
 ```
 
-ChloeDB's [text index](strata/index.md#full-text) keeps Loom for long lists, adding term frequencies addressed by posting rank and per-block maximum scores for top-k. On BEIR, against BP128 for every list, it is 2–4% smaller with 7.6–12× faster conjunctions ([ChloeDB results](strata/results.md#posting-formats-and-top-k)). Keyword values use Pyramid, whose unions and count-only intersections serve `IN` filters and facet counts.
+ChloeDB's [text index](chloedb/index.md#full-text) keeps Loom for long lists, adding term frequencies addressed by posting rank and per-block maximum scores for top-k. On BEIR, against BP128 for every list, it is 2–4% smaller with 7.6–12× faster conjunctions ([ChloeDB results](chloedb/results.md#posting-formats-and-top-k)). Keyword values use Pyramid, whose unions and count-only intersections serve `IN` filters and facet counts.
 
 ## Limitations
 

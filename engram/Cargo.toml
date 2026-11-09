@@ -7,7 +7,7 @@ description = "Automatic long-term context for coding agents, stored in Strata"
 publish = false
 
 [dependencies]
-strata = { path = "../strata" }
+chloedb = { path = "../chloedb" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
@@ -16,9 +16,9 @@ regex = "1"
 
 [features]
 # BGE-small through candle: better vectors, ~50 ms per record on CPU.
-bert = ["strata/bert"]
+bert = ["chloedb/bert"]
 # `bert` with matrix products in Apple's Accelerate framework (macOS only).
-accelerate = ["strata/accelerate"]
+accelerate = ["chloedb/accelerate"]
 
 [dev-dependencies]
 tempfile = "3"

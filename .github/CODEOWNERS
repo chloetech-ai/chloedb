@@ -11,31 +11,31 @@
 # The on-disk format: manifest, write-ahead log, pages, directory layout,
 # segments, the fixtures that pin each format version, and the features a
 # file declares (query/ir.rs).
-/strata/src/storage/manifest.rs   @rkonow
-/strata/src/storage/wal.rs        @rkonow
-/strata/src/storage/pager.rs      @rkonow
-/strata/src/storage/dir.rs        @rkonow
-/strata/src/storage/ship.rs       @rkonow
-/strata/src/segment/              @rkonow
-/strata/src/query/ir.rs           @rkonow
-/strata/tests/fixtures/format*/   @rkonow
+/chloedb/src/storage/manifest.rs   @rkonow
+/chloedb/src/storage/wal.rs        @rkonow
+/chloedb/src/storage/pager.rs      @rkonow
+/chloedb/src/storage/dir.rs        @rkonow
+/chloedb/src/storage/ship.rs       @rkonow
+/chloedb/src/segment/              @rkonow
+/chloedb/src/query/ir.rs           @rkonow
+/chloedb/tests/fixtures/format*/   @rkonow
 # The locks and pins a writer and readers in other processes share a
 # database by, which every version that opens the files must keep to.
-/strata/src/storage/share.rs      @rkonow
+/chloedb/src/storage/share.rs      @rkonow
 
 # The shard protocol and replication between servers, and the decisions
 # the server replicates by (cores/shard.rs) and takes the cluster map and
 # moves slots by (cores/slots.rs).
-/strata-server/proto/             @rkonow
-/strata-server/src/replication.rs @rkonow
-/strata-server/src/slots.rs       @rkonow
-/strata-server/src/cores/shard.rs @rkonow
-/strata-server/src/cores/slots.rs @rkonow
+/chloedb-server/proto/             @rkonow
+/chloedb-server/src/replication.rs @rkonow
+/chloedb-server/src/slots.rs       @rkonow
+/chloedb-server/src/cores/shard.rs @rkonow
+/chloedb-server/src/cores/slots.rs @rkonow
 
 # Authentication and authorization.
-/strata-server/src/auth.rs        @rkonow
-/strata-server/src/keys.rs        @rkonow
-/strata-server/src/keysync.rs     @rkonow
+/chloedb-server/src/auth.rs        @rkonow
+/chloedb-server/src/keys.rs        @rkonow
+/chloedb-server/src/keysync.rs     @rkonow
 
 # The merge gate itself.
 /.github/                         @rkonow

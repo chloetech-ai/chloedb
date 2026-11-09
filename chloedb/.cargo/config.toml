@@ -1,0 +1,16 @@
+# The testbed measures SIMD kernels; let the compiler use every instruction set
+# of the machine it runs on (AVX2/AVX-512/BMI2 on x86_64, NEON on aarch64), so
+# the kernels are chosen at compile time and the rest of the code may use them
+# too. Without it, Strata's own kernels are chosen at run time (chloedb::simd)
+# and the binary runs on any CPU of its architecture: chloedb-server, engram
+# and the Python package build that way.
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+# Every Apple silicon CPU has AES and SHA-2: the target assumes them, and ring
+# (the TLS of hosted embedding models, chloedb::hosted) refuses to build
+# without them. `native` on a virtual Mac (GitHub's macOS runners) names no
+# CPU and leaves them out, so they are named here. A target's flags replace
+# [build]'s, so this repeats target-cpu=native.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=native", "-C", "target-feature=+aes,+sha2"]

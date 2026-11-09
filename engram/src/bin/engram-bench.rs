@@ -336,7 +336,7 @@ impl Embedder for CachedOnly {
     fn dim(&self) -> usize {
         self.dim
     }
-    fn embed(&self, texts: &[&str]) -> strata::Result<Vec<Vec<f32>>> {
+    fn embed(&self, texts: &[&str]) -> chloedb::Result<Vec<Vec<f32>>> {
         eprintln!("warning: {} texts missing from the embedding cache", texts.len());
         Ok(texts.iter().map(|_| vec![0f32; self.dim]).collect())
     }
@@ -361,7 +361,7 @@ impl Embedder for CacheEmbedder {
     fn dim(&self) -> usize {
         self.inner.dim()
     }
-    fn embed(&self, texts: &[&str]) -> strata::Result<Vec<Vec<f32>>> {
+    fn embed(&self, texts: &[&str]) -> chloedb::Result<Vec<Vec<f32>>> {
         let c = self.cache.lock().unwrap();
         texts
             .iter()
@@ -374,7 +374,7 @@ impl Embedder for CacheEmbedder {
             })
             .collect()
     }
-    fn embed_query(&self, q: &str) -> strata::Result<Vec<f32>> {
+    fn embed_query(&self, q: &str) -> chloedb::Result<Vec<f32>> {
         if let Some(v) = self.cache.lock().unwrap().get(&query_key(q)) {
             return Ok(v.clone());
         }
@@ -619,7 +619,7 @@ fn run_unit(u: &Unit, foreign: Option<&(Question, HashSet<u64>)>, emb: &Embeds, 
         }
     }
     for (q, is_foreign) in qs {
-        let terms = strata::text::analyze_query(&q.question);
+        let terms = chloedb::text::analyze_query(&q.question);
         let bm = if terms.is_empty() { Vec::new() } else { store.bm25_top(&q.question, 100, &Filter::default()).unwrap_or_default() };
         let qv = emb.query(&q.question);
         let dv = store.vector_top(&qv, 100, &Filter::default()).unwrap_or_default();
@@ -1455,7 +1455,7 @@ fn probes_cmd(transcript: &Path, probes: &Path, points: &[String], embedder: &st
                     recall::Decision::Brief => recall::fmt_recall_as(&recall::pack(&hits, &p.q, &HashSet::new(), &PackParams::brief()), 0, true),
                     recall::Decision::Skip => String::new(),
                 };
-                let terms: HashSet<String> = strata::text::analyze_query(&p.q).into_iter().collect();
+                let terms: HashSet<String> = chloedb::text::analyze_query(&p.q).into_iter().collect();
                 let pull: String = hits.iter().take(8).map(|h| recall::snippet(&h.record.text, &terms, 700)).collect::<Vec<_>>().join("\n");
                 let first_rank = hits.iter().position(|h| hit(&h.record.text)).map(|r| r + 1);
                 let eligible_has = recs.iter().any(|r| (fresh || r.seq < window_seq) && hit(&r.text));
@@ -1832,7 +1832,7 @@ fn latency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_queri
             let rank = RankParams::default();
             let mut ph: HashMap<&str, Vec<f64>> = HashMap::new();
             for (q, _) in qs.iter().cycle().take(qs.len() * 2) {
-                let terms = strata::text::analyze_query(&q.question);
+                let terms = chloedb::text::analyze_query(&q.question);
                 let t = Instant::now();
                 let v = store.embedder.embed_query(&q.question).expect("embedding");
                 ph.entry("embed_query").or_default().push(ms_since(t));

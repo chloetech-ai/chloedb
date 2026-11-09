@@ -59,18 +59,18 @@ env:
 # repository keeps 10 GB of caches, and with every pull request saving its
 # own, main's were evicted and most jobs compiled every dependency (the
 # Python job took 26 to 39 minutes that way, 20 with a cache). For the same
-# reason Linux builds in strata/ name x86-64-v3 (AVX2, which every runner
+# reason Linux builds in chloedb/ name x86-64-v3 (AVX2, which every runner
 # has) instead of its config's target-cpu=native, so that one cache serves
 # every runner's CPU; on a runner with AVX-512 Strata still picks those
-# kernels at run time (strata::simd). macOS builds keep native, and the CPU
+# kernels at run time (chloedb::simd). macOS builds keep native, and the CPU
 # in their cache's key.
 jobs:
   # Whether the change touches more than the documentation site, Markdown
-  # files and benchmark results (the data under strata/results,
-  # strata-server/results and engram/results, which nothing builds or
+  # files and benchmark results (the data under chloedb/results,
+  # chloedb-server/results and engram/results, which nothing builds or
   # reads): if not, every other job is skipped. A Python script there
-  # still counts as code, since a job runs strata/results/sequence/gate.py,
-  # and so does strata/results/workloads/, which tests/workload_gen.rs
+  # still counts as code, since a job runs chloedb/results/sequence/gate.py,
+  # and so does chloedb/results/workloads/, which tests/workload_gen.rs
   # checks is not stale.
   changes:
     name: changes
@@ -102,8 +102,8 @@ jobs:
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
           grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
-          if grep -qvE '^(strata|strata-server|engram)/results/' "$RUNNER_TEMP/rest" \
-            || grep -qE '^(strata|strata-server|engram)/results/.*\.py$|^strata/results/workloads/' "$RUNNER_TEMP/rest"; then
+          if grep -qvE '^(strata|chloedb-server|engram)/results/' "$RUNNER_TEMP/rest" \
+            || grep -qE '^(strata|chloedb-server|engram)/results/.*\.py$|^chloedb/results/workloads/' "$RUNNER_TEMP/rest"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -117,13 +117,13 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-        # strata-crawl's crawl into a real cluster, and strata-sheets'
-        # workbooks in one, run in server-smoke, which builds strata-server;
+        # chloedb-crawl's crawl into a real cluster, and chloedb-sheets'
+        # workbooks in one, run in server-smoke, which builds chloedb-server;
         # here their other tests and clippy.
-        crate: [strata, engram, strata-server, strata-crawl, strata-sheets]
+        crate: [strata, engram, chloedb-server, chloedb-crawl, chloedb-sheets]
     runs-on: ${{ matrix.os }}
     # rust-cache saves only from a job that passed, so a macOS job that ran
-    # out of time starts the next one cold too: strata-server's tests took
+    # out of time starts the next one cold too: chloedb-server's tests took
     # 59 minutes from a cold build on the macOS runner on 11-08, and Clippy
     # after them did not fit in 60.
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 90 || 60 }}
@@ -135,7 +135,7 @@ jobs:
         with:
           components: clippy
       # On macOS the strata crate builds with -C target-cpu=native
-      # (strata/.cargo/config.toml), so its cache must not be restored on a
+      # (chloedb/.cargo/config.toml), so its cache must not be restored on a
       # runner with another CPU: the key hashes the model and its
       # instruction sets (runners with the same model name differ in them,
       # and a cached proc macro then dies of SIGILL).
@@ -155,23 +155,23 @@ jobs:
       # 16 codegen units (each crate's Cargo.toml): with release's, building
       # Strata's test binaries took 37 of the 40 minutes of its tests.
       # Strata's SQLite import and export (feature `sqlite`) are tested and
-      # linted in the strata job; strata-server and the Python package turn
+      # linted in the strata job; chloedb-server and the Python package turn
       # the feature on. --no-fail-fast runs every test binary even after one
       # fails: cargo stops at the first otherwise, and from 11-05 to 11-07 a
-      # failing unit test of engine-compare kept strata-server's integration
+      # failing unit test of engine-compare kept chloedb-server's integration
       # tests from running on macOS at all.
       - name: Tests
         working-directory: ${{ matrix.crate }}
         run: cargo test --profile ci --no-fail-fast ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
       # The cluster simulator over more seeds than its tests run (`cargo
-      # test` built strata-sim): the first 3,000 of each world on every
+      # test` built chloedb-sim): the first 3,000 of each world on every
       # change, and in the nightly run and a run started by hand 30,000 of
       # each that no run checked before, a new range each day. A seed
-      # replays exactly: `strata-sim --seed N --trace` (with `--cluster`
+      # replays exactly: `chloedb-sim --seed N --trace` (with `--cluster`
       # for the second world) shows what happened in it.
       - name: Simulator seeds
-        if: matrix.crate == 'strata-server' && runner.os == 'Linux'
-        working-directory: strata-server
+        if: matrix.crate == 'chloedb-server' && runner.os == 'Linux'
+        working-directory: chloedb-server
         shell: bash
         env:
           NEW_SEEDS: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -184,10 +184,10 @@ jobs:
           fi
           status=0
           sim() {
-            echo "strata-sim $*"
-            if ! ./target/ci/strata-sim "$@" | tee "$RUNNER_TEMP/sim.out"; then
+            echo "chloedb-sim $*"
+            if ! ./target/ci/chloedb-sim "$@" | tee "$RUNNER_TEMP/sim.out"; then
               status=1
-              { echo "### strata-sim $*"; echo '```'; tail -n 60 "$RUNNER_TEMP/sim.out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+              { echo "### chloedb-sim $*"; echo '```'; tail -n 60 "$RUNNER_TEMP/sim.out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
             fi
           }
           sim --seeds "$from..$((from + n))"
@@ -218,7 +218,7 @@ jobs:
     env: *test-env
     steps: *test-steps
 
-  # strata-server, engram and the Python package build for a generic CPU,
+  # chloedb-server, engram and the Python package build for a generic CPU,
   # where Strata chooses its SIMD kernels at run time: test the kernels in
   # such a build, then with every SIMD path turned off. A job of its own, so
   # that it runs beside the strata tests rather than after them.
@@ -237,10 +237,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata
+          workspaces: chloedb
           key: strata-generic
       - name: Kernels
-        working-directory: strata
+        working-directory: chloedb
         run: |
           cargo test --profile ci --lib -- vector:: postings:: forward:: simd
           STRATA_SIMD=portable cargo test --profile ci --lib -- vector:: postings:: forward::
@@ -250,7 +250,7 @@ jobs:
   # Strata and through a server, with the `hash` model (SigLIP's weights
   # are not fetched here), and clippy over the feature's code. `vision`
   # includes `bert`, so the cross-encoder tests against transformers'
-  # scores of the small models in strata/tests/models run here too.
+  # scores of the small models in chloedb/tests/models run here too.
   vision:
     name: images (feature vision)
     needs: changes
@@ -267,17 +267,17 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
             strata
-            strata-server
+            chloedb-server
           key: vision
       - name: Strata
-        working-directory: strata
+        working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
           cargo test --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
           cargo clippy --profile ci --features vision --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
-      - name: strata-server
-        working-directory: strata-server
+      - name: chloedb-server
+        working-directory: chloedb-server
         run: cargo test --profile ci --features vision --test media_vectors --test media
 
   # Sound (feature `audio`: symphonia's decoders, and Whisper and CLAP
@@ -301,22 +301,22 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
             strata
-            strata-server
+            chloedb-server
           key: audio
       - name: Strata
-        working-directory: strata
+        working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
           cargo test --profile ci --features audio --test derived_audio --test audio_vectors
           cargo test --profile ci --features audio --lib -- audio:: clap::
           cargo clippy --profile ci --features audio --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
-      - name: strata-server
-        working-directory: strata-server
+      - name: chloedb-server
+        working-directory: chloedb-server
         run: cargo clippy --profile ci --features audio -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # DataFusion as the engine of plans' operators (feature `datafusion`,
-  # strata::query::df): the differential test against Strata's own
+  # chloedb::query::df): the differential test against Strata's own
   # operators, window functions on both engines against SQLite's answers,
   # the compound-query suites again with DataFusion as the engine
   # (STRATA_ENGINE=datafusion: a plan it does not lower runs on the
@@ -338,15 +338,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata
+          workspaces: chloedb
           key: datafusion
       - name: Strata
-        working-directory: strata
+        working-directory: chloedb
         run: |
           cargo test --profile ci --features datafusion --test datafusion_engine --test hash_function
           cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
           STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
-          # Parquet files in and out, and s3:// URLs (strata::parquet, strata::objects)
+          # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
           cargo test --profile ci --features datafusion,parquet,s3 --test parquet
           cargo test --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
           cargo clippy --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
@@ -376,14 +376,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata
+          workspaces: chloedb
           key: strata-faults${{ runner.os == 'macOS' && format('-{0}', steps.cpu.outputs.model) || '' }}
       - name: Fault injection
-        working-directory: strata
+        working-directory: chloedb
         run: cargo test --profile ci --features fault-injection --test storage_faults
 
   # BM25 through SQL on three BEIR collections against the committed
-  # baseline (strata/tests/relevance_gate.rs): a ranking change must come
+  # baseline (chloedb/tests/relevance_gate.rs): a ranking change must come
   # with its new numbers.
   relevance-gate:
     name: relevance gate (BEIR)
@@ -399,16 +399,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata
+          workspaces: chloedb
           key: relevance
       - uses: actions/cache@v6
         with:
           path: ~/beir
-          key: beir-${{ hashFiles('strata/tests/fixtures/beir/fetch.sh') }}
+          key: beir-${{ hashFiles('chloedb/tests/fixtures/beir/fetch.sh') }}
       - name: Collections
-        run: strata/tests/fixtures/beir/fetch.sh "$HOME/beir"
+        run: chloedb/tests/fixtures/beir/fetch.sh "$HOME/beir"
       - name: Gate
-        working-directory: strata
+        working-directory: chloedb
         run: STRATA_BEIR_DIR="$HOME/beir" STRATA_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
 
   # BM25's top 20 reranked by the cross-encoder ms-marco-MiniLM-L-6-v2 on
@@ -429,22 +429,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata
+          workspaces: chloedb
           key: relevance-bert
       - uses: actions/cache@v6
         with:
           path: ~/beir
-          key: beir-${{ hashFiles('strata/tests/fixtures/beir/fetch.sh') }}
+          key: beir-${{ hashFiles('chloedb/tests/fixtures/beir/fetch.sh') }}
       - uses: actions/cache@v6
         with:
           path: ~/models
-          key: cross-encoder-${{ hashFiles('strata/tests/models/fetch_cross_encoder.sh') }}
+          key: cross-encoder-${{ hashFiles('chloedb/tests/models/fetch_cross_encoder.sh') }}
       - name: Collections and model
         run: |
-          strata/tests/fixtures/beir/fetch.sh "$HOME/beir"
-          strata/tests/models/fetch_cross_encoder.sh "$HOME/models"
+          chloedb/tests/fixtures/beir/fetch.sh "$HOME/beir"
+          chloedb/tests/models/fetch_cross_encoder.sh "$HOME/models"
       - name: Gate
-        working-directory: strata
+        working-directory: chloedb
         run: STRATA_BEIR_DIR="$HOME/beir" STRATA_MODELS="$HOME/models" STRATA_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
 
   # Miri runs the tests of Strata's zero-copy byte views (postings::bytes)
@@ -485,17 +485,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata
+          workspaces: chloedb
           key: miri
       - name: Miri
-        working-directory: strata
+        working-directory: chloedb
         env:
           RUSTFLAGS: ""
           MIRIFLAGS: -Zmiri-disable-isolation
         run: cargo miri test --no-default-features --lib -- ${{ matrix.tests }}
 
   server-smoke:
-    name: strata-server smoke test
+    name: chloedb-server smoke test
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -507,17 +507,17 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
-            strata-server
-            strata-crawl
-            strata-sheets
+            chloedb-server
+            chloedb-crawl
+            chloedb-sheets
           key: strata-server-smoke
       - name: Build
-        working-directory: strata-server
+        working-directory: chloedb-server
         run: cargo build --release
       - name: Serve a demo catalogue and query it
-        working-directory: strata-server
+        working-directory: chloedb-server
         run: |
-          ./target/release/strata-server --demo 5000 --db "$RUNNER_TEMP/demo.strata" --listen 127.0.0.1:7700 --grpc off &
+          ./target/release/chloedb-server --demo 5000 --db "$RUNNER_TEMP/demo.strata" --listen 127.0.0.1:7700 --grpc off &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:7700/v1/health && break; sleep 1; done
           curl -sf http://127.0.0.1:7700/v1/health | grep -q '"ok"'
           curl -sf -X POST http://127.0.0.1:7700/v1/query -H 'content-type: application/json' \
@@ -534,15 +534,15 @@ jobs:
           # Rows into a new database from the command line, then over HTTP.
           printf '{"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}]}' > "$RUNNER_TEMP/t.json"
           printf '{"id": "a", "title": "first row"}\n{"id": "b", "title": "second row", "extra": 1}\n' > "$RUNNER_TEMP/t.jsonl"
-          ./target/release/strata-server import --db "$RUNNER_TEMP/t.strata" --schema "$RUNNER_TEMP/t.json" "$RUNNER_TEMP/t.jsonl"
-          ./target/release/strata-server --db "$RUNNER_TEMP/t.strata" --listen 127.0.0.1:7702 --grpc off &
+          ./target/release/chloedb-server import --db "$RUNNER_TEMP/t.strata" --schema "$RUNNER_TEMP/t.json" "$RUNNER_TEMP/t.jsonl"
+          ./target/release/chloedb-server --db "$RUNNER_TEMP/t.strata" --listen 127.0.0.1:7702 --grpc off &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:7702/v1/health && break; sleep 1; done
           printf 'id,title\nc,third row\n' | curl -sf -X POST 'http://127.0.0.1:7702/v1/import?format=csv' -H 'content-type: text/csv' --data-binary @- | grep -q '"written":1'
           curl -sf http://127.0.0.1:7702/v1/health | grep -q '"docs":3'
           # A SQLite database's tables into a new database, and back out.
           python3 -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.executescript(\"CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, at DATETIME); INSERT INTO notes VALUES (1, 'a first note about rivers and mountains', '2026-10-01 12:00:00');\"); c.commit()" "$RUNNER_TEMP/s.sqlite"
-          ./target/release/strata-server import --db "$RUNNER_TEMP/s.strata" "$RUNNER_TEMP/s.sqlite"
-          ./target/release/strata-server export --db "$RUNNER_TEMP/s.strata" "$RUNNER_TEMP/s2.sqlite"
+          ./target/release/chloedb-server import --db "$RUNNER_TEMP/s.strata" "$RUNNER_TEMP/s.sqlite"
+          ./target/release/chloedb-server export --db "$RUNNER_TEMP/s.strata" "$RUNNER_TEMP/s2.sqlite"
           python3 -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert c.execute(\"SELECT notes.rowid, at FROM notes_fts JOIN notes ON notes.rowid = notes_fts.rowid WHERE notes_fts MATCH 'river'\").fetchall() == [(1, '2026-10-01 12:00:00')]" "$RUNNER_TEMP/s2.sqlite"
           # And over HTTP: the SQLite file into the running server, a new table, and the database back out.
           curl -sf -X POST 'http://127.0.0.1:7702/v1/import?format=sqlite' -H 'content-type: application/vnd.sqlite3' --data-binary @"$RUNNER_TEMP/s.sqlite" | grep -q '"written":1'
@@ -551,30 +551,30 @@ jobs:
       # The crawler on a site its test serves, into a cluster of this
       # build's servers that it starts and grows to three shards.
       - name: Crawl a site into a growing cluster
-        working-directory: strata-crawl
+        working-directory: chloedb-crawl
         env:
-          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           STRATA_CRAWL_NEED_SERVER: "1"
         run: cargo test --profile ci --test site
       # Spreadsheets kept in a server of this build: made, changed,
       # imported (CSV, SQLite), filled by a query, saved as a table,
       # searched, exported, and read back after a restart.
       - name: Workbooks in a cluster
-        working-directory: strata-sheets
+        working-directory: chloedb-sheets
         env:
-          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           STRATA_SHEETS_NEED_SERVER: "1"
         run: cargo test --profile ci --test cluster
-      # The app engine (strata-apps, a prototype in Node): apps built from
+      # The app engine (chloedb-apps, a prototype in Node): apps built from
       # plans, stored as SQL rows in a server of this build, run, tested and
       # searched; no model is called.
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: App engine against a server
-        working-directory: strata-apps
+        working-directory: chloedb-apps
         env:
-          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           STRATA_APPS_NEED_SERVER: "1"
         # The library is searched by meaning too: the model its meaning
         # column names must be there before the tests write rows.
@@ -601,18 +601,18 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      # strata-py and strata-server build for a generic CPU: one cache on
+      # chloedb-py and chloedb-server build for a generic CPU: one cache on
       # every runner.
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
-            strata-py
-            strata-server
+            chloedb-py
+            chloedb-server
           key: python
       # The client tests run against a real server.
-      - name: Build strata-server
-        working-directory: strata-server
+      - name: Build chloedb-server
+        working-directory: chloedb-server
         run: cargo build --release
       # The Kafka consumer's exactly-once test runs against Redpanda, on
       # Linux only (macOS runners have no Docker); elsewhere it is skipped.
@@ -628,7 +628,7 @@ jobs:
           docker exec redpanda rpk cluster health
           echo "STRATA_KAFKA=127.0.0.1:19092" >> "$GITHUB_ENV"
       - name: Build and test
-        working-directory: strata-py
+        working-directory: chloedb-py
         run: |
           python -m venv .venv
           . .venv/bin/activate
@@ -642,22 +642,22 @@ jobs:
           # optimisation and single codegen unit took most of this step.
           maturin develop --profile ci
           pytest tests -v
-      # The recommender gate (strata/results/sequence/gate.py): every
+      # The recommender gate (chloedb/results/sequence/gate.py): every
       # candidate source and two baselines on MovieLens-1M, checked against
-      # strata/tests/fixtures/recsys_gate.json and recsys_gate_time.json.
+      # chloedb/tests/fixtures/recsys_gate.json and recsys_gate_time.json.
       # The ratings come from a mirror on Hugging Face, pinned by revision
       # and SHA-256. The two protocols run at once, a process each (one
       # after the other they took 6 and 2 minutes), and their output is
       # printed when both have ended.
       - name: Recommender gate
         if: runner.os == 'Linux'
-        working-directory: strata-py
+        working-directory: chloedb-py
         run: |
           . .venv/bin/activate
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/ml-1m-ratings.csv" https://huggingface.co/datasets/hazemessam/ml-1m/resolve/b7ed0ffb2157bfbc794a1e47e9044ab323bee57f/ratings.csv
           echo "d2baa264e8ef4c7fb0c555acae5dc80239612481efff5814df9eab98cb9e1fe0  $RUNNER_TEMP/ml-1m-ratings.csv" | sha256sum -c
           for protocol in loo time; do
-            python ../strata/results/sequence/gate.py --ratings "$RUNNER_TEMP/ml-1m-ratings.csv" --protocol "$protocol" > "$RUNNER_TEMP/gate-$protocol.log" 2>&1 &
+            python ../chloedb/results/sequence/gate.py --ratings "$RUNNER_TEMP/ml-1m-ratings.csv" --protocol "$protocol" > "$RUNNER_TEMP/gate-$protocol.log" 2>&1 &
             echo $! > "$RUNNER_TEMP/gate-$protocol.pid"
           done
           status=0
@@ -667,7 +667,7 @@ jobs:
           done
           exit $status
       - name: Clippy
-        working-directory: strata-py
+        working-directory: chloedb-py
         run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   javascript:
@@ -703,36 +703,36 @@ jobs:
           deno-version: v2.x
       - if: steps.deno.outcome == 'failure'
         run: npm install -g deno && deno --version
-      # strata-js and strata-server build for a generic CPU: one cache on
+      # chloedb-js and chloedb-server build for a generic CPU: one cache on
       # every runner.
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
-            strata-js
-            strata-server
+            chloedb-js
+            chloedb-server
           key: javascript
       # The client tests run against a real server.
-      - name: Build strata-server
-        working-directory: strata-server
+      - name: Build chloedb-server
+        working-directory: chloedb-server
         run: cargo build --release
       - name: Build and test
-        working-directory: strata-js
+        working-directory: chloedb-js
         run: |
           node scripts/build.mjs --profile ci
           node --test test/*.test.mjs
       # The same addon from Bun and Deno: a file opened, written and
       # searched in each runtime, and the client against a server.
       - name: Bun and Deno
-        working-directory: strata-js
+        working-directory: chloedb-js
         run: |
           bun test/runtimes.mjs
           deno run --allow-ffi --allow-read --allow-write --allow-env --allow-net --allow-run --allow-sys test/runtimes.mjs
       - name: Clippy
-        working-directory: strata-js
+        working-directory: chloedb-js
         run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
-  # The Java package (strata-java): its native library, built by cargo
+  # The Java package (chloedb-java): its native library, built by cargo
   # inside mvn package, and the Java classes' tests against it on the
   # oldest Java the package supports (11) and on the newest long-term one,
   # which warns about native libraries loaded without
@@ -752,11 +752,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # strata-java builds for a generic CPU: one cache on every runner.
+      # chloedb-java builds for a generic CPU: one cache on every runner.
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata-java
+          workspaces: chloedb-java
           key: java
       - uses: actions/setup-java@v6
         with:
@@ -765,20 +765,20 @@ jobs:
           cache: maven
       # The ci profile, as the crates' tests have.
       - name: Build and test on Java 11
-        working-directory: strata-java
+        working-directory: chloedb-java
         run: mvn -B -ntp -Dcargo.profile=ci package
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "25"
       - name: Test on Java 25
-        working-directory: strata-java
+        working-directory: chloedb-java
         run: mvn -B -ntp -Dcargo.profile=ci -Dcargo.skip=true test
       - name: Native library's own tests
-        working-directory: strata-java
+        working-directory: chloedb-java
         run: cargo test --profile ci
       - name: Clippy
-        working-directory: strata-java
+        working-directory: chloedb-java
         run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # The one check main requires: every job above passed, or was skipped

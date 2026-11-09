@@ -43,8 +43,8 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl From<strata::Error> for Error {
-    fn from(e: strata::Error) -> Self {
+impl From<chloedb::Error> for Error {
+    fn from(e: chloedb::Error) -> Self {
         Error(format!("strata: {e}"))
     }
 }

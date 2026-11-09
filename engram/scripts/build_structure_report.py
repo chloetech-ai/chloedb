@@ -11,7 +11,7 @@ from collections import defaultdict
 root = pathlib.Path(__file__).resolve().parent.parent
 results = root / "results"
 src = root / "report" / "structure"
-shared = root.parent / "strata" / "report" / "postings"
+shared = root.parent / "chloedb" / "report" / "postings"
 
 
 def load(path):

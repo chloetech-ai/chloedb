@@ -303,7 +303,7 @@ impl Gate {
 }
 
 fn analyzed(text: &str) -> HashSet<String> {
-    strata::text::analyze(text).into_iter().collect()
+    chloedb::text::analyze(text).into_iter().collect()
 }
 
 /// Requests running [`both`] now.
@@ -372,13 +372,13 @@ pub fn search(store: &Store, query: &str, filter: &Filter, p: &RankParams) -> Re
 /// when `p.tail` is on.
 pub fn search_with(store: &Store, query: &str, tail: Option<&Tail>, filter: &Filter, p: &RankParams) -> Result<(Vec<Hit>, Evidence)> {
     let store = &store.pinned();
-    let terms = strata::text::analyze_query(query);
+    let terms = chloedb::text::analyze_query(query);
     let tail = tail.filter(|_| p.tail.enabled);
     let ((bm, td), (vq, dv, tv)) = both(
         || {
             let bm = if p.use_bm25 && !terms.is_empty() { store.bm25_top(query, p.n, filter) } else { Ok(Vec::new()) };
             let td = match tail {
-                Some(t) if p.use_bm25 && !strata::text::analyze_query(&t.digest).is_empty() => store.bm25_top(&t.digest, p.tail.n, filter),
+                Some(t) if p.use_bm25 && !chloedb::text::analyze_query(&t.digest).is_empty() => store.bm25_top(&t.digest, p.tail.n, filter),
                 _ => Ok(Vec::new()),
             };
             (bm, td)
@@ -525,7 +525,7 @@ pub fn snippet_range(text: &str, terms: &HashSet<String>, max: usize) -> (usize,
     let mut pos = 0;
     for w in text.split(|c: char| !c.is_alphanumeric()) {
         if !w.is_empty() {
-            if let Some(t) = strata::text::analyzer::term_of(&w.to_lowercase()) {
+            if let Some(t) = chloedb::text::analyzer::term_of(&w.to_lowercase()) {
                 if terms.contains(t.as_ref()) {
                     hits.push(pos);
                 }
@@ -587,7 +587,7 @@ fn same_question(r: &Record, terms: &HashSet<String>) -> bool {
     if r.kind != Kind::Prompt || terms.is_empty() || !r.text.contains('?') {
         return false;
     }
-    let other: HashSet<String> = strata::text::analyze_query(&r.text).into_iter().collect();
+    let other: HashSet<String> = chloedb::text::analyze_query(&r.text).into_iter().collect();
     let inter = terms.intersection(&other).count() as f64;
     let union = terms.union(&other).count() as f64;
     union > 0.0 && inter / union >= 0.7
@@ -596,7 +596,7 @@ fn same_question(r: &Record, terms: &HashSet<String>) -> bool {
 /// Selects hits within the budget; returns them oldest first with snippets.
 /// Answers marked uncertain and earlier copies of the same question are skipped.
 pub fn pack(hits: &[Hit], query: &str, skip: &HashSet<String>, p: &PackParams) -> Vec<(Record, String)> {
-    let terms: HashSet<String> = strata::text::analyze_query(query).into_iter().collect();
+    let terms: HashSet<String> = chloedb::text::analyze_query(query).into_iter().collect();
     let mut per: HashMap<(String, i64), usize> = HashMap::new();
     let mut used = 0usize;
     let mut out: Vec<(Record, String)> = Vec::new();
@@ -756,7 +756,7 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
     let store = &store.pinned();
     let mut f = filter.clone();
     f.kinds = KNOWLEDGE.to_vec();
-    let terms = strata::text::analyze_query(query);
+    let terms = chloedb::text::analyze_query(query);
     let (bm, dv) = both(
         || if terms.is_empty() { Ok(Vec::new()) } else { store.bm25_top(query, p.n, &f) },
         || store.vector_top(&store.embedder.embed_query(query)?, p.n, &f),
@@ -796,7 +796,7 @@ pub fn related(store: &Store, text: &str, n: usize) -> Result<Vec<Record>> {
     let f = Filter { kinds: KNOWLEDGE.to_vec(), ..Default::default() };
     let live = |r: &Record| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned");
     let (bm, dv) = both(
-        || if strata::text::analyze_query(text).is_empty() { Ok(Vec::new()) } else { store.bm25_top(text, n * 2, &f) },
+        || if chloedb::text::analyze_query(text).is_empty() { Ok(Vec::new()) } else { store.bm25_top(text, n * 2, &f) },
         || store.vector_top(&store.embedder.embed_query(text)?, n * 2, &f),
     );
     let mut score: HashMap<String, (Record, f64)> = HashMap::new();
@@ -1059,7 +1059,7 @@ mod tests {
     #[test]
     fn snippet_finds_terms() {
         let text = format!("{} the planner probes local selectivity {}", "x ".repeat(500), "y ".repeat(500));
-        let terms: HashSet<String> = strata::text::analyze_query("planner selectivity").into_iter().collect();
+        let terms: HashSet<String> = chloedb::text::analyze_query("planner selectivity").into_iter().collect();
         let s = snippet(&text, &terms, 200);
         assert!(s.contains("planner probes local selectivity"), "{s}");
         assert!(s.len() <= 210);

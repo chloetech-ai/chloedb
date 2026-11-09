@@ -18,11 +18,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
 
 use serde::Serialize;
-use strata::db::Db;
-use strata::query::exec::ResultSet;
-use strata::query::Params;
-use strata::storage::{DbOptions, MergerOptions, Snapshot};
-use strata::{Document, Value, VectorIndexKind};
+use chloedb::db::Db;
+use chloedb::query::exec::ResultSet;
+use chloedb::query::Params;
+use chloedb::storage::{DbOptions, MergerOptions, Snapshot};
+use chloedb::{Document, Value, VectorIndexKind};
 
 use crate::embed::Embedder;
 use crate::record::{entity_id, file_entity_id, links_of, record_id, schema, Draft, Kind, Link, Record, COLUMNS};
@@ -157,10 +157,10 @@ impl Store {
         if opts.mem_flat {
             dbo.mem_build = Some(dbo.build.clone().set("vector.index", "flat"));
         }
-        let db = if path.exists() || strata::upgrade::old_path(path).exists() {
+        let db = if path.exists() || chloedb::upgrade::old_path(path).exists() {
             // A store written before Strata had field ids is copied into
             // this version's format once, the old one kept beside it.
-            if let Some(u) = strata::upgrade::upgrade(path)? {
+            if let Some(u) = chloedb::upgrade::upgrade(path)? {
                 eprintln!("engram: copied {} records of {} into the current store format (the old file is {})", u.rows, path.display(), u.old.display());
             }
             let db = Db::open(path, dbo.clone())?;
@@ -178,7 +178,7 @@ impl Store {
             Db::create(path, schema(embedder.dim(), opts.vector_index.clone())?, dbo)?
         };
         let want = embedder.dim();
-        if let Some(strata::FieldType::Vector { dim, .. }) = db.schema().field("emb").map(|f| f.ty.clone()) {
+        if let Some(chloedb::FieldType::Vector { dim, .. }) = db.schema().field("emb").map(|f| f.ty.clone()) {
             if dim != want {
                 return Err(err(format!("{} holds {dim}-dimension vectors; the embedder {} makes {want}", path.display(), embedder.name())));
             }
@@ -593,7 +593,7 @@ fn commit_group(db: &Db, next_seq: &AtomicI64, mut group: Vec<Job>) {
 /// Applies a group in one transaction. An error says whether the commit
 /// was reached (then it may have happened, and the group is not retried).
 fn apply(db: &Db, next_seq: &AtomicI64, group: &mut [Job]) -> std::result::Result<Vec<Done>, (Error, bool)> {
-    let refused = |e: strata::Error| (Error::from(e), false);
+    let refused = |e: chloedb::Error| (Error::from(e), false);
     let schema = db.schema().clone();
     // Every earlier commit is published, so this is the latest version.
     let snap = db.snapshot();
@@ -741,7 +741,7 @@ fn migrate(path: &Path, embedder: &Arc<dyn Embedder>, opts: &StoreOptions) -> Re
         new.flush()?;
     }
     // Its writer's lock stays with the name it was written under.
-    strata::storage::share::remove(&tmp, false);
+    chloedb::storage::share::remove(&tmp, false);
     let bak = path.with_extension("v1");
     std::fs::rename(path, &bak)?;
     let _ = std::fs::rename(side(path, "-wal"), side(&bak, "-wal"));
@@ -997,7 +997,7 @@ mod tests {
         let path = dir.path().join("m.strata");
         let mut fields = schema(64, VectorIndexKind::Flat).unwrap().fields;
         fields.retain(|f| f.name != "links");
-        let old = strata::Schema::new("memory", fields, Some("id")).unwrap();
+        let old = chloedb::Schema::new("memory", fields, Some("id")).unwrap();
         {
             let db = Db::create(&path, old.clone(), DbOptions::default()).unwrap();
             let mut txn = db.storage().begin().unwrap();

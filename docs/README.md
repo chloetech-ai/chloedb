@@ -2,9 +2,9 @@
 
 An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.
 
-[How ChloeDB works](strata/index.md) · [Query language](strata/query-language.md) · [Server](strata/server.md) · [Python](strata/python.md) · [JavaScript](strata/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
+[How ChloeDB works](chloedb/index.md) · [Query language](chloedb/query-language.md) · [Server](chloedb/server.md) · [Python](chloedb/python.md) · [JavaScript](chloedb/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
 
-> ChloeDB was called Strata until November 2026. The rename is landing in steps: until it is done, folders, crates, commands, settings and the repository still carry the old name (`strata-server`, `import strata`, `STRATA_*`), and they keep working afterwards.
+> ChloeDB was called Strata until November 2026. The rename is landing in steps: until it is done, folders, crates, commands, settings and the repository still carry the old name (`chloedb-server`, `import strata`, `STRATA_*`), and they keep working afterwards.
 
 ---
 
@@ -14,12 +14,12 @@ This repository holds ChloeDB, the pieces around it, and Engram, an application 
 
 | part | what it is | read more |
 |---|---|---|
-| **ChloeDB** | The embedded, single-file database: ACID transactions, SQL, full text, structured columns, vectors and graph edges over the same rows, and a cost-based planner over all of it. SQLite databases import into it and it exports to SQLite. | [Design](strata/index.md) · [SQL](strata/query-language.md) · [Graphs](strata/graphs.md) · [Next items](strata/next-items.md) · [SQLite](strata/sqlite.md) · [Following Postgres](strata/postgres.md) · [OpenSearch API](strata/opensearch.md) · [Results](strata/results.md) |
-| **strata-server** | ChloeDB over HTTP JSON and gRPC, with a command center for one server or a cluster (health, topology, performance, alerts, queries and their profiles, CPU and memory flame graphs, logs, access), a query console and an agent that answers questions with SQL. Shards behind a coordinator answer like one database, and a primary ships its writes to replicas. | [Server](strata/server.md) |
-| **Apps on a cluster** | Programs the command center shows as views: a crawler that turns a site into a table and grows the cluster as it fills, and spreadsheets whose workbooks are ChloeDB rows (formulas, charts, pivots, SQL queries of the cluster in cells, the cluster's tables as live sheets, xlsx, CSV and SQLite in and out). | [Crawler](strata/crawler.md) · [Sheets](strata/sheets.md) |
-| **strata-apps** (a prototype) | An app engine: apps built from a description by a model, checked, stored in ChloeDB as SQL rows and run; changed by asking, one version per change; shared components and helpers found by words, meaning and a graph; a model and the web for apps, switched on per app. | [Apps](strata/apps.md) |
-| **strata-py** | ChloeDB from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of strata-server with the same methods. | [Python](strata/python.md) |
-| **strata-js** | ChloeDB from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of strata-server for any runtime, with the same methods. | [JavaScript](strata/javascript.md) |
+| **ChloeDB** | The embedded, single-file database: ACID transactions, SQL, full text, structured columns, vectors and graph edges over the same rows, and a cost-based planner over all of it. SQLite databases import into it and it exports to SQLite. | [Design](chloedb/index.md) · [SQL](chloedb/query-language.md) · [Graphs](chloedb/graphs.md) · [Next items](chloedb/next-items.md) · [SQLite](chloedb/sqlite.md) · [Following Postgres](chloedb/postgres.md) · [OpenSearch API](chloedb/opensearch.md) · [Results](chloedb/results.md) |
+| **chloedb-server** | ChloeDB over HTTP JSON and gRPC, with a command center for one server or a cluster (health, topology, performance, alerts, queries and their profiles, CPU and memory flame graphs, logs, access), a query console and an agent that answers questions with SQL. Shards behind a coordinator answer like one database, and a primary ships its writes to replicas. | [Server](chloedb/server.md) |
+| **Apps on a cluster** | Programs the command center shows as views: a crawler that turns a site into a table and grows the cluster as it fills, and spreadsheets whose workbooks are ChloeDB rows (formulas, charts, pivots, SQL queries of the cluster in cells, the cluster's tables as live sheets, xlsx, CSV and SQLite in and out). | [Crawler](chloedb/crawler.md) · [Sheets](chloedb/sheets.md) |
+| **chloedb-apps** (a prototype) | An app engine: apps built from a description by a model, checked, stored in ChloeDB as SQL rows and run; changed by asking, one version per change; shared components and helpers found by words, meaning and a graph; a model and the web for apps, switched on per app. | [Apps](chloedb/apps.md) |
+| **chloedb-py** | ChloeDB from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of chloedb-server with the same methods. | [Python](chloedb/python.md) |
+| **chloedb-js** | ChloeDB from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of chloedb-server for any runtime, with the same methods. | [JavaScript](chloedb/javascript.md) |
 | **ChloeDB's posting lists** | A study of compressed posting lists and their intersection and union algorithms, which produced three new formats. ChloeDB's text and keyword indexes use two of them. | [Posting lists](posting-lists.md) |
 | **Engram**, built on ChloeDB | Long-term memory for Claude Code. Hooks store every event of a session in a ChloeDB file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](engram/index.md) · [Install](engram/setup.md) · [Inspector](engram/inspector.md) · [Results](engram/results.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/) |
 
@@ -42,7 +42,7 @@ WHERE REACHABLE(cites, (SELECT id FROM papers ORDER BY similarity(emb, :q) DESC 
 ORDER BY similarity(emb, :q) DESC LIMIT 20;
 ```
 
-The [query language](strata/query-language.md) page is the reference: scores and rank fusion, typo-tolerant and synonym searches, aggregates, subqueries, `WITH` and joins, graphs, writes and `EXPLAIN`.
+The [query language](chloedb/query-language.md) page is the reference: scores and rank fusion, typo-tolerant and synonym searches, aggregates, subqueries, `WITH` and joins, graphs, writes and `EXPLAIN`.
 
 ## How it fits together
 
@@ -54,13 +54,13 @@ flowchart LR
         idx --- pl["posting lists<br/>Loom · Pyramid · BP128"]
     end
     app["your program (Rust)"] --> lib
-    py["strata-py<br/>in-process or HTTP client"] --> lib
+    py["chloedb-py<br/>in-process or HTTP client"] --> lib
     py -.-> srv
-    srv["strata-server<br/>HTTP JSON · gRPC · UI · agent<br/>coordinator over shards · replicas"] --> lib
+    srv["chloedb-server<br/>HTTP JSON · gRPC · UI · agent<br/>coordinator over shards · replicas"] --> lib
     engram["Engram<br/>memory for Claude Code"] --> lib
 ```
 
-A statement is parsed and bound into a predicate tree and a scorer; the planner picks, per segment and from exact statistics, how to evaluate each part (MaxScore or Block-Max WAND for text, range scans or postings for structured fields, an exact scan, IVF or HNSW with the filter inside for vectors); operators read zero-copy views of the segment's sections, and per-segment results are merged. [ChloeDB's design](strata/index.md) covers the file format, transactions, every index and the planner.
+A statement is parsed and bound into a predicate tree and a scorer; the planner picks, per segment and from exact statistics, how to evaluate each part (MaxScore or Block-Max WAND for text, range scans or postings for structured fields, an exact scan, IVF or HNSW with the filter inside for vectors); operators read zero-copy views of the segment's sections, and per-segment results are merged. [ChloeDB's design](chloedb/index.md) covers the file format, transactions, every index and the planner.
 
 ## Headline results
 

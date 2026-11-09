@@ -2,7 +2,7 @@
 
 ## One-way doors
 
-Does this change the on-disk format, the shard protocol (`strata-server/proto`), replication, or authentication? If so, which, and what happens to existing databases, replicas and clients. A change to one of them waits for a human review (`.github/CODEOWNERS`).
+Does this change the on-disk format, the shard protocol (`chloedb-server/proto`), replication, or authentication? If so, which, and what happens to existing databases, replicas and clients. A change to one of them waits for a human review (`.github/CODEOWNERS`).
 
 - [ ] No one-way door
 - [ ] Yes:

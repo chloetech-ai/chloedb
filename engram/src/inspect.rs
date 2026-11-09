@@ -5,8 +5,8 @@
 use std::time::Instant;
 
 use serde_json::{json, Map, Value as Json};
-use strata::query::Params;
-use strata::Value;
+use chloedb::query::Params;
+use chloedb::Value;
 
 use crate::store::Store;
 use crate::{err, Result};
@@ -25,7 +25,7 @@ pub fn value_json(v: &Value, max_dims: Option<usize>) -> Json {
         }
         Value::List(xs) => Json::Array(xs.iter().map(|x| value_json(x, max_dims)).collect()),
         Value::Bool(b) => json!(b),
-        Value::Timestamp(t) => json!(strata::timestamp::format(*t)),
+        Value::Timestamp(t) => json!(chloedb::timestamp::format(*t)),
     }
 }
 
@@ -78,7 +78,7 @@ pub fn layout(store: &Store) -> Result<Json> {
         .segments()
         .iter()
         .map(|v| {
-            let mut sections: Vec<(String, usize)> = v.file.section_sizes().into_iter().map(|(k, n)| (strata::segment::label(snap.schema(), &k), n)).collect();
+            let mut sections: Vec<(String, usize)> = v.file.section_sizes().into_iter().map(|(k, n)| (chloedb::segment::label(snap.schema(), &k), n)).collect();
             sections.sort_by(|a, b| b.1.cmp(&a.1));
             let sections: Map<String, Json> = sections.into_iter().map(|(k, n)| (k, json!(n))).collect();
             json!({"id": v.id, "in_memory": v.in_memory, "n_docs": v.file.n_docs(), "n_live": v.n_live, "sections": sections})

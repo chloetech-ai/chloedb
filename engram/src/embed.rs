@@ -1,4 +1,4 @@
-//! Text embedders: Strata's ([`strata::embed`]), opened from engram's model
+//! Text embedders: Strata's ([`chloedb::embed`]), opened from engram's model
 //! directory. Every vector is unit length, so Strata's dot product is cosine
 //! similarity.
 //!
@@ -10,8 +10,8 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "bert")]
-pub use strata::embed::BertEmbedder;
-pub use strata::embed::{fnv, Embedder, HashEmbedder, StaticEmbedder};
+pub use chloedb::embed::BertEmbedder;
+pub use chloedb::embed::{fnv, Embedder, HashEmbedder, StaticEmbedder};
 
 use crate::{err, Result};
 
