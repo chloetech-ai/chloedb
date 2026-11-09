@@ -78,7 +78,7 @@
    "default": "top"
   },
   "actions": {
-   "about": "more row actions for the table, as in a table block (\"do\": \"=row => ...\")"
+   "about": "the row's own steps, as in a table block (\"do\": \"=row => ...\"): they come before Edit and Delete, and the first is the row's next step (its button on a phone), such as 'Mark paid' or 'Order'"
   },
   "deleteLabel": {
    "about": "the label of each row's delete button",
@@ -244,6 +244,7 @@
      "{{...columns}}"
     ],
     "actions": [
+     "{{...actions}}",
      {
       "$when": "form!=none",
       "label": "Edit",
@@ -254,8 +255,7 @@
       "label": "{{deleteLabel}}",
       "class": "small ghost",
       "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
-     },
-     "{{...actions}}"
+     }
     ],
     "onRow": "{{onRow}}",
     "empty": "=state.{{key}}_q || state.{{key}}_f ? 'Nothing matches.' : {{empty|json}}"
@@ -336,6 +336,7 @@
          "{{...columns}}"
         ],
         "actions": [
+         "{{...actions}}",
          {
           "$when": "form!=none",
           "label": "Edit",
@@ -346,8 +347,7 @@
           "label": "{{deleteLabel}}",
           "class": "small ghost",
           "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
-         },
-         "{{...actions}}"
+         }
         ],
         "onRow": "{{onRow}}",
         "empty": "=state.{{key}}_q || state.{{key}}_f ? 'Nothing matches.' : {{empty|json}}"

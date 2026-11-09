@@ -239,6 +239,16 @@ Blocks, in "body" and in every block that holds blocks:
 
 Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a function, and logic another app could use in a helper. Write a code view (a code block, no "screen") only when most of the screen would be "code" blocks: a game, a drawing surface, an editor of its own.
 
+## How a working screen reads
+
+Working screens are drawn like a good phone app: a large title, the screen's numbers as one sentence under it, and the rows of a table as grouped list cells (a table on a computer), grouped by their state. Write for that; what makes an app look unfinished is mostly how a screen is put together, not its colors:
+- Numbers lead with what needs doing. A screen's first big numbers (its KPIs) are read as one sentence, in their order: first the one that asks for action (overdue, out, waiting, owed, due now), then the totals. Two to four, never one that is always zero.
+- Rows people keep are a list of a table (LIST with COLUMNS, or a "table" block), not cards drawn by hand: on a phone each row becomes a cell with its name, a line of detail, its state and its next step. Give the state a BADGE column (its words group the rows: Out, Low, OK) and keep the row's number (on hand, owed, votes) as a column. Draw cards yourself only for what is not rows of a table (photos, a board, a big today view).
+- One next step per row, named for what it does ('Mark paid', 'Order more', 'Vote', 'Start'): the row's first action (ACTION in a LIST, which comes before Edit and Delete). Never offer the same action twice on a row: no Edit button beside an Edit in a menu, no menu that repeats the buttons, no second vote link.
+- One main action per screen: its add button or its form's submit. Every other button is plain.
+- An empty list says what goes there and how to begin ("No requests yet. Add the first with New request.").
+- Titles and labels in the subject's own words, in sentence case.
+
 ## Front pages
 
 An app that people outside it will visit (a shop, café, restaurant, studio, salon, event, wedding, club, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. A tool only its owner uses has no front page unless asked.
@@ -655,6 +665,24 @@ const SCREEN_BLOCKS = [...FRONT_BLOCKS, 'h', 'text', 'ui', 'row', 'col', 'grid',
 const NESTED = { row: 'row', col: 'col', grid: 'grid', split: 'split', card: 'card', section: 'section', then: 'then', else: 'else', body: 'body', band: 'band', media: 'media' };
 const BLOCK_LISTS = ['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else', 'body', 'band', 'media'];
 
+// The labels a row offers more than once: its buttons, its actions and the
+// items of its menus, within one row (a list inside it is rows of its own).
+// Duplicated furniture is the first thing that makes a screen look unfinished.
+export function repeatedActions(blocks) {
+  const seen = new Map();
+  const add = (l) => { if (typeof l !== 'string' || !l.trim() || l.startsWith('=') || l.includes('{{')) return; const k = l.trim().toLowerCase(); seen.set(k, { label: seen.get(k)?.label || l.trim(), n: (seen.get(k)?.n || 0) + 1 }); };
+  const walk = (x, top) => {
+    if (Array.isArray(x)) { x.forEach((y) => walk(y, false)); return; }
+    if (!x || typeof x !== 'object') return;
+    if (!top && (x.each !== undefined || x.table !== undefined)) return;
+    if (typeof x.button === 'string') add(x.button);
+    else if (typeof x.label === 'string' && ['do', 'open', 'onClick', 'onSelect', 'href'].some((k) => x[k] !== undefined)) add(x.label);
+    for (const [k, v] of Object.entries(x)) if (k !== 'code' && k !== 'fields' && (v && typeof v === 'object')) walk(v, false);
+  };
+  walk(blocks, true);
+  return [...seen.values()].filter((v) => v.n > 1).map((v) => v.label);
+}
+
 // Checks a screen: its shape, that every expression parses, that its SQL is a
 // SELECT, and that its forms write tables and columns the app has.
 export function checkScreen(screen, columnsOf = () => null) {
@@ -697,6 +725,10 @@ export function checkScreen(screen, columnsOf = () => null) {
         if (!cols) problems.push(typeof b.table === 'string' && b.table && !b.table.startsWith('=') ? `${where}: the checks write table ${JSON.stringify(b.table)}, which the app does not have` : `${where}: checks names "table", the app's table whose rows are the checks`);
         else for (const k of ['item', 'day', 'skip']) { const n = b[k] || (k === 'skip' ? null : k); if (n && !cols.has(n)) problems.push(`${where}: the checks' ${k} column ${n} is not a column of ${b.table}`); }
         if (b.done === undefined) problems.push(`${where}: checks needs "done": the rows of ${b.table || 'its table'}`);
+      }
+      if (kind === 'table' || kind === 'each') {
+        const twice = repeatedActions(kind === 'table' ? { actions: b.actions } : b.body);
+        if (twice.length) problems.push(`${where}: each row offers ${twice.map((l) => JSON.stringify(l)).join(' and ')} twice (two buttons, or a button and a menu item): keep one of each; a row's own next step comes first, then Edit and Delete`);
       }
       if (kind === 'form') {
         const cols = columnsOf(b.form);

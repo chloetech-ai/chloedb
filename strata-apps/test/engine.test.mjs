@@ -8,7 +8,7 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkBrief, orderByBrief, normalizeBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER } from '../engine/forge.mjs';
+import { checkBrief, orderByBrief, normalizeBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER, repeatedActions } from '../engine/forge.mjs';
 import { expandScreen as expandWith } from '../engine/patterns.mjs';
 import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
@@ -1991,4 +1991,23 @@ test('UX measures from use: taps and seconds to do something, the first screen, 
   const written = [];
   await Store.prototype.track.call({ db: { write: async (ops) => written.push(...ops) } }, 'a1', 'insert', '', 'habits', { taps: 4, session: 's1' });
   assert.equal(written[0].doc.taps, 4);
+});
+
+test('finished screens: a row never offers an action twice, a list puts its own next step before Edit and Delete, palettes are not green by default', async () => {
+  // two Edits on a card row (a button and a menu item) are a problem; one of each is not
+  assert.deepEqual(repeatedActions([{ card: ['=row.title', { row: [{ button: 'Edit', do: '=a' }, { button: 'Delete', do: '=b' }, { ui: 'dropdownMenu', props: { items: [{ label: 'Edit', onSelect: '=c' }] } }] }] }]), ['Edit']);
+  assert.deepEqual(repeatedActions({ actions: [{ label: 'Mark paid', do: '=a' }, { label: 'Edit', do: '=b' }, { label: 'Delete', do: '=c' }] }), []);
+  const dup = checkScreen({ body: [{ table: '=rows', columns: [{ key: 'name' }], actions: [{ label: 'Vote', do: '=r => 1' }, { label: 'vote', do: '=r => 2' }] }] });
+  assert.ok(dup.some((p) => /offers "Vote" twice/.test(p)), dup.join('; '));
+  // a list's own actions come first, so the first is the row's button on a phone
+  const ex = expandWith({ body: [{ use: 'crud', table: 'rent', columns: [{ key: 'tenant' }], fields: ['tenant'], actions: [{ label: 'Mark paid', do: '=row => 1' }] }] }).screen;
+  const table = JSON.stringify(ex).match(/"actions":\[(.*?)\]/)[1];
+  assert.ok(table.indexOf('Mark paid') < table.indexOf('"Edit"') && table.indexOf('"Edit"') < table.indexOf('Delete'), table);
+  // green accents where the subject is not green are named, and a green subject may have one
+  const { paletteProblems } = await import('../engine/designs.mjs');
+  const d = (accent) => ({ light: { accent } });
+  assert.ok(paletteProblems([d('#1f8a4c'), d('#2b6cb0'), d('#c2410c')], { name: 'Run log', description: 'my runs' }).some((p) => /green/.test(p)));
+  assert.deepEqual(paletteProblems([d('#1f8a4c'), d('#2b6cb0'), d('#c2410c')], { name: 'Garden planner', description: 'what to plant when' }), []);
+  assert.ok(paletteProblems([d('#2b6cb0'), d('#2f5bd3'), d('#c2410c')], { name: 'Hours' }).some((p) => /one hue family/.test(p)));
+  assert.deepEqual(paletteProblems([d('#2b6cb0'), d('#b4235a'), d('#c2410c')], { name: 'Hours' }), []);
 });

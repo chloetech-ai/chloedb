@@ -101,6 +101,8 @@ const hsl = (h) => {
   const hh = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
   return [hh * 60, s, l];
 };
+// An accent's hue (0-360), saturation and lightness (0-1), for checks on a palette.
+export const hslOf = (h) => (HEX.test(String(h)) ? hsl(String(h).toLowerCase()) : [0, 0, 0]);
 const fromHsl = (hh, s, l) => {
   const k = (n) => (n + hh / 30) % 12; const a = s * Math.min(l, 1 - l);
   return hex([0, 8, 4].map((n) => 255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)))));

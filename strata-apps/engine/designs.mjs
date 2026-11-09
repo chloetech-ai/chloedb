@@ -4,7 +4,7 @@
 // person using the app on its own can pick their own. Picking one swaps a
 // block of CSS variables in each view: no code changes, nothing is rebuilt.
 import { ask } from './llm.mjs';
-import { CHOICES, checkDesign, presetDesigns } from '../web/design.js';
+import { CHOICES, checkDesign, presetDesigns, hslOf } from '../web/design.js';
 
 export const DESIGN_MODEL = process.env.STRATA_APPS_DESIGN_MODEL || 'claude-haiku-5-5';
 
@@ -12,25 +12,46 @@ export const DESIGN_MODEL = process.env.STRATA_APPS_DESIGN_MODEL || 'claude-haik
 // the studio as a whole while the looks are compared.
 const choices = Object.entries(CHOICES).filter(([k]) => k !== 'look').map(([k, opts]) => `- ${k}: ${Object.entries(opts).map(([v, what]) => `"${v}" (${what})`).join(', ')}`).join('\n');
 
-export const DESIGN_SYSTEM = `You are a product designer with taste for calm, precise tools: minimal, one accent color, clear small type, hairlines instead of boxes, nothing decorative. You design the look of small apps as a few tokens; the app's screens stay as they are.
+export const DESIGN_SYSTEM = `You are a brand designer. You give a small app its look as a few tokens; its screens stay as they are, drawn like a good phone app (a grouped page, white or dark cells, large titles, one accent color).
 
 Answer with a JSON array of exactly three designs and nothing else. Each design:
 {"name": "one or two words", "about": "the mood in under 12 words", "scheme": "auto",
  "light": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
  "dark": {"bg": "#rrggbb", "card": "#rrggbb", "fg": "#rrggbb", "accent": "#rrggbb"},
- "font": "system", "titles": "system", "corners": "soft", "density": "regular", "surface": "outlined", "nav": "tabs", "width": "wide",
+ "font": "system", "titles": "system", "corners": "soft", "density": "regular", "surface": "grouped", "nav": "tabs", "width": "wide",
  "gradient": ["#rrggbb", "#rrggbb", "#rrggbb"], "motion": "calm"}
 
 The tokens and their values:
 ${choices}
 
-Colors: bg is the page, card the surface of cards and lists, fg the text, accent the one color for buttons, links and selection. gradient is three colors that drift behind front pages and fill emphasized words, icons and the featured plan: the accent and two neighbours that flatter it (a sunset of coral, pink and gold; an ocean of blue, violet and cyan), vivid but not neon. Text (fg) reads on bg and on card at 7:1 or more; the accent reads as text on card at 4.5:1 or more. In light, card is usually white and bg a faint tint of the accent's hue or a warm or cool gray; in dark, bg is near black and card a little lighter. Keep saturation low except the accent.
+The accent is the app's identity: the one color for its buttons, links and the current selection, and nothing else is saturated. Choose its hue for this subject and the people who use it, as you would for a brand of its own. Green and teal are not a default: use them only when the subject itself is green (plants, gardens, farming, the outdoors, money), and never for more than one of the three.
+Pages are white or genuinely dark: in light, card white and bg white or a faint cool gray; in dark, bg near black and card a little lighter. No beige, cream or pastel page wash. Text (fg) reads on bg and on card at 7:1 or more; the accent reads as text on card at 4.5:1 or more, in light and in dark (a lighter tint of it in dark). gradient is the accent and two neighbours that flatter it, for front pages: vivid, never neon.
 
-The three must differ clearly, each fitting the app's subject and the people who use it:
-1. The natural one, quiet and precise like a well-made console: system font, a neutral gray page (#f4f5f7 in light, #0d0f12 in dark) with white outlined cards (#16181c in dark), soft corners, regular density (compact when the app is mostly forms and tables), tabs, wide; its accent taken from the subject.
-2. A warmer or more editorial one: serif or rounded titles, tinted paper, outlined or raised surfaces, tabs.
-3. A bolder one: a dark scheme or a strong accent, or a sidebar and wide layout when the app has many views or big tables.
+The three differ in more than color: their accents come from three different hue families, and each pair differs in at least two of titles, nav, density and corners. Each fits the app's subject and its people:
+1. The natural one: the hue the subject suggests first, system titles, regular density (compact when the app is mostly tables), tabs.
+2. A warmer or more editorial one: serif or rounded titles, a different hue family, airy or regular.
+3. A bolder one: a dark scheme or a deep, strong accent, or a sidebar when the app has many views or big tables.
 Names are evocative and short (Linen, Harbor, Ember), never the app's name.`;
+
+// What a palette must not be (Doable found models default every option to
+// green; 7 of our 12 persona apps came out green or teal): a green accent
+// where the subject is not green, or two of the three in one hue family.
+// The model is asked once more with the problems named.
+const GREEN_SUBJECT = /\b(plant|garden|farm|crop|seed|forest|tree|leaf|park|outdoor|hike|trail|eco|green|money|budget|finance|invest|savings|golf|tennis|herb|vegan|salad|matcha|tea)/i;
+export function paletteProblems(designs, app) {
+  const hues = designs.map((d) => hslOf(d.light?.accent));
+  const isGreen = ([hh, sat]) => sat > 0.18 && hh >= 70 && hh <= 185;
+  const subject = `${app?.name || ''} ${app?.description || ''}`;
+  const out = [];
+  const greens = hues.map((h, i) => (isGreen(h) ? i + 1 : 0)).filter(Boolean);
+  if (greens.length && !GREEN_SUBJECT.test(subject)) out.push(`design${greens.length > 1 ? 's' : ''} ${greens.join(' and ')} use a green or teal accent, and this subject is not green: choose hues the subject suggests`);
+  else if (greens.length > 1) out.push(`designs ${greens.join(' and ')} are both green or teal: only one may be`);
+  const dist = (a, b) => { const d = Math.abs(a[0] - b[0]) % 360; return Math.min(d, 360 - d); };
+  for (let i = 0; i < hues.length; i++) for (let j = i + 1; j < hues.length; j++) {
+    if (hues[i][1] > 0.18 && hues[j][1] > 0.18 && dist(hues[i], hues[j]) < 28) out.push(`designs ${i + 1} and ${j + 1} have accents of one hue family: give them different hues`);
+  }
+  return out;
+}
 
 export function designPrompt(app, view) {
   const views = (view?.views || []).map((v) => v.title).filter(Boolean);
@@ -53,8 +74,21 @@ const parse = (text) => {
 export async function makeDesigns(app, view, { ask: askFn = ask, model = DESIGN_MODEL } = {}) {
   const t0 = Date.now();
   try {
-    const r = await askFn({ system: DESIGN_SYSTEM, prompt: designPrompt(app, view), model, timeoutMs: 90_000, idleMs: 45_000 });
-    return { designs: parse(r.text), source: model, ms: Date.now() - t0, cost: r.cost || 0 };
+    const prompt = designPrompt(app, view);
+    const r = await askFn({ system: DESIGN_SYSTEM, prompt, model, timeoutMs: 90_000, idleMs: 45_000 });
+    let designs = parse(r.text);
+    let cost = r.cost || 0;
+    // A palette checked in code, not only asked for: one more try when it
+    // misses, and the second answer is kept whatever it holds.
+    const problems = paletteProblems(designs, app);
+    if (problems.length) {
+      try {
+        const again = await askFn({ system: DESIGN_SYSTEM, prompt: `${prompt}\n\nYour last answer:\n${JSON.stringify(designs.map(({ name, light, dark }) => ({ name, light, dark })))}\nWhat is wrong with it: ${problems.join('; ')}. Answer again with all three designs.`, model, timeoutMs: 90_000, idleMs: 45_000 });
+        cost += again.cost || 0;
+        designs = parse(again.text);
+      } catch { /* the first answer stands */ }
+    }
+    return { designs, source: model, ms: Date.now() - t0, cost, problems };
   } catch (e) {
     return { designs: presetDesigns(app.id), source: 'presets', ms: Date.now() - t0, cost: 0, error: e.message };
   }
