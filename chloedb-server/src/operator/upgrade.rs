@@ -1,5 +1,6 @@
-//! New versions of Strata: a cluster follows an image tag (`spec.upgrade`,
-//! `ghcr.io/chloetech-ai/strata-server:latest` by default), and when the
+//! New versions of ChloeDB: a cluster follows an image tag (`spec.upgrade`,
+//! by default its image's own, such as
+//! `ghcr.io/chloetech-ai/chloedb-server:latest`), and when the
 //! tag points to another image than the one its servers run, the operator
 //! suggests it (`suggest`) or rolls it out (`on`), as the image's digest
 //! (`repository@sha256:...`), so that every server runs the same bits even
@@ -240,8 +241,10 @@ impl Registry {
 // ----- core: the images a version picker offers
 
 /// The repository a server offers versions of when nothing names another
-/// (`--image-repository`).
-pub const REPOSITORY: &str = "ghcr.io/chloetech-ai/strata-server";
+/// (`--image-repository`). Every version is published under the old name
+/// too for a release, ghcr.io/chloetech-ai/strata-server, which a cluster
+/// whose image has that name keeps following.
+pub const REPOSITORY: &str = "ghcr.io/chloetech-ai/chloedb-server";
 
 impl Registry {
     /// The tags of `repository` (`registry/path`), every page of them.
@@ -589,15 +592,15 @@ mod tests {
 
     #[test]
     fn references_are_read_as_registries_name_them() {
-        let r = Ref::parse("ghcr.io/chloetech-ai/strata-server:latest").unwrap();
-        assert_eq!((r.registry.as_str(), r.path.as_str(), r.tag.as_deref(), r.digest.as_deref()), ("ghcr.io", "chloetech-ai/strata-server", Some("latest"), None));
-        assert_eq!(r.api(), "https://ghcr.io/v2/chloetech-ai/strata-server");
+        let r = Ref::parse("ghcr.io/chloetech-ai/chloedb-server:latest").unwrap();
+        assert_eq!((r.registry.as_str(), r.path.as_str(), r.tag.as_deref(), r.digest.as_deref()), ("ghcr.io", "chloetech-ai/chloedb-server", Some("latest"), None));
+        assert_eq!(r.api(), "https://ghcr.io/v2/chloetech-ai/chloedb-server");
         let d = format!("sha256:{}", "a".repeat(64));
         let r = Ref::parse(&format!("ghcr.io/x/y@{d}")).unwrap();
         assert_eq!((r.tag.as_deref(), r.digest.as_deref(), r.pinned("sha256:b").as_str()), (None, Some(d.as_str()), "ghcr.io/x/y@sha256:b"));
-        let r = Ref::parse("strata-server").unwrap();
-        assert_eq!((r.registry.as_str(), r.path.as_str(), r.tag.as_deref()), ("docker.io", "library/strata-server", Some("latest")));
-        assert_eq!(r.api(), "https://registry-1.docker.io/v2/library/strata-server");
+        let r = Ref::parse("chloedb-server").unwrap();
+        assert_eq!((r.registry.as_str(), r.path.as_str(), r.tag.as_deref()), ("docker.io", "library/chloedb-server", Some("latest")));
+        assert_eq!(r.api(), "https://registry-1.docker.io/v2/library/chloedb-server");
         let r = Ref::parse("localhost:5000/s:v2").unwrap();
         assert_eq!((r.registry.as_str(), r.path.as_str(), r.tag.as_deref(), r.api().as_str()), ("localhost:5000", "s", Some("v2"), "http://localhost:5000/v2/s"));
         assert!(Ref::parse("x@sha256:short").is_err());
@@ -607,8 +610,10 @@ mod tests {
     #[test]
     fn the_tag_followed_is_the_images_unless_named() {
         let u = Upgrade::default();
-        assert_eq!(u.tracked("ghcr.io/chloetech-ai/strata-server:latest"), "ghcr.io/chloetech-ai/strata-server:latest");
-        assert_eq!(u.tracked("ghcr.io/chloetech-ai/strata-server:v1"), "ghcr.io/chloetech-ai/strata-server:v1");
+        assert_eq!(u.tracked("ghcr.io/chloetech-ai/chloedb-server:latest"), "ghcr.io/chloetech-ai/chloedb-server:latest");
+        assert_eq!(u.tracked("ghcr.io/chloetech-ai/chloedb-server:v1"), "ghcr.io/chloetech-ai/chloedb-server:v1");
+        assert_eq!(u.tracked(&format!("ghcr.io/chloetech-ai/chloedb-server@sha256:{}", "c".repeat(64))), "ghcr.io/chloetech-ai/chloedb-server:latest");
+        // A cluster on the image's old name keeps following the old name.
         assert_eq!(u.tracked(&format!("ghcr.io/chloetech-ai/strata-server@sha256:{}", "c".repeat(64))), "ghcr.io/chloetech-ai/strata-server:latest");
         let u = Upgrade { track: Some("ghcr.io/x/y:main".into()), ..u };
         assert_eq!(u.tracked("anything:1"), "ghcr.io/x/y:main");

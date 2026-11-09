@@ -1,5 +1,5 @@
 //! A crawler beside the cluster (`spec.crawler`): the operator runs
-//! `strata-crawl serve` (a program of its own, in the same image) as a
+//! `chloedb-crawl serve` (a program of its own, in the same image) as a
 //! Deployment of one (strategy Recreate, `<cluster>-crawler`) behind a
 //! Service of that name, and the coordinators list it as the app `crawler`
 //! (`STRATA_APPS`), so that the command center shows **Apps → Crawler**.
@@ -40,7 +40,7 @@ pub struct CrawlerSpec {
     /// No crawler for now: the Deployment keeps no pod (the coordinators
     /// still list it, as an app that does not answer).
     pub paused: bool,
-    /// More arguments of `strata-crawl serve`.
+    /// More arguments of `chloedb-crawl serve`.
     pub args: Vec<String>,
     /// Resources of the crawler's container.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,7 +71,7 @@ impl CrawlerSpec {
         Ok(())
     }
 
-    /// The arguments of `strata-crawl` for a cluster whose coordinators'
+    /// The arguments of `chloedb-crawl` for a cluster whose coordinators'
     /// Service answers at `strata`.
     pub fn args(&self, strata: &str) -> Vec<String> {
         let mut a: Vec<String> = ["serve", "--listen", &format!("0.0.0.0:{PORT}"), "--strata", strata, "--grow", if self.grow { "kube" } else { "off" }].iter().map(|s| s.to_string()).collect();
@@ -90,13 +90,13 @@ impl CrawlerSpec {
 pub fn schema() -> Json {
     json!({
         "type": "object",
-        "description": "A crawler beside the cluster: a strata-crawl Deployment of one, which the command center shows under Apps; it crawls sites into tables and adds shards as they fill.",
+        "description": "A crawler beside the cluster: a chloedb-crawl Deployment of one, which the command center shows under Apps; it crawls sites into tables and adds shards as they fill.",
         "properties": {
             "grow": {"type": "boolean", "description": "Add a shard when a crawl's table fills one (default true)."},
             "splitRows": {"type": "integer", "minimum": 0, "description": "Rows of a crawl's table on a shard past which the cluster gets one more shard (0: never; default 100000)."},
             "maxShards": {"type": "integer", "minimum": 1, "description": "The most shards growing makes (default 8)."},
             "paused": {"type": "boolean", "description": "No crawler pod for now."},
-            "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments of strata-crawl serve."},
+            "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments of chloedb-crawl serve."},
             "resources": {"type": "object", "x-kubernetes-preserve-unknown-fields": true, "description": "Resources of the crawler's container."},
         },
     })

@@ -108,8 +108,8 @@ kubectl -n strata port-forward svc/demo 7700   # API and UI
 $deploy/kind-test.sh scale 3 3   # a third shard; slots move live</pre></div>
       <div class="code"><div class="code-head"><span>cluster.yaml: laptop → cloud</span></div><pre class="diff">  kind: StrataCluster
   spec:
-<span class="del">-   image: strata-server:dev</span>
-<span class="add">+   image: ghcr.io/chloetech-ai/strata-server:latest</span>
+<span class="del">-   image: chloedb-server:dev</span>
+<span class="add">+   image: ghcr.io/chloetech-ai/chloedb-server:latest</span>
     shards: 2
     replicas: 3
     storage:

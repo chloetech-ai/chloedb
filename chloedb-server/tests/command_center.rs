@@ -92,7 +92,7 @@ impl Node {
             .args(["--node-name", &format!("node-{}", self.name)])
             .args(&self.args)
             .env("CHLOEDB_ZONE", "zone-a")
-            .env("CHLOEDB_IMAGE", format!("ghcr.io/chloetech-ai/strata-server@sha256:{}", "a".repeat(64)))
+            .env("CHLOEDB_IMAGE", format!("ghcr.io/chloetech-ai/chloedb-server@sha256:{}", "a".repeat(64)))
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()

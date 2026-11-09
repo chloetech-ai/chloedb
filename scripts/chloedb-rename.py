@@ -15,8 +15,8 @@ to chloedb-server/, ...), renames the Cargo packages and the programs
   Kubernetes names, the image `ghcr.io/chloetech-ai/strata-server`, release
   tags (`strata-server-v0.1.0`) and the repository's own name
   (`chloetech-ai/strata`, which phase 4 renames);
-- the programs the operator's pods run (every image has their old names;
-  phase 5 moves them);
+- the programs the operator's pods run (every image has their old names,
+  and images from before the rename have only those);
 - settings (`STRATA_*`), headers (`x-strata-*`), the Python module
   (`import strata`), the Java package and the `.strata` file extension.
 

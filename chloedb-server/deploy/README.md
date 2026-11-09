@@ -50,7 +50,7 @@ kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 | `tokenSecret` | | a Secret whose key `token` every server and coordinator requires; without it they run with `--no-token`, open to whatever reaches them |
 | `clusterTokenSecret` | | a Secret whose key `token` is the cluster's own token (`--cluster-token`), which the servers and coordinators send each other and clients never hold; with it, the `tokenSecret` token goes to the coordinators alone, as the admin token (the operator's too), and may not make the calls between servers. Needs `tokenSecret` |
 | `secretEnv` | | environment variables of every server and coordinator taken from Secrets, `[{name, secret, key}]` (`key` defaults to `key`): the keys of models behind an API, `ANTHROPIC_API_KEY` for the agents, LLM fields and reranking, `OPENAI_API_KEY` and the like for hosted embeddings ([model keys](#model-keys)). Changing it restarts the copies one at a time |
-| `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `strata-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
+| `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `chloedb-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
 | `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0, onFailure: rollback, progressDeadlineSeconds: 600, verifySeconds: 60, extraCopies: true}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), `soakSeconds`, how long a restarted copy serves before the next restarts, `progressDeadlineSeconds`, how long a step of a restart may take, `verifySeconds`, how long the new version must be healthy in a row before it is ready, and `onFailure`, what a version that fails becomes: `rollback` (to the last version that ran everywhere) or `hold`, and `extraCopies`, whether a shard of fewer than three copies takes extra ones while its copies restart. Not part of a version: changing it restarts nothing |
 | `upgrade` | `{mode: off, checkMinutes: 10}` | the upgrader: every `checkMinutes` it asks the registry which image the tag `track` names (by default the tag of `image`), and with `mode` `suggest` shows it, with `on` rolls it out, pinned by its digest, once the cluster is ready. Not part of a version ([upgrading](#upgrading-chloedb)) |
 | `autoscale` | `{mode: off, cooldownMinutes: 20}` | rules that change `replicas`, `shards` or `storage.size` from how busy and full the servers are: `grow` (`busyAbove`, `forMinutes`, `add`, `max`), `shrink` (`busyBelow`, `forMinutes`, `min`), `volumes` (`fullAbove`, `action`: `grow` or `addShard`), `freeze` (weekly windows in UTC, `from`/`to` like `Fri 16:00`, `allowGrow`) and `cooldownMinutes`; `mode` `on` (the operator acts), `suggest` (a person applies or dismisses) or `off`. Not part of a version: the changes it makes are ([autoscaling](../../docs/chloedb/server.md#autoscaling)) |
@@ -159,7 +159,7 @@ in the cluster; `--namespace` limits it to one namespace, and `--no-crd`
 leaves the resource definition to you. On kind:
 
 ```bash
-chloedb-server/deploy/kind-test.sh up          # no STRATA_WORK or STRATA_DATA needed for the operator
+chloedb-server/deploy/kind-test.sh up          # no CHLOEDB_WORK or CHLOEDB_DATA needed for the operator
 chloedb-server/deploy/kind-test.sh image
 chloedb-server/deploy/kind-test.sh operator    # follows the cluster until it is Ready
 chloedb-server/deploy/kind-test.sh scale 3 3   # a third shard
@@ -204,12 +204,12 @@ the cluster answers queries and takes writes:
 
 ```bash
 # By hand: name it, as any change of the spec
-kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/strata-server:<sha>"}}'
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>"}}'
 # or through a coordinator: the plan first, then the upgrade (admin scope, audited)
-curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/strata-server:<sha>", "plan": true}' http://127.0.0.1:7700/v1/admin/kube/upgrade
-curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/strata-server:<sha>"}' http://127.0.0.1:7700/v1/admin/kube/upgrade
+curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>", "plan": true}' http://127.0.0.1:7700/v1/admin/kube/upgrade
+curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>"}' http://127.0.0.1:7700/v1/admin/kube/upgrade
 # Or let the upgrader follow the tag: suggest shows a new image, on rolls it out
-kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/strata-server:latest", "upgrade": {"mode": "on"}}}'
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/chloedb-server:latest", "upgrade": {"mode": "on"}}}'
 ```
 
 The command center's **Rollout** view (`#/rollout`) shows the same: what
@@ -257,12 +257,21 @@ reached restart with the version before, the others never left it. With
 spec changes. A rollback that fails is held, not rolled back again.
 
 The upgrader asks the registry anonymously (public images, such as
-ghcr.io/chloetech-ai/strata-server), follows one tag (`upgrade.track`, or
+ghcr.io/chloetech-ai/chloedb-server), follows one tag (`upgrade.track`, or
 the tag of `image`), and reads the commit each image was built from (its
 label `org.opencontainers.image.revision`). An image it rolled out that
 failed is kept in `status.upgrade.rejected` and never rolled out again by
 the upgrader; `POST /v1/admin/kube/upgrade` refuses it too unless given
 `"force": true`.
+
+ChloeDB was called Strata, and its image was
+ghcr.io/chloetech-ai/strata-server. For a release, every version is
+published under both names as the same image (the same digest), so a
+cluster whose `image` has the old name keeps following it. Moving a cluster
+to the new name is one change of `image` (and of `upgrade.track`, if it is
+set), which restarts each server once, as any upgrade does. The operator's
+own resources keep the old name: the `StrataCluster` kind, the
+`strata-system` namespace and the `strata-operator` Deployment.
 
 Without the extra copies (`extraCopies: false`), a shard of two copies
 serves no reads and takes no writes while one of them restarts: one of
@@ -369,11 +378,11 @@ From the repository root, with Docker running, `kind` and `kubectl`
 installed, and Quora prepared by `chloedb/scripts/prepare_beir.py`:
 
 ```bash
-export STRATA_DATA=/path/to/beir STRATA_WORK=/path/outside/the/repo
+export CHLOEDB_DATA=/path/to/beir CHLOEDB_WORK=/path/outside/the/repo
 cd chloedb-server
 # The unsplit database and its splits into 2, 3 and 4 shards (natively; minutes each).
 for n in 2 3 4; do cargo run --release --bin chloedb-server-bench -- \
-    --collection quora --work "$STRATA_WORK" --shards $n --reuse --build-only; done
+    --collection quora --work "$CHLOEDB_WORK" --shards $n --reuse --build-only; done
 cd ..
 chloedb-server/deploy/kind-test.sh up          # 1 control plane + 3 workers
 chloedb-server/deploy/kind-test.sh image

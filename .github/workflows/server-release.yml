@@ -12,7 +12,8 @@ name: chloedb-server release
 # as a release does, without releasing.
 #
 # The image (image.yml) is the other way to run it without building:
-# docker run ghcr.io/chloetech-ai/strata-server.
+# docker run ghcr.io/chloetech-ai/chloedb-server (or strata-server, its
+# old name, for a release).
 on:
   push:
     tags: ["chloedb-server-v*", "strata-server-v*"]
