@@ -13,7 +13,7 @@
 # Nothing in it updates itself: Claude Code's updater is off, the engine's
 # self-evolving is off (its code is the image's), and the versions below
 # are pinned.
-ARG STRATA_SERVER_IMAGE=ghcr.io/chloetech-ai/strata-server:latest
+ARG STRATA_SERVER_IMAGE=ghcr.io/chloetech-ai/chloedb-server:latest
 ARG NODE_IMAGE=node:24-bookworm-slim
 FROM ${STRATA_SERVER_IMAGE} AS server
 
