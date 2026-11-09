@@ -572,16 +572,20 @@
     }
     // A row's actions: the next step (the first action that does not
     // remove) as a button, the others in a menu behind "More".
-    function rowActions(acts, r, who, s, path, mainClass) {
+    // editByTap: when the row's first step is only Edit, a tap on the row
+    // edits it (as in a phone's lists) and Edit waits in the menu, rather
+    // than an Edit button on every row.
+    function rowActions(acts, r, who, s, path, mainClass, editByTap = false) {
       const label = (a) => T(a.label, s, path);
       const doIt = (a) => () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); };
       const first = acts.find((a) => /\bprimary\b/.test(a.class || '')) || acts.find((a) => !DESTROY.test(label(a)));
-      const others = acts.filter((a) => a !== first);
-      const main = first ? h('button', { class: mainClass(label(first)), type: 'button', 'aria-label': who ? `${label(first)}: ${who}` : null, onclick: doIt(first) }, label(first)) : null;
+      const edit = editByTap && first && /^edit\b/i.test(String(label(first)).trim()) ? first : null;
+      const others = acts.filter((a) => a !== first || edit);
+      const main = first && !edit ? h('button', { class: mainClass(label(first)), type: 'button', 'aria-label': who ? `${label(first)}: ${who}` : null, onclick: doIt(first) }, label(first)) : null;
       const more = others.length ? h('details', { class: 'rc-more' },
         h('summary', { 'aria-label': `More${who ? `: ${who}` : ''}`, title: 'More' }, h('span', { 'aria-hidden': 'true' }, '•••')),
         h('div', { class: 'rc-menu' }, others.map((a) => h('button', { class: `ghost${DESTROY.test(label(a)) ? ' danger' : ''}`, type: 'button', 'aria-label': who ? `${label(a)}: ${who}` : null, onclick: doIt(a) }, label(a))))) : null;
-      return { main, more };
+      return { main, more, tap: edit ? doIt(edit) : null };
     }
     const tickOf = (R, r, cols, fns, heads, cell, who) => {
       const el = R.tick >= 0 ? cell(cols[R.tick], fns[R.tick], r) : null;
@@ -601,7 +605,8 @@
       const items = rows.map((r) => ({ r, ...rowParts(R, r, cols, fns, heads, cell) }));
       const groups = [];
       for (const it of items) {
-        const key = R.badge >= 0 ? it.text(R.badge).trim() : '';
+        // a state left blank ("-", "—") is no group of its own
+        const key = R.badge >= 0 ? it.text(R.badge).trim().replace(/^[-–—]+$/, '') : '';
         let g = groups.find((x) => x.key === key);
         if (!g) groups.push((g = { key, tone: it.tone, items: [] }));
         g.items.push(it);
@@ -629,18 +634,19 @@
           const counted = /(stock|qty|quantity|on hand|left|remaining|units|count|in store)/.test(figName);
           const leadText = !figText ? '' : counted ? (Number(R.raw(cols[R.fig], R.fig, r)) === 0 ? 'None left' : `${figText} left`) : `${figText} ${figName}`.trim();
           const lead = needs && leadText ? h('span', { class: 'lead' }, leadText) : null;
-          const { main, more } = rowActions(acts, r, who, s, path, (l) => `rc-pill${SOFT.test(l) ? ' soft' : ''}`);
+          const { main, more, tap } = rowActions(acts, r, who, s, path, (l) => `rc-pill${SOFT.test(l) ? ' soft' : ''}`, !onRow);
+          const open = onRow ? () => run(onRow, [r], `${path}.onRow`) : tap;
           const tickEl = tickOf(R, r, cols, fns, heads, cell, who);
           const day = needs ? null : dayOf(name);
           const icon = tickEl ? h('label', { class: 'tap rc-tick' }, tickEl)
             : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
             : h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•');
           const end = main || (figText && !lead ? h('span', { class: 'rc-val' }, figText) : null);
-          return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${onRow ? ' tappable' : ''}`,
-            onclick: onRow ? (e) => { if (!e.target.closest('button, summary, input, label, a')) run(onRow, [r], `${path}.onRow`); } : null },
+          return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${open ? ' tappable' : ''}`,
+            onclick: open ? (e) => { if (!e.target.closest('button, summary, input, label, a')) open(); } : null },
             icon,
             h('div', { class: 'rc-name' }, h('div', { class: 'rc-title' }, name), lead || sub.length ? h('div', { class: 'rc-sub' }, lead, lead && sub.length ? ' · ' : null, sub.join(' · ')) : null),
-            end || more || onRow ? h('div', { class: 'rc-end' }, end, more, onRow && !main ? h('span', { class: 'chev', 'aria-hidden': 'true' }) : null) : null);
+            end || more || open ? h('div', { class: 'rc-end' }, end, more, open && !main ? h('span', { class: 'chev', 'aria-hidden': 'true' }) : null) : null);
         })))));
     }
 
