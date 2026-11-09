@@ -12,11 +12,15 @@
 //!   decided is often in the reply and in no note;
 //! * excerpts of the messages, for wording and figures a note left out.
 //!
+//! A question about order or a summary also gets every live note: its
+//! answer is spread over exchanges a search for its words misses.
+//!
 //! `memory_ask` answers with it. On BEAM 100K (400 questions, the same
-//! reader and judge for all three) it scores 61.5 with about 16K characters
+//! reader and judge for all three) it scores 62.9 with about 21K characters
 //! and no model call, against 55.0 for the query engine's picks and 63.4 for
 //! an observational memory that hands the reader its whole 153K-character
-//! log (`results/search/beam_100k`, `engram-bench search`).
+//! log; over two runs of what each writes, 61.6 against 62.1
+//! (`results/search/beam_100k`, `engram-bench search`).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -57,6 +61,11 @@ pub struct ContextParams {
     /// shorter, since its answer is spread over many exchanges.
     pub broad_replies: usize,
     pub broad_reply_chars: usize,
+    /// For a broad question, every live note rather than the ones a search
+    /// finds, oldest first, at most this many characters (the newest that
+    /// fit; on top of the budget). A summary needs what the search for its
+    /// words misses (0: none).
+    pub broad_timeline: usize,
 }
 
 impl Default for ContextParams {
@@ -76,6 +85,7 @@ impl Default for ContextParams {
             reply_user_chars: 200,
             broad_replies: 8,
             broad_reply_chars: 500,
+            broad_timeline: 50_000,
         }
     }
 }
@@ -267,7 +277,13 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
     let live = |r: &Record| r.tag != "superseded" && r.tag != "uncertain" && r.tag != "cue";
     let rules: Vec<Record> = rules.into_iter().filter(|(r, c)| *c >= p.rule_min_cos && live(r)).map(|(r, _)| r).take(p.rules).collect();
     let notes: Vec<Record> = notes.into_iter().filter(|r| live(r) && !rules.iter().any(|x| x.id == r.id)).collect();
-    let refs: Vec<&Record> = rules.iter().chain(notes.iter()).collect();
+    // A broad question's timeline: every live note.
+    let all_notes: Vec<Record> = if is_broad && p.broad_timeline > 0 {
+        store.latest(&NOTE_KINDS, 1_000_000, filter)?.into_iter().filter(|r| live(r)).collect()
+    } else {
+        Vec::new()
+    };
+    let refs: Vec<&Record> = rules.iter().chain(notes.iter()).chain(all_notes.iter()).collect();
     // A note is dated and ordered by the message it was written from: a
     // merged note is written late, but said when its newest source was.
     let at: Vec<(String, i64)> = refs.iter().map(|r| (r.session.clone(), r.turn)).collect();
@@ -296,6 +312,23 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
             used += line.len();
             shown.insert(r.id.clone());
             rule_lines.push((r.clone(), line));
+        }
+    }
+    // The timeline: the newest live notes that fit, shown oldest first in
+    // place of the searched ones.
+    let mut timeline: Vec<(Record, String)> = Vec::new();
+    if !all_notes.is_empty() {
+        let mut all: Vec<&Record> = all_notes.iter().filter(|r| !shown.contains(&r.id)).collect();
+        all.sort_by_key(|r| said(r));
+        let mut size = 0usize;
+        for r in all.into_iter().rev() {
+            let line = note_line(r);
+            if size + line.len() > p.broad_timeline {
+                break;
+            }
+            size += line.len();
+            shown.insert(r.id.clone());
+            timeline.push((r.clone(), line));
         }
     }
     let lists: [Vec<(Record, String)>; 2] = [notes.iter().map(|r| (r.clone(), note_line(r))).collect(), messages.iter().map(|r| (r.clone(), excerpt(r))).collect()];
@@ -367,13 +400,16 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
 
     let mut text = String::new();
     let mut records = Vec::new();
+    let every = !timeline.is_empty();
+    picked[0].append(&mut timeline);
     if !rule_lines.is_empty() || !picked[0].is_empty() {
         // By day, then by where the message each came from stands in the store.
         picked[0].sort_by_key(|(r, _)| {
             let (ts, seq) = said(r);
             (ts.div_euclid(86_400), seq)
         });
-        text += "Notes from earlier conversations with the user, in their current versions, oldest first (date, kind, note; what it replaced in brackets). Rules come first; a later note can change what an earlier one says:\n";
+        text += if every { "Every note" } else { "Notes" };
+        text += " from earlier conversations with the user, in their current versions, oldest first (date, kind, note; what it replaced in brackets). Rules come first; a later note can change what an earlier one says:\n";
         for (r, l) in rule_lines.into_iter().chain(picked[0].drain(..)) {
             text += &l;
             records.push(r);
@@ -480,6 +516,30 @@ mod tests {
         let first = b.text.find("- 1970-01-02 fact: The user's trek starts on March 3").expect("first note, dated by its message");
         let second = b.text.find("booked flights").expect("second note");
         assert!(first < second, "{}", b.text);
+    }
+
+    /// A summary question gets every live note, oldest first, each once,
+    /// with the rules first.
+    #[test]
+    fn summaries_show_every_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.append("s1", 0, DAY, vec![Draft::new(Kind::Preference, "Always answer the user in short bullet points.").tag("distilled")]).unwrap();
+        s.append("s1", 1, DAY, vec![Draft::new(Kind::Fact, "The user's trek starts on March 3.").tag("distilled")]).unwrap();
+        let old = s.append("s2", 0, 2 * DAY, vec![Draft::new(Kind::Fact, "The user's gear budget is 300 dollars.").tag("superseded")]).unwrap();
+        s.append("s3", 0, 3 * DAY, vec![Draft::new(Kind::Fact, "The user's sister moves to Lisbon in May.").tag("distilled")]).unwrap();
+        s.append("s4", 0, 4 * DAY, vec![Draft::new(Kind::Fact, "The user's gear budget is 450 dollars.").tag("distilled").link("supersedes", old[0].id.clone())]).unwrap();
+        s.flush().unwrap();
+        let p = ContextParams { rule_min_cos: -1.0, ..Default::default() };
+        let b = build(&s, "Can you summarize how my trek plans developed?", &Filter::default(), &p).unwrap();
+        assert!(b.text.starts_with("Every note"), "{}", b.text);
+        let at = |t: &str| b.text.find(t).unwrap_or_else(|| panic!("{t}: {}", b.text));
+        assert!(at("rule: Always answer") < at("trek starts on March 3") && at("trek starts") < at("sister moves to Lisbon") && at("Lisbon") < at("budget is 450 dollars. (changed"), "{}", b.text);
+        assert!(!b.text.contains("- 1970-01-03 fact: The user's gear budget is 300"), "{}", b.text);
+        assert_eq!(b.text.matches("Always answer the user").count(), 1, "{}", b.text);
+        // Other questions get the notes a search finds.
+        let one = build(&s, "When does my trek start?", &Filter::default(), &p).unwrap();
+        assert!(one.text.starts_with("Notes from"), "{}", one.text);
     }
 
     #[test]

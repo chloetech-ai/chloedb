@@ -309,17 +309,19 @@ The runner is [`competitor_contexts.py`](https://github.com/chloetech-ai/strata/
 
 ## Search alone against observational memory
 
-Since this change `memory_ask` answers by search alone ([how](index.md#answering-a-question)): rules, notes in their current versions with what they replaced, the assistant's closest replies and message excerpts, about 16,000 characters, with no model call. It was measured on BEAM 100K (400 questions) against two others, each read by the same reader and graded by the same judge (Haiku, BEAM's rubric judge, an answer prompt for an assistant reading its memory), three gradings each, since the same contexts graded twice can differ by two points:
+Since this change `memory_ask` answers by search alone ([how](index.md#answering-a-question)): rules, notes in their current versions with what they replaced, the assistant's closest replies and message excerpts, about 15,500 characters, with no model call; a question about order or a summary also gets every live note, about 43,000 characters in all. It was measured on BEAM 100K (400 questions) against two others, each read by the same reader and graded by the same judge (Haiku, BEAM's rubric judge, an answer prompt for an assistant reading its memory), three gradings each, since the same contexts graded twice can differ by two points:
 
 | | BEAM 100K | context per question | reader tokens | model calls at question time | to store a conversation |
 |---|---|---|---|---|---|
 | observational memory (Mastra's method, rebuilt from its prompts) | **63.4** | 153,400 characters | 59,300 | none | $0.13 (observer) |
-| `memory_ask`, search alone | 61.5 | 16,400 | 6,700 | none, 7 ms | $0.28 (the distiller Engram already runs) |
+| `memory_ask`, search alone | 62.9 | 21,000 | 8,200 | none, 7 ms | $0.28 (the distiller Engram already runs) |
 | `memory_ask` before: the query engine's picks | 55.0 | 1,600 | 1,400 | two, about 12 s, $0.0012 | none |
 
-*Paired over questions: search alone −1.9 points against observational memory (95% interval −4.5 to +0.9) and +6.4 against the query engine (+3.3 to +9.6). Everything is in `engram/results/search/beam_100k/`.*
+*Paired over questions: search alone −0.5 points against observational memory (95% interval −3.2 to +2.2) and +7.8 against the query engine (+4.8 to +11.1). Everything is in `engram/results/search/beam_100k/`.*
 
-Search alone is ahead of the query engine where the answer is a note that changed or a date: knowledge updates (70 against 49) and temporal reasoning (68 against 59). Observational memory leads on summaries (37 against 30), by handing the reader ten times more text: its whole log of observations. Questions about order or a summary get the assistant's replies from eight exchanges, 500 characters each; without them (as first merged) those 80 questions scored 32.9 instead of 38.3, and the whole set 60.2. Dating each note by the message it came from mattered: notes merged by consolidation had carried the day they were merged, and dating them by their newest source raised temporal reasoning from 63 to 70.
+**Both sides move when their memory is written again.** The notes and the observations are written by a model, and a second run writes different ones. A second run of the observer scored 60.7 against 63.4 for the first, and a second distillation of the same conversations 60.3 against 62.9 for search alone. Averaged over the two runs of each, search alone has 61.6 and observational memory 62.1 (−0.5, −2.7 to +1.8): level within the noise, with a seventh of the reader's tokens. A change to what the context shows counts only if it holds on both distillations: one that gained 1.6 points on the first scored 0.2 below on the second.
+
+Search alone is ahead of the query engine where the answer is a note that changed or a date: knowledge updates (68 against 49) and temporal reasoning (69 against 59). A summary needs what a search for its words misses: given every live note, summaries rose from 30 to 37 on the first distillation and from 31 to 37 on the second (observational memory: 37 and 40). Questions about order or a summary also get the assistant's replies from eight exchanges, 500 characters each; without them (as first merged) those 80 questions scored 32.9 instead of 38.3. Dating each note by the message it came from mattered: notes merged by consolidation had carried the day they were merged, and dating them by their newest source raised temporal reasoning from 63 to 70.
 
 ## The note-writer
 

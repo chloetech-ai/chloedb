@@ -7,12 +7,17 @@ the 20, $0.28 a conversation, 2,866 exchanges, 4,637 notes). The contexts,
 all read by the same reader and graded by the same judge:
 
 - **search**: what `memory_ask` returns, built by `engram::context` with its
-  defaults (`engram-bench search --notes DIR --budgets 12000`), 16,400
-  characters on average, no model call, 6.7 ms a question on one thread
-  (Intel Xeon @ 2.10GHz, 4 cores). A question about order or a summary gets
-  the replies of eight exchanges, 500 characters each;
-- **search_366**: the same as first merged (#366), where those questions got
-  no replies; the other 320 questions' contexts are the same as search's;
+  defaults (`engram-bench search --notes DIR --budgets 12000`), 21,000
+  characters on average, no model call, 6.9 ms a question on one thread
+  (Intel Xeon @ 2.10GHz, 4 cores). A question about order or a summary (80
+  of the 400) gets the replies of eight exchanges, 500 characters each, and
+  every live note, oldest first (at most 50,000 characters): 42,900
+  characters on average and 11 ms, against 15,500 for the others;
+- **search_370**: as merged in #370, where those 80 questions got the notes
+  a search finds; the other 320 questions' contexts are the same as
+  search's;
+- **search_366**: as first merged (#366), where those 80 got no replies
+  either;
 - **om**: observational memory (Mastra's method), rebuilt from its own
   prompts by `scripts/om_baseline.py` (`@mastra/memory` 1.41.0, observer
   Haiku): the whole observation log and the unobserved tail, 153,400
@@ -30,29 +35,60 @@ answer prompt of an assistant reading its memory (`bench_eval.py
 points, so one grading decides nothing, and an ability's score moves by up to
 three points between gradings of the same contexts. Scores are the means.
 
-| ability | search | search_366 | om | query_engine |
-|---|---|---|---|---|
-| information extraction | 73.9 | 71.2 | 75.1 | 71.8 |
-| knowledge update | 70.4 | 71.2 | 74.0 | 48.5 |
-| summarization | 30.4 | 27.9 | 37.4 | 18.4 |
-| event ordering | 40.8 | 37.9 | 38.1 | 35.7 |
-| multi-session reasoning | 53.1 | 50.2 | 54.6 | 46.7 |
-| temporal reasoning | 67.9 | 69.8 | 70.8 | 59.2 |
-| contradiction resolution | 45.7 | 44.7 | 47.8 | 48.6 |
-| abstention | 67.5 | 64.6 | 69.6 | 68.8 |
-| instruction following | 84.8 | 83.3 | 84.4 | 76.0 |
-| preference following | 80.0 | 80.8 | 82.1 | 76.7 |
-| **all** (each grading) | **61.5** (61.8, 61.6, 60.9) | **60.2** (61.8, 59.5, 59.2) | **63.4** (64.0, 63.7, 62.6) | **55.0** (55.2, 54.2, 55.7) |
-| reader tokens a question | 6,651 | 6,235 | 59,298 | 1,445 |
+| ability | search | search_370 | search_366 | om | query_engine |
+|---|---|---|---|---|---|
+| information extraction | 71.6 | 73.9 | 71.2 | 75.1 | 71.8 |
+| knowledge update | 67.9 | 70.4 | 71.2 | 74.0 | 48.5 |
+| summarization | 37.2 | 30.4 | 27.9 | 37.4 | 18.4 |
+| event ordering | 42.3 | 40.8 | 37.9 | 38.1 | 35.7 |
+| multi-session reasoning | 50.9 | 53.1 | 50.2 | 54.6 | 46.7 |
+| temporal reasoning | 68.8 | 67.9 | 69.8 | 70.8 | 59.2 |
+| contradiction resolution | 50.3 | 45.7 | 44.7 | 47.8 | 48.6 |
+| abstention | 70.8 | 67.5 | 64.6 | 69.6 | 68.8 |
+| instruction following | 86.0 | 84.8 | 83.3 | 84.4 | 76.0 |
+| preference following | 83.0 | 80.0 | 80.8 | 82.1 | 76.7 |
+| **all** (each grading) | **62.9** (63.9, 62.5, 62.2) | **61.5** (61.8, 61.6, 60.9) | **60.2** (61.8, 59.5, 59.2) | **63.4** (62.6, 64.0, 63.7) | **55.0** (55.2, 54.2, 55.7) |
+| reader tokens a question | 8,235 | 6,651 | 6,235 | 59,298 | 1,445 |
 
 Paired over questions (bootstrap, means of the three gradings): search
-against om −1.9 points, 95% interval −4.5 to +0.9; against the query engine
-+6.4, +3.3 to +9.6; against search_366 +1.3, −0.3 to +2.9. On the 80
-questions about order or a summary, where the two differ, from 32.9 to 38.3
-(+5.4, +2.3 to +8.7; om 37.8).
+against om −0.5 points, 95% interval −3.2 to +2.2; against the query engine
++7.8, +4.8 to +11.1. Against search_370 it is +1.4 (−0.3 to +3.2), but only
+the 80 questions about order or a summary have different contexts; the rest
+of that difference is the grader's noise on identical contexts.
 
 The evidence BEAM marks for each question (`search.json`, 355 questions with
-evidence): some of it is in the context for 88%, all of it for 50%.
+evidence): some of it is in the context for 90%, all of it for 52%.
+
+## A second run of what each side writes
+
+The notes and the observations are written by a model, and a second run
+writes different ones, so both sides were written again:
+
+- `distilled_2nd.json`: the same conversations distilled again ($5.59), by
+  `main`'s distiller with merged notes dated by the newest note they replace;
+  `search_2nd.contexts.jsonl.gz` is search on it. `reader/search_370_2nd_N`
+  grade #370's contexts on it (all 400); `reader/search_2nd_N` grade only
+  search's 80 questions about order or a summary, since its other 320
+  contexts are the same as #370's;
+- `distilled_3rd.json`: a third distillation ($5.80) by this branch's
+  distiller, which also names each exchange's day in its prompt. Notes that
+  carried the day of the replay instead (a relative date counted from it)
+  fell from 121 of the 400 contexts to 14; #370's contexts on it
+  (`reader/search_370_3rd_N`) scored 59.3;
+- `om_observer_2nd.json` ($2.58) and `reader/om_2nd_N`: the observer run
+  again, 155,900 characters.
+
+| | first run | second run | mean |
+|---|---|---|---|
+| search | 62.9 | 60.3 | **61.6** |
+| search_370 | 61.5 | 60.0 | 60.7 |
+| om | 63.4 | 60.7 | **62.1** |
+
+Averaged over the two runs of each, search against om is −0.5 points (−2.7
+to +1.8) and against search_370 +0.9 (−0.1 to +1.9). On the 80 questions
+about order or a summary, search against search_370 is +2.9 (−0.3 to
++6.3): summaries rose from 30.4 to 37.2 on the first distillation and from
+30.7 to 36.7 on the second.
 
 To run it again (`engram-bench` built with `--profile ci`, the data from
 `scripts/convert_new_benchmarks.py`):

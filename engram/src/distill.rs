@@ -63,7 +63,7 @@ impl DistillConfig {
 
 const SYSTEM: &str = "You keep the long-term notes of a software project. You read one exchange between a developer and a coding assistant and write down what a future session will need. Output JSON lines only.";
 
-const PROMPT: &str = r#"Here is one exchange from a software project.
+const PROMPT: &str = r#"Here is one exchange from a software project.{when}
 
 <request>
 {request}
@@ -128,11 +128,21 @@ pub fn label(kind: Kind) -> &'static str {
 }
 
 /// The prompt for one exchange; `known` lists (id, kind, text) of what is
-/// already noted.
-pub fn prompt_for(request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)]) -> String {
+/// already noted, and `ts` is when the exchange took place (0: unknown).
+pub fn prompt_for(request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)], ts: i64) -> String {
     let known = if known.is_empty() { "(nothing yet)".to_string() } else { known.iter().map(|(id, k, t)| format!("[{id}] {}: {}", label(*k), clip(t, 300))).collect::<Vec<_>>().join("\n") };
     let commands = if commands.is_empty() { "(none)".to_string() } else { commands.join("\n") };
+    // The day of the exchange, which is not always today: distillation can
+    // run later (a queue, an import), and a relative date ("tomorrow") is
+    // relative to when it was said.
+    let when = if ts > 0 {
+        let day: String = crate::recall::fmt_time(ts).chars().take(10).collect();
+        format!(" It took place on {day}: a date it gives relative to that day (\"tomorrow\", \"next Tuesday\") is counted from {day}, and nothing in it happened on any other day unless it says so.")
+    } else {
+        String::new()
+    };
     PROMPT
+        .replace("{when}", &when)
         .replace("{request}", &clip(&redact(request), 6000))
         .replace("{commands}", &clip(&redact(&commands), 1500))
         .replace("{answer}", &clip(&redact(answer), 4000))
@@ -184,8 +194,8 @@ pub fn parse(text: &str) -> Distilled {
 }
 
 /// Runs the model on one exchange.
-pub fn distill(cfg: &DistillConfig, request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)]) -> Result<Distilled> {
-    let prompt = prompt_for(request, answer, commands, known);
+pub fn distill(cfg: &DistillConfig, request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)], ts: i64) -> Result<Distilled> {
+    let prompt = prompt_for(request, answer, commands, known, ts);
     let model = cfg.model();
     let r = llm::complete(&cfg.cli(&model, cfg.timeout_secs), SYSTEM, &prompt)?;
     let mut d = parse(&r.text);
@@ -217,7 +227,11 @@ mod tests {
 
     #[test]
     fn prompt_carries_the_exchange() {
-        let p = prompt_for("Add X. The client wants Y.", "Added X.", &["make test".into()], &[("s:1".into(), Kind::Todo, "Build Z".into())]);
+        let p = prompt_for("Add X. The client wants Y.", "Added X.", &["make test".into()], &[("s:1".into(), Kind::Todo, "Build Z".into())], 0);
         assert!(p.contains("The client wants Y.") && p.contains("[s:1] requirement: Build Z") && p.contains("make test"));
+        assert!(!p.contains("took place"));
+        // 2024-03-15 09:00 UTC: the day it was said, for relative dates.
+        let p = prompt_for("Ship it tomorrow.", "OK.", &[], &[], 1_710_493_200);
+        assert!(p.contains("It took place on 2024-03-15"), "{p}");
     }
 }
