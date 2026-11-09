@@ -11,7 +11,7 @@ leaves the phone; otherwise it asks the cloud.
   /v1/slices/places/...` serves it. A slice is a manifest (the schema, the
   grid, the text field's statistics, and each word's document frequency and
   best score) plus one gzipped file of rows per 1 km tile.
-- **The phone** is `strata-nearby`, a process that embeds Strata as an app
+- **The phone** is `strata-nearby`, a process that embeds ChloeDB as an app
   would. It fetches the manifest once, then the tiles of the square around
   its user (5 km on a side by default) as the user moves. It searches them
   with the cloud's statistics, so every place it holds scores as in the

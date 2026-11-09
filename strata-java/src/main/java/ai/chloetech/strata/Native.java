@@ -14,10 +14,11 @@ import java.util.Map;
  * directory), and its two functions.
  *
  * <p>It is loaded from, in order: the path in the system property
- * {@code strata.library} (or the environment variable
+ * {@code chloedb.library} (or {@code strata.library}, its old name), or
+ * the environment variable {@code CHLOEDB_JNI_LIBRARY} (or
  * {@code STRATA_JNI_LIBRARY}); the jar, which holds it under
  * {@code ai/chloetech/strata/native/<os>-<arch>/} for the platform it was
- * built on, unpacked into a temporary directory ({@code strata.tmpdir}, or
+ * built on, unpacked into a temporary directory ({@code chloedb.tmpdir} or {@code strata.tmpdir}, else
  * {@code java.io.tmpdir}, which must allow running what it holds); and
  * {@code java.library.path}.
  */
@@ -47,15 +48,33 @@ final class Native {
         Object v = Codec.decode(call(0, "version", Codec.encode(null)));
         Object abi = v instanceof Map ? ((Map<?, ?>) v).get("abi") : null;
         if (!Long.valueOf(ABI).equals(abi)) {
-            throw new UnsatisfiedLinkError("Strata's native library speaks version " + abi + " of its calls, and this jar " + ABI + ": build them from the same checkout");
+            throw new UnsatisfiedLinkError("ChloeDB's native library speaks version " + abi + " of its calls, and this jar " + ABI + ": build them from the same checkout");
         }
     }
 
-    private static void load() {
-        String explicit = System.getProperty("strata.library");
-        if (explicit == null || explicit.isEmpty()) {
-            explicit = System.getenv("STRATA_JNI_LIBRARY");
+    /**
+     * The first of these settings that is set and not empty: system
+     * properties, then environment variables, each under the database's
+     * new name (it was called Strata) and then its old one.
+     */
+    private static String setting(String property, String oldProperty, String... env) {
+        for (String k : new String[] {property, oldProperty}) {
+            String v = System.getProperty(k);
+            if (v != null && !v.isEmpty()) {
+                return v;
+            }
         }
+        for (String k : env) {
+            String v = System.getenv(k);
+            if (v != null && !v.isEmpty()) {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    private static void load() {
+        String explicit = setting("chloedb.library", "strata.library", "CHLOEDB_JNI_LIBRARY", "STRATA_JNI_LIBRARY");
         if (explicit != null && !explicit.isEmpty()) {
             System.load(Paths.get(explicit).toAbsolutePath().toString());
             return;
@@ -66,7 +85,7 @@ final class Native {
             if (in != null) {
                 // A file to load: removed as soon as it is loaded (the mapping
                 // stays), so that no copy is left behind, even after a crash.
-                String tmp = System.getProperty("strata.tmpdir");
+                String tmp = setting("chloedb.tmpdir", "strata.tmpdir");
                 Path dir = tmp == null || tmp.isEmpty() ? Files.createTempDirectory("strata-jni") : Files.createTempDirectory(Paths.get(tmp), "strata-jni");
                 Path lib = dir.resolve(name);
                 try {
@@ -81,14 +100,14 @@ final class Native {
                 return;
             }
         } catch (IOException e) {
-            UnsatisfiedLinkError u = new UnsatisfiedLinkError("could not unpack Strata's native library " + resource + ": " + e);
+            UnsatisfiedLinkError u = new UnsatisfiedLinkError("could not unpack ChloeDB's native library " + resource + ": " + e);
             u.initCause(e);
             throw u;
         }
         try {
             System.loadLibrary("strata_jni");
         } catch (UnsatisfiedLinkError e) {
-            UnsatisfiedLinkError u = new UnsatisfiedLinkError("Strata's native library is not in this jar for " + platform() + ", nor on java.library.path: build the jar on this platform (mvn package in strata-java), or name the library with -Dstrata.library=/path/to/" + name);
+            UnsatisfiedLinkError u = new UnsatisfiedLinkError("ChloeDB's native library is not in this jar for " + platform() + ", nor on java.library.path: build the jar on this platform (mvn package in strata-java), or name the library with -Dchloedb.library=/path/to/" + name);
             u.initCause(e);
             throw u;
         }

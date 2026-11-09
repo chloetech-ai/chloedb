@@ -59,7 +59,7 @@ mod sim;
 mod snapshot;
 
 #[derive(Parser)]
-#[command(about = "Strata, Elasticsearch, OpenSearch, Solr and Vespa on the same BEIR collection")]
+#[command(about = "ChloeDB, Elasticsearch, OpenSearch, Solr and Vespa on the same BEIR collection")]
 struct Cli {
     /// A collection under $STRATA_DATA.
     #[arg(long, global = true, default_value = "quora")]
@@ -775,7 +775,7 @@ async fn setup(engine: Engine, client: &reqwest::Client, url: &str, shards: usiz
             }
             check(client.get(format!("{admin}?action=RELOAD&name=quora")).send().await, "reload").await?;
         }
-        Engine::Strata => return Err("Strata is built with `build`".into()),
+        Engine::Strata => return Err("ChloeDB is built with `build`".into()),
     }
     Ok(())
 }
@@ -1226,7 +1226,7 @@ fn differs(engine: Engine, kind: &str, paid: bool) -> Option<&'static str> {
             "the union of the lexical matches and the nearestNeighbor top 100, ranked first by BM25 + closeness on each content node; the best 200 of those re-ranked in the global phase by reciprocal_rank_fusion (k 60) or 0.2 x normalize_linear(bm25) + 0.8 x normalize_linear(closeness)",
         ),
         (Engine::Vespa, "bm25" | "bm25 + filter" | "boosted (bm25 × decay)" | "phrase") => Some("weakAnd (Vespa's text query, which keeps the best 100 matches by a cheaper score, then ranks them by BM25)"),
-        (Engine::Solr, "typo") => Some("each word~N with Strata's 'auto' edits; the Lucene parser does not stem a fuzzy word, so it is compared with the stemmed terms as typed"),
+        (Engine::Solr, "typo") => Some("each word~N with ChloeDB's 'auto' edits; the Lucene parser does not stem a fuzzy word, so it is compared with the stemmed terms as typed"),
         (Engine::Vespa, "sql aggregate") => Some(
             "grouping (no SQL): the 10 largest categories of the filtered rows, those of 1,000 rows or fewer dropped by the client (grouping has no HAVING); precision 1,000, so that every content node sends all its groups and the counts are exact",
         ),

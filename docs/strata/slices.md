@@ -51,7 +51,7 @@ near.close()
 ## From JavaScript
 
 ```js
-import { openNearby } from "strata-db";
+import { openNearby } from "chloedb";
 
 const near = await openNearby("http://127.0.0.1:7700", "places", "./slice");
 await near.moveTo(40.7484, -73.9857);

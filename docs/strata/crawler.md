@@ -20,7 +20,7 @@ Open `http://127.0.0.1:7700` and go to **Apps → Crawler**. Type the site's add
 
 ### From the command line
 
-The same crawl runs without the command center too. `crawl` takes the address, prints its progress every two seconds, then what it did (the table it made and why, the columns it added, the shards it added) and the `CREATE TABLE` it ran; add `--stay` to keep the cluster serving after the crawl. `preview` prints what the form's **Preview** shows, without Strata:
+The same crawl runs without the command center too. `crawl` takes the address, prints its progress every two seconds, then what it did (the table it made and why, the columns it added, the shards it added) and the `CREATE TABLE` it ran; add `--stay` to keep the cluster serving after the crawl. `preview` prints what the form's **Preview** shows, without ChloeDB:
 
 ```bash
 target/release/strata-crawl crawl https://books.toscrape.com/ --local ./crawl-cluster \
@@ -96,7 +96,7 @@ The upgrader moves the crawler with the servers, since it runs their image. Remo
 
 **Apps → Crawler** lists the crawls and the cluster's shards, each a bar of its rows against the split threshold, with the shards it added and the rebalances. **New crawl** takes a URL and the options above. **Preview** reads the URL and up to nine pages it links to and shows the table they would make: its columns with their types and where each comes from, the `CREATE TABLE`, the pages read, the template learned, every field found with the share of pages that had it, and three rows as they would be written. **Crawl** starts it.
 
-A crawl's page shows pages fetched and rows written a second, with the moments the table was made and shards were added; the shards filling and splitting; the table's columns, with when each was added, and the fields found so far with the column each went to; a search of the table through Strata (`MATCH` and `bm25` over the body, or the latest rows); what it did, with the SQL it ran; the last pages read; and problems (robots.txt, timeouts, answers that were not HTML, refused rows). Pause, Resume and Stop act at once; a stopped crawl writes the pages it has read.
+A crawl's page shows pages fetched and rows written a second, with the moments the table was made and shards were added; the shards filling and splitting; the table's columns, with when each was added, and the fields found so far with the column each went to; a search of the table through ChloeDB (`MATCH` and `bm25` over the body, or the latest rows); what it did, with the SQL it ran; the last pages read; and problems (robots.txt, timeouts, answers that were not HTML, refused rows). Pause, Resume and Stop act at once; a stopped crawl writes the pages it has read.
 
 The view is a module the crawler serves (`strata-crawl/ui/view.js`, compiled in; `STRATA_CRAWL_UI_DIR=strata-crawl/ui` reads it from disk), loaded and run by the command center as the [apps](server.md#apps) section describes.
 
@@ -131,7 +131,7 @@ The same names are the JSON fields of `POST /v1/crawls` and `POST /v1/preview`, 
 
 | request | |
 |---|---|
-| `GET /v1/info` | the crawler's version, the Strata it writes to and what it is, the growth policy and the default options |
+| `GET /v1/info` | the crawler's version, the ChloeDB it writes to and what it is, the growth policy and the default options |
 | `POST /v1/crawls` | starts a crawl from the options: `{id, table}`; two crawls may not fill one table at once |
 | `GET /v1/crawls` | the crawls, newest first |
 | `GET /v1/crawls/:id` | one crawl: its phase, counts, rates and a second-by-second series, the table's plan and SQL, the fields found, the last pages and problems, what it did, and the cluster's growth |

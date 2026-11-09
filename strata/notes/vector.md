@@ -634,7 +634,7 @@ unchanged: pre-filter below ~3%, post-filter above.
 **Post-filter depth (2026-11).** The post-filter fetched `2k/s` candidates,
 so about `2k` members reached the float32 re-rank: 20 at `k` = 10, half the
 40 rows an unfiltered search re-ranks. On the engine comparison's
-`rating >= 4` (a random 20%) that left Strata's recall@10 at 0.83 (1M and
+`rating >= 4` (a random 20%) that left ChloeDB's recall@10 at 0.83 (1M and
 10M), below engines that re-rank their full candidate list. It now fetches
 `max(rerank, 2k)/s` candidates (`cost::post_filter_candidates`, which the
 cost model shares), so a filtered search re-ranks as many rows as an
@@ -706,7 +706,7 @@ condition on the column is walked with no test at all, so the benchmark's
 
 msmarco-1000k (the engine comparison's first 1M MS MARCO passages, 768-d
 Arctic Embed M v1.5 vectors, its ratings, the first 300 dev queries), built
-as `engine-compare build` builds Strata (one segment, HNSW m 16,
+as `engine-compare build` builds ChloeDB (one segment, HNSW m 16,
 ef_construction 200, SQ8 codes), `examples/vector_partitions.rs`; recall@10
 against the exact top 10 by dot product, mean µs over 300 queries, one
 query thread, best of two passes, two runs (both shown where they differ);

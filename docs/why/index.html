@@ -339,23 +339,23 @@ footer p { max-width: 90ch; }
     <div class="head">
       <p class="eyebrow">How it searches</p>
       <h2>Every kind of search, and a planner that picks among them</h2>
-      <p class="lede">Engram runs on <a href="https://github.com/chloetech-ai/strata/tree/main/docs">Strata</a>, the embedded search database it is built on. One file per project indexes every record as full text, structured fields, vectors and a graph at once, and one SQL statement can combine them. For each request, Engram decides which searches are worth running and how to run each one.</p>
+      <p class="lede">Engram runs on <a href="https://github.com/chloetech-ai/strata/tree/main/docs">ChloeDB</a>, the embedded search database it is built on. One file per project indexes every record as full text, structured fields, vectors and a graph at once, and one SQL statement can combine them. For each request, Engram decides which searches are worth running and how to run each one.</p>
     </div>
     <div class="kinds">
       <div class="kind"><span class="k">Full text</span><p>BM25 ranking with Block-Max WAND, plus boolean and phrase queries.</p><small>Finds the exact error message or function name.</small></div>
       <div class="kind"><span class="k">Semantic</span><p>Embeddings from a small local model, searched with an HNSW vector index.</p><small>Finds the same idea said in other words.</small></div>
       <div class="kind"><span class="k">Hybrid</span><p>Keyword and vector rankings mixed into one list, weighted by kind and age.</p><small>What runs on every prompt.</small></div>
       <div class="kind"><span class="k">Structured</span><p>SQL filters and facets over session, kind, time, files and importance.</p><small>"Decisions from last week that touch billing.py."</small></div>
-      <div class="kind"><span class="k">Graph</span><p>Notes link to what they are about, such as a customer or a file, and the search walks to their neighbours.</p><small>On citation search, Strata's graph doubled what vectors found: nDCG@20 0.123 to 0.253.</small></div>
+      <div class="kind"><span class="k">Graph</span><p>Notes link to what they are about, such as a customer or a file, and the search walks to their neighbours.</p><small>On citation search, ChloeDB's graph doubled what vectors found: nDCG@20 0.123 to 0.253.</small></div>
     </div>
     <ol class="steps">
       <li><div><strong>Plan.</strong> A small model reads the request and writes up to eight searches across those kinds: keywords for a name, a sentence phrased like the record it hopes to find, a SQL filter for a time range, the graph around a customer.</div></li>
-      <li><div><strong>Run.</strong> Strata's cost-based planner picks how to evaluate each search from exact statistics. A filtered vector search becomes an exact scan, IVF, HNSW with the filter inside, or post-filtering, whichever is cheapest for that filter near that query.</div></li>
+      <li><div><strong>Run.</strong> ChloeDB's cost-based planner picks how to evaluate each search from exact statistics. A filtered vector search becomes an exact scan, IVF, HNSW with the filter inside, or post-filtering, whichever is cheapest for that filter near that query.</div></li>
       <li><div><strong>Pick.</strong> A second call keeps only what answers the request: 2.8 records and 960 characters on average, which hold all the evidence for 76% of LongMemEval questions.</div></li>
     </ol>
     <div class="sub">
       <h3>Fast and small because it works on bits</h3>
-      <p class="lede">Every index is a compact structure read in place through mmap, with nothing to deserialise. Posting lists use Loom and Pyramid, two formats designed for Strata that line dense runs of documents up on machine words. Columns are bit-packed in 128-document blocks with min/max zone maps, filters probe bitsets of accepted values in 4 to 5 ns, and vectors are scanned as 8-bit codes with SIMD integer dot products.</p>
+      <p class="lede">Every index is a compact structure read in place through mmap, with nothing to deserialise. Posting lists use Loom and Pyramid, two formats designed for ChloeDB that line dense runs of documents up on machine words. Columns are bit-packed in 128-document blocks with min/max zone maps, filters probe bitsets of accepted values in 4 to 5 ns, and vectors are scanned as 8-bit codes with SIMD integer dot products.</p>
     </div>
     <div class="figs">
       <div class="fig"><strong>1.7–3.2×</strong><span>faster BM25 top-10 than Tantivy, and 43–200× faster than SQLite's FTS5.</span></div>
@@ -365,7 +365,7 @@ footer p { max-width: 90ch; }
       <div class="fig"><strong>12.2–12.7 bits</strong><span>per posting, docID and frequency included. The TREC-COVID text index is 44.5 MiB, against 60.0 for Tantivy and 70.0 for FTS5.</span></div>
       <div class="fig"><strong>14 ns</strong><span>per 1,024-dimension dot product on 8-bit codes with NEON, reading 4× less than float32.</span></div>
     </div>
-    <p class="note">Measured on the M2 MacBook Air with Strata's BEIR benchmarks. Where it is slower: building the HNSW graph makes loading 1.7–5.9× slower than SQLite, Tantivy counts facets 1.1–2.1× faster on three of four collections, and Tantivy's cold structured filters are 1.4–3.4× faster. Details are in <a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/results.md">Strata's results</a> and <a href="https://github.com/chloetech-ai/strata/blob/main/docs/posting-lists.md">the posting-list study</a>.</p>
+    <p class="note">Measured on the M2 MacBook Air with ChloeDB's BEIR benchmarks. Where it is slower: building the HNSW graph makes loading 1.7–5.9× slower than SQLite, Tantivy counts facets 1.1–2.1× faster on three of four collections, and Tantivy's cold structured filters are 1.4–3.4× faster. Details are in <a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/results.md">ChloeDB's results</a> and <a href="https://github.com/chloetech-ai/strata/blob/main/docs/posting-lists.md">the posting-list study</a>.</p>
   </section>
 
   <section id="losses">

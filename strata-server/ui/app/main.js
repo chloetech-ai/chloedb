@@ -364,7 +364,7 @@ function drawCluster() {
   envBadge.textContent = env ? (prod ? "PROD" : env.toUpperCase().slice(0, 12)) : "";
   envBadge.title = env ? `Environment: ${env}${prod ? ". Changes here reach production." : ""}` : "";
   top.classList.toggle("prod", prod);
-  document.title = `${currentEntry?.title || "Strata"} · ${name || "Strata"}${prod ? " · PROD" : ""}`;
+  document.title = `${currentEntry?.title || "ChloeDB"} · ${name || "ChloeDB"}${prod ? " · PROD" : ""}`;
   if (name || env) remember(location.origin, name, env);
 }
 bus.on("whoami", () => { drawWho(); drawCluster(); });

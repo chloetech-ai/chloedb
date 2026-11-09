@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>10M passages on DigitalOcean · Strata benchmarks</title>
-<meta name="description" content="Strata and thirteen other engines on DigitalOcean at 10M MS MARCO passages with the 1M run's budget: fourteen kinds of query at 1, 4 and 16 clients, recall beside speed, writes, freshness and streams, the engines that did not finish at equal resources, and a head-to-head with Elasticsearch and OpenSearch; Strata on 7 November with five fixes now merged, each engine from its newest run.">
+<title>10M passages on DigitalOcean · ChloeDB benchmarks</title>
+<meta name="description" content="ChloeDB and thirteen other engines on DigitalOcean at 10M MS MARCO passages with the 1M run's budget: fourteen kinds of query at 1, 4 and 16 clients, recall beside speed, writes, freshness and streams, the engines that did not finish at equal resources, and a head-to-head with Elasticsearch and OpenSearch; ChloeDB on 7 November with five fixes now merged, each engine from its newest run.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
+<link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
     <a href="scale.html">Laptop to cloud</a>
@@ -30,14 +30,14 @@
     <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html">Overview</a><a href="bench-10m.html" aria-current="page">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop cluster</a><a href="bench-embedded.html">No server</a><a href="bench-graph.html">Graph</a><a href="bench-method.html">How we test</a></nav>
     <span class="eyebrow">Cluster · 10M passages · DigitalOcean · 3 to 7 November 2026</span>
     <h1>Ten times the data, the same budget</h1>
-    <p class="lede">The 1M run with ten times the data. Every engine had its own DigitalOcean machines with 6.8 CPUs and 52 GiB, and nine of the fourteen finished. Strata ran again on 7 November with five fixes that are now merged, Elasticsearch and OpenSearch on 5 November with their result caches off; the others' numbers are from 3 November.</p>
+    <p class="lede">The 1M run with ten times the data. Every engine had its own DigitalOcean machines with 6.8 CPUs and 52 GiB, and nine of the fourteen finished. ChloeDB ran again on 7 November with five fixes that are now merged, Elasticsearch and OpenSearch on 5 November with their result caches off; the others' numbers are from 3 November.</p>
     <p class="verdict" data-overall="cloud-10m"></p>
-    <p>Strata is fastest on 25 of the 45 tests and in the top half on 41. Its lowest places are key lookups (6th of 9) and recall under a filter. The SQL aggregate that was its worst result on 3 November (4.3 s) now takes 36.8 ms, the fastest of the run, and typo search 45.8 ms instead of 824. Head to head with Elasticsearch and OpenSearch it is fastest on 38 of the 45 tests (<a href="#latest">below</a>).</p>
+    <p>ChloeDB is fastest on 25 of the 45 tests and in the top half on 41. Its lowest places are key lookups (6th of 9) and recall under a filter. The SQL aggregate that was its worst result on 3 November (4.3 s) now takes 36.8 ms, the fastest of the run, and typo search 45.8 ms instead of 824. Head to head with Elasticsearch and OpenSearch it is fastest on 38 of the 45 tests (<a href="#latest">below</a>).</p>
     <dl class="atglance">
       <div><dt>Data</dt><dd>The first 10M MS MARCO v2.1 passages, with their Arctic Embed M v1.5 vectors (768 dimensions)</dd></div>
       <div><dt>Machines</dt><dd>DigitalOcean sfo2, Xeon Platinum and Gold; 6.8 CPUs and 52 GiB per engine</dd></div>
-      <div><dt>Strata</dt><dd>2 pods of 3.4 CPUs and 26 GiB, each a shard and a coordinator in one process; image <code>861ab1d</code>, main at <code>8e66622</code> with five pull requests (#293, #294, #295, #296 and #299), all now merged</dd></div>
-      <div><dt>Queries</dt><dd>300 dev queries per kind at 1, 4 and 16 clients, after warm-up; medians of three passes for Strata, Elasticsearch and OpenSearch, one pass for the rest</dd></div>
+      <div><dt>ChloeDB</dt><dd>2 pods of 3.4 CPUs and 26 GiB, each a shard and a coordinator in one process; image <code>861ab1d</code>, main at <code>8e66622</code> with five pull requests (#293, #294, #295, #296 and #299), all now merged</dd></div>
+      <div><dt>Queries</dt><dd>300 dev queries per kind at 1, 4 and 16 clients, after warm-up; medians of three passes for ChloeDB, Elasticsearch and OpenSearch, one pass for the rest</dd></div>
       <div><dt>Noise</dt><dd>6 November's main ran again on 7 November's nodes first, within 7% of its own numbers; 5 November's image on 6 November's nodes served 0.75 to 1.10 of its queries a second at 16 clients. Read gaps under 10% as ties</dd></div>
       <div><dt>Cost</dt><dd>$83.07 at list price, failed attempts included</dd></div>
     </dl>
@@ -48,14 +48,14 @@
     <div class="block-head">
       <span class="eyebrow">Head to head · 5 and 7 November 2026</span>
       <h2>Head to head with Elasticsearch and OpenSearch</h2>
-      <p>Strata's 7 November image (<code>861ab1d</code>, with the five fixes), and Elasticsearch and OpenSearch of 5 November with their result caches off, each on two m3-4vcpu-32gb machines, three passes each. Of the three, Strata is fastest on 38 of the 45 tests. Elasticsearch is fastest on typos, and OpenSearch on BM25 under load (720 queries a second at 16 clients, Strata 625), key lookups at four clients and recall under a filter. The days had different machines: on 6 November's, Strata's 5 November image served 0.75 to 1.10 of its 5 November queries a second at 16 clients, so where the others lead under load, part of it may be the machines.</p>
+      <p>ChloeDB's 7 November image (<code>861ab1d</code>, with the five fixes), and Elasticsearch and OpenSearch of 5 November with their result caches off, each on two m3-4vcpu-32gb machines, three passes each. Of the three, ChloeDB is fastest on 38 of the 45 tests. Elasticsearch is fastest on typos, and OpenSearch on BM25 under load (720 queries a second at 16 clients, ChloeDB 625), key lookups at four clients and recall under a filter. The days had different machines: on 6 November's, ChloeDB's 5 November image served 0.75 to 1.10 of its 5 November queries a second at 16 clients, so where the others lead under load, part of it may be the machines.</p>
     </div>
     <p class="verdict" data-overall="cloud-10m-h2h"></p>
     <div data-rank="cloud-10m-h2h"></div>
     <div data-pick="cloud-10m-h2h" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,os,es" data-kinds="bm25|phrase|vector|similar items|hybrid (RRF)|typo|sql aggregate"></div>
     <div data-pick="cloud-10m-h2h" data-metric="qps16" data-title="Queries a second at 16 clients, higher is better" data-engines="strata,os,es" data-kinds="bm25|bm25 + filter|phrase|vector|key lookup"></div>
     <div data-writes="cloud-10m-h2h"></div>
-    <p class="small muted">Raw data: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1107-do/README.md">Strata's rerun</a> and <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bigger-items-do/README.md">5 November's run</a>. The rest of this page ranks every engine from its newest run.</p>
+    <p class="small muted">Raw data: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1107-do/README.md">ChloeDB's rerun</a> and <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bigger-items-do/README.md">5 November's run</a>. The rest of this page ranks every engine from its newest run.</p>
   </div></section>
 
   <section class="gutter" id="fixes"><div class="wrap block">
@@ -74,7 +74,7 @@
     <div data-rank="cloud-10m"></div>
     <div class="sub">
       <h3>Under other rules</h3>
-      <p>Strata stays first at 16 clients, with gaps under 15% as ties, and on average place. Postgres is first on the four kinds every engine answered (33 points against Strata's 42): its text kinds hit a 20 s limit, which left it vectors, key lookups and aggregates.</p>
+      <p>ChloeDB stays first at 16 clients, with gaps under 15% as ties, and on average place. Postgres is first on the four kinds every engine answered (33 points against ChloeDB's 42): its text kinds hit a 20 s limit, which left it vectors, key lookups and aggregates.</p>
       <div data-variants="cloud-10m"></div>
     </div>
   </div></section>
@@ -101,7 +101,7 @@
     <div class="block-head">
       <span class="eyebrow">Engine by engine</span>
       <h2>About twice as fast as the closest engines</h2>
-      <p>Strata's speed over each engine's, the geometric mean over the kinds both run. Postgres answered five kinds at this size, so its ratio rests on those. Milvus and Redis ran on a 128 GB machine. Open an engine for each kind.</p>
+      <p>ChloeDB's speed over each engine's, the geometric mean over the kinds both run. Postgres answered five kinds at this size, so its ratio rests on those. Milvus and Redis ran on a 128 GB machine. Open an engine for each kind.</p>
     </div>
     <div data-versus="cloud-10m"></div>
   </div></section>
@@ -110,7 +110,7 @@
     <div class="block-head">
       <span class="eyebrow">The 128 GB machine</span>
       <h2>Milvus and Redis, with more memory</h2>
-      <p>Both needed more than 52 GiB, so they ran with the same CPUs on 128 GB and are not ranked. Redis is fastest on vectors (at recall 0.684) and key lookups, and takes 0.8 to 1.5 s on text. Milvus has the best filtered recall, at about a seventh of Strata's vector throughput. While searching on 3 November, Redis held 72 GiB, Milvus 64 and Strata 2.2.</p>
+      <p>Both needed more than 52 GiB, so they ran with the same CPUs on 128 GB and are not ranked. Redis is fastest on vectors (at recall 0.684) and key lookups, and takes 0.8 to 1.5 s on text. Milvus has the best filtered recall, at about a seventh of ChloeDB's vector throughput. While searching on 3 November, Redis held 72 GiB, Milvus 64 and ChloeDB 2.2.</p>
     </div>
     <div data-pick="cloud-10m" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,milvus,redis" data-kinds="bm25|vector|vector + filter|key lookup|hybrid (RRF)"></div>
     <div data-pick="cloud-10m" data-metric="qps4" data-title="Queries a second at 4 clients, higher is better" data-engines="strata,milvus,redis" data-kinds="bm25|vector|vector + filter|key lookup|hybrid (RRF)"></div>
@@ -120,7 +120,7 @@
     <div class="block-head">
       <span class="eyebrow">Writes and streams</span>
       <h2>Searchable in 7 ms</h2>
-      <p>Strata and Vespa make a write searchable when it returns (7.6 and 10.0 ms); Elasticsearch and OpenSearch refresh every second (820 and 674 ms at the median). At 16 clients Strata's updates are more than three times as fast as theirs (5,001 a second against 1,516 and 1,567), because it sets one column in place. From one client its writes are slower than on 4 November (289 inserts a second against 405), on other machines and with the coordinator across the network. A crashed stream consumer resumes exactly, since offsets commit with the rows. Solr has no write numbers.</p>
+      <p>ChloeDB and Vespa make a write searchable when it returns (7.6 and 10.0 ms); Elasticsearch and OpenSearch refresh every second (820 and 674 ms at the median). At 16 clients ChloeDB's updates are more than three times as fast as theirs (5,001 a second against 1,516 and 1,567), because it sets one column in place. From one client its writes are slower than on 4 November (289 inserts a second against 405), on other machines and with the coordinator across the network. A crashed stream consumer resumes exactly, since offsets commit with the rows. Solr has no write numbers.</p>
     </div>
     <div data-writes="cloud-10m"></div>
   </div></section>
@@ -129,14 +129,14 @@
     <div class="block-head">
       <span class="eyebrow">Load and size</span>
       <h2>Shown, not ranked</h2>
-      <p>Strata's shards were built offline from local files, the others over HTTP, so load times do not compare.</p>
+      <p>ChloeDB's shards were built offline from local files, the others over HTTP, so load times do not compare.</p>
     </div>
     <div data-load="cloud-10m"></div>
   </div></section>
 
   <section class="gutter" id="behind"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Where Strata is behind</span>
+      <span class="eyebrow">Where ChloeDB is behind</span>
       <h2>Typos, key lookups, recall and BM25 under load</h2>
     </div>
     <div data-pick="cloud-10m" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,os,es,solr,paradedb,postgres,qdrant,weaviate" data-kinds="typo|key lookup|boosted (bm25 × decay)"></div>
@@ -144,7 +144,7 @@
     <ul class="gaps">
       <li><b>Typo search.</b> 45.8 ms, against Elasticsearch's 34.6 (OpenSearch 46.6). It took 824 ms on 3 November's build, before #242 and #266.</li>
       <li><b>Key lookups.</b> 0.99 ms, against 0.37 to 0.47 for Postgres, Weaviate, ParadeDB and Qdrant: most of it is the hop from a coordinator to the shard. #299, already in these numbers, skips it for the coordinator's own shard, which helps under load more than at one client.</li>
-      <li><b>Vector recall.</b> 0.791 at the shared settings, against Qdrant's 0.941 and Postgres's 0.826; 0.821 under a filter, against Solr's 0.917. With 256 candidates Strata reaches 0.903 and 0.916, at 630 and 555 queries a second at 16 clients (<a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1107-do/10m/ef.md">ef.md</a>).</li>
+      <li><b>Vector recall.</b> 0.791 at the shared settings, against Qdrant's 0.941 and Postgres's 0.826; 0.821 under a filter, against Solr's 0.917. With 256 candidates ChloeDB reaches 0.903 and 0.916, at 630 and 555 queries a second at 16 clients (<a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1107-do/10m/ef.md">ef.md</a>).</li>
       <li><b>BM25 × recency.</b> 8.89 ms, against Vespa's 5.42 and Qdrant's 5.86.</li>
       <li><b>BM25 at 16 clients.</b> 625 queries a second, against OpenSearch's 720 and Elasticsearch's 683. A coordinator in each shard pod (#287) added 3% on the same machines, where 5 November's image served as many BM25 queries as on 5 November's: the shards' own scoring is what waits.</li>
     </ul>
@@ -163,7 +163,7 @@
       <li><b>Redis</b> keeps everything in memory, so it ran on 128 GB from the start.</li>
       <li><b>Postgres</b> finished, but its text search averaged 28 s a query on a 107 GB table; with a 20 s limit, its text kinds count as not answered.</li>
     </ul>
-    <p class="small muted">Strata's first attempt hit a 5 s server deadline on cold vector queries and was run again with the client's 30 s (#244). No number here comes from a failed attempt.</p>
+    <p class="small muted">ChloeDB's first attempt hit a 5 s server deadline on cold vector queries and was run again with the client's 30 s (#244). No number here comes from a failed attempt.</p>
   </div></section>
 
   <section class="gutter" id="files"><div class="wrap block">
@@ -172,9 +172,9 @@
       <h2>Every number comes from these files</h2>
     </div>
     <ul class="files">
-      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1107-do/README.md">Strata's rerun of 7 November</a>: the image with the five fixes against 6 November's main on the same machines, and recall at 64, 128 and 256 candidates</li>
-      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1106-do/README.md">Strata's rerun of 6 November</a>: main against 5 November's image on the same machines, and BM25 under load with coordinators in the shard pods</li>
-      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bigger-items-do/README.md">5 November's run</a>: Elasticsearch and OpenSearch with their result caches off, and Strata before and after the fixes of that day</li>
+      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1107-do/README.md">ChloeDB's rerun of 7 November</a>: the image with the five fixes against 6 November's main on the same machines, and recall at 64, 128 and 256 candidates</li>
+      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1106-do/README.md">ChloeDB's rerun of 6 November</a>: main against 5 November's image on the same machines, and BM25 under load with coordinators in the shard pods</li>
+      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bigger-items-do/README.md">5 November's run</a>: Elasticsearch and OpenSearch with their result caches off, and ChloeDB before and after the fixes of that day</li>
       <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-10m-do/README.md">README.md</a> of 3 November: setup, machines, the noise check and what went wrong</li>
       <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-10m-do/tables.md">tables.md</a>: every table</li>
       <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-10m-do/rank.md">rank.md</a>: the ranking as <code>rank.py</code> computes it</li>
@@ -185,14 +185,14 @@
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=5344f0f990"></script>
-<script src="assets/site.js?v=6d78382461"></script>
-<script src="assets/bench.js?v=6ebeb97e93"></script>
+<script src="assets/bench-data.js?v=7f52b41b8a"></script>
+<script src="assets/site.js?v=142c29c3e0"></script>
+<script src="assets/bench.js?v=c61344792b"></script>
 </body>
 </html>

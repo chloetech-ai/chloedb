@@ -1,6 +1,6 @@
 # Engram: how it works
 
-Engram, an application built on [Strata](../strata/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one Strata file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
+Engram, an application built on [ChloeDB](../strata/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one ChloeDB file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
 
 ## The problem
 
@@ -10,7 +10,7 @@ A long session on a complex project outgrows any context window. Claude Code the
 - the reason an approach was rejected;
 - a preference the user stated once, three hours earlier.
 
-A new session starts with only `CLAUDE.md` and the auto-memory index. The session that built Strata ran for 32 hours and wrote 43.7 MB of transcript across two compactions; its summaries hold under 0.1% of that text.
+A new session starts with only `CLAUDE.md` and the auto-memory index. The session that built ChloeDB ran for 32 hours and wrote 43.7 MB of transcript across two compactions; its summaries hold under 0.1% of that text.
 
 Three requirements follow:
 
@@ -20,20 +20,20 @@ Three requirements follow:
 
 ## Architecture
 
-![Engram's architecture: hooks and the MCP server talk to one daemon per project, which owns the Strata file](../assets/img/engram-architecture.png)
+![Engram's architecture: hooks and the MCP server talk to one daemon per project, which owns the ChloeDB file](../assets/img/engram-architecture.png)
 
-Strata holds an exclusive lock on its file, and hooks are short-lived processes that run concurrently with the MCP server. So one daemon per project owns the database, and hooks and the MCP server are its clients over a Unix socket.
+ChloeDB holds an exclusive lock on its file, and hooks are short-lived processes that run concurrently with the MCP server. So one daemon per project owns the database, and hooks and the MCP server are its clients over a Unix socket.
 
 - **Lazy start.** The first client to find no socket spawns the daemon under a spawn lock; the daemon exits after 30 idle minutes. Its first hook takes 50–72 ms, because the 129 MB embedding table is memory-mapped rather than read.
 - **Warm state.** The embedder, segment readers and the memtable stay in memory between hooks.
-- **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on Strata's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/chloetech-ai/strata/tree/main/engram/results/writes)).
+- **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on ChloeDB's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/chloetech-ai/strata/tree/main/engram/results/writes)).
 - **Never in the way.** A client that cannot reach the daemon within its deadline prints nothing and exits 0. A memory failure never blocks a prompt or a tool call.
 
 The store lives outside the repository, in `${ENGRAM_HOME:-~/.local/share/engram}/<project-slug>/`, because transcripts can contain secrets. A redaction pass removes common key and token formats before anything is stored.
 
 ## The data model
 
-One Strata table, `memory`. Each record is one key–value pair with attributes.
+One ChloeDB table, `memory`. Each record is one key–value pair with attributes.
 
 | field | type | meaning |
 |---|---|---|
@@ -137,7 +137,7 @@ sequenceDiagram
     participant U as User
     participant C as Claude Code
     participant E as Engram daemon
-    participant S as Strata
+    participant S as ChloeDB
     C->>E: SessionStart
     E->>S: planned work, rules, decisions, facts, last checkpoint
     E-->>C: briefing (≤ 6,000 chars)

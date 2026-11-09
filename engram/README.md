@@ -1,8 +1,8 @@
 # Engram
 
-Automatic long-term context for Claude Code, stored in [Strata](../strata).
+Automatic long-term context for Claude Code, stored in [ChloeDB](../strata).
 
-Engram records everything a coding session does into one Strata file per
+Engram records everything a coding session does into one ChloeDB file per
 project: prompts, answers, tool calls and results, errors, and compaction
 summaries. When it helps, Engram brings the right pieces back on its own,
 and it gives the model tools to search its history. Nothing depends on the
@@ -13,7 +13,7 @@ model remembering to save. The design is in [DESIGN.md](DESIGN.md).
      └──MCP (stdio)──▶ engram mcp ───────────┤   unix socket
                                               ▼
                          engram serve: one daemon per project, started on demand
-                         capture → embed → Strata (BM25 + vectors + filters)
+                         capture → embed → ChloeDB (BM25 + vectors + filters)
                          recall  → live-window exclusion → priors → gate → pack
 ```
 
@@ -67,7 +67,7 @@ engram install --user --distill-model haiku
 `~/.claude/settings.json` (saving the previous version next to it) and
 registers the MCP server at user scope with `claude mcp add-json`. Every
 Claude Code session then records into the store of its project directory,
-one Strata file per project, so sessions in the same project share memory
+one ChloeDB file per project, so sessions in the same project share memory
 and sessions in other projects never see it. Within a file each session
 keeps its own id. A project with its own `engram install` keeps using that
 one: the user-level hooks step aside there, so nothing is recorded twice.
@@ -125,7 +125,7 @@ The demo:
 A local web app for watching Engram work: chat with Claude Code in a scratch
 project (`~/engram-demo/project`, with its own store; `--data` moves it) and
 see, as each turn runs, what the hooks store, what the distiller writes down
-and what recall injects. The inspector reads the Strata file through the
+and what recall injects. The inspector reads the ChloeDB file through the
 project's daemon: every record and its links, the knowledge notes, the graph
 (with `REACHABLE` traversals), the vectors (projected on their first two
 principal components, with nearest neighbours), the table's schema and

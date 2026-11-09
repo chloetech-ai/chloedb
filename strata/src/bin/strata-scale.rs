@@ -41,7 +41,7 @@ use strata::{Document, Value, VectorIndexKind};
 type Res<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
-#[command(about = "Strata scale probe on MS MARCO v2.1 passages")]
+#[command(about = "ChloeDB scale probe on MS MARCO v2.1 passages")]
 struct Args {
     #[command(subcommand)]
     cmd: Cmd,

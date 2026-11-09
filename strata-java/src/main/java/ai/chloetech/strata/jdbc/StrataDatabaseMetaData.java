@@ -15,9 +15,9 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * What a Strata database holds and what its SQL does, for tools that ask
+ * What a ChloeDB database holds and what its SQL does, for tools that ask
  * (DBeaver, IntelliJ, Spark, ...). Tables have no catalog or schema; table
- * patterns match names regardless of case, as Strata's SQL does.
+ * patterns match names regardless of case, as ChloeDB's SQL does.
  */
 final class StrataDatabaseMetaData implements java.sql.DatabaseMetaData {
     private final StrataConnection conn;
@@ -236,7 +236,7 @@ final class StrataDatabaseMetaData implements java.sql.DatabaseMetaData {
     /**
      * The references from columns of tables matching {@code foreign} to the
      * keys of tables matching {@code parent}. A reference names the table
-     * whose key a column holds; Strata does not check that the row exists.
+     * whose key a column holds; ChloeDB does not check that the row exists.
      */
     private ResultSet references(String parentCatalog, String parentSchema, String parent, String foreignCatalog, String foreignSchema, String foreign, boolean byForeign) throws SQLException {
         List<Map<String, Object>> all = tables(null, null, null);
@@ -460,7 +460,7 @@ final class StrataDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public String getDatabaseProductName() {
-        return "Strata";
+        return "ChloeDB";
     }
 
     @Override
@@ -480,7 +480,7 @@ final class StrataDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public String getDriverName() {
-        return "Strata JDBC";
+        return "ChloeDB JDBC";
     }
 
     @Override
@@ -627,7 +627,7 @@ final class StrataDatabaseMetaData implements java.sql.DatabaseMetaData {
         return iface.isInstance(this);
     }
 
-    // The rest are flags: true where Strata's SQL does it (checked against it), else false.
+    // The rest are flags: true where ChloeDB's SQL does it (checked against it), else false.
 
     @Override
     public boolean allProceduresAreCallable() {

@@ -1,6 +1,6 @@
-# strata-db: Strata from Python
+# chloedb: ChloeDB from Python
 
-`import strata` runs a Strata database in your process (`strata.open`,
+`import strata` (or `import chloedb`, the same package by its new name) runs a ChloeDB database in your process (`strata.open`,
 `strata.Database`), or talks to a running `strata-server` (`strata.connect`,
 `strata.Client`), with the same methods: `insert`, `upsert`, `delete`,
 `import_file`, `query`, `sql`, `search`, and `table()` for queries built

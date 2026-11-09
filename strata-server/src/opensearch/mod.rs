@@ -647,7 +647,7 @@ impl Os {
             (M::GET | M::POST, ["_search"]) => self.search_req("*", &body, q).await,
             (M::GET | M::POST, ["_search", "scroll", rest @ ..]) => self.scroll(rest.first().copied(), &body, q).await,
             (M::DELETE, ["_search", "scroll", ..]) => ok(json!({"succeeded": true, "num_freed": 0})),
-            (M::POST | M::DELETE, ["_pit" | "_search", "point_in_time", ..]) => Err(OsError::new(400, "illegal_argument_exception", "Strata answers point-in-time searches with search_after on a sort, or a scroll")),
+            (M::POST | M::DELETE, ["_pit" | "_search", "point_in_time", ..]) => Err(OsError::new(400, "illegal_argument_exception", "ChloeDB answers point-in-time searches with search_after on a sort, or a scroll")),
             (M::GET | M::POST, [ix, "_search"]) => self.search_req(ix, &body, q).await,
             (M::GET | M::POST, ["_msearch"]) => self.msearch(None, &body).await,
             (M::GET | M::POST, [ix, "_msearch"]) => self.msearch(Some(ix), &body).await,
@@ -727,7 +727,7 @@ impl Os {
             }
             // Elasticsearch 6's typed paths, with the one type 7 kept.
             (m, [ix, "_doc", id, rest @ ..]) if !rest.is_empty() => Err(OsError::new(405, "illegal_argument_exception", format!("no handler for {m} /{ix}/_doc/{id}/{}", rest.join("/")))),
-            (m, _) => Err(OsError::new(405, "illegal_argument_exception", format!("Incorrect HTTP method for uri [/{}] and method [{m}], or Strata's OpenSearch API does not answer it", segs.join("/")))),
+            (m, _) => Err(OsError::new(405, "illegal_argument_exception", format!("Incorrect HTTP method for uri [/{}] and method [{m}], or ChloeDB's OpenSearch API does not answer it", segs.join("/")))),
         }
     }
 
@@ -896,7 +896,7 @@ impl Os {
         match ixs.len() {
             0 => Err(OsError::not_found(expr)),
             1 => Ok(ixs.pop().expect("one")),
-            n => Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {n} indexes; Strata's OpenSearch API searches and writes one index (or an alias of one) at a time"))),
+            n => Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {n} indexes; ChloeDB's OpenSearch API searches and writes one index (or an alias of one) at a time"))),
         }
     }
 
@@ -1218,7 +1218,7 @@ impl Os {
                 }
                 vec![row(&[("epoch", epoch()), ("timestamp", "00:00:00".into()), ("count", n.to_string())])]
             }
-            other => return Err(OsError::new(400, "illegal_argument_exception", format!("Strata's _cat answers indices, aliases, health and count, not [{other}]"))),
+            other => return Err(OsError::new(400, "illegal_argument_exception", format!("ChloeDB's _cat answers indices, aliases, health and count, not [{other}]"))),
         };
         // `h`: the columns asked for, in its order.
         let all_cols: Vec<String> = match rows.first() {
@@ -1302,7 +1302,7 @@ impl Os {
             let found = match self.resolve(&name).await {
                 Ok(mut v) if v.len() == 1 => Ok(v.pop()),
                 Ok(v) if v.is_empty() => Ok(None),
-                Ok(_) => Err(OsError::new(400, "illegal_argument_exception", format!("no write index is defined for alias [{name}]: Strata writes to an alias of one index"))),
+                Ok(_) => Err(OsError::new(400, "illegal_argument_exception", format!("no write index is defined for alias [{name}]: ChloeDB writes to an alias of one index"))),
                 Err(e) => Err(e),
             };
             let ix = match found {
@@ -1337,7 +1337,7 @@ impl Os {
                 },
                 (Action::Update, Some(b)) => {
                     if b.get("script").is_some() {
-                        out[i] = fail(OsError::new(400, "illegal_argument_exception", "Strata does not run scripts: send a partial document (doc) instead"));
+                        out[i] = fail(OsError::new(400, "illegal_argument_exception", "ChloeDB does not run scripts: send a partial document (doc) instead"));
                         continue;
                     }
                     let expand = |v: Option<&Json>| -> Result<Option<Json>, OsError> {
@@ -1756,7 +1756,7 @@ impl Os {
             None => None,
             Some(c) => {
                 if c.get("inner_hits").is_some() {
-                    return Err(OsError::parsing("Strata's collapse takes no inner_hits"));
+                    return Err(OsError::parsing("ChloeDB's collapse takes no inner_hits"));
                 }
                 Some(c.get("field").and_then(Json::as_str).ok_or_else(|| OsError::parsing("[collapse] requires field"))?.to_string())
             }
@@ -1766,13 +1766,13 @@ impl Os {
         }
         let scrolling = q.contains_key("scroll") || b.get("scroll").is_some() || b.get(SCROLL_AFTER).is_some() || b.get("_scroll_from").is_some();
         if scrolling {
-            return Err(OsError::new(400, "illegal_argument_exception", "Strata scrolls one index at a time, without collapse"));
+            return Err(OsError::new(400, "illegal_argument_exception", "ChloeDB scrolls one index at a time, without collapse"));
         }
         if ixs.len() > 1 && (b.get("aggs").is_some() || b.get("aggregations").is_some()) {
-            return Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {} indexes; Strata aggregates one index (or an alias of one) at a time", ixs.len())));
+            return Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {} indexes; ChloeDB aggregates one index (or an alias of one) at a time", ixs.len())));
         }
         if b.get("search_after").is_some() && collapse.is_some() {
-            return Err(OsError::parsing("Strata's collapse takes no search_after"));
+            return Err(OsError::parsing("ChloeDB's collapse takes no search_after"));
         }
         let page = |k: &str, d: usize| -> Result<usize, OsError> {
             let v = q.get(k).map(|s| json!(s)).or_else(|| b.get(k).cloned());
@@ -1868,7 +1868,7 @@ impl Os {
             v if v.is_empty() && (expr == "*" || expr == "_all") => return Ok((empty_search(), Arc::new(Index::new("", "", "", 0, json!({}), json!({}), Vec::new())?))),
             mut v if v.len() == 1 => v.pop().expect("one"),
             v if v.is_empty() => return Err(OsError::not_found(expr)),
-            v => return Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {} indexes ({}); Strata's OpenSearch API searches one index (or an alias of one) at a time", v.len(), v.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")))),
+            v => return Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {} indexes ({}); ChloeDB's OpenSearch API searches one index (or an alias of one) at a time", v.len(), v.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")))),
         };
         let num = |k: &str, d: usize| -> Result<usize, OsError> {
             match q.get(k).map(|s| s.parse::<i64>()).or_else(|| b.get(k).map(|v| v.as_i64().ok_or(()).or_else(|_| v.as_str().unwrap_or("x").parse::<i64>().map_err(|_| ())).map_err(|_| "x".parse::<i64>().unwrap_err()))) {
@@ -1945,7 +1945,7 @@ impl Os {
                     }
                 }
                 "_doc" => sort_cols.push((String::new(), SortVal::Doc)),
-                "_geo_distance" | "_script" => return Err(OsError::parsing(format!("Strata does not sort by [{field}]"))),
+                "_geo_distance" | "_script" => return Err(OsError::parsing(format!("ChloeDB does not sort by [{field}]"))),
                 f => {
                     let t = cx.target(f);
                     if matches!(t, Target::Vector(_)) {
@@ -1984,7 +1984,7 @@ impl Os {
                 let mut ands = Vec::new();
                 for (j, (col, kind)) in sort_cols.iter().enumerate().take(k + 1) {
                     if matches!(kind, SortVal::Score | SortVal::Const | SortVal::Doc) {
-                        return Err(OsError::parsing("Strata's search_after follows field sorts, not _score or _doc"));
+                        return Err(OsError::parsing("ChloeDB's search_after follows field sorts, not _score or _doc"));
                     }
                     let desc = order[j].contains(" DESC");
                     let v = match (kind, &after[j]) {
@@ -2284,7 +2284,7 @@ impl Os {
             let mut cx = Ctx::new(&ix);
             let c = self.query_of(&mut cx, &b, q)?;
             if !cx.params.is_empty() {
-                return Err(OsError::parsing("Strata's _delete_by_query does not take a knn query"));
+                return Err(OsError::parsing("ChloeDB's _delete_by_query does not take a knn query"));
             }
             let sql = format!("DELETE FROM {}{}", ix.table, c.pred.map(|p| format!(" WHERE {p}")).unwrap_or_default());
             if let SqlAnswer::Written { w, .. } = self.statement(who, &sql).await? {
@@ -2298,7 +2298,7 @@ impl Os {
         let t0 = Instant::now();
         let b = body_json(body)?;
         if b.get("script").is_some() {
-            return Err(OsError::new(400, "illegal_argument_exception", "Strata does not run scripts: update documents by _bulk with partial documents"));
+            return Err(OsError::new(400, "illegal_argument_exception", "ChloeDB does not run scripts: update documents by _bulk with partial documents"));
         }
         // Without a script, an update by query writes each document as it
         // is, which here changes nothing.

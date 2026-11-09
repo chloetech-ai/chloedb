@@ -799,7 +799,7 @@ fn ask_models(questions: &[&Question], models: &Path) -> Result<Vec<String>> {
 
 #[cfg(not(feature = "hosted"))]
 fn ask_models(_: &[&Question], _: &Path) -> Result<Vec<String>> {
-    Err(err("llm(): this build of Strata has no models behind an API (feature hosted)"))
+    Err(err("llm(): this build of ChloeDB has no models behind an API (feature hosted)"))
 }
 
 /// A value as an input's text: `NULL` none.

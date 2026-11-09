@@ -1,4 +1,4 @@
-# Strata
+# ChloeDB
 
 An embedded, single-file search database in the spirit of SQLite: one file,
 ACID transactions, SQL. Every table is indexed three ways at once (posting

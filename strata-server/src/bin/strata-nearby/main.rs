@@ -206,8 +206,16 @@ fn fail(e: impl std::fmt::Display) -> Failure {
     Failure(StatusCode::BAD_REQUEST, e.to_string())
 }
 
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
+    // clap and the code read the old names, so the new ones are copied over
+    // before the runtime starts any thread.
+    strata::env::adopt_new_names();
+    run()
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let a = Args::parse();
     let cloud = Cloud { url: a.cloud.trim_end_matches('/').to_string(), table: a.table.clone(), key: a.key.clone(), http: strata_server::http_client().build()? };
     let text = String::from_utf8(cloud.bytes("manifest.json").await?)?;

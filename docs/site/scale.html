@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>Small to big · Strata</title>
-<meta name="description" content="How Strata grows from one file in your program to a server, replicas, shards and Kubernetes, with the same SQL, schema and file format at every step, and the same cluster on a laptop as in the cloud.">
+<title>Small to big · ChloeDB</title>
+<meta name="description" content="How ChloeDB grows from one file in your program to a server, replicas, shards and Kubernetes, with the same SQL, schema and file format at every step, and the same cluster on a laptop as in the cloud.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
+<link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
     <a href="scale.html" aria-current="page">Laptop to cloud</a>
@@ -29,7 +29,7 @@
   <div class="gutter head-band"><div class="wrap page-head">
     <span class="eyebrow">Laptop to cloud</span>
     <h1>Start with a file. Add machines when you need them.</h1>
-    <p class="lede">A shard is a Strata file, a server serves one, and a cluster is servers behind a coordinator. Each step adds a process, never a new query language or a migration.</p>
+    <p class="lede">A shard is a ChloeDB file, a server serves one, and a cluster is servers behind a coordinator. Each step adds a process, never a new query language or a migration.</p>
   </div></div>
 
   <section class="gutter" id="steps"><div class="wrap block">
@@ -85,7 +85,7 @@ kubectl -n strata patch strata demo --type merge \
     <div class="principles">
       <div><b>The SQL</b><p>Over shards, the coordinator's merge gives what one database gives, scores and limits included.</p></div>
       <div><b>The schema</b><p>Tables, models, rank profiles and synonyms travel with the data.</p></div>
-      <div><b>The file format</b><p>A shard is a Strata file. A checkpoint of one opens on a laptop.</p></div>
+      <div><b>The file format</b><p>A shard is a ChloeDB file. A checkpoint of one opens on a laptop.</p></div>
       <div><b>The clients</b><p><code>strata.open</code> and <code>strata.connect</code> have the same methods.</p></div>
       <div><b>The command center</b><p>The same console for one server and for a cluster.</p></div>
       <div><b>The tests</b><p>A deterministic simulator replays failovers and slot moves from a seed.</p></div>
@@ -149,15 +149,15 @@ curl -s -X POST 'localhost:7700/v1/import?format=sqlite' \
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=5344f0f990"></script>
-<script src="assets/site.js?v=6d78382461"></script>
-<script src="assets/sims.js?v=4af92a5911"></script>
-<script src="assets/bench.js?v=6ebeb97e93"></script>
+<script src="assets/bench-data.js?v=7f52b41b8a"></script>
+<script src="assets/site.js?v=142c29c3e0"></script>
+<script src="assets/sims.js?v=ab097d9b23"></script>
+<script src="assets/bench.js?v=c61344792b"></script>
 </body>
 </html>

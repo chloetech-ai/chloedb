@@ -23,7 +23,7 @@ import java.util.Properties;
 import java.util.concurrent.Executor;
 
 /**
- * A connection to a Strata database in this process. Each statement
+ * A connection to a ChloeDB database in this process. Each statement
  * commits as it runs (auto-commit, which cannot be turned off).
  */
 public final class StrataConnection implements Connection {

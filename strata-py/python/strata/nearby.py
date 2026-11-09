@@ -85,7 +85,7 @@ class Nearby:
         self.url = url.rstrip("/")
         self.table = table
         self.dir = os.fspath(dir)
-        self.token = token if token is not None else os.environ.get("STRATA_TOKEN")
+        self.token = token if token is not None else os.environ.get("CHLOEDB_TOKEN") or os.environ.get("STRATA_TOKEN")
         self.reach = reach
         self.timeout = timeout
         self.status_every = status_every

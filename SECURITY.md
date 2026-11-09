@@ -6,7 +6,7 @@ Please report a vulnerability privately, through GitHub: open
 [a private security advisory](https://github.com/chloetech-ai/strata/security/advisories/new)
 on this repository. Don't open a public issue or pull request for it.
 
-Say what is affected (Strata the library, `strata-server`, the Python
+Say what is affected (ChloeDB the library, `strata-server`, the Python
 package, or Engram), the commit you tested, and how to reproduce it. The
 report and the fix are discussed in the advisory, which is published once a
 fix has merged.

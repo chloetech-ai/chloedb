@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>Command center · Strata</title>
-<meta name="description" content="Every Strata server serves its own console: 26 views to watch a cluster, profile a query, build queries and tables, tune rankings and change the cluster by drawing it.">
+<title>Command center · ChloeDB</title>
+<meta name="description" content="Every ChloeDB server serves its own console: 26 views to watch a cluster, profile a query, build queries and tables, tune rankings and change the cluster by drawing it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
+<link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
     <a href="scale.html">Laptop to cloud</a>
@@ -60,7 +60,7 @@
       <div data-panel="cluster"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/cluster</span></div><img class="zoomable" src="../assets/img/site-cc-cluster.png" alt="Cluster: 3 shards of 3 copies on three nodes in three zones, each copy's latency, and the alerts firing on them" loading="lazy"></figure><p>Every shard and copy on one canvas. Draft a change by dragging, and apply its plan.</p></div>
       <div data-panel="perf"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/performance</span></div><img class="zoomable" src="../assets/img/site-cc-performance.png" alt="Performance: p99 rising from 10 ms to 598 ms at 18:25, the statement behind it, and latency and failures by cause" loading="lazy"></figure><p>Latency, failures by cause and queries by kind, compared with the window before.</p></div>
       <div data-panel="timeline"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/timeline</span></div><img class="zoomable" src="../assets/img/site-cc-timeline.png" alt="Timeline: an hour of searches, failures, alerts, copies restarted for an upgrade, a primary handed over, people's changes and notes on one time axis" loading="lazy"></figure><p>Alerts, failovers, rollouts and people's changes on one time axis.</p></div>
-      <div data-panel="logs"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/logs</span></div><img class="zoomable" src="../assets/img/site-cc-logs.png" alt="Logs: every server's lines kept in Strata, by level, shard and server, with the slow-query warnings of an incident" loading="lazy"></figure><p>Every server's logs, kept in Strata and searched from one bar.</p></div>
+      <div data-panel="logs"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/logs</span></div><img class="zoomable" src="../assets/img/site-cc-logs.png" alt="Logs: every server's lines kept in ChloeDB, by level, shard and server, with the slow-query warnings of an incident" loading="lazy"></figure><p>Every server's logs, kept in ChloeDB and searched from one bar.</p></div>
       <div data-panel="alerts"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/alerts</span></div><img class="zoomable" src="../assets/img/site-cc-alerts.png" alt="Alerts: three warnings firing, then every rule with its scope, owner and state" loading="lazy"></figure><p>What is firing first, then every rule, backtested before you save it.</p></div>
     </div>
   </div></section>
@@ -158,13 +158,13 @@ open http://localhost:7700/</pre>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/compare-data.js?v=62ee55133b"></script>
-<script src="assets/site.js?v=6d78382461"></script>
+<script src="assets/compare-data.js?v=a298fac88a"></script>
+<script src="assets/site.js?v=142c29c3e0"></script>
 </body>
 </html>

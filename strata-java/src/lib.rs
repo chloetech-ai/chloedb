@@ -53,7 +53,7 @@ pub extern "system" fn Java_ai_chloetech_strata_Native_call<'l>(mut env: JNIEnv<
         Ok(Err(f)) => f,
         Err(panic) => {
             let why = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
-            Fail::Db(strata::Error::Query(format!("Strata's native code panicked: {why}")))
+            Fail::Db(strata::Error::Query(format!("ChloeDB's native code panicked: {why}")))
         }
     };
     throw(&mut env, failed);

@@ -3,7 +3,7 @@
 Compressed posting-list representations, intersection and union algorithms,
 and a benchmark testbed that compares them on synthetic and real collections.
 This began as a separate crate, `posting_bench`; it is now the `postings`
-module of Strata (`src/postings/`), whose text and keyword indexes use its Loom,
+module of ChloeDB (`src/postings/`), whose text and keyword indexes use its Loom,
 Pyramid and BP128 formats, and the `strata-posting-bench` binary.
 Every query result of every algorithm is checked against a reference before
 it is timed.
@@ -66,8 +66,8 @@ cargo run --release --bin strata-posting-bench -- run --distribution uniform --c
 cargo run --release --bin strata-posting-bench -- kernels --ratios 1,4,16,64,256,1024
 ```
 
-Strata's `.cargo/config.toml` builds with `-C target-cpu=native`. The SIMD
-paths of the codecs Strata's text index uses (Loom, BP128) and the
+ChloeDB's `.cargo/config.toml` builds with `-C target-cpu=native`. The SIMD
+paths of the codecs ChloeDB's text index uses (Loom, BP128) and the
 intersection kernels are chosen at run time (`strata::simd`), so other
 builds use them too; the other codecs of the study (Pyramid, Roaring,
 Entropic, the tries) select theirs at compile time. Every path has a

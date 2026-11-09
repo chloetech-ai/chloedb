@@ -1,13 +1,13 @@
 import { Input, Params, Plan, Result, Row, Schema, Searchable, Value } from "./common.js";
 
-export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, StrataError, Value } from "./common.js";
+export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, Value } from "./common.js";
 
 /** A file to upload: a path (read with node:fs) or its bytes. */
 type File = string | URL | Uint8Array | ArrayBuffer | ArrayBufferView | Blob;
 type Tables = string | Iterable<string>;
 
 export interface ClientOptions {
-  /** The server's --token or an API key ($STRATA_TOKEN by default). */
+  /** The server's --token or an API key ($CHLOEDB_TOKEN, or $STRATA_TOKEN, by default). */
   token?: string;
   /** Milliseconds a request may take (0 for no limit); 30 s by default. */
   timeout?: number;

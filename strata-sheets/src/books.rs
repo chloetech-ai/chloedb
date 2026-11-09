@@ -75,7 +75,7 @@ impl Books {
 
     /// Creates the tables, once.
     pub async fn ready(&self) -> Result<(), Fail> {
-        self.ready.get_or_try_init(|| async { store::ensure_tables(&self.strata).await }).await.map(|_| ()).map_err(|e| Fail { status: 502, message: format!("Strata: {e}") })
+        self.ready.get_or_try_init(|| async { store::ensure_tables(&self.strata).await }).await.map(|_| ()).map_err(|e| Fail { status: 502, message: format!("ChloeDB: {e}") })
     }
 
     pub fn open_count(&self) -> usize {

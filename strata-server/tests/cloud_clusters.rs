@@ -630,7 +630,7 @@ async fn a_cluster_made_here_opens_through_its_kubernetes_api() {
     assert_eq!(status, 202, "{j}");
     let id = j["id"].as_str().unwrap().to_string();
     let (status, j) = call(&base, "POST", "/v1/admin/hub/adopt", Some(json!({"made": id}))).await;
-    assert!(status == 409 || status == 502, "not until Strata answers there: {j}");
+    assert!(status == 409 || status == 502, "not until ChloeDB answers there: {j}");
     until(&base, &id, "ready").await;
 
     // The token: made once in the cluster, named by the StrataCluster.
@@ -677,7 +677,7 @@ async fn a_cluster_made_here_opens_through_its_kubernetes_api() {
     {
         let k = kube_seen.lock().unwrap();
         assert!(k.proxied.iter().all(|(_, auth, _)| auth == KUBE_TOKEN), "the API server gets the cluster's token, never the key: {:?}", k.proxied);
-        assert!(k.proxied.iter().all(|(_, _, key)| *key), "every call carries a key for Strata: {:?}", k.proxied);
+        assert!(k.proxied.iter().all(|(_, _, key)| *key), "every call carries a key for ChloeDB: {:?}", k.proxied);
         assert!(k.proxied.iter().any(|(p, _, _)| p == "/v1/admin/keys"));
     }
 

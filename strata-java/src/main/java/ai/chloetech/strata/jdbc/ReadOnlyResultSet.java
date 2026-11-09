@@ -19,7 +19,7 @@ import java.sql.Time;
 import java.sql.Timestamp;
 
 /**
- * A result set's writing half, which Strata's result sets do not have:
+ * A result set's writing half, which ChloeDB's result sets do not have:
  * they are read-only ({@code CONCUR_READ_ONLY}), and rows are written with
  * INSERT, UPDATE and DELETE.
  */

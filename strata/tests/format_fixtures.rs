@@ -620,7 +620,7 @@ fn same_bytes(old: &Path, new: &Path) {
     let at = a[skip..].iter().zip(&b[skip..]).position(|(x, y)| x != y);
     assert!(
         a.len() == b.len() && at.is_none(),
-        "{} is not what Strata writes now ({} bytes against {}, first difference at byte {:?}): if the change is deliberate, keep this set and write a new one as tests/fixtures/README.md says",
+        "{} is not what ChloeDB writes now ({} bytes against {}, first difference at byte {:?}): if the change is deliberate, keep this set and write a new one as tests/fixtures/README.md says",
         old.display(),
         a.len(),
         b.len(),

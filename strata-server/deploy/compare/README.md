@@ -1,13 +1,13 @@
-# Strata and thirteen other engines on the same cluster
+# ChloeDB and thirteen other engines on the same cluster
 
-Runs Strata, Elasticsearch, OpenSearch, Solr and Vespa one at a time on the
+Runs ChloeDB, Elasticsearch, OpenSearch, Solr and Vespa one at a time on the
 kind cluster of [`../kind-test.sh`](../kind-test.sh), on the same data, with
 the same number of shards and the same CPU and memory, and asks each the
 query kinds of `strata-server-bench` and five more (phrase, typo, prefix,
 similar items, an SQL aggregate). Nine more engines get the same data, the
 same budget on one node, and the same kinds where they have them:
 Meilisearch, Typesense, Manticore Search, Qdrant, Weaviate, Milvus,
-ParadeDB, Postgres and Redis ([below](#nine-more-engines-on-one-node)). Results of a run on a Mac (Strata,
+ParadeDB, Postgres and Redis ([below](#nine-more-engines-on-one-node)). Results of a run on a Mac (ChloeDB,
 Elasticsearch and Solr, 28 October 2026) are in
 [`../../results/compare-mac/README.md`](../../results/compare-mac/README.md).
 
@@ -16,13 +16,13 @@ Elasticsearch and Solr, 28 October 2026) are in
 | `compare.sh` | builds and loads the image, starts and stops each engine, loads it, runs the client |
 | `es.yaml`, `os.yaml`, `solr.yaml` | two data nodes of Elasticsearch 9.5.5, OpenSearch 3.9.0 or Solr 10.1.0 (SolrCloud, ZooKeeper embedded in `solr-0`) |
 | `vespa.yaml`, `vespa/` | Vespa 8.778.45: `vespa-0` (config server, cluster controller and the container that answers queries) and two content nodes; `vespa/package.sh` writes the application package (`services-cluster.xml`, `schemas/doc.sd`, the stopword lists); `vespa/services.xml` is the same application on one node, for trying it in Docker |
-| `strata-coordinating.yaml` | two Strata shards, each with a coordinator in its process that calls the shard in-process (`--coordinator-listen`), or as a process of its own in the pod (`STRATA_COORD=shards`, as from 6 November 2026 until then) |
-| `strata.yaml`, `strata-coordinator.yaml` | two Strata shards and a coordinator in a pod of its own (`STRATA_COORD=pod`, as before 6 November 2026) |
+| `strata-coordinating.yaml` | two ChloeDB shards, each with a coordinator in its process that calls the shard in-process (`--coordinator-listen`), or as a process of its own in the pod (`STRATA_COORD=shards`, as from 6 November 2026 until then) |
+| `strata.yaml`, `strata-coordinator.yaml` | two ChloeDB shards and a coordinator in a pod of its own (`STRATA_COORD=pod`, as before 6 November 2026) |
 | `redpanda.yaml` | one Redpanda broker for the stream test |
 | `more/*.yaml` | the nine one-node engines (`postgres.yaml` is ParadeDB's and Postgres's, as `paradedb-0` or `postgres-0`) |
 | `analyze.py` | scores the answers and prints the tables |
 | `profiles/*.toml` | traffic profiles for the [traffic simulator](#traffic-simulator) (copied into the image) |
-| `../../src/bin/engine-compare/` | the client: `build` (a Strata shard), `load` (the other engines), `run` (time the kinds and record the answers), `plan` and `replay` (the traffic simulator, `sim/` and `replay.rs`); `more.rs` speaks to the nine one-node engines |
+| `../../src/bin/engine-compare/` | the client: `build` (a ChloeDB shard), `load` (the other engines), `run` (time the kinds and record the answers), `plan` and `replay` (the traffic simulator, `sim/` and `replay.rs`); `more.rs` speaks to the nine one-node engines |
 
 ## What is the same for every engine
 
@@ -40,10 +40,10 @@ Elasticsearch and Solr, 28 October 2026) are in
   Elasticsearch, OpenSearch and Solr have two data nodes of 1.5 CPUs and 3
   GiB (heap 1.5 GB for Elasticsearch and OpenSearch, as Elastic recommends;
   1 GB for Solr, whose full-precision vectors need the page cache); and
-  as their data nodes also coordinate, Strata has two pods of a data
+  as their data nodes also coordinate, ChloeDB has two pods of a data
   node's CPU and memory (`DATA_CPU`, `DATA_MEM`), each with a shard and a
   coordinator over both shards, and the client sends its requests to both
-  coordinators. Runs before 6 November 2026 gave Strata two shards of 1
+  coordinators. Runs before 6 November 2026 gave ChloeDB two shards of 1
   CPU and 2.5 GiB and a coordinator of 1 CPU and 1 GiB in a pod of its own
   on the clients' node, where it sat mostly idle while the shards ran
   short of CPU; `STRATA_COORD=pod` runs that split again (`SHARD_CPU` and
@@ -60,17 +60,17 @@ Elasticsearch and Solr, 28 October 2026) are in
   to 5 s (from a loader pod on the third node, outside the budget; with
   every put of a 500-document batch at once, the first 1M NQ load failed
   at 850,000 with puts refused for 20 s on end),
-  and Strata builds each shard in a job on the shard's node, reading the
+  and ChloeDB builds each shard in a job on the shard's node, reading the
   documents from the files as it builds a segment of each 500K of them
   (`build --segment-docs`; holding a shard's documents and its one segment
   at once took about 15 KB a document, 7.8 GB at 500K).
-- **Text analysis**: Strata's, rebuilt in the others: words are runs of
+- **Text analysis**: ChloeDB's, rebuilt in the others: words are runs of
   letters and digits, lowercased and folded to ASCII, minus Lucene's classic
   English stopwords, stemmed with Snowball English (Porter 2); ranked
-  queries also drop Strata's query stopwords. BM25 with k1 1.2, b 0.75
+  queries also drop ChloeDB's query stopwords. BM25 with k1 1.2, b 0.75
   everywhere. Vespa gets the same chain from its Lucene linguistics, with
   one profile for documents and one for queries.
-- **Vectors**: HNSW, m 16, ef_construction 200, dot product. Strata stores
+- **Vectors**: HNSW, m 16, ef_construction 200, dot product. ChloeDB stores
   8-bit codes and re-scores the best 40 of an ef 64 search with the full
   vectors; Elasticsearch gets the same (`int8_hnsw`, `num_candidates` 64,
   `rescore_vector.oversample` 4), and OpenSearch its equivalent
@@ -82,7 +82,7 @@ Elasticsearch and Solr, 28 October 2026) are in
   from disk when memory is short (Vespa warns that paged HNSW vectors are
   slow when they do not fit), with `targetHits` 10 and
   `exploreAdditionalHits` 54.
-- **Filtered vectors**: Strata's vector field is partitioned by `rating`
+- **Filtered vectors**: ChloeDB's vector field is partitioned by `rating`
   (`partition_by = 'rating', partition_bounds = '1, 2, 3, 4'`). Besides
   its graph of every row, each segment keeps a graph for each range of
   ratings, over the same codes. `vector + filter` (`rating >= 4`) and
@@ -92,17 +92,17 @@ Elasticsearch and Solr, 28 October 2026) are in
   for these two kinds. The other engines search their one graph with the
   filter applied during the search: Qdrant with a `float` payload index
   on `rating`, Weaviate with a range index, Milvus with an `STL_SORT`
-  index. Runs before 6 November 2026 built Strata without the partitions.
-- **Segments**: Strata builds its shards as one segment each
+  index. Runs before 6 November 2026 built ChloeDB without the partitions.
+- **Segments**: ChloeDB builds its shards as one segment each
   up to 500K documents; a bigger shard is loaded in segments of 500K and
-  then compacted as `optimize` does, into segments of up to Strata's cap of
+  then compacted as `optimize` does, into segments of up to ChloeDB's cap of
   2M documents (a 5M shard at 10M: 2M, 2M and 1M), since merging into one
   would take more memory than the node has;
   Elasticsearch and OpenSearch are force-merged and Solr optimized to one
   segment after loading. Vespa has no segments to merge: a document is
   searchable once its put returns, and proton flushes and compacts on its
   own (compare.sh asks it to flush before measuring its size on disk).
-- **Access**: Strata's servers listen beyond loopback only with a token,
+- **Access**: ChloeDB's servers listen beyond loopback only with a token,
   so its shards, coordinator and the client share a random one, made once
   per cluster by `compare.sh` and kept in the secret `strata-token`; the
   other engines run with their security off, as their images start
@@ -114,7 +114,7 @@ Elasticsearch and Solr, 28 October 2026) are in
   (`index.requests.cache.enable: false`, which also covers their SQL
   endpoints); Manticore's query cache is off (`SET GLOBAL
   qcache_max_bytes=0`; it keeps queries slower than 3 s). Vespa, the
-  other engines and Strata keep no result cache by default (Typesense
+  other engines and ChloeDB keep no result cache by default (Typesense
   only when a request asks with `use_cache`, which these do not). Page
   caches and filter caches stay on everywhere. Each `run-*.json` keeps
   the caches' counters from before and after the timed runs
@@ -125,14 +125,14 @@ Elasticsearch and Solr, 28 October 2026) are in
 
 ## The query kinds
 
-| kind | Strata (SQL) | Elasticsearch | Solr |
+| kind | ChloeDB (SQL) | Elasticsearch | Solr |
 |---|---|---|---|
 | bm25 | `ORDER BY bm25(body, :t)` | `match` | `{!lucene q.op=OR}` over the query's words |
 | bm25 + filter | `WHERE year >= 2010 AND category IN (4 values)` | `bool` with `range` and `terms` filters | `fq` with a range and `{!terms}` |
 | vector | `ORDER BY similarity(emb, :v)` | `knn` | `{!knn}` |
 | vector + filter | `WHERE rating >= 4` | `knn` with `filter` | `{!knn}` with `fq` (a pre-filter) |
 | hybrid (RRF) | `rrf(bm25, similarity)`, k 60, depth 100 | `rrf` retriever (needs a paid licence) | combined query handler (`combiner.algorithm` rrf) |
-| hybrid (weighted) | `0.2 * minmax(bm25) + 0.8 * minmax(similarity)`, each min-max normalised over the union of their top 100 | no normalised fusion on the free licence: `match` (boost 0.2) plus `knn` (k 100, boost 0.8), raw scores summed | `{!bool should=...}` of the two, boosted the same (0.44 for BM25, since Solr's BM25 leaves out the factor k1 + 1 = 2.2 that Strata's and Elasticsearch's keep), raw scores summed |
+| hybrid (weighted) | `0.2 * minmax(bm25) + 0.8 * minmax(similarity)`, each min-max normalised over the union of their top 100 | no normalised fusion on the free licence: `match` (boost 0.2) plus `knn` (k 100, boost 0.8), raw scores summed | `{!bool should=...}` of the two, boosted the same (0.44 for BM25, since Solr's BM25 leaves out the factor k1 + 1 = 2.2 that ChloeDB's and Elasticsearch's keep), raw scores summed |
 | boosted | `bm25(body, :t) * decay(year, 2024, 5)` | `function_score` with an `exp` decay, multiplied | `{!boost}` by `exp(ln(0.5) / 5 * abs(year - 2024))` |
 | facet | `GROUP BY category` over `MATCH(body, :w)`, top 5 | `terms` aggregation, size 5 | JSON facet, `terms`, limit 5 |
 | key lookup | `POST /v1/kv/get` of the key, the read by key without SQL (the 1M run of 2026-11-03 sent `WHERE id = :k` to `/v1/query`) | `term` query on `id` | `{!term f=id}` |
@@ -173,10 +173,10 @@ beside the free run.
 ## Writes
 
 `compare.sh writes ENGINE` (`engine-compare writes`) times writes against
-the loaded engine, through the same endpoints as the queries (Strata's
+the loaded engine, through the same endpoints as the queries (ChloeDB's
 coordinator, Vespa's container), at 1, 4 and 16 clients for 6 s each:
 
-| phase | Strata | Elasticsearch, OpenSearch | Solr | Vespa |
+| phase | ChloeDB | Elasticsearch, OpenSearch | Solr | Vespa |
 |---|---|---|---|---|
 | insert one | `/v1/write`, one `insert` | `POST /quora/_doc/<id>` | `/update`, one document | `POST /document/v1/…/<id>` |
 | insert batch (100) | one `/v1/write` of 100 inserts | `_bulk` of 100 | `/update` of 100 | 100 puts at once (`/document/v1` takes one document a request) |
@@ -189,10 +189,10 @@ source, which here leaves out `body` and `emb` (kept only in the index), so
 they would lose them: they are sent the whole document instead, as an
 application that owns its records would. "Visible" writes 30 documents one
 at a time, each with a word no other has, and searches for the word every 5
-ms until it is found: Strata and Vespa make a write searchable when it
+ms until it is found: ChloeDB and Vespa make a write searchable when it
 returns; Elasticsearch and OpenSearch get their default refresh of 1 s
 (loading turned it off) and Solr a soft commit every second. Durability is
-each engine's default (Strata and Elasticsearch sync the log at every
+each engine's default (ChloeDB and Elasticsearch sync the log at every
 write). Afterwards the written documents are deleted and the old ratings
 written back, so the queries can be run again; the segments differ from
 the loaded ones, so time the queries first.
@@ -210,20 +210,20 @@ the time it was due.
   stopping after the first rate the engine falls behind at; then 20,000
   produced as fast as the producer can, for the consumer's top speed.
 - **The consumer**: one task a partition, reading with a 10 ms wait and
-  writing at most 500 documents a request, one request at a time: Strata
+  writing at most 500 documents a request, one request at a time: ChloeDB
   through `/v1/stream` (each line with its source offset, kept by the
   server in the rows' transaction), Elasticsearch and OpenSearch `_bulk`,
   Solr `/update`, Vespa one put a document, 48 at once a partition. Pushback
   (429, 503) is retried a second later, so no event is dropped.
 - **Lag**: from when a document was due to the engine's answer to the write
-  holding it. Strata answers a batch once its rows are visible, and a Vespa
+  holding it. ChloeDB answers a batch once its rows are visible, and a Vespa
   put is visible when it returns; Elasticsearch, OpenSearch and Solr answer
   once a document is written, and it is searchable within their 1 s
   refresh or soft commit. The read lag (due to read from the topic) is
   reported beside it.
 - **Crash**: a last stream of 10,000 documents at half the top speed, whose
   consumer crashes once half are written, right after a write and before
-  it commits its offsets, and starts again: Strata's from the offsets the
+  it commits its offsets, and starts again: ChloeDB's from the offsets the
   server has (`GET /v1/sources`), the others' from the offsets they
   committed (every second, as Kafka's consumers do). It counts the events
   written a second time (harmless here, since a document's id makes the
@@ -265,7 +265,7 @@ the distributions:
 | section | what it draws |
 |---|---|
 | `mix` | the share of each kind of `KINDS` a session sets out to ask |
-| `queries` | the collection's queries or a larger pool (`source = "pool"`); a Zipf head (`head`, `zipf_s`) that drifts (`drift_share` of it replaced every `drift_every_s`), a tail of queries asked once (`tail_share`), misspellings (`typo_share`: Strata's typo kind under `typos = "fuzzy"`, the text misspelt for every engine under `"plain"`) |
+| `queries` | the collection's queries or a larger pool (`source = "pool"`); a Zipf head (`head`, `zipf_s`) that drifts (`drift_share` of it replaced every `drift_every_s`), a tail of queries asked once (`tail_share`), misspellings (`typo_share`: ChloeDB's typo kind under `typos = "fuzzy"`, the text misspelt for every engine under `"plain"`) |
 | `docs` | which documents key lookups and similar items ask for: Zipf over the collection (`popular`; `doc_popularity.f32` beside it, if present, gives the weights) or `run`'s strides (`legacy`) |
 | `filters` | `run`'s fixed filters, or `drawn`: a target share of documents (log-uniform between `min_selectivity` and `max_selectivity`) met by a year and categories, or a rating, from the collection's own counts |
 | `sessions` | follow-ups (`follow_up`, the weights of refine, open and similar), think times (log-normal), and typing: one prefix request a keystroke, a log-normal gap apart, before the query |
@@ -377,9 +377,9 @@ memory). Writes and streams are not measured for them yet.
 | engine | image | text | vectors (HNSW, m 16, ef_construction 200, dot product) |
 |---|---|---|---|
 | Meilisearch | `getmeili/meilisearch:v1.56.0` | its ranking rules (not BM25), no stemming, Lucene's stopwords; 3 indexing threads, 3 GiB | a `userProvided` embedder |
-| Typesense | `typesense/typesense:30.2` | its text match (not BM25), `stem: true`, Lucene's and Strata's query stopwords as a stopword set | `float[]` field, `ef` 64 |
+| Typesense | `typesense/typesense:30.2` | its text match (not BM25), `stem: true`, Lucene's and ChloeDB's query stopwords as a stopword set | `float[]` field, `ef` 64 |
 | Manticore | `manticoresearch/manticore:29.9.0` | BM25 as `bm25a(1.2, 0.75)` with plain IDF, `stem_en`, its English stopwords | `float_vector`, 8-bit quantization, `ef` 64, rescore with oversampling 4 |
-| Qdrant | `qdrant/qdrant:v1.20.0` | BM25 from the client: sparse vectors of Strata's analysis (tf weighted with k1 and b, average length from a pass over the documents), Qdrant's IDF modifier | int8 scalar quantization, `hnsw_ef` 64, rescore with oversampling 4 |
+| Qdrant | `qdrant/qdrant:v1.20.0` | BM25 from the client: sparse vectors of ChloeDB's analysis (tf weighted with k1 and b, average length from a pass over the documents), Qdrant's IDF modifier | int8 scalar quantization, `hnsw_ef` 64, rescore with oversampling 4 |
 | Weaviate | `semitechnologies/weaviate:1.39.14` | its BM25 (k1 1.2, b 0.75), word tokenization, no stemming, its English stopwords | 8-bit rotational quantization, `ef` 64, rescore limit 40 |
 | Milvus | `milvusdb/milvus:v2.6.26` (standalone, embedded etcd, local storage) | its BM25 function over the `english` analyzer | `HNSW_SQ` (SQ8) refined with FP32, refine_k 4, `ef` 64 |
 | ParadeDB | `paradedb/paradedb:0.26.4-pg17` | `pg_search`'s BM25 over its `simple` tokenizer with the English stemmer, stopwords and ASCII folding | the vectors in the same index (`vector_ip_ops`) |
@@ -388,7 +388,7 @@ memory). Writes and streams are not measured for them yet.
 
 Each kind is the engine's closest native request, and its report says
 where it has none (`unavailable`) or where the request means something
-else than Strata's (`differs`); `analyze.py` prints both under the tables.
+else than ChloeDB's (`differs`); `analyze.py` prints both under the tables.
 In short:
 
 | engine | unavailable | means something else |
@@ -410,7 +410,7 @@ protocol, with trust authentication, and RESP2), a few lines each in
 ## Recommender kinds
 
 `engine-compare recsys-load` and `recsys-run` (`src/bin/engine-compare/recsys.rs`)
-time what a recommender asks of its store, on Strata, Elasticsearch,
+time what a recommender asks of its store, on ChloeDB, Elasticsearch,
 OpenSearch, Vespa, Qdrant, Milvus, Redis and Postgres (pgvector). The data
 is `strata/results/recsys/serving_data.py`'s, made from Yambda-50M: the
 most played tracks, each with the vector the sequence model learned (64
@@ -421,7 +421,7 @@ played; and a LightGBM ranker of 300 trees over the features and the
 user-track dot product (`f12`). Each kind is sent for each of `--users`
 users in turn:
 
-| kind | what | Strata |
+| kind | what | ChloeDB |
 |---|---|---|
 | r1 user to items | the 500 nearest tracks in the user's region, minus the (up to) 500 they played | `WHERE regions = :r AND id NOT IN (...) ORDER BY similarity(emb, :u, ef => 1000, rerank => 1000) DESC LIMIT 500` |
 | r2 candidates (RRF) | three sources under r1's filters, 1,000 deep: nearest the user, nearest their last track, most popular; fused by RRF (k 60), the best 1,000 | `rrf(similarity(emb, :u), similarity(emb, :l), pop, depth => 1000)` |
@@ -447,11 +447,11 @@ job, the client does the rest and the report says so (`differs`):
 | Redis | three `FT.SEARCH` at once (two KNN, one `SORTBY pop`), fused in the client | 1,000 pipelined `HMGET`, scored in the client | KNN 200 with the artist, capped in the client |
 | Postgres | one SQL statement: three subqueries ranked by `row_number()`, summed as RRF | `WHERE id = ANY(...)`, scored in the client | the nearest 200 in a subquery, `row_number()` over each artist |
 
-The client scores the trees with Strata's own GBDT evaluator, so a
-client-side r4 costs what Strata's trees cost plus the read. Vectors are
+The client scores the trees with ChloeDB's own GBDT evaluator, so a
+client-side r4 costs what ChloeDB's trees cost plus the read. Vectors are
 each engine's HNSW of full-precision floats (m 16, ef_construction 200, dot
 product), searched with 1,000 candidates for r1 and twice the depth for the
-others (pgvector's `ef_search` at most 1,000); Strata walks its graph over
+others (pgvector's `ef_search` at most 1,000); ChloeDB walks its graph over
 its 8-bit codes, as it always does, with the same `ef` and every candidate
 re-scored with the floats (`similarity(emb, :u, ef => 1000, rerank =>
 1000)`), and its database is merged into one segment after the load, as
@@ -459,7 +459,7 @@ Elasticsearch's and OpenSearch's are. Qdrant indexes a segment
 once it holds 10 MB of vectors (its default `indexing_threshold`), and
 searches smaller segments exactly: at 100,000 tracks of 64 numbers it
 indexed 81,500 in one of its two segments (`recsys-load` records it). Vespa's
-package is `vespa-recsys/` (`package.sh` adds the ranker); Strata's server
+package is `vespa-recsys/` (`package.sh` adds the ranker); ChloeDB's server
 starts with `recsys/strata-items.json` as its schema and the serving data
 as its `--models`.
 
@@ -479,7 +479,7 @@ no one query keeps the region's 1,000 most popular beside the two
 neighbour lists; r2 sends three.
 
 On one machine, one engine at a time in Docker (each capped at `CPUS` and
-`MEM`; Strata's server runs outside Docker, on the first `CPUS` cores):
+`MEM`; ChloeDB's server runs outside Docker, on the first `CPUS` cores):
 
 ```bash
 python3 strata/results/recsys/serving_data.py --work ~/data/yambda/work --data ~/data/yambda --out ~/data/recsys-100k --items 100000
@@ -503,7 +503,7 @@ $C up os;        $C load os;   $C run os;     $C writes os;    $C stream os;    
 $C up solr;      $C load solr; $C run solr;   $C writes solr;  $C stream solr;  $C down solr
 $C up vespa;     $C load vespa; $C run vespa; $C writes vespa; $C stream vespa; $C down vespa
 python3 strata-server/deploy/compare/analyze.py $STRATA_WORK/compare $STRATA_DATA/quora
-# Strata with its coordinator in a pod of its own, as before 6 November
+# ChloeDB with its coordinator in a pod of its own, as before 6 November
 # 2026, at the old split and another, kept beside the default run:
 export STRATA_COORD=pod
 $C up strata; $C run strata --label strata-coord-pod; $C down strata
@@ -522,4 +522,4 @@ it); give `analyze.py` that collection's directory.
 The Docker VM must allow `vm.max_map_count` of at least 262144 for
 Elasticsearch, and have room for one engine (6 GiB) at a time, plus
 Kubernetes: stop the other engines, and scale down `kind-test.sh`'s own
-Strata pods, first.
+ChloeDB pods, first.

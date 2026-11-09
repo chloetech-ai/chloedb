@@ -2,7 +2,7 @@
 
 Work in progress on `claude/determined-clarke-idilbk`. This note lists what
 the branch has, what is still to run, and the commands, for a session on
-another machine (macOS included: every SIMD path in Strata has a portable
+another machine (macOS included: every SIMD path in ChloeDB has a portable
 fallback, so it builds on Apple Silicon).
 
 ## In the branch
@@ -18,7 +18,7 @@ fallback, so it builds on Apple Silicon).
   `supersedes` the note it replaces.
 - Graph recall (`recall.rs`, `GraphParams`, `expand`, `merge_graph`): the
   top hits and the entities nearest the prompt start a walk over the links
-  (`Store::reach`, a Strata `REACHABLE` query through entities and notes);
+  (`Store::reach`, a ChloeDB `REACHABLE` query through entities and notes);
   what it reaches, ranked by similarity, is fused into the hybrid ranking by
   reciprocal rank. It is off until the evaluations show it helps:
   `ENGRAM_GRAPH=1` (or `rank.graph.enabled` in the config) turns it on.

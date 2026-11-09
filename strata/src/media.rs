@@ -473,7 +473,7 @@ impl Source {
                 }
                 Ok(Source::Stored(h.to_string()))
             }
-            _ => Err(format!("{uri}: Strata fetches file:, https: and media: URIs, not {scheme}:")),
+            _ => Err(format!("{uri}: ChloeDB fetches file:, https: and media: URIs, not {scheme}:")),
         }
     }
 }
@@ -571,7 +571,7 @@ impl Allowlist {
         let (scheme, authority) = match entry.split_once("://") {
             Some((s, rest)) if s.eq_ignore_ascii_case("https") => ("https", rest),
             Some((s, rest)) if s.eq_ignore_ascii_case("http") => ("http", rest),
-            Some((s, _)) => return Err(bad(format!("Strata fetches file:, https: and http: sources, not {s}:"))),
+            Some((s, _)) => return Err(bad(format!("ChloeDB fetches file:, https: and http: sources, not {s}:"))),
             None => ("https", entry),
         };
         let authority = authority.trim_end_matches('/');
@@ -824,7 +824,7 @@ pub fn decode_image(data: &[u8]) -> Result<crate::embed::Image> {
 /// Without the `vision` feature, images are not decoded.
 #[cfg(not(feature = "vision"))]
 pub fn decode_image(_data: &[u8]) -> Result<crate::embed::Image> {
-    Err(Error::Schema("decoding images needs Strata built with the `vision` feature".into()))
+    Err(Error::Schema("decoding images needs ChloeDB built with the `vision` feature".into()))
 }
 
 /// The sound of an audio file (WAV, FLAC, MP3, Ogg Vorbis, AAC in MP4) as
@@ -837,7 +837,7 @@ pub fn decode_audio(data: &[u8]) -> Result<crate::embed::Audio> {
 /// Without the `audio` feature, audio is not decoded.
 #[cfg(not(feature = "audio"))]
 pub fn decode_audio(_data: &[u8]) -> Result<crate::embed::Audio> {
-    Err(Error::Schema("decoding audio needs Strata built with the `audio` feature".into()))
+    Err(Error::Schema("decoding audio needs ChloeDB built with the `audio` feature".into()))
 }
 
 /// The bytes of base64 text, in the standard alphabet or the URL-safe

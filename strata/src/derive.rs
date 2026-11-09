@@ -62,7 +62,7 @@ pub fn open_for(spec: &crate::schema::Derive, models: &Path) -> Result<Arc<dyn D
     #[cfg(feature = "hosted")]
     return Ok(Arc::new(crate::hosted::Generator::open(&spec.model, &spec.prompt, models)?));
     #[cfg(not(feature = "hosted"))]
-    Err(model_err(format!("model {}: a language model is called over HTTP: build Strata with the `hosted` feature", spec.model)))
+    Err(model_err(format!("model {}: a language model is called over HTTP: build ChloeDB with the `hosted` feature", spec.model)))
 }
 
 /// Opens the model a derived field names: `colors`, or a directory under

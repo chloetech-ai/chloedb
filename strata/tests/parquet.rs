@@ -344,7 +344,7 @@ fn strata_to_parquet_and_back() {
     assert!(e.contains("one file, for one table"), "{e}");
     // A directory of tables is not one table.
     let e = pq::plan(&out, None, &ImportOptions::default()).err().unwrap().to_string();
-    assert!(e.contains("different Strata tables"), "{e}");
+    assert!(e.contains("different ChloeDB tables"), "{e}");
 
     // What any Parquet reader sees.
     let b = ParquetRecordBatchReaderBuilder::try_new(File::open(out.join("books.parquet")).unwrap()).unwrap();

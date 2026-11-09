@@ -4647,7 +4647,7 @@ async fn hub_follow(State(app): State<App>, w: Option<axum::Extension<Principal>
 async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>, req: Request) -> Result<Response, ApiError> {
     let rest = rest.trim_start_matches('/');
     if !(rest.starts_with("v1/") || matches!(rest, "livez" | "readyz" | "metrics")) {
-        return Err(ApiError { status: 404, message: format!("/c/{name}/ forwards Strata's API (/v1/...), not /{rest}") });
+        return Err(ApiError { status: 404, message: format!("/c/{name}/ forwards ChloeDB's API (/v1/...), not /{rest}") });
     }
     let path = format!("/{rest}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;

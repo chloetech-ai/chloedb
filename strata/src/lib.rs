@@ -41,6 +41,7 @@ pub mod data;
 pub mod db;
 pub mod derive;
 pub mod embed;
+pub mod env;
 pub mod error;
 pub mod forward;
 pub mod graph;

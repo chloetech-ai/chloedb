@@ -303,7 +303,7 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
             f.followed = kept.tables.iter().filter(|(_, (_, on, _))| *on).map(|(oid, (t, ..))| (*oid, t.clone())).collect();
             let at = kept.applied.unwrap_or(0);
             f.written = at;
-            tracing::info!(slot = %f.slot, at = %lsn_text(at), tables = f.followed.len(), "resuming from what Strata applied");
+            tracing::info!(slot = %f.slot, at = %lsn_text(at), tables = f.followed.len(), "resuming from what ChloeDB applied");
             None
         }
         (resume, s) => {
@@ -467,7 +467,7 @@ impl Follower {
 
     /// What Strata kept of this follower.
     async fn kept(&self) -> Result<Kept, ApiError> {
-        let j = retry("Strata's stream sources", || self.dst.get("/v1/sources")).await?;
+        let j = retry("ChloeDB's stream sources", || self.dst.get("/v1/sources")).await?;
         let all: Vec<(String, i64)> = j["sources"].as_array().into_iter().flatten().filter_map(|s| Some((s["name"].as_str()?.to_string(), s["offset"].as_i64()?))).collect();
         let get = |n: &str| all.iter().find(|(name, _)| name == n).map(|(_, o)| *o);
         let mut k = Kept { copy: get(&self.names.copy()).map(|c| c as u64), ..Default::default() };
@@ -491,7 +491,7 @@ impl Follower {
 
     /// Strata's tables, read again.
     async fn load_tables(&mut self) -> Result<(), ApiError> {
-        let j = retry("Strata's tables", || self.dst.get("/v1/tables")).await?;
+        let j = retry("ChloeDB's tables", || self.dst.get("/v1/tables")).await?;
         self.tables = j["tables"].as_array().into_iter().flatten().filter_map(|t| serde_json::from_value::<Schema>(t["schema"].clone()).ok()).map(|s| (s.table.to_ascii_lowercase(), Arc::new(s))).collect();
         Ok(())
     }
@@ -499,7 +499,7 @@ impl Follower {
     /// Runs `sql` on Strata.
     async fn sql(&self, sql: &str) -> Result<Json, ApiError> {
         let body = json!({"sql": sql});
-        retry("a statement on Strata", || self.dst.post("/v1/sql", &body)).await
+        retry("a statement on ChloeDB", || self.dst.post("/v1/sql", &body)).await
     }
 
     /// The types of these OIDs, read from the catalog unless known.
@@ -550,7 +550,7 @@ impl Follower {
         let names: Vec<String> = cols.rows.iter().filter_map(|r| r[0].clone()).collect();
         if names.is_empty() {
             return Err(ApiError::bad(format!(
-                "{shown} has no primary key, and a Strata table keeps its rows by one: add one (ALTER TABLE {shown} ADD PRIMARY KEY (...)), or name a unique index (REPLICA IDENTITY USING INDEX ...)"
+                "{shown} has no primary key, and a ChloeDB table keeps its rows by one: add one (ALTER TABLE {shown} ADD PRIMARY KEY (...)), or name a unique index (REPLICA IDENTITY USING INDEX ...)"
             )));
         }
         Ok(names)
@@ -627,7 +627,7 @@ impl Follower {
                 match decl(i) {
                     Some(t) if rel.key.len() == 1 && rel.key[0] == i => cols.push(format!("{} {t} PRIMARY KEY", ident(&c.name))),
                     Some(t) => cols.push(format!("{} {t}", ident(&c.name))),
-                    None => tracing::warn!(table = %rel.shown, column = %c.name, pg_type = %rel.types[i].name, "a column of a type the follower leaves out (make the table in Strata first to choose its type)"),
+                    None => tracing::warn!(table = %rel.shown, column = %c.name, pg_type = %rel.types[i].name, "a column of a type the follower leaves out (make the table in ChloeDB first to choose its type)"),
                 }
             }
             let sql = format!("CREATE TABLE {} ({})", ident(&rel.table), cols.join(", "));
@@ -662,7 +662,7 @@ impl Follower {
     }
 
     fn schema(&self, table: &str) -> Result<Arc<Schema>, ApiError> {
-        self.tables.get(&table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError { status: 409, message: format!("table {table} is gone from Strata: copy again (--copy)") })
+        self.tables.get(&table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError { status: 409, message: format!("table {table} is gone from ChloeDB: copy again (--copy)") })
     }
 
     /// Writes `ops` until Strata takes them.
@@ -676,11 +676,11 @@ impl Follower {
             match self.dst.post("/v1/write", &body).await {
                 Ok(j) => break j,
                 Err(e) if again(&e) => {
-                    tracing::warn!(status = e.status, "writing to Strata: {}; trying again", e.message);
+                    tracing::warn!(status = e.status, "writing to ChloeDB: {}; trying again", e.message);
                     tokio::time::sleep(wait).await;
                     wait = (wait * 2).min(Duration::from_secs(5));
                 }
-                Err(e) => return Err(ApiError { status: e.status, message: format!("writing to Strata: {}", e.message) }),
+                Err(e) => return Err(ApiError { status: e.status, message: format!("writing to ChloeDB: {}", e.message) }),
             }
         };
         self.stats.writes += 1;
@@ -717,7 +717,7 @@ impl Follower {
         let mut names: HashMap<String, u32> = HashMap::new();
         for r in &rels {
             if let Some(other) = names.insert(r.table.to_ascii_lowercase(), r.oid) {
-                return Err(ApiError::bad(format!("two Postgres tables become Strata table {} (OIDs {other} and {})", r.table, r.oid)));
+                return Err(ApiError::bad(format!("two Postgres tables become ChloeDB table {} (OIDs {other} and {})", r.table, r.oid)));
             }
         }
         if slot_exists {
@@ -754,7 +754,7 @@ impl Follower {
                 let mut rows = 0;
                 loop {
                     let Some(rel) = queue.lock().await.pop() else { break };
-                    let schema = tables.get(&rel.table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError::internal(format!("table {} is not in Strata", rel.table)))?;
+                    let schema = tables.get(&rel.table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError::internal(format!("table {} is not in ChloeDB", rel.table)))?;
                     rows += copy_table(&mut conn, &dst, &rel, &schema, batch).await?;
                 }
                 conn.query("COMMIT").await.map_err(pg)?;
@@ -783,7 +783,7 @@ impl Follower {
     /// meanwhile); the changes of it from the stream then bring it on.
     async fn copy_added(&mut self, mut rel: Rel) -> Result<(), ApiError> {
         if let Some((&other, _)) = self.followed.iter().find(|(o, t)| **o != rel.oid && t.eq_ignore_ascii_case(&rel.table)) {
-            return Err(ApiError::bad(format!("{} becomes Strata table {}, which follows another Postgres table already (OID {other}): rename one", rel.shown, rel.table)));
+            return Err(ApiError::bad(format!("{} becomes ChloeDB table {}, which follows another Postgres table already (OID {other}): rename one", rel.shown, rel.table)));
         }
         // With its row filter, from the catalog.
         if rel.filter.is_none() {
@@ -1155,7 +1155,7 @@ impl Follower {
         if !self.seen.is_empty() {
             body["min_seq_nos"] = json!(self.seen);
         }
-        let j = retry("a row's values from Strata", || self.dst.post("/v1/kv/get", &body)).await?;
+        let j = retry("a row's values from ChloeDB", || self.dst.post("/v1/kv/get", &body)).await?;
         match j["rows"].get(0) {
             Some(Json::Object(row)) => {
                 for c in want {
@@ -1164,7 +1164,7 @@ impl Follower {
                     }
                 }
             }
-            _ => tracing::warn!(table = %rel.table, key = %key, "an update left values unchanged of a row Strata does not hold: they are left NULL"),
+            _ => tracing::warn!(table = %rel.table, key = %key, "an update left values unchanged of a row ChloeDB does not hold: they are left NULL"),
         }
         Ok(out)
     }
@@ -1213,7 +1213,7 @@ impl Follower {
             }
             for (i, c) in rel.columns.iter().enumerate() {
                 if w.columns.iter().any(|o| o.name == c.name && o.type_oid != c.type_oid) {
-                    tracing::warn!(table = %rel.table, column = %c.name, to = %rel.types[i].name, "Postgres changed a column's type: its values are written as the Strata column's type reads them");
+                    tracing::warn!(table = %rel.table, column = %c.name, to = %rel.types[i].name, "Postgres changed a column's type: its values are written as the ChloeDB column's type reads them");
                 }
             }
         }
@@ -1276,7 +1276,7 @@ async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, bat
     let t0 = Instant::now();
     let send = |ops: Vec<Json>| async move {
         let body = json!({"ops": ops});
-        retry("writing a copy to Strata", || dst.post("/v1/write", &body)).await.map(|_| ())
+        retry("writing a copy to ChloeDB", || dst.post("/v1/write", &body)).await.map(|_| ())
     };
     loop {
         let chunk = conn.copy_data().await.map_err(pg)?;

@@ -222,13 +222,13 @@ impl Source {
                 }
             }
             let meta = b.metadata().file_metadata().key_value_metadata().and_then(|kv| kv.iter().find(|k| k.key == META_KEY).and_then(|k| k.value.clone()));
-            let meta = meta.map(|m| Schema::from_json(&m).map_err(|e| Error::Schema(format!("{}: the Strata schema it keeps: {e}", p.name)))).transpose()?;
+            let meta = meta.map(|m| Schema::from_json(&m).map_err(|e| Error::Schema(format!("{}: the ChloeDB schema it keeps: {e}", p.name)))).transpose()?;
             match &first {
                 None => first = Some((b.schema().clone(), meta)),
                 // An export of several tables to a directory: a file each.
                 Some((_, Some(a))) if meta.as_ref().is_some_and(|m| !m.table.eq_ignore_ascii_case(&a.table)) => {
                     let b = meta.map(|m| m.table).unwrap_or_default();
-                    return Err(Error::Schema(format!("{}: its files hold different Strata tables ({}, {b}..): import one file at a time", path.display(), a.table)));
+                    return Err(Error::Schema(format!("{}: its files hold different ChloeDB tables ({}, {b}..): import one file at a time", path.display(), a.table)));
                 }
                 Some(_) => {}
             }
@@ -376,7 +376,7 @@ impl Source {
             fields.push(f);
         }
         if fields.is_empty() {
-            return Err(Error::Schema("no column Strata can hold: see the plan's skipped columns".into()));
+            return Err(Error::Schema("no column ChloeDB can hold: see the plan's skipped columns".into()));
         }
         let s = Schema::new(table, fields, key.as_deref())?;
         Ok((s, notes))
@@ -550,7 +550,7 @@ fn builder(p: &Part) -> Result<ParquetRecordBatchReaderBuilder<File>> {
 }
 
 fn parquet_error(p: &Part, e: impl std::fmt::Display) -> Error {
-    Error::Schema(format!("{}: not a Parquet file Strata can read ({e})", p.name))
+    Error::Schema(format!("{}: not a Parquet file ChloeDB can read ({e})", p.name))
 }
 
 /// The Parquet files under `dir`, at any depth, in the order of their
@@ -734,7 +734,7 @@ fn choose(name: &str, t: &DataType, st: &Stats, key: bool, opts: &ImportOptions)
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => field(FieldType::Text { positions: true }),
         DataType::Binary | DataType::LargeBinary | DataType::BinaryView | DataType::FixedSizeBinary(_) => match opts.blobs_base64 {
             true => Choice::Field(Field::new(name, FieldType::Keyword).stored_only(), Some("binary values as base64 text".into())),
-            false => Choice::Skip("binary values: Strata has no binary type (blobs_base64 keeps them as base64 text)".into()),
+            false => Choice::Skip("binary values: ChloeDB has no binary type (blobs_base64 keeps them as base64 text)".into()),
         },
         DataType::FixedSizeList(item, n) if numeric(item.data_type()) && *n > 0 => Choice::Field(vector(*n as usize), None),
         DataType::List(item) | DataType::LargeList(item) | DataType::ListView(item) | DataType::LargeListView(item) => match item.data_type() {
@@ -753,7 +753,7 @@ fn choose(name: &str, t: &DataType, st: &Stats, key: bool, opts: &ImportOptions)
             _ => Choice::Field(Field::new(name, FieldType::Json), Some(format!("{t} as JSON"))),
         },
         DataType::FixedSizeList(..) | DataType::Struct(_) | DataType::Map(..) => Choice::Field(Field::new(name, FieldType::Json), Some(format!("{t} as JSON"))),
-        t => Choice::Skip(format!("Strata has no type for {t}")),
+        t => Choice::Skip(format!("ChloeDB has no type for {t}")),
     }
 }
 

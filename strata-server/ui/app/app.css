@@ -1,4 +1,4 @@
-/* Strata command center. Colors are tokens on :root, set again for dark
+/* ChloeDB command center. Colors are tokens on :root, set again for dark
    mode (the system's, unless the viewer picked light, and the viewer's).
    Series colors are the validated categorical order: slot n is --sN. */
 :root {

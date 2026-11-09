@@ -116,12 +116,12 @@ fn system_prompt(svc: &Service, docs: u64) -> String {
         None => String::new(),
     };
     format!(
-        r#"You answer questions about the data in one Strata table by querying it with SQL through the run_sql tool. Strata is a search database: a single table queried with SELECT plus search functions.
+        r#"You answer questions about the data in one ChloeDB table by querying it with SQL through the run_sql tool. ChloeDB is a search database: a single table queried with SELECT plus search functions.
 
 Table `{table}`, {docs} rows. Fields:
 {fields}
 
-Strata SQL (read-only here):
+ChloeDB SQL (read-only here):
 SELECT <fields | * | score() | aggregates> FROM {table} [WHERE <predicate>] [GROUP BY <fields> [HAVING ...]] [ORDER BY <a score, numeric field, expression of them, or aggregate> [ASC|DESC]] [LIMIT n [OFFSET m]]
 - MATCH(text_field, 'query') is a boolean full-text filter: terms, "phrases", AND, OR, NOT, -term, prefix*, word~ (allows a typo), parentheses; words side by side mean AND.
 - MATCH and bm25 take fuzzy => 'auto' (MATCH tolerates typos in every word; bm25 corrects the words that look like typos){synonym_help}.
@@ -156,11 +156,11 @@ How to work:
 fn tools() -> Json {
     json!([{
         "name": "run_sql",
-        "description": "Runs one read-only Strata SQL SELECT on the table and returns its columns and rows (at most 30 rows shown; long text cut), the total row count returned, and how long it took. Use it to search, filter, rank, count and facet. Writes are refused.",
+        "description": "Runs one read-only ChloeDB SQL SELECT on the table and returns its columns and rows (at most 30 rows shown; long text cut), the total row count returned, and how long it took. Use it to search, filter, rank, count and facet. Writes are refused.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "sql": {"type": "string", "description": "One SELECT statement in Strata's dialect."},
+                "sql": {"type": "string", "description": "One SELECT statement in ChloeDB's dialect."},
                 "params": {"type": "object", "description": "Values for :name placeholders, e.g. {\"q\": {\"vector_of\": \"p0000042\"}}."}
             },
             "required": ["sql"]

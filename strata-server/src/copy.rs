@@ -149,7 +149,7 @@ pub async fn adopt_made(svc: &Arc<Service>, id: &str, name: Option<String>, colo
     use crate::cloud::clusters::Phase;
     let m = svc.clouds.get(id).ok_or_else(|| ApiError { status: 404, message: format!("no cluster {id} was made here") })?;
     if !matches!(m.phase, Phase::Starting | Phase::Ready) {
-        return Err(ApiError { status: 409, message: format!("{} is {:?}: its command center opens once Strata is installed on it", m.cluster, m.phase).to_lowercase() });
+        return Err(ApiError { status: 409, message: format!("{} is {:?}: its command center opens once ChloeDB is installed on it", m.cluster, m.phase).to_lowercase() });
     }
     let k = svc.clouds.kube_of(id, &svc.aws, &svc.digitalocean).await.map_err(|e| ApiError { status: 502, message: format!("{}: {e}", m.cluster) })?;
     let via = crate::hub::ViaKube { made: m.id.clone(), provider: m.provider.clone(), cluster: m.cluster.clone(), region: m.region.clone(), namespace: crate::cloud::NAMESPACE.to_string(), service: m.name.clone() };

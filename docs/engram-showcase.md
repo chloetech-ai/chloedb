@@ -7,7 +7,7 @@ October 13, 2026
 - **Quality:** Engram lifts the solve rate by 15 points in fresh sessions (71% → 86%) and by 12 points in long sessions that compact (81% → 93%).
 - **Cost:** keeping the whole week in context reaches 93%, but at **$0.49 per task, about 60× the price** of a fresh session with Engram.
 - **Speed:** with Engram the agent needed **28% fewer steps** per task (8.8 → 6.3) and read **23% fewer tokens**, because it stopped searching the repository for decisions that were never written into it.
-- **Engine:** Engram stores memory in Strata, our single-file search database. It ran keyword search **99× faster than SQLite** and **2.0× faster than Tantivy** on 523,000 documents, ran vector search in 0.1 ms, and walked a citation graph up to 9× faster than SQLite.
+- **Engine:** Engram stores memory in ChloeDB, our single-file search database. It ran keyword search **99× faster than SQLite** and **2.0× faster than Tantivy** on 523,000 documents, ran vector search in 0.1 ms, and walked a citation graph up to 9× faster than SQLite.
 
 ![Engram matches full-context quality at a fraction of the cost](showcase/quality-vs-cost.png)
 
@@ -70,13 +70,13 @@ On speed, the setups averaged 24 to 27 seconds per task (Compact averaged 42 s b
 
 ## How it works
 
-Engram is automatic long-term context for Claude Code, stored in **Strata**, an embedded single-file search database. Nothing depends on the model remembering to save.
+Engram is automatic long-term context for Claude Code, stored in **ChloeDB**, an embedded single-file search database. Nothing depends on the model remembering to save.
 
-- **Records everything:** hooks store every prompt, tool call, answer and compaction summary in one Strata file per project.
+- **Records everything:** hooks store every prompt, tool call, answer and compaction summary in one ChloeDB file per project.
 - **Writes down what matters:** after each turn, a small model notes the rules, decisions and planned work the turn stated, and updates or closes earlier ones.
 - **Brings it back when it helps:** each prompt triggers a hybrid search (keywords plus vectors) over older history. The best records are injected only when the evidence is strong. The model can also search memory itself through MCP tools.
 
-## How the agent gets faster with Engram and Strata
+## How the agent gets faster with Engram and ChloeDB
 
 An agent without memory spends its time rediscovering things. It greps the repository for a rule that was only ever said in chat, re-reads files to rebuild context, or carries the whole history in every request. Engram replaces all of that with one lookup that takes milliseconds.
 
@@ -86,7 +86,7 @@ An agent without memory spends its time rediscovering things. It greps the repos
 
 The model works with Engram in two ways:
 
-- **Automatically, before it reads the prompt.** A hook runs one recall query against the project's Strata file and puts the strongest matches into the prompt. The model never has to know what to search for. In the kestrel runs this was nearly all of Engram's work: the agent called a memory tool in only 4 of 84 Engram runs.
+- **Automatically, before it reads the prompt.** A hook runs one recall query against the project's ChloeDB file and puts the strongest matches into the prompt. The model never has to know what to search for. In the kestrel runs this was nearly all of Engram's work: the agent called a memory tool in only 4 of 84 Engram runs.
 - **On demand, through tools.** When the model wants more, it can call `memory_search` (hybrid search), `memory_timeline` (what happened around a record), `memory_sql` (read-only SQL over the whole memory) and `memory_remember` (save a rule for later sessions).
 
 Here is a real run from the benchmark. In a brand-new session the owner asked: *"For the next importer I'd like to use `match` statements. Any objection?"* Recall found a note from day 3 of the history and put it in the prompt. The agent answered with no searching and no tool calls:
@@ -97,11 +97,11 @@ That is where the savings in the benchmark come from. Compared with a fresh sess
 
 ### One question, four indexes
 
-Every record Engram stores (a prompt, a tool call, an answer, a distilled rule) is one row in Strata, indexed four ways at once. Each index answers a different kind of question, and one query can use all four.
+Every record Engram stores (a prompt, a tool call, an answer, a distilled rule) is one row in ChloeDB, indexed four ways at once. Each index answers a different kind of question, and one query can use all four.
 
 ![One question, four ways into memory](showcase/four-indexes.png)
 
-<sub>How one prompt reaches each of Strata's indexes; graph expansion is off by default (ENGRAM\_GRAPH=1)</sub>
+<sub>How one prompt reaches each of ChloeDB's indexes; graph expansion is off by default (ENGRAM\_GRAPH=1)</sub>
 
 **Full text (BM25): exact names, codes and error messages.** Words like a vendor name, an invoice prefix or an exception type have to match exactly, and meaning-based search blurs them.
 
@@ -123,7 +123,7 @@ ORDER BY ts DESC LIMIT 5;
 SELECT kind, COUNT(*) FROM memory GROUP BY kind ORDER BY 2 DESC;
 ```
 
-**Vectors: the same idea in different words.** "Can we squeeze an extra patient in?" shares no words with "the board complained about overbooking", but the two mean nearly the same thing. Engram embeds each prompt and finds the nearest records in Strata's HNSW index.
+**Vectors: the same idea in different words.** "Can we squeeze an extra patient in?" shares no words with "the board complained about overbooking", but the two mean nearly the same thing. Engram embeds each prompt and finds the nearest records in ChloeDB's HNSW index.
 
 ```sql
 -- the records closest in meaning to the prompt
@@ -149,48 +149,48 @@ ORDER BY similarity(emb, :prompt) DESC LIMIT 20;
 
 The model can run any of these itself through `memory_sql`. Graph-expanded recall is opt-in (`ENGRAM_GRAPH=1`) and was off in the kestrel runs.
 
-Because all four indexes live in one Strata file, the planner combines them in a single statement. No search server runs alongside the agent, and no vector database has to be kept in sync with a text index.
+Because all four indexes live in one ChloeDB file, the planner combines them in a single statement. No search server runs alongside the agent, and no vector database has to be kept in sync with a text index.
 
-## Under the hood: Strata, one file that beats specialist engines
+## Under the hood: ChloeDB, one file that beats specialist engines
 
-Engram's speed comes from **Strata**, a search database we built for this job. Like SQLite, it is one file with ACID transactions and SQL. Unlike SQLite, every table is indexed three ways at once: full-text, structured columns and vectors. One SQL statement can mix all three. In the kestrel benchmark, run on the cloud VM, Engram's recall step took a median of **1.6–1.7 ms** (2.7 ms at p95), so remembering adds no wait you can notice.
+Engram's speed comes from **ChloeDB**, a search database we built for this job. Like SQLite, it is one file with ACID transactions and SQL. Unlike SQLite, every table is indexed three ways at once: full-text, structured columns and vectors. One SQL statement can mix all three. In the kestrel benchmark, run on the cloud VM, Engram's recall step took a median of **1.6–1.7 ms** (2.7 ms at p95), so remembering adds no wait you can notice.
 
-![Strata architecture](showcase/strata-architecture.png)
+![ChloeDB architecture](showcase/strata-architecture.png)
 
-<sub>Strata architecture, from strata/DESIGN.md and strata/README.md</sub>
+<sub>ChloeDB architecture, from strata/DESIGN.md and strata/README.md</sub>
 
-We measured Strata against two industry standards on four public BEIR collections, from 5,000 to 523,000 documents, running the same queries on the same machine. The baselines were **SQLite 3.53 with FTS5**, the world's most deployed embedded database, and **Tantivy 0.26**, the Rust engine in the style of Lucene that powers Quickwit. On Quora, the largest collection (523,000 documents), median warm latency per query was:
+We measured ChloeDB against two industry standards on four public BEIR collections, from 5,000 to 523,000 documents, running the same queries on the same machine. The baselines were **SQLite 3.53 with FTS5**, the world's most deployed embedded database, and **Tantivy 0.26**, the Rust engine in the style of Lucene that powers Quickwit. On Quora, the largest collection (523,000 documents), median warm latency per query was:
 
-![Strata vs Tantivy vs SQLite search latency](showcase/search-latency.png)
+![ChloeDB vs Tantivy vs SQLite search latency](showcase/search-latency.png)
 
-<sub>Strata evaluation, strata/results: Quora, 523,000 documents, one thread, warm cache; SQLite 3.53 + FTS5 and Tantivy 0.26</sub>
+<sub>ChloeDB evaluation, strata/results: Quora, 523,000 documents, one thread, warm cache; SQLite 3.53 + FTS5 and Tantivy 0.26</sub>
 
-- **Faster without losing quality:** BM25 search was 1.7–3.2× faster than Tantivy and 43–200× faster than SQLite FTS5 across the four collections. Strata won 24 of 28 warm text and filter comparisons. Ranking quality matched both: nDCG@10 was within 0.02 of the baselines everywhere.
+- **Faster without losing quality:** BM25 search was 1.7–3.2× faster than Tantivy and 43–200× faster than SQLite FTS5 across the four collections. ChloeDB won 24 of 28 warm text and filter comparisons. Ranking quality matched both: nDCG@10 was within 0.02 of the baselines everywhere.
 - **Vectors in milliseconds:** HNSW search took 0.05–0.10 ms with recall@10 of 0.99. SQLite has no built-in vector index, so it scans every vector, which takes 7.7 ms to 0.7 s.
-- **One planner for mixed queries:** for vector search under a filter, Strata's cost-based planner was 1.8–6.1× faster than the best fixed strategy on the three larger collections.
+- **One planner for mixed queries:** for vector search under a filter, ChloeDB's cost-based planner was 1.8–6.1× faster than the best fixed strategy on the three larger collections.
 - **Safe and compact:** every commit is durable (about 4 ms on a Mac, which makes the drive flush its write cache), every crash test recovered cleanly, and the file is about the size of SQLite's.
 
-Where Strata is behind: loading is slower, because building the vector graph takes time (on Quora, 153 s against SQLite's 31 s). Tantivy counts facets 1.1–2.1× faster on three of the four collections and is 1.4–3.4× faster on structured filters when the cache is cold. SQLite was tested without a vector extension such as sqlite-vec, so its vector numbers measure a scan, not a competing index. Dedicated vector stores such as FAISS or Qdrant were not part of the test. All runs used one thread on an Apple M2 MacBook Air.
+Where ChloeDB is behind: loading is slower, because building the vector graph takes time (on Quora, 153 s against SQLite's 31 s). Tantivy counts facets 1.1–2.1× faster on three of the four collections and is 1.4–3.4× faster on structured filters when the cache is cold. SQLite was tested without a vector extension such as sqlite-vec, so its vector numbers measure a scan, not a competing index. Dedicated vector stores such as FAISS or Qdrant were not part of the test. All runs used one thread on an Apple M2 MacBook Air.
 
 ## Graphs: search that follows connections
 
-In Strata, a row can link to other rows. A paper cites papers, a note is about a file, a new rule replaces an old one. The links live in the same file and the same transactions as the text and the vectors. So one SQL statement can search, follow links and rank, with no second database to keep in sync.
+In ChloeDB, a row can link to other rows. A paper cites papers, a note is about a file, a new rule replaces an old one. The links live in the same file and the same transactions as the text and the vectors. So one SQL statement can search, follow links and rank, with no second database to keep in sync.
 
 ![Search, then follow the graph](showcase/graph-search-flow.png)
 
-<sub>How a graph-assisted search runs in Strata</sub>
+<sub>How a graph-assisted search runs in ChloeDB</sub>
 
 To test whether links make search better, we held out 1,000 recent arXiv papers and asked each method to find the papers each one cites, using only its title and abstract. Searching by meaning and then following the citations of the two nearest papers **found twice as many references as vector search alone**, in 0.2 ms per query. The improvement is statistically solid (p < 0.0001).
 
 ![Following citations doubles what vector search finds](showcase/citation-quality.png)
 
-<sub>Strata graph evaluation, strata/results/graph/quality\_stats.json: 1,000 held-out ogbn-arxiv papers, 484 reported</sub>
+<sub>ChloeDB graph evaluation, strata/results/graph/quality\_stats.json: 1,000 held-out ogbn-arxiv papers, 484 reported</sub>
 
-Strata stores links compactly inside the file, at 27 bytes per citation on arXiv, and indexes them in both directions. Beyond one hop, that makes walking the graph much faster than SQLite's recursive queries:
+ChloeDB stores links compactly inside the file, at 27 bytes per citation on arXiv, and indexes them in both directions. Beyond one hop, that makes walking the graph much faster than SQLite's recursive queries:
 
-![Strata vs SQLite graph traversal latency](showcase/graph-latency.png)
+![ChloeDB vs SQLite graph traversal latency](showcase/graph-latency.png)
 
-<sub>Strata graph evaluation, strata/results/graph/latency\_arxiv.json: 200 random seeds, warm cache, one thread</sub>
+<sub>ChloeDB graph evaluation, strata/results/graph/latency\_arxiv.json: 200 random seeds, warm cache, one thread</sub>
 
 - **More than reachability:** shortest paths and personalized PageRank are built in. PageRank over a million rows and 10 million links takes 3.5 ms. SQLite has no practical way to express either.
 - **Links that never break:** links point at keys, not storage positions, so merges, updates and deletes never rewrite them. A link to a deleted row is skipped, like a foreign key without a constraint.
@@ -205,4 +205,4 @@ Strata stores links compactly inside the file, at 27 bytes per citation on arXiv
 - **Fair baseline:** every setup kept Claude Code's own built-in memory notes from the week. Memory, the repository and Engram's store were restored before every run, so no run could learn from another. No user plugins or extra tools were loaded.
 - **One model:** all runs used the same small, fast Claude model. Costs are list prices as reported by Claude Code.
 - **Hard by design:** one task, the booking-form check, was solved by no setup.
-- **Reproduce it:** the scenario, graders and harness are in `engram/eval/ab/scenarios/kestrel` and `engram/scripts/long_session_ab.py` in the [codex-test-2](https://github.com/rkonow/codex-test-2) repository; all 210 graded runs, with each run's code changes, are in `engram/results/long/kestrel` there. Strata's evaluation is in `strata/report` and `strata/results` in the same repository.
+- **Reproduce it:** the scenario, graders and harness are in `engram/eval/ab/scenarios/kestrel` and `engram/scripts/long_session_ab.py` in the [codex-test-2](https://github.com/rkonow/codex-test-2) repository; all 210 graded runs, with each run's code changes, are in `engram/results/long/kestrel` there. ChloeDB's evaluation is in `strata/report` and `strata/results` in the same repository.

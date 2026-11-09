@@ -7,19 +7,19 @@
  *   data-explorer="cloud-1m"    one kind and one measure, engines sorted
  *   data-pick="cloud-1m"        a few engines and kinds as a table
  *                               (data-engines, data-kinds, data-metric)
- *   data-scoreboard             Strata's place per kind in each report
+ *   data-scoreboard             ChloeDB's place per kind in each report
  *   data-writes="cloud-1m"      writes, freshness and streams
  *   data-load="cloud-1m"        load time and index size
  *   data-graph-rank             the graph comparison's places
  *   data-ab="bm25-load"         a before/after table (data-merge: one row a
  *                               kind, q/s at 16 and the median at 1;
  *                               data-labels="before,after" names the two)
- *   data-versus="cloud-1m,cloud-10m" Strata's speed over each engine's
+ *   data-versus="cloud-1m,cloud-10m" ChloeDB's speed over each engine's
  *   data-ef="ef-1m"             recall and speed at each ef
  *   data-num="cloud-1m:p50:strata:bm25" one number, inline
- *   data-overall="cloud-1m"     Strata's overall place (data-mode="tile" or "line")
+ *   data-overall="cloud-1m"     ChloeDB's overall place (data-mode="tile" or "line")
  *   data-variants="cloud-1m"    the ranking under other rules
- *   data-rank-mini="cloud-10m"  the top few by summed places, and Strata (data-top)
+ *   data-rank-mini="cloud-10m"  the top few by summed places, and ChloeDB (data-top)
  *   data-engine-names="a,b"     the engines the reports measured (data-also adds names)
  */
 (function () {
@@ -264,7 +264,7 @@
           var p = pl.strata, v = val(rep, metric, "strata", k.id);
           var bestE = null, bestV = null;
           engines.forEach(function (e) { if (pl[e] === 1) { bestE = e; bestV = val(rep, metric, e, k.id); } });
-          var tip = "<b>Strata</b> · " + esc(k.name) + "<br>" + (p == null ? "no value" : ord(p) + " of " + n + ": " + esc(fmt(v)) + " " + esc(M.unit)) + (bestE && bestE !== "strata" ? "<br>Best: " + esc(engineName(rep, bestE)) + ", " + esc(fmt(bestV)) + " " + esc(M.unit) : "");
+          var tip = "<b>ChloeDB</b> · " + esc(k.name) + "<br>" + (p == null ? "no value" : ord(p) + " of " + n + ": " + esc(fmt(v)) + " " + esc(M.unit)) + (bestE && bestE !== "strata" ? "<br>Best: " + esc(engineName(rep, bestE)) + ", " + esc(fmt(bestV)) + " " + esc(M.unit) : "");
           h += '<td class="' + placeClass(p, n) + '"><span tabindex="0" data-tip="' + esc(tip) + '"><b>' + (p == null ? "–" : ord(p)) + "</b><small>" + (p == null ? "" : esc(fmt(v)) + (M.unit === "ms" ? " ms" : "")) + "</small></span></td>";
         });
         h += "</tr>";
@@ -276,7 +276,7 @@
         h += '<td class="' + placeClass(pos, rep.ranked.length) + '"><span><b>' + ord(pos) + "</b><small>of " + rep.ranked.length + "</small></span></td>";
       });
       h += "</tr></tbody></table></div>";
-      h += '<div class="legend pl-legend"><span><i class="pl-1"></i>1st</span><span><i class="pl-2"></i>top quarter</span><span><i class="pl-3"></i>middle</span><span><i class="pl-4"></i>lower</span><span><i class="pl-5"></i>last</span><span>Hover or tap a cell for the engine that beat Strata.</span></div>';
+      h += '<div class="legend pl-legend"><span><i class="pl-1"></i>1st</span><span><i class="pl-2"></i>top quarter</span><span><i class="pl-3"></i>middle</span><span><i class="pl-4"></i>lower</span><span><i class="pl-5"></i>last</span><span>Hover or tap a cell for the engine that beat ChloeDB.</span></div>';
       el.innerHTML = h;
       el.querySelectorAll(".chipbtn").forEach(function (b) { b.addEventListener("click", function () { metric = b.getAttribute("data-v"); draw(); }); });
     }
@@ -340,7 +340,7 @@
     var max = rep.rank[rep.rank.length - 1].points;
     var h = '<div class="rankbars">';
     rep.rank.forEach(function (r, i) {
-      var self = r.name.indexOf("Strata") === 0;
+      var self = r.name.indexOf("ChloeDB") === 0;
       h += '<div class="rb-row' + (self ? " self" : "") + '"><span class="rb-pl">' + (i + 1) + '</span><span class="rb-name">' + esc(r.name) + '</span><span class="rb-bar"><i style="width:' + ((r.points / max) * 100).toFixed(1) + '%"></i><b>' + r.points + "</b></span></div>";
     });
     h += "</div>";
@@ -348,8 +348,8 @@
   }
 
   /* ------------------------------------------------------------ versus */
-  // Strata's speed over each engine's, the geometric mean over the kinds both
-  // run: at one client their median over Strata's, at 16 clients Strata's
+  // ChloeDB's speed over each engine's, the geometric mean over the kinds both
+  // run: at one client their median over ChloeDB's, at 16 clients ChloeDB's
   // queries a second over theirs. Each row opens to its kinds.
   function renderVersus(el) {
     var ids = el.getAttribute("data-versus").split(",").filter(function (id) { return R[id] && R[id].versus; });
@@ -372,7 +372,7 @@
       rows.forEach(function (r) {
         var v = r.v, eng = rep.engines.filter(function (z) { return z.id === r.e; })[0] || { name: r.e };
         var a = x(v.p50_gm), b = x(v.qps16_gm);
-        var label = esc(eng.name) + ": at one client Strata is " + times(v.p50_gm) + " as fast, at 16 clients it serves " + times(v.qps16_gm) + " the queries a second; faster on " + v.p50_won + " of " + v.p50_of + " kinds at one client";
+        var label = esc(eng.name) + ": at one client ChloeDB is " + times(v.p50_gm) + " as fast, at 16 clients it serves " + times(v.qps16_gm) + " the queries a second; faster on " + v.p50_won + " of " + v.p50_of + " kinds at one client";
         h += '<details class="vs-row"><summary aria-label="' + label + '"><span class="vs-name">' + esc(eng.name) + (eng.lane ? "<small>" + esc(eng.lane) + "</small>" : "") + "</span>" +
           '<span class="vs-track" aria-hidden="true">' + grid +
           '<span class="vs-span" style="left:' + Math.min(a, b) + "%;width:" + Math.abs(a - b).toFixed(2) + '%"></span>' +
@@ -392,7 +392,7 @@
         h += "</tbody></table></div></details>";
       });
       h += "</div>";
-      h += '<div class="legend vs-legend"><span><i class="vs-dot one"></i>one client: their median time over Strata\'s</span><span><i class="vs-dot sixteen"></i>16 clients: Strata\'s queries a second over theirs</span><span>Right of 1×, Strata is faster. Geometric mean over the kinds both run; open a row for each kind, green where Strata is faster.</span></div>';
+      h += '<div class="legend vs-legend"><span><i class="vs-dot one"></i>one client: their median time over ChloeDB\'s</span><span><i class="vs-dot sixteen"></i>16 clients: ChloeDB\'s queries a second over theirs</span><span>Right of 1×, ChloeDB is faster. Geometric mean over the kinds both run; open a row for each kind, green where ChloeDB is faster.</span></div>';
       el.innerHTML = h;
       el.querySelectorAll(".chipbtn").forEach(function (btn) { btn.addEventListener("click", function () { cur = btn.getAttribute("data-v"); draw(); }); });
     }
@@ -412,10 +412,10 @@
       if (efs.indexOf(r.ef) < 0) efs.push(r.ef);
       by[r.engine + "|" + r.kind + "|" + r.ef] = r;
     });
-    engines.sort(function (a, b) { return (b === "Strata") - (a === "Strata"); });
+    engines.sort(function (a, b) { return (b === "ChloeDB") - (a === "ChloeDB"); });
     efs.sort(function (a, b) { return a - b; });
     var h = '<div class="table-wrap"><table class="data ef"><thead><tr><th scope="col" rowspan="2">kind</th><th scope="col" rowspan="2" class="num">ef</th>';
-    engines.forEach(function (e) { h += '<th scope="colgroup" colspan="3"' + (e === "Strata" ? ' class="self"' : "") + ">" + esc(e) + "</th>"; });
+    engines.forEach(function (e) { h += '<th scope="colgroup" colspan="3"' + (e === "ChloeDB" ? ' class="self"' : "") + ">" + esc(e) + "</th>"; });
     h += "</tr><tr>";
     engines.forEach(function () { h += '<th scope="col" class="num">recall@10</th><th scope="col" class="num">median, 1 client</th><th scope="col" class="num">q/s, 16 clients</th>'; });
     h += "</tr></thead><tbody>";
@@ -423,7 +423,7 @@
       efs.forEach(function (ef, i) {
         h += "<tr>" + (i === 0 ? '<th scope="rowgroup" rowspan="' + efs.length + '">' + esc(kindName(R["cloud-1m"] || { kinds: [] }, k)) + "</th>" : "") + '<td class="n">' + ef + "</td>";
         engines.forEach(function (e) {
-          var r = by[e + "|" + k + "|" + ef], s = e === "Strata" ? " self" : "";
+          var r = by[e + "|" + k + "|" + ef], s = e === "ChloeDB" ? " self" : "";
           h += r ? '<td class="n' + s + '">' + fmt(r.recall, 3) + '</td><td class="n' + s + '">' + fmt(r.p50) + ' ms</td><td class="n' + s + '">' + fmt(r.qps16) + "</td>" : '<td class="n" colspan="3">–</td>';
         });
         h += "</tr>";
@@ -470,7 +470,7 @@
   function renderVariants(el) {
     var rep = R[el.getAttribute("data-variants")];
     if (!rep || !rep.variants) return pending(el);
-    var h = '<div class="table-wrap"><table class="data"><thead><tr><th scope="col">rule</th><th scope="col">1st</th><th scope="col">2nd</th><th scope="col">3rd</th><th scope="col" class="num">Strata</th></tr></thead><tbody>';
+    var h = '<div class="table-wrap"><table class="data"><thead><tr><th scope="col">rule</th><th scope="col">1st</th><th scope="col">2nd</th><th scope="col">3rd</th><th scope="col" class="num">ChloeDB</th></tr></thead><tbody>';
     rep.variants.forEach(function (v) {
       var pos = 0;
       v.rank.forEach(function (r, i) { if (r[0] === "strata") pos = i + 1; });
@@ -506,7 +506,7 @@
   }
 
   /* ------------------------------------------------------ short ranking */
-  // The top few engines by summed places, and Strata wherever it lands.
+  // The top few engines by summed places, and ChloeDB wherever it lands.
   function renderRankMini(el) {
     var rep = R[el.getAttribute("data-rank-mini")];
     if (!rep) { el.innerHTML = '<p class="rmini-cap">Results pending.</p>'; return; }

@@ -426,7 +426,7 @@ async function browseInfo(i) {
     <span><b>${st.sessions ?? "?"}</b> sessions</span>
     <span>embedder <b>${esc(st.embedder || "?")}</b></span>
     <span class="mono" title="project directory">${esc(cur.project || "project unknown")}</span>
-    <span class="mono" title="Strata file">${esc(i.store)}</span>` + (st.error ? `<span class="err">${esc(st.error)}</span>` : "");
+    <span class="mono" title="ChloeDB file">${esc(i.store)}</span>` + (st.error ? `<span class="err">${esc(st.error)}</span>` : "");
   // The live feed starts at the store's latest records rather than its first.
   S.seq = Math.max(0, (st.last_seq || 0) - 150);
   S.log = Math.max(0, (i.events_bytes || 0) - 20000);
@@ -649,7 +649,7 @@ function toolArg(name, input) {
 
 function emptyChat() {
   $("#log").innerHTML = `<div class="empty">
-    <p><b>Chat with Claude Code in a scratch project.</b> Engram's hooks record each turn into its Strata store; the panels on the right read that store directly.</p>
+    <p><b>Chat with Claude Code in a scratch project.</b> Engram's hooks record each turn into its ChloeDB store; the panels on the right read that store directly.</p>
     <p>Try a few turns that state rules and decisions, then start a new session and ask about them:</p>
     <ul>
       <li><a>We're building a tiny invoicing library. Rule: amounts are integer cents, never floats. The client runs Python 3.8, so no match statements. Create invoice.py with total(items).</a></li>

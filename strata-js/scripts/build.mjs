@@ -3,7 +3,7 @@
 //
 //   node scripts/build.mjs                 # release (link-time optimised)
 //   node scripts/build.mjs --profile ci    # CI's: optimised, built faster
-//   node scripts/build.mjs --features bert # more of Strata's features
+//   node scripts/build.mjs --features bert # more of ChloeDB's features
 //   node scripts/build.mjs --target aarch64-apple-darwin   # for another target
 //   node scripts/build.mjs --if-missing    # only when strata.node is missing (npm install)
 //

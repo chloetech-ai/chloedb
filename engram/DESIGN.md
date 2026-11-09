@@ -1,8 +1,8 @@
-# Engram: automatic long-term context for coding agents, on Strata
+# Engram: automatic long-term context for coding agents, on ChloeDB
 
 Engram gives a coding agent (Claude Code first) a memory that outlives its
 context window. It records every prompt, answer, tool call and compaction
-summary of a project into one Strata file. It brings the relevant pieces
+summary of a project into one ChloeDB file. It brings the relevant pieces
 back at the moments they matter, without the model having to ask, and gives
 the model tools to search its own history when it decides to.
 
@@ -16,7 +16,7 @@ Code then *compacts*: it replaces the history with a summary of about
 - a preference the user stated once, three hours earlier.
 
 A new session starts with only `CLAUDE.md` and the auto-memory index. The
-session that built Strata ran for 32 hours and wrote 43.7 MB of transcript
+session that built ChloeDB ran for 32 hours and wrote 43.7 MB of transcript
 across two compactions; its summaries hold under 0.1% of that text.
 
 Three requirements follow:
@@ -43,10 +43,10 @@ Three requirements follow:
                          ├─ embedder (static Model2Vec, or BGE-small)
                          ├─ recall: hybrid search → priors → gate → pack
                          ├─ session state: live window, injected ids
-                         └─ Strata file: memory.strata (+ WAL)
+                         └─ ChloeDB file: memory.strata (+ WAL)
 ```
 
-Strata holds an exclusive lock on its file, and hooks are short-lived
+ChloeDB holds an exclusive lock on its file, and hooks are short-lived
 processes that run concurrently with the MCP server. So one daemon per
 project owns the database. Hooks and the MCP server are clients over a Unix
 socket.
@@ -59,14 +59,14 @@ socket.
   and reads run on it against a snapshot, any number at once. Every write
   goes to one writer thread, which commits whatever is queued as one
   transaction (one WAL sync) and numbers new records in commit order. A
-  full memtable becomes a segment, and segments merge, on Strata's flusher
+  full memtable becomes a segment, and segments merge, on ChloeDB's flusher
   and merger threads while writes go on. Callers embed on their own
   threads and return once their write is visible, so a session reads its
   own writes. The writer also builds each new version before the write
-  returns (Strata's `publish_snapshots`), including the last memtable
+  returns (ChloeDB's `publish_snapshots`), including the last memtable
   chunk's in-memory segment, so a reader never builds an index or waits for
   one. Chunks hold 256 records and scan their vectors instead of building a
-  graph (Strata's `mem_build` option), so that build stays cheap. In the
+  graph (ChloeDB's `mem_build` option), so that build stays cheap. In the
   cloud container at 1M records, with four prompt clients and a tool hook
   every 10 ms, the daemon answers 146–149 prompts a second at a 56–57 ms
   p99, against 87–112 prompts and 81–120 ms when readers built the segment
@@ -88,7 +88,7 @@ token formats before anything is stored.
 
 ## 3. Data model
 
-One Strata table, `memory`:
+One ChloeDB table, `memory`:
 
 | field | type | meaning |
 |---|---|---|
@@ -245,7 +245,7 @@ There are three push points and one pull path:
 ### Ranking
 
 BM25 and vector search each return their top \(n = 50\) under the exclusion
-filter (two Strata queries on one snapshot). Their scores are min-max
+filter (two ChloeDB queries on one snapshot). Their scores are min-max
 normalised over the union \(C\), with a missing score counting as 0:
 
 \[ \mathrm{rel}(r) = w\,\widehat{\mathrm{bm25}}(r) + (1 - w)\,\widehat{\cos}(r). \]
@@ -294,7 +294,7 @@ differ.
 | `PostToolUse`, `Stop` client | < 10 ms (queued, embedded and committed in the background) |
 | `UserPromptSubmit` | < 100 ms p99 at 1M records (measured on an Apple M2: 24.9 ms p50, 38.6 ms p99 as a hook process, with 1% knowledge records; the knowledge query runs beside the main search; about 10 ms of it is process start) |
 | `SessionStart` | < 150 ms (daemon already up), < 1 s with daemon spawn |
-| background | the writer thread commits queued writes together and builds the new in-memory segment (at most 256 records, no graph) before they return, so no query does; flushes and merges run on Strata's flusher and merger threads, so a write waits for a flush only once the memtable holds twice `flush_docs` before the flush under way ends (`results/writes/`) |
+| background | the writer thread commits queued writes together and builds the new in-memory segment (at most 256 records, no graph) before they return, so no query does; flushes and merges run on ChloeDB's flusher and merger threads, so a write waits for a flush only once the memtable holds twice `flush_docs` before the flush under way ends (`results/writes/`) |
 | ingest | > 1,000 records per second with the static embedder |
 
 The default embedder is static (Model2Vec potion-retrieval-32M: token

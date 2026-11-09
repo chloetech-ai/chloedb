@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>1M passages on a laptop cluster · Strata benchmarks</title>
-<meta name="description" content="Strata and thirteen other engines on a simulated Kubernetes cluster inside one MacBook Air, on 1M BEIR NQ passages: fourteen kinds of query, nDCG@10 from the collection's judgments and recall beside speed, writes, freshness and streams.">
+<title>1M passages on a laptop cluster · ChloeDB benchmarks</title>
+<meta name="description" content="ChloeDB and thirteen other engines on a simulated Kubernetes cluster inside one MacBook Air, on 1M BEIR NQ passages: fourteen kinds of query, nDCG@10 from the collection's judgments and recall beside speed, writes, freshness and streams.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
+<link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
     <a href="scale.html">Laptop to cloud</a>
@@ -32,11 +32,11 @@
     <h1>Fourteen engines on one laptop's cluster</h1>
     <p class="lede">A kind cluster inside Docker Desktop on a MacBook Air, 3 CPUs and 6 GiB per engine. The nodes share four CPUs, so this compares the engines with each other, not with real machines. BEIR NQ's judgments score every answer with nDCG@10.</p>
     <p class="verdict" data-overall="laptop"></p>
-    <p>On this small budget Strata is fastest on 14 of 45 tests, in the top half on 40 and never last, and ties for first on BM25 nDCG@10. It is behind on typo search, SQL aggregates and key lookups. One pass.</p>
+    <p>On this small budget ChloeDB is fastest on 14 of 45 tests, in the top half on 40 and never last, and ties for first on BM25 nDCG@10. It is behind on typo search, SQL aggregates and key lookups. One pass.</p>
     <dl class="atglance">
       <div><dt>Machine</dt><dd>MacBook Air M2, 24 GB; Docker VM with 4 CPUs and 8.7 GiB</dd></div>
       <div><dt>Cluster</dt><dd>kind, 3 workers: data on two, clients on the third</dd></div>
-      <div><dt>Budget</dt><dd>3 CPUs and 6 GiB per engine. Strata: 2 shards of 1 CPU, a 1-CPU coordinator</dd></div>
+      <div><dt>Budget</dt><dd>3 CPUs and 6 GiB per engine. ChloeDB: 2 shards of 1 CPU, a 1-CPU coordinator</dd></div>
       <div><dt>Data</dt><dd>1M BEIR NQ passages, bge-small-en-v1.5 vectors (384 dimensions)</dd></div>
       <div><dt>Queries</dt><dd>300 judged queries per kind at 1, 4 and 16 clients</dd></div>
       <div><dt>Quality</dt><dd>nDCG@10 from NQ's judgments; recall@10 for vectors</dd></div>
@@ -52,7 +52,7 @@
     <div data-rank="laptop"></div>
     <div class="sub">
       <h3>Under other rules</h3>
-      <p>Strata stays first under every rule but one: on only the six kinds every engine runs, Qdrant is ahead by three points.</p>
+      <p>ChloeDB stays first under every rule but one: on only the six kinds every engine runs, Qdrant is ahead by three points.</p>
       <div data-variants="laptop"></div>
     </div>
   </div></section>
@@ -78,7 +78,7 @@
     <div class="block-head">
       <span class="eyebrow">Quality</span>
       <h2>Answers scored against NQ's judgments</h2>
-      <p>With the same analysis and BM25 parameters, eight engines agree within 0.006 (0.305 to 0.311). Meilisearch, Typesense and Postgres rank by rules of their own. On RRF hybrid, Strata is mid-table.</p>
+      <p>With the same analysis and BM25 parameters, eight engines agree within 0.006 (0.305 to 0.311). Meilisearch, Typesense and Postgres rank by rules of their own. On RRF hybrid, ChloeDB is mid-table.</p>
     </div>
     <div data-pick="laptop" data-metric="ndcg" data-title="nDCG@10, higher is better" data-engines="strata,es,solr,vespa,qdrant,milvus,meili,postgres" data-kinds="bm25|bm25 + filter|phrase|typo|vector|hybrid (RRF)|hybrid (weighted)"></div>
   </div></section>
@@ -87,7 +87,7 @@
     <div class="block-head">
       <span class="eyebrow">Writes and streams</span>
       <h2>Writes searchable in under 2 ms</h2>
-      <p>As in the cloud: Strata and Vespa make a write searchable when it returns, the Lucene engines refresh every second, and Strata's stream consumer writes no event twice after a crash.</p>
+      <p>As in the cloud: ChloeDB and Vespa make a write searchable when it returns, the Lucene engines refresh every second, and ChloeDB's stream consumer writes no event twice after a crash.</p>
     </div>
     <div data-writes="laptop"></div>
   </div></section>
@@ -96,7 +96,7 @@
     <div class="block-head">
       <span class="eyebrow">Load and size</span>
       <h2>Shown, not ranked</h2>
-      <p>Strata's shards were built offline, the others loaded over HTTP.</p>
+      <p>ChloeDB's shards were built offline, the others loaded over HTTP.</p>
     </div>
     <div data-load="laptop"></div>
   </div></section>
@@ -116,14 +116,14 @@
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=5344f0f990"></script>
-<script src="assets/site.js?v=6d78382461"></script>
-<script src="assets/bench.js?v=6ebeb97e93"></script>
+<script src="assets/bench-data.js?v=7f52b41b8a"></script>
+<script src="assets/site.js?v=142c29c3e0"></script>
+<script src="assets/bench.js?v=c61344792b"></script>
 </body>
 </html>
