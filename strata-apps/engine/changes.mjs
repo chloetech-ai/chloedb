@@ -132,7 +132,8 @@ export class Changes {
     const seeds = [`app:${appId}`, ...(mine.at(-1) || []).map((k) => `change:${k}`)];
     if (!mine.length) seeds.shift();
     if (!seeds.length) return [];
-    const rows = await this.db.query(`SELECT id, title, score() AS score FROM sa_changes WHERE kind = 'change' ORDER BY ppr(links, :s) DESC LIMIT 30`, { s: seeds });
+    const rows = await this.store.walk(`SELECT id, title, score() AS score FROM sa_changes WHERE kind = 'change' ORDER BY ppr(links, :s) DESC LIMIT 30`, { s: seeds },
+      'sa_changes', 'id, kind, title, links', (w) => w.byScore(w.ppr(seeds), (r) => r.kind === 'change', 30));
     const apps = (k) => others.filter((a) => seqs.get(a).some((ks) => ks.includes(k))).length;
     return rows.map((r) => ({ kind: r.id.slice('change:'.length), title: r.title, score: Number(r.score) }))
       .filter((r) => r.score > 0 && !done.has(r.kind))

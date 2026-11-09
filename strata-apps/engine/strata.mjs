@@ -138,10 +138,39 @@ export function findServerBinary(repoRoot) {
   return null;
 }
 
-// Starts strata-server on `db` and waits until it answers.
-export async function startServer({ bin, db, listen, log }) {
+// Starts strata-server on `db` and waits until it answers. With `shards`
+// (or $STRATA_APPS_TEST_SHARDS, for the tests), a cluster instead: that many
+// shard servers next to `db` and a coordinator over them on `listen`, as the
+// engine finds it beside a cluster; `child.kill()` stops them all.
+export async function startServer({ bin, db, listen, log, shards = Number(process.env.STRATA_APPS_TEST_SHARDS) || 0 }) {
+  if (shards > 0) return startCluster({ bin, db, listen, log, shards });
+  return startOne({ bin, args: ['--db', db, '--seq-no', '--listen', listen, '--grpc', 'off'], listen, log, db });
+}
+
+async function startCluster({ bin, db, listen, log, shards }) {
+  const port = Number(listen.split(':').pop());
+  const kids = [];
+  const stop = () => { for (const k of kids) k.kill(); };
+  try {
+    const grpcs = [];
+    for (let i = 0; i < shards; i++) {
+      const http = `127.0.0.1:${port + 1 + 2 * i}`;
+      const grpc = `127.0.0.1:${port + 2 + 2 * i}`;
+      const { child } = await startOne({ bin, args: ['--db', `${db}.shard-${i}`, '--seq-no', '--listen', http, '--grpc', grpc], listen: http, log, db });
+      kids.push(child);
+      grpcs.push(`http://${grpc}`);
+    }
+    const { child, client } = await startOne({ bin, args: ['--shards', grpcs.join(','), '--listen', listen, '--grpc', 'off'], listen, log, db });
+    kids.push(child);
+    return { child: { kill: stop, on: (ev, fn) => child.on(ev, fn) }, client };
+  } catch (e) {
+    stop();
+    throw e;
+  }
+}
+
+async function startOne({ bin, args, listen, log, db }) {
   mkdirSync(path.dirname(db), { recursive: true });
-  const args = ['--db', db, '--seq-no', '--listen', listen, '--grpc', 'off'];
   log(`starting ${bin} ${args.join(' ')}`);
   const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const tail = [];

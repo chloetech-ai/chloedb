@@ -5,6 +5,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { GRAPH_SQL, appDocs, capDoc, appNode, parseLinks } from './graph.mjs';
+import { Walker, isWalkRefused } from './walk.mjs';
 
 // Column types, the embedding model and a column's SQL live in types.mjs
 // (source.mjs writes tables as CREATE TABLE with them too).
@@ -111,6 +112,10 @@ const canon = (v) => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'objec
   ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
 const sameScreenJson = (a, b) => { try { return sameScreen(JSON.parse(a), JSON.parse(b)); } catch { return false; } };
 const sameJson = (a, b) => { try { return JSON.stringify(canon(JSON.parse(a))) === JSON.stringify(canon(JSON.parse(b))); } catch { return false; } };
+
+const GRAPH_COLS = 'id, kind, app, slug, title, description, live, version, links';
+// A node as the graph's REACHABLE queries above select it.
+const nodeRow = ({ id, kind, app, slug, title, hops }) => ({ id, kind, app, slug, title, hops });
 
 export class Store {
   constructor(strata, log = () => {}) {
@@ -522,6 +527,32 @@ export class Store {
     const ops = [...docs.map((doc) => ({ op: 'upsert', table: 'sa_graph', doc })), ...deletes.map((key) => ({ op: 'delete', table: 'sa_graph', key }))];
     if (!ops.length) return;
     try { await this.db.write(ops); } catch (e) { this.log(`graph: ${e.message}`); }
+    this.walkers?.delete('sa_graph');
+  }
+
+  // A graph query, run by Strata; or, on a cluster, whose coordinator
+  // refuses graph queries, answered by `here(walker)` from the table's
+  // nodes, which the engine reads and walks itself (walk.mjs).
+  async walk(sql, params, table, cols, here) {
+    if (!this.walkHere) {
+      try { return await this.db.query(sql, params); } catch (e) {
+        if (!isWalkRefused(e)) throw e;
+        this.walkHere = true;
+        this.log('graph: this Strata is a coordinator over shards, which walks no graphs; the engine walks them itself');
+      }
+    }
+    return here(await this.walker(table, cols));
+  }
+
+  // A table's nodes, read again after a write of the graph, or 5 s on.
+  async walker(table, cols) {
+    this.walkers ||= new Map();
+    const had = this.walkers.get(table);
+    if (had && Date.now() - had.at < 5000) return had.walker;
+    const rows = await this.db.query(`SELECT ${cols} FROM ${table} LIMIT 10000`);
+    const walker = new Walker(rows);
+    this.walkers.set(table, { at: Date.now(), walker });
+    return walker;
   }
 
   // An app's nodes follow the version that is live: written again whenever
@@ -557,7 +588,8 @@ export class Store {
   async graph({ app } = {}) {
     const cols = 'id, kind, app, slug, title, description, live, version, links';
     const rows = app
-      ? await this.db.query(`SELECT ${cols}, hops() AS hops FROM sa_graph WHERE REACHABLE(links, :n, hops => 6, min_hops => 0) ORDER BY hops() LIMIT 2000`, { n: appNode(app) })
+      ? await this.walk(`SELECT ${cols}, hops() AS hops FROM sa_graph WHERE REACHABLE(links, :n, hops => 6, min_hops => 0) ORDER BY hops() LIMIT 2000`, { n: appNode(app) },
+        'sa_graph', GRAPH_COLS, (w) => w.rowsByHops(w.reachable([appNode(app)], { hops: 6, minHops: 0 })))
       : await this.db.query(`SELECT ${cols} FROM sa_graph LIMIT 5000`);
     return rows.map((r) => ({ ...r, version: Number(r.version) || 0, links: parseLinks(r.links) }));
   }
@@ -566,8 +598,9 @@ export class Store {
   // functions and pieces that use it, and the apps they belong to, nearest
   // first. A view that only opens another does not depend on its pieces.
   async dependents(id, { hops = 8 } = {}) {
-    return this.db.query(`SELECT id, kind, app, slug, title, hops() AS hops FROM sa_graph
-      WHERE REACHABLE(links, :n, hops => ${Number(hops)}, dir => 'in', label => 'uses,has,calls') ORDER BY hops(), id LIMIT 2000`, { n: id });
+    return this.walk(`SELECT id, kind, app, slug, title, hops() AS hops FROM sa_graph
+      WHERE REACHABLE(links, :n, hops => ${Number(hops)}, dir => 'in', label => 'uses,has,calls') ORDER BY hops(), id LIMIT 2000`, { n: id },
+      'sa_graph', GRAPH_COLS, (w) => w.rowsByHops(w.reachable([id], { hops: Number(hops), dir: 'in', label: 'uses,has,calls' })).map(nodeRow));
   }
 
   // The nodes a walk from some nodes reaches along edges with these labels
@@ -577,15 +610,19 @@ export class Store {
     const ids = [...new Set(seeds.filter(Boolean))];
     if (!ids.length) return [];
     const labels = String(label).split(',').map((l) => l.trim()).filter((l) => /^[a-z]+$/.test(l)).join(',');
-    const rows = await this.db.query(`SELECT id, kind, app, slug, title, live, links, hops() AS hops FROM sa_graph
-      WHERE REACHABLE(links, :s, hops => ${Math.max(1, Math.min(8, Number(hops) || 1))}, dir => '${dir === 'out' ? 'out' : 'in'}'${labels ? `, label => '${labels}'` : ''}) ORDER BY hops(), id LIMIT 2000`, { s: ids });
+    const h = Math.max(1, Math.min(8, Number(hops) || 1));
+    const way = dir === 'out' ? 'out' : 'in';
+    const rows = await this.walk(`SELECT id, kind, app, slug, title, live, links, hops() AS hops FROM sa_graph
+      WHERE REACHABLE(links, :s, hops => ${h}, dir => '${way}'${labels ? `, label => '${labels}'` : ''}) ORDER BY hops(), id LIMIT 2000`, { s: ids },
+      'sa_graph', GRAPH_COLS, (w) => w.rowsByHops(w.reachable(ids, { hops: h, dir: way, label: labels })));
     return rows.map((r) => ({ ...r, hops: Number(r.hops) || 0, links: parseLinks(r.links) }));
   }
 
   // What a node needs: the pieces, tables and functions it reaches.
   async needs(id, { hops = 8 } = {}) {
-    return this.db.query(`SELECT id, kind, app, slug, title, hops() AS hops FROM sa_graph
-      WHERE REACHABLE(links, :n, hops => ${Number(hops)}, label => 'has,uses,data,calls,on') ORDER BY hops(), id LIMIT 2000`, { n: id });
+    return this.walk(`SELECT id, kind, app, slug, title, hops() AS hops FROM sa_graph
+      WHERE REACHABLE(links, :n, hops => ${Number(hops)}, label => 'has,uses,data,calls,on') ORDER BY hops(), id LIMIT 2000`, { n: id },
+      'sa_graph', GRAPH_COLS, (w) => w.rowsByHops(w.reachable([id], { hops: Number(hops), label: 'has,uses,data,calls,on' })).map(nodeRow));
   }
 
   // Shared pieces near some nodes, by personalized PageRank over every
@@ -599,8 +636,9 @@ export class Store {
     kinds.forEach((k, i) => { params[`k${i}`] = k; });
     let rows;
     try {
-      rows = await this.db.query(`SELECT id, kind, slug, title, score() AS score FROM sa_graph WHERE kind IN (${kinds.map((k, i) => `:k${i}`).join(', ')})
-        ORDER BY ppr(links, :s) DESC LIMIT ${Number(limit) + skip.size}`, params);
+      rows = await this.walk(`SELECT id, kind, slug, title, score() AS score FROM sa_graph WHERE kind IN (${kinds.map((k, i) => `:k${i}`).join(', ')})
+        ORDER BY ppr(links, :s) DESC LIMIT ${Number(limit) + skip.size}`, params,
+        'sa_graph', GRAPH_COLS, (w) => w.byScore(w.ppr(ids), (r) => kinds.includes(r.kind), Number(limit) + skip.size).map(({ id, kind, slug, title, score }) => ({ id, kind, slug, title, score })));
     } catch (e) { this.log(`graph: ${e.message}`); return []; }
     return rows.filter((r) => !skip.has(r.id) && Number(r.score) > 0).slice(0, limit).map((r) => ({ ...r, score: Number(r.score) }));
   }
