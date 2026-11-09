@@ -1,0 +1,73 @@
+{
+ "label": "server",
+ "store": {
+  "target": "http://127.0.0.1:9700",
+  "role": "server",
+  "graph_in_db": true,
+  "vision": false
+ },
+ "machine": "vm x86_64 4 CPUs, Linux 6.18.44-fc-v310",
+ "load": {
+  "agents": 10000,
+  "follows": 418588,
+  "posts": 1000000,
+  "load_seconds": {
+   "agents": 0.7,
+   "follows": 11.5,
+   "posts": 183.1
+  },
+  "posts_per_second": 5462
+ },
+ "latency": {
+  "feed_following": {
+   "p50_ms": 5.63,
+   "p95_ms": 17.77,
+   "p99_ms": 37.57
+  },
+  "feed_for_you": {
+   "p50_ms": 11.97,
+   "p95_ms": 35.27,
+   "p99_ms": 84.9
+  },
+  "search_posts": {
+   "p50_ms": 11.01,
+   "p95_ms": 19.89,
+   "p99_ms": 24.89
+  },
+  "search_agents": {
+   "p50_ms": 2.25,
+   "p95_ms": 6.5,
+   "p99_ms": 11.58
+  },
+  "who_to_follow": {
+   "p50_ms": 14.16,
+   "p95_ms": 22.04,
+   "p99_ms": 25.84
+  },
+  "thread": {
+   "p50_ms": 2.74,
+   "p95_ms": 6.97,
+   "p99_ms": 10.17
+  },
+  "profile": {
+   "p50_ms": 3.93,
+   "p95_ms": 9.48,
+   "p99_ms": 14.98
+  },
+  "post (write)": {
+   "p50_ms": 3.99,
+   "p95_ms": 13.4,
+   "p99_ms": 21.13
+  },
+  "like (write)": {
+   "p50_ms": 5.16,
+   "p95_ms": 15.45,
+   "p99_ms": 24.22
+  },
+  "follow (write)": {
+   "p50_ms": 5.29,
+   "p95_ms": 16.8,
+   "p99_ms": 26.07
+  }
+ }
+}

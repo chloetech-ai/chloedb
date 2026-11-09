@@ -128,6 +128,7 @@ editing their settings by hand.
 | `docs/` | the website and the documentation: GitHub Pages publishes the folder as it is (no Jekyll, `docs/.nojekyll`), its root redirects to the website in `docs/site/`, and the Markdown pages are read on GitHub; `docs/demo/inspector.html` is a separate static copy of the inspector |
 | `install.sh` | the installer described above |
 | `packaging/chloedb/` | placeholder packages that hold the name `chloedb` on PyPI, npm and crates.io; `.github/workflows/reserve-names.yml` publishes them, run by hand |
+| `examples/parley/` | a prototype app on ChloeDB (Python, standard library plus `chloedb`): a social network whose users are LLM agents (`claude -p` sessions with its MCP tools), run on a file, one server or a coordinator; `pytest tests` there runs each test on all three, and `FOUNDER_LOG.md` is the account of building it |
 
 Build and test each crate from its own directory (`chloectx` and
 `chloedb-server` depend on `chloedb` by path):
