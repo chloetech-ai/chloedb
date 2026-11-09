@@ -522,10 +522,10 @@ impl LogStore {
             opts,
         });
         let w = Arc::downgrade(&store);
-        let writer = std::thread::Builder::new().name("strata-log-writer".into()).spawn(move || write_loop(w, last)).map_err(|e| format!("log store: {e}"))?;
+        let writer = std::thread::Builder::new().name("chloedb-log-writer".into()).spawn(move || write_loop(w, last)).map_err(|e| format!("log store: {e}"))?;
         *lock(&store.writer) = Some(writer);
         let m = Arc::downgrade(&store);
-        std::thread::Builder::new().name("strata-log-maintenance".into()).spawn(move || maintain_loop(m)).map_err(|e| format!("log store: {e}"))?;
+        std::thread::Builder::new().name("chloedb-log-maintenance".into()).spawn(move || maintain_loop(m)).map_err(|e| format!("log store: {e}"))?;
         Ok(store)
     }
 

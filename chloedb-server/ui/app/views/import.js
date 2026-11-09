@@ -411,7 +411,7 @@ function render(page) {
         if (!idx) q.set("indexes", "false");
         const r = await api("/v1/export" + (q.toString() ? "?" + q : ""), { blob: true });
         const b = await r.blob();
-        download(b, "strata-export.sqlite");
+        download(b, "chloedb-export.sqlite");
         toast(`Exported ${fmt.bytes(b.size)}`, "ok");
       } catch (e) { failed(e.message, "bad", 8000); }
       go.disabled = false;
@@ -489,7 +489,7 @@ function render(page) {
         const j = await api("/v1/sources");
         clear(list, j.sources?.length ? h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "source"), h("th", { class: "num" }, "last offset"), h("th", {}, "written"))),
           h("tbody", {}, j.sources.map((x) => h("tr", {}, h("td", { class: "mono" }, x.name), h("td", { class: "num" }, fmt.n(x.offset)), h("td", { class: "small dim" }, x.updated ? fmt.ago(Date.parse(x.updated)) : "–")))))
-          : h("div", { class: "small muted" }, "No stream has written here yet. A Kafka consumer (Python: strata.kafka) or POST /v1/stream names its source and offset, and resumes from the offset kept here."));
+          : h("div", { class: "small muted" }, "No stream has written here yet. A Kafka consumer (Python: chloedb.ingest.kafka) or POST /v1/stream names its source and offset, and resumes from the offset kept here."));
       } catch (e) { clear(list, failure(e, "The sources")); }
     }
     stopSources = every(5000, refresh);

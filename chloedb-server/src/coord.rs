@@ -3283,7 +3283,7 @@ impl Coordinator {
             Ok(r) => r?.into_inner(),
         };
         if a.folded {
-            let file = if a.kind == crate::profiling::Kind::Heap { "strata-heap.folded" } else { "strata-cpu.folded" };
+            let file = if a.kind == crate::profiling::Kind::Heap { "chloedb-heap.folded" } else { "chloedb-cpu.folded" };
             return Ok(Answer::Folded(file, String::from_utf8_lossy(&answered.body).into_owned()));
         }
         let mut j: Json = serde_json::from_slice(&answered.body).map_err(|e| ApiError { status: 502, message: format!("{node} answered a profile that is not JSON: {e}") })?;

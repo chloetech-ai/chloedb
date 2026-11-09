@@ -155,7 +155,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         let n = std::thread::available_parallelism().map_or(4, |n| n.get());
-        tokio::runtime::Builder::new_multi_thread().worker_threads(n).thread_name("strata-datafusion").enable_all().build().expect("a tokio runtime for DataFusion")
+        tokio::runtime::Builder::new_multi_thread().worker_threads(n).thread_name("chloedb-datafusion").enable_all().build().expect("a tokio runtime for DataFusion")
     })
 }
 

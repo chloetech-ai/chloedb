@@ -334,7 +334,7 @@ impl Bucket {
             p => format!("{p}/"),
         };
         let s3 = store(url, &bucket)?;
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("strata-s3").enable_all().build()?;
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("chloedb-s3").enable_all().build()?;
         Ok(Bucket { url: format!("s3://{bucket}/{prefix}"), prefix, s3, rt: Some(rt) })
     }
 

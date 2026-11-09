@@ -556,7 +556,7 @@ function render(page, route) {
 
   function download(r) {
     const blob = new Blob([JSON.stringify(r, null, 2)], { type: "application/json" });
-    const a = h("a", { href: URL.createObjectURL(blob), download: `strata-simulator-${r.id}.json` });
+    const a = h("a", { href: URL.createObjectURL(blob), download: `chloedb-simulator-${r.id}.json` });
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }

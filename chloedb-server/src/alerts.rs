@@ -2485,7 +2485,7 @@ impl Alerts {
             "resolved" => {
                 let after = e.fired_ms.map(|f| format!(" after {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
                 let why = e.why.as_ref().map(|w| format!(" ({w}{})", e.by.as_ref().map(|b| format!(" by {b}")).unwrap_or_default())).unwrap_or_default();
-                format!("[strata RESOLVED {}] {} on {}{place}: {value}{after}{why}.", e.severity, e.name, id.name)
+                format!("[chloedb RESOLVED {}] {} on {}{place}: {value}{after}{why}.", e.severity, e.name, id.name)
             }
             state if flag => {
                 let how = match e.eval.as_str() {
@@ -2493,9 +2493,9 @@ impl Alerts {
                     "max" | "min" => format!("a point in {window}"),
                     ev => format!("{ev} over {window}"),
                 };
-                format!("[strata {} {}] {} on {}{place}: {value} ({how}).", state.to_uppercase(), e.severity, e.name, id.name)
+                format!("[chloedb {} {}] {} on {}{place}: {value} ({how}).", state.to_uppercase(), e.severity, e.name, id.name)
             }
-            state => format!("[strata {} {}] {} on {}{place}: {value} ({} {}, {} over {window}).", state.to_uppercase(), e.severity, e.name, id.name, e.op, number(e.threshold), e.eval),
+            state => format!("[chloedb {} {}] {} on {}{place}: {value} ({} {}, {} over {window}).", state.to_uppercase(), e.severity, e.name, id.name, e.op, number(e.threshold), e.eval),
         };
         if e.state == "firing" && !e.description.is_empty() {
             text.push(' ');
@@ -2638,7 +2638,7 @@ impl Alerts {
     pub async fn test_route(&self, name: &str, by: &str) -> Result<Json, ApiError> {
         let r = self.routes().into_iter().find(|r| r.name == name).ok_or_else(|| ApiError { status: 404, message: format!("no route {name}") })?;
         let id = self.identity();
-        let text = format!("[strata TEST] A test of route {} on {}, sent by {by}.{}", r.name, id.name, id.public_url.map(|u| format!(" {u}/#/alerts")).unwrap_or_default());
+        let text = format!("[chloedb TEST] A test of route {} on {}, sent by {by}.{}", r.name, id.name, id.public_url.map(|u| format!(" {u}/#/alerts")).unwrap_or_default());
         let t0 = std::time::Instant::now();
         let key = format!("strata/{}/test/{}", id.name, now_ms());
         // PagerDuty and Opsgenie: an info alert that is closed at once.
@@ -3853,7 +3853,7 @@ mod tests {
         let resolved = a.check_cluster(&snap("ok"), 30_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
         assert_eq!((resolved.state, resolved.where_.clone()), ("resolved", vec!["a".to_string(), "b".to_string()]), "named from their URLs");
         assert_eq!(resolved.fired_ms, Some(1_000));
-        assert!(a.message(&resolved).starts_with("[strata RESOLVED warning] Disk almost full on prod/a,b: "), "{}", a.message(&resolved));
+        assert!(a.message(&resolved).starts_with("[chloedb RESOLVED warning] Disk almost full on prod/a,b: "), "{}", a.message(&resolved));
         assert!(event_of(&resolved).title.starts_with("Disk almost full resolved on a, b after 29 s"), "{}", event_of(&resolved).title);
         // One copy: the copy and its shard.
         let one = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", "firing")]}, {"shard": 1, "replicas": [copy("http://b", "ok")]}]});
@@ -3902,11 +3902,11 @@ mod tests {
         let e = Event::of(&r, "firing", &st, 10);
         assert_eq!(
             a.message(&e),
-            "[strata FIRING warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 (> 0.9, mean over 5 min). Under 10% of the copy's disk is left. Runbook: https://wiki/disk https://cc.example/#/alert/disk-full"
+            "[chloedb FIRING warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 (> 0.9, mean over 5 min). Under 10% of the copy's disk is left. Runbook: https://wiki/disk https://cc.example/#/alert/disk-full"
         );
         let mut r2 = Event::of(&r, "resolved", &st, 600_010);
         (r2.fired_ms, r2.why, r2.by) = (Some(10), Some("the rule was deleted".into()), Some("ana".into()));
-        assert_eq!(a.message(&r2), "[strata RESOLVED warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 after 10 min (the rule was deleted by ana). Runbook: https://wiki/disk https://cc.example/#/alert/disk-full");
+        assert_eq!(a.message(&r2), "[chloedb RESOLVED warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 after 10 min (the rule was deleted by ana). Runbook: https://wiki/disk https://cc.example/#/alert/disk-full");
     }
 
     fn peer(url: &str, this: bool, seen: u64) -> crate::peers::Peer {

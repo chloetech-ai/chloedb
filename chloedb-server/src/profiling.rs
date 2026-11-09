@@ -144,7 +144,7 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             let (p, _) = profiler::take(hz, seconds, &mut load.during).await.map_err(refused)?;
             tracing::info!(seconds = p.seconds, hz, samples = p.samples, query = load.runs.is_some(), "CPU profile taken");
             if a.folded {
-                return Ok(Answer::Folded("strata-cpu.folded", p.folded()));
+                return Ok(Answer::Folded("chloedb-cpu.folded", p.folded()));
             }
             let mut j = json!(p);
             j["cores"] = json!(p.cores());
@@ -165,7 +165,7 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             let (p, _) = heap::take(every, seconds, &mut load.during).await.map_err(refused)?;
             tracing::info!(seconds = p.seconds, every, samples = p.samples, query = load.runs.is_some(), "allocation profile taken");
             if a.folded {
-                return Ok(Answer::Folded("strata-heap.folded", p.folded(a.in_use)));
+                return Ok(Answer::Folded("chloedb-heap.folded", p.folded(a.in_use)));
             }
             let mut j = json!(p);
             if let Some(r) = load.runs() {

@@ -622,7 +622,7 @@ function render(page, r) {
     if (!kinds.some(([k]) => k === kind)) kind = kinds[0][0];
     clear(outTabs, kinds.map(([k, l]) => h("button", { role: "tab", "aria-selected": String(k === kind), onclick: () => show(k) }, l)));
     clear(status, explain ? h("span", { class: "small" }, h("b", {}, j.kind), " · ", fmt.ms(j.took_ms), " · ", fmt.plural(j.rows, "row")) : j.local ? h("span", { class: "small muted", title: "SHOW and DESCRIBE are answered in the browser from GET /v1/tables" }, h("b", {}, fmt.plural(j.rows.length, "row")), " · from the catalog") : [answerStats(j), j.nodes?.length ? serversLine(j.nodes) : null],
-      j.rows?.length ? h("span", { class: "row nw", style: { gap: "2px" } }, exportMenu(j, "strata-query")) : null);
+      j.rows?.length ? h("span", { class: "row nw", style: { gap: "2px" } }, exportMenu(j, "chloedb-query")) : null);
     if (kind === "results" && (j.written != null || last.p?.write)) clear(outBody, written(j, last));
     else if (kind === "results") clear(outBody, grid(j));
     else if (kind === "chart") clear(outBody, h("div", { style: { padding: "12px 14px" } }, resultChart(j)));

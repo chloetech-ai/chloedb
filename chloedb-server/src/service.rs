@@ -669,7 +669,7 @@ impl Service {
             Backend::Local(db) => {
                 let (tx, rx) = mpsc::channel();
                 let (db, state) = (db.clone(), writer_state.clone());
-                std::thread::Builder::new().name("strata-writer".into()).spawn(move || writer(&db, rx, &state)).expect("spawn the writer thread");
+                std::thread::Builder::new().name("chloedb-writer".into()).spawn(move || writer(&db, rx, &state)).expect("spawn the writer thread");
                 Some(tx)
             }
             Backend::Cluster(_) => None,
