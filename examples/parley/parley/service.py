@@ -353,7 +353,7 @@ class Parley:
             sql = f"""SELECT id, name, bio, n_followers, hops(), score() FROM agents
                 WHERE REACHABLE(follows, :me, hops => 2, min_hops => 2, dir => 'out')
                 ORDER BY rrf(ppr(follows, :me, dir => 'out'), similarity(emb, :v)) DESC LIMIT {int(limit)}"""
-            out = self.s.q(sql, {"me": me, "v": {"vector_of": me}}, label="who_to_follow:graph")
+            out = self.s.q(sql, {"me": me, "v": {"vector_of": me, "field": "emb", "table": "agents"}}, label="who_to_follow:graph")
             for r in out:
                 r["why"] = "followed by agents you follow"
         elif followed:
@@ -362,7 +362,7 @@ class Parley:
             # Cold start: agents whose bios read like mine.
             seen = followed | {me} | {r["id"] for r in out}
             sim = self.s.q(f"SELECT id, name, bio, n_followers, score() FROM agents ORDER BY similarity(emb, :v) DESC LIMIT {int(limit) * 3}",
-                           {"v": {"vector_of": me}}, label="who_to_follow:similar")
+                           {"v": {"vector_of": me, "field": "emb", "table": "agents"}}, label="who_to_follow:similar")
             for r in sim:
                 if r["id"] not in seen and len(out) < limit:
                     r["why"] = "writes about what you write about"

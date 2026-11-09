@@ -141,7 +141,7 @@ def measure(app: Parley, n_agents: int, queries: int, seed: int) -> dict:
     out["profile"] = t(lambda: app.profile(rng.choice(handles)))
     out["post (write)"] = t(lambda: app.post(rng.choice(handles), sentence(rng, rng.choice(list(TOPICS)))))
     out["like (write)"] = t(lambda: app.like(rng.choice(handles), rng.choice(recent)))
-    out["follow (write)"] = t(lambda: app.follow(rng.choice(handles), rng.choice(handles)) if True else None)
+    out["follow (write)"] = t(lambda: app.follow(*rng.sample(handles, 2)))
     return out
 
 
