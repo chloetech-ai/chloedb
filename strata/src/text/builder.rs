@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::analyzer::{for_each_word, Analyzer};
 use super::codec::{encode_norm, get_varint, put_varint};
-use super::cursor::write_positions;
+use super::cursor::{write_packed_positions, write_positions};
 use super::dict::DictBuilder;
 use super::postings::{write_bp128, write_loom, ListSizes, PostingsFormat, LOOM_MIN_DF};
 use crate::error::{Error, Result};
@@ -37,6 +37,12 @@ pub struct TextMeta {
     pub n_postings: u64,
     /// Whether positions are stored (`n_positions` = `total_len` then).
     pub positions: bool,
+    /// Whether they are in the packed layout, in `text.<field>.ppos`
+    /// ([`super::cursor::write_packed_positions`]), rather than as varints
+    /// in `text.<field>.pos`. A version that does not know it finds no
+    /// `pos` section and refuses the field rather than misread it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub packed_positions: bool,
     /// Bytes of the postings section by part (docIDs, frequencies, list
     /// metadata), for size breakdowns.
     pub doc_bytes: u64,
@@ -61,10 +67,12 @@ struct Packed {
     lists: Vec<(usize, u32)>,
 }
 
-/// Builds `text.<field>.{meta,dict,post,pos,norms}`.
+/// Builds `text.<field>.{meta,dict,post,pos,norms}` (`ppos` for packed
+/// positions).
 pub struct TextFieldBuilder {
     field: String,
     positions: bool,
+    packed_positions: bool,
     format: PostingsFormat,
     loom_min_df: u32,
     analyzer: Analyzer,
@@ -89,6 +97,7 @@ impl TextFieldBuilder {
         TextFieldBuilder {
             field: field.to_string(),
             positions,
+            packed_positions: false,
             format,
             loom_min_df,
             analyzer: Analyzer::English,
@@ -102,6 +111,13 @@ impl TextFieldBuilder {
             scratch: Vec::new(),
             sealed: false,
         }
+    }
+
+    /// Writes positions in the packed layout if `packed`
+    /// ([`super::cursor::write_packed_positions`]).
+    pub fn with_packed_positions(mut self, packed: bool) -> Self {
+        self.packed_positions = packed;
+        self
     }
 
     /// Analyses text with `analyzer` (`english` unless set).
@@ -384,7 +400,9 @@ fn write_runs(runs: &[&TextFieldBuilder], format: PostingsFormat, loom_min_df: u
             let start = e.post.len();
             e.sizes += if loom { write_loom(&mut e.post, d, f, norms) } else { write_bp128(&mut e.post, d, f, norms) };
             let pos_start = e.pos.len();
-            if b0.positions {
+            if b0.positions && b0.packed_positions {
+                write_packed_positions(&mut e.pos, f, p);
+            } else if b0.positions {
                 write_positions(&mut e.pos, f, p);
             }
             e.lists.push((start, e.pos.len() - pos_start, df[i]));
@@ -426,6 +444,7 @@ fn write_runs(runs: &[&TextFieldBuilder], format: PostingsFormat, loom_min_df: u
         n_terms: terms.len() as u32,
         n_postings,
         positions: b0.positions,
+        packed_positions: b0.positions && b0.packed_positions,
         doc_bytes: sizes.docs as u64,
         freq_bytes: sizes.freqs as u64,
         list_meta_bytes: sizes.meta as u64,
@@ -435,7 +454,7 @@ fn write_runs(runs: &[&TextFieldBuilder], format: PostingsFormat, loom_min_df: u
     out.put(section(f, "dict"), dict.finish());
     out.put(section(f, "post"), post);
     if b0.positions {
-        out.put(section(f, "pos"), pos);
+        out.put(section(f, if b0.packed_positions { "ppos" } else { "pos" }), pos);
     }
     out.put(section(f, "norms"), norms.to_vec());
     Ok(())
@@ -471,6 +490,17 @@ impl FieldIndexBuilder for TextFieldBuilder {
     fn finish(mut self: Box<Self>, out: &mut SegmentWriter) -> Result<()> {
         self.seal();
         self.write(out)
+    }
+}
+
+/// The positions layout of build options `text.positions`: `packed`
+/// (true) or `varint` (false, the default). A segment build sets it from
+/// its table ([`crate::schema::Schema::packed_positions`]).
+pub fn packed_positions(opts: &crate::segment::build::BuildOptions) -> Result<bool> {
+    match opts.get_or("text.positions", "varint") {
+        "varint" => Ok(false),
+        "packed" => Ok(true),
+        other => Err(Error::Schema(format!("text.positions: unknown layout {other:?} (varint or packed)"))),
     }
 }
 

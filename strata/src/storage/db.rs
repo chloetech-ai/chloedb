@@ -24,12 +24,15 @@
 //!   version's snapshot before its commit returns, while readers take
 //!   snapshots, and readers only clone the published one: they never build
 //!   a memtable segment or wait for one to be built.
+//! * Other processes can read the database while one writes it: they open
+//!   it with [`DbOptions::read_only`], and see its commits as they are made
+//!   ([`crate::storage::share`] has the locks and pins that make it safe).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ops::Range;
 use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, TryLockError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -41,17 +44,20 @@ use crate::schema::{Alter, FieldType, Schema};
 use crate::sid::{Codebook, Ties};
 use crate::segment::build::{build_segment, build_threads, BuildOptions, GraphStart, SegmentBuild};
 use crate::segment::{DocId, SegmentFile, SegmentWriter, Spill};
+use crate::storage::cold::{Cold, ColdOptions, ColdStats};
 use crate::storage::freelist::FreeList;
 use crate::storage::io;
 use crate::storage::dir::{self, Current};
 use crate::storage::live::LiveDocs;
 use crate::storage::lock;
-use crate::storage::manifest::{sources_schema, Manifest, Numbering, RankProfile, SegmentMeta, SeqNo, TableMeta, SOURCES, SOURCES_ID};
+use crate::storage::manifest::{is_system, system_id, system_schema, Manifest, Numbering, RankProfile, SegmentMeta, SeqNo, TableMeta, FUNCTIONS_ID, SOURCES, SOURCES_ID, SYSTEM_IDS};
 use crate::storage::merge::{memory_limit, merge_memory, MergeEntry, MERGE_BATCH_BYTES, MERGE_BATCH_DOCS, MergePolicy, MergeRecord, MergeStats, MergeStatus, MergerOptions, Pacer, SegmentInfo};
 use crate::storage::pager::{self, Extent, Meta, META_PAGES, PAGE};
 use crate::postings::bytes::OwnedBytes;
 use crate::storage::snapshot::{build_memseg, next_mem_id, Pins, SegmentView, Snapshot};
+use crate::storage::reader::Reader;
 use crate::storage::rowseq::{self, Seqs};
+use crate::storage::share::{self, lock_exclusive, ReaderInfo, ReaderPin, Session, WriterLock};
 use crate::storage::state::{mem_seq, Check, Chunk, Key, Loc, SegHandle, State, TableState};
 use crate::storage::updates::{Updates, SEQ};
 use crate::storage::ship::{Applied, LogRead, ShipLog, Shipped};
@@ -79,9 +85,15 @@ pub struct DbOptions {
     /// Flush when the memtable's documents plus pending deletes exceed this.
     pub memtable_max_docs: usize,
     /// Documents per memtable chunk (rounded up to a multiple of 64). Each
-    /// chunk is one in-memory segment of a snapshot; the first snapshot
-    /// after a write rebuilds only the last chunk's.
+    /// full chunk is one in-memory segment of a snapshot, built once.
     pub memtable_chunk_docs: usize,
+    /// The last chunk, which every write changes, is built in pieces of
+    /// this many documents (rounded up to a multiple of 64), a segment
+    /// each: the first query after a write rebuilds only the last piece,
+    /// whose cost grows with its rows (a text field's analysis above all),
+    /// and takes the others as they were. 0, or `memtable_chunk_docs` or
+    /// more: the last chunk is one piece.
+    pub memtable_tail_docs: usize,
     /// Largest segment written by flushes and bulk loads.
     pub segment_max_docs: usize,
     /// `fsync` at every commit. Without it a process crash still loses
@@ -163,6 +175,29 @@ pub struct DbOptions {
     /// however long this is. 0: a write fails at once, as strata-server
     /// wants (its writer retries until each request's deadline).
     pub write_wait: Duration,
+    /// Keep segments on object storage, read through a local cache
+    /// ([`crate::storage::cold`]; directory layout only). A database with
+    /// cold segments opens only with it, and not read-only
+    /// ([`DbOptions::read_only`]): the cache files are the writer's.
+    pub cold: Option<ColdOptions>,
+    /// Open the database to read it while another process writes it (or
+    /// none does): any number of processes can, beside the one writer. It
+    /// never changes the database's files, and its writes fail. Its
+    /// snapshots see each commit the writer had made when they were taken
+    /// ([`DbOptions::refresh_interval`]); a thread of its own follows the
+    /// writer once a second when no snapshot does, so that the pages of
+    /// versions it no longer reads go back to the writer. Readers and
+    /// writers must be on one machine (a local file system, where `flock`
+    /// and the page cache are shared), and of a version of Strata that
+    /// knows read-only opens: an older one takes the file for itself and
+    /// is refused while readers have it ([`crate::storage::share`]).
+    pub read_only: bool,
+    /// How long a read-only database's snapshots go without looking for new
+    /// commits after one looked: 0 (the default) looks before every
+    /// snapshot, a few system calls; more saves those calls under many
+    /// queries a second, and a snapshot may then miss commits that recent.
+    /// [`Database::refresh`] looks at once.
+    pub refresh_interval: Duration,
 }
 
 /// How a database is laid out on disk.
@@ -179,7 +214,7 @@ pub enum Layout {
 
 impl DbOptions {
     /// How the segments of the version a database opens at are checked.
-    fn check_at_open(&self) -> Check {
+    pub(crate) fn check_at_open(&self) -> Check {
         match (self.verify_checksums, self.check_sections) {
             (true, _) => Check::Open,
             (false, true) => Check::Read,
@@ -195,6 +230,7 @@ impl Default for DbOptions {
             mem_build: None,
             memtable_max_docs: 10_000,
             memtable_chunk_docs: 1024,
+            memtable_tail_docs: 128,
             segment_max_docs: 100_000,
             sync: true,
             doc_source: None,
@@ -209,6 +245,9 @@ impl Default for DbOptions {
             open_old: false,
             merge_spill_bytes: 64 << 20,
             write_wait: Duration::from_secs(5),
+            cold: None,
+            read_only: false,
+            refresh_interval: Duration::ZERO,
         }
     }
 }
@@ -224,6 +263,19 @@ pub struct CheckpointOptions {
     /// and keep their ids in a checkpoint, so successive checkpoints share
     /// every segment no merge has replaced since.
     pub link_from: Option<PathBuf>,
+}
+
+/// What [`Database::scrub`] read, and what failed its checksum.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ScrubReport {
+    /// The commit of the database whose segments it read.
+    pub txn: u64,
+    pub segments: usize,
+    /// Bytes read: segment images, delete sets and updates.
+    pub bytes: u64,
+    /// Each segment whose bytes fail their checksum, in words.
+    pub damaged: Vec<String>,
+    pub seconds: f64,
 }
 
 /// What [`Database::checkpoint`] copied.
@@ -255,6 +307,9 @@ pub struct FileStats {
     pub memtable_docs: usize,
     pub pending_deletes: usize,
     pub segments: Vec<SegmentStats>,
+    /// The processes reading the database read-only (one file): each one's
+    /// pid and the oldest version whose pages it keeps.
+    pub readers: Vec<ReaderInfo>,
 }
 
 /// Size of one on-disk segment.
@@ -267,6 +322,8 @@ pub struct SegmentStats {
     pub n_deleted: u32,
     pub bytes: u64,
     pub delete_set_bytes: u64,
+    /// Kept on object storage ([`crate::storage::cold`]).
+    pub cold: bool,
 }
 
 /// An open database. `Send + Sync`: share it (e.g. in an `Arc`) between a
@@ -281,7 +338,16 @@ pub struct Database {
     dir: Option<PathBuf>,
     /// The single-writer lock; it owns the WAL.
     writer: Mutex<Wal>,
-    state: Mutex<State>,
+    /// Shared with the reader, read-only.
+    state: Arc<Mutex<State>>,
+    /// Where the writer's lock and the readers' pins are
+    /// ([`share::share_dir`]).
+    share: PathBuf,
+    /// The writer's hold on the files, kept while it is open; `None`
+    /// read-only.
+    _writer_lock: Option<WriterLock>,
+    /// What follows another process's writes, read-only.
+    reader: Option<Arc<Reader>>,
     /// Serialises memtable segment builds, so concurrent readers build once.
     build_lock: Mutex<()>,
     /// The snapshot readers get, with `DbOptions::publish_snapshots`.
@@ -331,6 +397,16 @@ pub struct Database {
     commit_hook: RwLock<Option<CommitHook>>,
     /// The codebooks of semantic-ID fields ([`Database::set_codebook`]).
     codebooks: RwLock<Vec<Coded>>,
+    /// The cold tier, with [`DbOptions::cold`].
+    cold: Option<Arc<Cold>>,
+    /// Segments being made cold, which merges leave alone meanwhile.
+    offloading: Mutex<HashSet<u64>>,
+    /// Set by [`Database::spawn_cold`].
+    cold_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Counts the times a segment's image was swapped for another (made
+    /// cold, or a cold one evicted), for the readers caches above that
+    /// hold them ([`Database::image_generation`]).
+    images_swapped: AtomicU64,
 }
 
 /// The codebook of semantic-ID field `field` of the table with id `table`,
@@ -722,11 +798,18 @@ impl Drop for Database {
         if let Some(sig) = self.flush_signal.get() {
             sig.close();
         }
+        if let Some(r) = &self.reader {
+            r.close();
+        }
         if let Some(m) = self.merger.get() {
             m.close();
         }
+        if let Some(c) = &self.cold {
+            c.signal.close();
+        }
         let mut threads: Vec<JoinHandle<()>> = self.flusher.get_mut().unwrap_or_else(|e| e.into_inner()).take().into_iter().collect();
         threads.append(self.merger_threads.get_mut().unwrap_or_else(|e| e.into_inner()));
+        threads.extend(self.cold_thread.get_mut().unwrap_or_else(|e| e.into_inner()).take());
         for h in threads {
             // The flusher and the mergers hold a reference only while they
             // work; when one held the last one, the database closes on its
@@ -839,6 +922,9 @@ impl Database {
         if path.exists() {
             return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists", path.display()))));
         }
+        if opts.read_only {
+            return Err(read_only(path));
+        }
         let tmp = beside(path, "creating")?;
         if opts.layout == Layout::Directory {
             return Database::create_dir(path, &tmp, schema, opts);
@@ -879,21 +965,105 @@ impl Database {
         Wal::create(&wal_path(path), db_id, false, true)?;
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(dir)?;
-        Database::load(path, file, opts)
+        // The file is held exclusively until here; from now on as a writer,
+        // whom readers can share it with.
+        let lock = WriterLock::take(&file, &share::share_dir(path, false))?;
+        Database::load(path, file, lock, opts)
     }
 
     /// Opens an existing database, recovering from a crash: the newest valid
     /// meta slot (or `CURRENT`) names the on-disk version, and committed WAL
     /// transactions not yet in it are replayed into the memtable.
+    ///
+    /// With [`DbOptions::read_only`] it opens the database to read it while
+    /// another process writes it, and changes nothing.
     pub fn open(path: &Path, opts: DbOptions) -> Result<Database> {
+        if opts.read_only {
+            return Database::open_read_only(path, opts);
+        }
         if path.is_dir() {
             let lockf = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path.join(dir::LOCK))?;
-            lock_exclusive(&lockf)?;
-            return Database::load_dir(path, lockf, opts);
+            let lock = WriterLock::take(&lockf, path)?;
+            return Database::load_dir(path, lockf, lock, opts);
         }
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-        lock_exclusive(&file)?;
-        Database::load(path, file, opts)
+        let lock = WriterLock::take(&file, &share::share_dir(path, false))?;
+        Database::load(path, file, lock, opts)
+    }
+
+    /// [`Database::open`] with [`DbOptions::read_only`].
+    fn open_read_only(path: &Path, opts: DbOptions) -> Result<Database> {
+        if opts.cold.is_some() {
+            return Err(Error::Schema(format!("{}: a read-only open does not read cold segments (DbOptions::cold): the writer fetches and evicts them", path.display())));
+        }
+        // Snapshots are taken by readers, and the log is the writer's to ship.
+        let opts = DbOptions { publish_snapshots: false, ship_log_bytes: 0, ..opts };
+        let (file, dir) = match path.is_dir() {
+            true => (File::open(path.join(dir::LOCK))?, Some(path.to_path_buf())),
+            false => (File::open(path)?, None),
+        };
+        share::lock_shared(&file)?;
+        let share_path = share::share_dir(path, dir.is_some());
+        // Before the first meta slot is read ([`share`]).
+        let pin = match &dir {
+            Some(_) => None,
+            None => ReaderPin::register(&share_path)?,
+        };
+        let wal_path = match &dir {
+            Some(d) => d.join(dir::WAL),
+            None => wal_path(path),
+        };
+        let (reader, damaged) = Reader::open(path, wal_path.clone(), dir.clone(), file.try_clone()?, opts.clone(), pin, Session::new(&share_path))?;
+        let db_id = lock(&reader.state).meta.db_id;
+        let merge_record_path = match &dir {
+            Some(d) => d.join(dir::MERGE_RECORD),
+            None => {
+                let mut s = path.as_os_str().to_owned();
+                s.push("-merging");
+                PathBuf::from(s)
+            }
+        };
+        let mem_opts = Arc::new(opts.mem_build.clone().unwrap_or_else(|| opts.build.clone()));
+        let db = Database {
+            path: path.to_path_buf(),
+            writer: Mutex::new(Wal::unwritable(file.try_clone()?, &wal_path, db_id)),
+            wal_path,
+            opts,
+            file,
+            dir,
+            state: reader.state.clone(),
+            share: share_path,
+            _writer_lock: None,
+            reader: Some(reader.clone()),
+            build_lock: Mutex::new(()),
+            published: RwLock::new(None),
+            read: AtomicBool::new(true),
+            merging: Mutex::new(Merging::default()),
+            expired: Mutex::new(HashMap::new()),
+            merge_record_path,
+            merger: OnceLock::new(),
+            merger_threads: Mutex::new(Vec::new()),
+            pins: reader.pins.clone(),
+            mem_opts,
+            poisoned: AtomicBool::new(false),
+            flush_error: Mutex::new(None),
+            damaged,
+            sealed_wals: Mutex::new(Vec::new()),
+            background: Mutex::new(()),
+            flush_signal: OnceLock::new(),
+            flusher: Mutex::new(None),
+            background_waiting: AtomicUsize::new(0),
+            background_holding: AtomicUsize::new(0),
+            commit_hook: RwLock::new(None),
+            codebooks: RwLock::new(Vec::new()),
+            cold: None,
+            offloading: Mutex::new(HashSet::new()),
+            cold_thread: Mutex::new(None),
+            images_swapped: AtomicU64::new(0),
+        };
+        let h = std::thread::Builder::new().name("strata-reader".into()).spawn(move || reader.run())?;
+        *lock(&db.flusher) = Some(h);
+        Ok(db)
     }
 
     /// [`Database::create`] in the directory layout, built in `tmp`.
@@ -923,23 +1093,32 @@ impl Database {
         };
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(parent)?;
-        Database::load_dir(path, lockf, opts)
+        let lock = WriterLock::take(&lockf, path)?;
+        Database::load_dir(path, lockf, lock, opts)
     }
 
-    fn load_dir(path: &Path, lockf: File, opts: DbOptions) -> Result<Database> {
+    fn load_dir(path: &Path, lockf: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
         let (cur, manifest) = dir::read_current(path)?;
         // Files a crash left behind: written for a commit that did not
         // finish, or no longer named after one that did.
         for (f, _) in dir::orphans(path, &dir::referenced(&cur, &manifest))? {
             io::remove_file(&f)?;
         }
+        let cold = match &opts.cold {
+            Some(c) => {
+                let cold = Cold::new(c.clone(), path, cur.db_id)?;
+                cold.recover(&manifest)?;
+                Some(cold)
+            }
+            None => None,
+        };
         let handles = manifest
             .tables
             .iter()
-            .map(|t| t.segments.iter().map(|m| SegHandle::open_in(path, m, &t.schema, opts.read_ahead, opts.read_ahead && opts.random_hints, opts.check_at_open()).map(Arc::new)).collect())
+            .map(|t| t.segments.iter().map(|m| SegHandle::open_in(path, m, &t.schema, opts.read_ahead, opts.read_ahead && opts.random_hints, opts.check_at_open(), cold.as_ref()).map(Arc::new)).collect())
             .collect::<Result<_>>()?;
         let meta = dir_meta(&cur);
-        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles)
+        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, lock, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles, cold)
     }
 
     /// Opens the newest version named by a valid meta slot, or, when that
@@ -949,13 +1128,16 @@ impl Database {
     /// ([`crate::storage::freelist`]). With `sync` off, a power loss can
     /// leave the newest slot naming pages that never reached the disk;
     /// that loses the newest commits, not the database.
-    fn load(path: &Path, file: File, opts: DbOptions) -> Result<Database> {
+    fn load(path: &Path, file: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
+        if opts.cold.is_some() {
+            return Err(Error::Schema(format!("{}: cold segments need the directory layout (Layout::Directory)", path.display())));
+        }
         let metas = pager::read_metas(&file)?;
         let mut damaged = None;
         for (i, &(meta, slot)) in metas.iter().enumerate() {
             match Database::load_version(&file, &opts, meta, i > 0) {
                 Ok((manifest, freelist, map, handles)) => {
-                    let mut db = Database::assemble(path, wal_path(path), None, file, opts, manifest, meta, slot, freelist, map, handles)?;
+                    let mut db = Database::assemble(path, wal_path(path), None, file, lock, opts, manifest, meta, slot, freelist, map, handles, None)?;
                     db.damaged = match (damaged, db.damaged.take()) {
                         (Some(a), Some(b)) => Some(format!("{a}; {b}")),
                         (a, b) => a.or(b),
@@ -1007,6 +1189,7 @@ impl Database {
         wal_path: PathBuf,
         dir: Option<PathBuf>,
         file: File,
+        writer_lock: WriterLock,
         opts: DbOptions,
         manifest: Manifest,
         meta: Meta,
@@ -1014,6 +1197,7 @@ impl Database {
         freelist: FreeList,
         map: OwnedBytes,
         handles: Vec<Vec<Arc<SegHandle>>>,
+        cold: Option<Arc<Cold>>,
     ) -> Result<Database> {
         if manifest.is_legacy() && !opts.open_old {
             return Err(Error::Schema(format!(
@@ -1021,6 +1205,8 @@ impl Database {
                 path.display()
             )));
         }
+        // Logs a crash left before they were named.
+        wal::remove_leftovers(&wal_path);
         let fits = |table: u32, op: &Op| manifest.table(table).is_none_or(|t| op_fits(&t.schema, op));
         let numbered = manifest.seq_no.is_some();
         let (sealed, mut txns, cut) = read_sealed_wals(&wal_path, &manifest, meta.db_id, opts.wal_drop_damaged, &fits)?;
@@ -1071,6 +1257,7 @@ impl Database {
             next_segment_id: 0,
             ship: ShipLog::new(opts.ship_log_bytes),
             dropped: Vec::new(),
+            pin_versions: false,
         };
         let mut flushed = false;
         for t in txns {
@@ -1118,6 +1305,7 @@ impl Database {
         let (spill_dir, spill_prefix) = spill_place(path, dir.as_deref());
         crate::segment::spill::remove_leftovers(spill_dir, &spill_prefix);
         let mem_opts = Arc::new(opts.mem_build.clone().unwrap_or_else(|| opts.build.clone()));
+        let share = share::share_dir(path, dir.is_some());
         let db = Database {
             path: path.to_path_buf(),
             wal_path,
@@ -1125,7 +1313,10 @@ impl Database {
             file,
             dir,
             writer: Mutex::new(wal),
-            state: Mutex::new(st),
+            state: Arc::new(Mutex::new(st)),
+            share,
+            _writer_lock: Some(writer_lock),
+            reader: None,
             build_lock: Mutex::new(()),
             published: RwLock::new(None),
             read: AtomicBool::new(true),
@@ -1147,6 +1338,10 @@ impl Database {
             background_holding: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
             codebooks: RwLock::new(Vec::new()),
+            cold,
+            offloading: Mutex::new(HashSet::new()),
+            cold_thread: Mutex::new(None),
+            images_swapped: AtomicU64::new(0),
         };
         db.republish();
         Ok(db)
@@ -1155,19 +1350,22 @@ impl Database {
     /// The schema of the database's first table, as it is now
     /// ([`Database::alter_table`] changes it).
     pub fn schema(&self) -> Arc<Schema> {
+        self.follow();
         lock(&self.state).tables[0].schema.clone()
     }
 
     /// The schemas of the database's tables, in creation order (the first
-    /// is the table the database was created with). The system table
-    /// [`SOURCES`] is not among them: [`Self::table`] and SQL read it by
-    /// name.
+    /// is the table the database was created with). The system tables
+    /// ([`SOURCES`], [`FUNCTIONS`](crate::storage::FUNCTIONS)) are not
+    /// among them: [`Self::table`] and SQL read them by name.
     pub fn tables(&self) -> Vec<Arc<Schema>> {
-        lock(&self.state).tables.iter().filter(|t| t.id != SOURCES_ID).map(|t| t.schema.clone()).collect()
+        self.follow();
+        lock(&self.state).tables.iter().filter(|t| !is_system(t.id)).map(|t| t.schema.clone()).collect()
     }
 
     /// The schema of the table named `name` (any case).
     pub fn table(&self, name: &str) -> Option<Arc<Schema>> {
+        self.follow();
         lock(&self.state).tables.iter().find(|t| t.schema.table.eq_ignore_ascii_case(name)).map(|t| t.schema.clone())
     }
 
@@ -1190,8 +1388,10 @@ impl Database {
         let mut wal = self.try_writer()?;
         self.check_poisoned()?;
         check_table_name(&schema.table)?;
-        if schema.table.eq_ignore_ascii_case(SOURCES) {
-            return Err(Error::Schema(format!("{SOURCES} is a system table, which streams make and write (Database::ensure_sources)")));
+        match system_id(&schema.table) {
+            Some(SOURCES_ID) => return Err(Error::Schema(format!("{SOURCES} is a system table, which streams make and write (Database::ensure_sources)"))),
+            Some(_) => return Err(Error::Schema(format!("{} is a system table, which CREATE FUNCTION makes and writes", schema.table))),
+            None => {}
         }
         if self.table(&schema.table).is_some() {
             return Err(Error::Schema(format!("table {} already exists", schema.table)));
@@ -1347,8 +1547,8 @@ impl Database {
         check_name("rank profile", &profile.name)?;
         let mut txn = self.begin()?;
         let t = self.table_ref(Some(table))?;
-        if t.id == SOURCES_ID {
-            return Err(Error::Schema(format!("{SOURCES} is a system table, which takes no rank profile")));
+        if is_system(t.id) {
+            return Err(Error::Schema(format!("{} is a system table, which takes no rank profile", t.schema.table)));
         }
         crate::query::profile::check_columns(&profile, &t.schema)?;
         let exists = lock(&self.state).tables[t.pos].profiles.iter().any(|p| p.name.eq_ignore_ascii_case(&profile.name));
@@ -1412,19 +1612,50 @@ impl Database {
     }
 
     fn has_sources(&self) -> bool {
-        lock(&self.state).tables.iter().any(|t| t.id == SOURCES_ID)
+        self.has_system(SOURCES_ID)
+    }
+
+    fn has_system(&self, id: u32) -> bool {
+        lock(&self.state).tables.iter().any(|t| t.id == id)
     }
 
     /// [`Database::ensure_sources`], under the writer lock.
     fn add_sources(&self, wal: &mut Wal) -> Result<()> {
-        if self.has_sources() {
+        self.add_system(wal, SOURCES_ID)
+    }
+
+    /// Adds the system table with id `id` ([`SYSTEM_IDS`]) if the database
+    /// lacks it, under the writer lock, in one commit.
+    fn add_system(&self, wal: &mut Wal, id: u32) -> Result<()> {
+        if self.has_system(id) {
             return Ok(());
         }
         let mut vw = VersionWriter::begin(self);
-        let schema = if vw.manifest.is_legacy() { sources_schema().without_ids() } else { sources_schema() };
-        vw.manifest.tables.push(TableMeta { id: SOURCES_ID, schema, segments: Vec::new(), profiles: Vec::new() });
+        let schema = system_schema(id).ok_or_else(|| Error::Schema(format!("no system table has id {id}")))?;
+        let schema = if vw.manifest.is_legacy() { schema.without_ids() } else { schema };
+        vw.manifest.tables.push(TableMeta { id, schema, segments: Vec::new(), profiles: Vec::new() });
         let c = vw.commit(wal)?;
         self.publish(c, |_| {})
+    }
+
+    /// Adds the system table [`FUNCTIONS`](crate::storage::FUNCTIONS) if
+    /// the database lacks it, in one commit: stored functions keep a row per version there
+    /// ([`crate::query::function`]). Every copy of a database gives it the
+    /// same id ([`FUNCTIONS_ID`]), so a replica makes its own when its
+    /// primary's first function arrives ([`Database::apply_shipped`]). The
+    /// database then needs feature `functions`, so versions of Strata
+    /// before it refuse to open it. A database written before field ids
+    /// takes none: it is upgraded first ([`crate::upgrade`]).
+    pub fn ensure_functions(&self) -> Result<()> {
+        if self.has_system(FUNCTIONS_ID) {
+            return Ok(());
+        }
+        let mut wal = self.try_writer()?;
+        self.check_poisoned()?;
+        if lock(&self.state).manifest.is_legacy() {
+            return Err(Error::Schema("this database was written before field ids, and keeps no functions: upgrade it first (strata upgrade)".into()));
+        }
+        self.add_system(&mut wal, FUNCTIONS_ID)
     }
 
     /// Numbers this database's writes from now on: every write transaction
@@ -1597,10 +1828,12 @@ impl Database {
         }
         let Some(WriteTxn { mut wal, .. }) = held else { return Ok(Applied::At(prev)) };
         let mut schemas: Vec<(u32, Arc<Schema>)> = lock(&self.state).tables.iter().map(|t| (t.id, t.schema.clone())).collect();
-        // The primary's sources' offsets, before this copy has a table for
-        // them: it makes its own, as the primary did.
-        if !schemas.iter().any(|(id, _)| *id == SOURCES_ID) {
-            schemas.push((SOURCES_ID, Arc::new(sources_schema())));
+        // The primary's sources' offsets and functions, before this copy
+        // has a table for them: it makes its own, as the primary did.
+        for sys in SYSTEM_IDS {
+            if !schemas.iter().any(|(id, _)| *id == sys) {
+                schemas.push((sys, Arc::new(system_schema(sys).expect("a system table"))));
+            }
         }
         // Writes fit the tables as the changes of tables before them in the
         // batch leave them; those changes are checked below.
@@ -1626,7 +1859,7 @@ impl Database {
             if t.ops.iter().any(|(_, op)| op.changes_tables()) {
                 let differs = |what: String| Error::Schema(format!("shipped transaction {} {what}: this database is not a copy of its primary's", s.seq));
                 for (id, op) in &t.ops {
-                    let system = *id == 0 || *id == SOURCES_ID;
+                    let system = *id == 0 || is_system(*id);
                     match op {
                         Op::Table { def: Some(def) } => {
                             if system || check_table_name(&def.table).is_err() || schemas.iter().any(|(i, x)| i == id || x.table.eq_ignore_ascii_case(&def.table)) {
@@ -1644,7 +1877,7 @@ impl Database {
                         // included: columns kept under another id here
                         // would read the primary's ids as columns missing.
                         Op::Alter { was, def } => match schemas.iter_mut().find(|(i, _)| i == id) {
-                            Some((_, s)) if *id != SOURCES_ID && **s == **was && def.check_ids().is_ok() && def.follows(was) => *s = def.clone(),
+                            Some((_, s)) if !is_system(*id) && **s == **was && def.check_ids().is_ok() && def.follows(was) => *s = def.clone(),
                             _ => return Err(differs(format!("alters the table with id {id}, which this database lacks, cannot alter, or holds with other columns or field ids"))),
                         },
                         _ => return Err(corrupt(format!("shipped transaction {} changes tables along with rows", s.seq))),
@@ -1653,8 +1886,10 @@ impl Database {
             }
             shipped.push((s, t.ops));
         }
-        if shipped.iter().any(|(_, ops)| ops.iter().any(|(id, _)| *id == SOURCES_ID)) {
-            self.add_sources(&mut wal)?;
+        for sys in SYSTEM_IDS {
+            if shipped.iter().any(|(_, ops)| ops.iter().any(|(id, _)| *id == sys)) {
+                self.add_system(&mut wal, sys)?;
+            }
         }
         let mut at = now.last();
         let mut failed = None;
@@ -1765,11 +2000,11 @@ impl Database {
             let st = lock(&copy.state);
             let n = st.manifest.seq_no.clone().ok_or_else(|| Error::Schema("the copy does not number its writes".into()))?;
             let mut tables = Vec::new();
-            let mut sources = None;
+            let mut system = Vec::new();
             for t in &st.manifest.tables {
                 let segs = t.segments.iter().map(|m| Ok((m.n_docs, st.handle(m.id).cloned().ok_or_else(|| corrupt(format!("segment {} is in the manifest but not open", m.id)))?))).collect::<Result<Vec<_>>>()?;
-                match t.id == SOURCES_ID {
-                    true => sources = Some(segs),
+                match is_system(t.id) {
+                    true => system.push((t.id, segs)),
                     false => {
                         // Logged since its last version, maybe.
                         let profiles = st.tables.iter().find(|ts| ts.id == t.id).map_or_else(Vec::new, |ts| ts.profiles.to_vec());
@@ -1777,9 +2012,9 @@ impl Database {
                     }
                 }
             }
-            (Numbering { seq: st.seq, ..n }, (tables, sources, st.manifest.next_table_id))
+            (Numbering { seq: st.seq, ..n }, (tables, system, st.manifest.next_table_id))
         };
-        let (tables, sources, next_table_id) = tables;
+        let (tables, system, next_table_id) = tables;
         // No background flush may seal the log in between.
         let _one = lock(&self.background);
         let mut wal = self.try_writer()?;
@@ -1793,8 +2028,8 @@ impl Database {
                 first.table
             )));
         }
-        if sources.is_some() {
-            self.add_sources(&mut wal)?;
+        for (id, _) in &system {
+            self.add_system(&mut wal, *id)?;
         }
         if theirs.term < ours.term {
             return Err(Error::Schema(format!("the copy is of term {}, older than this database's ({}): it is a copy of a replaced primary", theirs.term, ours.term)));
@@ -1811,11 +2046,11 @@ impl Database {
         for id in vw.manifest.tables.iter().flat_map(|t| &t.segments).map(|s| s.id).collect::<Vec<_>>() {
             vw.remove_segment(id);
         }
-        // The copy's tables, in its order, then the sources: a table of the
-        // same id takes the copy's schema, and one the copy lacks goes (its
-        // segments went above).
+        // The copy's tables, in its order, then the system tables: a table
+        // of the same id takes the copy's schema, and one the copy lacks
+        // goes (its segments went above).
         let mut old = std::mem::take(&mut vw.manifest.tables);
-        let kept_sources = old.iter().position(|t| t.id == SOURCES_ID).map(|i| old.remove(i));
+        let kept_system: Vec<TableMeta> = SYSTEM_IDS.iter().filter_map(|sys| old.iter().position(|t| t.id == *sys).map(|i| old.remove(i))).collect();
         for (id, schema, _, _) in &tables {
             let t = match old.iter().position(|t| t.id == *id) {
                 Some(i) => TableMeta { schema: schema.clone(), ..old.remove(i) },
@@ -1823,15 +2058,15 @@ impl Database {
             };
             vw.manifest.tables.push(t);
         }
-        vw.manifest.tables.extend(kept_sources);
+        vw.manifest.tables.extend(kept_system);
         vw.manifest.next_table_id = vw.manifest.next_table_id.max(next_table_id);
         let mut into: Vec<_> = tables.iter().map(|(id, _, segs, profiles)| (*id, (segs, profiles.clone()))).collect();
-        if let Some(segs) = &sources {
-            into.push((SOURCES_ID, (segs, Vec::new())));
+        for (id, segs) in &system {
+            into.push((*id, (segs, Vec::new())));
         }
         for (to, (segs, profiles)) in into {
             for (n_docs, h) in segs {
-                vw.add_segment(to, None, h.file.image(), *n_docs, h.base.as_deref(), h.updates.as_deref())?;
+                vw.add_segment(to, None, &h.whole_image()?, *n_docs, h.base.as_deref(), h.updates.as_deref())?;
             }
             vw.table_mut(to).profiles = profiles;
         }
@@ -1897,6 +2132,7 @@ impl Database {
                     Some(t) if t.id == 0 => return Err(Error::Schema(format!("{} is the database's first table, which cannot be dropped", t.schema.table))),
                     // A replica's would come back with its primary's next offset.
                     Some(t) if t.id == SOURCES_ID => return Err(Error::Schema(format!("{SOURCES} is a system table, which cannot be dropped: delete its rows to forget sources"))),
+                    Some(t) if is_system(t.id) => return Err(Error::Schema(format!("{} is a system table, which cannot be dropped: DROP FUNCTION drops a function", t.schema.table))),
                     Some(t) if ids.contains(&t.id) => {}
                     Some(t) => {
                         ids.push(t.id);
@@ -1945,8 +2181,8 @@ impl Database {
         let (id, before, profiles) = {
             let st = lock(&self.state);
             let t = st.tables.iter().find(|t| t.schema.table.eq_ignore_ascii_case(table)).ok_or_else(|| Error::Schema(format!("no table {table}")))?;
-            if t.id == SOURCES_ID {
-                return Err(Error::Schema(format!("{SOURCES} is a system table, whose columns do not change")));
+            if is_system(t.id) {
+                return Err(Error::Schema(format!("{} is a system table, whose columns do not change", t.schema.table)));
             }
             (t.id, t.schema.clone(), t.profiles.clone())
         };
@@ -1996,13 +2232,54 @@ impl Database {
     /// after a write rebuilds the last memtable chunk's segment, unless
     /// `DbOptions::publish_snapshots` has the writer build it.
     pub fn snapshot(&self) -> Snapshot {
+        self.follow();
         if !self.read.load(Ordering::Relaxed) {
             self.read.store(true, Ordering::Relaxed);
         }
-        if let Some(s) = &*self.published.read().unwrap_or_else(|e| e.into_inner()) {
-            return s.clone();
+        if let Some(s) = self.published() {
+            return s;
         }
-        self.snapshot_inner(true)
+        let s = self.snapshot_inner(true);
+        // Meanwhile the writer may have published a version and applied the
+        // next write, which this snapshot holds, without publishing that
+        // one yet: this reader's next snapshot would be the published one,
+        // older, and rows would disappear. So a version published meanwhile
+        // is returned instead; any published after this check holds at
+        // least what this snapshot does.
+        self.published().unwrap_or(s)
+    }
+
+    /// The snapshot readers get, with `DbOptions::publish_snapshots`.
+    fn published(&self) -> Option<Snapshot> {
+        self.published.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// A read-only database: follows the writer, at most once each
+    /// [`DbOptions::refresh_interval`], before a snapshot or a look at the
+    /// tables. A failure is tried again a little later; meanwhile what the
+    /// reader holds is read.
+    fn follow(&self) {
+        if let Some(r) = &self.reader {
+            if let Err(e) = r.sync(self.opts.refresh_interval, false) {
+                tracing::warn!(path = %self.path.display(), error = %e, "a read-only database could not follow its writer");
+            }
+        }
+    }
+
+    /// Whether the database was opened with [`DbOptions::read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// A read-only database: reads what the writer committed since it last
+    /// looked, now (snapshots do so at most once each
+    /// [`DbOptions::refresh_interval`]); returns whether anything changed.
+    /// `Ok(false)` for the writer.
+    pub fn refresh(&self) -> Result<bool> {
+        match &self.reader {
+            Some(r) => r.sync(Duration::ZERO, true),
+            None => Ok(false),
+        }
     }
 
     /// With `publish_snapshots`, builds the current version's snapshot and
@@ -2045,7 +2322,7 @@ impl Database {
             }
         }
         let version = cap.version;
-        let inner = Arc::new(cap.assemble(self.path.clone(), &self.mem_opts));
+        let inner = Arc::new(cap.assemble(self.path.clone(), &self.mem_opts, self.opts.memtable_tail_docs));
         if with_mem {
             let mut st = lock(&self.state);
             if st.version == version {
@@ -2232,6 +2509,9 @@ impl Database {
     /// are refused, as without a flusher. The thread ends with the
     /// database; calling this again does nothing.
     pub fn spawn_flusher(self: &Arc<Self>) {
+        if self.reader.is_some() {
+            return;
+        }
         let sig = Arc::new(FlushSignal::default());
         if self.flush_signal.set(sig.clone()).is_err() {
             return;
@@ -2472,7 +2752,7 @@ impl Database {
         if h.meta.n_deleted > 0 || h.updates.is_some() || pending > 0 {
             return Err(Error::Schema(format!("segment {id} has deleted or updated documents; merge it first")));
         }
-        let image = if self.dir.is_some() { h.map.clone() } else { h.map.slice(h.meta.extent.range()) };
+        let image = h.whole_image()?;
         let f = OpenOptions::new().write(true).create_new(true).open(dest)?;
         io::write_at(&f, &image, 0)?;
         io::sync(&f)?;
@@ -2592,6 +2872,9 @@ impl Database {
     /// rate too). [`Database::merge_status`] says what they do. The threads
     /// end with the database; calling this again does nothing.
     pub fn spawn_merger(self: &Arc<Self>, opts: MergerOptions) {
+        if self.reader.is_some() {
+            return;
+        }
         let m = Arc::new(Merger {
             policy: opts.policy,
             budget: opts.memory_budget.or_else(|| memory_limit().map(|l| l / 2)),
@@ -2696,7 +2979,15 @@ impl Database {
         };
         let threads = build_threads(&self.opts.build).unwrap_or(1);
         let spill = self.opts.merge_spill_bytes;
-        let (group, cut) = policy.select_within(&infos, |id| m.claimed(id), cap, threads, spill);
+        // Cold segments are not merged (their rows would be fetched), unless
+        // nothing of them is left to keep; nor segments being made cold.
+        let frozen: HashSet<u64> = {
+            let cold: HashSet<u64> = lock(&self.state).handles().filter(|h| h.is_cold()).map(|h| h.meta.id).collect();
+            let mut f: HashSet<u64> = infos.iter().filter(|s| s.n_live > 0 && cold.contains(&s.id)).map(|s| s.id).collect();
+            f.extend(lock(&self.offloading).iter().copied());
+            f
+        };
+        let (group, cut) = policy.select_within(&infos, |id| m.claimed(id) || frozen.contains(&id), cap, threads, spill);
         let mut group = group?;
         let memory = merge_memory(&infos.iter().filter(|s| group.contains(&s.id)).copied().collect::<Vec<_>>(), threads, spill);
         // It fits the budget alone: it waits for running merges to finish.
@@ -3184,6 +3475,8 @@ impl Database {
         };
         let tmp = beside(dest, "checkpoint")?;
         let r = self.write_checkpoint(&tmp, opts.layout, &manifest, &handles, link);
+        // The copy's writer is gone; its lock is no part of the copy.
+        share::remove(&tmp, opts.layout == Layout::Directory);
         let mut stats = match r {
             Ok(stats) => stats,
             Err(e) => {
@@ -3208,9 +3501,10 @@ impl Database {
         let o = DbOptions { layout, sync: true, publish_snapshots: false, doc_source: None, ..DbOptions::default() };
         let out = Database::create(tmp, manifest.tables[0].schema.clone(), o)?;
         for t in &manifest.tables[1..] {
-            match t.id == SOURCES_ID {
-                true => out.ensure_sources()?,
-                false => out.create_table(t.schema.clone())?,
+            match t.id {
+                SOURCES_ID => out.ensure_sources()?,
+                FUNCTIONS_ID => out.ensure_functions()?,
+                _ => out.create_table(t.schema.clone())?,
             }
         }
         let mut stats = CheckpointStats { tables: manifest.tables.len(), ..CheckpointStats::default() };
@@ -3236,7 +3530,7 @@ impl Database {
                 for m in &t.segments {
                     let h = handles.iter().find(|h| h.meta.id == m.id).ok_or_else(|| corrupt(format!("segment {} is in the manifest but not open", m.id)))?;
                     vw.manifest.next_segment_id = m.id;
-                    vw.add_segment(to, None, h.file.image(), m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
+                    vw.add_segment(to, None, &h.whole_image()?, m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
                     stats.segments += 1;
                     stats.live_docs += (m.n_docs - m.n_deleted) as u64;
                 }
@@ -3355,6 +3649,7 @@ impl Database {
                 memtable_docs: st.mem_live_docs(),
                 pending_deletes: st.n_pending,
                 segments: segment_stats(&st.manifest),
+                readers: Vec::new(),
             };
         }
         let segments = segment_stats(&st.manifest);
@@ -3370,7 +3665,271 @@ impl Database {
             memtable_docs: st.mem_live_docs(),
             pending_deletes: st.n_pending,
             segments,
+            readers: share::readers(&self.share),
         }
+    }
+
+    /// What the cold tier holds and has done; `None` without one
+    /// ([`DbOptions::cold`]).
+    pub fn cold_stats(&self) -> Option<ColdStats> {
+        self.cold.as_ref().map(|c| c.stats())
+    }
+
+    /// Changes each time a segment's image is swapped for another: one
+    /// made cold ([`Database::offload_segment`]) or a cold one's cache
+    /// evicted ([`Database::evict_cold`]). What caches readers of a
+    /// segment's image drops those of images no snapshot holds once it
+    /// changes, so that their space returns.
+    pub fn image_generation(&self) -> u64 {
+        self.images_swapped.load(Ordering::Acquire)
+    }
+
+    /// Makes cold what [`ColdOptions::keep_local_bytes`] does not keep
+    /// local: the newest segments are kept up to that many bytes, and the
+    /// older ones of at least [`ColdOptions::min_segment_bytes`] are made
+    /// cold, oldest first ([`Database::offload_segment`]). Returns how many
+    /// went. Does nothing without a cold tier or a `keep_local_bytes`.
+    pub fn offload(&self) -> Result<usize> {
+        let Some(cold) = &self.cold else { return Ok(0) };
+        let Some(keep) = cold.opts.keep_local_bytes else { return Ok(0) };
+        let mut local: Vec<(u64, u64, u64)> = lock(&self.state).handles().filter(|h| !h.is_cold()).map(|h| (h.meta.txn, h.meta.id, h.meta.extent.len)).collect();
+        // Newest first: what fits in `keep` stays.
+        local.sort_by(|a, b| b.cmp(a));
+        let mut kept = 0u64;
+        let mut over = Vec::new();
+        for (_, id, len) in local {
+            if over.is_empty() && kept + len <= keep {
+                kept += len;
+            } else if len >= cold.opts.min_segment_bytes {
+                over.push(id);
+            }
+        }
+        let mut n = 0;
+        for id in over.into_iter().rev() {
+            n += self.offload_segment(id)? as usize;
+        }
+        Ok(n)
+    }
+
+    /// Makes segment `id` cold ([`crate::storage::cold`]): uploads its image
+    /// and part table to the cold tier's store, copies its header and keys
+    /// into a cache file, and commits a version that names the object
+    /// instead of the local file, which goes once no snapshot reads it.
+    /// Returns false, having done nothing, if the segment is not there, is
+    /// cold already, or is being merged or made cold. Merges leave it alone
+    /// meanwhile. Takes the writer lock only to commit, and waits for it, so
+    /// it must not be called from a thread that holds a [`WriteTxn`].
+    pub fn offload_segment(&self, id: u64) -> Result<bool> {
+        let cold = self.cold.clone().ok_or_else(|| Error::Schema("the database has no cold tier (DbOptions::cold)".into()))?;
+        let d = self.dir.clone().ok_or_else(|| Error::Schema("cold segments need the directory layout".into()))?;
+        self.check_poisoned()?;
+        {
+            // The merges' lock first, as a merge claims under it.
+            let m = lock(&self.merging);
+            if m.claimed(id) || !lock(&self.offloading).insert(id) {
+                return Ok(false);
+            }
+        }
+        struct Unclaim<'a>(&'a Mutex<HashSet<u64>>, u64);
+        impl Drop for Unclaim<'_> {
+            fn drop(&mut self) {
+                lock(self.0).remove(&self.1);
+            }
+        }
+        let _unclaim = Unclaim(&self.offloading, id);
+        let Some(h) = lock(&self.state).handle(id).cloned().filter(|h| !h.is_cold()) else { return Ok(false) };
+        let name = h.meta.file.clone().ok_or_else(|| corrupt(format!("segment {id} has no file")))?;
+        let image: &[u8] = &h.map;
+        // A damaged image is not made the only copy.
+        if image.len() as u64 != h.meta.extent.len || crc32fast::hash(image) != h.meta.crc {
+            return Err(corrupt(format!("{name} fails its checksum")));
+        }
+        let (cref, object) = cold.upload(id, &d.join(&name), image)?;
+        let key = cref.key.clone();
+        let read = |r: Range<usize>| image.get(r).map(<[u8]>::to_vec).ok_or_else(|| corrupt(format!("{name}: a section lies outside it")));
+        let pinned = match crate::storage::cold::pinned_of(&object.table, &read) {
+            Ok(p) => p,
+            Err(e) => {
+                object.retire();
+                cold.uploaded(&key);
+                return Err(e);
+            }
+        };
+        // A commit that may have reached the disk poisons the database: then
+        // the object stays, and opening sorts it out. Otherwise it goes, with
+        // the cache file, once the image (dropped after this) and the object
+        // are dropped.
+        let given_up = || {
+            if !self.is_poisoned() {
+                object.retire();
+                cold.uploaded(&key);
+            }
+        };
+        // Its handle opens over this image when the version is published.
+        let fresh = match cold.fresh_image(&object, &pinned, Some(image), None) {
+            Ok(f) => f,
+            Err(e) => {
+                given_up();
+                return Err(e);
+            }
+        };
+        let mut wal = self.background_writer();
+        let committed = (|| -> Result<bool> {
+            self.check_poisoned()?;
+            // Still there, as it was uploaded (its deletes may have changed).
+            if lock(&self.state).handle(id).is_none_or(|now| now.meta.file.as_deref() != Some(name.as_str())) {
+                return Ok(false);
+            }
+            let mut vw = VersionWriter::begin(self);
+            let s = vw.manifest.tables.iter_mut().flat_map(|t| t.segments.iter_mut()).find(|s| s.id == id).expect("segment in manifest");
+            s.cold = Some(cref);
+            vw.obsolete.extend(s.file.take());
+            let c = vw.commit(&mut wal)?;
+            self.publish(c, |_| {})?;
+            Ok(true)
+        })();
+        drop(wal);
+        if !matches!(committed, Ok(true)) {
+            given_up();
+            drop(fresh);
+            return committed;
+        }
+        cold.uploaded(&key);
+        cold.offloaded.fetch_add(1, Ordering::Relaxed);
+        self.images_swapped.fetch_add(1, Ordering::AcqRel);
+        tracing::info!(segment = id, key = %key, bytes = h.meta.extent.len, "made a segment cold");
+        Ok(true)
+    }
+
+    /// Brings the cold tier's cache back under [`ColdOptions::cache_bytes`],
+    /// to nine tenths of it: drops the fetched parts of the least recently
+    /// read cold segments, each opened again over a new cache file that
+    /// holds its header and keys only. Snapshots taken before keep reading
+    /// the old file, whose space returns when the last of them ends.
+    /// Returns the bytes dropped. Takes the writer lock.
+    pub fn evict_cold(&self) -> Result<u64> {
+        let Some(cold) = &self.cold else { return Ok(0) };
+        let limit = cold.opts.cache_bytes;
+        if cold.used() <= limit {
+            return Ok(0);
+        }
+        let target = limit / 10 * 9;
+        let d = self.dir.clone().expect("a cold tier has the directory layout");
+        let _wal = self.background_writer();
+        self.check_poisoned()?;
+        let hints = self.opts.read_ahead && self.opts.random_hints;
+        let check = if self.opts.check_sections { Check::Read } else { Check::Never };
+        let mut freed = 0;
+        for old in cold.images_by_age() {
+            if cold.used() <= target {
+                break;
+            }
+            if old.held() == 0 {
+                continue;
+            }
+            let id = old.object.id;
+            let (h, schema) = {
+                let st = lock(&self.state);
+                let Some((t, h)) = st.tables.iter().find_map(|t| Some((t, t.handles.iter().find(|h| h.meta.id == id)?))) else { continue };
+                (h.clone(), t.schema.clone())
+            };
+            if !h.cold.as_ref().is_some_and(|c| Arc::ptr_eq(c, &old)) {
+                continue;
+            }
+            let pinned = old.pinned_ranges()?;
+            let fresh = cold.fresh_image(&old.object, &pinned, None, Some(&old))?;
+            let nh = Arc::new(SegHandle::open_in(&d, &h.meta, &schema, self.opts.read_ahead, hints, check, Some(cold))?);
+            debug_assert!(nh.cold.as_ref().is_some_and(|c| Arc::ptr_eq(c, &fresh)));
+            {
+                let mut st = lock(&self.state);
+                for x in st.tables.iter_mut().flat_map(|t| t.handles.iter_mut()) {
+                    if Arc::ptr_eq(x, &h) {
+                        *x = nh.clone();
+                    }
+                }
+                st.changed();
+            }
+            freed += old.held();
+            old.retire();
+            cold.evictions.fetch_add(1, Ordering::Relaxed);
+            self.images_swapped.fetch_add(1, Ordering::AcqRel);
+        }
+        self.republish();
+        Ok(freed)
+    }
+
+    /// Starts a thread that runs [`Database::offload`] every `every` and
+    /// [`Database::evict_cold`] whenever the cache outgrows its limit. It
+    /// ends with the database; without a cold tier, or called again, this
+    /// does nothing.
+    pub fn spawn_cold(self: &Arc<Self>, every: Duration) {
+        let Some(cold) = self.cold.clone() else { return };
+        let mut slot = lock(&self.cold_thread);
+        if slot.is_some() {
+            return;
+        }
+        let db = Arc::downgrade(self);
+        let thread = std::thread::Builder::new().name("strata-cold".into()).spawn(move || {
+            let mut last: Option<String> = None;
+            let mut next_offload = Instant::now();
+            while cold.signal.wait(every.min(Duration::from_secs(1))) {
+                let Some(db) = db.upgrade() else { return };
+                if db.is_poisoned() {
+                    continue;
+                }
+                let mut r = db.evict_cold().map(|_| ());
+                if r.is_ok() && Instant::now() >= next_offload {
+                    next_offload = Instant::now() + every;
+                    r = db.offload().map(|_| ());
+                }
+                let now = r.err().map(|e| e.to_string());
+                match (&now, &last) {
+                    (None, Some(_)) => tracing::info!("the cold tier works again"),
+                    (Some(e), l) if l.as_ref() != Some(e) => tracing::warn!(error = %e, "the cold tier failed to offload or evict; it tries again"),
+                    _ => {}
+                }
+                last = now;
+            }
+        });
+        *slot = Some(thread.expect("spawn the cold tier's thread"));
+    }
+
+    /// Reads every segment of the current version, with its delete set
+    /// and updates, and compares each with its checksum, as [`Self::check`]
+    /// does, but without the writer lock: writes, flushes and merges go on
+    /// meanwhile. The version it reads stays pinned, so no commit reuses
+    /// its pages, and a segment merged away meanwhile is read through its
+    /// mapping (in the directory layout, its delete-set and updates files
+    /// are skipped once unlinked). Damage is listed, not an error: the
+    /// scrub reads on past it. `pace` is called after each segment with
+    /// the bytes it read, so that a caller can keep reads to a rate.
+    ///
+    /// A section of a segment is checked the first time a query reads it
+    /// ([`DbOptions::check_sections`]); a scrub finds the damage a query
+    /// has not read yet, as on a replica that serves few searches, or a
+    /// segment that only a merge would read.
+    pub fn scrub(&self, mut pace: impl FnMut(u64)) -> Result<ScrubReport> {
+        let t0 = Instant::now();
+        let (handles, txn, _pin) = {
+            let st = lock(&self.state);
+            (st.handles().cloned().collect::<Vec<_>>(), st.txn, self.pins.pin(st.txn))
+        };
+        let mut r = ScrubReport { txn, ..Default::default() };
+        for h in &handles {
+            let m = &h.meta;
+            let bytes = m.extent.len + m.deletes.map_or(0, |e| e.len) + m.updates.map_or(0, |e| e.len);
+            match h.verify(self.dir.as_deref()) {
+                Ok(()) => {}
+                // Merged away meanwhile, its small files unlinked.
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => r.damaged.push(e.to_string()),
+            }
+            r.segments += 1;
+            r.bytes += bytes;
+            pace(bytes);
+        }
+        r.seconds = t0.elapsed().as_secs_f64();
+        Ok(r)
     }
 
     /// Verifies the file: the meta slot and manifest on disk match the open
@@ -3378,7 +3937,14 @@ impl Database {
     /// key is found by its segment's index, and every page is used exactly
     /// once (meta slot, extent, free run or pending free). `Error::Busy`
     /// while a write is in progress.
+    ///
+    /// A read-only database checks the version it holds: every segment,
+    /// delete set and set of updates against its checksum and every key;
+    /// which pages or files are used is for the writer's check.
     pub fn check(&self) -> Result<()> {
+        if self.reader.is_some() {
+            return self.check_read_only();
+        }
         let _w = self.try_writer()?;
         if let Some(d) = &self.dir {
             return self.check_dir(d);
@@ -3476,9 +4042,28 @@ impl Database {
         }
         check_field_lists(&manifest, &handles)?;
         for (s, h) in manifest.segments().zip(&handles) {
-            let name = s.file.as_deref().ok_or_else(|| corrupt(format!("segment {} has no file", s.id)))?;
-            if crc32fast::hash(&std::fs::read(d.join(name))?) != s.crc {
-                return Err(corrupt(format!("{name} fails its checksum")));
+            match (&s.cold, &h.cold) {
+                // A cold image is checked as far as the cache holds it (a
+                // damaged part is fetched again), and its object must be
+                // there and whole; it is not fetched to be checked.
+                (Some(c), Some(img)) => {
+                    img.verify_present()?;
+                    let store = &self.cold.as_ref().expect("a cold segment opens only with the cold tier").opts.store;
+                    let n = s.extent.len.div_ceil(c.chunk.max(1) as u64);
+                    if crc32fast::hash(&store.get_range(&format!("{}.crc", c.key), 0..24 + 4 * n)?) != c.table_crc {
+                        return Err(corrupt(format!("cold segment {}: {}.crc fails its checksum", s.id, c.key)));
+                    }
+                    if s.extent.len > 0 {
+                        store.get_range(&c.key, s.extent.len - 1..s.extent.len)?;
+                    }
+                }
+                (Some(_), None) | (None, Some(_)) => return Err(corrupt(format!("segment {} is cold in the manifest and not in the open version, or the other way", s.id))),
+                (None, None) => {
+                    let name = s.file.as_deref().ok_or_else(|| corrupt(format!("segment {} has no file", s.id)))?;
+                    if crc32fast::hash(&std::fs::read(d.join(name))?) != s.crc {
+                        return Err(corrupt(format!("{name} fails its checksum")));
+                    }
+                }
             }
             if let Some(df) = &s.deletes_file {
                 if crc32fast::hash(&std::fs::read(d.join(df))?) != s.deletes_crc {
@@ -3511,12 +4096,63 @@ impl Database {
         }
     }
 
+    /// [`Database::check`] of a read-only database.
+    fn check_read_only(&self) -> Result<()> {
+        // The pin keeps the version's pages while they are read.
+        let (_pin, manifest, handles, map) = {
+            let st = lock(&self.state);
+            (self.pins.pin(st.meta.txn), st.manifest.clone(), st.handles().cloned().collect::<Vec<_>>(), st.map.clone())
+        };
+        check_field_lists(&manifest, &handles)?;
+        let bytes = |file: Option<&str>, e: Extent| -> Result<Vec<u8>> {
+            match (&self.dir, file) {
+                (Some(d), Some(f)) => std::fs::read(d.join(f)).map_err(|e| match e.kind() {
+                    // The writer replaced it since.
+                    std::io::ErrorKind::NotFound => Error::Busy(format!("{f} went while it was checked: the version changed; check again")),
+                    _ => e.into(),
+                }),
+                (Some(_), None) => Err(corrupt("a part of a segment has no file")),
+                (None, _) => Ok(map[e.range()].to_vec()),
+            }
+        };
+        for (s, h) in manifest.segments().zip(&handles) {
+            // The image as the reader maps it (the writer may have removed
+            // its file since, in the directory layout).
+            if crc32fast::hash(h.file.image()) != s.crc {
+                return Err(corrupt(format!("segment {} fails its checksum", s.id)));
+            }
+            if let Some(e) = s.deletes.or(s.deletes_file.as_ref().map(|_| Extent { page: 0, len: 0 })) {
+                if crc32fast::hash(&bytes(s.deletes_file.as_deref(), e)?) != s.deletes_crc {
+                    return Err(corrupt(format!("delete set of segment {} fails its checksum", s.id)));
+                }
+                let n: u32 = h.base.as_ref().map_or(0, |b| b.deleted_words().iter().map(|w| w.count_ones()).sum());
+                if n != s.n_deleted {
+                    return Err(corrupt(format!("segment {} has {n} deletes, manifest says {}", s.id, s.n_deleted)));
+                }
+            }
+            if let Some(e) = s.updates.or(s.updates_file.as_ref().map(|_| Extent { page: 0, len: 0 })) {
+                if crc32fast::hash(&bytes(s.updates_file.as_deref(), e)?) != s.updates_crc {
+                    return Err(corrupt(format!("updates of segment {} fail their checksum", s.id)));
+                }
+            }
+            if let Some(pk) = &h.pk {
+                for d in 0..s.n_docs {
+                    if !pk.lookup_all(&pk.key(d)).any(|x| x == d) {
+                        return Err(corrupt(format!("segment {} key of document {d} not found", s.id)));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The writer lock, waiting up to [`DbOptions::write_wait`] while
     /// another write holds it, then `Busy`. A background flush holds it
     /// only to seal or install, briefly: that is waited for however long.
     /// While one waits for the lock, so does this, for a few milliseconds,
     /// in case the lock is being handed to the flush.
     fn try_writer(&self) -> Result<MutexGuard<'_, Wal>> {
+        self.writable()?;
         let t0 = Instant::now();
         let mut nap = Duration::from_micros(50);
         loop {
@@ -3539,7 +4175,18 @@ impl Database {
         }
     }
 
+    /// `Error::Query` for a read-only database, which no write may change.
+    fn writable(&self) -> Result<()> {
+        match self.reader {
+            Some(_) => Err(read_only(&self.path)),
+            None => Ok(()),
+        }
+    }
+
+    /// Fails a write when an earlier one failed partway, or the database is
+    /// read-only.
     fn check_poisoned(&self) -> Result<()> {
+        self.writable()?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(Error::Io(std::io::Error::other("an earlier write failed; reopen the database")));
         }
@@ -3575,13 +4222,23 @@ impl Database {
                     .iter()
                     .map(|m| match (old.iter().find(|h| h.meta == *m).filter(|_| !altered.contains(&t.id)), &self.dir) {
                         (Some(h), _) => Ok(h.clone()),
-                        (None, Some(d)) => SegHandle::open_in(d, m, &t.schema, self.opts.read_ahead, hints, check).map(Arc::new),
+                        (None, Some(d)) => SegHandle::open_in(d, m, &t.schema, self.opts.read_ahead, hints, check, self.cold.as_ref()).map(Arc::new),
                         (None, None) => SegHandle::open(&map, m, &t.schema, self.opts.read_ahead, hints, check).map(Arc::new),
                     })
                     .collect::<Result<Vec<_>>>()
             })
             .collect::<Result<Vec<_>>>()
             .map_err(|e| self.poison(e))?;
+        // Cold segments the new version no longer names: their objects go
+        // once no snapshot reads them.
+        let named: HashSet<&str> = c.manifest.segments().filter_map(|s| s.cold.as_ref().map(|c| c.key.as_str())).collect();
+        for h in &old {
+            if let Some(img) = h.cold.as_ref().filter(|i| !named.contains(i.object.key.as_str())) {
+                img.object.retire();
+                // Readers cached above let go of it.
+                self.images_swapped.fetch_add(1, Ordering::AcqRel);
+            }
+        }
         let obsolete = c.obsolete;
         {
             let mut st = lock(&self.state);
@@ -4592,12 +5249,18 @@ struct VersionWriter<'a> {
 
 impl<'a> VersionWriter<'a> {
     fn begin(db: &'a Database) -> VersionWriter<'a> {
+        // Read before the state: a reader that registers after this cannot
+        // read a version older than the one in the newer meta slot now.
+        let readers = match db.dir {
+            None => share::oldest_pin(&db.share),
+            Some(_) => None,
+        };
         let st = lock(&db.state);
         let mut fl = st.freelist.clone();
         // Reusable: freed before the newest on-disk commit (so the older
         // meta slot cannot reach them) and by a commit no live snapshot
-        // predates.
-        fl.release((st.meta.txn - 1).min(db.pins.min().unwrap_or(u64::MAX)));
+        // predates, here or in a reader's process ([`share`]).
+        fl.release((st.meta.txn - 1).min(db.pins.min().unwrap_or(u64::MAX)).min(readers.unwrap_or(u64::MAX)));
         let mut manifest = st.manifest.clone();
         // Past the ids reserved for merges.
         manifest.next_segment_id = manifest.next_segment_id.max(st.next_segment_id);
@@ -4739,6 +5402,7 @@ impl<'a> VersionWriter<'a> {
             updates: upd,
             updates_file,
             updates_crc,
+            cold: None,
         };
         let segs = &mut self.table_mut(table).segments;
         segs.insert(pos.unwrap_or(segs.len()), meta);
@@ -5026,6 +5690,7 @@ fn segment_stats(m: &Manifest) -> Vec<SegmentStats> {
                 n_deleted: s.n_deleted,
                 bytes: s.extent.len,
                 delete_set_bytes: s.deletes.map_or(0, |e| e.len),
+                cold: s.cold.is_some(),
             })
         })
         .collect()
@@ -5157,7 +5822,7 @@ fn pages_for(bytes: usize) -> u64 {
 /// could have committed (see [`WriteTxn`]'s checks). Replay takes one that
 /// is not, behind an intact checksum, as damage: applied, it would break
 /// what readers rely on.
-fn op_fits(schema: &Schema, op: &Op) -> bool {
+pub(crate) fn op_fits(schema: &Schema, op: &Op) -> bool {
     let is_key = |k: &Value| {
         schema.primary_key.is_some_and(|pk| matches!((&schema.fields[pk].ty, k), (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_))))
     };
@@ -5245,31 +5910,11 @@ fn wal_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// How long an open waits for a lock that is held.
-pub const LOCK_WAIT: Duration = Duration::from_millis(500);
+pub use crate::storage::share::LOCK_WAIT;
 
-/// One open `Database` per file: an exclusive `flock`, released when the
-/// file is closed (also by a crash). A child process holds a copy of every
-/// descriptor of its parent from its fork until its exec closes them, so a
-/// database that a process closes and opens again while it starts a child
-/// can find its own lock still held for a moment: a held lock is retried
-/// for [`LOCK_WAIT`] before the open fails.
-fn lock_exclusive(file: &File) -> Result<()> {
-    let deadline = Instant::now() + LOCK_WAIT;
-    loop {
-        // SAFETY: flock on a valid descriptor.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(());
-        }
-        let e = std::io::Error::last_os_error();
-        if e.raw_os_error() != Some(libc::EWOULDBLOCK) {
-            return Err(e.into());
-        }
-        if Instant::now() >= deadline {
-            return Err(Error::Busy("the database is open elsewhere".into()));
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+/// What a write to a read-only database fails with.
+fn read_only(path: &Path) -> Error {
+    Error::Query(format!("{} is open read-only", path.display()))
 }
 
 /// Lowers the calling thread's CPU priority to nice value `nice` (at most

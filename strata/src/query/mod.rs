@@ -16,6 +16,8 @@
 //!   files.
 //! * [`cross_encoder`]: cross-encoders (`cross_encoder()`), which a global
 //!   rerank phase scores rows' text with.
+//! * [`function`]: stored functions (`CREATE FUNCTION`), kept in
+//!   `_functions` and written out into the queries that call them.
 
 pub mod agg;
 #[cfg(feature = "datafusion")]
@@ -26,8 +28,10 @@ pub mod ddl;
 #[cfg(feature = "datafusion")]
 pub mod df;
 pub mod exec;
+pub mod function;
 pub mod fusion;
 pub mod hint;
+pub mod llm;
 pub mod ir;
 pub mod logical;
 pub mod memory;

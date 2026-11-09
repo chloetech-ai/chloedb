@@ -1,17 +1,6 @@
----
-title: Parquet and S3
-parent: Strata
-nav_order: 8
----
-
 # Parquet and S3
-{: .no_toc }
 
 Strata reads Parquet files, and directories of them as Spark, DuckDB, polars and pandas write them, into a table, making the table's schema from the columns' types and values when it does not exist, and writes a table to a Parquet file that any of those tools reads. An export keeps the table's Strata schema in the file, so importing it back gives the same schema and rows. Wherever a file is read or written, an `s3://` URL works too: an object, or every object under a prefix, on AWS S3 or any store that speaks its API.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Import
 

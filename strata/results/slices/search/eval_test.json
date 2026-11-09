@@ -1,0 +1,431 @@
+{
+ "queries": 50000,
+ "full_top10": 47191,
+ "words": 29154,
+ "methods": {
+  "cov": {
+   "10000": {
+    "1": {
+     "proved": 0.0008264287681973258,
+     "proved_8bit": 0.0008264287681973258,
+     "covered": 0.02074548112987646,
+     "local_equals_cloud": 0.02074548112987646,
+     "unknown_word": 0.39412176050518105,
+     "equal_among_unproved": 0.01993552765524262,
+     "overlap_among_unproved": 0.01993552765524262,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.0002754762560657753,
+     "proved_8bit": 0.0002754762560657753,
+     "covered": 0.009069525968934754,
+     "local_equals_cloud": 0.009069525968934754,
+     "unknown_word": 0.39412176050518105,
+     "equal_among_unproved": 0.008796472932298953,
+     "overlap_among_unproved": 0.01819350827363051,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00010595240617914433,
+     "proved_8bit": 0.00010595240617914433,
+     "covered": 0.00728952554512513,
+     "local_equals_cloud": 0.00728952554512513,
+     "unknown_word": 0.39412176050518105,
+     "equal_among_unproved": 0.007184334336455728,
+     "overlap_among_unproved": 0.017284787860806356,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00010595240617914433,
+     "proved_8bit": 6.35714437074866e-05,
+     "covered": 0.006378334851984488,
+     "local_equals_cloud": 0.006378334851984488,
+     "unknown_word": 0.39412176050518105,
+     "equal_among_unproved": 0.00627304709023863,
+     "overlap_among_unproved": 0.01686093332768238,
+     "violations": 0
+    }
+   },
+   "30000": {
+    "1": {
+     "proved": 0.002352143417177004,
+     "proved_8bit": 0.0022885719734695173,
+     "covered": 0.05761691848021869,
+     "local_equals_cloud": 0.05761691848021869,
+     "unknown_word": 0.27136530270602444,
+     "equal_among_unproved": 0.055395072217502124,
+     "overlap_among_unproved": 0.055395072217502124,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.0008052382869614969,
+     "proved_8bit": 0.0007628573244898391,
+     "covered": 0.029751435655103728,
+     "local_equals_cloud": 0.029751435655103728,
+     "unknown_word": 0.27136530270602444,
+     "equal_among_unproved": 0.028969524738616845,
+     "overlap_among_unproved": 0.05239680755554603,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0004873810684240639,
+     "proved_8bit": 0.0004873810684240639,
+     "covered": 0.024580958233561483,
+     "local_equals_cloud": 0.024580958233561483,
+     "unknown_word": 0.27136530270602444,
+     "equal_among_unproved": 0.02410532564450475,
+     "overlap_among_unproved": 0.050661465400271805,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00042380962471657733,
+     "proved_8bit": 0.0002754762560657753,
+     "covered": 0.020300481023924052,
+     "local_equals_cloud": 0.020300481023924052,
+     "unknown_word": 0.27136530270602444,
+     "equal_among_unproved": 0.019885098895507835,
+     "overlap_among_unproved": 0.048788450531044296,
+     "violations": 0
+    }
+   },
+   "100000": {
+    "1": {
+     "proved": 0.005657858489966307,
+     "proved_8bit": 0.0054035727151363604,
+     "covered": 0.12924074505732025,
+     "local_equals_cloud": 0.12924074505732025,
+     "unknown_word": 0.1791231378864614,
+     "equal_among_unproved": 0.12428607961810588,
+     "overlap_among_unproved": 0.12428607961810588,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.002521667267063635,
+     "proved_8bit": 0.002352143417177004,
+     "covered": 0.07463287491258927,
+     "local_equals_cloud": 0.07463287491258927,
+     "unknown_word": 0.1791231378864614,
+     "equal_among_unproved": 0.072293507817811,
+     "overlap_among_unproved": 0.11965358033083945,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.001907143311224598,
+     "proved_8bit": 0.0017588099425737958,
+     "covered": 0.06198215761479943,
+     "local_equals_cloud": 0.06198215761479943,
+     "unknown_word": 0.1791231378864614,
+     "equal_among_unproved": 0.0601898048873697,
+     "overlap_among_unproved": 0.11608246109423724,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.0016528575363946515,
+     "proved_8bit": 0.001101905024263101,
+     "covered": 0.04954334512936789,
+     "local_equals_cloud": 0.04954334512936789,
+     "unknown_word": 0.1791231378864614,
+     "equal_among_unproved": 0.04796977479676522,
+     "overlap_among_unproved": 0.11158066775624641,
+     "violations": 0
+    }
+   },
+   "200000": {
+    "1": {
+     "proved": 0.008751668750397321,
+     "proved_8bit": 0.008327859125680744,
+     "covered": 0.19272742683986355,
+     "local_equals_cloud": 0.19272742683986355,
+     "unknown_word": 0.13689050878345446,
+     "equal_among_unproved": 0.18562144597887897,
+     "overlap_among_unproved": 0.18562144597887897,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.004153334322222458,
+     "proved_8bit": 0.003877858066156682,
+     "covered": 0.11983217138861224,
+     "local_equals_cloud": 0.11983217138861224,
+     "unknown_word": 0.13689050878345446,
+     "equal_among_unproved": 0.11616129375465475,
+     "overlap_among_unproved": 0.1791963684079828,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0034540484414401053,
+     "proved_8bit": 0.0032209531478459875,
+     "covered": 0.10061240490771546,
+     "local_equals_cloud": 0.10061240490771546,
+     "unknown_word": 0.13689050878345446,
+     "equal_among_unproved": 0.09749510929658926,
+     "overlap_among_unproved": 0.1749723568937543,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.0030726197791951853,
+     "proved_8bit": 0.0019495242736962556,
+     "covered": 0.07908287597211333,
+     "local_equals_cloud": 0.07908287597211333,
+     "unknown_word": 0.13689050878345446,
+     "equal_among_unproved": 0.07624452663350763,
+     "overlap_among_unproved": 0.16960209156996253,
+     "violations": 0
+    }
+   },
+   "400000": {
+    "1": {
+     "proved": 0.014515479646542774,
+     "proved_8bit": 0.013900955690703735,
+     "covered": 0.29573435612722765,
+     "local_equals_cloud": 0.29573435612722765,
+     "unknown_word": 0.0980059757157085,
+     "equal_among_unproved": 0.2854040338881005,
+     "overlap_among_unproved": 0.2854040338881005,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.0075226208387192475,
+     "proved_8bit": 0.007077620732766841,
+     "covered": 0.19444385581996568,
+     "local_equals_cloud": 0.19444385581996568,
+     "unknown_word": 0.0980059757157085,
+     "equal_among_unproved": 0.18833803057477155,
+     "overlap_among_unproved": 0.2771870640817669,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0061664300396261995,
+     "proved_8bit": 0.005679048971202136,
+     "covered": 0.16323027695958975,
+     "local_equals_cloud": 0.16323027695958975,
+     "unknown_word": 0.0980059757157085,
+     "equal_among_unproved": 0.15803837953091684,
+     "overlap_among_unproved": 0.27234968017058536,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.005509525121315505,
+     "proved_8bit": 0.0037507151787417093,
+     "covered": 0.1275031255959823,
+     "local_equals_cloud": 0.1275031255959823,
+     "unknown_word": 0.0980059757157085,
+     "equal_among_unproved": 0.12266945089599625,
+     "overlap_among_unproved": 0.26491444887176896,
+     "violations": 0
+    }
+   }
+  },
+  "pop": {
+   "10000": {
+    "1": {
+     "proved": 0.0031997626666101587,
+     "proved_8bit": 0.0026064291920069507,
+     "covered": 0.08302430548197749,
+     "local_equals_cloud": 0.08302430548197749,
+     "unknown_word": 0.35958127609078,
+     "equal_among_unproved": 0.08008078231292518,
+     "overlap_among_unproved": 0.08008078231292518,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.001568095611451336,
+     "proved_8bit": 0.0010595240617914433,
+     "covered": 0.03375643660867538,
+     "local_equals_cloud": 0.03375643660867538,
+     "unknown_word": 0.35958127609078,
+     "equal_among_unproved": 0.03223889466646858,
+     "overlap_among_unproved": 0.07632772318554715,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0011442859867347587,
+     "proved_8bit": 0.0006780953995465237,
+     "covered": 0.023796910427835816,
+     "local_equals_cloud": 0.023796910427835816,
+     "unknown_word": 0.35958127609078,
+     "equal_among_unproved": 0.02267857521692089,
+     "overlap_among_unproved": 0.07442136750323236,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.0006145239558390371,
+     "proved_8bit": 0.00016952384988663092,
+     "covered": 0.01457905109025026,
+     "local_equals_cloud": 0.01457905109025026,
+     "unknown_word": 0.35958127609078,
+     "equal_among_unproved": 0.013973113947669735,
+     "overlap_among_unproved": 0.07043382384122285,
+     "violations": 0
+    }
+   },
+   "30000": {
+    "1": {
+     "proved": 0.005657858489966307,
+     "proved_8bit": 0.004937382127948126,
+     "covered": 0.1444767010658812,
+     "local_equals_cloud": 0.1444767010658812,
+     "unknown_word": 0.2329257697442309,
+     "equal_among_unproved": 0.13965135112096155,
+     "overlap_among_unproved": 0.13965135112096155,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.002648810154478608,
+     "proved_8bit": 0.002076667161111229,
+     "covered": 0.05816787099235023,
+     "local_equals_cloud": 0.05816787099235023,
+     "unknown_word": 0.2329257697442309,
+     "equal_among_unproved": 0.055666510857094294,
+     "overlap_among_unproved": 0.13199195456025917,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0021190481235828867,
+     "proved_8bit": 0.0015469051302155071,
+     "covered": 0.03892691403021763,
+     "local_equals_cloud": 0.03892691403021763,
+     "unknown_word": 0.2329257697442309,
+     "equal_among_unproved": 0.03688602917754985,
+     "overlap_among_unproved": 0.12836423095707145,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.0013350003178572184,
+     "proved_8bit": 0.00033904769977326183,
+     "covered": 0.020830243054819775,
+     "local_equals_cloud": 0.020830243054819775,
+     "unknown_word": 0.2329257697442309,
+     "equal_among_unproved": 0.01952130368358513,
+     "overlap_among_unproved": 0.12018969614666643,
+     "violations": 0
+    }
+   },
+   "100000": {
+    "1": {
+     "proved": 0.011930240935771651,
+     "proved_8bit": 0.01082833591150855,
+     "covered": 0.25659553728465173,
+     "local_equals_cloud": 0.25659553728465173,
+     "unknown_word": 0.13593693712784216,
+     "equal_among_unproved": 0.24766234880329416,
+     "overlap_among_unproved": 0.24766234880329416,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.006145239558390371,
+     "proved_8bit": 0.005297620308957216,
+     "covered": 0.11286050306202454,
+     "local_equals_cloud": 0.11286050306202454,
+     "unknown_word": 0.13593693712784216,
+     "equal_among_unproved": 0.1073751092727234,
+     "overlap_among_unproved": 0.2351264720723827,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.004873810684240639,
+     "proved_8bit": 0.0037507151787417093,
+     "covered": 0.07478120828124006,
+     "local_equals_cloud": 0.07478120828124006,
+     "unknown_word": 0.13593693712784216,
+     "equal_among_unproved": 0.0702710759992334,
+     "overlap_among_unproved": 0.22869615212623626,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.0027335720794219236,
+     "proved_8bit": 0.0010595240617914433,
+     "covered": 0.035218579813947576,
+     "local_equals_cloud": 0.035218579813947576,
+     "unknown_word": 0.13593693712784216,
+     "equal_among_unproved": 0.032574051251540524,
+     "overlap_among_unproved": 0.21529259275001436,
+     "violations": 0
+    }
+   },
+   "200000": {
+    "1": {
+     "proved": 0.017482147019558813,
+     "proved_8bit": 0.016316670551588225,
+     "covered": 0.35385984615710625,
+     "local_equals_cloud": 0.35385984615710625,
+     "unknown_word": 0.09953169036468819,
+     "equal_among_unproved": 0.3424060734158651,
+     "overlap_among_unproved": 0.3424060734158651,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.009620478481066305,
+     "proved_8bit": 0.008624525862982348,
+     "covered": 0.16676908732597318,
+     "local_equals_cloud": 0.16676908732597318,
+     "unknown_word": 0.09953169036468819,
+     "equal_among_unproved": 0.15867513961101481,
+     "overlap_among_unproved": 0.32279920976244114,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00748023987624759,
+     "proved_8bit": 0.0061664300396261995,
+     "covered": 0.11182216948146892,
+     "local_equals_cloud": 0.11182216948146892,
+     "unknown_word": 0.09953169036468819,
+     "equal_among_unproved": 0.10519236517357701,
+     "overlap_among_unproved": 0.31410393270423287,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.004640715390646521,
+     "proved_8bit": 0.0018011909050454536,
+     "covered": 0.05371786993282617,
+     "local_equals_cloud": 0.05371786993282617,
+     "unknown_word": 0.09953169036468819,
+     "equal_among_unproved": 0.04932725879247211,
+     "overlap_among_unproved": 0.29668738823131807,
+     "violations": 0
+    }
+   },
+   "400000": {
+    "1": {
+     "proved": 0.024729291602212287,
+     "proved_8bit": 0.02337310080311924,
+     "covered": 0.465830349007226,
+     "local_equals_cloud": 0.465830349007226,
+     "unknown_word": 0.07401835095675023,
+     "equal_among_unproved": 0.45235094733182685,
+     "overlap_among_unproved": 0.45235094733182685,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.014261193871712827,
+     "proved_8bit": 0.013159288847449725,
+     "covered": 0.24424148672416351,
+     "local_equals_cloud": 0.24424148672416351,
+     "unknown_word": 0.07401835095675023,
+     "equal_among_unproved": 0.23339352508706307,
+     "overlap_among_unproved": 0.43057167834673227,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.011633574198470047,
+     "proved_8bit": 0.010023097624547053,
+     "covered": 0.16867623063719778,
+     "local_equals_cloud": 0.16867623063719778,
+     "unknown_word": 0.07401835095675023,
+     "equal_among_unproved": 0.1589554478795935,
+     "overlap_among_unproved": 0.42015350971230353,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.006929287364116039,
+     "proved_8bit": 0.003136191222902672,
+     "covered": 0.08359644847534488,
+     "local_equals_cloud": 0.08359644847534488,
+     "unknown_word": 0.07401835095675023,
+     "equal_among_unproved": 0.07724479344486172,
+     "overlap_among_unproved": 0.40050785250940013,
+     "violations": 0
+    }
+   }
+  }
+ }
+}

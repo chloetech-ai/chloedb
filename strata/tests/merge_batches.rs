@@ -214,7 +214,7 @@ fn merges_that_spill_write_the_same_segment() {
         images.push(snap.segments()[0].file.image().to_vec());
         let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
-        assert_eq!(names, ["m.strata", "m.strata-wal"], "merge_spill_bytes {spill}");
+        assert_eq!(names, ["m.strata", "m.strata-readers", "m.strata-wal"], "merge_spill_bytes {spill}");
         // The merged segment answers as it did.
         let r = db.query("SELECT id FROM t WHERE MATCH(body, 'w1') ORDER BY id LIMIT 3", &Params::new()).unwrap();
         assert_eq!(r.rows.len(), 3);

@@ -14,7 +14,10 @@ once, and a database someone wrote with that version looks the same.
 | `profiles/` | 3, with `rank_profiles`: rank profiles in the manifest, and profile records in a WAL that names the feature (`STRWAL02`) | b43bfb2 | `tests/format_fixtures.rs` |
 | `fieldids-13d5bc5/` | 3, with `field_ids`: the writes of `format2/`, `format3/`, `seqno/` and `profiles/`, in subdirectories of those names, as the first version with field ids writes them | 13d5bc5 | `tests/format_fixtures.rs` |
 | `fieldids-bce183f/` | 3, with `field_ids`, the same writes as `fieldids-13d5bc5/`, and each segment's doc store with `store.crc`, a crc32 per block | bce183f | `tests/format_fixtures.rs` |
-| `fieldids/` | 3, with `field_ids` and `compact_keys`, the same writes as `fieldids-bce183f/`, and each segment's key index (`pk`) with 32-bit fingerprints, reading table `t`'s KEYWORD keys from their keyword column | the commit that adds this row | `tests/format_fixtures.rs` |
+| `fieldids-1bd956a/` | 3, with `field_ids` and `compact_keys`, the same writes as `fieldids-bce183f/`, and each segment's key index (`pk`) with 32-bit fingerprints, reading table `t`'s KEYWORD keys from their keyword column | 1bd956a | `tests/format_fixtures.rs` |
+| `fieldids/` | 3, with `field_ids`, `compact_keys` and `packed_positions`, the same writes as `fieldids-1bd956a/`, and each TEXT field with positions in the packed layout (section `text.<field>.ppos`, bit-packed by block); `seqno/`'s table has no positions, so it does not need the feature | the commit that adds this row | `tests/format_fixtures.rs` |
+| `functions-90091d4/` | 3, with `field_ids`, `compact_keys` and `functions`: table `t` and stored functions in the system table `_functions`, some versions flushed into segments and some in the WAL | 90091d4 | `tests/format_fixtures.rs` |
+| `functions/` | 3, with `field_ids`, `compact_keys`, `functions` and `packed_positions`: the same writes as `functions-90091d4/`, with `_functions`' TEXT fields' positions in the packed layout | the commit that adds this row | `tests/format_fixtures.rs` |
 
 All but `format1/` were written by [`writer.rs`](writer.rs). The sets from
 before field ids (`format1/` to `profiles/`), which named fields by position
@@ -40,7 +43,14 @@ directory layout. `writer.rs` makes the writes:
 - rank profiles: format 2's writes, with two profiles of `t` (`by_n`, and
   `phased` with rerank phases and defaults) flushed into the manifest with
   the deletes, and logged in the WAL before its transaction a profile of
-  `u` (`notes`), `by_n` replaced and `phased` dropped.
+  `u` (`notes`), `by_n` replaced and `phased` dropped;
+- stored functions (`functions/` and `functions-90091d4/`, written by `write_functions`, `cargo run
+  --release --example format_fixtures -- /tmp/fixtures functions`): format
+  2's table `t`, written and flushed, then `boosted` (which returns a value)
+  and `top` (which returns rows) at version 1, flushed with deletes; left in
+  the WAL, `boosted` version 2, `top` dropped (version 2, a tombstone),
+  `label` and a transaction on `t`. Each version is written at
+  2026-10-01 by `writer`, so the bytes are the same every time.
 
 `tests/format_fixtures.rs` opens copies of every set in both layouts with
 the current code. A set from before field ids must be refused by a plain

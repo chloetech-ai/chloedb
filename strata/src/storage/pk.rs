@@ -407,6 +407,24 @@ pub struct PkIndex {
     bloom: std::sync::Arc<std::sync::OnceLock<Bloom>>,
 }
 
+/// The field whose keyword column a `pk` section (`bytes`) reads its keys
+/// from (kind 3), if it does: the column's sections are then as much a
+/// part of the key index as the section is (a cold segment's cache keeps
+/// them, [`crate::storage::cold`]).
+pub fn key_column(bytes: OwnedBytes) -> Result<Option<String>> {
+    let mut r = ByteReader::new(bytes);
+    let kind = r.u64().map_err(corrupt)?;
+    if kind != KIND_COLUMN {
+        return Ok(None);
+    }
+    let _n = r.u64().map_err(corrupt)?;
+    let _bits = r.u64().map_err(corrupt)?;
+    let _dir: Slice<u32> = r.array().map_err(corrupt)?;
+    let _entries: Slice<u32> = r.array().map_err(corrupt)?;
+    let field: Slice<u8> = r.array().map_err(corrupt)?;
+    Ok(Some(std::str::from_utf8(&field).map_err(|_| corrupt("bad pk key field"))?.to_string()))
+}
+
 impl PkIndex {
     /// The index of a segment, or `None` if it has no `pk` section.
     pub fn open(seg: &SegmentFile) -> Result<Option<PkIndex>> {

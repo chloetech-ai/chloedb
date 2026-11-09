@@ -5,7 +5,9 @@
 //! reading: [`crate::storage::Database::checkpoint`] copies it consistently.
 //!
 //! ```text
-//! <dir>/LOCK                          held with flock by the open database
+//! <dir>/LOCK                          flock shared by the writer and its
+//!                                     readers ([`crate::storage::share`])
+//! <dir>/WRITER                        flock exclusive by the writer
 //! <dir>/CURRENT                       {db_id, txn, manifest, crc} as JSON
 //! <dir>/MANIFEST-<txn>                the manifest CURRENT names (JSON)
 //! <dir>/seg-<id>.strata               one segment image
@@ -122,12 +124,18 @@ pub fn write_current(dir: &Path, cur: &Current, sync: bool) -> Result<()> {
     Ok(())
 }
 
-/// Reads `CURRENT` and the manifest it names.
-pub fn read_current(dir: &Path) -> Result<(Current, Manifest)> {
+/// Reads `CURRENT`.
+pub fn read_current_file(dir: &Path) -> Result<Current> {
     let cur: Current = serde_json::from_slice(&std::fs::read(dir.join(CURRENT))?).map_err(|e| corrupt(format!("CURRENT: {e}")))?;
     if cur.format > crate::storage::pager::FORMAT_VERSION {
         return Err(corrupt(format!("unsupported format version {}", cur.format)));
     }
+    Ok(cur)
+}
+
+/// Reads `CURRENT` and the manifest it names.
+pub fn read_current(dir: &Path) -> Result<(Current, Manifest)> {
+    let cur = read_current_file(dir)?;
     let bytes = std::fs::read(dir.join(&cur.manifest))?;
     if crc32fast::hash(&bytes) != cur.crc {
         return Err(corrupt(format!("{} fails its checksum", cur.manifest)));
@@ -170,6 +178,6 @@ pub fn orphans(dir: &Path, keep: &HashSet<String>) -> Result<Vec<(PathBuf, u64)>
 pub fn size(dir: &Path) -> u64 {
     let log = |name: &str| name == WAL || name.strip_prefix("wal.").is_some_and(|t| t.len() == 20 && t.bytes().all(|b| b.is_ascii_digit()));
     std::fs::read_dir(dir)
-        .map(|it| it.filter_map(|e| e.ok()).filter(|e| !log(&e.file_name().to_string_lossy())).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
+        .map(|it| it.filter_map(|e| e.ok()).filter(|e| !log(&e.file_name().to_string_lossy())).filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum())
         .unwrap_or(0)
 }

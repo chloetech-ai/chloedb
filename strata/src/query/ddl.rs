@@ -60,7 +60,9 @@
 //! (default: the table's only TIMESTAMP; [`crate::schema::Schema::with_retain`]);
 //! and `expire_by`, a TIMESTAMP column holding when each row expires
 //! ([`crate::schema::Schema::with_expire_by`]): from then on the row is
-//! left out of every read, and deleted soon after:
+//! left out of every read, and deleted soon after; and `compression`,
+//! `'zstd'` for a doc store about 40% smaller for log lines whose rows take
+//! longer to read ([`crate::schema::Schema::with_compression`]):
 //!
 //! ```sql
 //! CREATE TABLE events (
@@ -87,9 +89,9 @@ fn err(m: impl Into<String>) -> Error {
 }
 
 /// The forms this module binds, for error messages.
-const CREATE_FORM: &str = "CREATE TABLE [IF NOT EXISTS] name (column TYPE [PRIMARY KEY] [NOT NULL] [DEFAULT value] [REFERENCES table] [OPTIONS(...)], ..., [PRIMARY KEY (column)], [FOREIGN KEY (column) REFERENCES table]) [OPTIONS(shard_by = 'column', cluster_by = 'column', retain = '400 days', retain_by = 'column', expire_by = 'column', edges = 'src, dst, w')]";
+const CREATE_FORM: &str = "CREATE TABLE [IF NOT EXISTS] name (column TYPE [PRIMARY KEY] [NOT NULL] [DEFAULT value] [REFERENCES table] [OPTIONS(...)], ..., [PRIMARY KEY (column)], [FOREIGN KEY (column) REFERENCES table]) [OPTIONS(shard_by = 'column', cluster_by = 'column', retain = '400 days', retain_by = 'column', expire_by = 'column', edges = 'src, dst, w', compression = 'zstd')]";
 /// The options of a table, in `OPTIONS(...)` after its columns.
-const TABLE_OPTIONS: [&str; 6] = ["shard_by", "cluster_by", "retain", "retain_by", "expire_by", "edges"];
+const TABLE_OPTIONS: [&str; 7] = ["shard_by", "cluster_by", "retain", "retain_by", "expire_by", "edges", "compression"];
 const TYPES: &str = "TEXT, KEYWORD, INT, FLOAT, BOOL, TIMESTAMP, VECTOR(dimensions), SPARSE, EDGES, JSON or MEDIA, KEYWORD[] or INT[] for lists, and VECTOR(dimensions)[] for several vectors per row";
 
 /// The table a `CREATE TABLE` statement makes, and whether it says `IF NOT
@@ -176,6 +178,7 @@ pub(crate) fn create_table(ct: &sql::CreateTable, tables: &[&Schema]) -> Result<
             v @ J::String(_) => short[k] = v,
             _ if k == "retain" => return Err(err("the table's option retain is a period, in quotes: retain = '400 days'")),
             _ if k == "edges" => return Err(err("the table's option edges names its source, target and weight columns, in quotes: edges = 'src, dst, w'")),
+            _ if k == "compression" => return Err(err("the table's option compression is 'lz4' (the default) or 'zstd', in quotes: compression = 'zstd'")),
             _ => return Err(err(format!("the table's option {k} names a column, in quotes: {k} = 'usr'"))),
         }
     }
@@ -908,13 +911,35 @@ mod tests {
     }
 
     #[test]
+    fn compression_is_a_table_option() {
+        use crate::schema::Compression;
+        let (s, _) = create("CREATE TABLE logs (id INT PRIMARY KEY, body TEXT) OPTIONS(compression = 'ZSTD')", &[]).unwrap();
+        assert_eq!(s.compression, Compression::Zstd);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["compact_keys", "zstd", "packed_positions"]);
+        assert_eq!(s.to_short_json()["compression"], serde_json::json!("zstd"));
+        assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
+        assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
+        // LZ4, the default, is left out of both forms.
+        let (s, _) = create("CREATE TABLE logs (id INT PRIMARY KEY, body TEXT) OPTIONS(compression = 'lz4')", &[]).unwrap();
+        assert_eq!(s.compression, Compression::Lz4);
+        assert!(s.to_short_json().get("compression").is_none() && !serde_json::to_string(&s).unwrap().contains("compression"));
+        for (bad, says) in [
+            ("CREATE TABLE t (a INT) OPTIONS(compression = 'gzip')", "lz4 (the default) or zstd"),
+            ("CREATE TABLE t (a INT) OPTIONS(compression = 3)", "compression = 'zstd'"),
+        ] {
+            let e = create(bad, &[]).unwrap_err().to_string();
+            assert!(e.contains(says), "{bad}: {e}");
+        }
+    }
+
+    #[test]
     fn derived_text_names_its_file_and_model() {
         let (s, _) = create("CREATE TABLE photos (id KEYWORD PRIMARY KEY, image MEDIA OPTIONS(kind = 'image'), caption TEXT OPTIONS(derive = 'image', model = 'blip-image-captioning-base'), emb VECTOR(8) OPTIONS(embed = 'caption', model = 'hash:8'))", &[]).unwrap();
         let f = s.field("caption").unwrap();
         assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into(), prompt: String::new() }));
         assert!(f.stored && matches!(f.ty, FieldType::Text { .. }));
         assert_eq!(s.derives_from(2), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys", "packed_positions"]);
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "caption", "type": "text", "derive": {"from": "image", "model": "blip-image-captioning-base"}}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);

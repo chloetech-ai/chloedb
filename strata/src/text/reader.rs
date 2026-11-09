@@ -71,7 +71,7 @@ impl TextFieldReader {
         if !(post.as_ptr() as usize).is_multiple_of(8) {
             return Err(corrupt("text postings section is not 8-byte aligned"));
         }
-        let pos = if meta.positions { Some(seg.require(&section(field, "pos"))?) } else { None };
+        let pos = if meta.positions { Some(seg.require(&section(field, if meta.packed_positions { "ppos" } else { "pos" }))?) } else { None };
         let norms: Slice<u8> = Slice::view(seg.require(&section(field, "norms"))?).map_err(corrupt)?;
         if norms.len() != meta.n_docs as usize || dict.n_terms() != meta.n_terms || meta.n_docs as usize != seg.n_docs() {
             return Err(corrupt(format!("text field {field}: inconsistent document or term counts")));
@@ -204,7 +204,7 @@ impl TextFieldReader {
     /// A cursor over the postings of a dictionary entry.
     pub fn cursor(&self, info: &TermInfo) -> PostingCursor<'_> {
         let start = info.post_off as usize;
-        let positions = self.pos.as_ref().map(|p| &p[info.pos_off as usize..info.pos_off.saturating_add(info.pos_len) as usize]);
+        let positions = self.pos.as_ref().map(|p| (&p[info.pos_off as usize..info.pos_off.saturating_add(info.pos_len) as usize], self.meta.packed_positions));
         if self.is_loom(info) {
             let (list, pos) = self.open_loom(info);
             PostingCursor::loom(&self.post, start, list, pos, info.df, positions)
@@ -322,6 +322,7 @@ impl TextFieldReader {
         match q {
             BoolQuery::Term(t) => self.doc_freq(t) as f64,
             BoolQuery::Phrase(ts) => ts.len() as f64 * ts.iter().map(|t| self.doc_freq(t) as f64).fold(f64::INFINITY, f64::min),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.eval_cost(&self.phrases_of(terms, prefix)),
             BoolQuery::Prefix(p) => self.prefix_infos(p).iter().map(|i| i.df as f64).sum(),
             BoolQuery::Fuzzy { term, edits } => self.fuzzy_infos(term, *edits).iter().map(|i| i.df as f64).sum(),
             BoolQuery::Or(cs) | BoolQuery::AtLeast { items: cs, .. } => cs.iter().map(|c| self.eval_cost(c)).sum(),
@@ -343,6 +344,7 @@ impl TextFieldReader {
                 None => DocSet::empty(n),
             },
             BoolQuery::Phrase(ts) => DocSet::from_sorted(self.phrase_docs(ts), n),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.eval_set(&self.phrases_of(terms, prefix)),
             BoolQuery::Prefix(p) => {
                 let infos = self.prefix_infos(p);
                 self.union_terms(&infos)
@@ -458,6 +460,18 @@ impl TextFieldReader {
         DocSet::from_sorted(out, n)
     }
 
+    /// A phrase prefix as phrases: `terms` and each of the first
+    /// [`PHRASE_PREFIX_TERMS`](super::query::PHRASE_PREFIX_TERMS) terms
+    /// with `prefix` in this field's dictionary.
+    fn phrases_of(&self, terms: &[String], prefix: &str) -> BoolQuery {
+        let phrase = |t: String| {
+            let mut ts = terms.to_vec();
+            ts.push(t);
+            BoolQuery::Phrase(ts)
+        };
+        BoolQuery::Or(self.expand_prefix(prefix, super::query::PHRASE_PREFIX_TERMS).into_iter().map(phrase).collect())
+    }
+
     /// Documents containing the terms at consecutive positions (all of
     /// them, without positions).
     pub fn phrase_docs(&self, terms: &[String]) -> Vec<DocId> {
@@ -495,6 +509,7 @@ impl TextFieldReader {
         match q {
             BoolQuery::Term(t) => self.doc_freq(t) as f64,
             BoolQuery::Phrase(ts) => n * ts.iter().map(|t| self.doc_freq(t) as f64 / n).product::<f64>(),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.estimate(&self.phrases_of(terms, prefix)),
             BoolQuery::Prefix(p) => {
                 n * (1.0 - self.prefix_infos(p).iter().map(|i| 1.0 - i.df as f64 / n).product::<f64>())
             }
@@ -534,6 +549,7 @@ impl TextFieldReader {
         match q {
             BoolQuery::Term(t) => self.postings(t).map_or(Matcher::Never, Matcher::Term),
             BoolQuery::Phrase(ts) if ts.len() == 1 => self.matcher(&BoolQuery::Term(ts[0].clone())),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.matcher(&self.phrases_of(terms, prefix)),
             BoolQuery::Phrase(ts) => {
                 let cs: Option<Vec<PostingCursor>> = ts.iter().map(|t| self.postings(t)).collect();
                 match cs {

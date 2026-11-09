@@ -33,6 +33,7 @@
 //! ([`plan_in`]): each leaf names its table, and a join or subquery across
 //! tables runs as one within a table does.
 
+use super::function::FunctionSet;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -128,7 +129,7 @@ pub(crate) fn needs(q: &sql::Query, schema: &Schema) -> bool {
         TableFactor::Table { name, .. } if is_table(name, schema) => {}
         _ => return true,
     }
-    if orders_by_text(q, s, schema) || filters_rows(s, schema) || orders_by_several(q, s, schema) {
+    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) {
         return true;
     }
     let mut found = false;
@@ -714,6 +715,30 @@ fn orders_by_text(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
     !grouped && es.first().is_some_and(|o| text(&o.expr))
 }
 
+/// Whether `q`, a query of one table that does not group, orders by a
+/// value of its rows that the scan's ranking does not compute, which
+/// takes numbers and scores: a text function, a hash (`ORDER BY hash(id,
+/// 7)`, a seeded shuffle) or a part of a time, and no score. The row
+/// evaluator sorts by it, over the rows the table's query finds.
+fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
+    let grouped = !matches!(&s.group_by, sql::GroupByExpr::Expressions(es, _) if es.is_empty()) || has_aggregate(s);
+    let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by else { return false };
+    let mut found = false;
+    for o in es {
+        if ranks(&o.expr) {
+            return false;
+        }
+        walk(&o.expr, &mut |x| {
+            found |= match x {
+                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime"),
+                Expr::Extract { .. } => true,
+                _ => false,
+            }
+        });
+    }
+    !grouped && found
+}
+
 /// The expressions of a SELECT outside its FROM and ORDER BY.
 fn select_exprs(s: &sql::Select) -> Vec<&Expr> {
     let mut out: Vec<&Expr> = distinct_on(s).iter().collect();
@@ -825,24 +850,37 @@ pub type Profiles<'a> = &'a dyn Fn(&str, &str) -> Option<RankProfile>;
 /// ranks by a rank profile (`ORDER BY rank_profile(..)`) plans as written
 /// out with the one `profiles` finds ([`super::profile::expand`]), and its
 /// plan names it. A server binds its requests against its database's
-/// tables with it.
+/// tables with it. It calls no stored function: [`plan_read_calling`]
+/// does.
 pub fn plan_read(sql_text: &str, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
-    plan_read_parsed(&*super::sql::parse_query_cached(sql_text)?, catalog, params, profiles)
+    plan_read_calling(sql_text, catalog, params, profiles, &FunctionSet::default())
 }
 
-/// [`plan_read`] of a query [`super::sql::parse_query_cached`] parsed.
-pub(crate) fn plan_read_parsed(p: &super::sql::Parsed, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
-    plan_read_with(&p.query, catalog, params, profiles, p.profiles)
+/// [`plan_read`] of a query that may call the stored functions of
+/// `functions`, which plan as written out ([`super::function::expand`]).
+pub fn plan_read_calling(sql_text: &str, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet) -> Result<ir::Plan> {
+    plan_read_parsed(&*super::sql::parse_query_cached(sql_text)?, catalog, params, profiles, functions)
 }
 
-/// [`plan_read`] of a parsed query.
-pub(crate) fn plan_read_query(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
-    plan_read_with(q, catalog, params, profiles, true)
+/// [`plan_read_calling`] of a query [`super::sql::parse_query_cached`]
+/// parsed.
+pub(crate) fn plan_read_parsed(p: &super::sql::Parsed, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet) -> Result<ir::Plan> {
+    plan_read_with(&p.query, catalog, params, profiles, functions, p.profiles)
+}
+
+/// [`plan_read_calling`] of a parsed query.
+pub(crate) fn plan_read_query(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet) -> Result<ir::Plan> {
+    plan_read_with(q, catalog, params, profiles, functions, true)
 }
 
 /// [`plan_read_query`]; `may_rank_by_profile` false for a query whose text
 /// names no `rank_profile`.
-fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, may_rank_by_profile: bool) -> Result<ir::Plan> {
+fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet, may_rank_by_profile: bool) -> Result<ir::Plan> {
+    // Stored functions are written out first: a table function's body may
+    // rank by a rank profile.
+    if let Some((q, _)) = super::function::expand(q, functions)? {
+        return plan_read_with(&q, catalog, params, profiles, &FunctionSet::default(), true);
+    }
     let mut rewritten;
     let q = match catalog.iter().any(|s| s.fields.iter().any(|f| f.ty == FieldType::Json)) {
         true => {
@@ -854,7 +892,7 @@ fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles
     };
     if let Some((q, r)) = if may_rank_by_profile { super::profile::expand(q, profiles)? } else { None } {
         let table = super::tables::read_by(&q).first().cloned().unwrap_or_default();
-        return Ok(super::profile::mark(plan_read_query(&q, catalog, params, &|_, _| None)?, &table, &r));
+        return Ok(super::profile::mark(plan_read_query(&q, catalog, params, &|_, _| None, functions)?, &table, &r));
     }
     let schema = match super::tables::read_by(q).first() {
         None => *catalog.first().ok_or_else(|| err("the database has no tables"))?,
@@ -1468,11 +1506,18 @@ impl<'a> Planner<'a> {
             Some(sql::Distinct::On(_)) => return self.join(&q, &s),
             _ if per_capped(&q) => return self.join(&q, &s),
             // Columns computed from the rows' values, and an order by
-            // text, by the row evaluator.
+            // text or by values of rows, by the row evaluator.
             // Window functions, by operators over the rows.
             // Conditions the indexes cannot answer, and orders by several
             // keys, by the row evaluator over the scan's rows.
-            _ if computes_columns(&q, &s) || orders_by_text(&q, &s, schema) || reads_paths(&q, &s) || windowed(&q, &s) || filters_rows(&s, schema) || orders_by_several(&q, &s, schema) => {
+            _ if computes_columns(&q, &s)
+                || orders_by_text(&q, &s, schema)
+                || orders_by_row_values(&q, &s)
+                || reads_paths(&q, &s)
+                || windowed(&q, &s)
+                || filters_rows(&s, schema)
+                || orders_by_several(&q, &s, schema) =>
+            {
                 return self.join(&q, &s)
             }
             Some(sql::Distinct::Distinct) => distinct_to_group(&mut s)?,
@@ -2750,6 +2795,12 @@ fn compile_all(es: &[Expr], cols: &[(String, String)], multi: &[bool], params: &
     es.iter().map(|e| compile_row(e, cols, multi, params, subs)).collect()
 }
 
+/// The value of `e`, an expression of no row (a literal or a
+/// parameter).
+pub(crate) fn value_of(e: &Expr, params: &Params) -> Result<Value> {
+    value(&compile(e, params, &|_| None, &[])?)
+}
+
 /// The value of an expression of no row.
 fn value(e: &ir::Expr) -> Result<Value> {
     eval::eval(e, &|r| Err(err(format!("{r:?} is not a value of no row"))))
@@ -2953,6 +3004,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "date_trunc" => Func::DateTrunc,
                 "date_part" => Func::DatePart,
                 "strftime" => Func::Strftime,
+                "hash" => Func::Hash,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
                     return Err(err(format!("{}(...) works on one table's scan, in its WHERE or ORDER BY (in a join, on that table's column: a.body), not on values of rows", n.to_uppercase())))
@@ -3003,7 +3055,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part and strftime";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, strftime and hash";
 
 /// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
 pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
@@ -3019,8 +3071,8 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 19] = [
-        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime",
+    const ROW_FUNCTIONS: [&str; 20] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "hash",
     ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
@@ -3029,10 +3081,11 @@ fn unknown_function(n: &str) -> String {
         "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
             "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
         }
-        "random" | "rand" => "; ORDER BY random() is not supported: Strata orders by columns and scores",
+        "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
         "floor" | "ceil" | "ceiling" | "trunc" | "truncate" => "; round(x) rounds to a whole number, round(x, n) to n decimals",
         "char_length" | "character_length" | "len" => "; length(text) counts its characters",
+        "llm" => "; llm() asks a language model about the rows a query returns, after the query finds them: Db::query and a server's queries run it, not a plan",
         "lcase" => "; lower(text)",
         "ucase" => "; upper(text)",
         _ => "",

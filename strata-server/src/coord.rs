@@ -90,6 +90,7 @@ use strata::query::stats::TermStats;
 use strata::query::steps::{self, Step};
 use strata::query::{bind_command, Command, Conflict, Params, Projection, Select, Write};
 use strata::schema::Schema;
+use strata::query::function::{self, Change, Function, FunctionSet, Statement};
 use strata::storage::RankProfile;
 use strata::value::Value;
 use tonic::service::interceptor::InterceptedService;
@@ -108,8 +109,10 @@ use crate::{json as js, plan_pb, ApiError};
 
 mod moves;
 pub mod plan;
+mod scroll;
 mod stats;
 pub use stats::{StatsCache, STATS_CACHE_TERMS};
+pub use scroll::{ShardScroll, SHARD_KEEP_ALIVE_MARGIN};
 pub use moves::{plan_even, MOVE_SLOTS};
 
 /// How the coordinator uses replicas and handles shards that do not answer.
@@ -498,6 +501,127 @@ fn common_profiles(answers: &[pb::SchemaResponse]) -> Vec<(String, RankProfile)>
     out
 }
 
+/// What a coordinator reads a replica's stored functions with: an
+/// ordinary query, so that no shard protocol changes. It has no LIMIT: a
+/// server refuses a LIMIT past the most rows a query returns
+/// (`--max-result-window`, 10,000 by default), and answers a query without
+/// one with every row up to that many.
+const FUNCTIONS_SQL: &str = "SELECT id, name, version, language, kind, signature, body, hash, description, created, created_by, dropped FROM _functions";
+
+/// The stored functions of each replica that answered within 5 s, by URL:
+/// none for one that has made no function, or a server from before stored
+/// functions (which reads no `_functions`); and, for each replica that did
+/// not say, its URL and why. It is read as every read is: in the protocol
+/// the cluster speaks, typed from protocol 2 and under the slot map's
+/// epoch from 4.
+async fn replica_functions(t: &Topology) -> (Vec<(String, FunctionSet)>, Vec<String>) {
+    let p = t.protocol();
+    let schema = strata::storage::functions_schema();
+    let typed = || strata::query::compound::plan_read(FUNCTIONS_SQL, &[&schema], &Params::new(), &|_, _| None);
+    let req = match Read::new(FUNCTIONS_SQL, &Params::new(), None, p, if p >= 4 { t.epoch() } else { 0 }, typed) {
+        Ok(read) => read.request(p, 0),
+        Err(e) => {
+            tracing::warn!(error = %e.message, "the read of stored functions does not plan");
+            return (Vec::new(), t.replicas.iter().flatten().map(|r| format!("{}: {}", r.url, e.message)).collect());
+        }
+    };
+    let calls = t.replicas.iter().flatten().map(|r| {
+        let (mut c, url, req) = (r.client.clone(), r.url.clone(), req.clone());
+        async move { (url, tokio::time::timeout(Duration::from_secs(5), c.query(req)).await) }
+    });
+    let (mut sets, mut failed) = (Vec::new(), Vec::new());
+    for (url, a) in join_all(calls).await {
+        let why = match a {
+            Ok(Ok(r)) => match result_from_pb(r.into_inner()).and_then(|rs| functions_of(&rs)) {
+                Ok(set) => {
+                    sets.push((url, set));
+                    continue;
+                }
+                Err(e) => format!("its stored functions do not read: {}", e.message),
+            },
+            Ok(Err(s)) if s.message().contains("no such table") => {
+                sets.push((url, FunctionSet::default()));
+                continue;
+            }
+            Ok(Err(s)) => s.message().to_string(),
+            Err(_) => "no answer within 5 s".to_string(),
+        };
+        tracing::warn!(replica = %url, error = %why, "a replica did not say which stored functions it holds");
+        failed.push(format!("{url}: {why}"));
+    }
+    (sets, failed)
+}
+
+/// The functions in rows of `_functions`.
+fn functions_of(rs: &ResultSet) -> Result<FunctionSet, ApiError> {
+    let rows = rs.rows.iter().map(|r| Function::from_row(&rs.columns.iter().cloned().zip(r.iter().cloned()).collect()).map_err(ApiError::from));
+    Ok(FunctionSet::of(rows.collect::<Result<Vec<_>, _>>()?))
+}
+
+/// Every version any replica holds; an error when two hold one version
+/// with two definitions.
+fn union_functions(sets: &[(String, FunctionSet)]) -> Result<FunctionSet, ApiError> {
+    let mut all: BTreeMap<String, (&str, &Function)> = BTreeMap::new();
+    for (url, set) in sets {
+        for f in set.all() {
+            match all.get(&f.id()) {
+                Some((other, g)) if g.hash != f.hash || g.dropped != f.dropped => {
+                    return Err(ApiError::bad(format!("version {} of {} differs on {other} and {url}: drop it on one (DROP FUNCTION {} VERSION {}) on that server", f.version, f.def.name, f.def.name, f.version)));
+                }
+                Some(_) => {}
+                None => {
+                    all.insert(f.id(), (url, f));
+                }
+            }
+        }
+    }
+    Ok(FunctionSet::of(all.into_values().map(|(_, f)| f.clone())))
+}
+
+/// The stored functions a coordinator calls: the versions every replica
+/// that answered holds alike (one that a replica lacks, or holds with
+/// another definition, is left out until they agree, so that a new
+/// version is called once every shard has it), and a function's drop as
+/// soon as any replica holds it, so that a dropped function is not called
+/// while the drop reaches the others.
+fn common_functions(sets: &[(String, FunctionSet)]) -> FunctionSet {
+    let Some((_, first)) = sets.first() else { return FunctionSet::default() };
+    let alike = |f: &Function| sets.iter().all(|(_, s)| s.get(&f.def.name, f.version).is_some_and(|g| g.hash == f.hash && g.dropped == f.dropped));
+    let mut out: Vec<Function> = first.all().filter(|f| alike(f)).map(|f| (**f).clone()).collect();
+    let mut tops: BTreeMap<&str, &Function> = BTreeMap::new();
+    for f in sets.iter().flat_map(|(_, s)| s.all()) {
+        let top = tops.entry(f.def.name.as_str()).or_insert(f);
+        if f.version > top.version {
+            *top = f;
+        }
+    }
+    for top in tops.into_values().filter(|f| f.dropped) {
+        if !out.iter().any(|f| f.id() == top.id()) {
+            out.push(top.clone());
+        }
+    }
+    FunctionSet::of(out)
+}
+
+/// What tells two sets of functions apart: each version's id, hash and
+/// whether it is a drop.
+fn fingerprint(set: &FunctionSet) -> Vec<(String, String, bool)> {
+    set.all().map(|f| (f.id(), f.hash.clone(), f.dropped)).collect()
+}
+
+/// The statements that write every version of `set` on a new shard under
+/// its number, oldest first, drops included.
+fn copied_functions(set: &FunctionSet) -> Vec<String> {
+    let mut all: Vec<&Arc<Function>> = set.all().collect();
+    all.sort_by(|a, b| (&a.def.name, a.version).cmp(&(&b.def.name, b.version)));
+    all.into_iter()
+        .map(|f| match f.dropped {
+            true => Statement::Drop { name: f.def.name.clone(), if_exists: true, version: None, at: Some(f.version) }.sql(),
+            false => Statement::Create { def: f.def.clone(), replace: true, at: Some(f.version) }.sql(),
+        })
+        .collect()
+}
+
 /// A table's rank profile as `Schema` sends it: `{"table", "profile"}`.
 pub fn profile_json(table: &str, profile: &RankProfile) -> String {
     json!({"table": table, "profile": profile}).to_string()
@@ -689,6 +813,8 @@ pub(crate) struct Topology {
     /// Per shard: calls answered, failed, timed out, and cut by a client's
     /// own deadline ([`Coordinator::call`]).
     outcomes: Vec<Arc<[AtomicU64; 4]>>,
+    /// Each copy's short name, as [`replicas`](Self::replicas) ([`copy_shorts`]).
+    shorts: Vec<Vec<String>>,
 }
 
 impl Topology {
@@ -713,7 +839,18 @@ impl Topology {
             outcomes.push(same.and_then(|i| before.map(|b| b.outcomes[i].clone())).unwrap_or_default());
             replicas.push(rs);
         }
-        Ok(Topology { shards: groups.iter().map(|g| g.join("|")).collect(), skip_until: groups.iter().map(|_| AtomicU64::new(0)).collect(), replicas, slots, outcomes })
+        let shorts = copy_shorts(&groups);
+        Ok(Topology { shards: groups.iter().map(|g| g.join("|")).collect(), skip_until: groups.iter().map(|_| AtomicU64::new(0)).collect(), replicas, slots, outcomes, shorts })
+    }
+
+    /// The short name of copy `k` of shard `i` ([`copy_shorts`]).
+    fn short(&self, i: usize, k: usize) -> &str {
+        self.shorts.get(i).and_then(|s| s.get(k)).map_or("?", String::as_str)
+    }
+
+    /// The short name of the copy at `url`, and its shard.
+    fn short_of(&self, url: &str) -> Option<(usize, &str)> {
+        self.replicas.iter().enumerate().find_map(|(i, rs)| rs.iter().position(|r| r.url == url).map(|k| (i, self.short(i, k))))
     }
 
     /// Each shard's servers' URLs.
@@ -754,6 +891,9 @@ pub struct Coordinator {
     /// The rank profiles every replica holds alike, by table
     /// ([`Self::refresh`]).
     profiles: RwLock<Arc<Vec<(String, RankProfile)>>>,
+    /// The stored functions it calls: the versions every replica holds
+    /// alike, and drops ([`common_functions`]).
+    functions: RwLock<Arc<FunctionSet>>,
     /// When the replicas were last asked for their tables.
     asked: Mutex<Option<Instant>>,
     pub opts: CoordOptions,
@@ -819,6 +959,90 @@ pub async fn with_partial<F: Future>(f: F) -> (F::Output, Option<Json>) {
 /// bits.
 pub fn auto_key() -> String {
     format!("auto-{:032x}", rand::random::<u128>())
+}
+
+/// The default port of a shard server's gRPC (`--grpc`), which a short
+/// name leaves out.
+const GRPC_PORT: &str = "7701";
+
+/// A copy's short name, which every text, event and alert of the cluster
+/// says: from its URL alone, so that a copy keeps its name when another
+/// copy of its shard leaves or joins, and every coordinator names it alike
+/// (a name by its place in the shard's list, `s0-2`, became `s0-1` once
+/// `s0-0` left, and the alerts about `s0-0` then pointed at another
+/// server). A server the operator runs, `<cluster>-s<set>-<ordinal>.…`,
+/// is `s<shard>-<ordinal>` (`s1-0`), as its pod is numbered; another host
+/// is its first label (`a0` of `http://a0.example:7701`), with its port
+/// unless that is 7701 (`a0:7711`); an IP address or `localhost` is
+/// `host:port` (`127.0.0.1:8004`). [`copy_shorts`] makes them unique.
+pub fn copy_short(shard: usize, url: &str) -> String {
+    let (host, port) = host_port(url);
+    let ip = host.starts_with('[') || host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok();
+    if ip {
+        return match port {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        };
+    }
+    let label = host.split('.').next().unwrap_or(host);
+    let parts: Vec<&str> = label.split('-').collect();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if let [.., set, ordinal] = parts.as_slice() {
+        if parts.len() >= 3 && set.len() > 1 && set.starts_with('s') && digits(&set[1..]) && digits(ordinal) {
+            return format!("s{shard}-{ordinal}");
+        }
+    }
+    match port.filter(|p| *p != GRPC_PORT) {
+        Some(p) => format!("{label}:{p}"),
+        None => label.to_string(),
+    }
+}
+
+/// `host` and `port` of a URL (`[::1]` keeps its brackets).
+fn host_port(url: &str) -> (&str, Option<&str>) {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let auth = auth.rsplit_once('@').map_or(auth, |(_, a)| a);
+    if let Some(end) = auth.find(']') {
+        let (h, p) = auth.split_at(end + 1);
+        return (h, p.strip_prefix(':').filter(|p| !p.is_empty()));
+    }
+    match auth.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() => (h, Some(p)),
+        _ => (auth.trim_end_matches(':'), None),
+    }
+}
+
+/// The short names of the copies of each shard ([`copy_short`]): where two
+/// copies would share one (hosts `db.east` and `db.west`), each is named by
+/// its `host:port`, and failing that by its URL.
+pub fn copy_shorts<S: AsRef<str>>(groups: &[Vec<S>]) -> Vec<Vec<String>> {
+    let mut names: Vec<Vec<String>> = groups.iter().enumerate().map(|(i, g)| g.iter().map(|u| copy_short(i, u.as_ref())).collect()).collect();
+    for pass in 0..2 {
+        let mut by: HashMap<String, std::collections::HashSet<&str>> = HashMap::new();
+        for (g, ns) in groups.iter().zip(&names) {
+            for (u, n) in g.iter().zip(ns) {
+                by.entry(n.clone()).or_default().insert(u.as_ref());
+            }
+        }
+        let shared: std::collections::HashSet<String> = by.into_iter().filter(|(_, us)| us.len() > 1).map(|(n, _)| n).collect();
+        if shared.is_empty() {
+            break;
+        }
+        for (g, ns) in groups.iter().zip(&mut names) {
+            for (u, n) in g.iter().zip(ns.iter_mut()) {
+                if shared.contains(n) {
+                    let u = u.as_ref();
+                    *n = match (pass, host_port(u)) {
+                        (0, (h, Some(p))) => format!("{h}:{p}"),
+                        (0, (h, None)) => h.to_string(),
+                        _ => u.to_string(),
+                    };
+                }
+            }
+        }
+    }
+    names
 }
 
 /// Why a shard of `n` copies, `up` of them answering, elects no primary:
@@ -1067,7 +1291,10 @@ fn refuses_reads(s: &tonic::Status) -> bool {
 
 /// Whether another replica may answer where this one failed: not when the
 /// request itself is wrong, nor when the replica is overloaded
-/// (`ResourceExhausted`), which would only load the next one more.
+/// (`ResourceExhausted`), which would only load the next one more. A
+/// replica that refuses the cluster's token (`Unauthenticated`) was
+/// started with another `--cluster-token`: the coordinator sends every
+/// replica the same one, and the others take it.
 fn try_elsewhere(s: &tonic::Status) -> bool {
     !matches!(
         s.code(),
@@ -1075,12 +1302,21 @@ fn try_elsewhere(s: &tonic::Status) -> bool {
             | Code::NotFound
             | Code::AlreadyExists
             | Code::PermissionDenied
-            | Code::Unauthenticated
             | Code::FailedPrecondition
             | Code::OutOfRange
             | Code::Unimplemented
             | Code::ResourceExhausted
     )
+}
+
+/// A copy's entry `j` in the cluster's view, which failed with `e`: one
+/// that refuses the cluster's token answers, but counts as down to the
+/// coordinators, and says so (`refuses_token`).
+fn token_refused(mut j: Json, e: &tonic::Status) -> Json {
+    if e.code() == Code::Unauthenticated {
+        j["refuses_token"] = json!(true);
+    }
+    j
 }
 
 /// What one shard answered a write ([`Coordinator::write`]): the rows it
@@ -1148,8 +1384,9 @@ impl Coordinator {
             return Err(ApiError::bad("the shards serve different schemas"));
         }
         let schema = parsed.into_iter().next().ok_or_else(|| ApiError::bad("no shard answered"))?;
-        if schema.primary_key.is_none() {
-            return Err(ApiError::bad("a sharded table needs a primary key to route writes"));
+        // otlp: a table without a key places its rows by shard_by.
+        if schema.primary_key.is_none() && schema.shard_by_field().is_none() {
+            return Err(ApiError::bad("a sharded table needs a primary key or shard_by to route writes"));
         }
         let catalog = common_tables(&tables)?;
         let profiles = common_profiles(&tables);
@@ -1205,6 +1442,7 @@ impl Coordinator {
             }
         }
         let stats_cache_terms = opts.stats_cache_terms;
+        let functions = common_functions(&replica_functions(&topo).await.0);
         Ok(Coordinator {
             topo: RwLock::new(Arc::new(topo)),
             changing: tokio::sync::Mutex::new(()),
@@ -1214,6 +1452,7 @@ impl Coordinator {
             schema,
             catalog: RwLock::new(Arc::new(catalog)),
             profiles: RwLock::new(Arc::new(profiles)),
+            functions: RwLock::new(Arc::new(functions)),
             asked: Mutex::new(Some(Instant::now())),
             opts,
             epoch: Instant::now(),
@@ -1263,9 +1502,17 @@ impl Coordinator {
         self.profiles.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Asks every replica for its tables and rank profiles again, at most
-    /// once a second unless `now`, and serves those every replica that
-    /// answered (within 5 s) holds alike. Returns whether they changed.
+    /// The stored functions it calls ([`strata::query::function`]): the
+    /// versions every replica held alike when last asked, and the drops
+    /// any held ([`common_functions`]).
+    pub fn functions(&self) -> Arc<FunctionSet> {
+        self.functions.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Asks every replica for its tables, rank profiles and stored
+    /// functions again, at most once a second unless `now`, and serves
+    /// those every replica that answered (within 5 s) holds alike. Returns
+    /// whether they changed.
     pub async fn refresh(&self, now: bool) -> bool {
         let t = &self.topo();
         {
@@ -1286,7 +1533,15 @@ impl Coordinator {
             _ => return false,
         };
         let profiles = common_profiles(&answers);
+        let functions = common_functions(&replica_functions(t).await.0);
         let mut changed = false;
+        {
+            let mut held = self.functions.write().unwrap_or_else(|e| e.into_inner());
+            if fingerprint(&held) != fingerprint(&functions) {
+                *held = Arc::new(functions);
+                changed = true;
+            }
+        }
         {
             let mut held = self.catalog.write().unwrap_or_else(|e| e.into_inner());
             if **held != tables {
@@ -1590,12 +1845,10 @@ impl Coordinator {
     /// 1)`), or its URL when the cluster map no longer holds it.
     pub fn copy_name(&self, url: &str) -> String {
         let t = self.topo();
-        for (i, rs) in t.replicas.iter().enumerate() {
-            if let Some(k) = rs.iter().position(|r| r.url == url) {
-                return format!("s{i}-{k} (shard {i})");
-            }
+        match t.short_of(url) {
+            Some((i, short)) => format!("{short} (shard {i})"),
+            None => format!("copy {url}"),
         }
-        format!("copy {url}")
     }
 
     /// The statistics of shards `which`, and the replica, lease and
@@ -2062,7 +2315,7 @@ impl Coordinator {
         if !stale.is_empty() {
             for &(i, r) in &stale {
                 match versions[i] {
-                    Some((kr, v)) if kr == r => self.stats.stale(&t.replicas[i][r].url, v),
+                    Some((kr, v)) if kr == r => self.stats.stale(&t.replicas[i][r].url, &schema.table, v),
                     _ => {
                         self.stats.stale.fetch_add(1, Ordering::Relaxed);
                     }
@@ -2173,7 +2426,7 @@ impl Coordinator {
         for (i, r, lease) in leases {
             if lease != 0 {
                 let mut c = t.replicas[i][r].client.clone();
-                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease] })).await });
+                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease], cursors: Vec::new() })).await });
             }
         }
     }
@@ -2427,7 +2680,7 @@ impl Coordinator {
                     Err((_, s)) if in_doubt(&s) => {
                         // The next write goes to the new primary.
                         self.ask_all(t, i).await;
-                        return Err(ApiError { status: 409, message: format!("s{i}-{k} (shard {i}): {}; {IN_DOUBT}", s.message()) });
+                        return Err(ApiError { status: 409, message: format!("{} (shard {i}): {}; {IN_DOUBT}", t.short(i, k), s.message()) });
                     }
                     Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
                         Some(m) => (k, passed_over) = (m, true),
@@ -2718,6 +2971,61 @@ impl Coordinator {
                     self.refresh(true).await;
                     return f.map_or(Ok(Written::default()), Err);
                 }
+            }
+        }
+    }
+
+    /// Runs `CREATE FUNCTION` or `DROP FUNCTION` on every shard, with the
+    /// version numbered alike on all of them: the coordinator asks every
+    /// replica which versions it holds, works out the change against all
+    /// of them together ([`function::change`]), and sends each shard's
+    /// primary the version to write (`AT VERSION n`), which a shard that
+    /// holds it already passes over. A definition that is the current
+    /// one's goes again to the shards that lack it. It waits for every
+    /// replica to answer, so that two shards never give one number two
+    /// definitions; a shard that fails leaves the others changed, and the
+    /// statement runs again. A table function's body is checked against
+    /// the tables the coordinator serves first. `author` is the name of the
+    /// key that asked; each shard records the coordinator's credential as
+    /// the version's `created_by`.
+    pub async fn define_function(&self, stmt: &Statement, author: &str) -> Result<Written, ApiError> {
+        let t = self.topo();
+        let (sets, failed) = replica_functions(&t).await;
+        let replicas = t.replicas.iter().flatten().count();
+        if !failed.is_empty() {
+            return Err(ApiError {
+                status: 503,
+                message: format!("{} of {replicas} replicas did not say which functions they hold ({}): a function's versions are numbered alike on every shard, so CREATE and DROP FUNCTION wait for every replica", failed.len(), failed.join("; ")),
+            });
+        }
+        let all = union_functions(&sets)?;
+        let send = match function::change(&all, stmt, Some(strata::timestamp::now()), Some(author))? {
+            Change::Put(f) if f.dropped => Some(Statement::Drop { name: f.def.name.clone(), if_exists: true, version: None, at: Some(f.version) }),
+            Change::Put(f) => {
+                if let Some(params) = function::sample_params(&f.def).filter(|_| f.def.kind == function::Kind::Table) {
+                    let catalog = self.catalog();
+                    let refs: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                    let profiles = self.rank_profiles();
+                    let profile = |t: &str, n: &str| profiles.iter().find(|(pt, p)| pt.eq_ignore_ascii_case(t) && p.name.eq_ignore_ascii_case(n)).map(|(_, p)| p.clone());
+                    strata::query::compound::plan_read_calling(&f.def.body, &refs, &params, &profile, &self.functions()).map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                }
+                Some(Statement::Create { def: f.def.clone(), replace: true, at: Some(f.version) })
+            }
+            Change::Delete(id) => {
+                let (name, v) = id.rsplit_once('@').ok_or_else(|| ApiError::internal(format!("a function's version without a number: {id}")))?;
+                Some(Statement::Drop { name: name.to_string(), if_exists: true, version: Some(v.parse().map_err(ApiError::internal)?), at: None })
+            }
+            // The definition is the current one's: the shards that lack it get it.
+            Change::Nothing => match stmt {
+                Statement::Create { def, .. } => all.current(&def.name).filter(|c| c.hash == def.hash()).map(|c| Statement::Create { def: c.def.clone(), replace: true, at: Some(c.version) }),
+                _ => None,
+            },
+        };
+        match send {
+            Some(s) => self.ddl(&s.sql(), &Params::new()).await,
+            None => {
+                self.refresh(true).await;
+                Ok(Written::default())
             }
         }
     }
@@ -3070,7 +3378,7 @@ impl Coordinator {
                 Some(u) => t.replicas[i].iter().position(|r| r.url == u),
                 None => t.replicas[i].iter().position(|r| r.takes_writes()),
             };
-            format!("s{i}-{}", k.unwrap_or(0))
+            t.short(i, k.unwrap_or(0)).to_string()
         };
         let mut shards: Vec<Json> = Vec::new();
         let mut took = Vec::new();
@@ -3173,7 +3481,7 @@ impl Coordinator {
                             let detail: Json = serde_json::from_str(&h.detail).unwrap_or(Json::Null);
                             json!({"url": r.url, "status": h.status, "docs": h.docs, "segments": h.segments, "txn": h.txn, "rtt_ms": ms, "detail": detail})
                         }
-                        Ok(Err(e)) => json!({"url": r.url, "status": "down", "error": e.message(), "rtt_ms": ms}),
+                        Ok(Err(e)) => token_refused(json!({"url": r.url, "status": "down", "error": e.message(), "rtt_ms": ms}), &e),
                         Err(_) => json!({"url": r.url, "status": "down", "error": "no answer within 2 s", "rtt_ms": ms}),
                     };
                     let up = j["status"] != "down";
@@ -3184,7 +3492,7 @@ impl Coordinator {
                         let _ = r.down_since_ms.compare_exchange(0, wall, Ordering::Relaxed, Ordering::Relaxed);
                     }
                     let role = r.role().as_str_name().to_lowercase();
-                    j["short"] = json!(format!("s{i}-{k}"));
+                    j["short"] = json!(t.short(i, k));
                     {
                         let mut known = r.known.lock().unwrap_or_else(|e| e.into_inner());
                         if up {
@@ -3311,7 +3619,7 @@ impl Coordinator {
                         answering.get_or_insert((h.docs, h.segments));
                         json!({"url": r.url, "status": h.status, "docs": h.docs, "segments": h.segments, "txn": h.txn})
                     }
-                    Ok(Err(e)) => json!({"url": r.url, "status": "down", "error": e.message()}),
+                    Ok(Err(e)) => token_refused(json!({"url": r.url, "status": "down", "error": e.message()}), &e),
                     Err(_) => json!({"url": r.url, "status": "down", "error": "no answer within 2 s"}),
                 };
                 all_up &= j["status"] == "ok";
@@ -3596,13 +3904,16 @@ impl Coordinator {
     }
 
     /// Creates every table the cluster serves on a new server, `c`, which
-    /// serves the first table already, and its rank profiles. Only a
+    /// serves the first table already, its rank profiles and its stored
+    /// functions, each version under its number. Only a
     /// server that no primary ships to is given them: each is a numbered
     /// write, which would make a replica's history differ from its
     /// primary's, which ships its tables and profiles.
     async fn copy_catalog(&self, url: &str, c: &mut Client) -> Result<(), ApiError> {
         let mut statements: Vec<String> = self.catalog().iter().skip(1).map(|t| strata::query::ddl::create_sql(t).replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)).collect();
         statements.extend(self.rank_profiles().iter().map(|(t, p)| profile_sql(t, p)));
+        // Every version of each function, numbered as on the other shards.
+        statements.extend(copied_functions(&self.functions()));
         for sql in statements {
             let r = pb::WriteRequest { sql: sql.clone(), ..Default::default() };
             c.write(r).await.map_err(|s| ApiError { status: ApiError::from(s.clone()).status, message: format!("{url}: {sql}: {}", s.message()) })?;
@@ -3717,6 +4028,13 @@ impl Coordinator {
         }
         let k = self.primary(&t, i).await?;
         if k == Some(gone) {
+            // A dead primary is still the one each copy follows: removed, the
+            // shard would have no primary (finding chaos-2).
+            if rs[gone].down_since_ms.load(Ordering::Relaxed) > 0 {
+                return Err(ApiError::bad(format!(
+                    "{url} does not answer, but was shard {i}'s primary when it last did: make another of its servers the primary first (POST /v1/admin/shards/{i}/promote; with \"force\" when fewer than a majority of its copies answer)"
+                )));
+            }
             return Err(ApiError::bad(format!("{url} is shard {i}'s primary: promote another of its servers first")));
         }
         let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;
@@ -3749,6 +4067,31 @@ async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_is_named_by_its_address_and_keeps_its_name_when_another_leaves() {
+        let k8s = |set: u32, o: u32| format!("http://search-s{set}-{o}.search-servers.prod.svc:7701");
+        for (url, want) in [
+            (k8s(0, 2), "s1-2"),
+            ("http://a0:7701".to_string(), "a0"),
+            ("http://a0.example:7711/".to_string(), "a0:7711"),
+            ("https://node-3.east.example".to_string(), "node-3"),
+            ("http://127.0.0.1:8004".to_string(), "127.0.0.1:8004"),
+            ("http://localhost:7701".to_string(), "localhost:7701"),
+            ("http://[::1]:8000".to_string(), "[::1]:8000"),
+            ("http://10.0.0.5".to_string(), "10.0.0.5"),
+        ] {
+            assert_eq!(copy_short(1, &url), want, "{url}");
+        }
+        // s0-0 leaves: the others keep their names, and a new copy has its own.
+        let before = copy_shorts(&[vec![k8s(0, 0), k8s(0, 1), k8s(0, 2)], vec!["http://127.0.0.1:8000".into(), "http://127.0.0.1:8004".into()]]);
+        let after = copy_shorts(&[vec![k8s(0, 1), k8s(0, 2), k8s(0, 3)], vec!["http://127.0.0.1:8004".into()]]);
+        assert_eq!(before, [vec!["s0-0", "s0-1", "s0-2"], vec!["127.0.0.1:8000", "127.0.0.1:8004"]]);
+        assert_eq!(after, [vec!["s0-1", "s0-2", "s0-3"], vec!["127.0.0.1:8004"]]);
+        // Two hosts that would share a name are named by host and port.
+        let same = copy_shorts(&[vec!["http://db.east.example:7701", "http://db.west.example:7701"], vec!["http://a1:7701"]]);
+        assert_eq!(same, [vec!["db.east.example:7701", "db.west.example:7701"], vec!["a1"]]);
+    }
 
     #[test]
     fn hedges_stay_within_their_share() {
@@ -3788,6 +4131,9 @@ mod tests {
         assert!(!try_elsewhere(&tonic::Status::resource_exhausted("too many queries running")));
         assert!(try_elsewhere(&tonic::Status::unavailable("connection refused")));
         assert!(!try_elsewhere(&tonic::Status::invalid_argument("bad SQL")));
+        // A replica started with another cluster token: the others take it.
+        assert!(try_elsewhere(&tonic::Status::unauthenticated("missing or wrong token")));
+        assert!(!try_elsewhere(&tonic::Status::permission_denied("this key may not write")));
         // The server answers too many queries with 429, which crosses gRPC
         // as ResourceExhausted and back.
         let s = tonic::Status::from(ApiError { status: 429, message: "too many queries running".into() });

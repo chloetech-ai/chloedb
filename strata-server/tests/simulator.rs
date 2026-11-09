@@ -81,6 +81,13 @@ fn check_report(r: &Json) {
     for id in ["cheapest", "copy_more", "machine_up"] {
         assert!(advice.iter().any(|a| a["id"] == id), "no {id} advice: {advice:?}");
     }
+    // The mix's main search, timed right after an insert: what it waits
+    // over one alone is the model's rebuild after a write.
+    assert!(r["write"]["after_insert"]["p50"].as_f64().is_some_and(|p| p > 0.0), "{}", r["write"]);
+    assert!(r["write"]["after_kind"].is_string(), "{}", r["write"]);
+    if r["fit"]["stall_ms"].as_f64().unwrap() > 0.0 {
+        assert!(checks.iter().any(|c| c["id"] == "stall"), "no stall check: {checks:?}");
+    }
     let cap = r["model"]["base"]["prediction"]["capacity_qps"].as_f64().unwrap();
     assert!(cap > 0.0 && cap.is_finite(), "{}", r["model"]["base"]);
     assert!(r["model"]["base"]["cost_month"].as_f64().unwrap() > 0.0);

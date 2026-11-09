@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css">
+<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
@@ -22,7 +22,7 @@
     <a href="benchmarks.html" aria-current="page">Benchmarks</a>
     <a href="use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+  <div class="top-links"><a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
 
 <main>
@@ -138,6 +138,7 @@
           <tr><th scope="row">Last in its lane, Milvus was still compacting during its first two passes, 2 to 3 times slower than alone</th><td>Its 1M numbers come from a run alone on a fresh node</td></tr>
         <tr><th scope="row">A slow kind is timed on fewer queries in its 6 seconds (Strata's typo kind on its first 48)</th><td>Open</td></tr>
         <tr><th scope="row">The graph run is on a fanless laptop, in a fixed order</th><td>Said on the graph page</td></tr>
+        <tr><th scope="row">The first graph passes sent Strata's queries as HTTP JSON, while Neo4j, Memgraph and FalkorDB used their binary protocols</th><td>Re-run with Strata over gRPC beside HTTP JSON; both on the graph page, gRPC 0.1 ms faster on short hops</td></tr>
         <tr><th scope="row">Elasticsearch's and OpenSearch's SQL aggregate went through their SQL endpoints, where the shard request cache stayed on; its 300 queries repeat 30 years, so their times are likely cached answers</th><td>Since <a href="https://github.com/chloetech-ai/strata/pull/262">#262</a> the harness turns it off for the whole index and records every engine's cache hits. Run again with it off on 5 November: Elasticsearch 50.1 ms at 1M, against 6.44 cached</td></tr>
       </tbody>
     </table></div>
@@ -191,11 +192,11 @@ deploy/compare/fanout.sh down</code></pre></div>
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js"></script>
-<script src="assets/site.js"></script>
-<script src="assets/bench.js"></script>
+<script src="assets/bench-data.js?v=5344f0f990"></script>
+<script src="assets/site.js?v=6d78382461"></script>
+<script src="assets/bench.js?v=6ebeb97e93"></script>
 </body>
 </html>

@@ -33,6 +33,14 @@ impl BuildOptions {
         self.params.insert(key.to_string(), value.to_string());
         self
     }
+
+    /// These options for a build of `schema`'s table: positions in the
+    /// layout the table writes (`text.positions`), whatever these say, so
+    /// that a segment holds packed positions only where the database
+    /// declares the feature ([`crate::schema::Schema::packed_positions`]).
+    pub fn for_table(&self, schema: &Schema) -> BuildOptions {
+        self.clone().set("text.positions", if schema.packed_positions { "packed" } else { "varint" })
+    }
 }
 
 /// Seconds spent in each part of segment builds since the last
@@ -149,7 +157,7 @@ pub fn build_segment_from(schema: &Schema, docs: &[Document], opts: &BuildOption
 /// which also writes the indexes.
 pub struct SegmentBuild<'a> {
     schema: &'a Schema,
-    opts: &'a BuildOptions,
+    opts: BuildOptions,
     threads: usize,
     n_docs: usize,
     added: usize,
@@ -169,14 +177,16 @@ pub struct SegmentBuild<'a> {
 
 impl<'a> SegmentBuild<'a> {
     /// A build of `n_docs` documents in all.
-    pub fn new(schema: &'a Schema, opts: &'a BuildOptions, n_docs: usize) -> Result<Self> {
+    pub fn new(schema: &'a Schema, opts: &BuildOptions, n_docs: usize) -> Result<Self> {
         Self::with_starts(schema, opts, n_docs, &[])
     }
 
     /// A build of `n_docs` documents in all, with the vector graphs
     /// `starts` names started from those segments' graphs
     /// ([`build_segment_from`]).
-    pub fn with_starts(schema: &'a Schema, opts: &'a BuildOptions, n_docs: usize, starts: &[GraphStart]) -> Result<Self> {
+    pub fn with_starts(schema: &'a Schema, opts: &BuildOptions, n_docs: usize, starts: &[GraphStart]) -> Result<Self> {
+        let owned = opts.for_table(schema);
+        let opts = &owned;
         let threads = build_threads(opts)?;
         let threads = if n_docs < PARALLEL_MIN_DOCS { 1 } else { threads };
         let (mut fields, mut slots) = (Vec::new(), Vec::new());
@@ -213,7 +223,7 @@ impl<'a> SegmentBuild<'a> {
             Some(pk) => KeyList::new(&schema.fields[pk].ty)?,
             None => KeyList::of(false),
         };
-        Ok(SegmentBuild { schema, opts, threads, n_docs, added: 0, fields, part_keys, slots, store, keys, spill: None })
+        Ok(SegmentBuild { schema, opts: owned, threads, n_docs, added: 0, fields, part_keys, slots, store, keys, spill: None })
     }
 
     /// Writes each section to `spill` as it is finished, and what grows
@@ -294,7 +304,7 @@ impl<'a> SegmentBuild<'a> {
                     let n = (docs.len() / TEXT_RUN_DOCS).clamp(1, threads);
                     let per = docs.len().div_ceil(n).max(1);
                     for at in (0..docs.len().max(1)).step_by(per) {
-                        let builder = crate::text::text_builder(&schema.fields[self.fields[j]], self.opts)?;
+                        let builder = crate::text::text_builder(&schema.fields[self.fields[j]], &self.opts)?;
                         tasks.push(Task::TextRun { slot: j, run: runs.len(), range: at..(at + per).min(docs.len()), builder });
                         runs.push(None);
                     }
@@ -447,6 +457,7 @@ pub fn missing_fields(seg: &SegmentFile, schema: &Schema) -> Result<Vec<usize>> 
 /// `SELECT`. Stored values come from the doc store
 /// ([`crate::forward::DocStore`]), which reads the same value.
 pub fn build_missing(schema: &Schema, fields: &[usize], n_docs: usize, opts: &BuildOptions) -> Result<SegmentFile> {
+    let opts = &opts.for_table(schema);
     let mut out = SegmentWriter::new(n_docs);
     for &i in fields {
         let f = &schema.fields[i];

@@ -1,0 +1,431 @@
+{
+ "queries": 1000000,
+ "full_top10": 50000,
+ "words": 30058,
+ "methods": {
+  "cov": {
+   "10000": {
+    "1": {
+     "proved": 0.00146,
+     "proved_8bit": 0.00144,
+     "covered": 0.02178,
+     "local_equals_cloud": 0.02178,
+     "unknown_word": 0.39008,
+     "equal_among_unproved": 0.020349710577443066,
+     "overlap_among_unproved": 0.020349710577443066,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.00058,
+     "proved_8bit": 0.00054,
+     "covered": 0.01066,
+     "local_equals_cloud": 0.01066,
+     "unknown_word": 0.39008,
+     "equal_among_unproved": 0.01008584979287987,
+     "overlap_among_unproved": 0.018510736227011822,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00046,
+     "proved_8bit": 0.00046,
+     "covered": 0.0096,
+     "local_equals_cloud": 0.0096,
+     "unknown_word": 0.39008,
+     "equal_among_unproved": 0.00914420633491406,
+     "overlap_among_unproved": 0.017392000320147517,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00046,
+     "proved_8bit": 0.00042,
+     "covered": 0.00946,
+     "local_equals_cloud": 0.00946,
+     "unknown_word": 0.39008,
+     "equal_among_unproved": 0.009004141905276427,
+     "overlap_among_unproved": 0.016713688296616912,
+     "violations": 0
+    }
+   },
+   "30000": {
+    "1": {
+     "proved": 0.00382,
+     "proved_8bit": 0.00376,
+     "covered": 0.06104,
+     "local_equals_cloud": 0.06104,
+     "unknown_word": 0.26672,
+     "equal_among_unproved": 0.057439418578971675,
+     "overlap_among_unproved": 0.057439418578971675,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.00214,
+     "proved_8bit": 0.00214,
+     "covered": 0.03494,
+     "local_equals_cloud": 0.03494,
+     "unknown_word": 0.26672,
+     "equal_among_unproved": 0.032870342533020666,
+     "overlap_among_unproved": 0.052980043960742906,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00192,
+     "proved_8bit": 0.0019,
+     "covered": 0.03124,
+     "local_equals_cloud": 0.03124,
+     "unknown_word": 0.26672,
+     "equal_among_unproved": 0.029376402693170888,
+     "overlap_among_unproved": 0.05080955434434113,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00178,
+     "proved_8bit": 0.0017,
+     "covered": 0.0306,
+     "local_equals_cloud": 0.0306,
+     "unknown_word": 0.26672,
+     "equal_among_unproved": 0.028871391076115485,
+     "overlap_among_unproved": 0.04910741119191892,
+     "violations": 0
+    }
+   },
+   "100000": {
+    "1": {
+     "proved": 0.00828,
+     "proved_8bit": 0.0081,
+     "covered": 0.1365,
+     "local_equals_cloud": 0.1365,
+     "unknown_word": 0.17448,
+     "equal_among_unproved": 0.12929052555156698,
+     "overlap_among_unproved": 0.12929052555156698,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.00484,
+     "proved_8bit": 0.00468,
+     "covered": 0.08848,
+     "local_equals_cloud": 0.08848,
+     "unknown_word": 0.17448,
+     "equal_among_unproved": 0.08404678644640058,
+     "overlap_among_unproved": 0.12310918177311292,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00412,
+     "proved_8bit": 0.00396,
+     "covered": 0.0807,
+     "local_equals_cloud": 0.0807,
+     "unknown_word": 0.17448,
+     "equal_among_unproved": 0.07689681487729445,
+     "overlap_among_unproved": 0.11977748323090194,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00372,
+     "proved_8bit": 0.00316,
+     "covered": 0.0793,
+     "local_equals_cloud": 0.0793,
+     "unknown_word": 0.17448,
+     "equal_among_unproved": 0.07586220741157104,
+     "overlap_among_unproved": 0.11603766009555888,
+     "violations": 0
+    }
+   },
+   "200000": {
+    "1": {
+     "proved": 0.01222,
+     "proved_8bit": 0.01178,
+     "covered": 0.2044,
+     "local_equals_cloud": 0.2044,
+     "unknown_word": 0.13366,
+     "equal_among_unproved": 0.1945777399825872,
+     "overlap_among_unproved": 0.1945777399825872,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.0072,
+     "proved_8bit": 0.0069,
+     "covered": 0.14324,
+     "local_equals_cloud": 0.14324,
+     "unknown_word": 0.13366,
+     "equal_among_unproved": 0.13704673650282032,
+     "overlap_among_unproved": 0.18783239323126266,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0059,
+     "proved_8bit": 0.00562,
+     "covered": 0.13334,
+     "local_equals_cloud": 0.13334,
+     "unknown_word": 0.13366,
+     "equal_among_unproved": 0.12819635851523992,
+     "overlap_among_unproved": 0.18402575193641663,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00542,
+     "proved_8bit": 0.00434,
+     "covered": 0.1318,
+     "local_equals_cloud": 0.1318,
+     "unknown_word": 0.13366,
+     "equal_among_unproved": 0.1270687124213236,
+     "overlap_among_unproved": 0.17930985943817054,
+     "violations": 0
+    }
+   },
+   "400000": {
+    "1": {
+     "proved": 0.0187,
+     "proved_8bit": 0.01788,
+     "covered": 0.31964,
+     "local_equals_cloud": 0.31964,
+     "unknown_word": 0.09526,
+     "equal_among_unproved": 0.30669520024457353,
+     "overlap_among_unproved": 0.30669520024457353,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.01102,
+     "proved_8bit": 0.01062,
+     "covered": 0.23882,
+     "local_equals_cloud": 0.23882,
+     "unknown_word": 0.09526,
+     "equal_among_unproved": 0.23033832837873364,
+     "overlap_among_unproved": 0.29751191463259913,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00928,
+     "proved_8bit": 0.00884,
+     "covered": 0.22636,
+     "local_equals_cloud": 0.22636,
+     "unknown_word": 0.09526,
+     "equal_among_unproved": 0.21911337209302326,
+     "overlap_among_unproved": 0.2927446705426584,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00874,
+     "proved_8bit": 0.00682,
+     "covered": 0.22478,
+     "local_equals_cloud": 0.22478,
+     "unknown_word": 0.09526,
+     "equal_among_unproved": 0.2179448378830983,
+     "overlap_among_unproved": 0.2867703730605779,
+     "violations": 0
+    }
+   }
+  },
+  "pop": {
+   "10000": {
+    "1": {
+     "proved": 0.00338,
+     "proved_8bit": 0.0028,
+     "covered": 0.08578,
+     "local_equals_cloud": 0.08578,
+     "unknown_word": 0.35982,
+     "equal_among_unproved": 0.08269952439244647,
+     "overlap_among_unproved": 0.08269952439244647,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.0016,
+     "proved_8bit": 0.00128,
+     "covered": 0.03544,
+     "local_equals_cloud": 0.03544,
+     "unknown_word": 0.35982,
+     "equal_among_unproved": 0.03389423076923077,
+     "overlap_among_unproved": 0.07872596153846408,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00128,
+     "proved_8bit": 0.00094,
+     "covered": 0.0253,
+     "local_equals_cloud": 0.0253,
+     "unknown_word": 0.35982,
+     "equal_among_unproved": 0.02405078500480615,
+     "overlap_among_unproved": 0.07677026594040026,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00076,
+     "proved_8bit": 0.00028,
+     "covered": 0.0157,
+     "local_equals_cloud": 0.0157,
+     "unknown_word": 0.35982,
+     "equal_among_unproved": 0.01495136303590729,
+     "overlap_among_unproved": 0.07230094872102232,
+     "violations": 0
+    }
+   },
+   "30000": {
+    "1": {
+     "proved": 0.00642,
+     "proved_8bit": 0.0058,
+     "covered": 0.1521,
+     "local_equals_cloud": 0.1521,
+     "unknown_word": 0.23178,
+     "equal_among_unproved": 0.1466615672618209,
+     "overlap_among_unproved": 0.1466615672618209,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.0032,
+     "proved_8bit": 0.00268,
+     "covered": 0.06204,
+     "local_equals_cloud": 0.06204,
+     "unknown_word": 0.23178,
+     "equal_among_unproved": 0.059028892455858746,
+     "overlap_among_unproved": 0.13877742108078667,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0024,
+     "proved_8bit": 0.00188,
+     "covered": 0.04152,
+     "local_equals_cloud": 0.04152,
+     "unknown_word": 0.23178,
+     "equal_among_unproved": 0.03921411387329591,
+     "overlap_among_unproved": 0.1345669607056809,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00142,
+     "proved_8bit": 0.00044,
+     "covered": 0.02222,
+     "local_equals_cloud": 0.02222,
+     "unknown_word": 0.23178,
+     "equal_among_unproved": 0.02082957800076108,
+     "overlap_among_unproved": 0.12597889002383988,
+     "violations": 0
+    }
+   },
+   "100000": {
+    "1": {
+     "proved": 0.01338,
+     "proved_8bit": 0.01232,
+     "covered": 0.27978,
+     "local_equals_cloud": 0.27978,
+     "unknown_word": 0.13414,
+     "equal_among_unproved": 0.27009385579047657,
+     "overlap_among_unproved": 0.27009385579047657,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.00708,
+     "proved_8bit": 0.00642,
+     "covered": 0.12642,
+     "local_equals_cloud": 0.12642,
+     "unknown_word": 0.13414,
+     "equal_among_unproved": 0.12019095193973331,
+     "overlap_among_unproved": 0.255569431575565,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0057,
+     "proved_8bit": 0.00462,
+     "covered": 0.0833,
+     "local_equals_cloud": 0.0833,
+     "unknown_word": 0.13414,
+     "equal_among_unproved": 0.07806497033088605,
+     "overlap_among_unproved": 0.24719702303128827,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00316,
+     "proved_8bit": 0.00104,
+     "covered": 0.04046,
+     "local_equals_cloud": 0.04046,
+     "unknown_word": 0.13414,
+     "equal_among_unproved": 0.03741824164359376,
+     "overlap_among_unproved": 0.2333233016331889,
+     "violations": 0
+    }
+   },
+   "200000": {
+    "1": {
+     "proved": 0.01966,
+     "proved_8bit": 0.0184,
+     "covered": 0.38862,
+     "local_equals_cloud": 0.38862,
+     "unknown_word": 0.09652,
+     "equal_among_unproved": 0.3764612277373156,
+     "overlap_among_unproved": 0.3764612277373156,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.011,
+     "proved_8bit": 0.01016,
+     "covered": 0.1916,
+     "local_equals_cloud": 0.1916,
+     "unknown_word": 0.09652,
+     "equal_among_unproved": 0.1826086956521739,
+     "overlap_among_unproved": 0.35727671048197357,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.00872,
+     "proved_8bit": 0.00724,
+     "covered": 0.12878,
+     "local_equals_cloud": 0.12878,
+     "unknown_word": 0.09652,
+     "equal_among_unproved": 0.12113630861108869,
+     "overlap_among_unproved": 0.34647728189817967,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.0054,
+     "proved_8bit": 0.0023,
+     "covered": 0.064,
+     "local_equals_cloud": 0.064,
+     "unknown_word": 0.09652,
+     "equal_among_unproved": 0.05891815805348884,
+     "overlap_among_unproved": 0.3285944098130238,
+     "violations": 0
+    }
+   },
+   "400000": {
+    "1": {
+     "proved": 0.02844,
+     "proved_8bit": 0.02702,
+     "covered": 0.52354,
+     "local_equals_cloud": 0.52354,
+     "unknown_word": 0.06926,
+     "equal_among_unproved": 0.5096545761455803,
+     "overlap_among_unproved": 0.5096545761455803,
+     "violations": 0
+    },
+    "3": {
+     "proved": 0.01654,
+     "proved_8bit": 0.01552,
+     "covered": 0.2877,
+     "local_equals_cloud": 0.2877,
+     "unknown_word": 0.06926,
+     "equal_among_unproved": 0.27576108840217195,
+     "overlap_among_unproved": 0.4861272107321733,
+     "violations": 0
+    },
+    "5": {
+     "proved": 0.0135,
+     "proved_8bit": 0.01156,
+     "covered": 0.20314,
+     "local_equals_cloud": 0.20314,
+     "unknown_word": 0.06926,
+     "equal_among_unproved": 0.19223517486061834,
+     "overlap_among_unproved": 0.4749437404967286,
+     "violations": 0
+    },
+    "10": {
+     "proved": 0.00882,
+     "proved_8bit": 0.0042,
+     "covered": 0.10772,
+     "local_equals_cloud": 0.10772,
+     "unknown_word": 0.06926,
+     "equal_among_unproved": 0.09980023810004238,
+     "overlap_among_unproved": 0.4549849674125756,
+     "violations": 0
+    }
+   }
+  }
+ }
+}

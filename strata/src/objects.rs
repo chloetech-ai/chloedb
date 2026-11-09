@@ -306,6 +306,111 @@ async fn upload(s3: &AmazonS3, url: &str, key: &str, file: &Path) -> Result<u64>
     Ok(size)
 }
 
+/// A bucket, or a prefix of one (`s3://bucket/prefix/`), as the store of a
+/// database's cold segments ([`crate::storage::cold`]): one client, with a
+/// runtime of its own, for the database's life. Calls block the calling
+/// thread, which may be a runtime's (the runtime is another).
+pub struct Bucket {
+    url: String,
+    prefix: String,
+    s3: AmazonS3,
+    rt: Option<tokio::runtime::Runtime>,
+}
+
+impl std::fmt::Debug for Bucket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bucket").field("url", &self.url).finish()
+    }
+}
+
+impl Bucket {
+    /// The bucket and prefix `url` names, configured by environment as
+    /// the module says.
+    pub fn open(url: &str) -> Result<Bucket> {
+        let (bucket, prefix) = parse(url)?;
+        let prefix = match prefix.trim_start_matches('/') {
+            "" => String::new(),
+            p if p.ends_with('/') => p.to_string(),
+            p => format!("{p}/"),
+        };
+        let s3 = store(url, &bucket)?;
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("strata-s3").enable_all().build()?;
+        Ok(Bucket { url: format!("s3://{bucket}/{prefix}"), prefix, s3, rt: Some(rt) })
+    }
+
+    fn call<T: Send + 'static>(&self, f: impl std::future::Future<Output = Result<T>> + Send + 'static) -> Result<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.rt.as_ref().expect("runtime until dropped").spawn(async move {
+            let _ = tx.send(f.await);
+        });
+        rx.recv().unwrap_or_else(|_| Err(Error::Io(std::io::Error::other(format!("{}: the S3 client stopped", self.url)))))
+    }
+
+    fn at(&self, k: &str) -> (AmazonS3, String, String) {
+        (self.s3.clone(), self.url.clone(), format!("{}{k}", self.prefix))
+    }
+}
+
+impl Drop for Bucket {
+    fn drop(&mut self) {
+        // Dropping a runtime blocks, which a runtime's thread may not.
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
+    }
+}
+
+/// An error of `url`'s, `NotFound` when the object is missing.
+fn failed_at(url: &str, k: &str, e: object_store::Error) -> Error {
+    let kind = match e {
+        object_store::Error::NotFound { .. } => std::io::ErrorKind::NotFound,
+        _ => std::io::ErrorKind::Other,
+    };
+    Error::Io(std::io::Error::new(kind, format!("{url}{k}: {e}")))
+}
+
+impl crate::storage::cold::ObjectStore for Bucket {
+    fn put_file(&self, k: &str, path: &Path) -> Result<()> {
+        let (s3, url, full) = self.at(k);
+        let path = path.to_path_buf();
+        self.call(async move { upload(&s3, &url, &full, &path).await.map(|_| ()) })
+    }
+
+    fn put(&self, k: &str, bytes: &[u8]) -> Result<()> {
+        let (s3, url, full) = self.at(k);
+        let payload = PutPayload::from(bytes.to_vec());
+        self.call(async move {
+            let key = key(&url, &full)?;
+            s3.put(&key, payload).await.map_err(|e| failed_at(&url, &full, e))?;
+            Ok(())
+        })
+    }
+
+    fn get_range(&self, k: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let (s3, url, full) = self.at(k);
+        self.call(async move {
+            let key = key(&url, &full)?;
+            let b = s3.get_range(&key, range).await.map_err(|e| failed_at(&url, &full, e))?;
+            Ok(b.to_vec())
+        })
+    }
+
+    fn delete(&self, k: &str) -> Result<()> {
+        let (s3, url, full) = self.at(k);
+        self.call(async move {
+            let key = key(&url, &full)?;
+            match s3.delete(&key).await {
+                Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                Err(e) => Err(failed_at(&url, &full, e)),
+            }
+        })
+    }
+
+    fn describe(&self) -> String {
+        self.url.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css">
+<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
@@ -22,7 +22,7 @@
     <a href="benchmarks.html" aria-current="page">Benchmarks</a>
     <a href="use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+  <div class="top-links"><a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
 
 <main>
@@ -79,6 +79,8 @@
         <p>A client reaches a coordinator in a shard pod across the network, as with Elasticsearch: 4 to 29% slower at one client at 1M, 7% at 10M (median over the kinds), for up to 1.9 times the queries a second at 16 clients.</p></div>
       <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.791; Qdrant 0.941</div></div>
         <p>Strata scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall. At 1M, asking for 256 candidates instead of 64 lifts it from 0.809 to 0.931, past Qdrant's 0.905, and Strata still serves 11% more queries a second; with a filter, 3.6 times as many at about equal recall. <a href="bench-1m.html#recall">The sweep</a>.</p></div>
+      <div class="loss"><div><h3>Short graph hops</h3><div class="nums">Graph · 1 hop 0.35 ms over gRPC; Memgraph 0.18</div></div>
+        <p>Memgraph and FalkorDB, both in memory, answer one to three hops in about half Strata's time. Strata's own time on one hop is 0.10 ms against Memgraph's 0.02; gRPC instead of HTTP JSON took 0.1 ms off the rest. Not fixed yet.</p></div>
       <div class="loss"><div><h3>Indexed price updates in an app</h3><div class="nums">571/s on main; SQLite 7,670</div></div>
         <p>Updating a row's price while it carries a text and a vector index is 2.4 times slower than on Strata's 2 November build (1,389 a second) and 13 times slower than SQLite. Found by the 6 November rerun, in both of its writes runs; not fixed yet. Without the indexes the same update got faster (3,276 a second).</p></div>
     </div>
@@ -145,11 +147,11 @@
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js"></script>
-<script src="assets/site.js"></script>
-<script src="assets/bench.js"></script>
+<script src="assets/bench-data.js?v=5344f0f990"></script>
+<script src="assets/site.js?v=6d78382461"></script>
+<script src="assets/bench.js?v=6ebeb97e93"></script>
 </body>
 </html>

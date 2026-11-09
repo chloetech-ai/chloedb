@@ -314,7 +314,8 @@ pub struct Opened {
 }
 
 /// Opens or creates a database: `op` is "create" ({path, schema,
-/// directory?, models?, threads?}), "open" ({path, models?, threads?}),
+/// directory?, models?, threads?}), "open" ({path, models?, threads?,
+/// read_only?}),
 /// "from_sqlite" ({sqlite_path, path, tables?, schemas?, blobs_base64?,
 /// directory?, models?, threads?}) or "from_parquet" ({parquet_path, path,
 /// table?, schema?, key?, blobs_base64?, directory?, models?, threads?}).
@@ -332,7 +333,7 @@ fn open_db(op: &str, a: &Args) -> Result<Opened> {
         }
         // The layout comes from the file; the option only matters to a create.
         "open" => {
-            let db = Db::open(&path, db_options(false, threads))?;
+            let db = Db::open(&path, DbOptions { read_only: a.bool("read_only", false)?, ..db_options(false, threads) })?;
             let e = embed_errors_of(&db, &models);
             (db, e, None)
         }
@@ -783,6 +784,8 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>) -> Result<Js
             Ok(Json::Null)
         }
         "vacuum" => Ok(Json::from(db.storage().vacuum()?)),
+        // Opened read-only: what the writer committed since the last look.
+        "refresh" => Ok(Json::from(db.storage().refresh()?)),
         other => Err(bad(format!("no operation {other:?}"))),
     }
 }
@@ -896,7 +899,8 @@ fn copied(vectors: Option<Vec<Float32Array>>) -> Vec<Vec<f32>> {
 // ---------------------------------------------------------------- the class
 
 /// A database file (or directory) opened in this process. Only one process
-/// may have a database open at a time.
+/// may have a database open to write it at a time; others may open it
+/// read-only.
 #[napi]
 pub struct NativeDatabase {
     db: Arc<RwLock<Option<Arc<Db>>>>,
@@ -976,6 +980,193 @@ impl NativeDatabase {
 #[napi(ts_return_type = "Promise<string>")]
 pub fn call_static(op: String, args: String) -> AsyncTask<Job> {
     job(move || dispatch_static(&op, Args::parse(&args)?))
+}
+
+// ---------------------------------------------------------------- slices
+
+type Slot = Arc<std::sync::Mutex<Option<strata::slice::Device>>>;
+
+/// Runs `f` on a slice's device, on the thread pool.
+fn on_device(dev: &Slot, f: impl FnOnce(&mut strata::slice::Device) -> Result<Json> + Send + 'static) -> AsyncTask<Job> {
+    let dev = dev.clone();
+    job(move || {
+        let mut g = dev.lock().unwrap_or_else(|e| e.into_inner());
+        f(g.as_mut().ok_or_else(|| bad("the slice is closed"))?)
+    })
+}
+
+/// A slice's opening on a device, run on libuv's thread pool.
+pub struct SliceJob {
+    dir: String,
+    manifest: String,
+}
+
+impl Task for SliceJob {
+    type Output = strata::slice::Device;
+    type JsValue = NativeSlice;
+
+    fn compute(&mut self) -> napi::Result<strata::slice::Device> {
+        guarded(|| strata::slice::Device::create(Path::new(&self.dir), strata::slice::Manifest::from_json(&self.manifest)?)).map_err(napi_err)
+    }
+
+    fn resolve(&mut self, _: Env, dev: strata::slice::Device) -> napi::Result<NativeSlice> {
+        Ok(NativeSlice { dev: Arc::new(std::sync::Mutex::new(Some(dev))) })
+    }
+}
+
+/// A device's slice of a table on a strata-server (`strata::slice`): the
+/// tiles held near its user in a local database, searched with the
+/// server's statistics. `index.js` (`openNearby`) fetches the manifest and
+/// tiles over HTTP and asks the server when the device cannot prove its
+/// answer; this class does the rest, with no network of its own. Answers
+/// are JSON text.
+#[napi]
+pub struct NativeSlice {
+    dev: Slot,
+}
+
+#[napi]
+impl NativeSlice {
+    /// A device with no tiles yet, from a slice's manifest (JSON text), its
+    /// database under directory `dir` (earlier ones of the table there are
+    /// deleted: they are a cache).
+    #[napi]
+    pub fn create(dir: String, manifest: String) -> AsyncTask<SliceJob> {
+        AsyncTask::new(SliceJob { dir, manifest })
+    }
+
+    /// What the manifest says, without its words or centres
+    /// (`strata::slice::summary`): kind, table, version, built_ms, tiles,
+    /// rows, and a geo slice's grid, text, lat and lon or a vector slice's
+    /// field, dim and clusters.
+    #[napi]
+    pub fn info(&self) -> napi::Result<String> {
+        self.now(|d| Ok(strata::slice::summary(d.manifest())))
+    }
+
+    /// The tiles to fetch for a user at (`lat`, `lon`), nearest first, and
+    /// those to drop: {fetch: [[x, y, path, bytes]], drop: [[x, y]]}.
+    #[napi]
+    pub fn plan(&self, lat: f64, lon: f64, reach: i32) -> napi::Result<String> {
+        self.now(|d| {
+            let p = d.plan(lat, lon, reach);
+            Ok(json!({
+                "fetch": p.fetch.iter().map(|(t, b)| json!([t.x, t.y, t.path(), b])).collect::<Vec<_>>(),
+                "drop": p.drop.iter().map(|t| json!([t.x, t.y])).collect::<Vec<_>>(),
+            }))
+        })
+    }
+
+    /// A vector slice's clusters to fetch so that the device holds those
+    /// whose rows could score highest for `taste`, best first, as many as
+    /// fit in `rows` rows, and those to drop: {fetch: [[x, y, path,
+    /// bytes]], drop: [[x, y]]}.
+    #[napi]
+    pub fn plan_vector(&self, taste: Vec<f64>, rows: u32) -> napi::Result<String> {
+        let taste: Vec<f32> = taste.into_iter().map(|x| x as f32).collect();
+        self.now(|d| {
+            let p = d.plan_vector(&taste, rows as u64)?;
+            Ok(json!({
+                "fetch": p.fetch.iter().map(|(t, b)| json!([t.x, t.y, t.path(), b])).collect::<Vec<_>>(),
+                "drop": p.drop.iter().map(|t| json!([t.x, t.y])).collect::<Vec<_>>(),
+            }))
+        })
+    }
+
+    /// Adds a tile from its file's bytes; answers the rows it held.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn add_tile(&self, x: i32, y: i32, data: napi::bindgen_prelude::Buffer) -> AsyncTask<Job> {
+        let data = data.to_vec();
+        on_device(&self.dev, move |d| Ok(json!(d.add_tile(strata::slice::Tile { x, y }, &data)?)))
+    }
+
+    /// Adds a vector slice's codes of every row from the bytes of its
+    /// `codes.bin.gz`: searches then bound the clusters not held far more
+    /// tightly, and name the clusters that would prove an answer.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn add_codes(&self, data: napi::bindgen_prelude::Buffer) -> AsyncTask<Job> {
+        let data = data.to_vec();
+        on_device(&self.dev, move |d| {
+            d.add_codes(&data)?;
+            Ok(Json::Null)
+        })
+    }
+
+    #[napi]
+    pub fn has_codes(&self) -> napi::Result<bool> {
+        let mut g = self.dev.lock().unwrap_or_else(|e| e.into_inner());
+        let d = g.as_mut().ok_or_else(|| napi::Error::from_reason("the slice is closed"))?;
+        Ok(d.has_codes())
+    }
+
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn drop_tile(&self, x: i32, y: i32) -> AsyncTask<Job> {
+        on_device(&self.dev, move |d| {
+            d.drop_tile(strata::slice::Tile { x, y })?;
+            Ok(Json::Null)
+        })
+    }
+
+    /// The tiles held: [[x, y, rows]].
+    #[napi]
+    pub fn held(&self) -> napi::Result<String> {
+        self.now(|d| Ok(json!(d.held().map(|(t, n)| json!([t.x, t.y, n])).collect::<Vec<_>>())))
+    }
+
+    /// The distance in metres to the nearest tile with rows not held (null
+    /// when it holds them all).
+    #[napi]
+    pub fn edge(&self, lat: f64, lon: f64) -> napi::Result<Option<f64>> {
+        let mut g = self.dev.lock().unwrap_or_else(|e| e.into_inner());
+        let d = g.as_mut().ok_or_else(|| napi::Error::from_reason("the slice is closed"))?;
+        Ok(Some(d.edge(lat, lon)).filter(|e| e.is_finite()))
+    }
+
+    /// Notes whether the server's table changed since the slice was built.
+    #[napi]
+    pub fn set_stale(&self, stale: bool) -> napi::Result<()> {
+        self.now(|d| {
+            d.set_stale(stale);
+            Ok(Json::Null)
+        })
+        .map(|_| ())
+    }
+
+    /// Searches the tiles held (`Device::search`): the answer
+    /// (`Answer::to_json`), with `ask`, the body of the request that asks
+    /// the server, to send as it is.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn search(&self, q: String, lat: f64, lon: f64, k: u32, d0_m: f64) -> AsyncTask<Job> {
+        on_device(&self.dev, move |d| {
+            let s = strata::slice::Search::new(&q, lat, lon, k as usize, d0_m)?;
+            Ok(d.search(&s)?.to_json(&s, d.manifest()))
+        })
+    }
+
+    /// Searches a vector slice's clusters held (`Device::search_vector`):
+    /// the `k` rows most similar to `vector`, answered as `search` answers.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn search_vector(&self, vector: Vec<f64>, k: u32) -> AsyncTask<Job> {
+        let vector: Vec<f32> = vector.into_iter().map(|x| x as f32).collect();
+        on_device(&self.dev, move |d| {
+            let s = strata::slice::VectorSearch::new(vector, k as usize)?;
+            Ok(d.search_vector(&s)?.to_json(&s, d.manifest()))
+        })
+    }
+
+    /// Closes its database.
+    #[napi]
+    pub fn close(&self) {
+        self.dev.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+impl NativeSlice {
+    fn now(&self, f: impl FnOnce(&mut strata::slice::Device) -> Result<Json>) -> napi::Result<String> {
+        let mut g = self.dev.lock().unwrap_or_else(|e| e.into_inner());
+        let d = g.as_mut().ok_or_else(|| napi::Error::from_reason("the slice is closed"))?;
+        guarded(|| f(d)).map(|j| j.to_string()).map_err(napi_err)
+    }
 }
 
 /// This addon's version.

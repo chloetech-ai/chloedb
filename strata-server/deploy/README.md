@@ -11,7 +11,7 @@ replicas dies, how to move to more shards, and what network latency does.
 
 | file | what |
 |---|---|
-| `Dockerfile` | strata-server and strata-server-bench on Debian slim (157 MB); build from the repository root |
+| `Dockerfile` | strata-server, strata-server-bench, engine-compare and strata-crawl on Debian slim; build from the repository root |
 | `k8s/shards.yaml` | a set of N shards × R replicas: a headless Service, and per shard a StatefulSet of R pods on different nodes; replica r of shard i serves `/data/<collection>.shard<i>of<N>.strata` (r = 0) or its own copy `...shard<i>of<N>.r<r>.strata` |
 | `k8s/coordinator.yaml` | the coordinator, a Deployment pointed at one set of shards (`--shards`, replicas of a shard joined by `\|`) |
 | `k8s/single.yaml` | one database holding the whole collection, to compare answers and latency with |
@@ -49,10 +49,12 @@ kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 | `writeAcks` | `all` | every primary's `--write-acks` |
 | `tokenSecret` | | a Secret whose key `token` every server and coordinator requires; without it they run with `--no-token`, open to whatever reaches them |
 | `clusterTokenSecret` | | a Secret whose key `token` is the cluster's own token (`--cluster-token`), which the servers and coordinators send each other and clients never hold; with it, the `tokenSecret` token goes to the coordinators alone, as the admin token (the operator's too), and may not make the calls between servers. Needs `tokenSecret` |
+| `secretEnv` | | environment variables of every server and coordinator taken from Secrets, `[{name, secret, key}]` (`key` defaults to `key`): the keys of models behind an API, `ANTHROPIC_API_KEY` for the agents, LLM fields and reranking, `OPENAI_API_KEY` and the like for hosted embeddings ([model keys](#model-keys)). Changing it restarts the copies one at a time |
 | `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `strata-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
 | `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0, onFailure: rollback, progressDeadlineSeconds: 600, verifySeconds: 60, extraCopies: true}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), `soakSeconds`, how long a restarted copy serves before the next restarts, `progressDeadlineSeconds`, how long a step of a restart may take, `verifySeconds`, how long the new version must be healthy in a row before it is ready, and `onFailure`, what a version that fails becomes: `rollback` (to the last version that ran everywhere) or `hold`, and `extraCopies`, whether a shard of fewer than three copies takes extra ones while its copies restart. Not part of a version: changing it restarts nothing |
 | `upgrade` | `{mode: off, checkMinutes: 10}` | the upgrader: every `checkMinutes` it asks the registry which image the tag `track` names (by default the tag of `image`), and with `mode` `suggest` shows it, with `on` rolls it out, pinned by its digest, once the cluster is ready. Not part of a version ([upgrading](#upgrading-strata)) |
 | `autoscale` | `{mode: off, cooldownMinutes: 20}` | rules that change `replicas`, `shards` or `storage.size` from how busy and full the servers are: `grow` (`busyAbove`, `forMinutes`, `add`, `max`), `shrink` (`busyBelow`, `forMinutes`, `min`), `volumes` (`fullAbove`, `action`: `grow` or `addShard`), `freeze` (weekly windows in UTC, `from`/`to` like `Fri 16:00`, `allowGrow`) and `cooldownMinutes`; `mode` `on` (the operator acts), `suggest` (a person applies or dismisses) or `off`. Not part of a version: the changes it makes are ([autoscaling](../../docs/strata/server.md#autoscaling)) |
+| `crawler` | | a crawler beside the cluster: the operator runs `strata-crawl serve` (in the same image) as a Deployment of one, `<cluster>-crawler`, with a Service of that name on port 7800, and the coordinators list it as an app, so the command center shows **Apps → Crawler**. It writes, and its API requires, the `tokenSecret` token. `grow` (default true) adds a shard through this resource when a crawl's table holds more than `splitRows` rows on one (default 100,000), up to `maxShards` (8); `paused` keeps it at no pod; `args` and `resources` for its container. Turning it on or off restarts the coordinators, not the servers ([the crawler](../../docs/strata/crawler.md#on-kubernetes)) |
 
 What a change does:
 
@@ -171,6 +173,27 @@ then let through with each restarted copy serving a second first), and
 a set, grows its volumes, and keeps its versions, resumes a hold and rolls
 back on a real API server (`STRATA_ENVTEST_DIR`: a directory with `etcd` and `kube-apiserver`,
 as `setup-envtest` downloads them).
+
+### Model keys
+
+What calls a model behind an API reads its key from the environment: the
+query console's agent, relevance grading and the on-call agent
+(`ANTHROPIC_API_KEY`, on the coordinators), fields made by a language model
+from another field's text (on the servers, as they write), reranking by a
+language model (on the coordinators), and hosted embeddings
+(`OPENAI_API_KEY`, `COHERE_API_KEY`, ..., on both). `secretEnv` gives a
+Secret's key to every server and coordinator:
+
+```bash
+kubectl -n strata create secret generic anthropic --from-literal=key="$ANTHROPIC_API_KEY"
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}]}}'
+```
+
+Make the Secret first: a copy that starts without it does not start, and
+the rollout stops at it. The copies restart one at a time with the
+variable, as for any other setting; `GET /v1/config` then says
+`"server_key": true`. A variable named `STRATA_...` is refused: those are
+the operator's own, and tokens go in `tokenSecret`.
 
 ### Upgrading Strata
 

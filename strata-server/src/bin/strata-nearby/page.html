@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata Nearby</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e2e0da;
+  --tile: 40, 40, 40; --held: #2f6fde; --held-fill: rgba(47, 111, 222, 0.10); --dot: rgba(29, 29, 27, 0.45);
+  --device: #1f7a4d; --device-bg: #e5f4e4; --cloud: #a35a00; --cloud-bg: #f9eeda; --bad: #b42318; --map: #fbfaf8;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --panel: #1f1f1d; --ink: #ecebe7; --muted: #a3a29c; --line: #34332f;
+    --tile: 230, 230, 225; --held: #78a6ff; --held-fill: rgba(120, 166, 255, 0.14); --dot: rgba(236, 235, 231, 0.45);
+    --device: #6fd39c; --device-bg: #193826; --cloud: #f0b25a; --cloud-bg: #3a2c14; --bad: #ff8a80; --map: #1a1a19;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --panel: #1f1f1d; --ink: #ecebe7; --muted: #a3a29c; --line: #34332f;
+  --tile: 230, 230, 225; --held: #78a6ff; --held-fill: rgba(120, 166, 255, 0.14); --dot: rgba(236, 235, 231, 0.45);
+  --device: #6fd39c; --device-bg: #193826; --cloud: #f0b25a; --cloud-bg: #3a2c14; --bad: #ff8a80; --map: #1a1a19;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 380px; height: 100vh; }
+.map { position: relative; background: var(--map); min-height: 320px; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.legend { position: absolute; left: 12px; bottom: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--muted); }
+.legend span { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
+.legend span:first-child { margin-left: 0; }
+.hint { position: absolute; left: 12px; top: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12px; color: var(--muted); }
+.panel { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 16px; }
+h1 { font-size: 18px; margin: 0 0 2px; }
+.sub { color: var(--muted); margin: 0 0 14px; }
+form { display: flex; gap: 8px; }
+input[type=search] { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; }
+button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--ink); color: var(--panel); font: inherit; cursor: pointer; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.chip { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font-size: 13px; cursor: pointer; }
+.opts { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; margin: 6px 0 12px; font-size: 13px; color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; color: var(--ink); padding: 4px 10px; font-size: 13px; }
+.seg button.on { background: var(--ink); color: var(--panel); }
+label.check { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; color: var(--ink); }
+.verdict { border-radius: 10px; padding: 10px 12px; margin: 4px 0 10px; }
+.verdict.device { background: var(--device-bg); }
+.verdict.cloud { background: var(--cloud-bg); }
+.verdict b { display: block; font-size: 15px; }
+.verdict.device b { color: var(--device); }
+.verdict.cloud b { color: var(--cloud); }
+.verdict p { margin: 4px 0 0; font-size: 13px; }
+.verdict .bad { color: var(--bad); font-weight: 600; }
+ol { margin: 0; padding: 0; list-style: none; }
+li { display: grid; grid-template-columns: 24px 1fr auto; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); }
+li .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; }
+li .name { font-weight: 600; }
+li .meta { color: var(--muted); font-size: 12px; }
+li .km { color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+.stat { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat .l { font-size: 12px; color: var(--muted); }
+.err { color: var(--bad); margin: 8px 0; }
+.empty { color: var(--muted); padding: 8px 0; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: 55vh auto; height: auto; }
+  .panel { border-left: 0; border-top: 1px solid var(--line); padding: 14px 16px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="map">
+    <canvas id="map"></canvas>
+    <div class="hint">Drag the blue dot (or click the map) to move. Scroll to zoom, drag to pan.</div>
+    <div class="legend"><span style="background:rgba(var(--tile),.25)"></span>the city's tiles <span style="background:var(--held)"></span>held on the device <span style="background:var(--device)"></span>answered on the device <span style="background:var(--cloud)"></span>asked the cloud</div>
+  </div>
+  <div class="panel">
+    <h1>Nearby</h1>
+    <p class="sub">Search runs on the device, which holds the places around you. When it can prove that its answer is the cloud's, nothing leaves the device.</p>
+    <form id="f"><input id="q" type="search" placeholder="pizza, coffee, pharmacy..." autocomplete="off"><button>Search</button></form>
+    <div class="chips" id="chips"></div>
+    <div class="opts">
+      <span>Results</span><span class="seg" id="k"><button data-v="1">1</button><button data-v="3">3</button><button data-v="10" class="on">10</button></span>
+      <span>Fade</span><span class="seg" id="d0"><button data-v="1000" class="on">1 km</button><button data-v="3000">3 km</button></span>
+      <span>Held</span><span class="seg" id="reach"><button data-v="1">3 km</button><button data-v="2" class="on">5 km</button><button data-v="4">9 km</button></span>
+      <label class="check"><input type="checkbox" id="check"> Also ask the cloud, to compare</label>
+    </div>
+    <div id="out"><p class="empty">Search for something near you.</p></div>
+    <div class="stats" id="stats"></div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+let S = null, places = [], results = [], resultWhere = "device", view = null, last = null;
+const opt = { k: 10, d0: 1000, reach: 2 };
+
+function xy(lat, lon) { return [(lon - S.grid.lon0) * S.kx, (lat - S.grid.lat0) * S.ky]; }
+function latlon(x, y) { return [S.grid.lat0 + y / S.ky, S.grid.lon0 + x / S.kx]; }
+function km(m) { return m < 1000 ? Math.round(m) + " m" : (m / 1000).toFixed(1) + " km"; }
+function mb(b) { return (b / 1e6).toFixed(1) + " MB"; }
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+
+function fit() {
+  const [ux, uy] = xy(S.user.lat, S.user.lon);
+  const c = $("map"), w = c.clientWidth, h = c.clientHeight;
+  const span = (2 * S.reach + 5) * S.grid.tile_m;
+  view = { cx: ux, cy: uy, s: Math.min(w, h) / span };
+}
+
+function draw() {
+  if (!S) return;
+  const c = $("map"), dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr;
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const T = S.grid.tile_m, px = (x) => w / 2 + (x - view.cx) * view.s, py = (y) => h / 2 - (y - view.cy) * view.s;
+  const max = Math.log(1 + Math.max(...S.tiles.map((t) => t[2]), 1));
+  const tile = css("--tile");
+  for (const [tx, ty, rows] of S.tiles) {
+    g.fillStyle = `rgba(${tile}, ${0.03 + 0.13 * Math.log(1 + rows) / max})`;
+    g.fillRect(px(tx * T), py((ty + 1) * T), T * view.s + 0.5, T * view.s + 0.5);
+  }
+  g.fillStyle = css("--held-fill");
+  g.strokeStyle = css("--held");
+  g.lineWidth = 1;
+  for (const [tx, ty] of S.held) {
+    g.fillRect(px(tx * T), py((ty + 1) * T), T * view.s, T * view.s);
+    g.strokeRect(px(tx * T) + 0.5, py((ty + 1) * T) + 0.5, T * view.s - 1, T * view.s - 1);
+  }
+  g.fillStyle = css("--dot");
+  const r = Math.max(0.8, Math.min(2, view.s * 12));
+  for (const [la, lo] of places) {
+    const [x, y] = xy(la, lo);
+    g.fillRect(px(x) - r / 2, py(y) - r / 2, r, r);
+  }
+  const [ux, uy] = xy(S.user.lat, S.user.lon);
+  if (S.edge_m) {
+    g.setLineDash([4, 4]);
+    g.strokeStyle = css("--held");
+    g.beginPath(); g.arc(px(ux), py(uy), S.edge_m * view.s, 0, 2 * Math.PI); g.stroke();
+    g.setLineDash([]);
+  }
+  const pin = css(resultWhere === "device" ? "--device" : "--cloud");
+  results.forEach((row, i) => {
+    const [x, y] = xy(row[S.latField], row[S.lonField]);
+    g.fillStyle = pin;
+    g.beginPath(); g.arc(px(x), py(y), 9, 0, 2 * Math.PI); g.fill();
+    g.fillStyle = "#fff"; g.font = "600 11px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(String(i + 1), px(x), py(y) + 0.5);
+  });
+  g.fillStyle = css("--held");
+  g.beginPath(); g.arc(px(ux), py(uy), 8, 0, 2 * Math.PI); g.fill();
+  g.strokeStyle = "#fff"; g.lineWidth = 3;
+  g.beginPath(); g.arc(px(ux), py(uy), 8, 0, 2 * Math.PI); g.stroke();
+}
+
+function stats() {
+  const share = S.searches ? Math.round(100 * S.on_device / S.searches) + "%" : "–";
+  $("stats").innerHTML = [
+    [share, `of ${S.searches} searches answered on the device`],
+    [S.held.length, `tiles held (${S.held_rows.toLocaleString()} places)`],
+    [mb(S.fetched_bytes), `downloaded (${S.fetched_tiles} tiles and the manifest)`],
+    [S.edge_m ? km(S.edge_m) : "∞", "to the nearest tile not held"],
+  ].map(([v, l]) => `<div class="stat"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`).join("") +
+    (S.mismatches ? `<p class="err">${S.mismatches} cloud checks differed.</p>` : "");
+}
+
+async function refresh(state) {
+  S = state;
+  S.latField = S.lat_field; S.lonField = S.lon_field;
+  opt.reach = S.reach;
+  for (const b of $("reach").children) b.classList.toggle("on", Number(b.dataset.v) === S.reach);
+  places = (await api("/api/places")).places;
+  if (!view) fit();
+  stats(); draw();
+}
+
+async function moveTo(lat, lon) {
+  S.user = { lat, lon }; draw();
+  try {
+    const s = await api("/api/move", { lat, lon, reach: opt.reach });
+    await refresh(s);
+    if (last) search(last.q, true);
+  } catch (e) { $("out").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function search(q, quiet) {
+  q = (q ?? $("q").value).trim();
+  if (!q) return;
+  $("q").value = q;
+  try {
+    const a = await api("/api/search", { q, k: opt.k, d0_m: opt.d0, check: $("check").checked });
+    last = a; results = a.rows; resultWhere = a.where;
+    render(a);
+    S = { ...S, ...(await api("/api/state")) };
+    S.latField = S.lat_field; S.lonField = S.lon_field;
+    stats(); draw();
+  } catch (e) { $("out").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+function render(a) {
+  const kth = a.local_kth == null ? null : a.local_kth.toFixed(3);
+  const bound = a.bound.toFixed(3), edge = a.edge_m == null ? "none are missing" : `the nearest tile not held is ${km(a.edge_m)} away`;
+  let v;
+  if (a.on_device) {
+    v = `<div class="verdict device"><b>Answered on the device</b><p>Proved to be the cloud's top ${a.k}: ` +
+      (a.text_bound === 0 ? "no place anywhere has these words." : `the ${ordinal(a.k)} score here, ${kth}, beats ${bound}, the most a place not held could score (${edge}).`) +
+      ` ${a.device_ms.toFixed(1)} ms, no request.</p>` +
+      (a.check ? `<p>${a.check.same ? "The cloud's answer, asked too, is the same." : '<span class="bad">The cloud answered differently.</span>'}</p>` : "") + "</div>";
+  } else {
+    const why = a.why === "stale" ? "the table changed since its slice was built, so a proof holds for the old version only" : a.local_rows < a.k ? `the device holds only ${a.local_rows} matching places` : `the ${ordinal(a.k)} score here, ${kth}, is below ${bound}, the most a place not held could score (${edge})`;
+    v = `<div class="verdict cloud"><b>Asked the cloud</b><p>The device could not prove its answer: ${why}. Device ${a.device_ms.toFixed(1)} ms, cloud ${a.cloud_ms.toFixed(1)} ms.</p></div>`;
+  }
+  const pin = a.on_device ? "var(--device)" : "var(--cloud)";
+  const list = a.rows.length ? "<ol>" + a.rows.map((r, i) => {
+    const name = r.name || String(r.body || "").split("\n")[0];
+    const meta = [r.category, r.address].filter(Boolean).join(" · ");
+    return `<li><span class="n" style="background:${pin}">${i + 1}</span><span><div class="name">${esc(name)}</div><div class="meta">${esc(meta)}</div></span><span class="km">${km(r._m)}<br>score ${r._score.toFixed(2)}</span></li>`;
+  }).join("") + "</ol>" : '<p class="empty">No place has these words.</p>';
+  $("out").innerHTML = v + list;
+}
+
+function ordinal(k) { return k === 1 ? "best" : k === 3 ? "3rd" : k + "th"; }
+
+function seg(id, key, after) {
+  $(id).addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    for (const x of $(id).children) x.classList.toggle("on", x === b);
+    opt[key] = Number(b.dataset.v);
+    after();
+  });
+}
+seg("k", "k", () => last && search(last.q));
+seg("d0", "d0", () => last && search(last.q));
+seg("reach", "reach", () => moveTo(S.user.lat, S.user.lon));
+
+for (const w of ["pizza", "coffee", "pharmacy", "sushi", "hardware store", "bagel", "bar", "laundromat"]) {
+  const b = document.createElement("button"); b.className = "chip"; b.type = "button"; b.textContent = w;
+  b.onclick = () => search(w); $("chips").appendChild(b);
+}
+$("f").addEventListener("submit", (e) => { e.preventDefault(); search(); });
+
+// Panning, zooming and moving the user.
+const c = $("map");
+let drag = null;
+const pointers = new Map();
+c.addEventListener("pointerdown", (e) => {
+  c.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, [e.offsetX, e.offsetY]);
+  const [ux, uy] = xy(S.user.lat, S.user.lon);
+  const sx = c.clientWidth / 2 + (ux - view.cx) * view.s, sy = c.clientHeight / 2 - (uy - view.cy) * view.s;
+  drag = { x: e.offsetX, y: e.offsetY, cx: view.cx, cy: view.cy, user: Math.hypot(e.offsetX - sx, e.offsetY - sy) < 16, moved: false };
+});
+c.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  pointers.set(e.pointerId, [e.offsetX, e.offsetY]);
+  if (pointers.size === 2) return;
+  const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+  if (Math.hypot(dx, dy) > 4) drag.moved = true;
+  if (drag.user) {
+    const x = view.cx + (e.offsetX - c.clientWidth / 2) / view.s, y = view.cy - (e.offsetY - c.clientHeight / 2) / view.s;
+    const [lat, lon] = latlon(x, y); S.user = { lat, lon };
+  } else {
+    view.cx = drag.cx - dx / view.s; view.cy = drag.cy + dy / view.s;
+  }
+  draw();
+});
+c.addEventListener("pointerup", (e) => {
+  pointers.delete(e.pointerId);
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.user || !d.moved) {
+    const x = view.cx + (e.offsetX - c.clientWidth / 2) / view.s, y = view.cy - (e.offsetY - c.clientHeight / 2) / view.s;
+    const [lat, lon] = latlon(x, y);
+    moveTo(lat, lon);
+  }
+});
+c.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const f = Math.exp(-e.deltaY * 0.0015);
+  const x = view.cx + (e.offsetX - c.clientWidth / 2) / view.s, y = view.cy - (e.offsetY - c.clientHeight / 2) / view.s;
+  view.s *= f; view.cx = x - (x - view.cx) / f; view.cy = y - (y - view.cy) / f;
+  draw();
+}, { passive: false });
+window.addEventListener("resize", draw);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+
+api("/api/state").then(refresh).catch((e) => { $("out").innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+</script>
+</body>
+</html>

@@ -269,6 +269,11 @@ There are three push points and one pull path:
    records anchored to that path (errors, decisions, preferences), once per
    file per window.
 4. **Pull: MCP tools.**
+   - `memory_ask(question, deep)`: rules, notes with what they replaced,
+     the assistant's closest replies and message excerpts, found by search
+     alone and packed for the question (`context.rs`), and every live note
+     for a question about order or a summary; with `deep`, the query
+     engine plans the searches and a model picks;
    - `memory_search(query, kinds, limit)`;
    - `memory_timeline(id, before, after)`, the neighbourhood of a hit;
    - `memory_sql(select)`: read-only SQL over `memory`, so the model can

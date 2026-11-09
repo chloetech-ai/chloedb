@@ -1,0 +1,40 @@
+{
+ "users": 200,
+ "budget": 20000,
+ "runs": [
+  {
+   "clusters": 793,
+   "searches": 800,
+   "proved": 387,
+   "proved_as_replay": 800,
+   "fetched": 413,
+   "proved_after_fetch": 413,
+   "proved_and_same_as_cloud": 800,
+   "proved_not_same": 0,
+   "plan_as_replay": 200,
+   "device_ms_p50": 16.03127999987919,
+   "device_ms_p99": 40.796781079907284,
+   "cloud_ms_p50": 93.23532049984351,
+   "cloud_ms_p99": 402.9127389001678,
+   "fetch_bytes_p50": 1873161.0,
+   "fetch_bytes_p99": 103197623.27999999
+  },
+  {
+   "clusters": 4096,
+   "searches": 800,
+   "proved": 447,
+   "proved_as_replay": 800,
+   "fetched": 353,
+   "proved_after_fetch": 353,
+   "proved_and_same_as_cloud": 800,
+   "proved_not_same": 0,
+   "plan_as_replay": 200,
+   "device_ms_p50": 15.394928499972593,
+   "device_ms_p99": 28.10889493070135,
+   "cloud_ms_p50": 86.71634149959573,
+   "cloud_ms_p99": 348.52617220001775,
+   "fetch_bytes_p50": 333455.0,
+   "fetch_bytes_p99": 30084381.360000122
+  }
+ ]
+}

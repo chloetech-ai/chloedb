@@ -88,17 +88,17 @@ fn check(texts: &[String], queries: usize, seed: u64) {
         .map(|&p| DocSet::from_sorted((0..n).filter(|_| rng.gen_bool(p)).collect(), n))
         .collect();
     let qs: Vec<BoolQuery> = (0..queries).map(|_| g.tree(3)).collect();
-    for (format, min_df) in configs() {
-        let seg = build(texts, format, min_df, true);
+    for ((format, min_df), packed) in configs().into_iter().flat_map(|c| [(c, false), (c, true)]) {
+        let seg = build_with(texts, format, min_df, true, packed);
         let r = TextFieldReader::open(&seg, "body").unwrap();
         for q in &qs {
             let want = naive.eval(q);
             let got: BTreeSet<u32> = r.eval(q, None).iter().collect();
-            assert!(got == want, "{format:?}/{min_df}: {q:?}: {} docs, want {}", got.len(), want.len());
+            assert!(got == want, "{format:?}/{min_df}/packed={packed}: {q:?}: {} docs, want {}", got.len(), want.len());
             for f in &filters {
                 let got: Vec<u32> = r.eval(q, Some(f)).iter().collect();
                 let w: Vec<u32> = want.iter().copied().filter(|&d| f.contains(d)).collect();
-                assert_eq!(got, w, "{format:?}/{min_df}: {q:?} with a filter of {}", f.len());
+                assert_eq!(got, w, "{format:?}/{min_df}/packed={packed}: {q:?} with a filter of {}", f.len());
             }
             let every = Every(3);
             let got: Vec<u32> = r.eval(q, Some(&every)).iter().collect();
@@ -135,8 +135,8 @@ fn match_queries_end_to_end() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    for (format, min_df) in configs() {
-        let seg = build(&texts, format, min_df, true);
+    for ((format, min_df), packed) in configs().into_iter().flat_map(|c| [(c, false), (c, true)]) {
+        let seg = build_with(&texts, format, min_df, true, packed);
         let r = TextFieldReader::open(&seg, "body").unwrap();
         let run = |q: &str| -> Vec<u32> { r.eval(&parse_match(q).unwrap(), None).iter().collect() };
         // "vaccination" and "vaccinate" stem to "vaccin" too.

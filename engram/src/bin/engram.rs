@@ -83,11 +83,14 @@ enum Cmd {
     /// How a decision, rule or fact changed: every version, with the dates
     /// it held. Takes a note id or words naming the subject.
     History { what: String },
-    /// Answer a question about earlier work: a model plans several searches,
-    /// they run, and a second model call picks the records that answer it.
+    /// Answer a question about earlier work: the rules, notes, replies and
+    /// messages that bear on it, found by search alone and packed for it.
     Ask {
         question: String,
-        /// Model for planning and ranking (default: the configured one).
+        /// A model plans several searches and a second call picks the records.
+        #[arg(long)]
+        deep: bool,
+        /// With --deep: model for planning and ranking (default: the configured one).
         #[arg(long)]
         model: Option<String>,
         /// Print the JSON result (picked ids, answer, confidence, cost).
@@ -219,8 +222,8 @@ fn main() {
             let id = what.split_once(':').is_some_and(|(a, b)| !a.is_empty() && !b.contains(' ') && !a.contains(' '));
             text(&send(&project, if id { json!({"op": "history", "id": what}) } else { json!({"op": "history", "query": what}) }, 30))
         }
-        Cmd::Ask { question, model, json: as_json, as_of } => {
-            let r = send(&project, json!({"op": "ask", "question": question, "model": model, "as_of": as_of, "include_current": true}), 300);
+        Cmd::Ask { question, deep, model, json: as_json, as_of } => {
+            let r = send(&project, json!({"op": "ask", "question": question, "deep": deep || model.is_some(), "model": model, "as_of": as_of, "include_current": true}), 300);
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());
             } else {

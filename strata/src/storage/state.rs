@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::postings::bytes::OwnedBytes;
 
-use crate::error::{corrupt, Result};
+use crate::error::{corrupt, Error, Result};
 use crate::schema::Schema;
 use crate::segment::{DocId, SegmentFile};
+use crate::storage::cold::{Cold, ColdImage};
 use crate::storage::db::Reserved;
 use crate::storage::freelist::FreeList;
 use crate::storage::live::{words_for, LiveDocs};
@@ -52,6 +53,8 @@ pub(crate) struct SegHandle {
     pub updates: Option<Arc<Updates>>,
     /// The mapping the views point into (for cache eviction).
     pub map: OwnedBytes,
+    /// A cold segment's cache file ([`crate::storage::cold`]).
+    pub cold: Option<Arc<ColdImage>>,
 }
 
 /// Checks a segment's image and, if any, its delete set and updates
@@ -102,15 +105,28 @@ impl SegHandle {
         }
         let deletes = meta.deletes.map(|e| map.slice(e.range()));
         let updates = meta.updates.map(|e| map.slice(e.range()));
-        SegHandle::from_bytes(map.slice(meta.extent.range()), deletes, updates, map.clone(), meta, schema, read_ahead, random_hints, check)
+        SegHandle::from_bytes(map.slice(meta.extent.range()), deletes, updates, map.clone(), meta, schema, read_ahead, random_hints, check, None)
     }
 
     /// Opens a segment of the directory layout from its own files (see
-    /// [`SegHandle::open`]).
-    pub fn open_in(dir: &Path, meta: &SegmentMeta, schema: &Schema, read_ahead: bool, random_hints: bool, check: Check) -> Result<SegHandle> {
-        let name = meta.file.as_deref().ok_or_else(|| corrupt(format!("segment {} has no file", meta.id)))?;
-        let map = crate::storage::dir::map(dir, name, read_ahead)?;
+    /// [`SegHandle::open`]), or a cold one over its cache file in `cold`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_in(dir: &Path, meta: &SegmentMeta, schema: &Schema, read_ahead: bool, random_hints: bool, check: Check, cold: Option<&Arc<Cold>>) -> Result<SegHandle> {
+        let (map, image) = match &meta.cold {
+            Some(cref) => {
+                let tier = cold.ok_or_else(|| {
+                    Error::Schema(format!("segment {} is kept on object storage (object {}): open the database with its cold tier (DbOptions::cold)", meta.id, cref.key))
+                })?;
+                let image = tier.image(&tier.object(meta.id, cref, meta.extent.len)?)?;
+                (crate::storage::pager::map_file(image.file(), read_ahead)?, Some(image))
+            }
+            None => {
+                let name = meta.file.as_deref().ok_or_else(|| corrupt(format!("segment {} has no file", meta.id)))?;
+                (crate::storage::dir::map(dir, name, read_ahead)?, None)
+            }
+        };
         if map.len() as u64 != meta.extent.len {
+            let name = meta.file.as_deref().or(meta.cold.as_ref().map(|c| c.key.as_str())).unwrap_or("?");
             return Err(corrupt(format!("{name} has {} bytes, the manifest says {}", map.len(), meta.extent.len)));
         }
         let deletes = match &meta.deletes_file {
@@ -121,9 +137,11 @@ impl SegHandle {
             Some(u) => Some(OwnedBytes::new(std::fs::read(dir.join(u))?)),
             None => None,
         };
-        SegHandle::from_bytes(map.clone(), deletes, updates, map, meta, schema, read_ahead, random_hints, check)
+        SegHandle::from_bytes(map.clone(), deletes, updates, map, meta, schema, read_ahead, random_hints, check, image)
     }
 
+    /// `cold`: the segment's cache file, whose image is fetched as it is
+    /// read, and checked part by part as it arrives (never whole here).
     #[allow(clippy::too_many_arguments)]
     fn from_bytes(
         image: OwnedBytes,
@@ -135,9 +153,14 @@ impl SegHandle {
         read_ahead: bool,
         random_hints: bool,
         check: Check,
+        cold: Option<Arc<ColdImage>>,
     ) -> Result<SegHandle> {
-        verify_segment(meta, (check == Check::Open).then_some(&image[..]), deletes.as_deref(), updates.as_deref())?;
-        let mut file = SegmentFile::open(image)?;
+        let whole = check == Check::Open && cold.is_none();
+        verify_segment(meta, whole.then_some(&image[..]), deletes.as_deref(), updates.as_deref())?;
+        let mut file = match &cold {
+            Some(c) => SegmentFile::open_fetched(image, c.clone())?,
+            None => SegmentFile::open(image)?,
+        };
         if check == Check::Read {
             file = file.checked_on_read();
         }
@@ -160,13 +183,36 @@ impl SegHandle {
             Some(b) => Some(Arc::new(Updates::decode(&b, schema)?)),
             None => None,
         };
-        Ok(SegHandle { meta: meta.clone(), file, pk, base, updates, map })
+        Ok(SegHandle { meta: meta.clone(), file, pk, base, updates, map, cold })
+    }
+
+    /// Whether the segment is cold.
+    pub fn is_cold(&self) -> bool {
+        self.cold.is_some()
+    }
+
+    /// The whole image, a cold one's fetched first: for a copy of it.
+    pub fn whole_image(&self) -> Result<OwnedBytes> {
+        self.file.ensure_all()?;
+        Ok(match &self.meta.file {
+            Some(_) => self.map.clone(),
+            None if self.cold.is_some() => self.map.clone(),
+            None => self.map.slice(self.meta.extent.range()),
+        })
     }
 
     /// Checks the segment's image, delete set and updates against their
     /// checksums; `dir` is the directory of the directory layout.
+    /// A cold segment's image is checked as far as it is in its cache file:
+    /// a damaged part there is fetched again.
     pub fn verify(&self, dir: Option<&Path>) -> Result<()> {
         let m = &self.meta;
+        if let (Some(c), Some(d)) = (&self.cold, dir) {
+            c.verify_present()?;
+            let read = |f: &Option<String>| f.as_ref().map(|f| std::fs::read(d.join(f))).transpose();
+            let (deletes, updates) = (read(&m.deletes_file)?, read(&m.updates_file)?);
+            return verify_segment(m, None, deletes.as_deref(), updates.as_deref());
+        }
         match dir {
             None => {
                 let at = |e: Option<Extent>| e.map(|e| &self.map[e.range()]);
@@ -181,7 +227,7 @@ impl SegHandle {
     }
 }
 
-fn lock_tail(m: &Mutex<Option<MemSeg>>) -> std::sync::MutexGuard<'_, Option<MemSeg>> {
+fn lock_tail(m: &Mutex<Vec<MemSeg>>) -> std::sync::MutexGuard<'_, Vec<MemSeg>> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -236,11 +282,6 @@ impl Chunk {
     /// The documents appended so far, in order.
     pub fn iter(&self) -> impl Iterator<Item = &Document> + '_ {
         (0..self.len()).map(|i| self.get(i))
-    }
-
-    /// The first `n` documents, copied.
-    pub fn to_vec(&self, n: usize) -> Vec<Document> {
-        (0..n).map(|i| self.get(i).clone()).collect()
     }
 }
 
@@ -366,10 +407,10 @@ pub(crate) struct TableState {
     pub mem_live: Vec<Option<(usize, usize, Arc<LiveDocs>)>>,
     /// The latest segment built for each memtable chunk (emptied by a flush).
     pub memsegs: Vec<Option<MemSeg>>,
-    /// The latest segment a snapshot built of the memtable's last chunk,
-    /// which snapshots build only when a query needs its indexes
-    /// ([`crate::storage::snapshot`]); shared with them.
-    pub tail: Arc<Mutex<Option<MemSeg>>>,
+    /// The latest segments a snapshot built of the pieces of the memtable's
+    /// last chunk, which snapshots build only when a query needs their
+    /// indexes ([`crate::storage::snapshot`]); shared with them.
+    pub tail: Arc<Mutex<Vec<MemSeg>>>,
     /// Its rank profiles, sorted by name: those of the manifest and those
     /// logged since, which the next version writes
     /// ([`crate::storage::manifest::TableMeta::profiles`]).
@@ -379,6 +420,12 @@ pub(crate) struct TableState {
     pub ties: Option<crate::sid::Ties>,
     /// The writes to it since the database was opened.
     pub activity: Activity,
+    /// The generation of its text statistics
+    /// ([`crate::storage::Snapshot::stats_gen`]): new with every change
+    /// to it ([`State::changed_table`]) and every change of the database's
+    /// version ([`State::changed`]), but those that leave each segment and
+    /// memtable chunk a snapshot reads as it was ([`State::changed_values`]).
+    pub stats_gen: u64,
 }
 
 /// A table's writes since its database was opened, kept in memory only
@@ -413,12 +460,12 @@ pub(crate) fn now_ms() -> u64 {
 
 impl TableState {
     pub fn new(id: u32, schema: Arc<Schema>, handles: Vec<Arc<SegHandle>>, chunk: usize, gen: u64) -> TableState {
-        TableState { id, schema, handles, mem: Memtable::new(chunk, gen), mem_live: Vec::new(), memsegs: Vec::new(), tail: Arc::default(), profiles: Arc::default(), ties: None, activity: Activity::default() }
+        TableState { id, schema, handles, mem: Memtable::new(chunk, gen), mem_live: Vec::new(), memsegs: Vec::new(), tail: Arc::default(), profiles: Arc::default(), ties: None, activity: Activity::default(), stats_gen: next_stats_gen() }
     }
 
     /// Empties the memtable (after a flush).
     pub fn clear_mem(&mut self) {
-        *lock_tail(&self.tail) = None;
+        lock_tail(&self.tail).clear();
         self.mem.clear();
         self.mem_live.clear();
         self.memsegs.clear();
@@ -454,12 +501,10 @@ impl TableState {
                 .collect();
             self.mem_live = self.mem_live.drain(..).skip(k).collect();
             let mut tail = lock_tail(&self.tail);
-            match tail.as_mut() {
-                Some(s) if s.gen == old.gen && s.chunk >= k => {
-                    s.gen = gen;
-                    s.chunk -= k;
-                }
-                _ => *tail = None,
+            tail.retain(|s| s.gen == old.gen && s.chunk >= k);
+            for s in tail.iter_mut() {
+                s.gen = gen;
+                s.chunk -= k;
             }
         } else {
             for p in n..old.len {
@@ -528,6 +573,10 @@ pub(crate) struct State {
     /// id alone, and a feed read from before it names the table it drops
     /// ([`crate::storage::feed`]).
     pub dropped: Vec<(u32, Arc<Schema>)>,
+    /// Snapshots pin the on-disk version they read (`meta.txn`) rather than
+    /// the last transaction: in a reader of another process's database,
+    /// whose pin is the oldest version it reads ([`crate::storage::share`]).
+    pub pin_versions: bool,
 }
 
 /// How many dropped tables' schemas [`State::dropped`] keeps.
@@ -587,6 +636,11 @@ impl State {
     /// at commit and on WAL replay, of the transaction numbered `seq` (0 if
     /// the database does not number its writes).
     pub fn apply(&mut self, t: usize, op: Op, seq: u64) {
+        // Whether the text statistics may have moved: they count deleted
+        // documents, so only a new one moves them, or a delete that leaves
+        // a memtable chunk with no live one, which snapshots leave out. A
+        // rank profile counts as moving them too.
+        let mut moved = true;
         match op {
             Op::Insert(doc) => {
                 let table = &mut self.tables[t];
@@ -605,12 +659,15 @@ impl State {
                     let mem = &mut self.tables[t].mem;
                     mem.delete(i);
                     mem.keys.remove(&Key::of(&v).unwrap());
+                    let k = i as usize / mem.chunk;
+                    moved = mem.chunk_deleted[k] == mem.chunks[k].len();
                 }
                 Some(Loc::Disk(id, d)) => {
                     self.pending.entry(id).or_default().insert(d);
                     self.n_pending += 1;
+                    moved = false;
                 }
-                None => {}
+                None => moved = false,
             },
             // Never logged: a change of tables is a version of its own
             // (`Database::change_tables`).
@@ -623,28 +680,37 @@ impl State {
                     profiles.sort_by_key(|p| p.name.to_ascii_lowercase());
                 }
             }
-            Op::Set { key, field, value } => match self.find_live(t, &key) {
-                Some(Loc::Mem(i)) => {
-                    let u = &mut self.tables[t].mem.updates;
-                    u.set(field as usize, i, value);
-                    if seq > 0 {
-                        u.set(SEQ, i, Value::Int(seq as i64));
+            // A value set in place is read beside the segment's text
+            // index, which it leaves as it was.
+            Op::Set { key, field, value } => {
+                moved = false;
+                match self.find_live(t, &key) {
+                    Some(Loc::Mem(i)) => {
+                        let u = &mut self.tables[t].mem.updates;
+                        u.set(field as usize, i, value);
+                        if seq > 0 {
+                            u.set(SEQ, i, Value::Int(seq as i64));
+                        }
                     }
+                    Some(Loc::Disk(id, d)) => {
+                        let (n, u) = self.pending_updates.entry(id).or_default();
+                        *n += 1;
+                        if u.set(field as usize, d, value) {
+                            self.n_pending += 1;
+                        }
+                        if seq > 0 {
+                            u.set(SEQ, d, Value::Int(seq as i64));
+                        }
+                    }
+                    None => {}
                 }
-                Some(Loc::Disk(id, d)) => {
-                    let (n, u) = self.pending_updates.entry(id).or_default();
-                    *n += 1;
-                    if u.set(field as usize, d, value) {
-                        self.n_pending += 1;
-                    }
-                    if seq > 0 {
-                        u.set(SEQ, d, Value::Int(seq as i64));
-                    }
-                }
-                None => {}
-            },
+            }
         }
-        self.changed();
+        if moved {
+            self.changed_table(t);
+        } else {
+            self.changed_values();
+        }
     }
 
     /// The sequence number of the write that last changed the document at
@@ -677,9 +743,36 @@ impl State {
         Some(u)
     }
 
-    /// Invalidates the cached snapshot.
+    /// Invalidates the cached snapshot, and every table's text statistics
+    /// generation ([`TableState::stats_gen`]).
     pub fn changed(&mut self) {
+        self.changed_values();
+        for t in &mut self.tables {
+            t.stats_gen = next_stats_gen();
+        }
+    }
+
+    /// Invalidates the cached snapshot, and table `t`'s text statistics
+    /// generation (a position in `tables`).
+    pub fn changed_table(&mut self, t: usize) {
+        self.changed_values();
+        self.tables[t].stats_gen = next_stats_gen();
+    }
+
+    /// Invalidates the cached snapshot after a change that leaves the text
+    /// statistics as they were: values set in place, or deletes that leave
+    /// each segment and memtable chunk a snapshot reads (BM25 statistics
+    /// count deleted documents, as a segment's own do).
+    pub fn changed_values(&mut self) {
         self.version += 1;
         self.cached = None;
     }
+}
+
+static NEXT_STATS_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A text statistics generation no table of this process has had
+/// ([`TableState::stats_gen`]); never 0.
+pub(crate) fn next_stats_gen() -> u64 {
+    NEXT_STATS_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

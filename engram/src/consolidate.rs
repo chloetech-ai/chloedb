@@ -244,9 +244,14 @@ pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64
                 continue;
             }
             let olds: Vec<&&Record> = members.iter().filter(|r| replaces.contains(&r.id)).collect();
-            // The newest replaced note's session and turn; its context and the
-            // anchors of all of them.
+            // The newest replaced note's session, turn and time; its context
+            // and the anchors of all of them. The merged note is dated by
+            // what it says, not by when it was merged: a later merge lists
+            // it with that date, and a model reading the merge time as the
+            // day something happened writes it into the note (in a replay
+            // or an import, months after the messages).
             let newest = olds.iter().max_by_key(|r| r.seq).unwrap();
+            let said = olds.iter().map(|r| r.ts).max().unwrap_or(now);
             let anchors: Vec<Anchor> = olds.iter().filter_map(|r| Anchor::parse(&r.ctx)).collect();
             let mut ctx = format!("Merged from {} notes, {}", olds.len(), fmt_time(now));
             if !anchors.is_empty() {
@@ -268,7 +273,7 @@ pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64
             for o in &against {
                 d = d.link("conflicts", o.clone());
             }
-            let merged = store.append(&newest.session, newest.turn, now, vec![d])?;
+            let merged = store.append(&newest.session, newest.turn, said, vec![d])?;
             let by = merged.first().map(|m| (m.id.clone(), m.valid_since()));
             if let Some((m, _)) = &by {
                 for o in &against {
@@ -305,6 +310,27 @@ mod tests {
         assert_eq!(p[0].1, vec!["a:1".to_string(), "a:2".to_string()]);
         assert_eq!(p[0].0.kind, Kind::Preference);
         assert_eq!(p[0].0.when, vec!["refund code".to_string()]);
+    }
+
+    #[test]
+    fn merged_notes_are_dated_by_what_they_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.strata"), Arc::new(HashEmbedder { dim: 256 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        s.append("a", 1, 100, vec![Draft::new(Kind::Preference, "Refunds are allowed within 14 days of purchase").tag("distilled").entities(vec!["refund".into()])]).unwrap();
+        s.append("a", 2, 200, vec![Draft::new(Kind::Preference, "Refunds are allowed within 30 days of purchase now").tag("distilled").entities(vec!["refund".into()])]).unwrap();
+        let ids: Vec<String> = live_notes(&s, 10).unwrap().iter().map(|r| r.id.clone()).collect();
+        let out = dir.path().join("out.json");
+        let merged = serde_json::json!({"kind": "rule", "text": "Refunds are allowed within 30 days of purchase.", "replaces": ids});
+        std::fs::write(&out, serde_json::json!({"is_error": false, "total_cost_usd": 0.0, "result": merged.to_string()}).to_string()).unwrap();
+        let script = dir.path().join("fake-model.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\ncat '{}'\n", out.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let cli = DistillConfig { command: script.display().to_string(), model: "m".into(), ..Default::default() };
+        let rep = run(&s, &ConsolidateConfig { cos: 0.99, entity_cos: 0.2, ..Default::default() }, &cli, 10_000).unwrap();
+        assert_eq!(rep.written, 1, "{:?}", rep.errors);
+        let live = live_notes(&s, 10).unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].ts, 200);
     }
 
     #[test]
@@ -363,7 +389,8 @@ mod tests {
         // The disagreement with the note outside it carries over, both ways.
         assert_eq!(m.linked("conflicts").collect::<Vec<_>>(), vec![c.id.as_str()]);
         assert!(s.get(&[c.id.clone()]).unwrap()[0].linked("conflicts").any(|x| x == m.id));
-        assert_eq!((m.ts, m.valid_since()), (5000, 2000));
+        // Dated by the newest note it replaces, not by the merge (at 5000).
+        assert_eq!((m.ts, m.valid_since()), (2000, 2000));
         let old = s.get(&[a.id.clone(), b.id.clone()]).unwrap();
         assert!(old.iter().all(|r| r.tag == "superseded" && r.valid_to == 2000 && r.linked("superseded_by").any(|x| x == m.id)), "{old:?}");
         // Day 1500: the 14 days held.

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use strata::query::exec::ResultSet;
 use strata::query::ir::{self, Plan};
@@ -77,6 +77,7 @@ pub fn result_to_pb(rs: &ResultSet, took_ms: f64) -> pb::QueryResponse {
         snapshot: 0,
         arrow: Vec::new(),
         stale: false,
+        cursor: String::new(),
     }
 }
 
@@ -107,10 +108,11 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), 15 copies
 /// only rows changed since a transaction and compares keys
 /// ([`FEED_KEYS_PROTOCOL`]), 16 keeps the stream offsets of slots that
-/// move ([`MOVE_OFFSETS_PROTOCOL`]), and 17 holds clients' writes on a
-/// mark and keeps promotions ([`HOLD_PROTOCOL`]).
+/// move ([`MOVE_OFFSETS_PROTOCOL`]), 17 holds clients' writes on a mark
+/// and keeps promotions ([`HOLD_PROTOCOL`]), and 18 scrolls a shard's rows
+/// for a coordinator ([`SCROLL_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 18;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -166,6 +168,12 @@ pub const MOVE_OFFSETS_PROTOCOL: u32 = 16;
 /// follower, and back. Nothing new on the wire but the marks, which an
 /// older shard refuses as its own.
 pub const HOLD_PROTOCOL: u32 = 17;
+
+/// The protocol whose shards scroll a query's rows for a coordinator
+/// (`QueryRequest.scroll`, `page_size`, `cursor`, `keep_alive_ms`,
+/// `QueryResponse.cursor`, `ReleaseRequest.cursors`): what a scroll over
+/// shards reads past the window by ([`crate::coord::ShardScroll`]).
+pub const SCROLL_PROTOCOL: u32 = 18;
 
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
@@ -240,6 +248,8 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         reads: false,
         stats_version: r.stats_version,
         boosts_alone: r.shard && r.protocol >= BOOSTS_PROTOCOL,
+        // A scroll's start names its owner ([`Grpc::query`]).
+        scroll: None,
     })
 }
 
@@ -302,7 +312,8 @@ pub fn code_name(c: tonic::Code) -> &'static str {
 fn method_scope(method: &str) -> Option<Scope> {
     match method {
         "Replicate" | "Restore" | "Verify" | "Vote" | "Slots" | "Configure" | "ExportSlots" | "FreezeSlots" | "CleanupSlots" | "Write (moved)" | "Keys" | "Feed" | "FeedKeys" => None,
-        "Write" | "WriteStream" => Some(Scope::Write),
+        // LogsExport: OpenTelemetry logs in ([`crate::otlp::Logs`]).
+        "Write" | "WriteStream" | "LogsExport" => Some(Scope::Write),
         "Logs" | "Profile" => Some(Scope::Admin),
         "Query" | "TermStats" | "GuardCounts" | "SidNext" | "Sources" | "Schema" | "Hello" | "Release" | "Health" | "Get" => Some(Scope::Read),
         // An unknown method is the root's.
@@ -347,7 +358,7 @@ impl Grpc {
     /// Serves one call: gives it its id (the caller's `x-request-id`, or a
     /// new one, sent back in the answer's metadata), runs it in a span that
     /// names it, counts it and logs it ([`crate::obs`]).
-    async fn serve<T, R, Fut>(&self, method: &'static str, req: Request<T>, f: impl FnOnce(Arc<Service>, Principal, T) -> Fut) -> Result<Response<R>, Status>
+    pub(crate) async fn serve<T, R, Fut>(&self, method: &'static str, req: Request<T>, f: impl FnOnce(Arc<Service>, Principal, T) -> Fut) -> Result<Response<R>, Status>
     where
         Fut: Future<Output = Result<R, ApiError>>,
     {
@@ -428,10 +439,22 @@ impl Grpc {
 #[tonic::async_trait]
 impl pb::strata_server::Strata for Grpc {
     async fn query(&self, req: Request<pb::QueryRequest>) -> Result<Response<pb::QueryResponse>, Status> {
-        self.serve("Query", req, |svc, _who, r| async move {
+        self.serve("Query", req, |svc, who, r| async move {
+            // A scroll's next page ([`SCROLL_PROTOCOL`]), for who started it.
+            let owner = crate::service::scroll_owner(&who);
+            let keep_alive = (r.keep_alive_ms > 0).then(|| Duration::from_millis(r.keep_alive_ms));
+            if !r.cursor.is_empty() {
+                let a = svc.scroll_next(&r.cursor, &owner, keep_alive, r.timeout_ms as u64, Some(r.page_size as usize)).await?;
+                return Ok(pb::QueryResponse { cursor: a.cursor.unwrap_or_default(), ..result_to_pb(&a.rs, a.took_ms) });
+            }
             svc.check_epoch(r.epoch)?;
-            let a = svc.query(query_req(r)?).await?;
-            Ok(pb::QueryResponse { snapshot: a.lease, arrow: a.arrow, stale: a.stale, ..result_to_pb(&a.rs, a.took_ms) })
+            let (scroll, page) = (r.scroll, r.page_size as usize);
+            let mut q = query_req(r)?;
+            if scroll {
+                q.scroll = Some(crate::service::ScrollAsk { page, keep_alive, owner });
+            }
+            let a = svc.query(q).await?;
+            Ok(pb::QueryResponse { snapshot: a.lease, arrow: a.arrow, stale: a.stale, cursor: a.cursor.unwrap_or_default(), ..result_to_pb(&a.rs, a.took_ms) })
         })
         .await
     }
@@ -750,8 +773,12 @@ impl pb::strata_server::Strata for Grpc {
     }
 
     async fn release(&self, req: Request<pb::ReleaseRequest>) -> Result<Response<pb::Empty>, Status> {
-        self.serve("Release", req, |svc, _who, r| async move {
+        self.serve("Release", req, |svc, who, r| async move {
             svc.release(&r.snapshots);
+            let owner = crate::service::scroll_owner(&who);
+            for c in &r.cursors {
+                svc.close_scroll(c, &owner);
+            }
             Ok(pb::Empty {})
         })
         .await
@@ -766,6 +793,7 @@ impl pb::strata_server::Strata for Grpc {
                 crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Scrub => format!("scrub from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Alerts => format!("alerts {} from a coordinator, by {}", asked.body["op"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Settings => match (asked.body.get("slow_ms"), asked.body.get("cpu_all")) {
                     (None, None) => "profiling settings, read by a coordinator".to_string(),

@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 28] = [
+pub const FEATURES: [&str; 30] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -157,6 +157,11 @@ pub const PREFIX_EDITS: &str = "prefix_edits";
 /// reads `)@2` as a word and ignores `min`, and so returns other rows.
 pub const MIN_MATCH: &str = "min_match";
 
+/// The feature of a plan whose `MATCH` has a phrase ending in a prefix
+/// (`"quick bro*"`, [`crate::text::query::BoolQuery::PhrasePrefix`]),
+/// which a Strata from before it reads as the phrase `quick bro`.
+pub const PHRASE_PREFIX: &str = "phrase_prefix";
+
 /// The feature of a plan that counts conditions: `AT_LEAST(n, ..)`
 /// ([`Expr::AtLeast`]) or `count_true(..)` ([`Func::CountTrue`]).
 pub const AT_LEAST: &str = "at_least";
@@ -192,6 +197,10 @@ pub const DATES: &str = "dates";
 /// The feature of a plan with a percentile ([`AggFn::PercentileCont`],
 /// [`AggFn::PercentileDisc`]), which a Strata from before them cannot read.
 pub const PERCENTILES: &str = "percentiles";
+
+/// The feature of a plan that hashes values ([`Func::Hash`]): a seeded
+/// sample, split or shuffle of rows.
+pub const HASH: &str = "hash";
 
 /// A statement as a tree of operators ([module docs](self)).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -779,6 +788,12 @@ pub enum Func {
     /// directives of `args[0]`, as SQLite's ([`crate::timestamp::strftime`]).
     /// Needs [`DATES`].
     Strftime,
+    /// `hash(x [, seed])`: an INT from 0 to 2^63 - 1 that only `x` and the
+    /// INT `seed` (0 without one) decide, the same on every machine and in
+    /// every version ([`eval::hash`]); NULL for a NULL `x` or `seed`. For
+    /// a seeded sample, split or shuffle of rows: `WHERE hash(id, 7) % 10
+    /// < 8`, `ORDER BY hash(id, 7)`. Needs [`HASH`].
+    Hash,
 }
 
 impl Func {
@@ -807,6 +822,7 @@ impl Func {
             Func::DateTrunc => "date_trunc",
             Func::DatePart => "date_part",
             Func::Strftime => "strftime",
+            Func::Hash => "hash",
         }
     }
 
@@ -834,7 +850,7 @@ impl Func {
     pub fn arity(self, n: usize) -> std::result::Result<(), &'static str> {
         let ok = match self {
             Func::Lower | Func::Upper | Func::Length | Func::Abs | Func::Ln | Func::Exp | Func::Sqrt | Func::Sigmoid => n == 1,
-            Func::Round | Func::Log => n == 1 || n == 2,
+            Func::Round | Func::Log | Func::Hash => n == 1 || n == 2,
             Func::Pow | Func::Dot | Func::SidAt | Func::DateTrunc | Func::DatePart | Func::Strftime => n == 2,
             Func::Clamp => n == 3,
             Func::Coalesce | Func::Least | Func::Greatest | Func::CountTrue => n >= 1,
@@ -851,6 +867,7 @@ impl Func {
             (_, Func::DateTrunc) => Err("two arguments: a unit ('day', 'week', 'month', ...) and a TIMESTAMP"),
             (_, Func::DatePart) => Err("two arguments: a part ('year', 'month', 'dow', ...) and a TIMESTAMP"),
             (_, Func::Strftime) => Err("two arguments: a format ('%Y-%m-%d') and a TIMESTAMP"),
+            (_, Func::Hash) => Err("one or two arguments: a value and an INT seed"),
             _ => Err("one argument"),
         }
     }
@@ -868,7 +885,7 @@ impl Func {
         }
         let x = args.first().copied().unwrap_or(f64::NAN);
         let r = match self {
-            Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime => f64::NAN,
+            Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime | Func::Hash => f64::NAN,
             Func::Abs => x.abs(),
             Func::Round => {
                 let d = args.get(1).map_or(0.0, |d| d.clamp(-30.0, 30.0).trunc());
@@ -1520,6 +1537,13 @@ impl Node {
         found
     }
 
+    /// Whether a `MATCH` of the plan has a phrase prefix ([`PHRASE_PREFIX`]).
+    pub fn has_phrase_prefix(&self) -> bool {
+        let mut found = false;
+        self.visit_exprs(&mut |e| found |= matches!(e, Expr::Match { query, .. } if crate::text::query::match_features(query).phrase_prefix));
+        found
+    }
+
     /// Whether a text of the plan needs some of its items ([`MIN_MATCH`]).
     pub fn has_min_match(&self) -> bool {
         let mut found = false;
@@ -2050,14 +2074,18 @@ impl Plan {
         if root.ranks_by_expression() {
             features.push(RANK_EXPRESSIONS.to_string());
         }
-        let (mut sid_at, mut json, mut dates) = (false, false, false);
+        let (mut sid_at, mut json, mut dates, mut hash) = (false, false, false, false);
         root.visit_exprs(&mut |e| {
             sid_at |= matches!(e, Expr::Call { func: Func::SidAt, .. });
             json |= matches!(e, Expr::Call { func: Func::JsonExtract, .. });
             dates |= matches!(e, Expr::Call { func: Func::DateTrunc | Func::DatePart | Func::Strftime, .. });
+            hash |= matches!(e, Expr::Call { func: Func::Hash, .. });
         });
         if dates {
             features.push(DATES.to_string());
+        }
+        if hash {
+            features.push(HASH.to_string());
         }
         if sid_at {
             features.push(SEMANTIC_ID.to_string());
@@ -2163,6 +2191,9 @@ impl Plan {
         }
         if root.has_min_match() {
             features.push(MIN_MATCH.to_string());
+        }
+        if root.has_phrase_prefix() {
+            features.push(PHRASE_PREFIX.to_string());
         }
         let mut counts = false;
         root.visit_exprs(&mut |e| counts |= matches!(e, Expr::AtLeast { .. } | Expr::Call { func: Func::CountTrue, .. }));

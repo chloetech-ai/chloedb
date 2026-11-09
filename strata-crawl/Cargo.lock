@@ -1644,6 +1644,7 @@ dependencies = [
  "clap",
  "ego-tree",
  "encoding_rs",
+ "httpdate",
  "libc",
  "regex",
  "reqwest",

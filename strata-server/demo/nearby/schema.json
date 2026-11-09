@@ -1,0 +1,13 @@
+{
+  "table": "places",
+  "key": "id",
+  "fields": [
+    {"name": "id", "type": "int"},
+    {"name": "name", "type": "keyword", "indexed": false},
+    {"name": "body", "type": "text", "positions": false},
+    {"name": "category", "type": "keyword"},
+    {"name": "address", "type": "keyword", "indexed": false},
+    {"name": "lat", "type": "float"},
+    {"name": "lon", "type": "float"}
+  ]
+}

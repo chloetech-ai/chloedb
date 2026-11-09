@@ -1,17 +1,6 @@
----
-title: Results
-parent: Engram
-nav_order: 2
----
-
 # Engram: results
-{: .no_toc }
 
 Engram works as a long-term memory for Claude Code. Every hook event is stored without the model's help. The details a compaction throws away come back when a prompt asks for them, and a new session starts out knowing what earlier sessions decided. Its weak point is the decision to inject: the gate keeps costs down but cannot reliably tell a related record from a relevant one. The query engine added in October 2026 lets a small model plan the searches and pick what matters, for about a tenth of a cent a request. It raises LongMemEval answers from 72% to 82%, helps on three newer benchmarks, and catches requirements a request implies without naming them.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Summary
 
@@ -52,14 +41,13 @@ The 6,000-character briefing did most of the work: it reached every Engram run. 
 
 **Limits.** Three small projects, one history each, one small model. The tasks were written alongside the histories and aimed at facts they state; real work rarely depends on earlier sessions this often, so the 40-point gain is a gain on such tasks, not on work in general.
 
-{: .note }
 A longer A/B on multi-day scenarios was run twice. The first run (`engram/results/long/*_v1_leaky`) is kept for the record only: Claude Code's own auto-memory, which lives outside the repository, was not reset between runs, so the runs within a lane were not independent. The rerun with the isolated harness (`engram/results/long/stockroom` and `slotwise`, 240 runs) does not show Engram recovering what compaction dropped. After a hand review of the regex-graded advice answers, stockroom was solved 26/30 with compaction alone, 27/30 with Engram, 30/30 with Engram and graph recall, and 30/30 with the full history; slotwise was 30/30 in every lane. Each compacted lane missed the one conversation-only fact its own last compaction summary dropped. In both Engram lanes the recall gate skipped those prompts and no run called a memory tool, so the differences between lanes come from their summaries. `stockroom/NOTE.md` has the review.
 
 ## Memory systems compared
 
 The A/B above compares Engram with nothing. This one puts Claude Code next to the memory systems a user could pick instead, on four projects, and compares Engram's `main` with the October changes (notes kept current, request-aware recall, code anchors and the query engine).
 
-**Method.** Each *lane* is one memory system. It records the project's history with that system on: each block of prompts is a new headless session, as separate working days are, and in one project a teammate's commits land between sessions without the agent being told. The lane's repository and whole home directory (which holds `~/.claude`, Claude Code's own memory, plugins and each system's data) are then frozen. Every follow-up task restores that state and starts a new session; a script grades the result, one check per fact. Each task runs four times per lane. Every `claude` process (and every hook, daemon and worker it starts) sees only `PATH`, its lane's `HOME` and the API address, so lanes cannot see each other or the machine's own setup. The agent and every memory system's own model calls use Haiku. The harness is [`engram/scripts/memory_bench.py`](https://github.com/rkonow/strata/blob/main/engram/scripts/memory_bench.py) and the competitors' setup is in [`engram/eval/competitors`](https://github.com/rkonow/strata/tree/main/engram/eval/competitors).
+**Method.** Each *lane* is one memory system. It records the project's history with that system on: each block of prompts is a new headless session, as separate working days are, and in one project a teammate's commits land between sessions without the agent being told. The lane's repository and whole home directory (which holds `~/.claude`, Claude Code's own memory, plugins and each system's data) are then frozen. Every follow-up task restores that state and starts a new session; a script grades the result, one check per fact. Each task runs four times per lane. Every `claude` process (and every hook, daemon and worker it starts) sees only `PATH`, its lane's `HOME` and the API address, so lanes cannot see each other or the machine's own setup. The agent and every memory system's own model calls use Haiku. The harness is [`engram/scripts/memory_bench.py`](https://github.com/chloetech-ai/strata/blob/main/engram/scripts/memory_bench.py) and the competitors' setup is in [`engram/eval/competitors`](https://github.com/chloetech-ai/strata/tree/main/engram/eval/competitors).
 
 | lane | what the agent has |
 |---|---|
@@ -101,7 +89,7 @@ Dropping the planner cost nothing here: ranker only solves the same 201 runs as 
 
 **Stale notes misled no one.** Bakehouse's two quick questions ask for something a teammate's commit changed after the history's notes were written: the order cutoff moved from 14:00 to 13:00 and the closed day from Sunday to Monday. Every lane, `main` and no memory included, answered both correctly in all four runs: the agent read the code before answering. With the three other tasks about code that changed under a note, this is 20 of 20 runs for every lane except the whole history (17 of 20), so code anchors did not show up in these grades. Revised decisions are solved by every Engram lane (15 or 16 of 16 runs; `main` 15).
 
-**What memory costs a run.** From the runs that logged where memory reached the agent (the fourth repeat of every lane, and all runs of the three new lanes; [`efficiency.md`](https://github.com/rkonow/strata/blob/main/engram/results/memory_bench/efficiency.md)):
+**What memory costs a run.** From the runs that logged where memory reached the agent (the fourth repeat of every lane, and all runs of the three new lanes; [`efficiency.md`](https://github.com/chloetech-ai/strata/blob/main/engram/results/memory_bench/efficiency.md)):
 
 | lane | memory context per run | agent input per run (p50) | memory system's model calls per run | $ per run, agent + memory |
 |---|---|---|---|---|
@@ -117,7 +105,7 @@ Dropping the planner cost nothing here: ranker only solves the same 201 runs as 
 
 Agent input counts every token the agent read over its steps, most of it Claude Code's own system prompt and tools, served from cache. Engram's 12,000 characters (about 3,000 tokens) are 2% of it. The whole history costs $0.016 a run while it is in the prompt cache and $0.075 when it is not, as in this fourth repeat, which ran hours after the history was recorded: about twice Engram's default ($0.0087) with the cache and nine times without. Wall times (p50 25–37 s) are not compared, because the lanes ran side by side on a 4-core container.
 
-**The first build.** Before these four-repeat runs, the query engine as first proposed in the same change ran three repeats of the 50 tasks that existed then: 144 of 150 in the background, 139 in front of each prompt, 137 with it off (`pooled.md`). Running it before the model starts cost 10 seconds a run and solved fewer. On slotwise it lost all three runs of one task: it picked a note the distiller had written from the assistant's own unanswered questions ("these cancellation fee details are still undecided and must be settled before the fee is built"), and the agent asked instead of building. The distill prompt now leaves such questions out ([check](https://github.com/rkonow/strata/tree/main/engram/results/v2/distill_open_questions): 6 of 6 outputs carried one before, 0 of 6 after), and the build above has the fix.
+**The first build.** Before these four-repeat runs, the query engine as first proposed in the same change ran three repeats of the 50 tasks that existed then: 144 of 150 in the background, 139 in front of each prompt, 137 with it off (`pooled.md`). Running it before the model starts cost 10 seconds a run and solved fewer. On slotwise it lost all three runs of one task: it picked a note the distiller had written from the assistant's own unanswered questions ("these cancellation fee details are still undecided and must be settled before the fee is built"), and the agent asked instead of building. The distill prompt now leaves such questions out ([check](https://github.com/chloetech-ai/strata/tree/main/engram/results/v2/distill_open_questions): 6 of 6 outputs carried one before, 0 of 6 after), and the build above has the fix.
 
 ## The session tail
 
@@ -142,7 +130,7 @@ Fisher's exact test gives p = 1.0 on solved runs, and a permutation test within 
 | 100,000 | 2.85 → 3.52 ms | 5.5 → 6.1 ms | 0.30 ms |
 | 1,000,000 | 10.5 → 16.3 ms | 27.7 → 34.1 ms | 0.36 ms |
 
-At a million records the tail adds 5.8 ms at the median, over the 2 ms it was allowed: almost all of it is `maxsim`'s four nearest-neighbour searches, one per vector, on the vector side of the search. LongMemEval turns name no files, so the digest's BM25 query does not run here and would add to that in a real session. Searching from the tail after each turn instead of on the prompt would take it off the hook's path, if the tail ever earns a place. The runs are in [`engram/results/memory_bench_tail/`](https://github.com/rkonow/strata/blob/main/engram/results/memory_bench_tail/README.md) and the timings in `engram/results/tail/tail_static.json` (`engram-bench tail`).
+At a million records the tail adds 5.8 ms at the median, over the 2 ms it was allowed: almost all of it is `maxsim`'s four nearest-neighbour searches, one per vector, on the vector side of the search. LongMemEval turns name no files, so the digest's BM25 query does not run here and would add to that in a real session. Searching from the tail after each turn instead of on the prompt would take it off the hook's path, if the tail ever earns a place. The runs are in [`engram/results/memory_bench_tail/`](https://github.com/chloetech-ai/strata/blob/main/engram/results/memory_bench_tail/README.md) and the timings in `engram/results/tail/tail_static.json` (`engram-bench tail`).
 
 ## Next files
 
@@ -159,7 +147,7 @@ Before an edit, the hook can also name the files that earlier sessions usually e
 | $ per run, agent + memory | 0.0068 | 0.0067 |
 | characters the edit hook injected | 525 | 755 |
 
-Fisher's exact test gives p = 0.82 on solved runs, and a permutation test within tasks p = 0.055 on the mean score (−0.012 with next files), almost three quarters of it from two tasks whose runs were shown no next files. One task lost two runs (`bake_sheet`, 3 to 1 of 4) with next files shown in all four, a move the same code makes between lanes by chance. The counts guessed the next file right about a time in four, and the agent edited the files it was told about no more often than without being told. Fewer than half of the notes shown with them (24 of 57) were facts or decisions; the rest were errors that name the file, mostly shell output, because nothing else was written about it. These tasks say which files to change, or the agent reads the code first; a hint would matter more in a repository too large to read, where a change in one place needs one in another that nothing names. The runs are in [`engram/results/memory_bench_next/`](https://github.com/rkonow/strata/blob/main/engram/results/memory_bench_next/README.md).
+Fisher's exact test gives p = 0.82 on solved runs, and a permutation test within tasks p = 0.055 on the mean score (−0.012 with next files), almost three quarters of it from two tasks whose runs were shown no next files. One task lost two runs (`bake_sheet`, 3 to 1 of 4) with next files shown in all four, a move the same code makes between lanes by chance. The counts guessed the next file right about a time in four, and the agent edited the files it was told about no more often than without being told. Fewer than half of the notes shown with them (24 of 57) were facts or decisions; the rest were errors that name the file, mostly shell output, because nothing else was written about it. These tasks say which files to change, or the agent reads the code first; a hint would matter more in a repository too large to read, where a change in one place needs one in another that nothing names. The runs are in [`engram/results/memory_bench_next/`](https://github.com/chloetech-ai/strata/blob/main/engram/results/memory_bench_next/README.md).
 
 ## This repository's own 26-hour session
 
@@ -253,7 +241,7 @@ Adding the picks to the recall fixed 61 answers and broke 13 (McNemar's exact te
 
 - **Stated preferences.** The first ranker prompt left out the turns where a taste was stated, because they do not look like answers: preference questions fell from 83% to 73% when its picks were added. One sentence asking it to pick what the user said about their tastes, habits, experience and plans when a request asks for suggestions or advice brings them to 90% (27 of 30) and costs nothing elsewhere (81.8% against 81.2% and 81.6%; the two runs of the first prompt show the run-to-run spread). A longer change that also stopped age warnings and asked for a reading of the user's circumstances scored lower (79.4%, p = 0.11 against the default) and was dropped.
 - **The planner earns its call on time.** Without it the ranker reads the 30 best of the request's own two searches. It keeps the evidence about as often (73% against 76%) for two thirds of the cost and half the wait (6.6 s at the median against 12 s), and answers drop 1.2 points (not significant, p = 0.5), mostly on temporal questions (74.0% against 81.1%), where the planner's date-filtered searches find the turns. On the coding projects above it made no difference. Questions about when something happened are common in coding work ("what did we change before the release"), so the planner stays on by default and `ENGRAM_DEEP_PLAN=none` is the cheaper, faster setting.
-- **A local ranker.** A logistic model over twelve features of each candidate (fused rank, similarity, term coverage, kind, length, recency), fitted on LongMemEval-S with five-fold cross-validation ([`local_ranker.py`](https://github.com/rkonow/strata/blob/main/engram/scripts/local_ranker.py), [fit](https://github.com/rkonow/strata/blob/main/engram/results/v2/local_ranker/fit.txt)), takes the top 5 with no model call. On held-out LoCoMo its top 5 hold all the evidence for 53% of questions, against 48% for the fused order's top 5. Added to the recall it gives +2.2 points (p = 0.14): a free option, well short of the model ranker.
+- **A local ranker.** A logistic model over twelve features of each candidate (fused rank, similarity, term coverage, kind, length, recency), fitted on LongMemEval-S with five-fold cross-validation ([`local_ranker.py`](https://github.com/chloetech-ai/strata/blob/main/engram/scripts/local_ranker.py), [fit](https://github.com/chloetech-ai/strata/blob/main/engram/results/v2/local_ranker/fit.txt)), takes the top 5 with no model call. On held-out LoCoMo its top 5 hold all the evidence for 53% of questions, against 48% for the fused order's top 5. Added to the recall it gives +2.2 points (p = 0.14): a free option, well short of the model ranker.
 
 **Where the gain comes from.** The planner's searches add depth more than reach: its 27 candidates hold all of a question's evidence for 79% of the 470 questions with evidence, against 78% for plain hybrid search taken to the same depth and 62% for its top 10. What changes the answers is the ranker. It keeps 2.8 records (960 characters) that hold all the evidence for 76% of questions and some of it for 94%.
 
@@ -267,7 +255,7 @@ Adding the picks to the recall fixed 61 answers and broke 13 (McNemar's exact te
 
 ## Three newer memory benchmarks
 
-LongMemEval and LoCoMo are what memory systems usually report. Three newer benchmarks test what they leave out: facts that are later overwritten, histories ten to forty times longer, and abilities beyond looking something up. Each conversation becomes its own store and a reader (Haiku) answers from each context. Each benchmark is scored its own way: FactConsolidation by whether an accepted answer appears in the reply, BEAM by a judge model against its rubric (0, 0.5 or 1 per item, averaged), LongMemEval-M by LongMemEval's judge prompts. The converters and scorers are [`convert_new_benchmarks.py`](https://github.com/rkonow/strata/blob/main/engram/scripts/convert_new_benchmarks.py) and [`bench_eval.py`](https://github.com/rkonow/strata/blob/main/engram/scripts/bench_eval.py); every number below is in `engram/results/v2/benchmarks/`.
+LongMemEval and LoCoMo are what memory systems usually report. Three newer benchmarks test what they leave out: facts that are later overwritten, histories ten to forty times longer, and abilities beyond looking something up. Each conversation becomes its own store and a reader (Haiku) answers from each context. Each benchmark is scored its own way: FactConsolidation by whether an accepted answer appears in the reply, BEAM by a judge model against its rubric (0, 0.5 or 1 per item, averaged), LongMemEval-M by LongMemEval's judge prompts. The converters and scorers are [`convert_new_benchmarks.py`](https://github.com/chloetech-ai/strata/blob/main/engram/scripts/convert_new_benchmarks.py) and [`bench_eval.py`](https://github.com/chloetech-ai/strata/blob/main/engram/scripts/bench_eval.py); every number below is in `engram/results/v2/benchmarks/`.
 
 | benchmark | what it tests | questions | history per question |
 |---|---|---|---|
@@ -300,7 +288,7 @@ The lanes above compare memory systems inside Claude Code. Here a memory system'
 - [mem0](https://github.com/mem0ai/mem0) 2.2.1 stores each session (on BEAM, each message group) with a model call and returns its top 20 memories. Its default install searches by vector alone; a second run turns on its optional keyword search and entity boosts (spaCy, BM25) over the same stored memories.
 - [Hindsight](https://github.com/vectorize-io/hindsight) 1.0.0, a server on Postgres, extracts facts and entities from each session with several model calls and recalls with budget `high`: up to 32,768 tokens of facts and 16,384 of source text a question on LongMemEval (12,288 and 8,192 on BEAM), reranked by a cross-encoder. A second recall from the same banks is capped at 640 tokens of facts and no source text, about the size of Engram's context.
 
-The runner is [`competitor_contexts.py`](https://github.com/rkonow/strata/blob/main/engram/scripts/competitor_contexts.py), and every context, answer and grade, with the method in full, is in [`engram/results/v3/competitors/`](https://github.com/rkonow/strata/tree/main/engram/results/v3/competitors) (cloud container, 4 CPUs).
+The runner is [`competitor_contexts.py`](https://github.com/chloetech-ai/strata/blob/main/engram/scripts/competitor_contexts.py), and every context, answer and grade, with the method in full, is in [`engram/results/v3/competitors/`](https://github.com/chloetech-ai/strata/tree/main/engram/results/v3/competitors) (cloud container, 4 CPUs).
 
 | | LongMemEval-S, 100 q | BEAM 100K, 400 q | context per question, characters (LME / BEAM) | model calls to store a history | per question |
 |---|---|---|---|---|---|
@@ -319,14 +307,30 @@ The runner is [`competitor_contexts.py`](https://github.com/rkonow/strata/blob/m
 
 **mem0 is level with the query engine, and pays at write time.** Its extraction call per session turns a history into short dated facts ahead of time, where Engram stores the raw records and spends its model calls on each question instead: mem0 spent $0.13 per LongMemEval history and $0.22 per BEAM conversation, against Engram's $0 to store and $0.0012–0.0014 a question. Which costs less depends on how many questions a history gets: on BEAM, at 20 a conversation, mem0 spends $0.011 a question. By ability, mem0 is better on BEAM's knowledge updates (56 against 40), preferences (72 against 66) and summaries (24 against 17), the kinds of question that facts rewritten at write time should help; the query engine is better on abstention (74 against 58), instruction following (54 against 43) and extraction (64 against 60), which depend more on the exact message. Turning on its optional search extras does not change that: 78% and 41.4.
 
+## Search alone against observational memory
+
+Since this change `memory_ask` answers by search alone ([how](index.md#answering-a-question)): rules, notes in their current versions with what they replaced, the assistant's closest replies and message excerpts, about 15,500 characters, with no model call; a question about order or a summary also gets every live note, about 43,000 characters in all. It was measured on BEAM 100K (400 questions) against two others, each read by the same reader and graded by the same judge (Haiku, BEAM's rubric judge, an answer prompt for an assistant reading its memory), three gradings each, since the same contexts graded twice can differ by two points:
+
+| | BEAM 100K | context per question | reader tokens | model calls at question time | to store a conversation |
+|---|---|---|---|---|---|
+| observational memory (Mastra's method, rebuilt from its prompts) | **63.4** | 153,400 characters | 59,300 | none | $0.13 (observer) |
+| `memory_ask`, search alone | 62.9 | 21,000 | 8,200 | none, 7 ms | $0.28 (the distiller Engram already runs) |
+| `memory_ask` before: the query engine's picks | 55.0 | 1,600 | 1,400 | two, about 12 s, $0.0012 | none |
+
+*Paired over questions: search alone −0.5 points against observational memory (95% interval −3.2 to +2.2) and +7.8 against the query engine (+4.8 to +11.1). Everything is in `engram/results/search/beam_100k/`.*
+
+**Both sides move when their memory is written again.** The notes and the observations are written by a model, and a second run writes different ones. A second run of the observer scored 60.7 against 63.4 for the first, and a second distillation of the same conversations 60.3 against 62.9 for search alone. Averaged over the two runs of each, search alone has 61.6 and observational memory 62.1 (−0.5, −2.7 to +1.8): level within the noise, with a seventh of the reader's tokens. A change to what the context shows counts only if it holds on both distillations: one that gained 1.6 points on the first scored 0.2 below on the second.
+
+Search alone is ahead of the query engine where the answer is a note that changed or a date: knowledge updates (68 against 49) and temporal reasoning (69 against 59). A summary needs what a search for its words misses: given every live note, summaries rose from 30 to 37 on the first distillation and from 31 to 37 on the second (observational memory: 37 and 40). Questions about order or a summary also get the assistant's replies from eight exchanges, 500 characters each; without them (as first merged) those 80 questions scored 32.9 instead of 38.3. Dating each note by the message it came from mattered: notes merged by consolidation had carried the day they were merged, and dating them by their newest source raised temporal reasoning from 63 to 70.
+
 ## The note-writer
 
-After each turn a small model writes down what the turn settled: decisions with their reasons, rules, requirements, facts, failed approaches. A note it should not have written misleads every later session; the first build's slow mode lost a task to one (above). Twelve exchanges in [`eval/distill/cases.jsonl`](https://github.com/rkonow/strata/blob/main/engram/eval/distill/cases.jsonl) each say what correct notes must and must not contain:
+After each turn a small model writes down what the turn settled: decisions with their reasons, rules, requirements, facts, failed approaches. A note it should not have written misleads every later session; the first build's slow mode lost a task to one (above). Twelve exchanges in [`eval/distill/cases.jsonl`](https://github.com/chloetech-ai/strata/blob/main/engram/eval/distill/cases.jsonl) each say what correct notes must and must not contain:
 
 - kept: a rule with its reason, a decision with its reason, a change that replaces a noted rule, a fact about the environment, an approach that failed and why, planned work the exchange finished (marked done);
 - left out: the assistant's unanswered questions, its own working habits, a suggestion the user turned down, status that will soon be stale, small talk, and any secret.
 
-`engram-bench distill` runs each exchange five times with Haiku and [`distill_eval.py`](https://github.com/rkonow/strata/blob/main/engram/scripts/distill_eval.py) checks every output ([results](https://github.com/rkonow/strata/tree/main/engram/results/distill)).
+`engram-bench distill` runs each exchange five times with Haiku and [`distill_eval.py`](https://github.com/chloetech-ai/strata/blob/main/engram/scripts/distill_eval.py) checks every output ([results](https://github.com/chloetech-ai/strata/tree/main/engram/results/distill)).
 
 | prompt | outputs passing | cost of the 60 |
 |---|---|---|
@@ -381,13 +385,13 @@ At a million records the latency benchmark then ran three times per side, altern
 | 1,000,000, 1 | 16.9–17.5 → 11.0–11.3 ms | 38.1–38.2 → 27.5–29.6 ms | 54–56 → 82–84 |
 | 1,000,000, 4 | 33.2–41.5 → 25.3–25.5 ms | 81.0–120.1 → 55.6–56.9 ms | 87–112 → 146–149 |
 
-One prompt at a time at a million records, the prompt hook (process start included) fell from 18.7–19.3 to 14.0–14.1 ms at the median. The cost is on the write side: an append returns after 2.6–3.2 ms instead of 0.9–1.0, because it waits for the new version to be built; the daemon stores records after the hook has answered, so no hook waits for that. With four prompt clients at 100,000 records the tool hook's own p99 rose from 8 to 12–13 ms while the daemon answered twice as many prompts. Every table and the variants that were tried and dropped are in [`engram/results/concurrency/`](https://github.com/rkonow/strata/blob/main/engram/results/concurrency/README.md).
+One prompt at a time at a million records, the prompt hook (process start included) fell from 18.7–19.3 to 14.0–14.1 ms at the median. The cost is on the write side: an append returns after 2.6–3.2 ms instead of 0.9–1.0, because it waits for the new version to be built; the daemon stores records after the hook has answered, so no hook waits for that. With four prompt clients at 100,000 records the tool hook's own p99 rose from 8 to 12–13 ms while the daemon answered twice as many prompts. Every table and the variants that were tried and dropped are in [`engram/results/concurrency/`](https://github.com/chloetech-ai/strata/blob/main/engram/results/concurrency/README.md).
 
 Quality is what degrades with size: the filler here is chat on every subject, while real project history is more homogeneous, so this is a stress test rather than a forecast. Strata's filters (session, time, file, kind) are what keep large stores precise, and `memory_sql` gives the model those filters directly.
 
 ## Reproducing the recorded numbers
 
-Before anything changed, every committed benchmark that needs no session transcript was rerun on `main` (787387d) on the cloud VM; [`engram/results/v2/baseline/REPORT.md`](https://github.com/rkonow/strata/blob/main/engram/results/v2/baseline/REPORT.md) has every table. Retrieval, the gate and the record-structure study reproduced exactly or within 0.007 (the docs' own MacBook rerun matches to the last digit; the committed `_c400` files are slightly older than the code), and the scale benchmark's quality numbers were identical at all three sizes. The reader study reproduces within 0.006 when the same model judges, but `haiku` now resolves to a newer model than the recorded runs used, which answers better: 8.6% / 72.2% / 89.8% with no memory, Engram's context and the oracle, against 11.0% / 68.2% / 81.0% recorded. New numbers on this page are compared with these reruns, not with the recorded runs.
+Before anything changed, every committed benchmark that needs no session transcript was rerun on `main` (787387d) on the cloud VM; [`engram/results/v2/baseline/REPORT.md`](https://github.com/chloetech-ai/strata/blob/main/engram/results/v2/baseline/REPORT.md) has every table. Retrieval, the gate and the record-structure study reproduced exactly or within 0.007 (the docs' own MacBook rerun matches to the last digit; the committed `_c400` files are slightly older than the code), and the scale benchmark's quality numbers were identical at all three sizes. The reader study reproduces within 0.006 when the same model judges, but `haiku` now resolves to a newer model than the recorded runs used, which answers better: 8.6% / 72.2% / 89.8% with no memory, Engram's context and the oracle, against 11.0% / 68.2% / 81.0% recorded. New numbers on this page are compared with these reruns, not with the recorded runs.
 
 On the changed build, the retrieval benchmarks return the same ranking as `main` for every question of both datasets: the October changes leave the per-prompt recall as it was, and their effect shows only where notes, anchors and the query engine are used.
 
@@ -415,4 +419,4 @@ On the changed build, the retrieval benchmarks return the same ranking as `main`
 - Hooks over HTTP to a localhost daemon, saving the process start per event: about 10 ms on macOS, 3 ms on Linux.
 - Shared project memory: one store per repository, synced between teammates' agents.
 
-The long-form reports have every chart and table: [Engram](../reports/engram.html) and [record structure](../reports/structure.html).
+The long-form reports have every chart and table: [Engram](https://chloetech-ai.github.io/strata/reports/engram.html) and [record structure](https://chloetech-ai.github.io/strata/reports/structure.html).

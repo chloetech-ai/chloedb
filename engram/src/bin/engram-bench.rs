@@ -111,6 +111,34 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         types: Vec<String>,
     },
+    /// Builds each question's context by search alone (engram::context,
+    /// what memory_ask returns; no model call) from stores `deep --notes`
+    /// distilled, at each budget; measures how much of the evidence each
+    /// holds and writes them as reader contexts (scripts/bench_eval.py).
+    Search {
+        #[arg(long)]
+        data: PathBuf,
+        #[arg(long, default_value = "static")]
+        embedder: String,
+        /// The stores `deep --notes` distilled (read, not changed).
+        #[arg(long)]
+        notes: PathBuf,
+        #[arg(long, default_value = "results/search")]
+        out: PathBuf,
+        /// Budgets in characters, one context file each.
+        #[arg(long, value_delimiter = ',', default_value = "12000")]
+        budgets: Vec<usize>,
+        #[arg(long, default_value_t = 8)]
+        threads: usize,
+        /// Overrides of engram::context::ContextParams, as name=value pairs
+        /// (shares as a/b).
+        #[arg(long, value_delimiter = ',')]
+        set: Vec<String>,
+        #[arg(long, default_value = "")]
+        tag: String,
+        #[arg(long, value_delimiter = ',')]
+        types: Vec<String>,
+    },
     /// Distils each exchange of a test set with Engram's prompt, several
     /// times, and writes every output (graded by scripts/distill_eval.py).
     Distill {
@@ -683,6 +711,7 @@ fn main() {
             eprintln!("{} texts in {:.1} ms", texts.len(), t0.elapsed().as_secs_f64() * 1e3);
         }
         Cmd::Distill { cases, model, repeats, threads, out } => distill_cmd(&cases, &model, repeats, threads, &out),
+        Cmd::Search { data, embedder, notes, out, budgets, threads, set, tag, types } => search_cmd(&data, &embedder, &notes, &out, &budgets, threads, &set, &tag, &types),
         Cmd::Deep { data, embedder, out, every, qevery, limit, threads, model, hard_model, max_picks, planner, ranker, features, tag, notes, types } => deep_cmd(
             &data,
             &embedder,
@@ -1007,6 +1036,161 @@ fn distilled_store(u: &Unit, dir: &Path, embedder: &str, e: &Arc<dyn Embedder>) 
     std::fs::write(&done, stats.to_string()).unwrap();
     eprintln!("  {}: distilled {n} exchanges in {:.0} s, ${cost:.3}: {stats}", u.unit_id, t0.elapsed().as_secs_f64());
     (d.store.clone(), stats)
+}
+
+fn context_params(set: &[String]) -> engram::context::ContextParams {
+    let mut p = engram::context::ContextParams::default();
+    for kv in set {
+        let (k, v) = kv.split_once('=').unwrap_or_else(|| panic!("--set {kv}: name=value"));
+        let n = || v.parse::<usize>().unwrap_or_else(|_| panic!("--set {kv}: a number"));
+        let f = || v.parse::<f64>().unwrap_or_else(|_| panic!("--set {kv}: a number"));
+        match k {
+            "notes" => p.notes = n(),
+            "excerpts" => p.excerpts = n(),
+            "excerpt_chars" => p.excerpt_chars = n(),
+            "rules" => p.rules = n(),
+            "rule_min_cos" => p.rule_min_cos = f(),
+            "rule_share" => p.rule_share = f(),
+            "broad_scale" => p.broad_scale = f(),
+            "replies" => p.replies = n(),
+            "reply_chars" => p.reply_chars = n(),
+            "reply_user_chars" => p.reply_user_chars = n(),
+            "broad_replies" => p.broad_replies = n(),
+            "broad_reply_chars" => p.broad_reply_chars = n(),
+            "broad_timeline" => p.broad_timeline = n(),
+            "shares" => {
+                let xs: Vec<f64> = v.split('/').map(|x| x.parse().unwrap_or_else(|_| panic!("--set {kv}: a/b"))).collect();
+                assert!(xs.len() == 2, "--set {kv}: a/b");
+                p.shares = [xs[0], xs[1]];
+            }
+            _ => panic!("--set {k}: unknown"),
+        }
+    }
+    p
+}
+
+/// Which BEAM turns a record stands for: a message its own turn; a note
+/// the turns of the exchange it was written from.
+struct Covers {
+    exchange: HashMap<(String, i64), Vec<String>>,
+}
+
+impl Covers {
+    fn new(u: &Unit) -> Covers {
+        let mut exchange = HashMap::<(String, i64), Vec<String>>::new();
+        let mut start = 0i64;
+        for (i, t) in u.turns.iter().enumerate() {
+            if t.role == "user" || i == 0 || u.turns[i - 1].session_id != t.session_id {
+                start = i as i64;
+            }
+            exchange.entry((t.session_id.clone(), start)).or_default().push(t.turn_id.clone());
+        }
+        Covers { exchange }
+    }
+
+    fn tags<'a>(&'a self, r: &'a Record) -> Vec<&'a str> {
+        if matches!(r.kind, Kind::Prompt | Kind::Answer) {
+            return vec![r.tag.as_str()];
+        }
+        if r.kind.is_knowledge() {
+            if let Some(v) = self.exchange.get(&(r.session.clone(), r.turn)) {
+                return v.iter().map(|s| s.as_str()).collect();
+            }
+        }
+        Vec::new()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_cmd(data: &Path, embedder: &str, notes: &Path, out: &Path, budgets: &[usize], threads: usize, set: &[String], tag: &str, types: &[String]) {
+    let t0 = Instant::now();
+    let e: Arc<dyn Embedder> = open_embedder(embedder);
+    let text = std::fs::read_to_string(data).expect("read data");
+    let units: Vec<Unit> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).expect("unit")).collect();
+    drop(text);
+    let dataset = units.first().map(|u| u.dataset.clone()).unwrap_or_default();
+    let base = context_params(set);
+    let covers: Vec<Covers> = units.iter().map(Covers::new).collect();
+    let stores: Vec<Arc<Store>> = units
+        .iter()
+        .map(|u| {
+            let udir = notes.join(u.unit_id.replace(['/', ' '], "_"));
+            assert!(udir.join("distilled.json").exists(), "{} was not distilled (engram-bench deep --notes)", udir.display());
+            Arc::new(Store::open(&engram::paths::StorePaths::new(&udir).db, e.clone(), StoreOptions { sync: false, ..Default::default() }).expect("open store"))
+        })
+        .collect();
+    let jobs: Vec<(usize, usize)> = units
+        .iter()
+        .enumerate()
+        .flat_map(|(i, u)| (0..u.questions.len()).map(move |j| (i, j)))
+        .filter(|&(i, j)| types.is_empty() || types.contains(&units[i].questions[j].question_type))
+        .collect();
+    let next = AtomicUsize::new(0);
+    let rows: Mutex<Vec<Json>> = Mutex::new(Vec::new());
+    let ctxs: Vec<Mutex<Vec<Json>>> = budgets.iter().map(|_| Mutex::new(Vec::new())).collect();
+    std::thread::scope(|s| {
+        for _ in 0..threads.max(1) {
+            let (units, jobs, next, rows, ctxs, stores, covers, base) = (&units, &jobs, &next, &rows, &ctxs, &stores, &covers, &base);
+            s.spawn(move || loop {
+                let k = next.fetch_add(1, Ordering::SeqCst);
+                let Some(&(i, j)) = jobs.get(k) else { break };
+                let (u, q) = (&units[i], &units[i].questions[j]);
+                let ev: HashSet<&str> = q.evidence_turn_ids.iter().map(|s| s.as_str()).collect();
+                let mut row = json!({"qid": q.qid, "unit": u.unit_id, "qtype": q.question_type, "abstention": q.abstention, "n_evidence": ev.len()});
+                for (b, &budget) in budgets.iter().enumerate() {
+                    let p = engram::context::ContextParams { budget, ..base.clone() };
+                    let built = engram::context::build(&stores[i], &q.question, &Filter::default(), &p).expect("context");
+                    let got: HashSet<&str> = built.records.iter().flat_map(|r| covers[i].tags(r)).filter(|t| ev.contains(t)).collect();
+                    let mut kinds: HashMap<&str, usize> = HashMap::new();
+                    for r in &built.records {
+                        *kinds.entry(r.kind.as_str()).or_default() += 1;
+                    }
+                    row[format!("any@{budget}")] = json!((!got.is_empty()) as u8);
+                    row[format!("all@{budget}")] = json!((!ev.is_empty() && got.len() == ev.len()) as u8);
+                    row[format!("frac@{budget}")] = json!(got.len() as f64 / ev.len().max(1) as f64);
+                    row[format!("chars@{budget}")] = json!(built.text.len());
+                    row[format!("ms@{budget}")] = json!(built.ms);
+                    row[format!("kinds@{budget}")] = json!(kinds);
+                    ctxs[b].lock().unwrap().push(json!({"qid": q.qid, "context": built.text}));
+                }
+                let n = {
+                    let mut g = rows.lock().unwrap();
+                    g.push(row);
+                    g.len()
+                };
+                if n % 100 == 0 {
+                    eprintln!("  {n}/{} questions, {:.0} s", jobs.len(), t0.elapsed().as_secs_f64());
+                }
+            });
+        }
+    });
+    let rows = rows.into_inner().unwrap();
+    let eligible: Vec<&Json> = rows.iter().filter(|r| !r["abstention"].as_bool().unwrap_or(false) && r["n_evidence"].as_u64().unwrap_or(0) > 0).collect();
+    let mean = |sel: &[&Json], k: &str| sel.iter().map(|r| r[k].as_f64().unwrap_or(0.0)).sum::<f64>() / sel.len().max(1) as f64;
+    let mut qtypes: Vec<String> = eligible.iter().filter_map(|r| r["qtype"].as_str().map(String::from)).collect::<HashSet<_>>().into_iter().collect();
+    qtypes.sort();
+    std::fs::create_dir_all(out).unwrap();
+    let name = format!("{dataset}_search{}", if tag.is_empty() { String::new() } else { format!("_{tag}") });
+    let mut summary = serde_json::Map::new();
+    for (b, &budget) in budgets.iter().enumerate() {
+        let keys = [format!("any@{budget}"), format!("all@{budget}"), format!("frac@{budget}"), format!("chars@{budget}"), format!("ms@{budget}")];
+        let agg = |sel: &[&Json]| -> Json { json!({"n": sel.len(), "any": mean(sel, &keys[0]), "all": mean(sel, &keys[1]), "frac": mean(sel, &keys[2]), "chars": mean(sel, &keys[3]), "ms": mean(sel, &keys[4])}) };
+        let by_type: serde_json::Map<String, Json> = qtypes.iter().map(|ty| (ty.clone(), agg(&eligible.iter().copied().filter(|r| r["qtype"] == ty.as_str()).collect::<Vec<_>>()))).collect();
+        let a = agg(&eligible);
+        let all: Vec<&Json> = rows.iter().collect();
+        let (chars, ms) = (mean(&all, &keys[3]), mean(&all, &keys[4]));
+        eprintln!("budget {budget}: evidence any {:.3} all {:.3} frac {:.3}; {chars:.0} chars, {ms:.1} ms per question", a["any"].as_f64().unwrap(), a["all"].as_f64().unwrap(), a["frac"].as_f64().unwrap());
+        for (ty, v) in &by_type {
+            eprintln!("  {ty:<26} n {:>3}  any {:.2} all {:.2} frac {:.2}  {:>5.0} chars", v["n"], v["any"].as_f64().unwrap(), v["all"].as_f64().unwrap(), v["frac"].as_f64().unwrap(), v["chars"].as_f64().unwrap());
+        }
+        summary.insert(budget.to_string(), json!({"evidence": a, "by_type": by_type, "chars": chars, "ms": ms}));
+        let lines: String = ctxs[b].lock().unwrap().iter().map(|r| serde_json::to_string(r).unwrap() + "\n").collect();
+        std::fs::write(out.join(format!("{name}_{budget}.contexts.jsonl")), lines).unwrap();
+    }
+    let params = format!("{base:?}");
+    std::fs::write(out.join(format!("{name}.json")), serde_json::to_string_pretty(&json!({"dataset": dataset, "embedder": e.name(), "params": params, "questions": rows.len(), "budgets": summary})).unwrap()).unwrap();
+    std::fs::write(out.join(format!("{name}.rows.jsonl")), rows.iter().map(|r| serde_json::to_string(r).unwrap() + "\n").collect::<String>()).unwrap();
+    eprintln!("{name}: {} questions in {:.0} s", rows.len(), t0.elapsed().as_secs_f64());
 }
 
 #[allow(clippy::too_many_arguments)]

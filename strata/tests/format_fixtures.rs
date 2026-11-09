@@ -253,7 +253,7 @@ fn recorded_features(dir: &Path) -> Vec<String> {
 #[test]
 fn key_indexes_of_every_set_find_their_keys() {
     for (set, _) in sets("format2").into_iter().filter(|s| s.1 == Era::Ids) {
-        let compact = set.parent().unwrap().file_name().unwrap() == "fieldids";
+        let compact = recorded_features(&set.join("db.dir")).contains(&"compact_keys".to_string());
         let dir = tempfile::tempdir().unwrap();
         for path in copies(&set, dir.path()) {
             let what = path.display().to_string();
@@ -487,7 +487,13 @@ fn profile_fixtures_rank_as_written() {
             assert_eq!(format_on_disk(&path), 3, "{what}");
             if path.is_dir() {
                 let (_, m) = strata::storage::dir::read_current(&path).unwrap();
-                let features: &[&str] = if era == Era::Old { &["rank_profiles"] } else { &["compact_keys", "field_ids", "rank_profiles"] };
+                // The sets from before packed positions keep their varints.
+                let packed = recorded_features(&path).contains(&"packed_positions".to_string());
+                let features: &[&str] = match (era, packed) {
+                    (Era::Old, _) => &["rank_profiles"],
+                    (Era::Ids, false) => &["compact_keys", "field_ids", "rank_profiles"],
+                    (Era::Ids, true) => &["compact_keys", "field_ids", "packed_positions", "rank_profiles"],
+                };
                 assert_eq!(m.features(), features, "{what}");
                 let names: Vec<&str> = m.tables[0].profiles.iter().map(|p| p.name.as_str()).collect();
                 assert_eq!(names, ["by_n", "phased"], "{what}: flushed with the deletes");
@@ -534,6 +540,66 @@ fn profile_fixtures_rank_as_written() {
     }
 }
 
+/// The sets of stored functions (`functions/`, and `functions-90091d4/`
+/// from before packed positions) hold `t`'s rows and, in `_functions`,
+/// `boosted` at versions 1 and 2, `top` at version 1 and dropped at 2,
+/// and `label` at 1, half of them flushed into segments and half in the
+/// WAL. Their calls answer as written out, and the versions survive new
+/// ones, a flush, a merge and opening again.
+#[test]
+fn function_fixtures_keep_their_versions() {
+    let mut sets: Vec<PathBuf> = std::fs::read_dir(fixtures()).unwrap().map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap().to_str().unwrap().split('-').next() == Some("functions")).collect();
+    sets.sort();
+    assert_eq!(sets.len(), 2, "{sets:?}");
+    for set in sets {
+        let dir = tempfile::tempdir().unwrap();
+        // The set from before packed positions keeps its varints.
+        let packed = recorded_features(&set.join("db.dir")).contains(&"packed_positions".to_string());
+        for path in copies(&set, dir.path()) {
+            let what = path.display().to_string();
+            assert_eq!(format_on_disk(&path), 3, "{what}");
+            if path.is_dir() {
+                let (_, m) = strata::storage::dir::read_current(&path).unwrap();
+                // `_functions` has BOOL, TIMESTAMP, NOT NULL and DEFAULT
+                // columns, and TEXT ones with positions.
+                let features: &[&str] = match packed {
+                    false => &["bool", "compact_keys", "default", "field_ids", "functions", "not_null", "timestamp"],
+                    true => &["bool", "compact_keys", "default", "field_ids", "functions", "not_null", "packed_positions", "timestamp"],
+                };
+                assert_eq!(m.features(), features, "{what}");
+            }
+            let versions = |db: &Db| db.functions().unwrap().all().map(|f| (f.id(), f.dropped, f.created, f.created_by.clone())).collect::<Vec<_>>();
+            let written = |n: &str| (n.to_string(), n.starts_with("top@2"), Some(OCT1), Some("writer".to_string()));
+            let check = |db: &Db| {
+                assert_eq!(firsts(db, "SELECT id FROM t"), (5..35).map(key).collect::<Vec<_>>(), "{what}");
+                assert_eq!(rows(db, "SELECT boosted(2, n), label(n) FROM t WHERE id = 'k000006'"), [[Value::Float(2.0), Value::Str("few".into())]], "{what}");
+                assert_eq!(rows(db, "SELECT \"boosted@1\"(2, 4)"), [[Value::Float(6.0)]], "{what}");
+                assert!(db.query("SELECT * FROM top('lorem')", &Params::new()).is_err(), "{what}: top was dropped");
+                let top = rows(db, "SELECT * FROM \"top@1\"('version 1', k => 3)");
+                assert_eq!(top, rows(db, "SELECT id, n FROM t WHERE MATCH(body, 'version 1') ORDER BY bm25(body, 'version 1') DESC, id LIMIT 3"), "{what}");
+                assert_eq!(top.len(), 3, "{what}");
+                let f = db.functions().unwrap();
+                assert_eq!(f.get("boosted", 1).unwrap().def.description.as_deref(), Some("a score raised by n"), "{what}");
+            };
+            let db = open(&path, Era::Ids);
+            assert_eq!(versions(&db), ["boosted@1", "boosted@2", "label@1", "top@1", "top@2"].map(written), "{what}");
+            check(&db);
+            run(&db, "CREATE OR REPLACE FUNCTION label(n INT) RETURNS KEYWORD AS CASE WHEN :n > 5 THEN 'many' ELSE 'few' END");
+            run(&db, "DROP FUNCTION boosted VERSION 1");
+            run(&db, "INSERT INTO t (id, n, body) VALUES ('k000099', 9, 'new')");
+            db.storage().flush().unwrap();
+            merge(&db);
+            db.storage().check().unwrap();
+            assert_eq!(rows(&db, "SELECT label(n) FROM t WHERE id = 'k000099'"), [[Value::Str("many".into())]], "{what}");
+            drop(db);
+            let db = open(&path, Era::Ids);
+            let ids: Vec<String> = versions(&db).into_iter().map(|v| v.0).collect();
+            assert_eq!(ids, ["boosted@2", "label@1", "label@2", "top@1", "top@2"], "{what}");
+            assert_eq!(format_on_disk(&path), 3, "{what}");
+        }
+    }
+}
+
 /// `new` holds the bytes of `old` but for the database id: in a WAL's
 /// header, and in a single file's two meta pages.
 fn same_bytes(old: &Path, new: &Path) {
@@ -563,17 +629,23 @@ fn same_bytes(old: &Path, new: &Path) {
 }
 
 /// The sets this version writes, by the writes in `writer.rs`, are those in
-/// `fieldids/`.
+/// `fieldids/` and `functions/`.
 #[test]
 fn this_version_writes_the_fixtures_byte_for_byte() {
     let dir = tempfile::tempdir().unwrap();
     writer::write_all(dir.path());
-    for set in ["format2", "format3", "seqno", "profiles"] {
-        let (old, new) = (fixtures().join("fieldids").join(set), dir.path().join(set));
+    writer::write_functions(dir.path());
+    for set in ["format2", "format3", "seqno", "profiles", "functions"] {
+        let old = match set {
+            "functions" => fixtures().join(set),
+            _ => fixtures().join("fieldids").join(set),
+        };
+        let new = dir.path().join(set);
         same_bytes(&old.join("db.strata"), &new.join("db.strata"));
         same_bytes(&old.join("db.strata-wal"), &new.join("db.strata-wal"));
+        // The writer's lock (`WRITER`) is no part of the format.
         let names = |d: &Path| {
-            let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+            let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n != "WRITER").collect();
             v.sort();
             v
         };

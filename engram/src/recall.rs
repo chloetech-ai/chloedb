@@ -925,7 +925,7 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
         s += &format!(", last activity {}", fmt_ago(r.ts, now));
     }
     s += ". Requirements, decisions and conventions agreed in earlier conversations are often not in the code: \
-          before a design decision, and whenever a task refers to earlier work, search memory (memory_ask answers a question about earlier work by running several searches; \
+          before a design decision, and whenever a task refers to earlier work, search memory (memory_ask answers a question about earlier work from notes, replies and messages at once; \
           memory_search is one quick search; memory_timeline shows a record's surroundings; memory_sql runs structured queries). memory_remember stores a new decision or fact.\n";
     let clip = |t: &str, n: usize| -> String {
         let t = t.split_whitespace().collect::<Vec<_>>().join(" ");

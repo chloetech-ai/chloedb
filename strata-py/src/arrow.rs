@@ -13,18 +13,14 @@
 //! column are an error, as Arrow holds one type a column.
 
 use std::ffi::CStr;
-use std::sync::Arc;
 
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
-use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Array, ArrayRef, Float64Array, RecordBatch, RecordBatchIterator, RecordBatchOptions, TimestampMicrosecondArray};
+use arrow_array::{RecordBatch, RecordBatchIterator};
 use arrow_schema::ffi::FFI_ArrowSchema;
-use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
-use strata::query::arrow::column_of;
+use strata::query::arrow::answer_batch;
 use strata::query::exec::Leaf;
-use strata::Value;
 
 use crate::StrataError;
 
@@ -42,18 +38,10 @@ pub struct Arrow {
 
 impl Arrow {
     /// A query's answer ([`strata::db::Db::query_leaf`]) as Arrow columns,
-    /// each named as the query names it: the executor's arrays, or its
-    /// rows made arrays.
+    /// each named as the query names it ([`strata::query::arrow::answer_batch`]).
     pub fn of(leaf: Leaf) -> strata::Result<Arrow> {
-        let (names, arrays, rows, stats) = match leaf {
-            Leaf::Arrow(c) => (c.names, c.arrays, c.rows, c.stats),
-            Leaf::Rows(rs) => {
-                let n = rs.rows.len();
-                (rs.columns.clone(), arrays_of(&rs.columns, rs.rows)?, n, rs.stats)
-            }
-        };
-        let stats = serde_json::to_string(&stats).unwrap_or_default();
-        Ok(Arrow { batch: batch_of(&names, arrays.into_iter().map(utc).collect(), rows)?, stats })
+        let (batch, stats) = answer_batch(leaf)?;
+        Ok(Arrow { batch, stats: serde_json::to_string(&stats).unwrap_or_default() })
     }
 }
 
@@ -95,66 +83,6 @@ impl Arrow {
         let n = self.batch.num_rows();
         format!("<strata.ArrowResult {n} row{}: {}>", if n == 1 { "" } else { "s" }, self.columns().join(", "))
     }
-}
-
-/// Rows of `columns.len()` values as arrays, one a column (a row with
-/// fewer is NULL in the rest).
-fn arrays_of(columns: &[String], rows: Vec<Vec<Value>>) -> strata::Result<Vec<ArrayRef>> {
-    let n = rows.len();
-    let mut cols: Vec<Vec<Value>> = columns.iter().map(|_| Vec::with_capacity(n)).collect();
-    for r in rows {
-        let k = r.len();
-        for (c, v) in cols.iter_mut().zip(r) {
-            c.push(v);
-        }
-        cols.iter_mut().skip(k).for_each(|c| c.push(Value::Null));
-    }
-    cols.into_iter().zip(columns).map(|(values, name)| array_of(name, values)).collect()
-}
-
-/// `arrays`, of `n` rows each, as one record batch.
-fn batch_of(names: &[String], arrays: Vec<ArrayRef>, n: usize) -> strata::Result<RecordBatch> {
-    let fields: Vec<Field> = names.iter().zip(&arrays).map(|(name, a)| Field::new(name, a.data_type().clone(), true)).collect();
-    let opts = RecordBatchOptions::new().with_row_count(Some(n));
-    RecordBatch::try_new_with_options(Arc::new(ArrowSchema::new(fields)), arrays, &opts).map_err(|e| strata::Error::Query(format!("arrow: {e}")))
-}
-
-/// A column of times in UTC, which Strata's are; any other as it is.
-fn utc(a: ArrayRef) -> ArrayRef {
-    match (a.data_type(), a.as_any().downcast_ref::<TimestampMicrosecondArray>()) {
-        (DataType::Timestamp(_, None), Some(t)) => Arc::new(t.clone().with_timezone("UTC")),
-        _ => a,
-    }
-}
-
-/// One column's values as an array of their one type.
-fn array_of(name: &str, values: Vec<Value>) -> strata::Result<ArrayRef> {
-    let numbers = |v: &Value| matches!(v, Value::Null | Value::Int(_) | Value::Float(_));
-    if values.iter().any(|v| matches!(v, Value::Int(_))) && values.iter().any(|v| matches!(v, Value::Float(_))) && values.iter().all(numbers) {
-        return Ok(Arc::new(values.iter().map(Value::as_f64).collect::<Float64Array>()));
-    }
-    // A multi-vector field's: a list of vectors a row.
-    let vectors = |v: &Value| match v {
-        Value::List(xs) => xs.iter().all(|x| matches!(x, Value::Vector(_))),
-        v => matches!(v, Value::Null),
-    };
-    if values.iter().any(|v| matches!(v, Value::List(xs) if !xs.is_empty())) && values.iter().all(vectors) {
-        let mut b = ListBuilder::new(ListBuilder::new(Float32Builder::new()));
-        for v in &values {
-            match v {
-                Value::List(xs) => {
-                    for x in xs {
-                        b.values().values().append_slice(x.as_vector().unwrap_or_default());
-                        b.values().append(true);
-                    }
-                    b.append(true);
-                }
-                _ => b.append(false),
-            }
-        }
-        return Ok(Arc::new(b.finish()));
-    }
-    column_of(values).map_err(|m| strata::Error::Query(format!("column {name}: {}; an Arrow column holds values of one type (query() answers it)", m.0)))
 }
 
 /// The Arrow stream `data` gives through the Arrow PyCapsule interface

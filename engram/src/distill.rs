@@ -73,7 +73,7 @@ impl DistillConfig {
 
 const SYSTEM: &str = "You keep the long-term notes of a software project. You read one exchange between a developer and a coding assistant and write down what a future session will need. Output JSON lines only.";
 
-const PROMPT: &str = r#"Here is one exchange from a software project. It took place on {date}.
+const PROMPT: &str = r#"Here is one exchange from a software project.{when}
 
 <request>
 {request}
@@ -151,21 +151,25 @@ pub fn parse_date(s: &str) -> Option<i64> {
 }
 
 /// The prompt for one exchange; `known` lists (id, kind, text) of what is
-/// already noted.
-pub fn prompt_for(request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)]) -> String {
-    prompt_at(request, answer, commands, known, crate::now())
-}
-
-/// [`prompt_for`] for an exchange that took place at `ts`.
-pub fn prompt_at(request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)], ts: i64) -> String {
+/// already noted, and `ts` is when the exchange took place (0: unknown).
+pub fn prompt_for(request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)], ts: i64) -> String {
     let known = if known.is_empty() { "(nothing yet)".to_string() } else { known.iter().map(|(id, k, t)| format!("[{id}] {}: {}", label(*k), clip(t, 300))).collect::<Vec<_>>().join("\n") };
     let commands = if commands.is_empty() { "(none)".to_string() } else { commands.join("\n") };
+    // The day of the exchange, which is not always today: distillation can
+    // run later (a queue, an import), and a relative date ("tomorrow") is
+    // relative to when it was said.
+    let when = if ts > 0 {
+        let day: String = crate::recall::fmt_time(ts).chars().take(10).collect();
+        format!(" It took place on {day}: a date it gives relative to that day (\"tomorrow\", \"next Tuesday\") is counted from {day}, and nothing in it happened on any other day unless it says so.")
+    } else {
+        String::new()
+    };
     PROMPT
+        .replace("{when}", &when)
         .replace("{request}", &clip(&redact(request), 6000))
         .replace("{commands}", &clip(&redact(&commands), 1500))
         .replace("{answer}", &clip(&redact(answer), 4000))
         .replace("{known}", &known)
-        .replace("{date}", &fmt_date(ts))
 }
 
 /// Up to `n` non-empty strings (each at most `max` bytes) of an array field.
@@ -219,7 +223,7 @@ pub fn parse(text: &str) -> Distilled {
 
 /// Runs the model on one exchange, which took place at `ts`.
 pub fn distill(cfg: &DistillConfig, request: &str, answer: &str, commands: &[String], known: &[(String, Kind, String)], ts: i64) -> Result<Distilled> {
-    let prompt = prompt_at(request, answer, commands, known, ts);
+    let prompt = prompt_for(request, answer, commands, known, ts);
     let model = cfg.model();
     let r = llm::complete(&cfg.cli(&model, cfg.timeout_secs), SYSTEM, &prompt)?;
     let mut d = parse(&r.text);
@@ -318,8 +322,8 @@ mod tests {
         assert_eq!(d.drafts[0].since, Some(1_791_763_200));
         assert_eq!(d.drafts[1].links, vec![crate::record::Link::new("conflicts", "a:4")]);
         assert_eq!(d.replaced, vec!["a:1".to_string()]);
-        let p = prompt_at("x", "y", &[], &[], 1_791_788_086);
-        assert!(p.contains("It took place on 2026-10-12."), "{p}");
+        let p = prompt_for("x", "y", &[], &[], 1_791_788_086);
+        assert!(p.contains("It took place on 2026-10-12:"), "{p}");
     }
 
     #[test]
@@ -341,7 +345,11 @@ mod tests {
 
     #[test]
     fn prompt_carries_the_exchange() {
-        let p = prompt_for("Add X. The client wants Y.", "Added X.", &["make test".into()], &[("s:1".into(), Kind::Todo, "Build Z".into())]);
+        let p = prompt_for("Add X. The client wants Y.", "Added X.", &["make test".into()], &[("s:1".into(), Kind::Todo, "Build Z".into())], 0);
         assert!(p.contains("The client wants Y.") && p.contains("[s:1] requirement: Build Z") && p.contains("make test"));
+        assert!(!p.contains("took place"));
+        // 2024-03-15 09:00 UTC: the day it was said, for relative dates.
+        let p = prompt_for("Ship it tomorrow.", "OK.", &[], &[], 1_710_493_200);
+        assert!(p.contains("It took place on 2024-03-15"), "{p}");
     }
 }

@@ -1,18 +1,6 @@
----
-title: Engram
-nav_order: 3
-has_children: true
-permalink: /engram/
----
-
 # Engram: how it works
-{: .no_toc }
 
 Engram, an application built on [Strata](../strata/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one Strata file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## The problem
 
@@ -38,7 +26,7 @@ Strata holds an exclusive lock on its file, and hooks are short-lived processes 
 
 - **Lazy start.** The first client to find no socket spawns the daemon under a spawn lock; the daemon exits after 30 idle minutes. Its first hook takes 50–72 ms, because the 129 MB embedding table is memory-mapped rather than read.
 - **Warm state.** The embedder, segment readers and the memtable stay in memory between hooks.
-- **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on Strata's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/rkonow/strata/tree/main/engram/results/writes)).
+- **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on Strata's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/chloetech-ai/strata/tree/main/engram/results/writes)).
 - **Never in the way.** A client that cannot reach the daemon within its deadline prints nothing and exits 0. A memory failure never blocks a prompt or a tool call.
 
 The store lives outside the repository, in `${ENGRAM_HOME:-~/.local/share/engram}/<project-slug>/`, because transcripts can contain secrets. A redaction pass removes common key and token formats before anything is stored.
@@ -98,7 +86,7 @@ Raw records hold what was *said*; a later session needs what was *agreed*: a dec
 
 ![Knowledge records: a small model writes down what each turn agreed](../assets/img/engram-knowledge-records.png)
 
-After each `Stop`, off the prompt's path, the daemon gives the turn (request, commands, reply) to a small model through `claude -p`, with up to 40 live notes for context: the ones most related to the turn wherever they are in the history, then the newest. Seeing the related ones is what lets the model update a note written weeks ago instead of adding a near-copy next to it. The model returns JSON lines:
+After each `Stop`, off the prompt's path, the daemon gives the turn (request, commands, reply) to a small model through `claude -p`, with up to 40 live notes for context: the ones most related to the turn wherever they are in the history, then the newest. Seeing the related ones is what lets the model update a note written weeks ago instead of adding a near-copy next to it. The prompt names the day the turn took place, so a relative date in it ("tomorrow", "next Tuesday") is counted from that day even when the turn is distilled later (`engram distill`, a backlog). The model returns JSON lines:
 
 | item | stored as | tag |
 |---|---|---|
@@ -115,7 +103,7 @@ Each note also carries **the situations it will matter in** (`when`), written at
 
 ### Consolidation
 
-Notes accumulate. Every eight distilled turns (or on `engram consolidate`), the daemon groups live notes that say related things: pairs whose embeddings have a cosine of at least 0.80, or 0.55 when they share an entity, joined strongest first into groups of at most ten. A small model rewrites each group as the smallest set of notes that keeps every detail, number, name and reason that still holds: a later change replaces the earlier version ("30 days, changed from 14"), duplicates merge, notes on different subjects stay apart, and rules, requirements and reasons are never dropped. Each merged note links to the notes it replaces (`supersedes`), which are retagged `superseded` and leave the briefing and recall; a note the model would only reword is kept as it is.
+Notes accumulate. Every eight distilled turns (or on `engram consolidate`), the daemon groups live notes that say related things: pairs whose embeddings have a cosine of at least 0.80, or 0.55 when they share an entity, joined strongest first into groups of at most ten. A small model rewrites each group as the smallest set of notes that keeps every detail, number, name and reason that still holds: a later change replaces the earlier version ("30 days, changed from 14"), duplicates merge, notes on different subjects stay apart, and rules, requirements and reasons are never dropped. Each merged note links to the notes it replaces (`supersedes`), which are retagged `superseded` and leave the briefing and recall, and is dated by the newest of them, not by when it was merged; a note the model would only reword is kept as it is.
 
 ### Notes tied to the code
 
@@ -183,7 +171,7 @@ sequenceDiagram
    Then the main search and a three-way gate: strong evidence injects the top records up to 4,000 characters; weak evidence injects three records up to 1,200, marked as a weak match; otherwise nothing.
 3. **`PreToolUse` on `Edit`/`Write`: file notes.** Up to two older errors, decisions or rules anchored to that path, once per file per window. With `ENGRAM_NEXT_FILES=1` (an experiment, off by default) the hook also names the files earlier sessions usually edited next: B follows A when an edit of B came within three edits after one of A (consecutive edits of one file count once), weighted by one over the gap and summed over sessions, and files above 1 are shown, at most two, each with its newest note. The daemon counts these from the edits the store holds as tool calls, reading only what was stored since it last looked, so nothing new is written. On the memory bench it changed neither how many tasks were solved nor which files were edited ([results](results.md#next-files)), so it stays off.
 4. **`PostToolUse` and `PostToolUseFailure` on `Bash`: error to fix.** A command that fails and then passes, with edits or other commands between, is written down as a fix: an `error` record tagged `fix` holding the error's line, the steps (the last eight edits and commands that change something; `ls`, `grep`, `git status` and the like do not count) and what showed it fixed (the same command passed, or failed with another error). The same command means the same after `cd`, pipes, redirections, `timeout` and variable assignments are taken off (`cd x && cargo test 2>&1 | tail` is `cargo test`); a failure is followed for 60 tool calls, and one that passes with nothing between is not a fix. When a command later fails with the same error, in any session of the project, its fixes come with the failure, at most two, once a session. Errors are matched by their signature: the telling line (a compiler's `error:`, a panic, the last line of a Python traceback, `fatal:`, ...) with numbers, hashes, temporary paths and the project's path masked, or one sharing four in five of its words. The fix links to the prompt of the turn that fixed it.
-5. **Pull: MCP tools.** `memory_ask` (the query engine below), `memory_search`, `memory_timeline` (the neighbourhood of a hit), `memory_sql` (read-only SQL over `memory`), `memory_history` (every version of a note, oldest first, with when each held), `memory_remember` and `memory_forget`. `memory_ask` and `memory_search` take `as_of` to answer from the notes that held on a past date.
+5. **Pull: MCP tools.** `memory_ask` (by search alone, [below](#answering-a-question); with `deep`, the query engine), `memory_search`, `memory_timeline` (the neighbourhood of a hit), `memory_sql` (read-only SQL over `memory`), `memory_history` (every version of a note, oldest first, with when each held), `memory_remember` and `memory_forget`. `memory_ask` and `memory_search` take `as_of` to answer from the notes that held on a past date.
 
 The briefing also ends with a one-line index of the notes it had no room for ("31 older notes are not shown here, about: …"), so the model knows what to ask for.
 
@@ -218,6 +206,21 @@ $$
 The weights come from a logistic fit on LongMemEval-S (`engram/scripts/fit_gate.py`): positives are questions whose evidence the packed injection contains; negatives are questions asked against another conversation's store, abstentions and misses. θ<sub>hi</sub> holds precision 0.9 on the fit and θ<sub>lo</sub> precision 0.7. The gate is the weakest part of the design; [the results](results.md#the-gate) say why.
 
 ![The query path: the exclusion predicate runs inside both searches](../assets/img/engram-query-path.png)
+
+## Answering a question
+
+`memory_ask` (and `engram ask`) answers by search alone: no model call runs between the question and the answer, because the work was done when memory was written (the messages, the notes the distiller wrote, the user's rules). Four searches run side by side on one snapshot of the store ([`context.rs`](https://github.com/chloetech-ai/strata/blob/main/engram/src/context.rs)), each with the live-window exclusion:
+
+| search | over | what the context shows |
+|---|---|---|
+| rules | preferences, by vector, cosine at least 0.3 | at most four, first, in at most a fifth of the budget |
+| notes | decisions, rules, facts, plans (hybrid) | current versions only, each with the note it replaced ("changed DATE; was: …"), dated and ordered by the message each came from (a merged note by its newest source) |
+| replies | the assistant's answers (hybrid) | the three exchanges these hits rank first: the start of the user's message (200 characters) and the part of the reply closest to the question (1,000) |
+| excerpts | prompts and answers (hybrid) | the 400 characters of each closest to the question |
+
+Notes take 40% of the 12,000-character budget the rules leave, excerpts 25%, and both then fill the rest in rank order; the replies come on top, so a context is about 15,500 characters (about 3,900 tokens). A question about order or a summary ("in what order", "summarize", "a timeline of") has its answer spread over many exchanges, which a search for its words misses: it gets one and a half times the budget, the replies of eight exchanges (500 characters each), and every live note in place of the searched ones, oldest first (at most 50,000 characters, the newest kept), about 43,000 characters in all on BEAM. It takes about 6 ms a question on BEAM's stores, 11 ms for a summary.
+
+On BEAM 100K (20 conversations, 400 questions; [results](results.md#search-alone-against-observational-memory)) this context scores 62.9, against 55.0 for the query engine's picks and 63.4 for an observational memory that hands the reader its whole log of observations, about 153,000 characters, with the same reader and judge. Both sides move when their notes are written again: over two runs each, search alone averages 61.6 and observational memory 62.1. With `deep: true` (`engram ask --deep`, or a `model`) `memory_ask` runs the query engine below instead.
 
 ## Query understanding
 
@@ -254,7 +257,7 @@ It runs in one of four modes (`"deep": {"mode": …}` in the store's `config.jso
 | mode | when it runs | how its result arrives |
 |---|---|---|
 | `off` | never | |
-| `tool` | only when the model calls `memory_ask` (or `engram ask`) | the tool's result |
+| `tool` | only when the model calls `memory_ask` with `deep` (or `engram ask --deep`) | the tool's result |
 | `async` (default) | after every prompt of four words or more, once the store holds 20 records, in the background | with the next tool result; if the turn ends first, its end waits up to 25 s and, when the picks are new and the ranker's confidence is high or medium, asks the model once to reconsider and give its whole answer again |
 | `sync` | the same prompts, before the model starts | in the prompt's context, after a wait (12 s at the median and 16 s at p90 in the cloud container, six requests at a time) |
 
@@ -270,6 +273,7 @@ Two settings make it cheaper. `"planner": "none"` (`ENGRAM_DEEP_PLAN=none`) skip
 | `UserPromptSubmit` | < 100 ms p99 at 1M records | 24.9 ms p50, 38.6 ms p99 as a hook process |
 | `SessionStart` | < 150 ms (daemon up), < 1 s with spawn | 50–72 ms including daemon start |
 | ingest | > 1,000 records/s | 48,000–52,000 records/s with the static embedder |
+| `memory_ask` (search alone) | < 100 ms | 6.9 ms a question on BEAM 100K's stores, one thread (11 ms for a summary) |
 | query engine (planner and ranker) | off the prompt's path unless `sync` | 12 s p50, 16 s p90, $0.0012 per request with Haiku |
 
 The default embedder is static (Model2Vec potion-retrieval-32M: token lookup and mean, 512 dimensions, microseconds per record). BGE-small (384 dimensions) is optional (`--features bert`) and costs about 50 ms per record on a CPU.
@@ -279,7 +283,7 @@ The default embedder is static (Model2Vec potion-retrieval-32M: token lookup and
 [Install on your machine](setup.md) has the whole procedure, remote machines and dev containers included. In short:
 
 ```sh
-git clone https://github.com/rkonow/strata && cd strata && ./install.sh   # every Claude Code session
+git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh   # every Claude Code session
 ./install.sh --project /path/to/your/project                              # or one project
 engram doctor                                                             # check the setup
 engram ui                                                                 # browse what it stored
@@ -313,4 +317,4 @@ engram stats | briefing | stop
 | `ENGRAM_ERROR_FIXES=0` | turns error to fix off ([when to load](#when-to-load); or `"error_fixes": false` in the store's `config.json`) |
 | `ENGRAM_EMBEDDER` | `static` (default), `bert`, or `hash:<dim>` for a model-free hash embedder |
 
-The full design, including the evaluation plan, is in [`engram/DESIGN.md`](https://github.com/rkonow/strata/blob/main/engram/DESIGN.md).
+The full design, including the evaluation plan, is in [`engram/DESIGN.md`](https://github.com/chloetech-ai/strata/blob/main/engram/DESIGN.md).

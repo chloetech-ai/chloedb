@@ -9,7 +9,8 @@
 //! | `text.f.meta` | format, counts, totals (JSON) |
 //! | `text.f.dict` | front-coded term dictionary ([`dict`]) |
 //! | `text.f.post` | posting lists: docIDs, frequencies, impacts ([`postings`]) |
-//! | `text.f.pos` | positions, if the field has them ([`cursor`]) |
+//! | `text.f.pos` | positions, if the field has them, as varints ([`cursor`]) |
+//! | `text.f.ppos` | positions in the packed layout instead, for a table that writes them so ([`crate::schema::Schema::packed_positions`]) |
 //! | `text.f.norms` | one-byte document lengths ([`codec::encode_norm`]) |
 //!
 //! Build options: `text.postings = loom | bp128` (docID encoding, default
@@ -68,5 +69,6 @@ pub fn text_builder(field: &Field, opts: &BuildOptions) -> Result<TextFieldBuild
         _ => return Err(Error::Schema(format!("field {} is not TEXT", field.name))),
     };
     let (format, loom_min_df) = builder::options(opts)?;
-    Ok(TextFieldBuilder::new(&field.key(), positions, format, loom_min_df).with_analyzer(field.text_analyzer()))
+    let packed = builder::packed_positions(opts)?;
+    Ok(TextFieldBuilder::new(&field.key(), positions, format, loom_min_df).with_packed_positions(packed).with_analyzer(field.text_analyzer()))
 }

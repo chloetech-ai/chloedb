@@ -63,7 +63,13 @@ pub fn scifact(limit: usize) -> Option<Vec<String>> {
 
 /// A segment holding one text field `body`.
 pub fn build(texts: &[String], format: PostingsFormat, loom_min_df: u32, positions: bool) -> SegmentFile {
-    let mut b = TextFieldBuilder::new("body", positions, format, loom_min_df);
+    build_with(texts, format, loom_min_df, positions, false)
+}
+
+/// [`build`], with its positions in the packed layout if `packed`.
+#[allow(dead_code)]
+pub fn build_with(texts: &[String], format: PostingsFormat, loom_min_df: u32, positions: bool, packed: bool) -> SegmentFile {
+    let mut b = TextFieldBuilder::new("body", positions, format, loom_min_df).with_packed_positions(packed);
     for t in texts {
         b.add_text(t);
     }
@@ -126,6 +132,19 @@ impl Naive {
                     })
                     .collect()
             }
+            // The phrases of `terms` and each of the first terms the
+            // prefix starts.
+            BoolQuery::PhrasePrefix { terms, prefix } => self
+                .index
+                .keys()
+                .filter(|t| t.starts_with(prefix.as_str()))
+                .take(strata::text::query::PHRASE_PREFIX_TERMS)
+                .flat_map(|t| {
+                    let mut ts = terms.clone();
+                    ts.push(t.clone());
+                    self.eval(&BoolQuery::Phrase(ts))
+                })
+                .collect(),
             BoolQuery::Fuzzy { term, edits } => {
                 let a: Vec<char> = term.chars().collect();
                 self.index.iter().filter(|(t, _)| strata::text::fuzzy::within(&a, t, *edits).is_some()).flat_map(|(_, ps)| ps.iter().map(|x| x.0)).collect()

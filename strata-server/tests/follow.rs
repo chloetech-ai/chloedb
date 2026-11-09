@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -725,8 +725,9 @@ async fn same_log(source: &Arc<Service>, follower: &Arc<Service>) {
 
 /// Writes rows of `log` by new ids (`first`, then every `step`th) until
 /// `stop`: to `a`, and once `a` holds its writes, to `b`, as a client
-/// switched over would, until `b` takes them. Answers the ids each took.
-fn switching_writer(a: Arc<Service>, b: Arc<Service>, stop: Arc<AtomicBool>, first: i64, step: i64) -> tokio::task::JoinHandle<(Vec<i64>, Vec<i64>)> {
+/// switched over would, until `b` takes them; counts itself in `moved` at
+/// its first write to `b`. Answers the ids each took.
+fn switching_writer(a: Arc<Service>, b: Arc<Service>, stop: Arc<AtomicBool>, moved: Arc<AtomicUsize>, first: i64, step: i64) -> tokio::task::JoinHandle<(Vec<i64>, Vec<i64>)> {
     tokio::spawn(async move {
         let (mut on_a, mut on_b) = (Vec::new(), Vec::new());
         let mut id = first;
@@ -736,7 +737,14 @@ fn switching_writer(a: Arc<Service>, b: Arc<Service>, stop: Arc<AtomicBool>, fir
             let to = if switched { &b } else { &a };
             match to.sql(&Principal::open(), &q, &Params::new(), After::Any, 0).await {
                 Ok(_) => {
-                    if switched { on_b.push(id) } else { on_a.push(id) }
+                    if switched {
+                        if on_b.is_empty() {
+                            moved.fetch_add(1, Ordering::Relaxed);
+                        }
+                        on_b.push(id)
+                    } else {
+                        on_a.push(id)
+                    }
                     id += step;
                 }
                 Err(e) if !switched && e.status == 503 && e.message.contains("holds its writes") => switched = true,
@@ -767,15 +775,21 @@ async fn a_planned_switch_over_loses_no_write_and_the_old_source_follows_back() 
     caught_up(&svc_a, &svc_b, &view).await;
 
     // Four clients write to the source as the switch-over runs.
-    let stop = Arc::new(AtomicBool::new(false));
-    let writers: Vec<_> = (0..4).map(|w| switching_writer(svc_a.clone(), svc_b.clone(), stop.clone(), w, 4)).collect();
+    let (stop, moved) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+    let writers: Vec<_> = (0..4).map(|w| switching_writer(svc_a.clone(), svc_b.clone(), stop.clone(), moved.clone(), w, 4)).collect();
     tokio::time::sleep(Duration::from_millis(500)).await;
     let o = follow::SwitchOptions { target: url_b.clone(), target_token: None, target_ca: None, name: "east".into(), source: None, source_key: None, source_ca: None, unplanned: false, wait: Duration::from_secs(60) };
     let r = follow::switch_over(o).await.unwrap();
     assert_eq!(r["planned"], true, "{r}");
     assert_eq!(r["lost"], 0, "{r}");
     assert_eq!(r["seqs"].as_array().unwrap().len(), 1, "{r}");
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Every client writes to the new primary (on CI's macOS runner, half a
+    // second after the promotion was not always enough for all four).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while moved.load(Ordering::Relaxed) < 4 {
+        assert!(Instant::now() < deadline, "{} of 4 clients wrote to the new primary", moved.load(Ordering::Relaxed));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     stop.store(true, Ordering::Relaxed);
     let (mut on_a, mut on_b) = (Vec::new(), Vec::new());
     for w in writers {
