@@ -156,7 +156,7 @@ The rows here are nodes with text, vectors and edges at once. The question the e
 
 - 1,000 papers of OGB's test split (809 from 2019, 191 from 2020, each citing at least five papers) are held out of the table.
 - Each held-out paper's title and abstract is the query. Its references in the table (15.3 on average) are the relevant rows.
-- Vectors come from a static embedder (Model2Vec potion-retrieval-32M, 512 dimensions), the same one Engram uses.
+- Vectors come from a static embedder (Model2Vec potion-retrieval-32M, 512 dimensions), the same one ChloeCtx uses.
 - Each method returns 20 papers. Methods that start from vector seeds have one parameter, the number of seeds *S*, swept from 1 to 50. Papers with even ids choose *S* by nDCG@20 (516 queries) and papers with odd ids report it (484 queries), so no reported number was tuned on its own queries.
 - Comparisons are paired over the same queries, with a 95% bootstrap interval and a two-sided sign-flip test.
 
@@ -222,6 +222,6 @@ Graph queries run on one database, not through a [coordinator](server.md#shardin
 - **No patterns.** There is no multi-hop pattern matching with a predicate per step; `through` and labels cover one constraint per traversal. SQL/PGQ's `MATCH` would be the standard syntax for more.
 - **Unweighted paths.** Weights are used by PageRank only.
 - **Walks across shards.** A coordinator refuses graph queries ([above](#on-a-cluster)). It could run them itself, asking the shards for the edges of each frontier and sending them the rows it reached with their distances and PageRank scores, at a round trip per hop. That needs a call to read edges by key and a plan that carries the rows' values, so it is a change of the shard protocol.
-- **Engram.** Its records have natural edges the store does not keep yet: a distilled note to the turn it came from, a superseded decision to its replacement, an error to the edit that fixed it. The arXiv result suggests the pattern to try (recall's best hits as seeds, then the records linked to them), but Engram's earlier study found that widening a hit to its neighbouring records gained little, so this needs its own measurement first.
+- **ChloeCtx.** Its records have natural edges the store does not keep yet: a distilled note to the turn it came from, a superseded decision to its replacement, an error to the edit that fixed it. The arXiv result suggests the pattern to try (recall's best hits as seeds, then the records linked to them), but ChloeCtx's earlier study found that widening a hit to its neighbouring records gained little, so this needs its own measurement first.
 
 The full report, with every table, is [ChloeDB graphs](https://chloetech-ai.github.io/strata/reports/graph.html). [Reproducing the results](../reproduce.md#chloedb-graphs) has the commands.

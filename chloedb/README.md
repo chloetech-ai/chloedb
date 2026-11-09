@@ -72,11 +72,11 @@ scripts/run_eval.sh                                    # every experiment, in or
 python3 scripts/build_report.py                        # report/strata.html
 ```
 
-Graphs (ogbn-arxiv, about 150 MB; vectors from Engram's static embedder):
+Graphs (ogbn-arxiv, about 150 MB; vectors from ChloeCtx's static embedder):
 
 ```sh
 python3 -I scripts/prepare_arxiv.py /home/user/data/graph/arxiv      # after downloading arxiv.zip and titleabs.tsv.gz there
-engram-bench embed --input /home/user/data/graph/arxiv/arxiv.jsonl --out /home/user/data/graph/arxiv/arxiv.f32
+chloectx-bench embed --input /home/user/data/graph/arxiv/arxiv.jsonl --out /home/user/data/graph/arxiv/arxiv.f32
 cargo build --release --features baselines --bin chloedb-graph-bench
 target/release/chloedb-graph-bench load
 target/release/chloedb-graph-bench latency --sqlite /home/user/data/graph/arxiv/edges.sqlite

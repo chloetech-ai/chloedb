@@ -1,11 +1,11 @@
-// Static mode for the Engram live inspector (engram/demo/index.html).
+// Static mode for the ChloeCtx live inspector (chloectx/demo/index.html).
 //
 // The inspector normally talks to demo/server.py, which runs Claude Code and
-// asks Engram's daemon to query its ChloeDB store. On a static site there is
+// asks ChloeCtx's daemon to query its ChloeDB store. On a static site there is
 // no server, so this file answers the same HTTP calls in the browser:
 //
 // * /api/chat replays a recorded session (inspector-data.js), turn by turn,
-//   with the records Engram wrote for each turn appearing as the turn runs.
+//   with the records ChloeCtx wrote for each turn appearing as the turn runs.
 // * inspect_query runs the SQL in a small JavaScript model of ChloeDB over the
 //   recorded records and their recorded vectors: the same analyser, BM25,
 //   hash embedder, rank fusion, graph traversal and personalized PageRank.
@@ -13,7 +13,7 @@
 //   end of the recording.
 "use strict";
 (() => {
-const D = window.ENGRAM_DEMO;
+const D = window.CHLOECTX_DEMO;
 
 // ====================================================================== text analysis (chloedb/src/text/analyzer.rs)
 const STOPWORDS = new Set(["a","an","and","are","as","at","be","but","by","for","if","in","into","is","it","no","not","of","on","or","such","that","the","their","then","there","these","they","this","to","was","will","with"]);
@@ -66,7 +66,7 @@ function analyzeQuery(text, dropStop = true) {
   return out;
 }
 
-// ====================================================================== Engram's hash embedder (engram/src/embed.rs)
+// ====================================================================== ChloeCtx's hash embedder (chloectx/src/embed.rs)
 const DIM = D.dim, MASK64 = (1n << 64n) - 1n, enc = new TextEncoder();
 function fnv(s) { let h = 0xcbf29ce484222325n; for (const b of enc.encode(s)) { h ^= BigInt(b); h = (h * 0x100000001b3n) & MASK64; } return h; }
 function embed(text) {
@@ -499,8 +499,8 @@ window.fetch = async (url, opts = {}) => {
   if (path === "/api/chat") {
     const turn = D.turns[turnIdx];
     if (busy) return json({error: "a turn is already running"}, 409);
-    if (!turn) return json({error: "This copy of the inspector replays a recorded session, and all of it has played. Run engram/demo/run.sh to chat with Claude Code yourself."}, 400);
-    if (body.message.trim() !== turn.message.trim()) return json({error: `This copy replays a recorded session, so it can only send the recorded messages. The next one is:\n\n${turn.message}\n\nClick it in the list above the box, or run engram/demo/run.sh to chat with Claude Code yourself.`}, 400);
+    if (!turn) return json({error: "This copy of the inspector replays a recorded session, and all of it has played. Run chloectx/demo/run.sh to chat with Claude Code yourself."}, 400);
+    if (body.message.trim() !== turn.message.trim()) return json({error: `This copy replays a recorded session, so it can only send the recorded messages. The next one is:\n\n${turn.message}\n\nClick it in the list above the box, or run chloectx/demo/run.sh to chat with Claude Code yourself.`}, 400);
     turnIdx++;
     return new Response(chatStream(turn), {headers: {"Content-Type": "application/x-ndjson"}});
   }
@@ -512,7 +512,7 @@ window.fetch = async (url, opts = {}) => {
         case "inspect_layout": return json({...D.layout, live_docs: visible, note: "recorded at the end of the session"});
         case "stats": return json(stats());
         case "timeline": return json(D.timelines[body.id] ? {text: D.timelines[body.id]} : {error: "no timeline for " + body.id});
-        case "search": return json({error: "Engram's own hybrid search runs in its daemon, which this static copy does not have. Use SQL mode: the reciprocal rank fusion example is close to what recall runs."});
+        case "search": return json({error: "ChloeCtx's own hybrid search runs in its daemon, which this static copy does not have. Use SQL mode: the reciprocal rank fusion example is close to what recall runs."});
       }
       return json({error: `op ${body.op} is not available here`}, 400);
     } catch (e) { return json({error: e.message}); }
@@ -521,7 +521,7 @@ window.fetch = async (url, opts = {}) => {
 };
 
 // Helpers the page uses to drive the replay.
-window.ENGRAM_STATIC = {
+window.CHLOECTX_STATIC = {
   next: () => D.turns[turnIdx],
   finish() { visible = ALL.length; logShown = D.events.length; turnIdx = D.turns.length; sessions = D.info.sessions.slice(); current = sessions.at(-1)?.id || null; },
   analyze, embed,

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Engram Inspector</title>
+<title>ChloeCtx Inspector</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%233a5ccc'/%3E%3Ccircle cx='8' cy='8' r='3' fill='white'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -181,15 +181,15 @@ td .clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vert
 </head>
 <body>
 <header>
-  <h1>Engram Inspector</h1>
+  <h1>ChloeCtx Inspector</h1>
   <div class="meta" id="meta"></div>
 </header>
-<div id="static">This is a static copy of Engram's live inspector. It replays a recorded session with a small model: send the suggested messages to watch Engram store each turn, or <a id="finish">load the finished session</a> and explore the store. Queries run in your browser, in a JavaScript model of ChloeDB. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/engram/inspector.md">About the inspector</a> · <a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a></div>
+<div id="static">This is a static copy of ChloeCtx's live inspector. It replays a recorded session with a small model: send the suggested messages to watch ChloeCtx store each turn, or <a id="finish">load the finished session</a> and explore the store. Queries run in your browser, in a JavaScript model of ChloeDB. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloectx/inspector.md">About the inspector</a> · <a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a></div>
 <main>
   <section id="chat">
     <div id="chatbar">
       <select id="sessions" title="Claude Code session"></select>
-      <button id="newsess" title="Start a new Claude Code session. Its context starts empty; Engram's memory carries over.">New session</button>
+      <button id="newsess" title="Start a new Claude Code session. Its context starts empty; ChloeCtx's memory carries over.">New session</button>
     </div>
     <div id="log"></div>
     <div id="compose">
@@ -279,7 +279,7 @@ td .clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vert
       <div class="toolbar">
         <select id="q-ex"></select>
         <label><input type="radio" name="qmode" value="sql" checked> SQL</label>
-        <label><input type="radio" name="qmode" value="search"> Engram hybrid search</label>
+        <label><input type="radio" name="qmode" value="search"> ChloeCtx hybrid search</label>
       </div>
       <textarea id="sql" spellcheck="false"></textarea>
       <div class="params" id="params"></div>
@@ -378,15 +378,15 @@ function toolArg(name, input) {
 }
 
 function emptyChat() {
-  const turns = window.ENGRAM_DEMO.turns;
+  const turns = window.CHLOECTX_DEMO.turns;
   $("#log").innerHTML = `<div class="empty">
-    <p><b>Chat with Claude Code in a scratch project.</b> Engram's hooks record each turn into its ChloeDB store; the panels on the right read that store directly.</p>
+    <p><b>Chat with Claude Code in a scratch project.</b> ChloeCtx's hooks record each turn into its ChloeDB store; the panels on the right read that store directly.</p>
     <p>This copy replays a recorded session. Click each message in order, then press Send:</p>
     <ul>${turns.map(t => `<li><a>${t.fresh ? "(new session) " : ""}${esc(t.message)}</a></li>`).join("")}</ul></div>`;
   $$("#log .empty a").forEach(a => a.onclick = () => { $("#input").value = a.textContent.replace(/^\(new session\) /, ""); if (a.textContent.startsWith("(new")) newSession(); $("#input").focus(); });
 }
 function suggestNext() {
-  const t = window.ENGRAM_STATIC.next();
+  const t = window.CHLOECTX_STATIC.next();
   if (!t || S.busy) return;
   if (t.fresh && S.session) newSession();
   $("#input").value = t.message;
@@ -400,7 +400,7 @@ function newSession() {
   d.className = "foot";
   d.style.textAlign = "center";
   d.style.margin = "14px 0";
-  d.textContent = "— new Claude Code session: its context starts empty, Engram's memory carries over —";
+  d.textContent = "— new Claude Code session: its context starts empty, ChloeCtx's memory carries over —";
   $("#log").appendChild(d);
 }
 
@@ -435,7 +435,7 @@ async function send() {
       if (ev.context && seenHooks.has(key)) return;
       seenHooks.add(key);
       if (ev.context) {
-        const label = ev.event === "SessionStart" ? "Engram briefing" : ev.event === "UserPromptSubmit" ? "Engram recalled" : ev.event === "PreToolUse" ? "Engram file notes" : "Engram " + ev.event;
+        const label = ev.event === "SessionStart" ? "ChloeCtx briefing" : ev.event === "UserPromptSubmit" ? "ChloeCtx recalled" : ev.event === "PreToolUse" ? "ChloeCtx file notes" : "ChloeCtx " + ev.event;
         const d = document.createElement("details");
         d.className = "engram";
         d.innerHTML = `<summary><span class="lbl">${label}</span> <span class="hint">injected ${ev.context.length.toLocaleString()} characters into Claude's context (${esc(ev.event)} hook)</span></summary><div class="body"><pre>${esc(ev.context)}</pre></div>`;
@@ -557,7 +557,7 @@ function attachToTurn(recs) {
       if (!S.turnKey && S.turnSession && r.session === S.turnSession) S.turnKey = key;
       if (key !== S.turnKey) continue;
     }
-    if (!stored.childElementCount) stored.insertAdjacentHTML("beforeend", `<span>Engram stored:</span>`);
+    if (!stored.childElementCount) stored.insertAdjacentHTML("beforeend", `<span>ChloeCtx stored:</span>`);
     const c = document.createElement("span");
     c.className = "chip flash";
     c.title = r.text.slice(0, 300);
@@ -573,7 +573,7 @@ function eventToTurn(e) {
     const d = document.createElement("div");
     d.className = "foot";
     const n = (e.injected || []).length;
-    d.innerHTML = `Engram recall: <b>${esc(e.decision)}</b> · gate ${(+e.gate || 0).toFixed(2)} · ${e.candidates} candidates · ${n ? `${n} record${n === 1 ? "" : "s"} injected (${e.chars} chars): ` : "nothing injected"}` +
+    d.innerHTML = `ChloeCtx recall: <b>${esc(e.decision)}</b> · gate ${(+e.gate || 0).toFixed(2)} · ${e.candidates} candidates · ${n ? `${n} record${n === 1 ? "" : "s"} injected (${e.chars} chars): ` : "nothing injected"}` +
       (e.injected || []).map(i => `<a data-open="${esc(i)}">${esc(i)}</a>`).join(", ");
     $(".engrams", S.turnEl).appendChild(d);
     wireOpen(d);
@@ -1112,7 +1112,7 @@ $("#d-close").onclick = () => $("#drawer").classList.remove("open");
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("#drawer").classList.remove("open"); });
 setExample(0);
 emptyChat();
-$("#finish").onclick = () => { if (S.busy) return; window.ENGRAM_STATIC.finish(); $("#input").value = ""; $("#log").innerHTML = `<div class="empty"><p>The whole recorded session is loaded into the store: ${window.ENGRAM_DEMO.records.length} records from ${window.ENGRAM_DEMO.turns.length} turns in two Claude Code sessions. Explore it in the panels on the right.</p></div>`; loadInfo(); };
+$("#finish").onclick = () => { if (S.busy) return; window.CHLOECTX_STATIC.finish(); $("#input").value = ""; $("#log").innerHTML = `<div class="empty"><p>The whole recorded session is loaded into the store: ${window.CHLOECTX_DEMO.records.length} records from ${window.CHLOECTX_DEMO.turns.length} turns in two Claude Code sessions. Explore it in the panels on the right.</p></div>`; loadInfo(); };
 loadInfo().then(() => { poll(); suggestNext(); });
 </script>
 </body>

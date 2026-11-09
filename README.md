@@ -18,7 +18,7 @@ Around the library:
 - **[chloedb-crawl](docs/chloedb/crawler.md)** crawls a site into a table: given a URL it reads the pages, finds their fields (JSON-LD, meta tags, spec tables, the site's template), makes a table from them and fills it, and adds shards to the cluster as the table grows. A program of its own that talks to chloedb-server over HTTP, shown in the command center as an app.
 - **[chloedb-sheets](docs/chloedb/sheets.md)** is a spreadsheet app whose workbooks live in ChloeDB: formulas (IronCalc, over 300 functions), formats, charts, pivots, filters and SQL queries of the cluster that fill cells; every cell is a row, so every workbook can be searched; the cluster's tables open as live sheets to sort, filter and edit; Excel, CSV and SQLite files come in, Excel and CSV go out. Shown in the command center as an app.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype) builds apps from a description: a model plans and writes them, the engine checks every piece, stores it in ChloeDB as a SQL statement and runs it, and you change an app by asking, each change a version you can go back from. Apps share components and helpers found by words, meaning and a graph, get sign-in, files, email and maps, and, when their owner switches it on, a model and the web.
-- **[Engram](#engram-memory-for-coding-agents-built-on-chloedb)** is an application built on ChloeDB: long-term memory for coding agents. It records every Claude Code session of a project into one ChloeDB file and brings the right pieces back when a prompt needs them.
+- **[ChloeCtx](#chloectx-memory-for-coding-agents-built-on-chloedb)** is an application built on ChloeDB: long-term memory for coding agents. It records every Claude Code session of a project into one ChloeDB file and brings the right pieces back when a prompt needs them.
 
 🌐 **Website:** [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/), with the benchmarks against other engines. 📖 **Documentation:** [`docs/`](docs/README.md).
 
@@ -54,7 +54,7 @@ flowchart LR
     PY["chloedb-py<br/>in-process or HTTP client"] --> LIB
     PY -.-> SRV
     SRV["chloedb-server<br/>HTTP JSON · gRPC · UI · agent<br/>coordinator over shards · replicas"] --> LIB
-    EN["Engram<br/>memory for Claude Code"] --> LIB
+    EN["ChloeCtx<br/>memory for Claude Code"] --> LIB
 ```
 
 ## Results at a glance
@@ -70,15 +70,15 @@ flowchart LR
 | Graph expansion for citation search (arXiv) | nDCG@20 **0.123 → 0.253** over vector search alone (p < 0.0001) | [ChloeDB graphs](docs/chloedb/graphs.md#does-the-graph-help-search) |
 | Loom posting lists vs partitioned Elias-Fano | same size, **2.4–3.0× faster AND**, 3.8–7.7× faster OR | [Posting lists](docs/posting-lists.md) |
 
-**Engram, on ChloeDB**
+**ChloeCtx, on ChloeDB**
 
 | | Result | Where |
 |---|---|---|
-| **Claude Code with and without Engram** (2 held-out projects, 200 runs) | **100 of 100** follow-up tasks solved with Engram, **60 of 100** without. The whole gap is on facts said only in conversation: 60/60 against 20/60. Permutation test p < 0.0001 | [Engram results](docs/engram/results.md#claude-code-with-and-without-engram) |
-| After a compaction, details the summary dropped | **13 of 15** came back automatically, 14 with one search | [Engram results](docs/engram/results.md#this-repositorys-own-26-hour-session) |
-| Live sessions asked about a 26-hour project history | **8 of 8** answered with Engram, **0 of 4** without | [Engram results](docs/engram/results.md#live-claude-code-runs) |
-| LongMemEval-S retrieval (115k-token histories) | **R@10 0.90**; the 4,000-character injection holds the evidence for 87% of questions | [Engram results](docs/engram/results.md#retrieval-on-long-conversation-benchmarks) |
-| Cost of a prompt hook | **14–26 ms** median from 10k to 1M records, mostly starting the hook process; 5.7 ms recall at a million records | [Engram results](docs/engram/results.md#scale-and-latency) |
+| **Claude Code with and without ChloeCtx** (2 held-out projects, 200 runs) | **100 of 100** follow-up tasks solved with ChloeCtx, **60 of 100** without. The whole gap is on facts said only in conversation: 60/60 against 20/60. Permutation test p < 0.0001 | [ChloeCtx results](docs/chloectx/results.md#claude-code-with-and-without-chloectx) |
+| After a compaction, details the summary dropped | **13 of 15** came back automatically, 14 with one search | [ChloeCtx results](docs/chloectx/results.md#this-repositorys-own-26-hour-session) |
+| Live sessions asked about a 26-hour project history | **8 of 8** answered with ChloeCtx, **0 of 4** without | [ChloeCtx results](docs/chloectx/results.md#live-claude-code-runs) |
+| LongMemEval-S retrieval (115k-token histories) | **R@10 0.90**; the 4,000-character injection holds the evidence for 87% of questions | [ChloeCtx results](docs/chloectx/results.md#retrieval-on-long-conversation-benchmarks) |
+| Cost of a prompt hook | **14–26 ms** median from 10k to 1M records, mostly starting the hook process; 5.7 ms recall at a million records | [ChloeCtx results](docs/chloectx/results.md#scale-and-latency) |
 
 All numbers come from the experiments in this repository; [Reproducing the results](docs/reproduce.md) says how each was produced, and which ones were re-run for this release.
 
@@ -145,17 +145,17 @@ ChloeDB from JavaScript ([more](docs/chloedb/javascript.md)):
 cd chloedb-js && npm run build && cd ../my-app && npm install ../strata/chloedb-js
 ```
 
-## Engram: memory for coding agents, built on ChloeDB
+## ChloeCtx: memory for coding agents, built on ChloeDB
 
-Claude Code forgets. A long session gets compacted into a summary of about 15,000 characters, and a new session starts with almost nothing. Engram records everything a session does (prompts, answers, tool calls and their results, errors, compaction summaries) into one local ChloeDB file per project. It brings the right pieces back on its own when a prompt needs them, and it gives the model tools to search its own history. Every question it asks is ChloeDB SQL: recall is a BM25 search and a vector search under a filter that leaves out what the model can still see, and the model's `memory_sql` tool is ChloeDB's SQL itself, read-only.
+Claude Code forgets. A long session gets compacted into a summary of about 15,000 characters, and a new session starts with almost nothing. ChloeCtx records everything a session does (prompts, answers, tool calls and their results, errors, compaction summaries) into one local ChloeDB file per project. It brings the right pieces back on its own when a prompt needs them, and it gives the model tools to search its own history. Every question it asks is ChloeDB SQL: recall is a BM25 search and a vector search under a filter that leaves out what the model can still see, and the model's `memory_sql` tool is ChloeDB's SQL itself, read-only.
 
-🧭 **Why Engram, in two pages:** where it wins, where it loses, how it searches and what it saves on coding sessions, with a cost calculator: [`docs/why/`](docs/why/index.html), live at [chloetech-ai.github.io/strata/why/](https://chloetech-ai.github.io/strata/why/).
+🧭 **Why ChloeCtx, in two pages:** where it wins, where it loses, how it searches and what it saves on coding sessions, with a cost calculator: [`docs/why/`](docs/why/index.html), live at [chloetech-ai.github.io/strata/why/](https://chloetech-ai.github.io/strata/why/).
 
-🚀 **Try it:** `git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh` sets Engram up for every Claude Code session on a Mac or Linux machine ([install Engram](#install-engram)). To have a coding agent do it, tell it: *"Clone https://github.com/chloetech-ai/strata and set Engram up for my Claude Code by following its AGENTS.md."* [`AGENTS.md`](AGENTS.md) gives an agent the steps, the checks and what to ask you first.
+🚀 **Try it:** `git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh` sets ChloeCtx up for every Claude Code session on a Mac or Linux machine ([install ChloeCtx](#install-chloectx)). To have a coding agent do it, tell it: *"Clone https://github.com/chloetech-ai/strata and set ChloeCtx up for my Claude Code by following its AGENTS.md."* [`AGENTS.md`](AGENTS.md) gives an agent the steps, the checks and what to ask you first.
 
-![A new Claude Code session answers from Engram's memory: the storage decision, its reason, and the receipt-printer constraint, all stated in an earlier session](docs/assets/img/inspector-new-session.png)
+![A new Claude Code session answers from ChloeCtx's memory: the storage decision, its reason, and the receipt-printer constraint, all stated in an earlier session](docs/assets/img/inspector-new-session.png)
 
-*The Engram live inspector. Left: a fresh Claude Code session is asked what was decided earlier, and answers from the briefing Engram injected. Right: the records the hooks stored and the decisions, rules and planned work a small model distilled from the first session.*
+*The ChloeCtx live inspector. Left: a fresh Claude Code session is asked what was decided earlier, and answers from the briefing ChloeCtx injected. Right: the records the hooks stored and the decisions, rules and planned work a small model distilled from the first session.*
 
 ```mermaid
 flowchart LR
@@ -163,9 +163,9 @@ flowchart LR
         HK["hooks<br/>SessionStart · UserPromptSubmit<br/>PreToolUse · PostToolUse · Stop · Compact"]
         MCP["MCP tools<br/>memory_search · memory_timeline<br/>memory_sql · memory_remember"]
     end
-    HK -- "engram hook &lt;event&gt;<br/>~15 ms, never blocks" --> D
-    MCP -- "engram mcp (stdio)" --> D
-    D["engram serve<br/>one daemon per project<br/>capture → embed → store<br/>recall → gate → pack"]
+    HK -- "chloectx hook &lt;event&gt;<br/>~15 ms, never blocks" --> D
+    MCP -- "chloectx mcp (stdio)" --> D
+    D["chloectx serve<br/>one daemon per project<br/>capture → embed → store<br/>recall → gate → pack"]
     D -- "SQL: BM25 + vectors + filters" --> S[("ChloeDB<br/>memory.strata + WAL")]
     D -. "after each turn" .-> DL["distiller<br/>(small model via claude -p)<br/>decisions · rules · planned work · facts"]
     DL -.-> S
@@ -175,7 +175,7 @@ flowchart LR
 2. **Load without being asked, only when it helps.** A briefing at session start, a knowledge block and gated recall on every prompt, notes before editing a file. Nothing the model can still see is repeated.
 3. **Let the model ask precisely.** Hybrid search, a timeline around any record, and read-only SQL over its own memory.
 
-### Install Engram
+### Install ChloeCtx
 
 Requirements: macOS or Linux (WSL 2 on Windows), Rust (stable), a C compiler, and the [Claude Code](https://claude.com/claude-code) CLI, logged in (`claude auth status`).
 
@@ -185,26 +185,26 @@ git clone https://github.com/chloetech-ai/strata && cd strata
 ./install.sh --project ~/code/app     # ... or one project
 ```
 
-`install.sh` builds Engram, installs it to `~/.local/bin/engram`, downloads the embedding model (129 MB), wires the hooks and the MCP server into Claude Code (`engram install --user`, or `--project`), and runs `engram doctor` to check the result. Each project directory gets its own store under `~/.local/share/engram/projects/`, outside the repository. Run it again after `git pull` to upgrade; `engram uninstall --user` removes it and keeps the stores. [Install on your machine](docs/engram/setup.md) covers the details, remote machines, dev containers and troubleshooting.
+`install.sh` builds ChloeCtx, installs it to `~/.local/bin/chloectx`, downloads the embedding model (129 MB), wires the hooks and the MCP server into Claude Code (`chloectx install --user`, or `--project`), and runs `chloectx doctor` to check the result. Each project directory gets its own store under `~/.local/share/engram/projects/`, outside the repository. Run it again after `git pull` to upgrade; `chloectx uninstall --user` removes it and keeps the stores. [Install on your machine](docs/chloectx/setup.md) covers the details, remote machines, dev containers and troubleshooting.
 
-An agent can do all of this: [`AGENTS.md`](AGENTS.md) has its instructions, including which steps need you (choosing the scope, and `claude auth login` if the CLI is logged out). Engram takes effect in new Claude Code sessions.
+An agent can do all of this: [`AGENTS.md`](AGENTS.md) has its instructions, including which steps need you (choosing the scope, and `claude auth login` if the CLI is logged out). ChloeCtx takes effect in new Claude Code sessions.
 
 Then browse what it stored, per project and per session:
 
 ```sh
-engram ui           # the inspector over every local store, at http://127.0.0.1:8765/?token=...
-engram doctor       # what is wired where, and whether the daemon and the distiller work
+chloectx ui           # the inspector over every local store, at http://127.0.0.1:8765/?token=...
+chloectx doctor       # what is wired where, and whether the daemon and the distiller work
 ```
 
 Try it by hand:
 
 ```sh
-engram search "why did we pick JSON over SQLite"
-engram sql "SELECT ts, text FROM memory WHERE kind = 'error' ORDER BY ts DESC LIMIT 5"
-engram remember decision "Prices are integer cents"
+chloectx search "why did we pick JSON over SQLite"
+chloectx sql "SELECT ts, text FROM memory WHERE kind = 'error' ORDER BY ts DESC LIMIT 5"
+chloectx remember decision "Prices are integer cents"
 ```
 
-Or watch it work in the scripted demo, which chats with Claude Code in a scratch project (from `engram/`):
+Or watch it work in the scripted demo, which chats with Claude Code in a scratch project (from `chloectx/`):
 
 ```sh
 demo/run.sh --model <model> --distill-model <small model>     # http://127.0.0.1:8765
@@ -223,30 +223,30 @@ demo/run.sh --embedder hash:256 ...                           # without download
 | [`chloedb-crawl/`](chloedb-crawl/) | the crawler: polite fetching, field extraction, a table's schema inferred from the pages, batched writes and a cluster grown a shard at a time; its command center view (`ui/view.js`) ([docs](docs/chloedb/crawler.md)) |
 | [`chloedb-sheets/`](chloedb-sheets/) | the spreadsheet app: workbooks kept as ChloeDB rows (IronCalc's formulas), live sheets of the cluster's tables, SQL query blocks, xlsx, CSV and SQLite in and out; its command center view (`ui/view.js`) ([docs](docs/chloedb/sheets.md)) |
 | [`chloedb-apps/`](chloedb-apps/) | the app engine (a prototype, in Node.js): the forge that has a model plan and write apps, their pieces stored as SQL rows, the checks, the studio, sandboxed views and QuickJS functions, a library of 150 shared pieces, and the services apps get ([docs](docs/chloedb/apps.md)) |
-| [`engram/`](engram/) | Engram, the memory system built on ChloeDB: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), evaluation harnesses and results |
+| [`chloectx/`](chloectx/) | ChloeCtx, the memory system built on ChloeDB: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), evaluation harnesses and results |
 | [`docs/`](docs/) | this documentation, as Markdown and as a GitHub Pages site |
-| [`install.sh`](install.sh) | builds Engram, installs it to `~/.local/bin` and wires it into Claude Code |
-| [`AGENTS.md`](AGENTS.md) | instructions for a coding agent setting Engram up or working on this repository (`CLAUDE.md` imports it) |
+| [`install.sh`](install.sh) | builds ChloeCtx, installs it to `~/.local/bin` and wires it into Claude Code |
+| [`AGENTS.md`](AGENTS.md) | instructions for a coding agent setting ChloeCtx up or working on this repository (`CLAUDE.md` imports it) |
 
-Each crate also carries its own design document ([ChloeDB](chloedb/DESIGN.md), [Engram](engram/DESIGN.md)) and full HTML reports with every chart and table ([ChloeDB](chloedb/report/strata.html), [ChloeDB graphs](chloedb/report/graph.html), [posting lists](chloedb/report/postings/report.html), [designs](chloedb/report/postings/designs.html), [Engram](engram/report/engram.html), [record structure](engram/report/structure.html)).
+Each crate also carries its own design document ([ChloeDB](chloedb/DESIGN.md), [ChloeCtx](chloectx/DESIGN.md)) and full HTML reports with every chart and table ([ChloeDB](chloedb/report/strata.html), [ChloeDB graphs](chloedb/report/graph.html), [posting lists](chloedb/report/postings/report.html), [designs](chloedb/report/postings/designs.html), [ChloeCtx](chloectx/report/engram.html), [record structure](chloectx/report/structure.html)).
 
 ## Documentation
 
 - [Overview](docs/README.md)
 - **ChloeDB:** [design](docs/chloedb/index.md) · [query language](docs/chloedb/query-language.md) · [graphs](docs/chloedb/graphs.md) · [server](docs/chloedb/server.md) · [Python](docs/chloedb/python.md) · [Java](docs/chloedb/java.md) · [JavaScript](docs/chloedb/javascript.md) · [SQLite](docs/chloedb/sqlite.md) · [Postgres](docs/chloedb/postgres.md) · [results](docs/chloedb/results.md)
 - [Posting lists](docs/posting-lists.md)
-- **Engram, built on ChloeDB:** [install on your machine](docs/engram/setup.md) · [how it works](docs/engram/index.md) · [live inspector](docs/engram/inspector.md) · [results](docs/engram/results.md) · [why Engram](https://chloetech-ai.github.io/strata/why/)
+- **ChloeCtx, built on ChloeDB:** [install on your machine](docs/chloectx/setup.md) · [how it works](docs/chloectx/index.md) · [live inspector](docs/chloectx/inspector.md) · [results](docs/chloectx/results.md) · [why ChloeCtx](https://chloetech-ai.github.io/strata/why/)
 - [Reproducing the results](docs/reproduce.md)
 
 ## Status and limits
 
-This is a research prototype, measured carefully, most of it on one machine (an Apple M2 MacBook Air; the model-based runs on an earlier 4-core cloud VM, and the comparisons with other engines on DigitalOcean). A ChloeDB database has one writer process (the multi-process writer lock is designed but not built), and `chloedb-server` serves a database's first table for now; its sharding, replication and agent are new and have been tested, not yet measured at scale. Engram's coding evidence comes from one long session, a handful of live runs and three small A/B projects; the public benchmarks it uses (LongMemEval, LoCoMo) are chat histories, not coding sessions. Each results page lists its own limitations.
+This is a research prototype, measured carefully, most of it on one machine (an Apple M2 MacBook Air; the model-based runs on an earlier 4-core cloud VM, and the comparisons with other engines on DigitalOcean). A ChloeDB database has one writer process (the multi-process writer lock is designed but not built), and `chloedb-server` serves a database's first table for now; its sharding, replication and agent are new and have been tested, not yet measured at scale. ChloeCtx's coding evidence comes from one long session, a handful of live runs and three small A/B projects; the public benchmarks it uses (LongMemEval, LoCoMo) are chat histories, not coding sessions. Each results page lists its own limitations.
 
 The repository was called `rkonow/engram` until October 2026. GitHub redirects the old address, so existing clones keep working.
 
 ## Licence
 
-ChloeDB, Engram and everything else in this repository are licensed under the
+ChloeDB, ChloeCtx and everything else in this repository are licensed under the
 [Apache License, Version 2.0](LICENSE). Unless you state otherwise, a
 contribution you submit for inclusion is licensed the same way, with no
 additional terms or conditions.

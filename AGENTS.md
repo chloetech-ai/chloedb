@@ -1,10 +1,10 @@
-# ChloeDB and Engram: instructions for coding agents
+# ChloeDB and ChloeCtx: instructions for coding agents
 
 This repository holds ChloeDB, an embedded search database with SQL, and
-Engram, long-term memory for Claude Code built on it. This file is for a
-coding agent (Claude Code or another) that was asked to set Engram up for its
+ChloeCtx, long-term memory for Claude Code built on it. This file is for a
+coding agent (Claude Code or another) that was asked to set ChloeCtx up for its
 user, or to work on this repository. People should start with
-[README.md](README.md) and [the install guide](docs/engram/setup.md).
+[README.md](README.md) and [the install guide](docs/chloectx/setup.md).
 
 ChloeDB was called Strata until November 2026, and the rename lands in steps.
 The folders, crates, programs, settings (`CHLOEDB_*`), headers
@@ -17,18 +17,18 @@ gRPC services, `memory.strata`) keep the old name for now: use the names as
 this file and the code spell them, and say ChloeDB in prose. A branch started
 before the folders moved comes across with `scripts/chloedb-port.sh`.
 
-## Set Engram up for the user's Claude Code
+## Set ChloeCtx up for the user's Claude Code
 
-Engram plugs into Claude Code with hooks and an MCP server, so installing it
+ChloeCtx plugs into Claude Code with hooks and an MCP server, so installing it
 changes the user's Claude Code configuration. **Ask the user which scope they
 want before running anything:**
 
 | scope | command | what it changes |
 |---|---|---|
-| every session on this machine | `./install.sh` | merges hooks, a permission and `env.ENGRAM_DISTILL_MODEL` into `~/.claude/settings.json` (backed up first as `settings.json.engram-<time>.bak`) and registers the `engram` MCP server at user scope |
+| every session on this machine | `./install.sh` | merges hooks, a permission and `env.CHLOECTX_DISTILL_MODEL` into `~/.claude/settings.json` (backed up first as `settings.json.chloectx-<time>.bak`) and registers the `chloectx` MCP server at user scope |
 | one project (good for a first try) | `./install.sh --project /absolute/path` | writes the project's `.claude/settings.local.json` and `.mcp.json` only |
 
-Both install the binary to `~/.local/bin/engram` and download a 129 MB
+Both install the binary to `~/.local/bin/chloectx` and download a 129 MB
 embedding model into `~/.local/share/engram/models`.
 
 ### 1. Check the prerequisites
@@ -44,7 +44,7 @@ claude auth status       # must show "loggedIn": true
 ```
 
 If `claude auth status` shows `"loggedIn": false`, ask the user to run
-`claude auth login` in their own terminal (it is interactive). Engram still
+`claude auth login` in their own terminal (it is interactive). ChloeCtx still
 records and recalls without it, but its distiller runs `claude -p` after each
 turn and fails, so no decisions or rules get written down.
 
@@ -61,12 +61,12 @@ for several minutes (a release build), so give the command a long timeout
 Options: `--distill-model NAME` (default `haiku`), `--prefix DIR` (default
 `~/.local`), `--no-wire` (build and install the binary only). The script stops
 at the first failed step with a message saying what is missing, ends by running
-`engram doctor`, and exits non-zero if any doctor check failed.
+`chloectx doctor`, and exits non-zero if any doctor check failed.
 
 ### 3. Verify
 
 ```bash
-cd /path/to/the/project && ~/.local/bin/engram doctor
+cd /path/to/the/project && ~/.local/bin/chloectx doctor
 ```
 
 Exit code 0 means ready. Each line is `ok`, `warn` (advisory) or `FAIL`, and a
@@ -75,20 +75,20 @@ editing their settings by hand.
 
 ### 4. Tell the user what happens next
 
-- Engram takes effect in **new** Claude Code sessions. The session you are
+- ChloeCtx takes effect in **new** Claude Code sessions. The session you are
   running in started before the hooks existed: it records nothing and has no
   `memory_*` tools until the user starts a new one.
-- `~/.local/bin/engram ui` opens a local inspector of what was stored, per
+- `~/.local/bin/chloectx ui` opens a local inspector of what was stored, per
   project and per session. It prints a URL with an access token; on a remote
   machine, forward the port first (`ssh -L 8765:127.0.0.1:8765 host`).
-- To remove it: `~/.local/bin/engram uninstall --user` (or
-  `engram uninstall --project /absolute/path`). Stores are kept under
+- To remove it: `~/.local/bin/chloectx uninstall --user` (or
+  `chloectx uninstall --project /absolute/path`). Stores are kept under
   `~/.local/share/engram/projects/`.
 
 ### Do not
 
 - edit `~/.claude/settings.json`, `~/.claude.json` or a project's `.mcp.json`
-  by hand; `engram install` and `engram uninstall` merge their entries and
+  by hand; `chloectx install` and `chloectx uninstall` merge their entries and
   leave everything else alone;
 - commit a project's `.claude/settings.local.json` or `.mcp.json` after a
   project install unless the user wants that: both contain the absolute path
@@ -100,8 +100,8 @@ editing their settings by hand.
 
 | path | what |
 |---|---|
-| `engram/` | the memory system (Rust crate): hooks client, per-project daemon, MCP server, recall, distiller, `engram ui`, `engram doctor` |
-| `engram/demo/index.html` | the inspector page; it is compiled into the binary with `include_str!`, so rebuild after editing it |
+| `chloectx/` | the memory system (Rust crate): hooks client, per-project daemon, MCP server, recall, distiller, `chloectx ui`, `chloectx doctor` |
+| `chloectx/demo/index.html` | the inspector page; it is compiled into the binary with `include_str!`, so rebuild after editing it |
 | `chloedb/` | the database (Rust crate), including the posting-list study in `src/postings/` |
 | `chloedb/fuzz/` | cargo-fuzz targets (nightly: `cargo +nightly fuzz run <target>` there) feeding ChloeDB damaged files and arbitrary SQL; `chloedb/tests/corrupt_input.rs` runs the same targets on stable |
 | `chloedb-server/` | ChloeDB over HTTP JSON and gRPC, a coordinator over shards, and the UI: the command center (`ui/index.html` and the modules under `ui/app/`, listed in `src/ui.rs`) and the query console (`ui/classic.html`), compiled in with `include_str!`; `CHLOEDB_UI_DIR=chloedb-server/ui` serves them from disk without a rebuild |
@@ -119,12 +119,12 @@ editing their settings by hand.
 | `install.sh` | the installer described above |
 | `packaging/chloedb/` | placeholder packages that hold the name `chloedb` on PyPI, npm and crates.io; `.github/workflows/reserve-names.yml` publishes them, run by hand |
 
-Build and test each crate from its own directory (`engram` and
+Build and test each crate from its own directory (`chloectx` and
 `chloedb-server` depend on `chloedb` by path):
 
 ```bash
 cd chloedb && cargo test --release
-cd engram && cargo test --release
+cd chloectx && cargo test --release
 cd chloedb-server && cargo test --release
 cd chloedb-crawl && cargo test --release   # its crawl into a cluster needs chloedb-server built (or CHLOEDB_SERVER_BIN)
 cd chloedb-sheets && cargo test --release  # its cluster test needs chloedb-server built (or CHLOEDB_SERVER_BIN)

@@ -462,7 +462,7 @@ job_test_chloedb() {
 }
 
 job_test_engram() {
-    cd engram
+    cd chloectx
     crate_tests
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
@@ -771,12 +771,12 @@ prune_dirs() {
 prune_job() {
     local rel crate
     if [ "$LANES" = 1 ]; then
-        prune_dirs chloedb/target chloedb-server/target engram/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
+        prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
         return 0
     fi
     case "$LANE" in
         1) prune_dirs chloedb/target ;;
-        2) prune_dirs engram/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target ;;
+        2) prune_dirs chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target ;;
     esac
     { sed -n 's/^ *Running .* (\(target\/[^)]*\))$/\1/p' "$1"; cat "$1.binaries" 2>/dev/null; } | sort -u | while read -r rel; do
         case "$rel" in
@@ -916,7 +916,7 @@ find_affected() {
     for f in $(git diff --name-only "$BASE_SHA" HEAD); do
         case "$f" in
             docs/*|*.md) ;;
-            engram/*|install.sh) AFFECTED="$AFFECTED test-engram" ;;
+            chloectx/*|install.sh) AFFECTED="$AFFECTED test-engram" ;;
             chloedb-py/*) AFFECTED="$AFFECTED python" ;;
             chloedb-js/*) AFFECTED="$AFFECTED javascript" ;;
             chloedb-java/*) AFFECTED="$AFFECTED java" ;;
@@ -997,7 +997,7 @@ else
         LANE_PIDS="$LANE_PIDS $!"
     done
     supervise
-    [ "$KEEP_BINARIES" = 1 ] || prune_dirs chloedb/target chloedb-server/target engram/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
+    [ "$KEEP_BINARIES" = 1 ] || prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
     finish_miri
 fi
 

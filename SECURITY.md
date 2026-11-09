@@ -7,7 +7,7 @@ Please report a vulnerability privately, through GitHub: open
 on this repository. Don't open a public issue or pull request for it.
 
 Say what is affected (ChloeDB the library, `chloedb-server`, the Python
-package, or Engram), the commit you tested, and how to reproduce it. The
+package, or ChloeCtx), the commit you tested, and how to reproduce it. The
 report and the fix are discussed in the advisory, which is published once a
 fix has merged.
 
@@ -25,7 +25,7 @@ There are no releases yet: fixes go to `main` only.
 - A crafted database file, write-ahead log, model file, import (SQLite,
   CSV, JSON) or request that corrupts memory, reads outside its buffers, or
   makes a server fetch a URL its media allowlist refuses.
-- Engram exposing one project's memory to another, or its inspector
+- ChloeCtx exposing one project's memory to another, or its inspector
   answering without its access token.
 
 A server started with no token and no key is open by design: it is for a

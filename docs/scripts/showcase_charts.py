@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draws the two latency charts of the Engram showcase from ChloeDB's results:
+"""Draws the two latency charts of the ChloeCtx showcase from ChloeDB's results:
 docs/showcase/search-latency.png (Quora workload, ChloeDB against Tantivy and
 SQLite) and docs/showcase/graph-latency.png (arXiv traversals, ChloeDB against
 SQLite). Titles and labels are computed from the numbers.

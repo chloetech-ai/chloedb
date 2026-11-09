@@ -67,7 +67,7 @@ env:
 jobs:
   # Whether the change touches more than the documentation site, Markdown
   # files and benchmark results (the data under chloedb/results,
-  # chloedb-server/results and engram/results, which nothing builds or
+  # chloedb-server/results and chloectx/results, which nothing builds or
   # reads): if not, every other job is skipped. A Python script there
   # still counts as code, since a job runs chloedb/results/sequence/gate.py,
   # and so does chloedb/results/workloads/, which tests/workload_gen.rs

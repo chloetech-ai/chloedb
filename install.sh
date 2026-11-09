@@ -1,8 +1,8 @@
 #!/bin/sh
-# Builds Engram from this checkout, installs the binary, downloads the
-# embedding model and wires Engram into Claude Code. Run it again after
+# Builds ChloeCtx from this checkout, installs the binary, downloads the
+# embedding model and wires ChloeCtx into Claude Code. Run it again after
 # `git pull` to upgrade. Non-interactive; exits non-zero when a step fails or
-# when `engram doctor` reports a failed check. Agents: see AGENTS.md.
+# when `chloectx doctor` reports a failed check. Agents: see AGENTS.md.
 #
 #   ./install.sh                         every Claude Code session on this machine
 #   ./install.sh --project ~/code/app    one project only
@@ -11,7 +11,7 @@
 #   --project DIR          install for one project instead of every session
 #   --distill-model NAME   model that writes down decisions after each turn
 #                          (default: haiku; "" uses the Claude Code CLI's default)
-#   --prefix DIR           where the binary goes (default: ~/.local, so ~/.local/bin/engram)
+#   --prefix DIR           where the binary goes (default: ~/.local, so ~/.local/bin/chloectx)
 #   --no-wire              build and install the binary only; leave Claude Code alone
 set -eu
 
@@ -34,11 +34,11 @@ say() { printf '==> %s\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-[ -f "$ROOT/engram/Cargo.toml" ] || die "run this from a checkout of https://github.com/chloetech-ai/strata"
+[ -f "$ROOT/chloectx/Cargo.toml" ] || die "run this from a checkout of https://github.com/chloetech-ai/strata"
 
 case "$(uname -s)" in
   Darwin|Linux) ;;
-  *) die "Engram needs macOS or Linux (on Windows, use WSL)" ;;
+  *) die "ChloeCtx needs macOS or Linux (on Windows, use WSL)" ;;
 esac
 
 # Rust, a C compiler (for the tokenizer's regex library) and curl.
@@ -53,14 +53,14 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 say "building engram ($(cargo --version))"
-(cd "$ROOT/engram" && cargo build --release --bin engram)
+(cd "$ROOT/chloectx" && cargo build --release --bin chloectx)
 
-BIN="$PREFIX/bin/engram"
+BIN="$PREFIX/bin/chloectx"
 mkdir -p "$PREFIX/bin"
 # Replace the file rather than writing into it: running daemons keep the old one.
 TARGET="${CARGO_TARGET_DIR:-target}"
-case "$TARGET" in /*) ;; *) TARGET="$ROOT/engram/$TARGET" ;; esac
-cp "$TARGET/release/engram" "$BIN.new" && mv -f "$BIN.new" "$BIN"
+case "$TARGET" in /*) ;; *) TARGET="$ROOT/chloectx/$TARGET" ;; esac
+cp "$TARGET/release/chloectx" "$BIN.new" && mv -f "$BIN.new" "$BIN"
 say "installed $BIN"
 case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;
@@ -70,7 +70,7 @@ esac
 # Daemons from an earlier build pick up the new one when they restart.
 "$BIN" stop --all >/dev/null 2>&1 || true
 
-if [ -f "${ENGRAM_MODELS:-${ENGRAM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/engram}/models}/potion-retrieval-32M/model.safetensors" ]; then
+if [ -f "${CHLOECTX_MODELS:-${CHLOECTX_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/engram}/models}/potion-retrieval-32M/model.safetensors" ]; then
   say "embedding model already downloaded"
 else
   say "downloading the embedding model (potion-retrieval-32M, 129 MB)"
@@ -80,11 +80,11 @@ fi
 [ "$WIRE" = 1 ] || { say "done (Claude Code not changed: --no-wire)"; exit 0; }
 
 if [ -n "$PROJECT" ]; then
-  say "wiring Engram into $PROJECT"
+  say "wiring ChloeCtx into $PROJECT"
   "$BIN" install --project "$PROJECT" ${DISTILL:+--distill-model "$DISTILL"}
   cd "$PROJECT"
 else
-  say "wiring Engram into every Claude Code session"
+  say "wiring ChloeCtx into every Claude Code session"
   "$BIN" install --user ${DISTILL:+--distill-model "$DISTILL"}
 fi
 
@@ -96,10 +96,10 @@ cat <<EOF
 
 Next:
   - Start Claude Code (claude) in a project and work as usual. Sessions that
-    were already running pick Engram up when they restart.
-  - $BIN ui            browse what Engram stored, per project and session
+    were already running pick ChloeCtx up when they restart.
+  - $BIN ui            browse what ChloeCtx stored, per project and session
   - $BIN doctor        check the setup again
   - $BIN uninstall --user   (or: uninstall in the project) to remove it; stores are kept
 EOF
-[ "$STATUS" = 0 ] || say "engram doctor reported a problem above; fix it and run $BIN doctor again"
+[ "$STATUS" = 0 ] || say "chloectx doctor reported a problem above; fix it and run $BIN doctor again"
 exit "$STATUS"
