@@ -490,7 +490,10 @@
             }
             return h('td', { 'data-label': heads[i], class: v === '' ? 'blank' : null }, v);
           }),
-          acts.length ? h('td', { class: 'nowrap right' }, acts.map((a) => {
+          // More than two steps: the row's next step as a button, the rest
+          // in its menu (as on a phone), not a line of words on every row.
+          acts.length > 2 ? h('td', { class: 'right acts' }, (() => { const { main, more } = rowActions(acts, r, rowName(r), s, path, (l) => `rc-pill${SOFT.test(l) ? ' soft' : ''}`); return h('span', { class: 'rc-end' }, main, more); })())
+          : acts.length ? h('td', { class: 'nowrap right' }, acts.map((a) => {
             const label = T(a.label, s, path);
             const who = rowName(r);
             return h('button', { class: a.class || 'small ghost', type: 'button', 'aria-label': who ? `${label}: ${who}` : null, onclick: () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); } }, label);
@@ -575,6 +578,26 @@
     // editByTap: when the row's first step is only Edit, a tap on the row
     // edits it (as in a phone's lists) and Edit waits in the menu, rather
     // than an Edit button on every row.
+    // A row's menu opens over the page, not inside its list or table (a
+    // table scrolls sideways, and would cut it off): placed by the button,
+    // below it when there is room, else above; one menu open at a time.
+    function placeMenu(e) {
+      const d = e.currentTarget;
+      const menu = d.querySelector('.rc-menu');
+      if (!menu) return;
+      if (!d.open) { menu.removeAttribute('style'); return; }
+      for (const o of document.querySelectorAll('details.rc-more[open]')) if (o !== d) o.open = false;
+      const r = d.querySelector('summary').getBoundingClientRect();
+      const tall = menu.offsetHeight || 200;
+      const below = r.bottom + 6 + tall < window.innerHeight || r.top < tall + 6;
+      Object.assign(menu.style, { position: 'fixed', right: `${Math.max(8, window.innerWidth - r.right)}px`, left: 'auto', top: below ? `${r.bottom + 6}px` : 'auto', bottom: below ? 'auto' : `${window.innerHeight - r.top + 6}px` });
+      if (!placeMenu.closing) {
+        placeMenu.closing = true;
+        const close = (ev) => { if (!ev.target.closest?.('details.rc-more')) for (const o of document.querySelectorAll('details.rc-more[open]')) o.open = false; };
+        document.addEventListener('click', close);
+        window.addEventListener('scroll', () => { for (const o of document.querySelectorAll('details.rc-more[open]')) o.open = false; }, { passive: true, capture: true });
+      }
+    }
     function rowActions(acts, r, who, s, path, mainClass, editByTap = false) {
       const label = (a) => T(a.label, s, path);
       const doIt = (a) => () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); };
@@ -582,7 +605,7 @@
       const edit = editByTap && first && /^edit\b/i.test(String(label(first)).trim()) ? first : null;
       const others = acts.filter((a) => a !== first || edit);
       const main = first && !edit ? h('button', { class: mainClass(label(first)), type: 'button', 'aria-label': who ? `${label(first)}: ${who}` : null, onclick: doIt(first) }, label(first)) : null;
-      const more = others.length ? h('details', { class: 'rc-more' },
+      const more = others.length ? h('details', { class: 'rc-more', ontoggle: placeMenu },
         h('summary', { 'aria-label': `More${who ? `: ${who}` : ''}`, title: 'More' }, h('span', { 'aria-hidden': 'true' }, '•••')),
         h('div', { class: 'rc-menu' }, others.map((a) => h('button', { class: `ghost${DESTROY.test(label(a)) ? ' danger' : ''}`, type: 'button', 'aria-label': who ? `${label(a)}: ${who}` : null, onclick: doIt(a) }, label(a))))) : null;
       return { main, more, tap: edit ? doIt(edit) : null };

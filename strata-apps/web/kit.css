@@ -536,5 +536,11 @@ tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; 
 .rc-end > button.rc-pill { min-height: 36px; padding: 0 14px; border-radius: 999px; font-weight: 700; }
 @media (pointer: coarse) { .rc-end > button.rc-pill { min-height: 44px; } }
 .rc-end .rc-more > summary { width: 36px; height: 36px; font-size: 9px; background: transparent; color: var(--muted); }
+/* a table row's next step and its menu (more than two steps) */
+td.acts { width: 1%; white-space: nowrap; }
+td.acts .rc-end { justify-content: flex-end; }
+td.acts .rc-pill { min-height: 30px; padding: 0 12px; font-size: calc(var(--text) * .92); }
+td.acts .rc-more > summary { width: 30px; height: 30px; }
+@media (pointer: coarse) { td.acts .rc-pill { min-height: 44px; } td.acts .rc-more > summary { width: 44px; height: 44px; } }
 @media (pointer: coarse) { .rc-end .rc-more > summary { width: 44px; height: 44px; } }
 .rc-end .chev { width: 8px; height: 8px; border-right: 2px solid color-mix(in srgb, var(--fg) 30%, transparent); border-top: 2px solid color-mix(in srgb, var(--fg) 30%, transparent); transform: rotate(45deg); margin: 0 4px 0 2px; }
