@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: strata
-          image: strata-server:dev
+          image: chloedb-server:dev
           imagePullPolicy: IfNotPresent
           # A test cluster, served open (see README.md, Security).
           args:

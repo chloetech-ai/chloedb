@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: strata
-          image: strata-server:dev
+          image: chloedb-server:dev
           imagePullPolicy: IfNotPresent
           # A test cluster, served open (see README.md, Security).
           args: ["--db", "/data/quora.sq8.strata", "--listen", "0.0.0.0:7700", "--grpc", "off", "--no-token"]

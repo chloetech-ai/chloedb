@@ -1,4 +1,4 @@
-# The Strata operator: one Deployment running `strata-server operator`,
+# The ChloeDB operator: one Deployment running `chloedb-server operator`,
 # which installs the StrataCluster resource definition (crd.json) when it
 # starts and then keeps every StrataCluster in every namespace as its spec
 # says: the shards' StatefulSets, their Services, the coordinators, and the
@@ -95,7 +95,7 @@ spec:
       serviceAccountName: strata-operator
       containers:
         - name: operator
-          image: strata-server:dev
+          image: chloedb-server:dev
           imagePullPolicy: IfNotPresent
           args: [operator]
           env:

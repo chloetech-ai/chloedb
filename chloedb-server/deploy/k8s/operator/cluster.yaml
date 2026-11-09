@@ -1,4 +1,4 @@
-# A Strata cluster the operator makes and keeps: 2 shards of 3 copies
+# A ChloeDB cluster the operator makes and keeps: 2 shards of 3 copies
 # each (a primary and two replicas, on different nodes when there are),
 # behind one coordinator, holding 10,000 demo products split over the two
 # shards. Edit and apply again to change it:
@@ -20,7 +20,7 @@ metadata:
   name: demo
   namespace: strata
 spec:
-  image: strata-server:dev
+  image: chloedb-server:dev
   imagePullPolicy: IfNotPresent
   shards: 2
   replicas: 3
@@ -29,7 +29,7 @@ spec:
     size: 1Gi
     # storageClassName: standard
   # The first table: demo products here; or `schema:` with a table's
-  # schema as strata-server --schema takes it, for example
+  # schema as chloedb-server --schema takes it, for example
   #   schema: {table: notes, key: id, fields: [{name: id, type: keyword}, {name: body, type: text}]}
   demo: 10000
   # A replica takes over when its primary has not answered for this long

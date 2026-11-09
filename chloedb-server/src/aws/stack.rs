@@ -319,7 +319,7 @@ mod tests {
         assert_eq!((&c["shards"], &c["replicas"], &c["image"], &c["storage"]), (&json!(2), &json!(3), &json!(IMAGE), &json!({"size": "10Gi", "storageClassName": "gp3"})));
         assert!(c["resources"]["requests"]["memory"].as_str().unwrap().ends_with("Mi"));
         let op = j["manifests"]["operator"].as_str().unwrap();
-        assert!(op.contains(&format!("image: {IMAGE}")) && !op.contains("strata-server:dev"), "{op}");
+        assert!(op.contains(&format!("image: {IMAGE}")) && !op.contains("chloedb-server:dev"), "{op}");
         let cl = j["manifests"]["cluster"].as_str().unwrap();
         assert_eq!(cl.matches("---\n").count(), 3);
         for d in cl.split("---\n").skip(1) {

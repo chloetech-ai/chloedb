@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# A local multi-node Kubernetes cluster (kind, in Docker) running Strata as
+# A local multi-node Kubernetes cluster (kind, in Docker) running ChloeDB as
 # shards behind a coordinator, beside one unsplit database to compare with.
 # See deploy/README.md for the whole test.
 #
-#   STRATA_WORK=/path/to/dbs STRATA_DATA=/path/to/beir deploy/kind-test.sh up
+#   CHLOEDB_WORK=/path/to/dbs CHLOEDB_DATA=/path/to/beir deploy/kind-test.sh up
 #   deploy/kind-test.sh image                 # build the image and load it into the nodes
 #   deploy/kind-test.sh single                # the unsplit database
 #   deploy/kind-test.sh shards 2 [R]          # shards 0..1 of /data/quora.shard<i>of2.strata, R replicas each
@@ -17,16 +17,19 @@
 #   deploy/kind-test.sh scale SHARDS COPIES   # change that cluster (NAME, default demo); follow: watch it until Ready
 #   deploy/kind-test.sh down
 #
-# STRATA_WORK holds the databases (chloedb-server-bench --build-only writes
+# CHLOEDB_WORK holds the databases (chloedb-server-bench --build-only writes
 # them) and is mounted at /data on every node; reports land in
-# STRATA_WORK/results. STRATA_DATA holds the prepared BEIR collections the
+# CHLOEDB_WORK/results. CHLOEDB_DATA holds the prepared BEIR collections the
 # client reads its queries from, mounted read-only at /beir. The operator
 # steps need neither: its clusters keep their data on volumes.
 set -euo pipefail
 
+# ChloeDB was called Strata: STRATA_WORK and STRATA_DATA work too.
+CHLOEDB_WORK=${CHLOEDB_WORK:-${STRATA_WORK:-}}
+CHLOEDB_DATA=${CHLOEDB_DATA:-${STRATA_DATA:-}}
 CLUSTER=${CLUSTER:-strata}
 WORKERS=${WORKERS:-3}
-IMAGE=strata-server:dev
+IMAGE=chloedb-server:dev
 NS=strata
 HERE=$(cd "$(dirname "$0")" && pwd)
 K="kubectl --context kind-$CLUSTER -n $NS"
@@ -35,9 +38,9 @@ cmd=${1:-}
 shift || true
 case "$cmd" in
 up)
-    # Without STRATA_WORK and STRATA_DATA, a cluster for the operator only.
-    mounts=${STRATA_WORK:+${STRATA_DATA:+yes}}
-    [ -z "$mounts" ] || mkdir -p "$STRATA_WORK/results"
+    # Without CHLOEDB_WORK and CHLOEDB_DATA, a cluster for the operator only.
+    mounts=${CHLOEDB_WORK:+${CHLOEDB_DATA:+yes}}
+    [ -z "$mounts" ] || mkdir -p "$CHLOEDB_WORK/results"
     cfg=$(mktemp)
     {
         echo "kind: Cluster"
@@ -48,8 +51,8 @@ up)
             echo "  - role: worker"
             [ -n "$mounts" ] || continue
             echo "    extraMounts:"
-            echo "      - {hostPath: \"$STRATA_WORK\", containerPath: /data}"
-            echo "      - {hostPath: \"$STRATA_DATA\", containerPath: /beir, readOnly: true}"
+            echo "      - {hostPath: \"$CHLOEDB_WORK\", containerPath: /data}"
+            echo "      - {hostPath: \"$CHLOEDB_DATA\", containerPath: /beir, readOnly: true}"
         done
     } >"$cfg"
     kind create cluster --name "$CLUSTER" --config "$cfg"
@@ -71,7 +74,7 @@ shards)
     # (a clone on APFS, so instant and sharing the disk blocks).
     for i in $(seq 0 $((n - 1))); do
         for k in $(seq 1 $((r - 1))); do
-            base="${STRATA_WORK:?set STRATA_WORK for replica copies}/quora.shard${i}of${n}"
+            base="${CHLOEDB_WORK:?set CHLOEDB_WORK for replica copies}/quora.shard${i}of${n}"
             [ -e "$base.r$k.strata" ] || cp -c "$base.strata" "$base.r$k.strata" 2>/dev/null || cp "$base.strata" "$base.r$k.strata"
         done
     done
@@ -128,7 +131,7 @@ spec:
           command: ["chloedb-server-bench"]
           args: $args
           env:
-            - {name: STRATA_DATA, value: /beir}
+            - {name: CHLOEDB_DATA, value: /beir}
           volumeMounts:
             - {name: beir, mountPath: /beir, readOnly: true}
             - {name: data, mountPath: /data}

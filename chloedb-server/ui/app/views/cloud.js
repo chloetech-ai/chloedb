@@ -575,7 +575,7 @@ function render(page, r) {
   function drawPlan() {
     if (!may() || !cat) { clear(planEl); return; }
     const name = h("input", { class: "input sm mono", value: form.name, size: 14, onchange: () => set("name", name.value.trim()) });
-    const image = h("input", { class: "input sm mono", value: form.image, placeholder: "ghcr.io/chloetech-ai/strata-server:latest", size: 34, onchange: () => set("image", image.value.trim()) });
+    const image = h("input", { class: "input sm mono", value: form.image, placeholder: "ghcr.io/chloetech-ai/chloedb-server:latest", size: 34, onchange: () => set("image", image.value.trim()) });
     const afterSel = h("select", { class: "select sm", title: "This server deletes it then (and its data), or as soon as it runs again if it was off: nothing in the cloud does", onchange: () => { form.delete_after = afterSel.value ? Number(afterSel.value) : null; drawCreate(); } },
       AFTER.map(([v, l]) => h("option", { value: v ?? "", selected: (v ?? null) === form.delete_after }, l)));
     const version = prov === "digitalocean" ? h("select", { class: "select sm", onchange: () => set("version", version.value) },

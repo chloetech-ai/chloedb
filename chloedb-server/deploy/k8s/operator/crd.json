@@ -274,10 +274,10 @@
                     "type": "integer"
                   },
                   "crawler": {
-                    "description": "A crawler beside the cluster: a strata-crawl Deployment of one, which the command center shows under Apps; it crawls sites into tables and adds shards as they fill.",
+                    "description": "A crawler beside the cluster: a chloedb-crawl Deployment of one, which the command center shows under Apps; it crawls sites into tables and adds shards as they fill.",
                     "properties": {
                       "args": {
-                        "description": "More arguments of strata-crawl serve.",
+                        "description": "More arguments of chloedb-crawl serve.",
                         "items": {
                           "type": "string"
                         },
@@ -324,7 +324,7 @@
                     "type": "integer"
                   },
                   "follow": {
-                    "description": "Following another cluster: a strata-server follow Deployment of one copies the source, then applies its feed; the cluster refuses its clients' writes meanwhile.",
+                    "description": "Following another cluster: a chloedb-server follow Deployment of one copies the source, then applies its feed; the cluster refuses its clients' writes meanwhile.",
                     "properties": {
                       "askedMs": {
                         "description": "When following was asked for (ms since the epoch): a copy is made once, and a stop or promotion after it is final for this spec.",
@@ -374,7 +374,7 @@
                     "type": "object"
                   },
                   "image": {
-                    "description": "The strata-server image of every server (default strata-server:dev).",
+                    "description": "The chloedb-server image of every server (default chloedb-server:dev).",
                     "type": "string"
                   },
                   "imagePullPolicy": {
@@ -461,7 +461,7 @@
                     "type": "object"
                   },
                   "schema": {
-                    "description": "The first table's schema, as strata-server --schema takes it. Without it and without demo, the cluster starts with no tables.",
+                    "description": "The first table's schema, as chloedb-server --schema takes it. Without it and without demo, the cluster starts with no tables.",
                     "type": "object",
                     "x-kubernetes-preserve-unknown-fields": true
                   },
@@ -496,10 +496,10 @@
                     "type": "integer"
                   },
                   "sheets": {
-                    "description": "Spreadsheets beside the cluster: a strata-sheets Deployment of one, which the command center shows under Apps; its workbooks are rows of two tables of the cluster, and the cluster's tables open in it as sheets.",
+                    "description": "Spreadsheets beside the cluster: a chloedb-sheets Deployment of one, which the command center shows under Apps; its workbooks are rows of two tables of the cluster, and the cluster's tables open in it as sheets.",
                     "properties": {
                       "args": {
-                        "description": "More arguments of strata-sheets serve.",
+                        "description": "More arguments of chloedb-sheets serve.",
                         "items": {
                           "type": "string"
                         },

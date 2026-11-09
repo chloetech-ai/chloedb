@@ -1053,7 +1053,7 @@ function render(page, r) {
       h("div", { class: "ro-col" }, howCard())));
   }
   function howCard(v) {
-    const image = v?.image || (reg?.repository ? `${reg.repository}:latest` : "ghcr.io/chloetech-ai/strata-server:latest");
+    const image = v?.image || (reg?.repository ? `${reg.repository}:latest` : "ghcr.io/chloetech-ai/chloedb-server:latest");
     const cmds = [`docker pull ${image}`, "# then, for each replica, one at a time: stop it, start it with the new image, wait until Cluster shows it back and caught up", "# then hand each primary over (Cluster, the copy, Make primary) and restart it the same way", "# the coordinators last"];
     return card({
       title: "Upgrade machines of your own", sub: "by hand, one copy at a time",

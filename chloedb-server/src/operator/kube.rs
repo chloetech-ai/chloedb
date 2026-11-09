@@ -20,6 +20,13 @@
 //!
 //! Each is owned by the `StrataCluster`, so deleting it deletes them (the
 //! volumes are kept).
+//!
+//! The pods start the programs by their old names (`strata-server`,
+//! `strata-crawl`, `strata-sheets`) and pass their settings as `STRATA_*`,
+//! since ChloeDB was called Strata: every image answers to those, and the
+//! images from before the rename, which a cluster may still run or roll
+//! back to, answer to nothing else. They take the new names once the old
+//! ones stop working.
 
 use std::time::Duration;
 

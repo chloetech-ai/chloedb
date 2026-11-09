@@ -1,8 +1,11 @@
 name: Image
 
 # chloedb-server's image, for clusters the command center's Cloud view
-# plans: ghcr.io/chloetech-ai/strata-server, for x86-64 and arm64 (AWS
-# Graviton) in one tag.
+# plans: ghcr.io/chloetech-ai/chloedb-server, for x86-64 and arm64 (AWS
+# Graviton) in one tag. ChloeDB was called Strata, and for a release every
+# tag is also published as ghcr.io/chloetech-ai/strata-server, the same
+# image (the same digest), so that a cluster that follows the old name
+# keeps getting new versions.
 #
 # A push to main that changes ChloeDB or the server publishes it as `latest`
 # and as the commit's full sha. A pull request that changes the Dockerfile
@@ -40,7 +43,9 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/chloetech-ai/strata-server
+  IMAGE: ghcr.io/chloetech-ai/chloedb-server
+  # The old name, published for a release beside the new one.
+  OLD_IMAGE: ghcr.io/chloetech-ai/strata-server
   PUSH: ${{ github.event_name != 'pull_request' }}
 
 jobs:
@@ -97,9 +102,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: One tag for both architectures
+      - name: One tag for both architectures, under both names
         run: |
-          tags=(-t "$IMAGE:${{ github.sha }}")
-          if [ "${{ github.event_name }}" = push ]; then tags+=(-t "$IMAGE:latest"); fi
-          docker buildx imagetools create "${tags[@]}" "$IMAGE:${{ github.sha }}-amd64" "$IMAGE:${{ github.sha }}-arm64"
-          docker buildx imagetools inspect "$IMAGE:${{ github.sha }}"
+          for repo in "$IMAGE" "$OLD_IMAGE"; do
+            tags=(-t "$repo:${{ github.sha }}")
+            if [ "${{ github.event_name }}" = push ]; then tags+=(-t "$repo:latest"); fi
+            docker buildx imagetools create "${tags[@]}" "$IMAGE:${{ github.sha }}-amd64" "$IMAGE:${{ github.sha }}-arm64"
+            docker buildx imagetools inspect "$repo:${{ github.sha }}"
+          done

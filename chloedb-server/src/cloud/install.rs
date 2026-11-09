@@ -180,12 +180,12 @@ mod tests {
     fn the_operator_is_what_its_manifests_say() {
         let yaml = include_str!("../../deploy/k8s/operator/operator.yaml");
         let docs: Vec<Json> = serde_yaml::Deserializer::from_str(yaml).map(|d| serde::Deserialize::deserialize(d).expect("a YAML document")).collect();
-        assert_eq!(docs, operator_objects("strata-server:dev"));
+        assert_eq!(docs, operator_objects("chloedb-server:dev"));
     }
 
     #[test]
     fn objects_have_their_paths() {
-        let all = objects("ghcr.io/x/strata-server:1", &super::super::cluster_objects("search", &json!({"shards": 1}), None));
+        let all = objects("ghcr.io/x/chloedb-server:1", &super::super::cluster_objects("search", &json!({"shards": 1}), None));
         let paths: Vec<String> = all.iter().map(|o| path_of(o).unwrap()).collect();
         assert_eq!(paths, [
             "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/strataclusters.strata.chloetech.ai",
@@ -197,7 +197,7 @@ mod tests {
             "/api/v1/namespaces/strata",
             "/apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search",
         ]);
-        assert_eq!(all[5]["spec"]["template"]["spec"]["containers"][0]["image"], "ghcr.io/x/strata-server:1");
+        assert_eq!(all[5]["spec"]["template"]["spec"]["containers"][0]["image"], "ghcr.io/x/chloedb-server:1");
         assert!(path_of(&json!({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "x", "namespace": "y"}})).is_err());
         assert!(path_of(&json!({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "x"}})).is_err());
         let sc = json!({"apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": {"name": "gp3"}});

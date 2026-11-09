@@ -1,5 +1,5 @@
 //! Spreadsheets beside the cluster (`spec.sheets`): the operator runs
-//! `strata-sheets serve` (a program of its own, in the same image) as a
+//! `chloedb-sheets serve` (a program of its own, in the same image) as a
 //! Deployment of one (strategy Recreate, `<cluster>-sheets`) behind a
 //! Service of that name, and the coordinators list it as the app `sheets`
 //! (`STRATA_APPS`), so that the command center shows **Apps → Sheets**.
@@ -27,7 +27,7 @@ pub struct SheetsSpec {
     /// coordinators still list it, as an app that does not answer; the
     /// workbooks stay in their tables).
     pub paused: bool,
-    /// More arguments of `strata-sheets serve`.
+    /// More arguments of `chloedb-sheets serve`.
     pub args: Vec<String>,
     /// Resources of its container.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +49,7 @@ impl SheetsSpec {
         Ok(())
     }
 
-    /// The arguments of `strata-sheets` for a cluster whose coordinators'
+    /// The arguments of `chloedb-sheets` for a cluster whose coordinators'
     /// Service answers at `strata`.
     pub fn args(&self, strata: &str) -> Vec<String> {
         let mut a: Vec<String> = ["serve", "--listen", &format!("0.0.0.0:{PORT}"), "--strata", strata].iter().map(|s| s.to_string()).collect();
@@ -62,10 +62,10 @@ impl SheetsSpec {
 pub fn schema() -> Json {
     json!({
         "type": "object",
-        "description": "Spreadsheets beside the cluster: a strata-sheets Deployment of one, which the command center shows under Apps; its workbooks are rows of two tables of the cluster, and the cluster's tables open in it as sheets.",
+        "description": "Spreadsheets beside the cluster: a chloedb-sheets Deployment of one, which the command center shows under Apps; its workbooks are rows of two tables of the cluster, and the cluster's tables open in it as sheets.",
         "properties": {
             "paused": {"type": "boolean", "description": "No spreadsheets pod for now (the workbooks stay)."},
-            "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments of strata-sheets serve."},
+            "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments of chloedb-sheets serve."},
             "resources": {"type": "object", "x-kubernetes-preserve-unknown-fields": true, "description": "Resources of its container."},
         },
     })
