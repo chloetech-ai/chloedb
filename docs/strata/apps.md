@@ -1,12 +1,12 @@
 # strata-apps: apps built from a description
 
-`strata-apps` is a prototype app engine on Strata. You describe an app in a sentence ("a stock room: items, suppliers, what is low, purchase orders"), and the engine has a model plan and write it, checks what it wrote, stores every piece in Strata and runs it. You then change it by asking ("add a Check price online button on each item"), and every change is a new version you can go back from.
+`strata-apps` is a prototype app engine on ChloeDB. You describe an app in a sentence ("a stock room: items, suppliers, what is low, purchase orders"), and the engine has a model plan and write it, checks what it wrote, stores every piece in ChloeDB and runs it. You then change it by asking ("add a Check price online button on each item"), and every change is a new version you can go back from.
 
-Everything an app is lives in Strata, as rows:
+Everything an app is lives in ChloeDB, as rows:
 
 - **Its pieces are SQL statements.** Screens are `CREATE SCREEN`, rules are `CREATE RULE`, tables are `CREATE TABLE`, and each is a row of `sa_capabilities`. A version is a row of `sa_compositions` that lists the pieces it is made of, so going back is one write. Tables only grow, so an app's data survives every change and every step back.
-- **Pieces are shared.** Components (`ui.calendar(props)`) and helpers (`lib.dates.addDays(day, 1)`) are written once and used by every app. They are found for a new request by words (BM25) and by meaning (a vector column), and linked in a graph that Strata walks (`REACHABLE`, `ppr`) to offer an app a newer version. 150 of them ship in `strata-apps/library/`.
-- **What people do is recorded** in Strata (`sa_events`), and the engine counts patterns in it (a search typed again and again, the same field changed row after row) to suggest changes, or to build one beside the live version for the owner to try, keep or drop.
+- **Pieces are shared.** Components (`ui.calendar(props)`) and helpers (`lib.dates.addDays(day, 1)`) are written once and used by every app. They are found for a new request by words (BM25) and by meaning (a vector column), and linked in a graph that ChloeDB walks (`REACHABLE`, `ppr`) to offer an app a newer version. 150 of them ship in `strata-apps/library/`.
+- **What people do is recorded** in ChloeDB (`sa_events`), and the engine counts patterns in it (a search typed again and again, the same field changed row after row) to suggest changes, or to build one beside the live version for the owner to try, keep or drop.
 - **Apps get services:** sign-in, files, email (held in an outbox unless a mail server is set), address search and maps, and, when the owner switches them on, a model and the web (below).
 
 It is a program of its own, in Node.js, that talks to strata-server over HTTP. Views run in sandboxed frames in the browser, and server functions run in QuickJS compiled to WebAssembly, with no network and a time limit.

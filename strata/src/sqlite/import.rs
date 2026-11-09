@@ -437,7 +437,7 @@ fn catalog(conn: &Connection) -> Result<Catalog> {
             continue;
         }
         if ty == "view" {
-            cat.skipped.push((name.clone(), "a view (Strata has no views)".into()));
+            cat.skipped.push((name.clone(), "a view (ChloeDB has no views)".into()));
             continue;
         }
         if is_virtual(sql) {
@@ -928,7 +928,7 @@ fn choose(name: &str, hint: Hint, st: &Stats, role: &Role, opts: &ImportOptions)
         if opts.blobs_base64 {
             return Choice::Field(Field::new(name, FieldType::Keyword).stored_only(), Read::Base64);
         }
-        return Choice::Skip("BLOB values: Strata has no binary type (blobs_base64 keeps them as base64 text)".into());
+        return Choice::Skip("BLOB values: ChloeDB has no binary type (blobs_base64 keeps them as base64 text)".into());
     }
     match hint {
         Hint::Vector(dim) if st.numbers() == 0 && !st.not_vector => return vector(dim),

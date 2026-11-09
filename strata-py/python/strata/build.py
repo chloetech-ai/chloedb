@@ -35,7 +35,7 @@ from ._native import StrataError
 
 VERSION = 1
 
-# Rows a scan whose groups `distinct_on` keeps reads at most (Strata's
+# Rows a scan whose groups `distinct_on` keeps reads at most (ChloeDB's
 # `compound::MAX_ROWS`).
 _MAX_ROWS = 1_000_000
 
@@ -1052,7 +1052,7 @@ def rrf(*scores: Expr, k: float = 60, depth: int = 100) -> Expr:
 
 
 def ranked(keys: Iterable[Any]) -> Expr:
-    """A ranking computed outside Strata, as a score: the rows of `keys`
+    """A ranking computed outside ChloeDB, as a score: the rows of `keys`
     (primary keys, best first), each scoring -(its position) from 1, and
     rows not listed none. An input of `rrf`, or of an expression."""
     keys = [keys] if isinstance(keys, (str, int)) else list(keys)
@@ -1873,10 +1873,10 @@ class _StrNs:
 
     def contains(self, text: str, *, literal: bool = True) -> Expr:
         """The text holds `text` (`LIKE '%text%'`). Polars reads a regular
-        expression unless `literal`; Strata has none, and `%` and `_` in
+        expression unless `literal`; ChloeDB has none, and `%` and `_` in
         `text` match any run of letters and any one letter, as in LIKE."""
         if not literal:
-            raise StrataError("Strata has no regular expressions: str.contains matches text as LIKE does")
+            raise StrataError("ChloeDB has no regular expressions: str.contains matches text as LIKE does")
         return self._like(f"%{text}%", "LIKE", f"contains({text!r})")
 
     def starts_with(self, prefix: str) -> Expr:

@@ -254,10 +254,10 @@ impl Keys {
             // on no command line.
             Secrets::Keychain => {
                 let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
-                run("security", &["-i"], Some(&format!("add-generic-password -U -s {} -a {} -l {} -w {}\n", quote(SERVICE), quote(&acct), quote(&format!("Strata hub: {name}")), quote(key))))?;
+                run("security", &["-i"], Some(&format!("add-generic-password -U -s {} -a {} -l {} -w {}\n", quote(SERVICE), quote(&acct), quote(&format!("ChloeDB hub: {name}")), quote(key))))?;
             }
             Secrets::SecretTool => {
-                run("secret-tool", &["store", "--label", &format!("Strata hub: {name}"), "service", SERVICE, "account", &acct], Some(key))?;
+                run("secret-tool", &["store", "--label", &format!("ChloeDB hub: {name}"), "service", SERVICE, "account", &acct], Some(key))?;
             }
             Secrets::File(_) => {}
         }
@@ -610,7 +610,7 @@ impl Hub {
                 return Err(ApiError { status: 502, message: format!("{} ({status}): {m}", v.describe()) });
             }
             return match status {
-                200..=299 => serde_json::from_slice::<Json>(&body).ok().filter(|j| j.get("scope").is_some()).ok_or_else(|| ApiError { status: 502, message: format!("{} did not answer as Strata does", c.name) }),
+                200..=299 => serde_json::from_slice::<Json>(&body).ok().filter(|j| j.get("scope").is_some()).ok_or_else(|| ApiError { status: 502, message: format!("{} did not answer as ChloeDB does", c.name) }),
                 401 | 403 => Err(ApiError { status: 409, message: format!("{} refused the key ({status}): check it, and that it has not expired", c.name) }),
                 s => Err(ApiError { status: 502, message: format!("{} answered {s} through {}", c.name, v.describe()) }),
             };
@@ -624,9 +624,9 @@ impl Hub {
         for u in &c.urls {
             match cl.get(format!("{u}/v1/whoami")).bearer_auth(key).header("x-strata-client", "hub").send().await {
                 Ok(r) if r.status().is_success() => {
-                    let j: Json = r.json().await.map_err(|e| ApiError { status: 502, message: format!("{u} did not answer as Strata does: {e}") })?;
+                    let j: Json = r.json().await.map_err(|e| ApiError { status: 502, message: format!("{u} did not answer as ChloeDB does: {e}") })?;
                     if j.get("scope").is_none() {
-                        return Err(ApiError { status: 502, message: format!("{u} did not answer as Strata does") });
+                        return Err(ApiError { status: 502, message: format!("{u} did not answer as ChloeDB does") });
                     }
                     if j["auth"]["open"] == true && !loopback(&reqwest::Url::parse(u).map_err(|e| ApiError::bad(e.to_string()))?) {
                         tracing::warn!(connection = %c.name, url = %u, "this cluster takes calls without a key");

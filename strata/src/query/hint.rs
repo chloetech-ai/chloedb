@@ -67,7 +67,7 @@ pub fn no_table<'a>(name: &str, tables: impl IntoIterator<Item = &'a str>) -> St
     }
     let lower = name.to_ascii_lowercase();
     let schemas = if ["information_schema", "pg_", "sqlite_", "sys."].iter().any(|p| lower.starts_with(p)) {
-        "; Strata has no system tables: GET /v1/tables lists the tables and their columns"
+        "; ChloeDB has no system tables: GET /v1/tables lists the tables and their columns"
     } else {
         ""
     };

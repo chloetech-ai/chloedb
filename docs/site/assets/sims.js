@@ -1,4 +1,4 @@
-/* Strata showcase site: small simulators that run in the browser.
+/* ChloeDB showcase site: small simulators that run in the browser.
  *
  *   data-sim="rank"      BM25 against vector similarity over 40 sample
  *                        products, fused with minmax(), as you type
@@ -825,7 +825,7 @@
     var at = 0;
     function step() { at++; if (at % 7 === 0) del(); else commit(); if (segs.length > 14 || docs > 90000) { reset(); render(); } }
     reset(); render();
-    log("Every commit makes a small segment; a tiered policy merges them. The merge factor is 4 here, to fit; Strata's default is 8.");
+    log("Every commit makes a small segment; a tiered policy merges them. The merge factor is 4 here, to fit; ChloeDB's default is 8.");
     if (REDUCED) return;
     onScreen(root, function () { if (demo && !timer) timer = setInterval(function () { if (demo) step(); }, 1200); }, function () { if (demo) { clearInterval(timer); timer = 0; } }, 0.35);
   }

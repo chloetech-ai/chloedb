@@ -1,25 +1,27 @@
-# Strata
+# ChloeDB
 
 An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.
 
-[How Strata works](strata/index.md) · [Query language](strata/query-language.md) · [Server](strata/server.md) · [Python](strata/python.md) · [JavaScript](strata/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
+[How ChloeDB works](strata/index.md) · [Query language](strata/query-language.md) · [Server](strata/server.md) · [Python](strata/python.md) · [JavaScript](strata/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
+
+> ChloeDB was called Strata until November 2026. The rename is landing in steps: until it is done, folders, crates, commands, settings and the repository still carry the old name (`strata-server`, `import strata`, `STRATA_*`), and they keep working afterwards.
 
 ---
 
-Strata is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions with snapshot isolation, and is queried with SQL. Every table is indexed three ways at once (posting lists for full text, a columnar forward index for structured fields, and vector indexes), rows can hold typed, weighted edges to other rows, and a cost-based planner chooses, per segment and from exact statistics, how to run each part of a statement. A database holds several tables, and queries join them.
+ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions with snapshot isolation, and is queried with SQL. Every table is indexed three ways at once (posting lists for full text, a columnar forward index for structured fields, and vector indexes), rows can hold typed, weighted edges to other rows, and a cost-based planner chooses, per segment and from exact statistics, how to run each part of a statement. A database holds several tables, and queries join them.
 
-This repository holds Strata, the pieces around it, and Engram, an application built on it.
+This repository holds ChloeDB, the pieces around it, and Engram, an application built on it.
 
 | part | what it is | read more |
 |---|---|---|
-| **Strata** | The embedded, single-file database: ACID transactions, SQL, full text, structured columns, vectors and graph edges over the same rows, and a cost-based planner over all of it. SQLite databases import into it and it exports to SQLite. | [Design](strata/index.md) · [SQL](strata/query-language.md) · [Graphs](strata/graphs.md) · [Next items](strata/next-items.md) · [SQLite](strata/sqlite.md) · [Following Postgres](strata/postgres.md) · [OpenSearch API](strata/opensearch.md) · [Results](strata/results.md) |
-| **strata-server** | Strata over HTTP JSON and gRPC, with a command center for one server or a cluster (health, topology, performance, alerts, queries and their profiles, CPU and memory flame graphs, logs, access), a query console and an agent that answers questions with SQL. Shards behind a coordinator answer like one database, and a primary ships its writes to replicas. | [Server](strata/server.md) |
-| **Apps on a cluster** | Programs the command center shows as views: a crawler that turns a site into a table and grows the cluster as it fills, and spreadsheets whose workbooks are Strata rows (formulas, charts, pivots, SQL queries of the cluster in cells, the cluster's tables as live sheets, xlsx, CSV and SQLite in and out). | [Crawler](strata/crawler.md) · [Sheets](strata/sheets.md) |
-| **strata-apps** (a prototype) | An app engine: apps built from a description by a model, checked, stored in Strata as SQL rows and run; changed by asking, one version per change; shared components and helpers found by words, meaning and a graph; a model and the web for apps, switched on per app. | [Apps](strata/apps.md) |
-| **strata-py** | Strata from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of strata-server with the same methods. | [Python](strata/python.md) |
-| **strata-js** | Strata from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of strata-server for any runtime, with the same methods. | [JavaScript](strata/javascript.md) |
-| **Strata's posting lists** | A study of compressed posting lists and their intersection and union algorithms, which produced three new formats. Strata's text and keyword indexes use two of them. | [Posting lists](posting-lists.md) |
-| **Engram**, built on Strata | Long-term memory for Claude Code. Hooks store every event of a session in a Strata file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](engram/index.md) · [Install](engram/setup.md) · [Inspector](engram/inspector.md) · [Results](engram/results.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/) |
+| **ChloeDB** | The embedded, single-file database: ACID transactions, SQL, full text, structured columns, vectors and graph edges over the same rows, and a cost-based planner over all of it. SQLite databases import into it and it exports to SQLite. | [Design](strata/index.md) · [SQL](strata/query-language.md) · [Graphs](strata/graphs.md) · [Next items](strata/next-items.md) · [SQLite](strata/sqlite.md) · [Following Postgres](strata/postgres.md) · [OpenSearch API](strata/opensearch.md) · [Results](strata/results.md) |
+| **strata-server** | ChloeDB over HTTP JSON and gRPC, with a command center for one server or a cluster (health, topology, performance, alerts, queries and their profiles, CPU and memory flame graphs, logs, access), a query console and an agent that answers questions with SQL. Shards behind a coordinator answer like one database, and a primary ships its writes to replicas. | [Server](strata/server.md) |
+| **Apps on a cluster** | Programs the command center shows as views: a crawler that turns a site into a table and grows the cluster as it fills, and spreadsheets whose workbooks are ChloeDB rows (formulas, charts, pivots, SQL queries of the cluster in cells, the cluster's tables as live sheets, xlsx, CSV and SQLite in and out). | [Crawler](strata/crawler.md) · [Sheets](strata/sheets.md) |
+| **strata-apps** (a prototype) | An app engine: apps built from a description by a model, checked, stored in ChloeDB as SQL rows and run; changed by asking, one version per change; shared components and helpers found by words, meaning and a graph; a model and the web for apps, switched on per app. | [Apps](strata/apps.md) |
+| **strata-py** | ChloeDB from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of strata-server with the same methods. | [Python](strata/python.md) |
+| **strata-js** | ChloeDB from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of strata-server for any runtime, with the same methods. | [JavaScript](strata/javascript.md) |
+| **ChloeDB's posting lists** | A study of compressed posting lists and their intersection and union algorithms, which produced three new formats. ChloeDB's text and keyword indexes use two of them. | [Posting lists](posting-lists.md) |
+| **Engram**, built on ChloeDB | Long-term memory for Claude Code. Hooks store every event of a session in a ChloeDB file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](engram/index.md) · [Install](engram/setup.md) · [Inspector](engram/inspector.md) · [Results](engram/results.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/) |
 
 ## One query
 
@@ -46,7 +48,7 @@ The [query language](strata/query-language.md) page is the reference: scores and
 
 ```mermaid
 flowchart LR
-    subgraph lib["Strata: one file + WAL"]
+    subgraph lib["ChloeDB: one file + WAL"]
         direction TB
         sql["SQL: parser, binder,<br/>cost-based planner per segment"] --> idx["full text · columns · vectors · graph edges<br/>immutable segments, read in place through mmap"]
         idx --- pl["posting lists<br/>Loom · Pyramid · BP128"]
@@ -58,7 +60,7 @@ flowchart LR
     engram["Engram<br/>memory for Claude Code"] --> lib
 ```
 
-A statement is parsed and bound into a predicate tree and a scorer; the planner picks, per segment and from exact statistics, how to evaluate each part (MaxScore or Block-Max WAND for text, range scans or postings for structured fields, an exact scan, IVF or HNSW with the filter inside for vectors); operators read zero-copy views of the segment's sections, and per-segment results are merged. [Strata's design](strata/index.md) covers the file format, transactions, every index and the planner.
+A statement is parsed and bound into a predicate tree and a scorer; the planner picks, per segment and from exact statistics, how to evaluate each part (MaxScore or Block-Max WAND for text, range scans or postings for structured fields, an exact scan, IVF or HNSW with the filter inside for vectors); operators read zero-copy views of the segment's sections, and per-segment results are merged. [ChloeDB's design](strata/index.md) covers the file format, transactions, every index and the planner.
 
 ## Headline results
 
@@ -66,21 +68,21 @@ A statement is parsed and bound into a predicate tree and a scorer; the planner 
 
 | question | answer |
 |---|---|
-| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean, 7 November): Strata **146**, Solr 286, Elasticsearch 291, Qdrant 300. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
-| Is Strata fast? | Warm BM25 **1.7–3.2×** faster than Tantivy, and 24 of 28 text and filter comparisons won; vector top-10 in **0.05–0.10 ms** at recall@10 0.99 on Quora. |
+| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean, 7 November): ChloeDB **146**, Solr 286, Elasticsearch 291, Qdrant 300. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
+| Is ChloeDB fast? | Warm BM25 **1.7–3.2×** faster than Tantivy, and 24 of 28 text and filter comparisons won; vector top-10 in **0.05–0.10 ms** at recall@10 0.99 on Quora. |
 | Does the planner earn its keep? | On filtered vector search it is **1.8–6.1×** faster than the best fixed strategy, at recall@10 0.991–0.998. |
 | Do graph edges help search? | Following the citations of the two nearest papers doubles nDCG@20 on arXiv (0.123 → 0.253). |
 | What do the new posting lists buy? | Loom is the size of partitioned Elias-Fano with **2.4–3.0×** faster AND and 3.8–7.7× faster OR. |
 
 </div>
 
-![Median latency by query kind, Strata against SQLite with FTS5 and Tantivy on TREC-COVID](assets/img/chart-strata-latency.png)
+![Median latency by query kind, ChloeDB against SQLite with FTS5 and Tantivy on TREC-COVID](assets/img/chart-strata-latency.png)
 
-## Engram: an application of Strata
+## Engram: an application of ChloeDB
 
 A coding agent's context window is its whole working memory. When a long session fills it, Claude Code *compacts*: it replaces the history with a summary of about 15,000 characters. The plan survives; the particulars do not. Exact error messages, the reason an approach was dropped, and a rule the user stated once three hours earlier all go. A new session starts with almost nothing.
 
-Engram keeps all of it in a Strata file per project and brings back what a prompt needs. Strata answers every question Engram asks with SQL: recall is two searches (BM25 and vectors) under a filter that excludes what the model can still see, the briefing is a handful of structured queries, and the model's `memory_sql` tool is Strata's SQL itself, read-only.
+Engram keeps all of it in a ChloeDB file per project and brings back what a prompt needs. ChloeDB answers every question Engram asks with SQL: recall is two searches (BM25 and vectors) under a filter that excludes what the model can still see, the briefing is a handful of structured queries, and the model's `memory_sql` tool is ChloeDB's SQL itself, read-only.
 
 [How Engram works](engram/index.md) · [Install it](engram/setup.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/)
 
@@ -88,7 +90,7 @@ Engram keeps all of it in a Strata file per project and brings back what a promp
 
 *A fresh Claude Code session, asked what storage was chosen earlier and why, answers from the briefing Engram injected at session start. Right: the records the hooks wrote and the knowledge a small model distilled from the previous session. See [the live inspector](engram/inspector.md).*
 
-[Try the inspector in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) It replays a recorded session, and every panel queries the recorded store with Strata's SQL, run by a JavaScript model of Strata.
+[Try the inspector in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) It replays a recorded session, and every panel queries the recorded store with ChloeDB's SQL, run by a JavaScript model of ChloeDB.
 
 ```mermaid
 flowchart TB
@@ -105,7 +107,7 @@ flowchart TB
         rec["recall<br/>exclude live window · hybrid search<br/>priors · gate · pack"]
         dis["distill<br/>small model after each turn"]
     end
-    daemon --> strata[("Strata: memory.strata + WAL<br/>BM25 · HNSW · columns · graph edges")]
+    daemon --> strata[("ChloeDB: memory.strata + WAL<br/>BM25 · HNSW · columns · graph edges")]
 ```
 
 <div class="table-wrapper" markdown="1">
@@ -126,8 +128,8 @@ For the short version, with the week-long Kestrel benchmark and its cost compari
 
 Each project also has a long-form report with interactive charts, formulas and every table. They are published on the website:
 
-- [Strata: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html)
-- [Strata graphs](https://chloetech-ai.github.io/strata/reports/graph.html)
+- [ChloeDB: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html)
+- [ChloeDB graphs](https://chloetech-ai.github.io/strata/reports/graph.html)
 - [Posting lists: formats and algorithms](https://chloetech-ai.github.io/strata/reports/posting-lists.html) and [the three new designs](https://chloetech-ai.github.io/strata/reports/posting-list-designs.html)
 - [Engram: the memory system](https://chloetech-ai.github.io/strata/reports/engram.html)
 - [Engram: what a record should be](https://chloetech-ai.github.io/strata/reports/structure.html)
@@ -136,4 +138,4 @@ Each project also has a long-form report with interactive charts, formulas and e
 
 Every figure in these documents comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. The comparisons with other engines ran on DigitalOcean, and [each report](https://chloetech-ai.github.io/strata/site/benchmarks.html) names its machines. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
 
-The repository was called `rkonow/engram` until October 2026. Strata's website is [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/); these documents are read here on GitHub.
+The repository was called `rkonow/engram` until October 2026. ChloeDB's website is [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/); these documents are read here on GitHub.

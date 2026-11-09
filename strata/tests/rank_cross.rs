@@ -163,7 +163,7 @@ fn what_a_cross_encoder_cannot_do_is_refused() {
     refused(&db, &phase("cross_encoder('builtin:overlap', title, 3)"), &params, "cross_encoder('model', field, ..., query)");
     // A model a build without the `bert` feature cannot run.
     #[cfg(not(feature = "bert"))]
-    refused(&db, &phase("cross_encoder('ce_bert', title, :t)"), &params, "build Strata with the `bert` feature");
+    refused(&db, &phase("cross_encoder('ce_bert', title, :t)"), &params, "build ChloeDB with the `bert` feature");
     // features() lists the ranking's features, which it is not one of.
     let sql = "WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :t) DESC LIMIT 20) SELECT id, features() FROM top ORDER BY cross_encoder('builtin:overlap', title, :t) + rating DESC LIMIT 5";
     let rs = query(&db, sql, &params);
@@ -442,5 +442,5 @@ mod onnx_models {
 #[test]
 fn an_onnx_model_needs_the_onnx_feature() {
     let e = strata::query::model::Models::default().cross_encoder(&models_dir(), "ce_bert_int8").err().expect("refused").to_string();
-    assert!(e.contains("build Strata with the `onnx` feature"), "{e}");
+    assert!(e.contains("build ChloeDB with the `onnx` feature"), "{e}");
 }

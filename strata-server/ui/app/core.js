@@ -206,7 +206,7 @@ export const authHeader = () => (token ? { authorization: "Bearer " + token } : 
 /**
  * A failed call. `status` is the HTTP status, 0 when nothing answered (a
  * network failure or a timeout). `answered` is false when the answer did
- * not come from Strata (nothing answered, or a proxy's page that is not
+ * not come from ChloeDB (nothing answered, or a proxy's page that is not
  * JSON): the server counts as not answering then.
  */
 export class ApiError extends Error {
@@ -214,8 +214,8 @@ export class ApiError extends Error {
 }
 
 // Whether the server answers: every call of `api` says. A call answered by
-// Strata (any status, its JSON) means yes; a network failure, a timeout or
-// an answer that is not Strata's JSON (an ingress's 502 page) means no.
+// ChloeDB (any status, its JSON) means yes; a network failure, a timeout or
+// an answer that is not ChloeDB's JSON (an ingress's 502 page) means no.
 const conn = { ok: true, since_ms: null, status: null, message: null, path: null, last_ok_ms: null, last_fail_ms: null };
 /** `{ ok, since_ms, status, message, path, last_ok_ms }`: whether the server answers, and since when it does not. */
 export const connection = () => ({ ...conn });
@@ -232,10 +232,10 @@ function notAnswering(status, message, path) {
   Object.assign(conn, { ok: false, since_ms: was ? now : conn.since_ms, status, message, path });
   bus.emit("connection", connection());
 }
-/** What an HTTP status means when it did not come from Strata. */
+/** What an HTTP status means when it did not come from ChloeDB. */
 function proxyWhy(status) {
   return status === 502 ? "502 from the ingress or proxy" : status === 503 ? "503 from the ingress or proxy" : status === 504 ? "504: the ingress or proxy gave up waiting"
-    : status >= 500 ? `${status} that is not Strata's` : `an answer that is not Strata's (HTTP ${status})`;
+    : status >= 500 ? `${status} that is not ChloeDB's` : `an answer that is not ChloeDB's (HTTP ${status})`;
 }
 // Header values are Latin-1: anything else in a reason goes percent-encoded.
 const headerSafe = (t) => String(t).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)).slice(0, 2000);
@@ -287,7 +287,7 @@ export async function api(path, opts = {}) {
   const t = await r.text().catch(() => null);
   if (t == null) { notAnswering(r.status || 0, "the answer was cut off", path); throw new ApiError(r.status || 0, "the answer was cut off", null, false); }
   if (opts.text) {
-    // A page that is not Strata's error: a proxy answered for it.
+    // A page that is not ChloeDB's error: a proxy answered for it.
     if (!r.ok && r.status >= 500 && parseJson(t) === undefined) { notAnswering(r.status, proxyWhy(r.status), path); throw new ApiError(r.status, proxyWhy(r.status), null, false); }
     answered();
     if (r.status === 401) bus.emit("unauthorized", path);
@@ -295,7 +295,7 @@ export async function api(path, opts = {}) {
     return t;
   }
   let j = t.trim() === "" ? {} : parseJson(t);
-  // Strata always answers JSON here (its errors say {"error": ...}). Anything
+  // ChloeDB always answers JSON here (its errors say {"error": ...}). Anything
   // else came from something in front of it.
   if (j === undefined || (r.status >= 500 && !isStrataError(j))) {
     notAnswering(r.status, proxyWhy(r.status), path);

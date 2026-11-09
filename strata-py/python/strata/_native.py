@@ -36,5 +36,5 @@ except ImportError as e:  # the HTTP client alone
     NATIVE = False
 
     class StrataError(Exception):  # type: ignore[no-redef]
-        """An error Strata reports. A client's has the answer's HTTP
+        """An error ChloeDB reports. A client's has the answer's HTTP
         `status`, and its JSON body as `answer`."""

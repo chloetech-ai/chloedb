@@ -1,4 +1,4 @@
-// The crawler's page in Strata's command center (#/app/crawler). The
+// The crawler's page in ChloeDB's command center (#/app/crawler). The
 // command center loads this file through strata-server, which forwards
 // /v1/apps/crawler/... to the crawler, and runs it with its own helpers:
 // render(el, ctx) gets ctx.core (h, card, table, fmt, ...), ctx.charts,
@@ -277,7 +277,7 @@ function homePage(root, ctx) {
       fill(info.defaults || {});
       const st = info.strata || {};
       conn.replaceChildren(
-        st.error ? core.pill("bad", "Strata does not answer") : core.pill("ok", st.role === "coordinator" ? "writes to a coordinator" : "writes to a server"),
+        st.error ? core.pill("bad", "ChloeDB does not answer") : core.pill("ok", st.role === "coordinator" ? "writes to a coordinator" : "writes to a server"),
         h("span", { class: "small muted", title: st.error || "" }, st.url, info.local ? " · started by the crawler" : ""));
     } catch (e) { if (!gone) conn.replaceChildren(core.pill("bad", "the crawler does not answer"), h("span", { class: "small muted" }, e.message)); }
   }
@@ -409,7 +409,7 @@ function crawlPage(root, ctx, id) {
   const hits = h("div");
   const searchSql = h("div");
   root.append(h("div", { class: "grid g2", style: { marginTop: "14px" } },
-    card({ title: "Search the table", sub: "through Strata", body: h("div", {}, h("form", { class: "cr-search", onsubmit: (e) => { e.preventDefault(); search(); } }, q, h("button", { class: "btn", type: "submit" }, icon("search"), "Search")), hits, searchSql) }),
+    card({ title: "Search the table", sub: "through ChloeDB", body: h("div", {}, h("form", { class: "cr-search", onsubmit: (e) => { e.preventDefault(); search(); } }, q, h("button", { class: "btn", type: "submit" }, icon("search"), "Search")), hits, searchSql) }),
     card({ title: "What it did", body: h("div", { style: { maxHeight: "520px", overflow: "auto" } }, h("div", { "data-events": "" })) })));
   const eventsBox = root.querySelector("[data-events]");
 

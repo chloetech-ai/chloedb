@@ -25,10 +25,11 @@ use crate::error::{corrupt, Result};
 use crate::schema::{Field, FieldType, Schema, VectorIndexKind};
 use crate::value::{Document, Value};
 
-/// Directory holding the prepared collections: `$STRATA_DATA`, else
+/// Directory holding the prepared collections: `$CHLOEDB_DATA` (or
+/// `$STRATA_DATA`), else
 /// `/home/user/data/beir`.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("STRATA_DATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/home/user/data/beir"))
+    crate::env::var_os("STRATA_DATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/home/user/data/beir"))
 }
 
 /// Field order of the BEIR table (indices into `Document`).

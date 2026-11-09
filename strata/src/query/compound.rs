@@ -3050,7 +3050,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             let part = extract_part(field);
             ir::Expr::Call { func: Func::DatePart, args: vec![ir::Expr::Lit(Value::Str(part)), go(expr)?] }
         }
-        e => return Err(err(format!("{e} is not something Strata computes for a row: {}", ROW_EXPRESSIONS))),
+        e => return Err(err(format!("{e} is not something ChloeDB computes for a row: {}", ROW_EXPRESSIONS))),
     })
 }
 
@@ -3091,7 +3091,7 @@ fn unknown_function(n: &str) -> String {
         _ => "",
     };
     format!(
-        "unknown function {n}(){}: over rows Strata computes {}{hint}",
+        "unknown function {n}(){}: over rows ChloeDB computes {}{hint}",
         hint::did_you_mean(n, ROW_FUNCTIONS),
         ROW_FUNCTIONS.join(", ")
     )

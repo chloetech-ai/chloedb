@@ -504,7 +504,7 @@ fn system_prompt(svc: &Service) -> String {
     let name = svc.identity.name.as_deref().map_or("this cluster".to_string(), |n| format!("the cluster {n}"));
     let env = svc.identity.environment.as_deref().map_or(String::new(), |e| format!(" ({e})"));
     format!(
-        r#"You are the on-call engineer for {name}{env}, a Strata cluster (Strata is a search database with SQL; a cluster is coordinators over shards, each shard a primary and its replicas). You look into an alert or a question with read-only tools, then report.
+        r#"You are the on-call engineer for {name}{env}, a ChloeDB cluster (ChloeDB is a search database with SQL; a cluster is coordinators over shards, each shard a primary and its replicas). You look into an alert or a question with read-only tools, then report.
 
 Tools:
 - health, cluster, load, system: whether nodes are up, the shards and their copies, each copy's load, the host.

@@ -327,24 +327,24 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
 /// Why a statement Strata does not run is refused, and what does the
 /// same: the tables and their columns are in `GET /v1/tables`.
 fn unsupported_statement(stmt: &sql::Statement, tables: &[&Schema]) -> String {
-    let supported = "Strata runs SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE RANK PROFILE, DROP RANK PROFILE, CREATE FUNCTION, DROP FUNCTION and EXPLAIN";
+    let supported = "ChloeDB runs SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE RANK PROFILE, DROP RANK PROFILE, CREATE FUNCTION, DROP FUNCTION and EXPLAIN";
     let names: Vec<&str> = tables.iter().map(|t| t.table.as_str()).collect();
     let listing = if names.is_empty() { String::new() } else { format!(" (the tables are {})", hint::listing(&names, 20)) };
     let first = word_of(stmt);
     match stmt {
         sql::Statement::ShowTables { .. } | sql::Statement::ShowDatabases { .. } | sql::Statement::ShowSchemas { .. } | sql::Statement::ShowObjects(_) => {
-            format!("{first} is not a statement Strata runs: GET /v1/tables lists the tables and their columns{listing}, and so does the SQL workbench's sidebar")
+            format!("{first} is not a statement ChloeDB runs: GET /v1/tables lists the tables and their columns{listing}, and so does the SQL workbench's sidebar")
         }
         sql::Statement::ShowColumns { .. } | sql::Statement::ExplainTable { .. } | sql::Statement::ShowCreate { .. } => format!(
-            "{first} is not a statement Strata runs: GET /v1/tables gives each table's columns and the CREATE TABLE that makes it{listing}; SELECT * FROM t LIMIT 0 names the columns a query returns"
+            "{first} is not a statement ChloeDB runs: GET /v1/tables gives each table's columns and the CREATE TABLE that makes it{listing}; SELECT * FROM t LIMIT 0 names the columns a query returns"
         ),
         sql::Statement::StartTransaction { .. } | sql::Statement::Commit { .. } | sql::Statement::Rollback { .. } => {
-            format!("{first} is not a statement Strata runs: each statement is a transaction of its own (several writes in one transaction go through the Rust and Python APIs)")
+            format!("{first} is not a statement ChloeDB runs: each statement is a transaction of its own (several writes in one transaction go through the Rust and Python APIs)")
         }
         sql::Statement::Truncate { .. } => "TRUNCATE is not supported: DELETE FROM t deletes every row of t".into(),
         sql::Statement::CreateIndex(_) => "CREATE INDEX is not supported: a table indexes each column by its type when it is created (OPTIONS(indexed = false) leaves one out)".into(),
         sql::Statement::CreateView { .. } => "CREATE VIEW is not supported: name a query in WITH, or keep it in the SQL workbench's library".into(),
-        _ => format!("{first} is not a statement Strata runs: {supported}"),
+        _ => format!("{first} is not a statement ChloeDB runs: {supported}"),
     }
 }
 
@@ -3392,7 +3392,7 @@ impl CastTo {
             "TIMESTAMP" | "TIMESTAMPTZ" | "DATETIME" | "DATE" => CastTo::Timestamp,
             _ => {
                 return Err(err(format!(
-                    "CAST to {written}: Strata casts to INT (or INTEGER, BIGINT), FLOAT (or DOUBLE, REAL, NUMERIC, DECIMAL), TEXT (or VARCHAR), BOOL and TIMESTAMP (or DATE)"
+                    "CAST to {written}: ChloeDB casts to INT (or INTEGER, BIGINT), FLOAT (or DOUBLE, REAL, NUMERIC, DECIMAL), TEXT (or VARCHAR), BOOL and TIMESTAMP (or DATE)"
                 )))
             }
         })

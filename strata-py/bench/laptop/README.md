@@ -1,7 +1,7 @@
-# The laptop benchmark: Strata in one file
+# The laptop benchmark: ChloeDB in one file
 
 Part A of the laptop benchmark (Part B, the cluster, is
-`strata-server/deploy/compare`): Strata as an app's database, search box and
+`strata-server/deploy/compare`): ChloeDB as an app's database, search box and
 recommender in one file, against the libraries apps use for each today, all
 driven from Python as an app would drive them. Part C carries the same app
 queries from the file to a sharded cluster.
@@ -13,7 +13,7 @@ queries from the file to a sharded cluster.
 | `a2_search.py` | full text, vector and hybrid search on BEIR, the 11 kinds of `strata/results/workloads` plus phrase, prefix, typos (whole query and one word) and weighted fusion | SQLite FTS5 + sqlite-vec, Tantivy (tantivy-py), DuckDB fts + vss, LanceDB |
 | `a_writes.py` | writes into a file with text and vector indexes: inserts of 1 to 10,000 per transaction, six kinds of update, a stream of review events at 1K, 10K, 50K a second and flat out while 4 threads query | SQLite FTS5 + sqlite-vec (FULL and NORMAL), DuckDB, LanceDB, Tantivy (text only) |
 | `a3_recsys.py` | similar items (filtered, history left out) and a home feed (two sources, rules, at most 2 a brand) | LanceDB, sqlite-vec, FAISS HNSW + SQLite |
-| `part_c.py`, `part_c.sh` | the Shop's 12 app queries in the app, on one server, on a cluster of 1 then 3 shards while slots move, and from `git clone` to a 3-shard cluster | Strata's own answers in the app |
+| `part_c.py`, `part_c.sh` | the Shop's 12 app queries in the app, on one server, on a cluster of 1 then 3 shards while slots move, and from `git clone` to a 3-shard cluster | ChloeDB's own answers in the app |
 | `common.py` | timing, the machine, BEIR collections, reports | |
 
 Next items (the sequence encoder, walks and their fusion on Amazon 2014

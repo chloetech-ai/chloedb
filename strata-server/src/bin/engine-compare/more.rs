@@ -1455,14 +1455,14 @@ pub(crate) fn differs(o: Other, kind: &str) -> Option<&'static str> {
         (Typesense, "hybrid (weighted)") => "rank fusion with alpha 0.8 (reciprocal ranks, not normalised scores), over the vector top 100",
         (Manticore, k) if text_kind || k == "boosted (bm25 × decay)" => match k {
             "typo" => "every word must match, each fuzzy (OPTION fuzzy=1, distance 2, preserve 1: fuzzy search takes no OR; it needs min_infix_len, set to 2)",
-            "boosted (bm25 × decay)" => "weight() x the decay, where weight() is bm25a(1.2, 0.75), which Manticore scales into 0 to 1 (not BM25's raw sum), so the decay weighs more than on Strata",
+            "boosted (bm25 × decay)" => "weight() x the decay, where weight() is bm25a(1.2, 0.75), which Manticore scales into 0 to 1 (not BM25's raw sum), so the decay weighs more than on ChloeDB",
             _ => "BM25 as the ranker expression bm25a(1.2, 0.75) with plain IDF (weight() is an integer: 10,000 x the score); Manticore's English stopwords",
         },
         (Manticore, "hybrid (RRF)") => "MATCH and knn fused by RRF (fusion_method='rrf', rank_constant 60, window 100)",
         (Qdrant, k) if text_kind || k == "boosted (bm25 × decay)" => match k {
             "boosted (bm25 × decay)" => "the BM25 top 100 re-ranked by a formula query: score x exp_decay(year, target 2024, scale 5, midpoint 0.5)",
             "phrase" => "BM25 over the whole query, filtered by the text index's phrase match",
-            _ => "BM25 from the client: sparse vectors of Strata's analysis weighted tf (k1 + 1) / (tf + k1 (1 - b + b dl / avgdl)), Qdrant applying the IDF",
+            _ => "BM25 from the client: sparse vectors of ChloeDB's analysis weighted tf (k1 + 1) / (tf + k1 (1 - b + b dl / avgdl)), Qdrant applying the IDF",
         },
         (Qdrant, "hybrid (RRF)") => "prefetch of the BM25 and vector top 100, fused by rrf (k 60)",
         (Qdrant, "hybrid (weighted)") => "prefetch of the BM25 and vector top 100, fused by dbsf (each normalised by its mean ± 3 standard deviations, summed unweighted: no weights)",
@@ -1475,14 +1475,14 @@ pub(crate) fn differs(o: Other, kind: &str) -> Option<&'static str> {
         (Milvus, "boosted (bm25 × decay)") => "the BM25 top 100 re-ranked by the decay ranker (exp, origin 2024, scale 5, decay 0.5); the client keeps the top 10",
         (Milvus, "hybrid (RRF)") => "hybrid_search of the BM25 and vector top 100, rrf ranker (k 60)",
         (Milvus, "hybrid (weighted)") => "hybrid_search of the BM25 and vector top 100, weighted ranker 0.2 and 0.8 with norm_score (an arctan normalisation, not min-max)",
-        (Paradedb, "typo") => "each word fuzzy with Strata's 'auto' edits, unstemmed (as Solr's), the others matched as words",
+        (Paradedb, "typo") => "each word fuzzy with ChloeDB's 'auto' edits, unstemmed (as Solr's), the others matched as words",
         (Paradedb, "hybrid (RRF)" | "hybrid (weighted)") => "SQL over the BM25 and vector top 100 (ParadeDB's own pattern)",
         (Paradedb, "prefix") => "a regex on the terms (pre.*), ranked with the words before",
         (Postgres, k) if text_kind || k == "boosted (bm25 × decay)" || k == "hybrid (RRF)" || k == "hybrid (weighted)" => {
             "ts_rank (term frequencies, no IDF), not BM25, over to_tsquery('english') of the words OR-ed; hybrids in SQL over the top 100 of each"
         }
         (Redis, "bm25" | "bm25 + filter" | "phrase" | "typo" | "prefix" | "boosted (bm25 × decay)") => {
-            "BM25STD over Redis's English stemming; typo: %word% (1 edit) or %%word%% (2) by Strata's 'auto'; boosted: FT.AGGREGATE with ADDSCORES and APPLY"
+            "BM25STD over Redis's English stemming; typo: %word% (1 edit) or %%word%% (2) by ChloeDB's 'auto'; boosted: FT.AGGREGATE with ADDSCORES and APPLY"
         }
         (Redis, "hybrid (RRF)") => "FT.HYBRID, COMBINE RRF (window 100, constant 60)",
         (Redis, "hybrid (weighted)") => {

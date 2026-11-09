@@ -1,6 +1,6 @@
 # Install Engram on your machine
 
-Engram runs next to your own Claude Code: hooks record each session into a local Strata file per project, and a small MCP server lets the model search that history. This page takes a fresh macOS or Linux machine to a working install in a few minutes, shows how to check it, and covers remote boxes, dev containers and upgrades.
+Engram runs next to your own Claude Code: hooks record each session into a local ChloeDB file per project, and a small MCP server lets the model search that history. This page takes a fresh macOS or Linux machine to a working install in a few minutes, shows how to check it, and covers remote boxes, dev containers and upgrades.
 
 ## What you need
 

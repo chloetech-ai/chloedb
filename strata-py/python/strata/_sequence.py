@@ -9,14 +9,14 @@ the step's position counted from the oldest. Pre-norm causal transformer
 layers follow; the newest step's output, normalized and projected to the
 item dimension, then normalized, is the vector. A row's score is its dot
 product with an item's vector as stored, which is what `similarity` in
-Strata computes.
+ChloeDB computes.
 
-Strata reads the files this module writes (`<models>/<name>/config.json`,
+ChloeDB reads the files this module writes (`<models>/<name>/config.json`,
 `model.safetensors` and `items.safetensors`) and runs the same arithmetic
 in Rust; the names and shapes of the tensors here are the format. The
 items file holds the item vectors the model was trained with, the tensor
 `vectors` (a row an item) with the items' keys as a JSON array in its
-metadata's `keys`: Strata serves the model only over a field that holds
+metadata's `keys`: ChloeDB serves the model only over a field that holds
 those vectors.
 """
 
@@ -272,7 +272,7 @@ def _batches(torch, steps: Steps, order: list[int], size: int, vectors):
 
 
 def item_matrix(torch, base, learned):
-    """The item vectors as Strata will store them: the given ones, or the
+    """The item vectors as ChloeDB will store them: the given ones, or the
     learned ones normalized."""
     return torch.nn.functional.normalize(learned, dim=-1) if learned is not None else base
 

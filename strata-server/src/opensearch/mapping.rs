@@ -770,7 +770,7 @@ fn kind_of(ty: &str, spec: &Json, settings: &Json) -> Result<Kind, OsError> {
             Kind::Vector { dim: dim as usize }
         }
         "ip" | "geo_point" | "geo_shape" | "flat_object" | "flattened" | "binary" | "token_count" | "integer_range" | "long_range" | "float_range" | "double_range" | "date_range" | "ip_range" | "alias" | "join" | "percolator" | "rank_feature" | "rank_features" => Kind::Other,
-        other => return Err(OsError::mapper(format!("no handler for type [{other}]: Strata maps text, keyword, numbers, boolean, date, knn_vector, object and nested fields"))),
+        other => return Err(OsError::mapper(format!("no handler for type [{other}]: ChloeDB maps text, keyword, numbers, boolean, date, knn_vector, object and nested fields"))),
     })
 }
 
@@ -1007,7 +1007,7 @@ pub fn row_of(ix: &Index, id: &str, version: i64, doc: &Map<String, Json>) -> Re
             }
             Kind::Date => {
                 if vals.len() > 1 {
-                    return Err(OsError::mapper(format!("failed to parse field [{name}] of type [date]: Strata holds one date a field")));
+                    return Err(OsError::mapper(format!("failed to parse field [{name}] of type [date]: ChloeDB holds one date a field")));
                 }
                 let t = parse_date(vals[0]).map_err(|why| OsError::mapper(format!("failed to parse field [{name}] of type [date] in document with id '{id}': {why}")))?;
                 row.insert(name.clone(), json!(strata::timestamp::format(t)));
@@ -1118,12 +1118,12 @@ fn check_limits(doc: &Map<String, Json>) -> Result<(), OsError> {
     fn walk(v: &Json, path: usize, depth: usize, n: &mut usize) -> Result<(), OsError> {
         *n += 1;
         if *n > MAX_VALUES {
-            return Err(OsError::mapper(format!("Strata keeps at most {MAX_VALUES} values and objects in a document")));
+            return Err(OsError::mapper(format!("ChloeDB keeps at most {MAX_VALUES} values and objects in a document")));
         }
         match v {
             Json::Object(m) => {
                 if depth > MAX_DEPTH {
-                    return Err(OsError::mapper(format!("Strata keeps objects nested at most {MAX_DEPTH} deep")));
+                    return Err(OsError::mapper(format!("ChloeDB keeps objects nested at most {MAX_DEPTH} deep")));
                 }
                 for (k, x) in m {
                     if k.contains('\0') {
@@ -1131,7 +1131,7 @@ fn check_limits(doc: &Map<String, Json>) -> Result<(), OsError> {
                     }
                     let len = path + if path > 0 { 1 } else { 0 } + strata::json::escape(k).len();
                     if len > MAX_PATH {
-                        return Err(OsError::mapper(format!("Strata keeps field paths of at most {MAX_PATH} bytes")));
+                        return Err(OsError::mapper(format!("ChloeDB keeps field paths of at most {MAX_PATH} bytes")));
                     }
                     walk(x, len, depth + 1, n)?;
                 }
@@ -1152,7 +1152,7 @@ fn check_limits(doc: &Map<String, Json>) -> Result<(), OsError> {
         }
         let len = strata::json::escape(k).len();
         if len > MAX_PATH {
-            return Err(OsError::mapper(format!("Strata keeps field paths of at most {MAX_PATH} bytes")));
+            return Err(OsError::mapper(format!("ChloeDB keeps field paths of at most {MAX_PATH} bytes")));
         }
         walk(x, len, 1, &mut n)?;
     }

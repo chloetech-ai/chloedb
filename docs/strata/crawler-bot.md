@@ -10,7 +10,7 @@ This page says what the crawler is, how it behaves on your site, and how to slow
 
 ## What it is
 
-strata-crawl is open-source software (Apache-2.0, part of [Strata](https://github.com/chloetech-ai/strata)). It reads a site's pages into a table of a database: their titles, text and the fields their markup carries (JSON-LD, meta tags, tables of specifications). It is not a search engine and not a service of ours. Whoever runs a copy starts its crawls from their own machines, so the requests you see come from them.
+strata-crawl is open-source software (Apache-2.0, part of [ChloeDB](https://github.com/chloetech-ai/strata)). It reads a site's pages into a table of a database: their titles, text and the fields their markup carries (JSON-LD, meta tags, tables of specifications). It is not a search engine and not a service of ours. Whoever runs a copy starts its crawls from their own machines, so the requests you see come from them.
 
 A crawl can say whom to reach about it. That goes in the user agent after this page's address:
 

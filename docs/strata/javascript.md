@@ -1,6 +1,6 @@
-# Strata from JavaScript
+# ChloeDB from JavaScript
 
-The `strata-db` package opens a Strata file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [strata-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
+The `chloedb` package (`strata-db` before the rename) opens a ChloeDB file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [strata-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
 
 ## Install
 
@@ -8,20 +8,22 @@ The package is in [`strata-js/`](https://github.com/chloetech-ai/strata/tree/mai
 
 ### Prebuilt
 
-Each `strata-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/strata/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
+Each `chloedb-js-v<version>` release (`strata-js-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/strata/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
 
 ```sh
 npm install https://github.com/chloetech-ai/strata/releases/download/strata-js-v0.1.0/strata-db-0.1.0-darwin-arm64.tgz
 ```
 
+Release 0.1.0 was made before the rename: its tarballs are `strata-db-0.1.0-<platform>.tgz`, and code imports it as `"strata-db"`. Releases after it are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do.
+
 | platform | tarball |
 |---|---|
-| macOS 11+ on Apple silicon | `strata-db-<version>-darwin-arm64.tgz` |
-| macOS 11+ on Intel | `strata-db-<version>-darwin-x64.tgz` |
-| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata-db-<version>-linux-x64-gnu.tgz` |
-| Linux arm64, glibc 2.35+ | `strata-db-<version>-linux-arm64-gnu.tgz` |
+| macOS 11+ on Apple silicon | `chloedb-<version>-darwin-arm64.tgz` |
+| macOS 11+ on Intel | `chloedb-<version>-darwin-x64.tgz` |
+| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `chloedb-<version>-linux-x64-gnu.tgz` |
+| Linux arm64, glibc 2.35+ | `chloedb-<version>-linux-arm64-gnu.tgz` |
 
-The workflow [`js-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/js-release.yml) builds them on a tag `strata-js-v<version>` (the version in `strata-js/package.json`), tests each one, installs it into an empty app and runs it there, then attaches them to the release; `node scripts/pack.mjs <platform>` packs one by hand. The package is not on npm yet. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2).
+The workflow [`js-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/js-release.yml) builds them on a tag `chloedb-js-v<version>` (or `strata-js-v<version>`; the version in `strata-js/package.json`), tests each one, installs it into an empty app and runs it there, then attaches them to the release; `node scripts/pack.mjs <platform>` packs one by hand. The package is not on npm yet. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2).
 
 ### From source
 
@@ -31,17 +33,17 @@ It needs Rust (stable) and a C compiler.
 cd strata-js
 npm run build                    # cargo build --release, then copies the addon to strata.node
 cd ../my-app
-npm install ../strata/strata-js  # or "strata-db": "file:../strata/strata-js" in package.json
+npm install ../strata/strata-js  # or "chloedb": "file:../strata/strata-js" in package.json
 ```
 
-`npm install` of the directory builds the addon itself when `strata.node` is missing. `npm run build -- --features bert` builds more of Strata's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$STRATA_NODE_ADDON` loads an addon from another place.
+`npm install` of the directory builds the addon itself when `strata.node` is missing. `npm run build -- --features bert` builds more of ChloeDB's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`) loads an addon from another place.
 
-The client alone (`strata-db/client`) is plain JavaScript with no addon: a bundler takes it into a page, and the package's `browser` and `workerd` conditions give it for `strata-db` too.
+The client alone (`chloedb/client`) is plain JavaScript with no addon: a bundler takes it into a page, and the package's `browser` and `workerd` conditions give it for `chloedb` too.
 
 ## A database in the process
 
 ```js
-import { open } from "strata-db";
+import { open } from "chloedb";
 
 const db = await open("books.strata", {
   schema: {
@@ -113,7 +115,7 @@ Errors reject with a `StrataError`, whose message is the database's.
 ## A server from JavaScript
 
 ```js
-import { connect } from "strata-db/client";   // or from "strata-db"
+import { connect } from "chloedb/client";   // or from "chloedb"
 
 const client = connect("http://127.0.0.1:7700", { token: process.env.STRATA_TOKEN });
 await client.upsert([{ id: "b2", title: "A second book", year: 2001 }]);
@@ -131,7 +133,7 @@ In a browser, the client works from pages of the server's own origin (a page it 
 `openNearby(url, table, dir)` holds a [slice](slices.md) of a strata-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `moveTo(lat, lon)` fetches the tiles it lacks, and `search(q, { k, d0 })` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason. For a [vector slice](slices.md#vector-slices-more-like-this-on-the-device), `focus(taste, { rows })` holds the clusters nearest a taste vector and `similar(vector, { k })` answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.
 
 ```js
-import { openNearby } from "strata-db";
+import { openNearby } from "chloedb";
 
 const near = await openNearby("http://127.0.0.1:7700", "places", "./slice");
 await near.moveTo(40.7484, -73.9857);

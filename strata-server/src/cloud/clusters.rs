@@ -558,7 +558,7 @@ async fn kube(m: &Made, aws: &Aws, d: &DigitalOcean) -> Result<Kube, String> {
 
 async fn installing(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), String> {
     if m.tries >= INSTALL_TRIES {
-        let e = m.error.clone().unwrap_or_else(|| "the cluster's API did not take Strata".into());
+        let e = m.error.clone().unwrap_or_else(|| "the cluster's API did not take ChloeDB".into());
         m.fail(format!("installing gave up after {INSTALL_TRIES} tries: {e}"));
         return Ok(());
     }

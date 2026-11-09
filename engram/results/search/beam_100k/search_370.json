@@ -1,0 +1,94 @@
+{
+  "budgets": {
+    "12000": {
+      "by_type": {
+        "contradiction_resolution": {
+          "all": 0.6,
+          "any": 0.975,
+          "chars": 15170.725,
+          "frac": 0.7854166666666667,
+          "ms": 5.806012750000001,
+          "n": 40
+        },
+        "event_ordering": {
+          "all": 0.075,
+          "any": 0.85,
+          "chars": 20356.275,
+          "frac": 0.4037003968253968,
+          "ms": 8.562844850000001,
+          "n": 40
+        },
+        "information_extraction": {
+          "all": 0.625,
+          "any": 0.8,
+          "chars": 15733.825,
+          "frac": 0.7083333333333335,
+          "ms": 6.167592,
+          "n": 40
+        },
+        "instruction_following": {
+          "all": 0.6,
+          "any": 0.75,
+          "chars": 15347.775,
+          "frac": 0.6770833333333333,
+          "ms": 6.2998695499999995,
+          "n": 40
+        },
+        "knowledge_update": {
+          "all": 0.8,
+          "any": 0.95,
+          "chars": 15513.425,
+          "frac": 0.8625,
+          "ms": 5.7073187,
+          "n": 40
+        },
+        "multi_session_reasoning": {
+          "all": 0.35,
+          "any": 0.975,
+          "chars": 15651.925,
+          "frac": 0.6385101010101011,
+          "ms": 6.092360224999999,
+          "n": 40
+        },
+        "preference_following": {
+          "all": 0.6666666666666666,
+          "any": 0.717948717948718,
+          "chars": 15535.410256410256,
+          "frac": 0.6880341880341881,
+          "ms": 6.380872358974358,
+          "n": 39
+        },
+        "summarization": {
+          "all": 0.0,
+          "any": 0.8611111111111112,
+          "chars": 20049.777777777777,
+          "frac": 0.3406640812890813,
+          "ms": 8.61573713888889,
+          "n": 36
+        },
+        "temporal_reasoning": {
+          "all": 0.725,
+          "any": 1.0,
+          "chars": 15530.2,
+          "frac": 0.8625,
+          "ms": 6.468608775,
+          "n": 40
+        }
+      },
+      "chars": 16416.2375,
+      "evidence": {
+        "all": 0.49859154929577465,
+        "any": 0.8760563380281691,
+        "chars": 16506.588732394368,
+        "frac": 0.6665323760746297,
+        "ms": 6.656915022535214,
+        "n": 355
+      },
+      "ms": 6.681116435000003
+    }
+  },
+  "dataset": "beam_100k",
+  "embedder": "static:potion-retrieval-32M",
+  "params": "ContextParams { budget: 12000, notes: 30, excerpts: 12, excerpt_chars: 400, rules: 4, rule_min_cos: 0.3, rule_share: 0.2, shares: [0.4, 0.25], broad_scale: 1.5, replies: 3, reply_chars: 1000, reply_user_chars: 200, broad_replies: 8, broad_reply_chars: 500 }",
+  "questions": 400
+}

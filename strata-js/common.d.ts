@@ -1,9 +1,9 @@
-/** A value Strata stores or answers: an INT (a number, or a BigInt past
+/** A value ChloeDB stores or answers: an INT (a number, or a BigInt past
  * 2^53), FLOAT, text or keyword, BOOL, a TIMESTAMP (ISO 8601 text in UTC),
  * a vector (numbers), a list, or null. */
 export type Value = null | boolean | number | bigint | string | Value[] | { [k: string]: Value };
 
-/** A value written: what Strata answers, and also `Date`s (TIMESTAMPs),
+/** A value written: what ChloeDB answers, and also `Date`s (TIMESTAMPs),
  * typed arrays (vectors) and `Map`s (sparse term weights). */
 export type Input = Value | Date | Float32Array | Float64Array | Int32Array | Map<string, number> | Input[] | { [k: string]: Input };
 
@@ -40,6 +40,9 @@ export declare class StrataError extends Error {
   /** The server's answer, its JSON. */
   answer?: unknown;
 }
+
+/** `StrataError` by the database's new name: the same class. */
+export { StrataError as ChloeDBError };
 
 /** A query's answer. Iterating gives each row as an object. */
 export declare class Result<T extends Record<string, Value> = Record<string, Value>> implements Iterable<T> {

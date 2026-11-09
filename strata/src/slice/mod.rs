@@ -355,7 +355,7 @@ impl Manifest {
     pub fn from_json(text: &str) -> Result<Manifest> {
         let m: Manifest = serde_json::from_str(text).map_err(|e| Error::Query(format!("not a slice manifest: {e}")))?;
         if m.format != FORMAT {
-            return Err(Error::Query(format!("slice manifest format {}, but this build of Strata reads format {FORMAT}", m.format)));
+            return Err(Error::Query(format!("slice manifest format {}, but this build of ChloeDB reads format {FORMAT}", m.format)));
         }
         match &m.key {
             Key::Geo(g) => {

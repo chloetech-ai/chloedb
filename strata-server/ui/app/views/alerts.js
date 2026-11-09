@@ -871,7 +871,7 @@ function alertHub(page, id, r) {
   }
 
   function drawHead() {
-    document.title = `${rule.name} · Alert · Strata`;
+    document.title = `${rule.name} · Alert · ChloeDB`;
     const st = x.state;
     const tone = st === "firing" ? (rule.severity === "critical" ? "critical pulse" : "warn") : st === "pending" ? "pending" : st === "ok" ? "ok" : "";
     clear(title, h("span", { class: "dot " + tone, style: { width: "10px", height: "10px" } }), rule.name,

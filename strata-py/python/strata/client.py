@@ -71,7 +71,7 @@ class Client(Search, FrameStore):
 
     def __init__(self, url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0):
         self.url = url.rstrip("/")
-        self.token = token if token is not None else os.environ.get("STRATA_TOKEN")
+        self.token = token if token is not None else os.environ.get("CHLOEDB_TOKEN") or os.environ.get("STRATA_TOKEN")
         self.timeout = timeout
         self.retry_for = retry_for
         self._schema: dict | None = None
@@ -472,7 +472,7 @@ class Client(Search, FrameStore):
         """Downloads the server's tables (all, or `tables`) as a new SQLite
         file at `path`, which must not exist: the rows, keys, references,
         B-tree indexes (`indexes`), an FTS5 index over each table's text
-        (`fts`) and the Strata schemas (`schemas`). Returns the tables."""
+        (`fts`) and the ChloeDB schemas (`schemas`). Returns the tables."""
         path = os.fspath(path)
         q: dict = {k: "false" for k, v in {"fts": fts, "indexes": indexes, "schemas": schemas}.items() if not v}
         if tables is not None:
@@ -522,7 +522,7 @@ class Client(Search, FrameStore):
     def export_parquet(self, path: str | os.PathLike, *, table: str | None = None, schemas: bool = True) -> str:
         """Downloads one of the server's tables (`table`, which a server of
         one table may leave out) as a new Parquet file at `path`, which must
-        not exist; the file keeps the table's Strata schema. Returns the
+        not exist; the file keeps the table's ChloeDB schema. Returns the
         table."""
         path = os.fspath(path)
         q: dict = {"format": "parquet"}

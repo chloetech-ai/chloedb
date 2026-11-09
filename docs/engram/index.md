@@ -1,6 +1,6 @@
 # Engram: how it works
 
-Engram, an application built on [Strata](../strata/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one Strata file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
+Engram, an application built on [ChloeDB](../strata/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one ChloeDB file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
 
 ## The problem
 
@@ -10,7 +10,7 @@ A long session on a complex project outgrows any context window. Claude Code the
 - the reason an approach was rejected;
 - a preference the user stated once, three hours earlier.
 
-A new session starts with only `CLAUDE.md` and the auto-memory index. The session that built Strata ran for 32 hours and wrote 43.7 MB of transcript across two compactions; its summaries hold under 0.1% of that text.
+A new session starts with only `CLAUDE.md` and the auto-memory index. The session that built ChloeDB ran for 32 hours and wrote 43.7 MB of transcript across two compactions; its summaries hold under 0.1% of that text.
 
 Three requirements follow:
 
@@ -20,20 +20,20 @@ Three requirements follow:
 
 ## Architecture
 
-![Engram's architecture: hooks and the MCP server talk to one daemon per project, which owns the Strata file](../assets/img/engram-architecture.png)
+![Engram's architecture: hooks and the MCP server talk to one daemon per project, which owns the ChloeDB file](../assets/img/engram-architecture.png)
 
-Strata holds an exclusive lock on its file, and hooks are short-lived processes that run concurrently with the MCP server. So one daemon per project owns the database, and hooks and the MCP server are its clients over a Unix socket.
+ChloeDB holds an exclusive lock on its file, and hooks are short-lived processes that run concurrently with the MCP server. So one daemon per project owns the database, and hooks and the MCP server are its clients over a Unix socket.
 
 - **Lazy start.** The first client to find no socket spawns the daemon under a spawn lock; the daemon exits after 30 idle minutes. Its first hook takes 50–72 ms, because the 129 MB embedding table is memory-mapped rather than read.
 - **Warm state.** The embedder, segment readers and the memtable stay in memory between hooks.
-- **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on Strata's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/chloetech-ai/strata/tree/main/engram/results/writes)).
+- **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on ChloeDB's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/chloetech-ai/strata/tree/main/engram/results/writes)).
 - **Never in the way.** A client that cannot reach the daemon within its deadline prints nothing and exits 0. A memory failure never blocks a prompt or a tool call.
 
 The store lives outside the repository, in `${ENGRAM_HOME:-~/.local/share/engram}/<project-slug>/`, because transcripts can contain secrets. A redaction pass removes common key and token formats before anything is stored.
 
 ## The data model
 
-One Strata table, `memory`. Each record is one key–value pair with attributes.
+One ChloeDB table, `memory`. Each record is one key–value pair with attributes.
 
 | field | type | meaning |
 |---|---|---|
@@ -86,7 +86,7 @@ Raw records hold what was *said*; a later session needs what was *agreed*: a dec
 
 ![Knowledge records: a small model writes down what each turn agreed](../assets/img/engram-knowledge-records.png)
 
-After each `Stop`, off the prompt's path, the daemon gives the turn (request, commands, reply) to a small model through `claude -p`, with up to 40 live notes for context: the ones most related to the turn wherever they are in the history, then the newest. Seeing the related ones is what lets the model update a note written weeks ago instead of adding a near-copy next to it. The model returns JSON lines:
+After each `Stop`, off the prompt's path, the daemon gives the turn (request, commands, reply) to a small model through `claude -p`, with up to 40 live notes for context: the ones most related to the turn wherever they are in the history, then the newest. Seeing the related ones is what lets the model update a note written weeks ago instead of adding a near-copy next to it. The prompt names the day the turn took place, so a relative date in it ("tomorrow", "next Tuesday") is counted from that day even when the turn is distilled later (`engram distill`, a backlog). The model returns JSON lines:
 
 | item | stored as | tag |
 |---|---|---|
@@ -103,7 +103,7 @@ Each note also carries **the situations it will matter in** (`when`), written at
 
 ### Consolidation
 
-Notes accumulate. Every eight distilled turns (or on `engram consolidate`), the daemon groups live notes that say related things: pairs whose embeddings have a cosine of at least 0.80, or 0.55 when they share an entity, joined strongest first into groups of at most ten. A small model rewrites each group as the smallest set of notes that keeps every detail, number, name and reason that still holds: a later change replaces the earlier version ("30 days, changed from 14"), duplicates merge, notes on different subjects stay apart, and rules, requirements and reasons are never dropped. Each merged note links to the notes it replaces (`supersedes`), which are retagged `superseded` and leave the briefing and recall; a note the model would only reword is kept as it is.
+Notes accumulate. Every eight distilled turns (or on `engram consolidate`), the daemon groups live notes that say related things: pairs whose embeddings have a cosine of at least 0.80, or 0.55 when they share an entity, joined strongest first into groups of at most ten. A small model rewrites each group as the smallest set of notes that keeps every detail, number, name and reason that still holds: a later change replaces the earlier version ("30 days, changed from 14"), duplicates merge, notes on different subjects stay apart, and rules, requirements and reasons are never dropped. Each merged note links to the notes it replaces (`supersedes`), which are retagged `superseded` and leave the briefing and recall, and is dated by the newest of them, not by when it was merged; a note the model would only reword is kept as it is.
 
 ### Notes tied to the code
 
@@ -137,7 +137,7 @@ sequenceDiagram
     participant U as User
     participant C as Claude Code
     participant E as Engram daemon
-    participant S as Strata
+    participant S as ChloeDB
     C->>E: SessionStart
     E->>S: planned work, rules, decisions, facts, last checkpoint
     E-->>C: briefing (≤ 6,000 chars)
@@ -218,9 +218,9 @@ The weights come from a logistic fit on LongMemEval-S (`engram/scripts/fit_gate.
 | replies | the assistant's answers (hybrid) | the three exchanges these hits rank first: the start of the user's message (200 characters) and the part of the reply closest to the question (1,000) |
 | excerpts | prompts and answers (hybrid) | the 400 characters of each closest to the question |
 
-Notes take 40% of the 12,000-character budget the rules leave, excerpts 25%, and both then fill the rest in rank order; the replies come on top, so a context is about 16,400 characters (about 4,100 tokens). A question about order or a summary ("in what order", "summarize", "a timeline of") gets one and a half times the budget and the replies of eight exchanges, 500 characters each, since its answer is spread over many exchanges. It takes about 7 ms a question on BEAM's stores.
+Notes take 40% of the 12,000-character budget the rules leave, excerpts 25%, and both then fill the rest in rank order; the replies come on top, so a context is about 15,500 characters (about 3,900 tokens). A question about order or a summary ("in what order", "summarize", "a timeline of") has its answer spread over many exchanges, which a search for its words misses: it gets one and a half times the budget, the replies of eight exchanges (500 characters each), and every live note in place of the searched ones, oldest first (at most 50,000 characters, the newest kept), about 43,000 characters in all on BEAM. It takes about 6 ms a question on BEAM's stores, 11 ms for a summary.
 
-On BEAM 100K (20 conversations, 400 questions; [results](results.md#search-alone-against-observational-memory)) this context scores 61.5, against 55.0 for the query engine's picks and 63.4 for an observational memory that hands the reader its whole log of observations, about 153,000 characters, with the same reader and judge. With `deep: true` (`engram ask --deep`, or a `model`) `memory_ask` runs the query engine below instead.
+On BEAM 100K (20 conversations, 400 questions; [results](results.md#search-alone-against-observational-memory)) this context scores 62.9, against 55.0 for the query engine's picks and 63.4 for an observational memory that hands the reader its whole log of observations, about 153,000 characters, with the same reader and judge. Both sides move when their notes are written again: over two runs each, search alone averages 61.6 and observational memory 62.1. With `deep: true` (`engram ask --deep`, or a `model`) `memory_ask` runs the query engine below instead.
 
 ## Query understanding
 
@@ -273,7 +273,7 @@ Two settings make it cheaper. `"planner": "none"` (`ENGRAM_DEEP_PLAN=none`) skip
 | `UserPromptSubmit` | < 100 ms p99 at 1M records | 24.9 ms p50, 38.6 ms p99 as a hook process |
 | `SessionStart` | < 150 ms (daemon up), < 1 s with spawn | 50–72 ms including daemon start |
 | ingest | > 1,000 records/s | 48,000–52,000 records/s with the static embedder |
-| `memory_ask` (search alone) | < 100 ms | 6.7 ms a question on BEAM 100K's stores, one thread |
+| `memory_ask` (search alone) | < 100 ms | 6.9 ms a question on BEAM 100K's stores, one thread (11 ms for a summary) |
 | query engine (planner and ranker) | off the prompt's path unless `sync` | 12 s p50, 16 s p90, $0.0012 per request with Haiku |
 
 The default embedder is static (Model2Vec potion-retrieval-32M: token lookup and mean, 512 dimensions, microseconds per record). BGE-small (384 dimensions) is optional (`--features bert`) and costs about 50 ms per record on a CPU.

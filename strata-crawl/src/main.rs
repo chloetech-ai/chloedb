@@ -15,7 +15,7 @@ use strata_crawl::strata::Strata;
 use strata_crawl::urls::Scope;
 
 #[derive(Parser)]
-#[command(name = "strata-crawl", version, about = "A crawler on Strata: a site's pages, their fields, a table inferred from them, and a cluster that grows as it fills")]
+#[command(name = "strata-crawl", version, about = "A crawler on ChloeDB: a site's pages, their fields, a table inferred from them, and a cluster that grows as it fills")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -224,7 +224,7 @@ fn random_token() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Strata to write to, the local cluster (started) if any, and the grower.
+/// ChloeDB to write to, the local cluster (started) if any, and the grower.
 async fn connect(t: &Target, app: Option<(String, Option<String>)>) -> (Strata, Option<Arc<Local>>, Arc<Grower>) {
     let (url, local) = match (&t.local, &t.strata) {
         (Some(_), Some(_)) => fail("give --strata or --local, not both"),
@@ -269,8 +269,16 @@ async fn shutdown_signal() {
     let _ = ctrl_c.await;
 }
 
+fn main() {
+    // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
+    // clap and the code read the old names, so the new ones are copied over
+    // before the runtime starts any thread.
+    strata_crawl::adopt_new_env_names();
+    run();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run() {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "strata_crawl=info".into())).with_writer(std::io::stderr).with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr())).init();
     let cli = Cli::parse();
     match cli.cmd {

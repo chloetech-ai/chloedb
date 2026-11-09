@@ -6,7 +6,7 @@ Every timing on these pages comes from a file committed under `engram/results/` 
 
 - **MacBook Air, Apple M2:** 8 cores (4 performance, 4 efficiency), 24 GB, macOS 26.0.1, on mains power. Rust 1.92.0; every crate builds with `-C target-cpu=native`, which on the M2 enables NEON, `dotprod` and `i8mm`.
 - **One benchmark at a time.** A driver started each step only when no compiler was running and the CPU was at least 55% idle three checks in a row, and logged the idle share every 30 s. Steps ran at 75–88% idle on average (one busy core of eight is 12.5%), with the desktop apps and a QA Electron app in the background. Two development servers that had been stuck at 115–160% CPU for two days were stopped first.
-- **Tests:** `cargo test --release` passes in full: Strata 221 (with the posting-list suite; 14 timing tests are ignored), Engram 22.
+- **Tests:** `cargo test --release` passes in full: ChloeDB 221 (with the posting-list suite; 14 timing tests are ignored), Engram 22.
 
 ## What changed on the laptop
 
@@ -18,7 +18,7 @@ Every timing on these pages comes from a file committed under `engram/results/` 
 | Roaring AND, WikiText-103 | 0.0070 | 0.0044 | 1.61× faster |
 | Entropic OR, WikiText-103 | 0.424 | 0.279 | 1.52× faster |
 | PEF AND, uniform | 0.080 | 0.077 | 1.04× faster |
-| **Strata (median ms per query)** | | | |
+| **ChloeDB (median ms per query)** | | | |
 | BM25 top-10, warm, TREC-COVID | 0.613 | 0.391 | 1.57× faster |
 | BM25 top-10, warm, Tantivy, TREC-COVID | 1.13 | 0.681 | 1.66× faster |
 | vector top-10, warm, Quora | 0.196 | 0.097 | 2.02× faster |
@@ -29,7 +29,7 @@ Every timing on these pages comes from a file committed under `engram/results/` 
 | build, Quora (s) | 243 | 153 | 1.58× faster |
 | durable 1-document commit (ms) | 0.273 | 4.12 | 15.09× slower |
 | WAL, 1,000-document transactions with fsync (docs/s) | 87,215 | 98,204 | 1.13× faster |
-| **Strata graphs (ms)** | | | |
+| **ChloeDB graphs (ms)** | | | |
 | 2 hops both ways, arXiv, p95 | 2.59 | 1.57 | 1.65× faster |
 | same, SQLite, p95 | 24.5 | 14.8 | 1.66× faster |
 | PageRank ε = 1e-4, 1M rows, p50 | 5.81 | 3.49 | 1.67× faster |
@@ -41,16 +41,16 @@ Every timing on these pages comes from a file committed under `engram/results/` 
 | append p50 | 0.296 | 4.82 | 16.27× slower |
 | static embedder (records/s) | 9,513 | 51,481 | 5.41× faster |
 
-*Medians unless marked. The posting-list rows are the best algorithm per codec; the Strata rows come from `strata/results/strata/` and `strata/results/storage/wal.json`; the Engram rows from `engram/results/scale/` and `engram/results/latency/`. Every page quotes the M2 numbers; the VM's are in this repository's history.*
+*Medians unless marked. The posting-list rows are the best algorithm per codec; the ChloeDB rows come from `strata/results/strata/` and `strata/results/storage/wal.json`; the Engram rows from `engram/results/scale/` and `engram/results/latency/`. Every page quotes the M2 numbers; the VM's are in this repository's history.*
 
 Most of the work runs 1.5–2.5× faster on the M2. Four things behave differently, and each page says where they matter:
 
-- **NEON kernels.** The SIMD paths of the posting lists (Loom, Pyramid, Roaring, the tries and Entropic) and of Strata's vector scoring were written for AVX-512 and fell back to scalar code on Apple silicon. Each now has a NEON path, checked against the scalar code in the tests; the x86 paths are unchanged. NEON has 128-bit registers and no compress or gather instructions, so some of these take a different route (Entropic decodes four blocks in scalar registers, for example), and a few stay scalar where NEON was not faster. Unions over bitmaps gained least: Loom's and Pyramid's unions on the clustered collection are at or slightly behind the Xeon's.
-- **Cold cache.** Strata's cold measurements evict the files before each query. Eviction used `posix_fadvise`, which macOS lacks, so on macOS it now invalidates a fresh mapping of the file (`msync(MS_INVALIDATE)`, as `vmtouch -e` does). Pages on macOS are 16 KiB, and every fault reads at least one, so random-access queries (HNSW, the key index) read about four times the data of a 4 KiB page and are slower cold than on the VM. Page counts are still reported in 4 KiB units.
+- **NEON kernels.** The SIMD paths of the posting lists (Loom, Pyramid, Roaring, the tries and Entropic) and of ChloeDB's vector scoring were written for AVX-512 and fell back to scalar code on Apple silicon. Each now has a NEON path, checked against the scalar code in the tests; the x86 paths are unchanged. NEON has 128-bit registers and no compress or gather instructions, so some of these take a different route (Entropic decodes four blocks in scalar registers, for example), and a few stay scalar where NEON was not faster. Unions over bitmaps gained least: Loom's and Pyramid's unions on the clustered collection are at or slightly behind the Xeon's.
+- **Cold cache.** ChloeDB's cold measurements evict the files before each query. Eviction used `posix_fadvise`, which macOS lacks, so on macOS it now invalidates a fresh mapping of the file (`msync(MS_INVALIDATE)`, as `vmtouch -e` does). Pages on macOS are 16 KiB, and every fault reads at least one, so random-access queries (HNSW, the key index) read about four times the data of a 4 KiB page and are slower cold than on the VM. Page counts are still reported in 4 KiB units.
 - **Durable commits.** On macOS, Rust's `sync_data` is `F_FULLFSYNC`, which makes the drive flush its write cache; the VM's `fdatasync` on a virtual disk returned far sooner. A durable single-document commit takes about 4 ms instead of 0.27 ms, and an Engram append, which is one, about 4.5 ms. Batched commits are faster than on the VM.
 - **Process start.** Starting a hook process takes about 10 ms on macOS against about 3 ms on the VM, so an Engram hook costs more although the search inside it is twice as fast.
 
-Two benchmarks gained a warm-up pass. `strata-vector-bench` timed its recall/latency sweep right after building the index, and `strata-graph-bench quality` timed each method's first query cold; on Linux, fault-around hid the cost of first touching each page, on macOS it made the first settings look slower than the deeper ones. Both now run one untimed pass first, as the main Strata workload always did.
+Two benchmarks gained a warm-up pass. `strata-vector-bench` timed its recall/latency sweep right after building the index, and `strata-graph-bench quality` timed each method's first query cold; on Linux, fault-around hid the cost of first touching each page, on macOS it made the first settings look slower than the deeper ones. Both now run one untimed pass first, as the main ChloeDB workload always did.
 
 ## Engram retrieval, earlier on the same laptop
 
@@ -91,7 +91,7 @@ The first long-session A/B (`engram/results/long/*_v1_leaky`) is kept for the re
 - Rust (stable; 1.92 on the laptop above) and Python 3.
 - For Engram's live tests, A/B runs and distillation: the [Claude Code](https://claude.com/claude-code) CLI. Those runs call a model and cost money; retrieval, scale and latency studies do not.
 - Several scripts default to data under `/home/user/data/…`; pass paths explicitly, or set `STRATA_DATA` to the BEIR directory. `strata/scripts/run_eval.sh` uses `bash` 4 features (`declare -A`); on macOS, whose `bash` is 3.2, run its steps directly or use a newer `bash`.
-- On macOS, Strata's cold-cache measurements need no privileges: eviction invalidates a mapping of each file.
+- On macOS, ChloeDB's cold-cache measurements need no privileges: eviction invalidates a mapping of each file.
 - Benchmarks are single-threaded unless a flag says otherwise. Run them on an otherwise idle machine.
 
 ## Posting lists
@@ -105,9 +105,9 @@ scripts/postings/run_designs.sh data/wikitext103.txt        # Pyramid, Loom and 
 python3 scripts/postings/build_report.py                    # report/postings/report.html and designs.html
 ```
 
-`strata/.cargo/config.toml` builds with `-C target-cpu=native`. Every SIMD kernel has an AVX-512 version, a NEON version and a portable fallback; the committed timings are from the NEON build on the M2, so x86 timings are not directly comparable with them. strata-server, engram and the Python package build for a generic CPU and pick Strata's vector, column and posting-list kernels at run time (`strata::simd`; the server logs which), so their binaries run on any CPU of their architecture.
+`strata/.cargo/config.toml` builds with `-C target-cpu=native`. Every SIMD kernel has an AVX-512 version, a NEON version and a portable fallback; the committed timings are from the NEON build on the M2, so x86 timings are not directly comparable with them. strata-server, engram and the Python package build for a generic CPU and pick ChloeDB's vector, column and posting-list kernels at run time (`strata::simd`; the server logs which), so their binaries run on any CPU of their architecture.
 
-## Strata
+## ChloeDB
 
 The BEIR evaluation (about 4.8 GB of data with embeddings; about 2 hours on the M2):
 
@@ -121,7 +121,7 @@ python3 scripts/build_report.py                         # report/strata.html
 
 `run_eval.sh` builds with `--features baselines` (SQLite with FTS5 and Tantivy) and writes JSON to `strata/results/` and logs to `strata/results/logs/`.
 
-### Strata graphs
+### ChloeDB graphs
 
 ```sh
 cd strata

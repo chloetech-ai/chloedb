@@ -92,7 +92,7 @@ pub fn router(svc: Shared) -> Router {
 /// with `--token`, a request without it.
 async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
     if req.headers().contains_key(header::ORIGIN) {
-        return ApiError(StatusCode::FORBIDDEN, "strata-sheets takes no requests from browsers: open it in Strata's command center (strata-server --app sheets=URL)".into()).into_response();
+        return ApiError(StatusCode::FORBIDDEN, "strata-sheets takes no requests from browsers: open it in ChloeDB's command center (strata-server --app sheets=URL)".into()).into_response();
     }
     if let Some(t) = &svc.token {
         let given = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("");
@@ -111,7 +111,7 @@ async fn manifest() -> Json<Value> {
     Json(json!({
         "name": "sheets",
         "title": "Sheets",
-        "description": "Spreadsheets kept in Strata: formulas, charts and pivots, xlsx, CSV and SQLite in and out, and the cluster's tables as sheets",
+        "description": "Spreadsheets kept in ChloeDB: formulas, charts and pivots, xlsx, CSV and SQLite in and out, and the cluster's tables as sheets",
         "icon_svg": ICON,
         "view": "ui/view.js",
         "version": env!("CARGO_PKG_VERSION"),

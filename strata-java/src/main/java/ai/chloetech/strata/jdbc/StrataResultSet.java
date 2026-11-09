@@ -660,7 +660,7 @@ public final class StrataResultSet extends ReadOnlyResultSet {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("a Strata result set does not unwrap to a " + iface.getName());
+        throw new SQLException("a ChloeDB result set does not unwrap to a " + iface.getName());
     }
 
     @Override

@@ -49,7 +49,7 @@ fn detect() -> u32 {
             f |= DOTPROD;
         }
     }
-    match std::env::var("STRATA_SIMD").as_deref() {
+    match crate::env::var("STRATA_SIMD").as_deref() {
         Ok("portable") | Ok("scalar") | Ok("none") => f = 0,
         Ok("avx2") => f &= AVX2 | BMI2 | SSSE3,
         _ => {}

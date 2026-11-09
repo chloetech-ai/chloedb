@@ -452,7 +452,7 @@ fn names_as_written_and_values_noted() {
     drop(c);
     let (db, done) = sqlite::import_new(&src, &dir.path().join("odd.strata"), DbOptions::default(), &ImportOptions::default()).unwrap();
     let names: Vec<(&str, &str, u64)> = done.tables.iter().map(|t| (t.source.as_str(), t.table.as_str(), t.rows)).collect();
-    assert_eq!(names, [("x-y", "x_y_2", 1), ("x_y", "x_y", 3)], "a name Strata spells as SQLite does keeps it");
+    assert_eq!(names, [("x-y", "x_y_2", 1), ("x_y", "x_y", 3)], "a name ChloeDB spells as SQLite does keeps it");
     let s = db.catalog().into_iter().find(|s| s.table == "x_y").unwrap();
     let fields: Vec<&str> = s.fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(fields, ["id", "a_b_2", "a_b", "m", "r"]);

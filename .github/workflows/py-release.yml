@@ -5,14 +5,15 @@ name: strata-py release
 # on 4 cores). The extension is built for CPython's stable ABI (abi3,
 # Python 3.10 and later), so one wheel per platform serves every Python.
 #
-# A tag strata-py-v<version> (strata-py/pyproject.toml's version) builds and
-# tests every platform and attaches the wheels to the tag's GitHub release,
-# from which `pip install strata-db -f <the release's assets page>` picks
-# the one for its machine; a run started by hand does the same and keeps
+# A tag chloedb-py-v<version> (strata-py/pyproject.toml's version; the
+# old name, strata-py-v<version>, works too) builds and tests every
+# platform and attaches the wheels to the tag's GitHub release, from
+# which `pip install chloedb -f <the release's assets page>` picks the
+# one for its machine; a run started by hand does the same and keeps
 # them as the run's artifacts. Publishing to PyPI comes later.
 on:
   push:
-    tags: ["strata-py-v*"]
+    tags: ["chloedb-py-v*", "strata-py-v*"]
   workflow_dispatch:
   # A change to the release itself builds every platform as a release does,
   # without releasing.
@@ -54,7 +55,9 @@ jobs:
           python-version: "3.12"
       - name: The tag names pyproject.toml's version
         if: startsWith(github.ref, 'refs/tags/')
-        run: test "strata-py-v$(python3 -c 'import tomllib; print(tomllib.load(open("strata-py/pyproject.toml", "rb"))["project"]["version"])')" = "$GITHUB_REF_NAME"
+        run: |
+          v=$(python3 -c 'import tomllib; print(tomllib.load(open("strata-py/pyproject.toml", "rb"))["project"]["version"])')
+          test "$GITHUB_REF_NAME" = "chloedb-py-v$v" || test "$GITHUB_REF_NAME" = "strata-py-v$v"
       - name: Build the wheel
         working-directory: strata-py
         shell: bash
@@ -72,13 +75,14 @@ jobs:
           pip install --only-binary :all: "$GITHUB_WORKSPACE"/strata-py/dist/*.whl pytest numpy
           cd "$RUNNER_TEMP"
           python -c '
-          import strata
-          db = strata.open("notes.strata", schema={"table": "notes", "key": "id", "fields": [{"name": "id", "type": "int"}, {"name": "body", "type": "text"}]})
+          import chloedb, strata
+          assert chloedb is strata
+          db = chloedb.open("notes.strata", schema={"table": "notes", "key": "id", "fields": [{"name": "id", "type": "int"}, {"name": "body", "type": "text"}]})
           db.upsert([{"id": 1, "body": "rivers and mountains"}, {"id": 2, "body": "the sea"}])
           hits = db.search("river")
           assert hits.keys == [1], hits.dicts()
           db.close()
-          print("strata-db installed and searched:", strata.__file__)
+          print("chloedb installed and searched:", strata.__file__)
           '
           # The tests, and the models they read from beside them, outside
           # the checkout, so that `import strata` is the wheel's.
@@ -114,6 +118,6 @@ jobs:
         run: |
           ls -la dist
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" --title "strata-py ${TAG#strata-py-v}" --notes "Prebuilt strata-db wheels for CPython 3.10 and later; no Rust needed: \`pip install strata-db -f https://github.com/$REPO/releases/expanded_assets/$TAG\` picks the one for your machine. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later)."
+            gh release create "$TAG" --repo "$REPO" --title "chloedb for Python ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) wheels for CPython 3.10 and later; no Rust needed: \`pip install chloedb -f https://github.com/$REPO/releases/expanded_assets/$TAG\` picks the one for your machine. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later)."
           fi
           gh release upload "$TAG" dist/*.whl --repo "$REPO" --clobber

@@ -223,10 +223,11 @@ fn model_err(what: impl std::fmt::Display) -> Error {
     Error::Schema(what.to_string())
 }
 
-/// Where [`open`] looks for models by default: `$STRATA_MODELS`, else
+/// Where [`open`] looks for models by default: `$CHLOEDB_MODELS` (or
+/// `$STRATA_MODELS`), else
 /// `~/.local/share/strata/models`.
 pub fn models_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("STRATA_MODELS") {
+    if let Some(d) = crate::env::var_os("STRATA_MODELS") {
         return PathBuf::from(d);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
@@ -763,7 +764,7 @@ impl ColbertEmbedder {
         let num = |k: &str, default: u64| meta[k].as_u64().unwrap_or(default) as usize;
         let (dim, query_len, doc_len) = (num("dim", 128), num("query_maxlen", 32), num("doc_maxlen", 180));
         if let Some(s) = meta["similarity"].as_str().filter(|s| *s != "cosine") {
-            return Err(e(format!("artifact.metadata: similarity {s}: Strata scores ColBERT's cosine")));
+            return Err(e(format!("artifact.metadata: similarity {s}: ChloeDB scores ColBERT's cosine")));
         }
         if query_len < 4 || doc_len < 4 || query_len > positions || doc_len > positions {
             return Err(e(format!("artifact.metadata: query_maxlen {query_len} and doc_maxlen {doc_len} are 4 to {positions} tokens")));

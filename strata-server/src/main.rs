@@ -1,4 +1,4 @@
-//! `strata-server`: Strata over HTTP JSON and gRPC, with a query UI.
+//! `strata-server`: ChloeDB over HTTP JSON and gRPC, with a query UI.
 //!
 //! ```text
 //! strata-server --demo 20000 --db products.strata      # a demo catalogue, UI at http://127.0.0.1:7700
@@ -29,7 +29,7 @@ use strata_server::obs;
 use strata_server::server::{self, Options};
 
 #[derive(Parser)]
-#[command(version, about = "Strata over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
+#[command(version, about = "ChloeDB over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -59,7 +59,7 @@ struct Args {
     /// without vectors. By default they get them once the model opens.
     #[arg(long)]
     no_backfill: bool,
-    /// Do not download the models Strata knows (see `fetch-model`) that an
+    /// Do not download the models ChloeDB knows (see `fetch-model`) that an
     /// embedded field names and --models lacks.
     #[arg(long)]
     no_fetch_models: bool,
@@ -82,7 +82,7 @@ struct Args {
     /// sequence number of its last write (`seq_no()` in a SELECT), and a
     /// write operation can apply only while a row's number is the one it
     /// read (`if_seq_no`). The database then needs this version of
-    /// Strata or a later one.
+    /// ChloeDB or a later one.
     #[arg(long)]
     seq_no: bool,
     /// Ship this database's writes to these replicas, as their primary
@@ -433,7 +433,7 @@ struct Args {
     #[arg(long, env = "STRATA_LOG_FORMAT", default_value = "text")]
     log_format: String,
     /// Where the server keeps its log lines and the queries it answered, a
-    /// Strata database of its own searched with SQL (POST /v1/logs/query,
+    /// ChloeDB database of its own searched with SQL (POST /v1/logs/query,
     /// the UI's Logs): a path, or "off" (default: DB.logs beside --db; a
     /// coordinator keeps none unless given one, and asks its shards').
     #[arg(long)]
@@ -517,7 +517,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Copy a database written by a version of Strata from before field
+    /// Copy a database written by a version of ChloeDB from before field
     /// ids, which no longer opens, into this version's format in its place;
     /// the old one is kept as <db>.before-field-ids. The server must not
     /// have it open.
@@ -641,12 +641,12 @@ enum Command {
         once: Option<u64>,
     },
     /// Follow a Postgres database by logical replication: copy the tables
-    /// of a publication into Strata (making the tables it lacks), then
+    /// of a publication into ChloeDB (making the tables it lacks), then
     /// keep applying their inserts, updates, deletes, truncates and new
     /// columns, a moment behind, until stopped. Postgres needs wal_level =
     /// logical and a publication (CREATE PUBLICATION strata FOR TABLE
     /// ...); the user signs in with the REPLICATION attribute. What it
-    /// applied is kept in Strata's _sources (postgres/NAME/...), so that
+    /// applied is kept in ChloeDB's _sources (postgres/NAME/...), so that
     /// started again it goes on from there and applies each change once.
     FollowPostgres {
         /// The database, as postgres://user:password@host:5432/database
@@ -663,16 +663,16 @@ enum Command {
         /// The replication slot it reads and makes (strata_NAME by default).
         #[arg(long)]
         slot: Option<String>,
-        /// Strata's HTTP URL: a server, or a cluster's coordinator.
+        /// ChloeDB's HTTP URL: a server, or a cluster's coordinator.
         #[arg(long)]
         target: String,
-        /// Strata's token (a server's --token, or a cluster's --cluster-token).
+        /// ChloeDB's token (a server's --token, or a cluster's --cluster-token).
         #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
         target_token: Option<String>,
         /// A CA certificate (PEM) to check the target's TLS certificate by.
         #[arg(long)]
         target_ca: Option<PathBuf>,
-        /// The name Strata knows the database by (letters, digits, '.', '_'
+        /// The name ChloeDB knows the database by (letters, digits, '.', '_'
         /// and '-'), which its marks in _sources name.
         #[arg(long)]
         name: String,
@@ -681,7 +681,7 @@ enum Command {
         #[arg(long, default_value_t = strata_server::postgres::BATCH)]
         batch: usize,
         /// Copy the tables again from the start (with a new slot), whatever
-        /// Strata kept.
+        /// ChloeDB kept.
         #[arg(long)]
         copy: bool,
         /// How many tables are copied at once.
@@ -730,7 +730,7 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         wait_s: u64,
     },
-    /// Run the Kubernetes operator: it makes and changes the Strata clusters
+    /// Run the Kubernetes operator: it makes and changes the ChloeDB clusters
     /// that StrataCluster resources describe (see deploy/README.md). In a
     /// pod it talks to the API server as its service account.
     Operator {
@@ -818,9 +818,9 @@ enum Command {
     /// Write a database's tables, from one snapshot, to a new SQLite file
     /// (the rows, keys, references, NOT NULL and DEFAULT, a B-tree index on
     /// each indexed KEYWORD, INT, FLOAT, BOOL and TIMESTAMP field, an FTS5
-    /// index over each table's TEXT fields, and the Strata schemas, which
+    /// index over each table's TEXT fields, and the ChloeDB schemas, which
     /// `import` restores), or to Parquet: a `.parquet` file for one table,
-    /// else a directory of `<table>.parquet` files, each keeping its Strata
+    /// else a directory of `<table>.parquet` files, each keeping its ChloeDB
     /// schema. OUT may be an s3:// URL. A server must not have the database
     /// open.
     Export {
@@ -840,7 +840,7 @@ enum Command {
         /// SQLite: no B-tree indexes.
         #[arg(long)]
         no_indexes: bool,
-        /// Leave out the Strata schemas: SQLite's table `_strata_tables`,
+        /// Leave out the ChloeDB schemas: SQLite's table `_strata_tables`,
         /// each Parquet file's `strata.schema` metadata.
         #[arg(long)]
         no_schemas: bool,
@@ -850,8 +850,16 @@ enum Command {
     },
 }
 
+fn main() {
+    // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
+    // clap and the code read the old names, so the new ones are copied over
+    // before the runtime starts any thread.
+    strata::env::adopt_new_names();
+    run();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run() {
     let a = Args::parse();
     strata::query::llm::set_limits(strata::query::llm::Limits { rows: a.llm_rows, per_minute: (a.llm_per_minute > 0).then_some(a.llm_per_minute) });
     let format = obs::LogFormat::parse(&a.log_format).unwrap_or_else(|| {

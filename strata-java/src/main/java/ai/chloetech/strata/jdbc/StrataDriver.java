@@ -18,7 +18,8 @@ import java.util.Properties;
 import java.util.logging.Logger;
 
 /**
- * Strata's JDBC driver: {@code jdbc:strata:PATH} opens the database file (or
+ * ChloeDB's JDBC driver: {@code jdbc:chloedb:PATH} (or {@code jdbc:strata:PATH},
+ * by its old name) opens the database file (or
  * directory) at {@code PATH} in this process, as {@code jdbc:sqlite:PATH}
  * does a SQLite file. No server is involved.
  *
@@ -52,6 +53,8 @@ import java.util.logging.Logger;
 public final class StrataDriver implements Driver {
     /** The prefix of the URLs this driver takes. */
     public static final String PREFIX = "jdbc:strata:";
+    /** The prefix by the database's new name (it was called Strata), taken as well. */
+    public static final String NEW_PREFIX = "jdbc:chloedb:";
 
     static {
         try {
@@ -63,7 +66,7 @@ public final class StrataDriver implements Driver {
 
     @Override
     public boolean acceptsURL(String url) {
-        return url != null && url.startsWith(PREFIX);
+        return url != null && (url.startsWith(PREFIX) || url.startsWith(NEW_PREFIX));
     }
 
     @Override
@@ -71,7 +74,7 @@ public final class StrataDriver implements Driver {
         if (!acceptsURL(url)) {
             return null;
         }
-        String rest = url.substring(PREFIX.length());
+        String rest = url.substring(url.startsWith(NEW_PREFIX) ? NEW_PREFIX.length() : PREFIX.length());
         Map<String, String> options = new HashMap<>();
         if (info != null) {
             for (String k : info.stringPropertyNames()) {
@@ -93,7 +96,7 @@ public final class StrataDriver implements Driver {
             rest = rest.substring("file:".length());
         }
         if (rest.isEmpty()) {
-            throw new SQLException("a Strata URL names a database: jdbc:strata:/path/to/file.strata", "08001");
+            throw new SQLException("a ChloeDB URL names a database: jdbc:chloedb:/path/to/file.strata", "08001");
         }
         for (String k : options.keySet()) {
             if (!k.equals("schema") && !k.equals("models") && !k.equals("threads") && !k.equals("readonly") && !k.equals("user") && !k.equals("password")) {

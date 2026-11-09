@@ -196,7 +196,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         "quota": {"droplets": cat.droplet_limit, "running": cat.droplets, "needs": p.nodes},
         "cost": cost,
         "warnings": warnings,
-        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on DOKS, from strata-server's cloud view", &objects)},
+        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A ChloeDB cluster on DOKS, from strata-server's cloud view", &objects)},
         "objects": objects,
         "commands": crate::cloud::with_token_secret(&f.cluster, &commands),
         "teardown": teardown,

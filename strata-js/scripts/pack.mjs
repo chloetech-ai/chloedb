@@ -1,7 +1,7 @@
 // Packs the package with its built addon (strata.node) for one platform,
 // as a tarball that `npm install` takes with no Rust and no build:
 //
-//   node scripts/pack.mjs linux-x64-gnu     # dist/strata-db-<version>-linux-x64-gnu.tgz
+//   node scripts/pack.mjs linux-x64-gnu     # dist/chloedb-<version>-linux-x64-gnu.tgz
 //
 // The platform is <os>-<cpu>[-<libc>], as Node names them: linux-x64-gnu,
 // linux-arm64-gnu, darwin-arm64, darwin-x64. The tarball says so (`os`,
@@ -29,7 +29,7 @@ if (!existsSync(join(root, "strata.node"))) {
   process.exit(1);
 }
 
-const files = ["index.js", "index.d.ts", "client.js", "client.d.ts", "common.js", "common.d.ts", "README.md", "strata.node"];
+const files = ["index.js", "index.d.ts", "client.js", "client.d.ts", "common.js", "common.d.ts", "nearby.js", "README.md", "strata.node"];
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const stage = mkdtempSync(join(tmpdir(), "strata-js-pack-"));
 try {

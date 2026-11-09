@@ -296,7 +296,7 @@ async fn converges(src: &str, dst: &str, pg_sql: &str, strata_sql: &str) {
         }
         if Instant::now() > until {
             let show = |v: &Vec<Vec<Option<String>>>| v.iter().take(8).map(|r| format!("{r:?}")).collect::<Vec<_>>().join("\n");
-            panic!("Strata did not converge on {pg_sql}: {} rows wanted, {} held\nwanted:\n{}\nheld:\n{}", want.len(), have.len(), show(&want), show(&have));
+            panic!("ChloeDB did not converge on {pg_sql}: {} rows wanted, {} held\nwanted:\n{}\nheld:\n{}", want.len(), have.len(), show(&want), show(&have));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }

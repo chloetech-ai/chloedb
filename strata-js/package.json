@@ -1,7 +1,7 @@
 {
-  "name": "strata-db",
+  "name": "chloedb",
   "version": "0.1.0",
-  "description": "Strata from JavaScript: a search database with SQL, opened in-process from its file (Node, Bun, Deno) or over HTTP from any runtime with fetch",
+  "description": "ChloeDB from JavaScript: a search database with SQL, opened in-process from its file (Node, Bun, Deno) or over HTTP from any runtime with fetch",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",

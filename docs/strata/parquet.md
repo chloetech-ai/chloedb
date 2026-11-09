@@ -1,6 +1,6 @@
 # Parquet and S3
 
-Strata reads Parquet files, and directories of them as Spark, DuckDB, polars and pandas write them, into a table, making the table's schema from the columns' types and values when it does not exist, and writes a table to a Parquet file that any of those tools reads. An export keeps the table's Strata schema in the file, so importing it back gives the same schema and rows. Wherever a file is read or written, an `s3://` URL works too: an object, or every object under a prefix, on AWS S3 or any store that speaks its API.
+ChloeDB reads Parquet files, and directories of them as Spark, DuckDB, polars and pandas write them, into a table, making the table's schema from the columns' types and values when it does not exist, and writes a table to a Parquet file that any of those tools reads. An export keeps the table's ChloeDB schema in the file, so importing it back gives the same schema and rows. Wherever a file is read or written, an `s3://` URL works too: an object, or every object under a prefix, on AWS S3 or any store that speaks its API.
 
 ## Import
 
@@ -17,8 +17,8 @@ strata-server import --db lake.strata --schema plan.json events.parquet # with t
 
 A Parquet file is recognised by its name (`.parquet`), its first bytes or `--format parquet`, and a directory by the Parquet files in it, at any depth; names starting with `_` or `.`, such as Spark's `_SUCCESS` and its `.crc` checksums, are passed over. The files of a directory make one table, read in the order of their paths, and may differ in columns: each file's columns fill the fields of their names. Parquet and SQLite files, and JSON and CSV files, can be mixed in one command. The rows go into the table `--table` names, else the one an [export](#export) kept in the file, else a table named for the file or directory (`events.snappy.parquet` and `events/` make `events`):
 
-- **A table Strata has** keeps its schema: each column fills the field of its name (in any case), the others are left out and listed. The rows are upserted by key (inserted, in a table without one), 10,000 a transaction, or bulk-loaded when the table is empty.
-- **A table Strata lacks** is created, with the schema `--schema` gives, or the one an export kept in the file, or else one made from the columns, and its rows are bulk-loaded in one commit: a value that does not fit is reported with its file and row, and nothing is written.
+- **A table ChloeDB has** keeps its schema: each column fills the field of its name (in any case), the others are left out and listed. The rows are upserted by key (inserted, in a table without one), 10,000 a transaction, or bulk-loaded when the table is empty.
+- **A table ChloeDB lacks** is created, with the schema `--schema` gives, or the one an export kept in the file, or else one made from the columns, and its rows are bulk-loaded in one commit: a value that does not fit is reported with its file and row, and nothing is written.
 
 A database that does not exist is created with the first Parquet file's table. In Python, `strata.from_parquet("events.parquet", "lake.strata")` creates a database, `db.import_parquet("out/clicks/", table="clicks")` imports into an open one, and `strata.plan_parquet("events.parquet")` returns the plan ([Python](python.md)). From Rust it is `strata::parquet` (feature `parquet`): `import_new`, `import`, `plan` and `Source` for each step.
 
@@ -26,7 +26,7 @@ A database that does not exist is created with the first Parquet file's table. I
 
 Parquet columns have types, so a table made from a file takes them, and reads the first 100,000 rows only to choose between a few:
 
-| Parquet / Arrow column | Strata field |
+| Parquet / Arrow column | ChloeDB field |
 |---|---|
 | integers of any width, decimals with no scale | `INT` |
 | floats, other decimals | `FLOAT` (a decimal as a double: the plan notes it) |
@@ -38,16 +38,16 @@ Parquet columns have types, so a table made from a file takes them, and reads th
 | lists of text or of integers | multi-valued `KEYWORD` or `INT` |
 | lists of vectors | multi-vector `VECTOR(n)[]` |
 | structs, maps, other lists | `JSON` |
-| binary | left out (Strata has no binary type), or base64 text in a stored `KEYWORD` with `--blobs-base64` |
+| binary | left out (ChloeDB has no binary type), or base64 text in a stored `KEYWORD` with `--blobs-base64` |
 | times of day, durations, intervals, columns of NULLs only | left out |
 
-Text reads as labels when no value is over 256 bytes and the values have 2.5 words or fewer on average, or each value repeats ten times on average (as the [SQLite import](sqlite.md#how-sqlite-columns-become-fields) judges). Column names that are not Strata identifiers are respelled (`City Name` becomes `City_Name`; the plan lists each). A column named `id` (in any case) of integers or text without NULLs in the sample is the key; `--key` names another, and `--key ""` makes a table without one. A NaN or infinite float is read as NULL, and the import says how many were.
+Text reads as labels when no value is over 256 bytes and the values have 2.5 words or fewer on average, or each value repeats ten times on average (as the [SQLite import](sqlite.md#how-sqlite-columns-become-fields) judges). Column names that are not ChloeDB identifiers are respelled (`City Name` becomes `City_Name`; the plan lists each). A column named `id` (in any case) of integers or text without NULLs in the sample is the key; `--key` names another, and `--key ""` makes a table without one. A NaN or infinite float is read as NULL, and the import says how many were.
 
 Into a table that exists, a column fills its field when its values do: any integer, float or decimal for a number, dates, timestamps and ISO 8601 text for a `TIMESTAMP`, a list of `n` numbers (or `4n` little-endian float32 bytes) for a `VECTOR(n)`, a list for a multi-valued field, structs, maps and lists for a `JSON` field. Integers that are Unix times (seconds, milliseconds or microseconds, by their size) fill a `TIMESTAMP` too.
 
 ### Directories and Hive partitions
 
-A directory Spark writes with `partitionBy` holds its files under `key=value` directories (`year=2026/month=11/part-00000-….snappy.parquet`). Each key becomes a field, `INT` when every value is an integer and `KEYWORD` otherwise, and each row takes its file's values; `__HIVE_DEFAULT_PARTITION__` is NULL. Into a table that exists, a key fills the field of its name. A directory whose files keep different Strata tables (an export of several, below) is refused: import its files one at a time.
+A directory Spark writes with `partitionBy` holds its files under `key=value` directories (`year=2026/month=11/part-00000-….snappy.parquet`). Each key becomes a field, `INT` when every value is an integer and `KEYWORD` otherwise, and each row takes its file's values; `__HIVE_DEFAULT_PARTITION__` is NULL. Into a table that exists, a key fills the field of its name. A directory whose files keep different ChloeDB tables (an export of several, below) is refused: import its files one at a time.
 
 ## Export
 
@@ -60,7 +60,7 @@ strata-server export --db lake.strata --no-schemas events.parquet       # withou
 
 An export reads the rows of one snapshot. It writes a `.parquet` file when the name says so (one table), and otherwise a new directory with a `<table>.parquet` file a table (`--format parquet`, or a name ending in `/`; without either, the export is a [SQLite file](sqlite.md#export)). The files are compressed with Zstandard, in row groups of about 128 MB, and written under another name and renamed into place when complete; an existing file or directory is an error, but for an empty directory. In Python it is `db.export_parquet("events.parquet", tables="events")`, from Rust `strata::parquet::export`.
 
-| Strata field | Parquet / Arrow column |
+| ChloeDB field | Parquet / Arrow column |
 |---|---|
 | `INT` | `INT64` |
 | `FLOAT` | `DOUBLE` |
@@ -72,7 +72,7 @@ An export reads the rows of one snapshot. It writes a `.parquet` file when the n
 | multi-valued `KEYWORD`, `INT` | a list of `STRING`, of `INT64` |
 | `JSON`, `SPARSE`, `EDGES`, `MEDIA` | `STRING`, the value's JSON text |
 
-Only the key's column is not nullable. Each file keeps its table's Strata schema as JSON in its key-value metadata (`strata.schema`), which other tools ignore and an import restores: analyzers, vector indexes and their kinds, embedding models, references, defaults and generated fields' definitions, which Parquet has no place for. A field neither stored nor recoverable from an index is NULL, and a generated field holds its text; the export's notes list what does not carry over.
+Only the key's column is not nullable. Each file keeps its table's ChloeDB schema as JSON in its key-value metadata (`strata.schema`), which other tools ignore and an import restores: analyzers, vector indexes and their kinds, embedding models, references, defaults and generated fields' definitions, which Parquet has no place for. A field neither stored nor recoverable from an index is NULL, and a generated field holds its text; the export's notes list what does not carry over.
 
 ## S3 and S3-compatible stores
 
@@ -88,7 +88,7 @@ The store is configured as the AWS tools are, by environment variables:
 | `AWS_ALLOW_HTTP=true` | for an endpoint over plain `http://`, such as a local MinIO |
 | `AWS_VIRTUAL_HOSTED_STYLE_REQUEST=true` | `bucket.host` addresses instead of `host/bucket` |
 
-Profiles in `~/.aws` are not read. The S3 client is [object_store](https://docs.rs/object_store)'s, in Strata's feature `s3` (on by default in strata-server and the Python package).
+Profiles in `~/.aws` are not read. The S3 client is [object_store](https://docs.rs/object_store)'s, in ChloeDB's feature `s3` (on by default in strata-server and the Python package).
 
 ## Over HTTP and in the UI
 
@@ -98,7 +98,7 @@ The command center's Import view reads a dropped Parquet file's plan from the se
 
 ## Arrow from Python
 
-`db.import_arrow(data, table=None)` writes the rows of anything that gives an Arrow stream (`__arrow_c_stream__`): a pyarrow Table, RecordBatch or RecordBatchReader, a polars DataFrame, a DuckDB relation, an answer of `query_arrow`, and a pandas DataFrame through pyarrow. Each column fills the field of its name, read as an import reads a Parquet column; the others are left out and listed. Into an empty table the rows are bulk-loaded in one commit, otherwise upserted by key. With `query_arrow` going the other way, a table moves between Strata and dataframe libraries without JSON in between.
+`db.import_arrow(data, table=None)` writes the rows of anything that gives an Arrow stream (`__arrow_c_stream__`): a pyarrow Table, RecordBatch or RecordBatchReader, a polars DataFrame, a DuckDB relation, an answer of `query_arrow`, and a pandas DataFrame through pyarrow. Each column fills the field of its name, read as an import reads a Parquet column; the others are left out and listed. Into an empty table the rows are bulk-loaded in one commit, otherwise upserted by key. With `query_arrow` going the other way, a table moves between ChloeDB and dataframe libraries without JSON in between.
 
 ## With Spark
 
@@ -106,7 +106,7 @@ Spark reads an export as it reads any Parquet (`spark.read.parquet("s3a://lake/e
 
 ## What it does not do
 
-- **Read Parquet in place.** An import copies the rows into Strata's own files, which hold the indexes Parquet has none of; a query never reads a Parquet file.
+- **Read Parquet in place.** An import copies the rows into ChloeDB's own files, which hold the indexes Parquet has none of; a query never reads a Parquet file.
 - **Several tables from one directory.** A directory is one table, as Spark, DuckDB and polars read one; an export of several tables is a directory of files, imported a file at a time.
 - **Partitioned exports.** An export writes one file a table, in row groups; it does not split a table by a column into `key=value` directories.
 - **Stream from S3.** An import reads all the objects to local disk before it reads them, and an export writes the file locally before it sends it, so both need the space.

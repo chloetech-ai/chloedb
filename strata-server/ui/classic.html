@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strata query console</title>
+<title>ChloeDB query console</title>
 <style>
 :root {
   --bg: #f7f7f5; --panel: #ffffff; --panel-2: #f1f1ee; --line: #e2e2dc; --text: #1d1d1b; --muted: #6b6b66;
@@ -164,7 +164,7 @@ progress { width: 100%; accent-color: var(--accent); }
 </head>
 <body>
 <header>
-  <span class="logo">Strata</span>
+  <span class="logo">ChloeDB</span>
   <span class="meta"><span class="dot" id="dot"></span><span id="table">connecting…</span><span id="counts"></span></span>
   <span class="spacer"></span>
   <span id="tokenBox" class="row hidden"><input id="token" type="password" placeholder="API token" style="width:180px"><button class="btn small" id="tokenSave">Use token</button></span>
@@ -340,13 +340,13 @@ progress { width: 100%; accent-color: var(--accent); }
       </div>
       <div class="card">
         <h2 style="margin:0">SQLite export</h2>
-        <p class="small muted" style="margin:6px 0 10px">Export writes this database to a SQLite file that any SQLite program reads: the rows, keys, references, an index on each filterable field, an FTS5 index over each table's text, and the Strata schemas, which an import here restores. Vector indexes, analyzers and Strata's ranking have no SQLite form and stay behind; the vectors go as <code>F32_BLOB</code> columns.</p>
+        <p class="small muted" style="margin:6px 0 10px">Export writes this database to a SQLite file that any SQLite program reads: the rows, keys, references, an index on each filterable field, an FTS5 index over each table's text, and the ChloeDB schemas, which an import here restores. Vector indexes, analyzers and ChloeDB's ranking have no SQLite form and stay behind; the vectors go as <code>F32_BLOB</code> columns.</p>
         <div class="row">
           <div style="width:200px"><label class="lbl" for="xTables">tables <span class="muted">(empty: all)</span></label><input id="xTables" type="text" spellcheck="false"></div>
           <div><label class="lbl">&nbsp;</label><span class="row" style="gap:12px">
             <label class="small"><input type="checkbox" id="xFts" checked> FTS5 index</label>
             <label class="small"><input type="checkbox" id="xIndexes" checked> indexes</label>
-            <label class="small"><input type="checkbox" id="xSchemas" checked> Strata schemas</label></span></div>
+            <label class="small"><input type="checkbox" id="xSchemas" checked> ChloeDB schemas</label></span></div>
           <div><label class="lbl">&nbsp;</label><button class="btn" id="xExport">Download as SQLite</button></div>
         </div>
         <div id="xOut" style="margin-top:10px"></div>
@@ -375,7 +375,7 @@ progress { width: 100%; accent-color: var(--accent); }
 
     <section id="tab-help" class="hidden">
       <div class="card">
-        <p style="margin:0 0 8px">Strata's SQL goes well past filters. Each example below uses this table's own fields; <b>Try it</b> opens it in the SQL tab and runs it.</p>
+        <p style="margin:0 0 8px">ChloeDB's SQL goes well past filters. Each example below uses this table's own fields; <b>Try it</b> opens it in the SQL tab and runs it.</p>
         <div class="help-nav" id="helpNav"></div>
       </div>
       <div id="helpBody"></div>

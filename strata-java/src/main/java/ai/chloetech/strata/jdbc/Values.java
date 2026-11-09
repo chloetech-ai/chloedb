@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Strata's values (null, Boolean, Long, Double, String, float[] vectors,
+ * ChloeDB's values (null, Boolean, Long, Double, String, float[] vectors,
  * lists, maps, Instant times, byte[]) as the types JDBC's getters ask for.
  * Times are in UTC.
  */

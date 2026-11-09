@@ -13,7 +13,7 @@
  */
 window.STRATA_COMPARE = {
   systems: [
-    { id: "strata", name: "Strata", sub: "embedded or server", group: "self" },
+    { id: "strata", name: "ChloeDB", sub: "embedded or server", group: "self" },
     { id: "sqlite", name: "SQLite", sub: "FTS5, sqlite-vec", group: "embedded" },
     { id: "postgres", name: "PostgreSQL", sub: "pgvector", group: "embedded" },
     { id: "lancedb", name: "LanceDB", sub: "embedded", group: "embedded" },
@@ -230,7 +230,7 @@ window.STRATA_COMPARE = {
         ["Plans, makes and deletes a cloud cluster, with its cost", {
           strata: "y:The Cloud view plans EKS or DigitalOcean Kubernetes from live prices and quotas, makes the cluster, follows it and deletes it" }],
         ["The database's own logs, searched with SQL", {
-          strata: "y:Every server's lines and queries kept in Strata, across the cluster", elastic: "p:Its logs once shipped into it", opensearch: "p:Its logs once shipped into it",
+          strata: "y:Every server's lines and queries kept in ChloeDB, across the cluster", elastic: "p:Its logs once shipped into it", opensearch: "p:Its logs once shipped into it",
           solr: "p:The latest lines in the admin UI" }],
         ["An agent that investigates alerts and proposes fixes to approve", {
           strata: "y:The on-call agent: read-only tools, and proposals an admin approves within the hour", elastic: "$?:AI Assistant for Observability, in paid tiers" }],

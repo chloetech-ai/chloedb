@@ -13,7 +13,7 @@ const docs = path.resolve(__dirname, "..");
 const img = process.env.OUT || path.join(docs, "assets", "img");
 
 const SHOTS = [
-  // Strata
+  // ChloeDB
   { report: "strata.html", out: "chart-strata-latency.png", frameOf: "#latency-chart" },
   { report: "strata.html", out: "chart-strata-fusion.png", frameOf: "#hybrid-sweep" },
   { report: "strata.html", out: "chart-strata-recall-latency.png", frameOf: "#vector-curves" },
@@ -23,7 +23,7 @@ const SHOTS = [
   { report: "posting-list-designs.html", out: "chart-postings-and-clustered.png", frameOf: "#clustered-and" },
   { report: "posting-list-designs.html", out: "chart-postings-and-wikitext.png", frameOf: "#wikitext-and" },
   { report: "posting-list-designs.html", out: "chart-postings-or-wikitext.png", frameOf: "#wikitext-or" },
-  // Strata graphs
+  // ChloeDB graphs
   { report: "graph.html", out: "table-graph-speed.png", element: "#speed-tabs table" },
   { report: "graph.html", out: "table-graph-size.png", element: "#size-table table" },
   { report: "graph.html", out: "table-graph-quality.png", element: "#quality-table table" },

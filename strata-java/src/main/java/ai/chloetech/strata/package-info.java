@@ -1,6 +1,6 @@
 /**
- * Strata from Java: the database in this process, read and written by
- * Strata's native library over JNI, with no server, as sqlite-jdbc opens a
+ * ChloeDB from Java: the database in this process, read and written by
+ * ChloeDB's native library over JNI, with no server, as sqlite-jdbc opens a
  * SQLite file.
  *
  * <p>{@link ai.chloetech.strata.Database} creates or opens a database file

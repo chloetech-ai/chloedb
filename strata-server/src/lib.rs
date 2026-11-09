@@ -49,6 +49,7 @@ pub mod keys;
 pub mod keysync;
 pub mod logstore;
 pub mod mcp;
+pub mod names;
 pub mod media;
 pub mod metrics;
 pub mod obs;

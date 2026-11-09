@@ -11,7 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-/** A statement run on a Strata database: SQL as Strata speaks it, and {@code :name} parameters through {@link StrataPreparedStatement}. */
+/** A statement run on a ChloeDB database: SQL as ChloeDB speaks it, and {@code :name} parameters through {@link StrataPreparedStatement}. */
 public class StrataStatement implements Statement {
     final StrataConnection conn;
     /** The kind of result sets: forward-only, or scroll-insensitive. */
@@ -183,7 +183,7 @@ public class StrataStatement implements Statement {
         return queryTimeout;
     }
 
-    /** Taken and kept, but statements run to the end: Strata's queries take no deadline yet. */
+    /** Taken and kept, but statements run to the end: ChloeDB's queries take no deadline yet. */
     @Override
     public void setQueryTimeout(int seconds) throws SQLException {
         if (seconds < 0) {
@@ -400,7 +400,7 @@ public class StrataStatement implements Statement {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("a Strata statement does not unwrap to a " + iface.getName());
+        throw new SQLException("a ChloeDB statement does not unwrap to a " + iface.getName());
     }
 
     @Override

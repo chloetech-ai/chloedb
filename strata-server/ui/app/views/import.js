@@ -426,7 +426,7 @@ function render(page) {
       sqliteOpts.classList.toggle("hidden", v === "parquet");
       go.lastChild.textContent = v === "parquet" ? "Download as Parquet" : "Download as SQLite";
       sub.textContent = v === "parquet" ? "a Parquet file a table, for Spark, DuckDB, polars and pandas" : "the database as a SQLite file";
-      hint.textContent = v === "parquet" ? "Vectors go as lists of float32, timestamps in UTC; each file keeps its Strata schema." : "Vectors go as float32 blobs, lists as JSON arrays.";
+      hint.textContent = v === "parquet" ? "Vectors go as lists of float32, timestamps in UTC; each file keeps its ChloeDB schema." : "Vectors go as float32 blobs, lists as JSON arrays.";
     });
     // A coordinator holds no rows: say so before anything is asked for.
     if (isCoordinator()) {

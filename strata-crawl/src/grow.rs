@@ -148,7 +148,7 @@ impl Grower {
             let rows: u64 = tables.iter().filter_map(|t| health["tables"][t].as_u64()).sum();
             g.rows = rows;
             g.tables = tables;
-            g.waiting = Some("Strata is one server, not a cluster: it cannot split. Start the crawler with --local, or point it at a coordinator".into());
+            g.waiting = Some("ChloeDB is one server, not a cluster: it cannot split. Start the crawler with --local, or point it at a coordinator".into());
             return Ok(());
         }
         let cluster = self.strata.cluster().await.map_err(|e| e.to_string())?.unwrap_or(Value::Null);

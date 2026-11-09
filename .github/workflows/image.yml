@@ -21,6 +21,7 @@ on:
       - "strata/**"
       - "strata-server/**"
       - "strata-crawl/**"
+      - "strata-sheets/**"
       - ".github/workflows/image.yml"
   pull_request:
     paths:

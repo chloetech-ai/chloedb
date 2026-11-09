@@ -1,4 +1,4 @@
-// Cloud: a Strata cluster on Amazon EKS or DigitalOcean Kubernetes (DOKS),
+// Cloud: a ChloeDB cluster on Amazon EKS or DigitalOcean Kubernetes (DOKS),
 // planned from this page. The account's key is kept on this server (never
 // shown again, every change audited); the region's machines are drawn by
 // price and memory with their live prices and the account's limit; the
@@ -7,7 +7,7 @@
 // CloudFormation template, or DOKS's request) and the Kubernetes
 // manifests, checked by the cloud itself. **Create it** makes the cluster
 // from here, after its name is typed again: this server asks the cloud,
-// installs Strata's operator through the new cluster's API, follows its
+// installs ChloeDB's operator through the new cluster's API, follows its
 // copies until they answer, and deletes it (its volumes first) when asked.
 
 import * as core from "../core.js";
@@ -104,7 +104,7 @@ function typed({ title, body, name, ok }) {
 
 /** Where a made cluster is, as a pill. */
 const PHASES = {
-  creating: ["pending", "creating"], installing: ["pending", "installing Strata"], starting: ["pending", "starting its copies"],
+  creating: ["pending", "creating"], installing: ["pending", "installing ChloeDB"], starting: ["pending", "starting its copies"],
   ready: ["ok", "ready"], deleting: ["warn", "deleting"], deleted: ["disabled", "deleted"], failed: ["bad", "failed"],
 };
 const ON_ITS_WAY = new Set(["creating", "installing", "starting", "deleting"]);
@@ -249,7 +249,7 @@ function render(page, r) {
     const k = key();
     const label = !status ? null : k ? pill("ok", prov === "aws" ? (k.account ? `account ${k.account}` : "keys from the environment") : (k.account?.team ? `team ${k.account.team}` : "token from the environment")) : pill("pending", `no ${P.name} key`);
     clear(head, h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, "Cloud setup"), h("p", {}, `Plan a new Strata cluster on ${P.k8s}: machines with their prices, where the copies go, what it costs, and what makes it.`)),
+      h("div", {}, h("h1", {}, "Cloud setup"), h("p", {}, `Plan a new ChloeDB cluster on ${P.k8s}: machines with their prices, where the copies go, what it costs, and what makes it.`)),
       h("div", { class: "tools" },
         seg(Object.entries(PROVIDERS).map(([k, v]) => [k, v.name]), prov, (v) => { location.hash = "#/cloud?provider=" + v; }, { "aria-label": "Cloud" }),
         label)));
@@ -688,8 +688,8 @@ function render(page, r) {
           ? `${p.layout.nodes.length} × ${p.machine.type} in ${p.region}, on ${P.k8s}: about ${usd(p.cost.hour, 2)} an hour. It deletes itself, with its data, after ${hoursLabel(form.delete_after)}: about ${usd(p.cost.hour * form.delete_after, 2)} in all.`
           : `${p.layout.nodes.length} × ${p.machine.type} in ${p.region}, on ${P.k8s}: about ${usd(p.cost.hour, 2)} an hour, ${usd(p.cost.month, 0)} a month, from now until it is deleted.`),
         h("p", { class: "dim", style: { margin: 0 } }, prov === "aws"
-          ? "CloudFormation makes the network, the EKS cluster and its nodes (15 to 20 minutes); then this server installs Strata's operator and the cluster, and follows its copies until they answer."
-          : "DigitalOcean makes the cluster and its nodes (5 to 10 minutes); then this server installs Strata's operator and the cluster, and follows its copies until they answer."),
+          ? "CloudFormation makes the network, the EKS cluster and its nodes (15 to 20 minutes); then this server installs ChloeDB's operator and the cluster, and follows its copies until they answer."
+          : "DigitalOcean makes the cluster and its nodes (5 to 10 minutes); then this server installs ChloeDB's operator and the cluster, and follows its copies until they answer."),
         form.bring.length ? h("p", { class: "dim", style: { margin: 0 } }, `Then it copies ${form.bring.join(", ")} from this server into it, with their schemas, through its Kubernetes API.`) : null,
         p.warnings.length ? h("div", { class: "stack cloud-warn" }, p.warnings.map((w) => h("div", { class: "row nw small" }, icon("warn"), h("span", {}, w)))) : null),
     });
@@ -774,7 +774,7 @@ function render(page, r) {
   function madeRow(c) {
     const order = ["creating", "installing", "starting", "ready"];
     const at = order.indexOf(c.phase);
-    const stages = [[c.provider === "aws" ? "Stack" : "Cluster", "the cloud makes the cluster and its nodes"], ["Strata", "the operator and the cluster are applied"], ["Copies", "the operator starts every copy"], ["Ready", "every copy answers"]];
+    const stages = [[c.provider === "aws" ? "Stack" : "Cluster", "the cloud makes the cluster and its nodes"], ["ChloeDB", "the operator and the cluster are applied"], ["Copies", "the operator starts every copy"], ["Ready", "every copy answers"]];
     const track = at < 0 ? null : h("div", { class: "cloud-track" }, stages.map(([label, what], i) =>
       h("span", { class: "cloud-stage" + (i < at || c.phase === "ready" ? " done" : i === at ? " now" : ""), title: what }, label)));
     const last = c.steps[c.steps.length - 1];

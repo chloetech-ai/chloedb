@@ -12,3 +12,19 @@ pub mod io;
 pub mod ops;
 pub mod store;
 pub mod strata;
+
+/// Copies every `CHLOEDB_X` setting into `STRATA_X`, the name the code and
+/// clap read: ChloeDB was called Strata, and a setting may carry either
+/// name (the new one wins). As `strata::env::adopt_new_names`, which this
+/// crate does not depend on. Call it first in `main`, before any thread.
+pub fn adopt_new_env_names() {
+    let new: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+        .filter_map(|(k, v)| {
+            let rest = k.to_str()?.strip_prefix("CHLOEDB_")?;
+            (!rest.is_empty()).then(|| (format!("STRATA_{rest}").into(), v))
+        })
+        .collect();
+    for (k, v) in new {
+        std::env::set_var(k, v);
+    }
+}

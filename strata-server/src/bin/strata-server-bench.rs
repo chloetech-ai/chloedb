@@ -67,7 +67,7 @@ use strata_server::service::{shard_of, AgentConfig, Backend, Service};
 use tokio::net::TcpListener;
 
 #[derive(Parser)]
-#[command(about = "End-to-end benchmark of Strata and strata-server on a BEIR collection")]
+#[command(about = "End-to-end benchmark of ChloeDB and strata-server on a BEIR collection")]
 struct Args {
     /// A collection under $STRATA_DATA.
     #[arg(long, default_value = "quora")]

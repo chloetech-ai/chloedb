@@ -1,6 +1,6 @@
-# Strata from Java
+# ChloeDB from Java
 
-The `ai.chloetech.strata` package runs a Strata database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by Strata's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:strata:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
+The `ai.chloetech.strata` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:strata:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
 
 ## Build it
 
@@ -65,7 +65,7 @@ Only one process may have a database open to write it at a time; another gets a 
 
 A row is a map of field name to value, and a query's answer gives values back as Java types:
 
-| Strata | written as | read as |
+| ChloeDB | written as | read as |
 |---|---|---|
 | KEYWORD, TEXT | `String` | `String` |
 | INT | `Integer`, `Long` (any integer type, `BigInteger` within 64 bits) | `Long` |
@@ -131,7 +131,7 @@ Their options are maps, with the names the [SQLite](sqlite.md) and [Parquet](par
 
 ## JDBC
 
-The jar is also a JDBC driver: `jdbc:strata:PATH` opens the database at `PATH` in the process, as `jdbc:sqlite:PATH` does a SQLite file. `DriverManager` finds it by itself (the jar lists it under `META-INF/services`).
+The jar is also a JDBC driver: `jdbc:strata:PATH` (or `jdbc:chloedb:PATH`, by the new name) opens the database at `PATH` in the process, as `jdbc:sqlite:PATH` does a SQLite file. `DriverManager` finds it by itself (the jar lists it under `META-INF/services`).
 
 ```java
 import java.sql.*;
@@ -150,12 +150,12 @@ try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
 
 Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:strata:books.strata?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:strata:file:books.strata`.
 
-- **Statements** are Strata's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
+- **Statements** are ChloeDB's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
 - **Results** come back whole, so a result set can scroll if the statement is made with `ResultSet.TYPE_SCROLL_INSENSITIVE`; result sets are read-only. `getObject` gives an INT as `Long`, a FLOAT as `Double`, a TIMESTAMP as `java.sql.Timestamp`, a vector as `float[]` and a list as `List`; the getters convert (`getInt`, `getString`, `getObject(i, Instant.class)`, `getArray` for vectors). Times are in UTC.
-- **Transactions**: each statement commits as it runs, as it does through the rest of the package. Auto-commit is always on: `setAutoCommit(false)` throws `SQLFeatureNotSupportedException` rather than pretending a rollback could undo anything, and `commit()` and `rollback()` throw too. A tool or framework that needs transactions across statements cannot use Strata through JDBC yet.
+- **Transactions**: each statement commits as it runs, as it does through the rest of the package. Auto-commit is always on: `setAutoCommit(false)` throws `SQLFeatureNotSupportedException` rather than pretending a rollback could undo anything, and `commit()` and `rollback()` throw too. A tool or framework that needs transactions across statements cannot use ChloeDB through JDBC yet.
 - **Connections share the database.** A process may have a database open once, so the connections to one file (a pool's, say) share one `Database`, which the last of them to close closes. `connection.unwrap(Database.class)` gives it, for what SQL does not do: `search`, `importParquet`, `embed`.
-- **Metadata** (`getMetaData()`) lists tables, columns with their types (KEYWORD and TEXT as `VARCHAR`, INT as `BIGINT`, FLOAT as `DOUBLE`, BOOL, TIMESTAMP, vectors and lists as `ARRAY`), keys, references and the SQL types: what database browsers ask a driver. Tables have no catalog or schema, and table and column patterns match regardless of case, as Strata's SQL names do.
-- **Errors** are `SQLException`s: a statement Strata cannot parse or plan a `SQLSyntaxErrorException`, what the driver does not do a `SQLFeatureNotSupportedException`.
+- **Metadata** (`getMetaData()`) lists tables, columns with their types (KEYWORD and TEXT as `VARCHAR`, INT as `BIGINT`, FLOAT as `DOUBLE`, BOOL, TIMESTAMP, vectors and lists as `ARRAY`), keys, references and the SQL types: what database browsers ask a driver. Tables have no catalog or schema, and table and column patterns match regardless of case, as ChloeDB's SQL names do.
+- **Errors** are `SQLException`s: a statement ChloeDB cannot parse or plan a `SQLSyntaxErrorException`, what the driver does not do a `SQLFeatureNotSupportedException`.
 
 ## Errors
 
@@ -165,6 +165,6 @@ The database's errors (a bad schema, query, value or file, a database open elsew
 
 The JNI boundary is two functions: `call(handle, method, args)` runs one of the library's methods with its arguments as one value and gives its answer as another, both in a small tagged binary form ([`codec.rs`](https://github.com/chloetech-ai/strata/blob/main/strata-java/src/codec.rs), and `Codec.java` on the Java side), and `free(handle)` drops a database once Java no longer holds it. So no JNI call is made per value, and what a method does lives in one place ([`calls.rs`](https://github.com/chloetech-ai/strata/blob/main/strata-java/src/calls.rs)), as the Python package does it: rows, schemas and options are read by the code that reads files and the HTTP API. JNI rather than the Foreign Function and Memory API (Panama) because Panama is final only from Java 22, and JNI runs on every Java from 11.
 
-The library is loaded from the path in the system property `strata.library` (or `STRATA_JNI_LIBRARY`) if set, else from the jar, unpacked to a temporary file that is removed once loaded, else from `java.library.path`. A jar and a library built from different checkouts refuse each other. Java 22 and later warn when a library is loaded without `--enable-native-access=ALL-UNNAMED` (the jar's manifest says so for an executable jar); pass it to the JVM.
+The library is loaded from the path in the system property `chloedb.library` (or `CHLOEDB_JNI_LIBRARY`; the old names `strata.library` and `STRATA_JNI_LIBRARY` work too) if set, else from the jar, unpacked to a temporary file that is removed once loaded, else from `java.library.path`. A jar and a library built from different checkouts refuse each other. Java 22 and later warn when a library is loaded without `--enable-native-access=ALL-UNNAMED` (the jar's manifest says so for an executable jar); pass it to the JVM.
 
 The Python package's query builder (`strata.Query`), Arrow answers, client of strata-server and training helpers have no Java counterpart yet: queries are SQL.

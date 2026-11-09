@@ -98,7 +98,7 @@ async fn the_command_center_is_served_with_every_module_it_imports() {
     assert_eq!(strata_server::http_client().build().unwrap().get(format!("{base}/ui/nope.js")).send().await.unwrap().status(), 404);
     assert_eq!(strata_server::http_client().build().unwrap().get(format!("{base}/ui/../src/ui.rs")).send().await.unwrap().status(), 404);
     let classic = strata_server::http_client().build().unwrap().get(format!("{base}/classic")).send().await.unwrap().text().await.unwrap();
-    assert!(classic.contains("Strata query console"));
+    assert!(classic.contains("ChloeDB query console"));
 
     // SH-11: gzip for a client that asks, of JSON and the UI's files; not
     // for one that does not, nor for event streams.

@@ -184,7 +184,7 @@ td .clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vert
   <h1>Engram Inspector</h1>
   <div class="meta" id="meta"></div>
 </header>
-<div id="static">This is a static copy of Engram's live inspector. It replays a recorded session with a small model: send the suggested messages to watch Engram store each turn, or <a id="finish">load the finished session</a> and explore the store. Queries run in your browser, in a JavaScript model of Strata. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/engram/inspector.md">About the inspector</a> · <a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a></div>
+<div id="static">This is a static copy of Engram's live inspector. It replays a recorded session with a small model: send the suggested messages to watch Engram store each turn, or <a id="finish">load the finished session</a> and explore the store. Queries run in your browser, in a JavaScript model of ChloeDB. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/engram/inspector.md">About the inspector</a> · <a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a></div>
 <main>
   <section id="chat">
     <div id="chatbar">
@@ -380,7 +380,7 @@ function toolArg(name, input) {
 function emptyChat() {
   const turns = window.ENGRAM_DEMO.turns;
   $("#log").innerHTML = `<div class="empty">
-    <p><b>Chat with Claude Code in a scratch project.</b> Engram's hooks record each turn into its Strata store; the panels on the right read that store directly.</p>
+    <p><b>Chat with Claude Code in a scratch project.</b> Engram's hooks record each turn into its ChloeDB store; the panels on the right read that store directly.</p>
     <p>This copy replays a recorded session. Click each message in order, then press Send:</p>
     <ul>${turns.map(t => `<li><a>${t.fresh ? "(new session) " : ""}${esc(t.message)}</a></li>`).join("")}</ul></div>`;
   $$("#log .empty a").forEach(a => a.onclick = () => { $("#input").value = a.textContent.replace(/^\(new session\) /, ""); if (a.textContent.startsWith("(new")) newSession(); $("#input").focus(); });
