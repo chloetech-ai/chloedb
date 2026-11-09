@@ -1,5 +1,5 @@
 """Search near a device's user on the device, with a chloedb-server as the
-fallback: `strata.nearby(url, table, dir)`.
+fallback: `chloedb.nearby(url, table, dir)`.
 
 The server builds a table's slice (`POST /v1/admin/slices`, or the command
 center's Slices view): a manifest and the rows of each map tile, or of each
@@ -19,13 +19,13 @@ the build it asks the server for every search (unless the slice is under
 `report_every` searches (`POST /v1/slices/<table>/usage`), which the
 command center shows.
 
-    near = strata.nearby("http://127.0.0.1:7700", "places", "./slice")
+    near = chloedb.nearby("http://127.0.0.1:7700", "places", "./slice")
     near.move_to(40.7484, -73.9857)
     r = near.search("pizza", k=10)
     r.where, r.why          # "device" or "server", and why
     for row in r: print(row["name"])
 
-    tracks = strata.nearby("http://127.0.0.1:7700", "tracks", "./tracks")
+    tracks = chloedb.nearby("http://127.0.0.1:7700", "tracks", "./tracks")
     tracks.focus(taste, rows=20_000)    # the user's taste, a vector
     r = tracks.similar(taste, k=10)     # or any vector near it
 
@@ -49,7 +49,7 @@ import urllib.request
 import uuid
 from typing import Any
 
-from ._native import StrataError, _strata
+from ._native import ChloeDBError, _strata
 from .result import Result
 
 REASONS = ("proved", "no_match", "short", "bound", "stale")
@@ -118,12 +118,12 @@ class Nearby:
                 text = json.loads(text).get("error", text)
             except ValueError:
                 pass
-            raise StrataError(f"{method} {path}: {e.code}: {text}") from None
+            raise ChloeDBError(f"{method} {path}: {e.code}: {text}") from None
 
     @property
     def _d(self) -> Any:
         if self._dev is None:
-            raise StrataError("the slice is closed")
+            raise ChloeDBError("the slice is closed")
         return self._dev
 
     def _slice(self, rel: str) -> bytes:
@@ -207,7 +207,7 @@ class Nearby:
         server's, else the server's."""
         if lat is None or lon is None:
             if self.position is None:
-                raise StrataError("move_to(lat, lon) first, or pass lat and lon")
+                raise ChloeDBError("move_to(lat, lon) first, or pass lat and lon")
             lat, lon = self.position
         return self._answer(lambda: self._d.search(q, lat, lon, k, float(d0)))
 
@@ -273,7 +273,7 @@ class Nearby:
             return
         try:
             self._request("POST", f"/v1/slices/{urllib.parse.quote(self.table)}/usage", {"device": self.device, **p})
-        except (StrataError, OSError):
+        except (ChloeDBError, OSError):
             pass  # counts are best effort: a search never fails for them
 
     def close(self) -> None:

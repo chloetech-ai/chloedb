@@ -16,7 +16,7 @@ Each `chloedb-py-v<version>` release (`strata-py-v<version>` before the rename) 
 pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
 ```
 
-Release 0.1.0 was made before the rename, as `strata-db`; releases after it are `chloedb` (`pip install chloedb -f <its assets page>`), and `import chloedb` is `import strata` in them, the same package by either name.
+Release 0.1.0 was made before the rename, as `strata-db`; releases after it are `chloedb` (`pip install chloedb -f <its assets page>`). Its package is `chloedb` (`import chloedb`, with `import strata` in 0.1.0); `import strata` goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`.
 
 | platform | wheel |
 |---|---|
@@ -29,13 +29,13 @@ The workflow [`py-release.yml`](https://github.com/chloetech-ai/strata/blob/main
 
 ### Only the client, with no build
 
-[`strata.connect`](#a-server-from-python), the client of a running chloedb-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put `chloedb-py/python` on the path and import it:
+[`chloedb.connect`](#a-server-from-python), the client of a running chloedb-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put `chloedb-py/python` on the path and import it:
 
 ```sh
-PYTHONPATH=chloedb-py/python python3 -c 'import strata; print(strata.connect("http://127.0.0.1:7700").health())'
+PYTHONPATH=chloedb-py/python python3 -c 'import chloedb; print(chloedb.connect("http://127.0.0.1:7700").health())'
 ```
 
-The package imports without the extension, and `strata.Client`, `strata.connect`, `strata.StrataError`, `Result` and the query builder work. A database in the process (`strata.open`, `strata.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
+The package imports without the extension, and `chloedb.Client`, `chloedb.connect`, `chloedb.ChloeDBError`, `Result` and the query builder work. A database in the process (`chloedb.open`, `chloedb.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
 
 ### From source
 
@@ -60,9 +60,9 @@ The package includes [DataFusion](query-language.md#subqueries-with-and-joins), 
 ## A database in your process
 
 ```python
-import strata
+import chloedb
 
-db = strata.open("books.strata", schema={
+db = chloedb.open("books.strata", schema={
     "table": "books",
     "key": "id",
     "fields": [
@@ -88,11 +88,11 @@ db.query("SELECT year, COUNT(*) FROM books WHERE genres = :g GROUP BY year", g="
 db.close()
 ```
 
-`strata.open(path, schema)` opens the database at `path`, or creates it with `schema` if it does not exist. The schema is a dict, JSON text or the path of a JSON file, in the [form the server takes](server.md#schemas). `Database.create(path, schema)` and `Database.open(path)` do one or the other. `models=` says where embedding and [ranking](query-language.md#ranking-models-gbdtmodel-features) models, and the captioners of [text made from media](server.md#text-from-media), are (default `$CHLOEDB_MODELS`, else `~/.local/share/strata/models`; `chloedb-server fetch-model NAME` downloads one there), and `directory=True` creates the database as a directory of segment files.
+`chloedb.open(path, schema)` opens the database at `path`, or creates it with `schema` if it does not exist. The schema is a dict, JSON text or the path of a JSON file, in the [form the server takes](server.md#schemas). `Database.create(path, schema)` and `Database.open(path)` do one or the other. `models=` says where embedding and [ranking](query-language.md#ranking-models-gbdtmodel-features) models, and the captioners of [text made from media](server.md#text-from-media), are (default `$CHLOEDB_MODELS`, else `~/.local/share/strata/models`; `chloedb-server fetch-model NAME` downloads one there), and `directory=True` creates the database as a directory of segment files.
 
-A database written by a version of ChloeDB from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `strata.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
+A database written by a version of ChloeDB from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `chloedb.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
-One process at a time can have a database open to write it. Others can open it with `strata.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `StrataError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `chloedb-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
+One process at a time can have a database open to write it. Others can open it with `chloedb.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `ChloeDBError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `chloedb-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
 
 ## Writing
 
@@ -115,11 +115,11 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 | `export_parquet(path, tables=None)` | writes the tables to Parquet: a `.parquet` file for one table, else a directory of them, each keeping its ChloeDB schema |
 | `import_arrow(data, table=None)` | writes the rows of a pyarrow Table or RecordBatchReader, a polars DataFrame, a DuckDB relation or anything with `__arrow_c_stream__`, columns into the fields of their names; bulk-loaded into an empty table, else upserted |
 
-`strata.from_sqlite("shop.sqlite", "shop.strata")` creates a database from a SQLite file's tables, and `strata.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `strata.from_parquet("events.parquet", "lake.strata")` and `strata.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
+`chloedb.from_sqlite("shop.sqlite", "shop.strata")` creates a database from a SQLite file's tables, and `chloedb.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `chloedb.from_parquet("events.parquet", "lake.strata")` and `chloedb.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
 
 `insert`, `upsert`, `delete` and `import_file` write the database's first table, the one `schema` describes, or the one `table=` names (`db.insert(rows, table="events")`); `sql` names the table it writes, and `tables()` lists every table's schema. Through a coordinator, `delete` on a table placed by a column takes that column's value as `routing=` ([tables on shards](server.md#tables-on-shards)). A key a row leaves out gets its field's `default`, and a field with `not_null` refuses a row without a value ([schema options](server.md#schemas)); a `timestamp` defaulting to `"now"` takes one time for all the rows of a call.
 
-Vectors of embedded fields that a row leaves out are computed by the field's model when it is open, here or behind an API: a field naming `openai/text-embedding-3-small`, `cohere/embed-v4.0`, `voyage/voyage-3.5`, `gemini/gemini-embedding-001`, `ollama/nomic-embed-text` or another [hosted model](server.md#hosted-models) gets its vectors from the provider, with the key in the process's environment (`OPENAI_API_KEY`, ...), so inserting plain text is enough. A write whose vectors the provider will not give (after its retries) raises `StrataError` and writes nothing. `db.embed_errors` lists the embedded fields whose model did not open (a hosted model without its key says which variable to set), whose vectors rows must then bring, and the [semantic-ID fields](#semantic-id-codebooks) whose codebook did not open.
+Vectors of embedded fields that a row leaves out are computed by the field's model when it is open, here or behind an API: a field naming `openai/text-embedding-3-small`, `cohere/embed-v4.0`, `voyage/voyage-3.5`, `gemini/gemini-embedding-001`, `ollama/nomic-embed-text` or another [hosted model](server.md#hosted-models) gets its vectors from the provider, with the key in the process's environment (`OPENAI_API_KEY`, ...), so inserting plain text is enough. A write whose vectors the provider will not give (after its retries) raises `ChloeDBError` and writes nothing. `db.embed_errors` lists the embedded fields whose model did not open (a hosted model without its key says which variable to set), whose vectors rows must then bring, and the [semantic-ID fields](#semantic-id-codebooks) whose codebook did not open.
 
 ## Querying
 
@@ -165,7 +165,7 @@ duckdb.sql("SELECT avg(rating) FROM r")
 | `vector` | `list<float32>` |
 | a `multi` field | `list<int64>` or `list<string>` |
 
-A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `StrataError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`. A `Client`'s `query_arrow` asks the server for an Arrow answer (`"format": "arrow"`) and returns a pyarrow Table with the same column types; it needs pyarrow, and a server too old for Arrow answers JSON, which it types from the values.
+A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `ChloeDBError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`. A `Client`'s `query_arrow` asks the server for an Arrow answer (`"format": "arrow"`) and returns a pyarrow Table with the same column types; it needs pyarrow, and a server too old for Arrow answers JSON, which it types from the values.
 
 `search(text, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
 
@@ -188,7 +188,7 @@ db.run(p)
 `table()` starts a query of the table built from Python values instead of SQL text, so nothing is quoted or escaped: fields are named as the schema names them (`col("order")`, `col("doc no")`), and values keep their types (a `str` is text whatever quotes it holds, a `date` or `datetime` a timestamp, UTC unless it says otherwise). Each method returns a new query; iterating one, or `run()`, runs it and gives its `Result`:
 
 ```python
-from strata import col, match, bm25, similarity, rrf, count, score
+from chloedb import col, match, bm25, similarity, rrf, count, score
 
 q = (db.table()
      .select("id", "title", score())
@@ -239,13 +239,13 @@ rows[0]["features"], rows[0]["label"], rows[0]["history_items"]
 
 ## Semantic-ID codebooks
 
-A [semantic-ID field](server.md#semantic-ids) gives each row a code from its vector by a codebook, which `strata.train.codebook` trains and saves in the models directory before a table names it:
+A [semantic-ID field](server.md#semantic-ids) gives each row a code from its vector by a codebook, which `chloedb.train.codebook` trains and saves in the models directory before a table names it:
 
 ```python
-h = strata.train.codebook(db, "items-rq", field="emb")       # a table's vectors
-h = strata.train.codebook(vectors, "items-rq")               # a list of lists, or a 2-D numpy array
+h = chloedb.train.codebook(db, "items-rq", field="emb")       # a table's vectors
+h = chloedb.train.codebook(vectors, "items-rq")               # a list of lists, or a 2-D numpy array
 
-items = strata.open("items.strata", schema={
+items = chloedb.open("items.strata", schema={
     "table": "items", "key": "id",
     "fields": [
         {"name": "id", "type": "keyword"},
@@ -262,43 +262,43 @@ It returns the SHA-256 of the file, which the table records. The options are `le
 
 ## Next items
 
-`strata.ngrams` keeps counts of what came after the last one or two items in a table, and `strata.next_items(db, history, k=10)` reads them with backoff ([Next items](next-items.md)):
+`chloedb.ngrams` keeps counts of what came after the last one or two items in a table, and `chloedb.next_items(db, history, k=10)` reads them with backoff ([Next items](next-items.md)):
 
 ```python
-from strata import ngrams
+from chloedb import ngrams
 
-db = strata.open("next.strata", ngrams.schema())
+db = chloedb.open("next.strata", ngrams.schema())
 db.write(ngrams.ops(["a", "b"], "c"))       # after each event: "c" after [..., "a", "b"]
-strata.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
+chloedb.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
 ```
 
 ## Sequence models
 
-[`encode('model', history)`](query-language.md#sequence-models-encodemodel-history) turns a user's events into a vector of an item field, by a model that `strata.train.sequence` trains with PyTorch (`pip install torch`) and saves in the models directory:
+[`encode('model', history)`](query-language.md#sequence-models-encodemodel-history) turns a user's events into a vector of an item field, by a model that `chloedb.train.sequence` trains with PyTorch (`pip install torch`) and saves in the models directory:
 
 ```python
-import strata.train
-db = strata.Database.open("shop.strata", models="models")
-out = strata.train.sequence(db, "next", table="items", field="emb",
+import chloedb.train
+db = chloedb.Database.open("shop.strata", models="models")
+out = chloedb.train.sequence(db, "next", table="items", field="emb",
                             events={"table": "events", "user": "usr", "item": "item", "action": "action", "time": "ts"},
                             learn_items=True, negatives="all", holdout=True, models="models")
-strata.train.write_vectors(db, "next", models="models")      # the learned item vectors, into items.emb
+chloedb.train.write_vectors(db, "next", models="models")      # the learned item vectors, into items.emb
 db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
             (SELECT item, action, ts FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 200))) DESC LIMIT 10""", {"u": "u42"})
 ```
 
 - **The histories** come from one of `events` (a table of the database: its columns of users, items, and optionally actions, times, and `order` for events with equal times), `sequences` (a dict from user to a list of `(item, action, time in seconds)`, oldest first) or `records` (the [rank log's export](#the-rank-log) with `history`: each record's history is a training example, and its row the target when its label is positive or missing). The item vectors are the field's, or `vectors` (a dict from key to vector).
 - **What it learns**: every event is the target of the events before it. Each item is scored as `similarity` scores it, the dot product of the model's unit vector with the item's vector, over `temperature` (0.05), and the loss is cross-entropy against the other targets of the batch (`negatives="in_batch"`, the default) or every item (`"all"`, for catalogs that fit). With `learn_items=True` the item vectors are trained too, starting from the field's, and returned normalized in `out["vectors"]`; without it the field keeps its vectors and the model learns to map histories into their space, so a new item is found as soon as it has a vector.
-- **The item vectors go with the model**: it is saved with the vectors it was trained with (`items.safetensors`, part of its hash), and `encode` refuses a history whose items have other vectors in the field. `strata.train.write_vectors(db, name, models=None)` writes them into the field the model's config names, by an `UPDATE` of that field alone for each item (a `Database` or a `Client`); returns the rows written. `strata._sequence.read_items(path)` reads them back.
+- **The item vectors go with the model**: it is saved with the vectors it was trained with (`items.safetensors`, part of its hash), and `encode` refuses a history whose items have other vectors in the field. `chloedb.train.write_vectors(db, name, models=None)` writes them into the field the model's config names, by an `UPDATE` of that field alone for each item (a `Database` or a `Client`); returns the rows written. `chloedb._sequence.read_items(path)` reads them back.
 - **Options**: `width` (64), `layers` (2), `heads` (1), `ffn` (4 × width), `max_len` (200 events), `gap_buckets` (32), `actions` (the actions seen by default; others count as one more), `epochs` (50), `batch` (128), `lr` (1e-3), `dropout` (0.2), `seed`. With `holdout=True` each user's last event is kept out of training, and training stops when NDCG@10 on those has not risen for `patience` epochs (5), keeping the best epoch. `max_seconds` stops it after the first epoch that ends past that many seconds. `log=print` prints each epoch's loss and metrics, which `out["history"]` also holds.
 - It returns `{"path", "history", "vectors"}`. Pass the same `models=` to `Database.open`, or start the server with `--models`: a coordinator needs the model, its shards don't.
 
 ## A server from Python
 
-`strata.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running chloedb-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
+`chloedb.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running chloedb-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
 
 ```python
-client = strata.connect("http://127.0.0.1:7700")   # token= or $CHLOEDB_TOKEN for a server with --token
+client = chloedb.connect("http://127.0.0.1:7700")   # token= or $CHLOEDB_TOKEN for a server with --token
 client.upsert({"id": "b3", "title": "Star letters", "year": 2024})
 client.search("letters", limit=3).dicts()
 ```
@@ -310,14 +310,14 @@ for page in client.scroll("SELECT id, title FROM books WHERE year >= :y", y=1950
     handle(page.dicts())
 ```
 
-The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
+The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `chloedb.ChloeDBError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
 
 ```python
 try:
     client.write(ops)
-except strata.StrataError as e:
+except chloedb.ChloeDBError as e:
     if not (e.answer or {}).get("partial"):
         raise
     client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
@@ -327,12 +327,12 @@ except strata.StrataError as e:
 
 `client.stream(events)` writes an iterable of [stream lines](server.md#streams) through `/v1/stream` as it is read, each an operation or one event's operations as `{"ops": [...], "source": {"name", "offset", "ts"}}`, and returns the stream's last answer (`lines`, `written`, `skipped`). `client.source(name)` is the offset of the last event a source wrote (None for none), and `client.sources()` lists them all. A server skips the operations of an offset it has reached, so a stream resumed from `source(name) + 1`, or from anywhere before it, writes each event once.
 
-`strata.ingest.kafka` is a Kafka (or Redpanda) consumer built on it, which needs `confluent-kafka` (`pip install confluent-kafka`, or `pip install "./chloedb-py[kafka]"`). Each partition is a source named `<topic>/<partition>` (after `prefix=`), and a partition given to the consumer is read from after the offset the server has, not from what the consumer group committed to Kafka, so each event is written once across consumer restarts, server restarts and rebalances. Within a partition the events are written in order.
+`chloedb.ingest.kafka` is a Kafka (or Redpanda) consumer built on it, which needs `confluent-kafka` (`pip install confluent-kafka`, or `pip install "./chloedb-py[kafka]"`). Each partition is a source named `<topic>/<partition>` (after `prefix=`), and a partition given to the consumer is read from after the offset the server has, not from what the consumer group committed to Kafka, so each event is written once across consumer restarts, server restarts and rebalances. Within a partition the events are written in order.
 
 ```python
 import json
-import strata
-from strata import ingest
+import chloedb
+from chloedb import ingest
 
 def click(e):                                   # an ingest.Event: topic, partition, offset, timestamp, key, value
     c = json.loads(e.value)
@@ -341,17 +341,17 @@ def click(e):                                   # an ingest.Event: topic, partit
         {"op": "add", "table": "users", "key": c["usr"], "field": "n_events", "value": 1},
     ]
 
-ingest.kafka(strata.connect("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092", group="strata")
+ingest.kafka(chloedb.connect("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092", group="strata")
 ```
 
 The function gives an event's operations, which commit together with its offset; None writes the offset alone (for events to leave out). Without one, each value is JSON: an operation, or `{"ops": [...]}`. The consumer runs until interrupted, or until `max_events=` events were read or none came for `idle=` seconds, and returns counts (`events`, `written`, `skipped`, `streams`, `retries`). It keeps a stream open for `seconds_per_stream=` (1 by default), then commits the stream's offsets to Kafka for Kafka's own lag tools and opens the next. When the server cannot be reached, or answers 429 or 5xx, it waits and reads every partition again from the server's offsets, for up to `retry_for=` seconds (60). An event the function fails on stops it after the events before it are written, so a restart begins with that event. `config=` adds librdkafka settings, and consumers of one `group` share the partitions. `ingest.consume(client, log, to_ops)` runs the same loop over another log, through the small `ingest.Log` interface.
 
 ## Search on the device
 
-`strata.nearby(url, table, dir)` holds a [slice](slices.md) of a chloedb-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `move_to(lat, lon)` fetches the tiles it lacks, and `search(q, k=10, d0=1000)` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason. For a [vector slice](slices.md#vector-slices-more-like-this-on-the-device), `focus(taste, rows=20_000)` holds the clusters nearest a taste vector and `similar(vector, k=10)` answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.
+`chloedb.nearby(url, table, dir)` holds a [slice](slices.md) of a chloedb-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `move_to(lat, lon)` fetches the tiles it lacks, and `search(q, k=10, d0=1000)` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason. For a [vector slice](slices.md#vector-slices-more-like-this-on-the-device), `focus(taste, rows=20_000)` holds the clusters nearest a taste vector and `similar(vector, k=10)` answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.
 
 ```python
-near = strata.nearby("http://127.0.0.1:7700", "places", "./slice")
+near = chloedb.nearby("http://127.0.0.1:7700", "places", "./slice")
 near.move_to(40.7484, -73.9857)
 r = near.search("pizza", k=10)
 r.where, r.why            # ("device", "proved")

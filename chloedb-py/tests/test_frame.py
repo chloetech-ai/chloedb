@@ -1,4 +1,4 @@
-"""strata.Frame: the same frames on a file and on a server, checked against
+"""chloedb.Frame: the same frames on a file and on a server, checked against
 answers worked out in Python from the rows."""
 
 import datetime as dt
@@ -7,8 +7,8 @@ from collections import Counter, defaultdict
 
 import pytest
 
-import strata
-from strata import col
+import chloedb
+from chloedb import col
 
 pa = pytest.importorskip("pyarrow")
 
@@ -49,7 +49,7 @@ def shop(request, tmp_path):
     """A store with orders and users: a file, or a server of one (whose
     users table is made over HTTP)."""
     path = tmp_path / "shop.strata"
-    s = strata.connect(path)
+    s = chloedb.connect(path)
     s.create_table("orders", orders_arrow(), key="id", text=["note"])
     if request.param == "file":
         s.create_table("users", USERS)
@@ -57,7 +57,7 @@ def shop(request, tmp_path):
         s.close()
         return
     s.close()
-    c = strata.connect(request.getfixturevalue("serve")(path))
+    c = chloedb.connect(request.getfixturevalue("serve")(path))
     c.create_table("users", USERS)
     yield c
 
@@ -76,7 +76,7 @@ def test_tables_and_types(shop):
     assert t.num_rows == 2
     assert t.schema.field("amount").type == pa.float64() and pa.types.is_timestamp(t.schema.field("ts").type)
     assert o.count() == N and shop["users"].count() == 30
-    with pytest.raises(strata.StrataError, match="no table 'nope'"):
+    with pytest.raises(chloedb.StrataError, match="no table 'nope'"):
         shop["nope"]
 
 
@@ -93,22 +93,22 @@ def test_filter_select_sort(shop):
     assert o.drop("emb", "note").rename({"amount": "amt"}).columns == ["id", "user", "country", "status", "amt", "ts"]
     top = o.with_columns(x=col("amount") * 2).sort("x", descending=True).head(1).to_dicts()[0]
     assert top["x"] == max(r["amount"] for r in ORDERS) * 2
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.StrataError):
         o.select("amount", "amount")
 
 
 def test_group_by(shop):
     o = shop["orders"]
-    got = {r["country"]: r for r in o.group_by("country").agg(revenue=col("amount").sum(), n=strata.len(), users=col("user").n_unique()).to_dicts()}
+    got = {r["country"]: r for r in o.group_by("country").agg(revenue=col("amount").sum(), n=chloedb.len(), users=col("user").n_unique()).to_dicts()}
     for c in ("cl", "us", "de"):
         rows = [r for r in ORDERS if r["country"] == c]
         assert got[c]["n"] == len(rows) and got[c]["revenue"] == pytest.approx(sum(r["amount"] for r in rows))
         assert got[c]["users"] == len({r["user"] for r in rows})
     # A computed key, so the input is wrapped first.
-    got = o.with_columns(big=col("amount") > 50).group_by("big").agg(n=strata.len(), avg=col("amount").mean()).to_dicts()
+    got = o.with_columns(big=col("amount") > 50).group_by("big").agg(n=chloedb.len(), avg=col("amount").mean()).to_dicts()
     assert {r["big"]: r["n"] for r in got} == dict(Counter(r["amount"] > 50 for r in ORDERS))
     # Months of a timestamp: the key comes back a timestamp from either store.
-    t = o.group_by(month=col("ts").dt.truncate("month")).agg(n=strata.len(), p50=col("amount").median()).sort("month").to_arrow()
+    t = o.group_by(month=col("ts").dt.truncate("month")).agg(n=chloedb.len(), p50=col("amount").median()).sort("month").to_arrow()
     assert pa.types.is_timestamp(t.schema.field("month").type)
     months = Counter(r["ts"].replace(day=1, hour=0) for r in ORDERS)
     assert [(r["month"], r["n"]) for r in t.to_pylist()] == sorted(months.items())
@@ -120,7 +120,7 @@ def test_group_by(shop):
     cut = (top[-5] + top[-6]) / 2  # between two sums, clear of rounding
     got = o.group_by("user").agg(s=col("amount").sum()).filter(col("s") >= cut).sort("s", descending=True).to_dicts()
     assert [r["user"] for r in got] == sorted((u for u in sums if sums[u] >= cut), key=lambda u: -sums[u])
-    total = o.filter(country="cl").select(n=strata.len(), s=col("amount").sum(), first=col("ts").min()).to_dicts()[0]
+    total = o.filter(country="cl").select(n=chloedb.len(), s=col("amount").sum(), first=col("ts").min()).to_dicts()[0]
     cl = [r for r in ORDERS if r["country"] == "cl"]
     assert total["n"] == len(cl) and total["s"] == pytest.approx(sum(r["amount"] for r in cl)) and total["first"] == min(r["ts"] for r in cl)
     assert o.select(col("amount").max()).item() == max(r["amount"] for r in ORDERS)
@@ -134,7 +134,7 @@ def test_joins(shop):
     assert o.join(u, left_on="user", right_on="id").count() == sum(r["user"] in plan for r in ORDERS)
     left = o.join(u, left_on="user", right_on="id", how="left").select("id", "user", "plan").to_dicts()
     assert len(left) == N and all((r["plan"] is None) == (r["user"] not in plan) for r in left)
-    got = {r["plan"]: r for r in o.join(u.filter(col("age") > 30), left_on="user", right_on="id").group_by("plan").agg(rev=col("amount").sum(), n=strata.len()).to_dicts()}
+    got = {r["plan"]: r for r in o.join(u.filter(col("age") > 30), left_on="user", right_on="id").group_by("plan").agg(rev=col("amount").sum(), n=chloedb.len()).to_dicts()}
     old = {r["id"]: r["plan"] for r in USERS if r["age"] > 30}
     for p in ("pro", "free"):
         rows = [r for r in ORDERS if old.get(r["user"]) == p]
@@ -160,7 +160,7 @@ def test_search_and_rank(shop):
     near = o.near(q, on="emb", k=3).select("id", "score").to_dicts()
     assert [r["id"] for r in near] == [r["id"] for r in sorted(ORDERS, key=lambda r: -dot(r["emb"]))[:3]]
     assert near[0]["score"] == pytest.approx(dot(ORDERS[int(near[0]["id"][1:])]["emb"]), rel=1e-5)
-    hybrid = o.rank_by(0.6 * strata.minmax(strata.bm25("note", "refund")) + 0.4 * strata.minmax(strata.similarity("emb", q)), k=20).max_per(1, "user").to_dicts()
+    hybrid = o.rank_by(0.6 * chloedb.minmax(chloedb.bm25("note", "refund")) + 0.4 * chloedb.minmax(chloedb.similarity("emb", q)), k=20).max_per(1, "user").to_dicts()
     assert hybrid and len({r["user"] for r in hybrid}) == len(hybrid)
     again = o.search("refund", on="note", k=50).rerank(col("amount"), k=3).to_dicts()
     assert len(again) == 3 and [r["score"] for r in again] == sorted((r["amount"] for r in again), reverse=True)
@@ -191,13 +191,13 @@ def test_unique_windows_expressions(shop):
     for r in rows:
         rank, run, prev = want[r["id"]]
         assert r["r"] == rank and r["cs"] == pytest.approx(run) and r["prev"] == prev
-    got = o.select("id", c=col("country").str.upper(), y=col("ts").dt.year(), m=col("ts").dt.strftime("%Y-%m"), band=strata.when(col("amount") > 50).then("hi").otherwise("lo")).filter(col("note").str.contains("broken")).to_dicts()
+    got = o.select("id", c=col("country").str.upper(), y=col("ts").dt.year(), m=col("ts").dt.strftime("%Y-%m"), band=chloedb.when(col("amount") > 50).then("hi").otherwise("lo")).filter(col("note").str.contains("broken")).to_dicts()
     want = {r["id"]: r for r in ORDERS if "broken" in r["note"]}
     assert len(got) == len(want)
     for r in got:
         w = want[r["id"]]
         assert (r["c"], r["y"], r["m"], r["band"]) == (w["country"].upper(), w["ts"].year, w["ts"].strftime("%Y-%m"), "hi" if w["amount"] > 50 else "lo")
-    both = strata.concat([o.filter(country="cl").select("id", "user"), u.select("id", user="plan")])
+    both = chloedb.concat([o.filter(country="cl").select("id", "user"), u.select("id", user="plan")])
     assert both.count() == sum(r["country"] == "cl" for r in ORDERS) + len(USERS)
 
 
@@ -221,25 +221,25 @@ def test_writes(shop, tmp_path):
     assert o.filter(col("id") == "o0005").update(amount=col("amount") + 1000, status="void") == 1
     assert o.get("o0005")["amount"] == ORDERS[5]["amount"] + 1000 and o.get("o0005")["status"] == "void"
     assert o.filter(col("id").is_in(["o0006", "o0007"])).delete() == 2 and o.count() == N - 2
-    with pytest.raises(strata.StrataError, match="all=True"):
+    with pytest.raises(chloedb.StrataError, match="all=True"):
         o.delete()
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.StrataError):
         o.filter(country="cl").upsert([order(1)])
     assert o.upsert([order(6)]) == 1 and o.count() == N - 1
-    churn = shop.create_table("churn", o.select("user").unique().with_columns(p=strata.lit(0.5)), key="user")
+    churn = shop.create_table("churn", o.select("user").unique().with_columns(p=chloedb.lit(0.5)), key="user")
     assert churn.count() == 40 and shop["churn"].get("u1")["p"] == 0.5
-    with pytest.raises(strata.StrataError, match="exists"):
+    with pytest.raises(chloedb.StrataError, match="exists"):
         shop.create_table("churn", [{"user": "u1", "p": 0.1}], key="user")
     shop.create_table("churn", [{"user": "u1", "p": 0.9}, {"user": "zz", "p": 0.1}], key="user", if_exists="append")
     assert shop["churn"].count() == 41 and shop["churn"].get("u1")["p"] == 0.9
     shop.create_table("churn", [{"user": "u1", "p": 0.3}], key="user", if_exists="replace")
     assert shop["churn"].to_dicts() == [{"user": "u1", "p": 0.3}]
     # To another store and back: a file from either.
-    copy = strata.connect(tmp_path / "copy.strata")
+    copy = chloedb.connect(tmp_path / "copy.strata")
     cl = o.filter(country="cl").select("id", "user", "amount").write_to(copy, "orders_cl")
     assert cl.count() == sum(r["country"] == "cl" for r in ORDERS) and copy.tables()[0]["key"] == "id"
     assert cl.filter(col("amount") > 50).write_to(shop, "big").count() == cl.filter(col("amount") > 50).count()
-    with pytest.raises(strata.StrataError, match="one store"):
+    with pytest.raises(chloedb.StrataError, match="one store"):
         o.join(cl, on="id")
     copy.close()
 
@@ -294,27 +294,27 @@ def test_sample_split_shuffle(shop):
     assert h["h"] == strata_hash("o0042", 7) and h["u"] == strata_hash("u2", strata_hash("cl", 1))
     assert o.with_columns(h=col("id").hash()).to_arrow().schema.field("h").type == pa.int64()
     # A frame of groups has no key: it names the columns that tell rows apart.
-    g = o.group_by("user").agg(n=strata.len())
-    with pytest.raises(strata.StrataError, match="has none: name the columns"):
+    g = o.group_by("user").agg(n=chloedb.len())
+    with pytest.raises(chloedb.StrataError, match="has none: name the columns"):
         g.sample(fraction=0.5)
     assert sorted(r["user"] for r in g.sample(fraction=0.5, seed=1, on="user").to_dicts()) == sorted(users_tr)
     for bad, msg in [(lambda: o.sample(), "n= .* or fraction="), (lambda: o.sample(3, fraction=0.1), "n= .* or fraction="),
                      (lambda: o.split(1.5), "a number from 0 to 1"), (lambda: o.sample(fraction=0.1, seed="x"), "seed is an int"),
                      (lambda: col("id").hash(1.5), "seed is an int")]:
-        with pytest.raises(strata.StrataError, match=msg):
+        with pytest.raises(chloedb.StrataError, match=msg):
             bad()
 
 
 def test_pending_store(tmp_path):
-    s = strata.connect(tmp_path / "new.strata")
+    s = chloedb.connect(tmp_path / "new.strata")
     assert "no tables" in repr(s) or "new.strata" in repr(s)
     assert s.tables() == []
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.StrataError):
         s["t"]
     t = s.create_table("t", {"id": "a", "n": 1})
     assert t.to_dicts() == [{"id": "a", "n": 1}] and (tmp_path / "new.strata").exists()
     s.close()
-    assert strata.connect(f"file:{tmp_path / 'new.strata'}")["t"].count() == 1
+    assert chloedb.connect(f"file:{tmp_path / 'new.strata'}")["t"].count() == 1
 
 
 @pytest.mark.parametrize("where", ["file", "server"])
@@ -324,9 +324,9 @@ def test_near_embeds_text(where, tmp_path, request):
     from conftest import BOOKS, book
 
     path = tmp_path / "books.strata"
-    with strata.Database.create(path, BOOKS) as db:
+    with chloedb.Database.create(path, BOOKS) as db:
         db.insert([book(i) for i in range(200)])
-    store = strata.connect(path if where == "file" else request.getfixturevalue("serve")(path))
+    store = chloedb.connect(path if where == "file" else request.getfixturevalue("serve")(path))
     hits = store["books"].near("dragon river", on="emb", k=5).select("id", "score").to_dicts()
     assert len(hits) == 5 and [h["score"] for h in hits] == sorted((h["score"] for h in hits), reverse=True)
     again = store["books"].near(store.embed("dragon river", "emb"), on="emb", k=5).to_dicts()
@@ -338,7 +338,7 @@ def test_server_answers_arrow(tmp_path, serve):
     """A server's answers come as Arrow, typed as the file's own are; a
     server that answers JSON alone still gives frames typed by the schema."""
     path = tmp_path / "shop.strata"
-    s = strata.connect(path)
+    s = chloedb.connect(path)
     s.create_table("orders", orders_arrow(), key="id", text=["note"])
     sqls = [
         "SELECT id, amount, ts, emb FROM orders WHERE country = 'cl' ORDER BY amount LIMIT 20",
@@ -348,7 +348,7 @@ def test_server_answers_arrow(tmp_path, serve):
     ]
     local = {q: pa.table(s.query_arrow(q)) for q in sqls}
     s.close()
-    c = strata.connect(serve(path))
+    c = chloedb.connect(serve(path))
     for q in sqls:
         got = c.query_arrow(q)
         assert isinstance(got, pa.Table)
@@ -365,7 +365,7 @@ def test_server_scrolls_past_the_window(tmp_path, serve):
     a scroll at a time, every page from one version; Client.scroll and
     Database.scroll page the same rows."""
     path = tmp_path / "shop.strata"
-    s = strata.connect(path)
+    s = chloedb.connect(path)
     s.create_table("orders", orders_arrow(), key="id")
     s.create_table("users", USERS)
     local = {
@@ -377,8 +377,8 @@ def test_server_scrolls_past_the_window(tmp_path, serve):
     assert [len(p) for p in pages] == [250, 250, 100] and [r["id"] for p in pages for r in p] == [r["id"] for r in local["all"]]
     assert [t.num_rows for t in s.scroll("SELECT id FROM orders WHERE amount < 0", arrow=True)] == [0]
     s.close()
-    c = strata.connect(serve(path, "--max-result-window", "100"))
-    with pytest.raises(strata.StrataError, match="more than 100 rows"):
+    c = chloedb.connect(serve(path, "--max-result-window", "100"))
+    with pytest.raises(chloedb.StrataError, match="more than 100 rows"):
         c.query("SELECT id FROM orders")
     assert c["orders"].select("id", "amount", "ts").to_dicts() == local["all"]
     assert c["orders"].select("id", "amount").sort("amount", descending=True).to_dicts() == local["sorted"]
@@ -403,10 +403,10 @@ def test_server_scrolls_past_the_window(tmp_path, serve):
     assert scrolls_open() == 0
     # A sorted read holds its rows' places, at most --max-scroll-rows.
     other = tmp_path / "small.strata"
-    s = strata.connect(other)
+    s = chloedb.connect(other)
     s.create_table("orders", orders_arrow(), key="id")
     s.close()
-    small = strata.connect(serve(other, "--max-result-window", "100", "--max-scroll-rows", "50"))
+    small = chloedb.connect(serve(other, "--max-result-window", "100", "--max-scroll-rows", "50"))
     assert len(small["orders"].select("id").to_dicts()) == N
-    with pytest.raises(strata.StrataError, match="max-scroll-rows"):
+    with pytest.raises(chloedb.StrataError, match="max-scroll-rows"):
         small["orders"].sort("amount").to_arrow()

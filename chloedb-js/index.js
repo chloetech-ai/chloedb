@@ -34,7 +34,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { Nearby } from "./nearby.js";
-import { StrataError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
 export { ChloeDBError, StrataError, Result } from "./common.js";
 export { Client, connect } from "./client.js";
@@ -47,17 +47,17 @@ const here = dirname(fileURLToPath(import.meta.url));
 function load() {
   const path = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON || join(here, "strata.node");
   if (!existsSync(path)) {
-    throw new StrataError(`the ChloeDB addon is not built: ${path} is missing (run \`npm run build\` in chloedb-js, which needs Rust and a C compiler)`);
+    throw new ChloeDBError(`the ChloeDB addon is not built: ${path} is missing (run \`npm run build\` in chloedb-js, which needs Rust and a C compiler)`);
   }
   return createRequire(import.meta.url)(path);
 }
 
 const native = load();
 
-/** A native error (a failed call) as a StrataError. */
+/** A native error (a failed call) as a ChloeDBError. */
 function failed(e) {
-  if (e instanceof StrataError) return e;
-  return new StrataError(e?.message ?? String(e), { cause: e });
+  if (e instanceof ChloeDBError) return e;
+  return new ChloeDBError(e?.message ?? String(e), { cause: e });
 }
 
 async function callStatic(op, args) {
@@ -423,7 +423,7 @@ export class Database extends Searchable {
  */
 export async function open(path, { schema, directory = false, models, threads, readOnly = false } = {}) {
   if (existsSync(paths(path)) || readOnly) return Database.open(path, { models, threads, readOnly });
-  if (schema == null) throw new StrataError(`${paths(path)} does not exist: pass a schema to create it`);
+  if (schema == null) throw new ChloeDBError(`${paths(path)} does not exist: pass a schema to create it`);
   return Database.create(path, schema, { directory, models, threads });
 }
 

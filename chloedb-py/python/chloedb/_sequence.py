@@ -48,7 +48,7 @@ def _torch():
     try:
         import torch
     except ImportError as e:  # pragma: no cover
-        raise ImportError("strata.train.sequence needs PyTorch: pip install torch") from e
+        raise ImportError("chloedb.train.sequence needs PyTorch: pip install torch") from e
     return torch
 
 

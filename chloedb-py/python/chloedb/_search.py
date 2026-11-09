@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
-from ._native import StrataError
+from ._native import ChloeDBError
 from .build import Expr, Query, bm25, hops, rrf, score, similarity
 from .result import Result
 
@@ -104,14 +104,14 @@ class Search:
 
     def table(self, name: str | None = None) -> Query:
         """A query of the first table or the one named, built from Python
-        values (`strata.build`):
+        values (`chloedb.build`):
         `db.table().where(col("year") >= 2019).order_by(bm25("body",
         q)).limit(10)`."""
         s = self.schema
         if name is not None and name.lower() != s["table"].lower():
             s = next((t for t in self.tables() if t["table"].lower() == name.lower()), None)
             if s is None:
-                raise StrataError(f"no table {name}")
+                raise ChloeDBError(f"no table {name}")
         return Query(self, s)
 
     def search(
@@ -151,11 +151,11 @@ class Search:
         scores = []
         if mode in ("text", "hybrid"):
             if not text_fields:
-                raise StrataError(f"{s['table']} has no indexed text field to search")
+                raise ChloeDBError(f"{s['table']} has no indexed text field to search")
             scores += [f"bm25({quote(f)}, :_q)" for f in text_fields]
         if mode in ("vector", "hybrid"):
             if not vector_field:
-                raise StrataError(f"{s['table']} has no embedded vector field with its model open")
+                raise ChloeDBError(f"{s['table']} has no embedded vector field with its model open")
             scores.append(f"similarity({quote(vector_field)}, :_v)")
         if mode not in ("text", "vector", "hybrid"):
             raise ValueError('mode is "auto", "text", "vector" or "hybrid"')

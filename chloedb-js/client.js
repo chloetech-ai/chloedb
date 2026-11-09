@@ -7,7 +7,7 @@
 // origin (a page it serves, or one behind the same reverse proxy): it
 // sends no CORS headers, and refuses writes from other origins.
 
-import { StrataError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
 export { ChloeDBError, StrataError, Result } from "./common.js";
 
@@ -54,7 +54,7 @@ async function bytesOf(data) {
   if (data instanceof Uint8Array || data instanceof ArrayBuffer) return data;
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   if (typeof Blob !== "undefined" && data instanceof Blob) return data;
-  throw new StrataError("a file is a path, a Uint8Array, an ArrayBuffer or a Blob");
+  throw new ChloeDBError("a file is a path, a Uint8Array, an ArrayBuffer or a Blob");
 }
 
 /** Writes `bytes` to `path`, which must not exist. */
@@ -65,9 +65,9 @@ async function writeNew(path, bytes) {
     await f.writeFile(part, bytes, { flag: "wx" });
     try {
       await f.access(path);
-      throw new StrataError(`${path} exists`);
+      throw new ChloeDBError(`${path} exists`);
     } catch (e) {
-      if (e instanceof StrataError) throw e;
+      if (e instanceof ChloeDBError) throw e;
     }
     await f.rename(part, path);
   } finally {
@@ -103,7 +103,7 @@ function retryAfter(v) {
 /**
  * A chloedb-server at `url` ("http://host:7700"). `token` is the server's
  * --token or an API key, if it needs one ($CHLOEDB_TOKEN, or $STRATA_TOKEN, by default).
- * Errors the server reports reject with `StrataError` (its `status` and
+ * Errors the server reports reject with `ChloeDBError` (its `status` and
  * `answer` set); one it cannot be reached rejects with fetch's error.
  *
  * A request the server refuses for its load (429: behind on flushing its
@@ -161,7 +161,7 @@ export class Client extends Searchable {
         await new Promise((ok) => setTimeout(ok, wait));
         continue;
       }
-      throw new StrataError(`${msg} (HTTP ${r.status})`, { status: r.status, answer });
+      throw new ChloeDBError(`${msg} (HTTP ${r.status})`, { status: r.status, answer });
     }
     if (as === "response") return r;
     const text = await r.text();
@@ -199,7 +199,7 @@ export class Client extends Searchable {
     try {
       return await this._call("GET", "/v1/health");
     } catch (e) {
-      if (e instanceof StrataError && e.status === 503 && e.answer?.status) return e.answer;
+      if (e instanceof ChloeDBError && e.status === 503 && e.answer?.status) return e.answer;
       throw e;
     }
   }
@@ -235,7 +235,7 @@ export class Client extends Searchable {
     const out = text.split("\n").filter((l) => l.trim()).map(decode);
     const last = out.at(-1);
     if (last && "error" in last && !("request" in last)) {
-      throw new StrataError(`${last.error} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
+      throw new ChloeDBError(`${last.error} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
     }
     return out;
   }
@@ -325,7 +325,7 @@ export class Client extends Searchable {
     try {
       return (await this._call("GET", await this.#kvPath(key, table))).row;
     } catch (e) {
-      if (e instanceof StrataError && e.status === 404 && e.answer?.found === false) return null;
+      if (e instanceof ChloeDBError && e.status === 404 && e.answer?.found === false) return null;
       throw e;
     }
   }
@@ -389,7 +389,7 @@ export class Client extends Searchable {
       }
     }
     if ("error" in last || !last.done) {
-      throw new StrataError(`${last.error ?? "the stream ended early"} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
+      throw new ChloeDBError(`${last.error ?? "the stream ended early"} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
     }
     return last;
   }
@@ -416,7 +416,7 @@ export class Client extends Searchable {
    * upserted. Returns {rows, bulk, skippedFields}. */
   async importFile(file, { format, table } = {}) {
     format ??= FORMATS[extension(file)];
-    if (!format) throw new StrataError(`name the format of ${typeof file === "string" ? file : "the file"}: jsonl, json, csv or tsv`);
+    if (!format) throw new ChloeDBError(`name the format of ${typeof file === "string" ? file : "the file"}: jsonl, json, csv or tsv`);
     const r = await this.#upload(file, format, { table });
     return { rows: r.written, bulk: false, skippedFields: r.skipped_fields ?? [] };
   }

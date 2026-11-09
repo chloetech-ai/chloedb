@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-import strata
+import chloedb
 
 
 def shop(path):
@@ -39,7 +39,7 @@ def shop(path):
 def test_from_sqlite_and_back(tmp_path):
     src = tmp_path / "shop.sqlite"
     shop(src)
-    plan = strata.plan_sqlite(src)
+    plan = chloedb.plan_sqlite(src)
     assert [t["table"] for t in plan["tables"]] == ["authors", "books"]
     assert set(plan["skipped"]) == {"books_fts", "cheap"}
     books = plan["tables"][1]
@@ -48,7 +48,7 @@ def test_from_sqlite_and_back(tmp_path):
     }
     assert any("cover" in n for n in books["notes"])
 
-    with strata.from_sqlite(src, tmp_path / "shop.strata") as db:
+    with chloedb.from_sqlite(src, tmp_path / "shop.strata") as db:
         assert [(t["table"], t["rows"]) for t in db.last_import["tables"]] == [("authors", 2), ("books", 2)]
         assert db.query("SELECT isbn FROM books WHERE MATCH(title, 'wizards')").scalar() == "isbn-1"
         assert db.query("SELECT isbn FROM books WHERE in_print = false").scalar() == "isbn-2"
@@ -57,7 +57,7 @@ def test_from_sqlite_and_back(tmp_path):
         out = tmp_path / "copy.sqlite"
         done = db.export_sqlite(out)
         assert [(t["table"], t["rows"], t["fts"]) for t in done["tables"]] == [("authors", 2, None), ("books", 2, "books_fts")]
-        with pytest.raises(strata.StrataError, match="exists"):
+        with pytest.raises(chloedb.StrataError, match="exists"):
             db.export_sqlite(out)
 
     c = sqlite3.connect(out)
@@ -72,7 +72,7 @@ def test_import_sqlite_into_a_database(tmp_path):
     src = tmp_path / "shop.sqlite"
     shop(src)
     schema = {"table": "books", "key": "isbn", "fields": [{"name": "isbn", "type": "keyword"}, {"name": "title", "type": "text"}]}
-    with strata.open(tmp_path / "b.strata", schema=schema) as db:
+    with chloedb.open(tmp_path / "b.strata", schema=schema) as db:
         db.insert({"isbn": "isbn-9", "title": "Already here"})
         r = db.import_sqlite(src, tables="books", blobs_base64=True)
         (books,) = r["tables"]
@@ -80,7 +80,7 @@ def test_import_sqlite_into_a_database(tmp_path):
         assert any('"price" left out' in n for n in books["notes"])
         assert len(db) == 3
         # A given schema for a new table, from an edited plan.
-        plan = strata.plan_sqlite(src, tables=["authors"])
+        plan = chloedb.plan_sqlite(src, tables=["authors"])
         plan["tables"][0]["fields"][1]["type"] = "text"
         db.import_sqlite(src, tables=["authors"], schemas=plan)
         assert db.query("SELECT id FROM authors WHERE MATCH(name, 'calvino')").scalar() == 2

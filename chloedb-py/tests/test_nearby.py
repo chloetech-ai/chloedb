@@ -3,7 +3,7 @@ import urllib.request
 
 import pytest
 
-import strata
+import chloedb
 
 PLACES = {
     "table": "places",
@@ -37,7 +37,7 @@ def call(url, path, body=None):
 @pytest.fixture
 def cloud(tmp_path, serve):
     path = tmp_path / "places.strata"
-    with strata.Database.create(path, PLACES) as db:
+    with chloedb.Database.create(path, PLACES) as db:
         db.insert([place(i) for i in range(2000)])
     url = serve(path, "--slices", str(tmp_path / "slices"))
     built = call(url, "/v1/admin/slices", {"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -74.0})
@@ -46,7 +46,7 @@ def cloud(tmp_path, serve):
 
 
 def test_nearby_answers_on_the_device_what_the_server_would(cloud, tmp_path):
-    with strata.nearby(cloud, "places", tmp_path / "device", reach=1, report_every=0, device="test-phone") as near:
+    with chloedb.nearby(cloud, "places", tmp_path / "device", reach=1, report_every=0, device="test-phone") as near:
         moved = near.move_to(40.7, -74.0)
         assert moved["fetched"] == 9 and moved["bytes"] > 0
         assert sum(n for _, _, n in near.held()) > 0
@@ -73,11 +73,11 @@ def test_nearby_answers_on_the_device_what_the_server_would(cloud, tmp_path):
 
 
 def test_nearby_asks_the_server_while_the_table_has_changed(cloud, tmp_path):
-    near = strata.nearby(cloud, "places", tmp_path / "device", reach=1, report_every=0)
+    near = chloedb.nearby(cloud, "places", tmp_path / "device", reach=1, report_every=0)
     near.move_to(40.7, -74.0)
     assert near.check()["fresh"] and near.search("nothing").where == "device"
     version = near.info["version"]
-    strata.connect(cloud).delete([7])
+    chloedb.connect(cloud).delete([7])
     assert near.check()["fresh"] is False
     r = near.search("nothing")
     assert (r.where, r.why) == ("server", "stale")
@@ -88,7 +88,7 @@ def test_nearby_asks_the_server_while_the_table_has_changed(cloud, tmp_path):
     r = near.search("nothing")
     assert (r.where, r.why) == ("device", "no_match")
     near.close()
-    with pytest.raises(strata.StrataError, match="closed"):
+    with pytest.raises(chloedb.StrataError, match="closed"):
         near.held()
 
 
@@ -114,12 +114,12 @@ def track(i):
 
 def test_a_vector_slice_answers_on_the_device_what_the_server_would(tmp_path, serve):
     path = tmp_path / "tracks.strata"
-    with strata.Database.create(path, TRACKS) as db:
+    with chloedb.Database.create(path, TRACKS) as db:
         db.insert([track(i) for i in range(1200)])
     url = serve(path, "--slices", str(tmp_path / "slices"))
     built = call(url, "/v1/admin/slices", {"table": "tracks", "vector": "emb", "clusters": 12})
     assert (built["kind"], built["rows"], built["clusters"]) == ("vector", 1200, 12) and built["codes_bytes"] > 0
-    with strata.nearby(url, "tracks", tmp_path / "device", report_every=0) as near:
+    with chloedb.nearby(url, "tracks", tmp_path / "device", report_every=0) as near:
         assert near.info["kind"] == "vector" and near.info["dim"] == 8
         taste = track(5)["emb"]
         got = near.focus(taste, rows=300)
@@ -143,7 +143,7 @@ def test_a_vector_slice_answers_on_the_device_what_the_server_would(tmp_path, se
         assert r.keys == cloud_r["keys"] and r.scores == cloud_r["scores"]
         assert near.stats["fetched_bytes"] >= built["codes_bytes"]
         # A geo search of a vector slice is refused.
-        with pytest.raises(strata.StrataError, match="search it with a vector"):
+        with pytest.raises(chloedb.StrataError, match="search it with a vector"):
             near.search("pizza", lat=40.7, lon=-74.0)
     usage = call(url, "/v1/admin/slices")["slices"][0]["usage"]
     assert usage["codes"] == 1 and usage["codes_bytes"] == built["codes_bytes"]

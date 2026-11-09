@@ -8,8 +8,8 @@ offsets its group committed to Kafka, so an event is written once across
 consumer restarts, server restarts and rebalances::
 
     import json
-    import strata
-    from strata import ingest
+    import chloedb
+    from chloedb import ingest
 
     def click(e):
         c = json.loads(e.value)
@@ -18,7 +18,7 @@ consumer restarts, server restarts and rebalances::
             {"op": "add", "table": "users", "key": c["usr"], "field": "n_events", "value": 1},
         ]
 
-    ingest.kafka(strata.Client("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092")
+    ingest.kafka(chloedb.Client("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092")
 
 It needs ``confluent-kafka`` (``pip install confluent-kafka``, or the package's ``kafka`` extra). `consume`
 runs the same loop over any log of numbered partitions (a `Log`).
@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
-from ._native import StrataError
+from ._native import ChloeDBError
 from .client import Client, _default
 
 Partition = tuple[str, int]
@@ -98,7 +98,7 @@ def ops_of(e: Event) -> list:
 def _retryable(err: BaseException) -> bool:
     # A server that is down, restarting or refusing for now (429, 5xx), or a
     # stream it cut short.
-    if isinstance(err, StrataError):
+    if isinstance(err, ChloeDBError):
         status = getattr(err, "status", None)
         return status is not None and (status == 429 or status >= 500)
     return isinstance(err, (OSError, http.client.HTTPException))

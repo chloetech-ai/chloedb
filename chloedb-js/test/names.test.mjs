@@ -7,13 +7,14 @@ import * as client from "../client.js";
 import * as common from "../common.js";
 import * as local from "../index.js";
 
-test("ChloeDBError is StrataError, from every entry point", () => {
+test("StrataError is ChloeDBError, from every entry point", () => {
   for (const m of [common, client, local]) {
-    assert.equal(m.ChloeDBError, common.StrataError);
-    assert.equal(m.StrataError, common.StrataError);
+    assert.equal(m.ChloeDBError, common.ChloeDBError);
+    assert.equal(m.StrataError, common.ChloeDBError);
   }
-  const e = new common.ChloeDBError("x", { status: 400 });
-  assert.ok(e instanceof common.StrataError);
+  const e = new common.StrataError("x", { status: 400 });
+  assert.ok(e instanceof common.ChloeDBError);
+  assert.equal(e.name, "ChloeDBError");
   assert.equal(e.status, 400);
 });
 

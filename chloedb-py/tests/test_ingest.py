@@ -9,8 +9,8 @@ import uuid
 
 import pytest
 
-import strata
-from strata import ingest
+import chloedb
+from chloedb import ingest
 from conftest import free_port, server_binary
 
 USERS = 50
@@ -73,7 +73,7 @@ class Server:
 @pytest.fixture
 def server(tmp_path):
     s = Server(tmp_path / "events.strata").start()
-    c = strata.Client(s.url)
+    c = chloedb.Client(s.url)
     for ddl in TABLES:
         c.sql(ddl)
     c.insert([{"id": f"u{u}"} for u in range(USERS)], table="users")
@@ -133,7 +133,7 @@ def totals(c):
 
 
 def test_a_consumer_resumes_where_the_server_stopped(server):
-    c = strata.Client(server.url)
+    c = chloedb.Client(server.url)
     parts = clicks(3, 1000)
     # A consumer that stops partway, then a new one reading from offset 0:
     # it starts after the server's offsets, so nothing is read twice.
@@ -158,7 +158,7 @@ def test_a_consumer_resumes_where_the_server_stopped(server):
 
 
 def test_a_server_killed_mid_stream_loses_and_duplicates_nothing(server):
-    c = strata.Client(server.url)
+    c = chloedb.Client(server.url)
     kills = []
 
     def kill_once(log):
@@ -176,7 +176,7 @@ def test_a_server_killed_mid_stream_loses_and_duplicates_nothing(server):
 
 
 def test_a_bad_event_stops_the_consumer_after_the_events_before_it(server):
-    c = strata.Client(server.url)
+    c = chloedb.Client(server.url)
     parts = {("clicks", 0): [json.dumps(click(i)).encode() for i in range(100)]}
     parts[("clicks", 0)][60] = b"not json"
     with pytest.raises(ValueError):
@@ -184,7 +184,7 @@ def test_a_bad_event_stops_the_consumer_after_the_events_before_it(server):
     assert totals(c) == (60, 60)
     assert c.source("clicks/0") == 59
     # A write the server refuses (no such table) is not retried either.
-    with pytest.raises(strata.StrataError, match="HTTP 400"):
+    with pytest.raises(chloedb.StrataError, match="HTTP 400"):
         ingest.consume(c, Memory({("views", 0): [b"{}"]}), lambda e: {"op": "insert", "table": "views", "doc": {}}, idle=0.2)
     # None writes only the offset.
     assert ingest.consume(c, Memory({("views", 0): [b"{}"] * 5}), lambda e: None, idle=0.2)["written"] == 0
@@ -194,7 +194,7 @@ def test_a_bad_event_stops_the_consumer_after_the_events_before_it(server):
 KAFKA = os.environ.get("CHLOEDB_KAFKA")
 CONSUMER = """
 import json, sys, time, strata
-from strata import ingest
+from chloedb import ingest
 url, topic, group, idle = sys.argv[1:5]
 # At most 5,000 events a second, so that a consumer is still writing when it
 # or the server is killed: unpaced, a fast machine wrote all the second
@@ -206,7 +206,7 @@ def to_ops(e):
     return [{"op": "insert", "table": "events", "doc": c}, {"op": "add", "table": "users", "key": c["usr"], "field": "n", "value": 1}]
 # A killed consumer's partitions move once its session times out.
 config = {"session.timeout.ms": 6000, "heartbeat.interval.ms": 500}
-print(json.dumps(ingest.kafka(strata.Client(url), topic, to_ops, brokers=sys.argv[5], group=group, config=config, idle=float(idle) if idle != "none" else None, seconds_per_stream=0.25, retry_for=60)))
+print(json.dumps(ingest.kafka(chloedb.Client(url), topic, to_ops, brokers=sys.argv[5], group=group, config=config, idle=float(idle) if idle != "none" else None, seconds_per_stream=0.25, retry_for=60)))
 """
 
 
@@ -227,7 +227,7 @@ def test_kafka_exactly_once_across_consumer_and_server_restarts(server):
         if i % 5000 == 0:
             p.poll(0)
     p.flush(30)
-    c = strata.Client(server.url)
+    c = chloedb.Client(server.url)
 
     def written():
         return sum(s["offset"] + 1 for s in c.sources() if s["name"].startswith(topic))

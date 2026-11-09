@@ -71,7 +71,7 @@ class Result:
         return pandas.DataFrame(self.rows, columns=self.columns)
 
     def __repr__(self) -> str:
-        return f"<strata.Result {len(self.rows)} row{'' if len(self.rows) == 1 else 's'}: {', '.join(self.columns)}>"
+        return f"<chloedb.Result {len(self.rows)} row{'' if len(self.rows) == 1 else 's'}: {', '.join(self.columns)}>"
 
 
 class ArrowResult:
@@ -146,4 +146,4 @@ class ArrowResult:
 
     def __repr__(self) -> str:
         n = self.num_rows
-        return f"<strata.ArrowResult {n} row{'' if n == 1 else 's'}: {', '.join(self.columns)}>"
+        return f"<chloedb.ArrowResult {n} row{'' if n == 1 else 's'}: {', '.join(self.columns)}>"

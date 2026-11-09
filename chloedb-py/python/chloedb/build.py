@@ -5,7 +5,7 @@ A `Query` makes a plan, the JSON that `Database.plan` and the server's
 named by their names, whatever they are (`col("order")`, `col("doc no")`),
 and values keep their types, so nothing is quoted or escaped:
 
-    from strata import col, match, bm25
+    from chloedb import col, match, bm25
 
     q = (db.table()
          .select("id", "title")
@@ -31,7 +31,7 @@ import datetime as _dt
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
-from ._native import StrataError
+from ._native import ChloeDBError
 
 VERSION = 1
 
@@ -95,7 +95,7 @@ class _Ctx:
         for i, f in enumerate(self.fields):
             if f["name"].lower() == name.lower():
                 return i, f
-        raise StrataError(f"{self.table} has no field {name!r}")
+        raise ChloeDBError(f"{self.table} has no field {name!r}")
 
 
 def _micros(t: _dt.date) -> int:
@@ -139,13 +139,13 @@ class Expr:
     __hash__ = None  # type: ignore[assignment]
 
     def _ir(self, ctx: _Ctx) -> Any:
-        raise StrataError(f"{self!r} runs in frames (SQL), not in a Query's plan")
+        raise ChloeDBError(f"{self!r} runs in frames (SQL), not in a Query's plan")
 
     def _sql(self, s: Any) -> str:
         """The expression as SQL: `s` (a frame's renderer) gives each
         column's SQL (`s.col(name)`), binds values as parameters
         (`s.param(v)`) and writes constants (`s.value(v)`)."""
-        raise StrataError(f"{self!r} has no SQL form, so a frame cannot use it")
+        raise ChloeDBError(f"{self!r} has no SQL form, so a frame cannot use it")
 
     def _kids(self) -> list:
         """The expressions this one is made of."""
@@ -216,7 +216,7 @@ class Expr:
             n = len(prefix)
             fuzzy = 0 if n <= 2 else 1 if n <= 5 else 2
         if fuzzy not in (0, 1, 2) or isinstance(fuzzy, bool):
-            raise StrataError("fuzzy is 0, 1, 2 or 'auto'")
+            raise ChloeDBError("fuzzy is 0, 1, 2 or 'auto'")
         return _Prefix(self, prefix, int(fuzzy))
 
     def is_null(self) -> Expr:
@@ -321,9 +321,9 @@ class Expr:
         with `interpolation="nearest"` one of the values
         (`PERCENTILE_DISC`)."""
         if isinstance(q, bool) or not isinstance(q, (int, float)) or not 0 <= q <= 1:
-            raise StrataError(f"a quantile is a fraction from 0 to 1, not {q!r}")
+            raise ChloeDBError(f"a quantile is a fraction from 0 to 1, not {q!r}")
         if interpolation not in ("linear", "nearest"):
-            raise StrataError("interpolation is 'linear' (PERCENTILE_CONT) or 'nearest' (PERCENTILE_DISC)")
+            raise ChloeDBError("interpolation is 'linear' (PERCENTILE_CONT) or 'nearest' (PERCENTILE_DISC)")
         return _Pct(self, float(q), interpolation == "nearest")
 
     def n_unique(self) -> Expr:
@@ -348,7 +348,7 @@ class Expr:
         machine and in every version (SQL's `hash`): for a seeded sample,
         split or shuffle. NULL for a NULL value."""
         if isinstance(seed, bool) or not isinstance(seed, (int, Expr)):
-            raise StrataError(f"hash's seed is an int, not {seed!r}")
+            raise ChloeDBError(f"hash's seed is an int, not {seed!r}")
         return _SqlCall("hash", [self, seed], f"{self!r}.hash({seed!r})")
 
     def cast(self, dtype: Any) -> Expr:
@@ -375,7 +375,7 @@ class Expr:
         group."""
         fns = {"min": "RANK", "dense": "DENSE_RANK", "ordinal": "ROW_NUMBER"}
         if method not in fns:
-            raise StrataError(f"rank's method is 'min', 'dense' or 'ordinal', not {method!r}")
+            raise ChloeDBError(f"rank's method is 'min', 'dense' or 'ordinal', not {method!r}")
         return _Window(lambda s: f"{fns[method]}()", [], f"{self!r}.rank({method!r})", own_order=[(self, bool(descending))])
 
     def shift(self, n: int = 1, *, fill_value: Any = None) -> Expr:
@@ -383,7 +383,7 @@ class Expr:
         window's order: `.shift(1).over("user", order_by="ts")` (`LAG`,
         `LEAD`). Rows have no order of their own, so it needs one."""
         if isinstance(n, bool) or not isinstance(n, int):
-            raise StrataError(f"shift takes a whole number of rows, not {n!r}")
+            raise ChloeDBError(f"shift takes a whole number of rows, not {n!r}")
         fn = "LAG" if n >= 0 else "LEAD"
 
         def sql(s: Any) -> str:
@@ -405,7 +405,7 @@ class Expr:
             return e
         if isinstance(e, _Agg):
             return _Window(e._sql, [e], repr(e), frame="ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING", agg=True)
-        raise StrataError(f"over() takes an aggregate, rank(), shift() or cum_sum(), not {self!r}")
+        raise ChloeDBError(f"over() takes an aggregate, rank(), shift() or cum_sum(), not {self!r}")
 
     @property
     def str(self) -> "_StrNs":
@@ -419,7 +419,7 @@ class Expr:
 
     def _name(self) -> str:
         """The column's name when it has no alias."""
-        raise StrataError(f"{self!r} is not a column: select fields, score(), hops(), features(), aggregates or ranking expressions")
+        raise ChloeDBError(f"{self!r} is not a column: select fields, score(), hops(), features(), aggregates or ranking expressions")
 
     def _is_score(self) -> bool:
         return False
@@ -428,7 +428,7 @@ class Expr:
 def _expr(x: Any) -> Expr:
     if isinstance(x, Expr):
         return x
-    raise TypeError(f"{x!r} is not a query condition: build one with col(...) and the functions of strata")
+    raise TypeError(f"{x!r} is not a query condition: build one with col(...) and the functions of chloedb")
 
 
 def _num(x: Any) -> Expr:
@@ -460,7 +460,7 @@ class _Col(Expr):
         i, _ = ctx.field(self.name)
         if ctx.outputs is not None:
             if ("field", i) not in ctx.outputs:
-                raise StrataError(f"{self.name} is not a group key: name it in group_by, or aggregate it")
+                raise ChloeDBError(f"{self.name} is not a group key: name it in group_by, or aggregate it")
             return {"output": ctx.outputs[("field", i)]}
         return {"field": i}
 
@@ -497,7 +497,7 @@ class _Cmp(Expr):
         if not isinstance(self.left, Expr):
             raise TypeError("a comparison names an expression first")
         if self.right is None:
-            raise StrataError("a comparison with None is never true: use is_null() or is_not_null()")
+            raise ChloeDBError("a comparison with None is never true: use is_null() or is_not_null()")
         f = _field_of(self.left, ctx) if ctx.outputs is None else None
         return {"cmp": {"op": self.op, "left": self.left._ir(ctx), "right": _operand(self.right, ctx, f)}}
 
@@ -505,7 +505,7 @@ class _Cmp(Expr):
         if not isinstance(self.left, Expr):
             raise TypeError("a comparison names an expression first")
         if self.right is None:
-            raise StrataError("a comparison with None is never true: use is_null() or is_not_null()")
+            raise ChloeDBError("a comparison with None is never true: use is_null() or is_not_null()")
         return f"{self.left._sql(s)} {_SQL_OPS[self.op]} {_sql_of(self.right, s)}"
 
     def _kids(self) -> list:
@@ -596,14 +596,14 @@ class _In(Expr):
     def _ir(self, ctx: _Ctx) -> Any:
         f = _field_of(self.e, ctx)
         if any(v is None for v in self.values):
-            raise StrataError("isin with None: None equals nothing; use is_null()")
+            raise ChloeDBError("isin with None: None equals nothing; use is_null()")
         return {"in": {"expr": self.e._ir(ctx), "list": [_operand(v, ctx, f) for v in self.values]}}
 
     def _sql(self, s: Any) -> str:
         if any(v is None for v in self.values):
-            raise StrataError("isin with None: None equals nothing; use is_null()")
+            raise ChloeDBError("isin with None: None equals nothing; use is_null()")
         if not self.values:
-            raise StrataError("isin takes at least one value")
+            raise ChloeDBError("isin takes at least one value")
         return f"{self.e._sql(s)} IN ({', '.join(_sql_of(v, s) for v in self.values)})"
 
     def _kids(self) -> list:
@@ -631,7 +631,7 @@ class _Between(Expr):
             return f"{e} >= {_sql_of(self.lo, s)}"
         if self.hi is not None:
             return f"{e} <= {_sql_of(self.hi, s)}"
-        raise StrataError("between needs a bound")
+        raise ChloeDBError("between needs a bound")
 
     def _kids(self) -> list:
         return [self.e] + [v for v in (self.lo, self.hi) if isinstance(v, Expr)]
@@ -782,7 +782,7 @@ class _Agg(Expr):
 
     def _ir(self, ctx: _Ctx) -> Any:
         if ctx.outputs is None:
-            raise StrataError(f"{self!r} is an aggregate: select it, or use it in having or order_by")
+            raise ChloeDBError(f"{self!r} is an aggregate: select it, or use it in having or order_by")
         return {"output": ctx.outputs[self.key(ctx)]}
 
     def agg(self, ctx: _Ctx) -> dict:
@@ -817,7 +817,7 @@ class _Agg(Expr):
 def _arg_field(e: Expr) -> str:
     name = e._field()
     if name is None:
-        raise StrataError(f"an aggregate takes a field, not {e!r}")
+        raise ChloeDBError(f"an aggregate takes a field, not {e!r}")
     return name
 
 
@@ -858,7 +858,7 @@ def features() -> Expr:
 
 class _Features(Expr):
     def _ir(self, ctx: _Ctx) -> Any:
-        raise StrataError("features() stands for several columns: select it by itself")
+        raise ChloeDBError("features() stands for several columns: select it by itself")
 
     def __repr__(self) -> str:
         return "features()"
@@ -867,7 +867,7 @@ class _Features(Expr):
 def _need(min: int | str) -> str:
     """A count or a percentage (`2`, `"75%"`), as MATCH's `@` writes it."""
     if isinstance(min, bool) or not isinstance(min, (int, str)):
-        raise StrataError(f"min is a count or a percentage ('75%'), not {min!r}")
+        raise ChloeDBError(f"min is a count or a percentage ('75%'), not {min!r}")
     return str(min)
 
 
@@ -878,10 +878,10 @@ def _rows(what: str, min: int | str | None, min_rows: int | None, max_rows: int 
     for k, v in (("min_rows", min_rows), ("max_rows", max_rows)):
         if v is not None:
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-                raise StrataError(f"{k} is a count of rows (500), not {v!r}")
+                raise ChloeDBError(f"{k} is a count of rows (500), not {v!r}")
             rows[k] = v
     if rows and min is None:
-        raise StrataError(f"min_rows and max_rows on {what} relax its min, which it needs")
+        raise ChloeDBError(f"min_rows and max_rows on {what} relax its min, which it needs")
     return rows
 
 
@@ -911,7 +911,7 @@ def match(field: str, query: str, *, min: int | str | None = None, min_rows: int
     extra = "".join(f", {k}={v!r}" for k, v in rows.items())
     def sql(s: Any) -> str:
         if rows:
-            raise StrataError("match's min_rows and max_rows are not in frames yet")
+            raise ChloeDBError("match's min_rows and max_rows are not in frames yet")
         return f"MATCH({s.col(field)}, {s.param(q)})"
 
     return _Fn(lambda ctx: {"match": {"field": ctx.field(field)[0], "query": q}}, f"match({field!r}, {q!r}{extra})", score=False, guard=_guarded(rows, site, min), sql=sql, fields=[field])
@@ -923,7 +923,7 @@ def _of(need: int | str, y: int) -> int:
     s = str(need).strip() if isinstance(need, (int, str)) and not isinstance(need, bool) else ""
     p = s[:-1] if s.endswith("%") else None
     if not (p if p is not None else s).isdigit() or (p is not None and int(p) > 100):
-        raise StrataError(f"at_least takes a count (2) or a percentage ('75%'), not {need!r}")
+        raise ChloeDBError(f"at_least takes a count (2) or a percentage ('75%'), not {need!r}")
     n = y * int(p) // 100 if p is not None else int(s)
     return max(1, min(n, y))
 
@@ -940,7 +940,7 @@ class _AtLeast(Expr):
 
     def _sql(self, s: Any) -> str:
         if self.rows:
-            raise StrataError("at_least's min_rows and max_rows are not in frames yet")
+            raise ChloeDBError("at_least's min_rows and max_rows are not in frames yet")
         return f"AT_LEAST({self.need}, {', '.join(c._sql(s) for c in self.conds)})"
 
     def _kids(self) -> list:
@@ -962,7 +962,7 @@ def at_least(n: int | str, *conds: Expr, min_rows: int | None = None, max_rows: 
     for as many of the conditions as it can, all of them down to `n`,
     while the rows fit (or are too few)."""
     if not conds:
-        raise StrataError("at_least(n, *conds) takes one or more conditions")
+        raise ChloeDBError("at_least(n, *conds) takes one or more conditions")
     return _AtLeast(n, [_expr(c) for c in conds], _rows("at_least", n, min_rows, max_rows))
 
 
@@ -991,7 +991,7 @@ def bm25(field: str, text: str, *, syntax: str | None = None, min: int | str | N
 
     def sql(s: Any) -> str:
         if rows:
-            raise StrataError("bm25's min_rows and max_rows are not in frames yet")
+            raise ChloeDBError("bm25's min_rows and max_rows are not in frames yet")
         opts = "".join(f", {k} => {s.value(v)}" for k, v in (("syntax", syntax), ("min", min)) if v is not None)
         return f"bm25({s.col(field)}, {s.param(text)}{opts})"
 
@@ -1010,10 +1010,10 @@ def similarity(field: str, query: Sequence[float] | Mapping[str, float] | str) -
         i, f = ctx.field(field)
         if f["type"] == "sparse":
             if not isinstance(query, Mapping):
-                raise StrataError(f"{field} is SPARSE: give {{term: weight}}")
+                raise ChloeDBError(f"{field} is SPARSE: give {{term: weight}}")
             return {"sparse": {"field": i, "terms": [[t, float(w)] for t, w in query.items()]}}
         if isinstance(query, (str, Mapping)):
-            raise StrataError(f"{field} takes a vector: embed the text with embed(text, {field!r})")
+            raise ChloeDBError(f"{field} takes a vector: embed the text with embed(text, {field!r})")
         return {"similarity": {"field": i, "vector": [float(x) for x in query]}}
 
     return _Fn(build, f"similarity({field!r}, ...)", sql=lambda s: f"similarity({s.col(field)}, {s.query(query)})", fields=[field], fname="similarity")
@@ -1030,7 +1030,7 @@ def maxsim(field: str, vectors: Iterable[Sequence[float]], *, max_vectors: int |
     def build(ctx: _Ctx) -> Any:
         i, f = ctx.field(field)
         if f["type"] != "vector":
-            raise StrataError(f"maxsim takes a VECTOR field, and {field} is not one")
+            raise ChloeDBError(f"maxsim takes a VECTOR field, and {field} is not one")
         m: dict[str, Any] = {"field": i, "vectors": {"lit": {"list": [{"vector": v} for v in vs]}}}
         if max_vectors is not None:
             m["opts"] = {"max_vectors": {"int": int(max_vectors)}}
@@ -1043,7 +1043,7 @@ def rrf(*scores: Expr, k: float = 60, depth: int = 100) -> Expr:
     """Reciprocal rank fusion of rankings: each row scores Σ 1 / (k +
     its rank), over each ranking's best `depth` rows."""
     if not scores:
-        raise StrataError("rrf takes rankings")
+        raise ChloeDBError("rrf takes rankings")
     def sql(s: Any) -> str:
         opts = ("" if k == 60 else f", k => {s.value(k)}") + ("" if depth == 100 else f", depth => {int(depth)}")
         return f"rrf({', '.join(x._sql(s) for x in scores)}{opts})"
@@ -1059,7 +1059,7 @@ def ranked(keys: Iterable[Any]) -> Expr:
 
     def build(ctx: _Ctx) -> Any:
         if not ctx.key:
-            raise StrataError(f"ranked() ranks rows by their primary keys, and {ctx.table} has none")
+            raise ChloeDBError(f"ranked() ranks rows by their primary keys, and {ctx.table} has none")
         key = ctx.field(ctx.key)[1]
         return {"ranked": {"keys": [_value(k, key) for k in keys]}}
 
@@ -1086,13 +1086,13 @@ def tmm(x: Expr, lo: float | None = None, hi: float | None = None) -> Expr:
     x = _num(x)
     for name, b in (("lo", lo), ("hi", hi)):
         if b is not None and not (isinstance(b, (int, float)) and math.isfinite(b)):
-            raise StrataError(f"tmm's {name} is a finite number, not {b!r}")
+            raise ChloeDBError(f"tmm's {name} is a finite number, not {b!r}")
     shown = f"tmm({x!r}{'' if lo is None else f', lo={lo!r}'}{'' if hi is None else f', hi={hi!r}'})"
     if hi is not None:
         if lo is None:
-            raise StrataError("tmm(x, hi=...) needs lo too: the bounds are fixed together")
+            raise ChloeDBError("tmm(x, hi=...) needs lo too: the bounds are fixed together")
         if hi <= lo:
-            raise StrataError(f"tmm's hi ({hi}) must be above its lo ({lo})")
+            raise ChloeDBError(f"tmm's hi ({hi}) must be above its lo ({lo})")
         return coalesce((x - lo) / (hi - lo), 0)
 
     def build(ctx: _Ctx, a: list) -> Any:
@@ -1129,7 +1129,7 @@ def gbdt(model: str, *features: Any) -> Expr:
     hash of the model's file, and a database whose file differs refuses
     it."""
     if not features:
-        raise StrataError("gbdt takes a model's name and the features it reads")
+        raise ChloeDBError("gbdt takes a model's name and the features it reads")
     parts = [_num(f) for f in features]
     return _Ranked("gbdt", parts, lambda ctx, a: {"gbdt": {"model": model, "args": a}}, f"gbdt({model!r}, {', '.join(map(repr, parts))})", sql=lambda s, a: f"gbdt({s.text(model)}, {', '.join(a)})")
 
@@ -1147,7 +1147,7 @@ def cross_encoder(model: str, fields: str | Sequence[str], query: str) -> Expr:
     text holds)."""
     names = [fields] if isinstance(fields, str) else list(fields)
     if not names:
-        raise StrataError("cross_encoder reads the text of at least one field")
+        raise ChloeDBError("cross_encoder reads the text of at least one field")
     build = lambda ctx: {"cross_encoder": {"model": model, "fields": [ctx.field(f)[0] for f in names], "query": str(query)}}
     sql = lambda s: f"cross_encoder({s.text(model)}, {', '.join(s.col(f) for f in names)}, {s.param(str(query))})"
     return _Fn(build, f"cross_encoder({model!r}, {', '.join(names)})", sql=sql, fields=names, fname="cross_encoder")
@@ -1202,7 +1202,7 @@ def case(*whens: tuple[Expr, Any], otherwise: Any = None) -> Expr:
     """The value of the first `(condition, value)` whose condition holds,
     else `otherwise`, else NULL: `case((col("year") > 2020, 1), otherwise=0)`."""
     if not whens:
-        raise StrataError("case takes (condition, value) pairs")
+        raise ChloeDBError("case takes (condition, value) pairs")
     conds = [_expr(c) for c, _ in whens]
     values = [_num(v) for _, v in whens]
     rest = [] if otherwise is None else [_num(otherwise)]
@@ -1228,7 +1228,7 @@ def count_true(*conds: Expr) -> Expr:
     col("venue").isin(["nejm", "lancet"])))`. A condition on a NULL counts
     as not met."""
     if not conds:
-        raise StrataError("count_true(*conds) takes one or more conditions")
+        raise ChloeDBError("count_true(*conds) takes one or more conditions")
     parts = [_expr(c) for c in conds]
     return _Fn(lambda ctx: {"call": {"func": "count_true", "args": [c._ir(ctx) for c in parts]}}, f"count_true({', '.join(map(repr, parts))})", kids=parts, sql=lambda s: f"count_true({', '.join(c._sql(s) for c in parts)})", fname="count_true")
 
@@ -1337,7 +1337,7 @@ class Query:
         row it reranks (a global phase); any other on each shard over its
         own rows."""
         if int(count) < 1:
-            raise StrataError("a rerank phase reranks at least one row")
+            raise ChloeDBError("a rerank phase reranks at least one row")
         return self._copy(phases=self._phases + [(_expr(expr), int(count))])
 
     def group_by(self, *fields: str | Expr) -> Query:
@@ -1360,9 +1360,9 @@ class Query:
         rows with no more than 2 of a venue. NULL is one value; a
         multi-valued field is refused."""
         if isinstance(k, bool) or not isinstance(k, int) or k < 1:
-            raise StrataError(f"max_per keeps a whole number of rows, 1 or more ({k!r})")
+            raise ChloeDBError(f"max_per keeps a whole number of rows, 1 or more ({k!r})")
         if not isinstance(field, str):
-            raise StrataError("max_per takes a field's name")
+            raise ChloeDBError("max_per takes a field's name")
         return self._copy(distinct_on=[col(field)], per=k, per_field=field)
 
     def having(self, *conditions: Expr) -> Query:
@@ -1385,14 +1385,14 @@ class Query:
         guards = [c for c in where if getattr(c, "guard", None) is not None]
         where = [c for c in where if getattr(c, "guard", None) is None]
         if any(_guards(c) for c in where):
-            raise StrataError("min_rows and max_rows guard a condition of where() joined to the others by AND, not one inside |, ~ or another condition")
+            raise ChloeDBError("min_rows and max_rows guard a condition of where() joined to the others by AND, not one inside |, ~ or another condition")
         guards += [g for k in self._order for g in _guards(k.e)]
         if any(_guards(e) for e, _ in self._phases):
-            raise StrataError("min_rows and max_rows guard a search's first ranking, not a rerank phase")
+            raise ChloeDBError("min_rows and max_rows guard a search's first ranking, not a rerank phase")
         if any(_guards(c) for c in self._select or []):
-            raise StrataError("min_rows and max_rows on bm25 guard the ranking of order_by")
+            raise ChloeDBError("min_rows and max_rows on bm25 guard the ranking of order_by")
         if len(guards) > 1:
-            raise StrataError("a query has one guard (min_rows, max_rows) at most")
+            raise ChloeDBError("a query has one guard (min_rows, max_rows) at most")
         if guards:
             search["guard"] = guards[0].guard(ctx)
         if where:
@@ -1405,17 +1405,17 @@ class Query:
         grouped = bool(self._group) or any(isinstance(_bare(c), _Agg) for c in columns)
         if any(isinstance(c, _Features) for c in columns):
             if grouped:
-                raise StrataError("features() lists the inputs of a ranking of rows, not of groups")
+                raise ChloeDBError("features() lists the inputs of a ranking of rows, not of groups")
             columns = [x for c in columns for x in (self._features(ctx) if isinstance(c, _Features) else [c])]
         node: dict[str, Any] = search
         if not grouped:
             if self._having:
-                raise StrataError("having keeps groups: group the rows with group_by")
+                raise ChloeDBError("having keeps groups: group the rows with group_by")
             if self._order:
                 search["order"] = [k._ir(ctx) for k in self._order]
             if self._phases:
                 if len(self._order) != 1:
-                    raise StrataError("rerank phases follow an order_by of one key")
+                    raise ChloeDBError("rerank phases follow an order_by of one key")
                 phases, after = [], False
                 for e, n in self._phases:
                     expr = e._ir(ctx)
@@ -1424,9 +1424,9 @@ class Query:
                 search["phases"] = phases
         else:
             if self._phases:
-                raise StrataError("rerank phases rank rows, not groups")
+                raise ChloeDBError("rerank phases rank rows, not groups")
             if self._order and any(k.e._is_score() for k in self._order):
-                raise StrataError("groups are ordered by a group key or an aggregate, not a score")
+                raise ChloeDBError("groups are ordered by a group key or an aggregate, not a score")
             keys = [ctx.field(_arg_field(g))[0] for g in self._group]
             outputs: dict[tuple, int] = {("field", f): n for n, f in enumerate(keys)}
             aggs: list[dict] = []
@@ -1446,12 +1446,12 @@ class Query:
         features: list[str] = []
         if self._distinct_on:
             if grouped:
-                raise StrataError("distinct_on keeps rows of the table: not with group_by or aggregates")
+                raise ChloeDBError("distinct_on keeps rows of the table: not with group_by or aggregates")
             if self._per_field is not None:
                 if not self._order:
-                    raise StrataError("max_per needs an order_by: it keeps each value's first rows in its order")
+                    raise ChloeDBError("max_per needs an order_by: it keeps each value's first rows in its order")
                 if ctx.field(self._per_field)[1].get("multi"):
-                    raise StrataError(f"max_per: {self._per_field} is multi-valued, and a row with several values is in several groups")
+                    raise ChloeDBError(f"max_per: {self._per_field} is multi-valued, and a row with several values is in several groups")
             # The scan's rows with the answer's columns and the fields of
             # the keys, which are computed over them, the first row of each
             # group kept in their order. A LIMIT reads the scan in growing
@@ -1494,7 +1494,7 @@ class Query:
         each ranking that scores a row by itself and is not a leaf."""
         ranks = [k.e for k in self._order[:1]] + [e for e, _ in self._phases]
         if not ranks:
-            raise StrataError("features() lists the inputs of the query's ranking, and it has no order_by")
+            raise ChloeDBError("features() lists the inputs of the query's ranking, and it has no order_by")
 
         def leaves(e: Any, out: list[Expr]) -> None:
             e = _bare(e)
@@ -1617,7 +1617,7 @@ def _order_keys(by: Any, descending: bool | Sequence[bool]) -> list[tuple[Expr, 
     keys = [by] if isinstance(by, (str, Expr)) else list(by)
     desc = [descending] * len(keys) if isinstance(descending, bool) else list(descending)
     if len(desc) != len(keys):
-        raise StrataError("descending takes one bool, or one for each key")
+        raise ChloeDBError("descending takes one bool, or one for each key")
     return [(_colish(k), bool(d)) for k, d in zip(keys, desc)]
 
 
@@ -1691,7 +1691,7 @@ class _Cast(Expr):
     def __init__(self, e: Expr, dtype: Any):
         name = getattr(dtype, "__name__", dtype)
         if not isinstance(name, str) or name.lower() not in _CASTS:
-            raise StrataError(f"cast takes 'int', 'float', 'str', 'bool' or 'timestamp' (or int, float, str, bool), not {dtype!r}")
+            raise ChloeDBError(f"cast takes 'int', 'float', 'str', 'bool' or 'timestamp' (or int, float, str, bool), not {dtype!r}")
         self.e, self.to = e, _CASTS[name.lower()]
 
     def _sql(self, s: Any) -> str:
@@ -1719,7 +1719,7 @@ class _Window(Expr):
     def _sql(self, s: Any) -> str:
         order = self.own_order + self.order
         if self.needs_order and not order:
-            raise StrataError(f"{self.shown} needs an order: .over(..., order_by=...), since rows have no order of their own")
+            raise ChloeDBError(f"{self.shown} needs an order: .over(..., order_by=...), since rows have no order of their own")
         parts = []
         if self.partition:
             parts.append("PARTITION BY " + ", ".join(p._sql(s) for p in self.partition))
@@ -1800,7 +1800,7 @@ class _DtNs:
         (or Polars' "1d", "1mo", ...)."""
         unit = _POLARS_UNITS.get(every, every).lower().rstrip("s") if isinstance(every, str) else every
         if unit not in _UNITS:
-            raise StrataError(f"truncate takes one of {', '.join(_UNITS)}, not {every!r}")
+            raise ChloeDBError(f"truncate takes one of {', '.join(_UNITS)}, not {every!r}")
         return _Template(self.e, f"date_trunc('{unit}', {{}})", f"{self.e!r}.dt.truncate({unit!r})")
 
     def _part(self, part: str, name: str) -> Expr:
@@ -1876,7 +1876,7 @@ class _StrNs:
         expression unless `literal`; ChloeDB has none, and `%` and `_` in
         `text` match any run of letters and any one letter, as in LIKE."""
         if not literal:
-            raise StrataError("ChloeDB has no regular expressions: str.contains matches text as LIKE does")
+            raise ChloeDBError("ChloeDB has no regular expressions: str.contains matches text as LIKE does")
         return self._like(f"%{text}%", "LIKE", f"contains({text!r})")
 
     def starts_with(self, prefix: str) -> Expr:

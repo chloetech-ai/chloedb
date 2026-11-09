@@ -1,4 +1,4 @@
-//! Python bindings for Strata, the database in-process: the `strata._strata`
+//! Python bindings for ChloeDB, the database in-process: the `chloedb._chloedb`
 //! extension module under the `strata` package (`python/strata`), which
 //! wraps it in the documented API.
 //!
@@ -34,10 +34,10 @@ use chloedb::segment::build::BuildOptions;
 use chloedb::storage::{DbOptions, Layout, MergerOptions};
 use chloedb::{FieldType, Value};
 
-create_exception!(_strata, StrataError, PyException, "An error from the database: a bad schema, query, value or file.");
+create_exception!(_chloedb, ChloeDBError, PyException, "An error from the database: a bad schema, query, value or file.");
 
 fn err(e: chloedb::Error) -> PyErr {
-    StrataError::new_err(e.to_string())
+    ChloeDBError::new_err(e.to_string())
 }
 
 /// Rows a write transaction carries (as `chloedb-server import` does).
@@ -310,7 +310,7 @@ fn with_threads(mut db: Db, threads: usize) -> Db {
 
 /// A database file (or directory) opened in this process. Only one process
 /// may have a database open at a time.
-#[pyclass(frozen, module = "strata._strata")]
+#[pyclass(frozen, module = "chloedb._chloedb")]
 struct Database {
     db: RwLock<Option<Arc<Db>>>,
     /// Embedded fields whose model did not open, with the reason.
@@ -335,7 +335,7 @@ impl Database {
     }
 
     fn get(&self) -> PyResult<Arc<Db>> {
-        self.db.read().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| StrataError::new_err("the database is closed"))
+        self.db.read().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| ChloeDBError::new_err("the database is closed"))
     }
 
     fn sqlite_options(tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool) -> PyResult<sqlite::ImportOptions> {
@@ -543,7 +543,7 @@ impl Database {
     fn query_logged<'py>(&self, py: Python<'py>, sql: &str, params: Option<&Bound<'py, PyDict>>, log: &str) -> PyResult<Bound<'py, PyDict>> {
         let db = self.get()?;
         let p = params_json(params)?;
-        let log: Json = serde_json::from_str(log).map_err(|e| StrataError::new_err(format!("log options are JSON: {e}")))?;
+        let log: Json = serde_json::from_str(log).map_err(|e| ChloeDBError::new_err(format!("log options are JSON: {e}")))?;
         let l = py.detach(|| Log::from_json(&log).and_then(|log| self::params(&db, &p).and_then(|p| db.query_logged(sql, &p, &log)))).map_err(err)?;
         let d = result_py(py, &l.rs)?;
         d.set_item("request", l.request)?;
@@ -558,7 +558,7 @@ impl Database {
     /// list.
     fn export_rank_log(&self, py: Python<'_>, export: &str) -> PyResult<String> {
         let db = self.get()?;
-        let x: Json = serde_json::from_str(export).map_err(|e| StrataError::new_err(format!("export options are JSON: {e}")))?;
+        let x: Json = serde_json::from_str(export).map_err(|e| ChloeDBError::new_err(format!("export options are JSON: {e}")))?;
         py.detach(|| {
             let x = Export::from_json(&x)?;
             let mut out = Vec::new();
@@ -580,7 +580,7 @@ impl Database {
     /// Runs a plan given as JSON text, as `sql` runs a statement.
     fn run<'py>(&self, py: Python<'py>, plan: &str) -> PyResult<Bound<'py, PyAny>> {
         let db = self.get()?;
-        let plan: Json = serde_json::from_str(plan).map_err(|e| StrataError::new_err(format!("a plan is JSON: {e}")))?;
+        let plan: Json = serde_json::from_str(plan).map_err(|e| ChloeDBError::new_err(format!("a plan is JSON: {e}")))?;
         match py.detach(|| Plan::from_json(&plan).and_then(|plan| db.run(&plan))).map_err(err)? {
             SqlResult::Rows(rs) => Ok(result_py(py, &rs)?.into_any()),
             SqlResult::Written(n) => Ok(n.into_pyobject(py)?.into_any()),
@@ -1093,7 +1093,7 @@ fn create_sql(schema: &str) -> PyResult<String> {
 /// statistics. `strata.nearby` (python/strata/nearby.py) fetches the
 /// manifest and tiles over HTTP and asks the server when the device cannot
 /// prove its answer; this class does the rest, with no network of its own.
-#[pyclass(module = "strata._strata")]
+#[pyclass(module = "chloedb._chloedb")]
 struct SliceDevice {
     dev: std::sync::Mutex<Option<chloedb::slice::Device>>,
 }
@@ -1101,7 +1101,7 @@ struct SliceDevice {
 impl SliceDevice {
     fn with<T>(&self, f: impl FnOnce(&mut chloedb::slice::Device) -> chloedb::Result<T>) -> PyResult<T> {
         let mut g = self.dev.lock().unwrap_or_else(|e| e.into_inner());
-        let d = g.as_mut().ok_or_else(|| StrataError::new_err("the slice is closed"))?;
+        let d = g.as_mut().ok_or_else(|| ChloeDBError::new_err("the slice is closed"))?;
         f(d).map_err(err)
     }
 }
@@ -1220,7 +1220,7 @@ impl SliceDevice {
 }
 
 #[pymodule]
-fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _chloedb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
     m.add_class::<SliceDevice>()?;
     #[cfg(feature = "datafusion")]
@@ -1228,6 +1228,8 @@ fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(train_codebook, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add_function(wrap_pyfunction!(create_sql, m)?)?;
-    m.add("StrataError", m.py().get_type::<StrataError>())?;
+    m.add("ChloeDBError", m.py().get_type::<ChloeDBError>())?;
+    // Its name when ChloeDB was called Strata: the same class.
+    m.add("StrataError", m.py().get_type::<ChloeDBError>())?;
     Ok(())
 }

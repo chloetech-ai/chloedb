@@ -7,10 +7,10 @@ vector, by a codebook of residual k-means centroids. Train the codebook
 first, on a table's vectors or on vectors you have, then create the table
 that names it::
 
-    import strata
+    import chloedb
 
-    hash = strata.train.codebook(db, "items-rq", field="emb")
-    items = strata.open("items.strata", schema={
+    hash = chloedb.train.codebook(db, "items-rq", field="emb")
+    items = chloedb.open("items.strata", schema={
         "table": "items", "key": "id",
         "fields": [
             {"name": "id", "type": "keyword"},
@@ -242,7 +242,7 @@ def write_vectors(source: Any, name: str, *, models: str | os.PathLike | None = 
     cfg = json.load(open(os.path.join(path, S.CONFIG)))
     items = S.read_items(path)
     if not items:
-        raise ValueError(f"sequence model {name} was saved without its item vectors ({S.ITEMS}): train it again with strata.train.sequence")
+        raise ValueError(f"sequence model {name} was saved without its item vectors ({S.ITEMS}): train it again with chloedb.train.sequence")
     table, field = cfg["table"], cfg["field"]
     pk = _key(source, table)
     written = 0

@@ -7,7 +7,7 @@ import urllib.request
 
 import pytest
 
-import strata
+import chloedb
 
 BOOKS = {
     "table": "books",
@@ -40,7 +40,7 @@ def book(i):
 
 @pytest.fixture
 def db(tmp_path):
-    with strata.Database.create(tmp_path / "books.strata", BOOKS) as d:
+    with chloedb.Database.create(tmp_path / "books.strata", BOOKS) as d:
         d.insert([book(i) for i in range(200)])
         yield d
 

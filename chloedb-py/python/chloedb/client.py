@@ -15,7 +15,7 @@ import urllib.request
 from typing import Any, Iterable, Iterator, Mapping
 
 from ._search import Search, ordered_schema, params as _params
-from ._native import StrataError
+from ._native import ChloeDBError
 from .build import Query
 from .frame import FrameStore, _UPLOAD_ROWS, _arrow_table, _client_arrow
 from .result import Result
@@ -60,7 +60,7 @@ FRAME_PAGE = 100_000
 class Client(Search, FrameStore):
     """A chloedb-server at `url` ("http://host:7700"). `token` is the
     server's --token, if it has one. Errors the server reports raise
-    `StrataError`; one it cannot be reached raises `urllib.error.URLError`.
+    `ChloeDBError`; one it cannot be reached raises `urllib.error.URLError`.
 
     A request the server refuses for its load (429: behind on flushing its
     writes, its write queue full, too many queries running) did nothing,
@@ -110,7 +110,7 @@ class Client(Search, FrameStore):
                 if e.code == 429 and self.retry_for > 0 and again and (keyed or not partial) and time.monotonic() + wait <= give_up:
                     time.sleep(wait)
                     continue
-                err = StrataError(f"{msg} (HTTP {e.code})")
+                err = ChloeDBError(f"{msg} (HTTP {e.code})")
                 err.status = e.code
                 err.answer = answer
                 raise err from None
@@ -137,7 +137,7 @@ class Client(Search, FrameStore):
         or "failing" (which the server answers with 503)."""
         try:
             return self._call("GET", "/v1/health")
-        except StrataError as e:
+        except ChloeDBError as e:
             if e.status == 503 and isinstance(e.answer, dict) and "status" in e.answer:
                 return e.answer
             raise
@@ -225,7 +225,7 @@ class Client(Search, FrameStore):
     def _close_cursor(self, cursor: str) -> None:
         try:
             self._call("DELETE", f"/v1/query/cursors/{cursor}")
-        except (StrataError, OSError):
+        except (ChloeDBError, OSError):
             pass  # it ends when its keep-alive does
 
     def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, idempotency_key: str | None = None, **kw: Any) -> Result | int:
@@ -245,7 +245,7 @@ class Client(Search, FrameStore):
         # NDJSON, a record a line; a failure partway is the last line.
         out = [json.loads(line) for line in self._call("POST", "/v1/rank_log/export", opts, text=True).splitlines() if line.strip()]
         if out and "error" in out[-1] and "request" not in out[-1]:
-            err = StrataError(f"{out[-1]['error']} (HTTP {out[-1].get('status', 500)})")
+            err = ChloeDBError(f"{out[-1]['error']} (HTTP {out[-1].get('status', 500)})")
             err.status, err.answer = out[-1].get("status", 500), out[-1]
             raise err
         return out
@@ -337,7 +337,7 @@ class Client(Search, FrameStore):
         path = f"/v1/kv/{urllib.parse.quote(self._table(table), safe='')}/{urllib.parse.quote(str(key), safe='')}"
         try:
             return self._call("GET", path)["row"]
-        except StrataError as e:
+        except ChloeDBError as e:
             if e.status == 404 and isinstance(e.answer, dict) and e.answer.get("found") is False:
                 return None
             raise
@@ -372,9 +372,9 @@ class Client(Search, FrameStore):
         stream; one the server has reached already (a replay's) is skipped,
         so resuming from `source(name) + 1`, or from before it, applies
         each event once. Returns the last answer, {"done": True, "lines",
-        "written", "skipped", "batches"}; a failure raises StrataError,
+        "written", "skipped", "batches"}; a failure raises ChloeDBError,
         whose `answer["lines"]` counts the events written before it.
-        `strata.ingest` reads Kafka into a stream."""
+        `chloedb.ingest` reads Kafka into a stream."""
 
         def chunks() -> Iterable[bytes]:
             chunk: list[str] = []
@@ -406,11 +406,11 @@ class Client(Search, FrameStore):
                             break
         except urllib.error.HTTPError as e:
             raw = e.read()
-            err = StrataError(f"{raw.decode(errors='replace')} (HTTP {e.code})")
+            err = ChloeDBError(f"{raw.decode(errors='replace')} (HTTP {e.code})")
             err.status, err.answer = e.code, None
             raise err from None
         if "error" in last or not last.get("done"):
-            err = StrataError(f"{last.get('error', 'the stream ended early')} (HTTP {last.get('status', 500)})")
+            err = ChloeDBError(f"{last.get('error', 'the stream ended early')} (HTTP {last.get('status', 500)})")
             err.status, err.answer = last.get("status", 500), last
             raise err
         return last
@@ -565,12 +565,12 @@ class Client(Search, FrameStore):
             while True:
                 try:
                     page, cursor = self._arrow_page(body, types)
-                except StrataError as e:
+                except ChloeDBError as e:
                     # A server from before scrolls answers at most
                     # --max-result-window rows a query.
                     if "a query returns at most" not in str(e) and "the most a query returns" not in str(e):
                         raise
-                    err = StrataError(f"{e}; this server reads a frame in one query (it is from before scrolls), so it needs a larger --max-result-window (0: none)")
+                    err = ChloeDBError(f"{e}; this server reads a frame in one query (it is from before scrolls), so it needs a larger --max-result-window (0: none)")
                     err.status, err.answer = getattr(e, "status", None), getattr(e, "answer", None)
                     raise err from None
                 yield page
@@ -627,4 +627,4 @@ class Client(Search, FrameStore):
         self.close()
 
     def __repr__(self) -> str:
-        return f"<strata.Client {self.url}>"
+        return f"<chloedb.Client {self.url}>"

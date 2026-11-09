@@ -1,8 +1,8 @@
 # chloedb: ChloeDB from Python
 
-`import strata` (or `import chloedb`, the same package by its new name) runs a ChloeDB database in your process (`strata.open`,
-`strata.Database`), or talks to a running `chloedb-server` (`strata.connect`,
-`strata.Client`), with the same methods: `insert`, `upsert`, `delete`,
+`import strata` (or `import chloedb`, the same package by its new name) runs a ChloeDB database in your process (`chloedb.open`,
+`chloedb.Database`), or talks to a running `chloedb-server` (`chloedb.connect`,
+`chloedb.Client`), with the same methods: `insert`, `upsert`, `delete`,
 `import_file`, `query`, `sql`, `search`, and `table()` for queries built
 from Python values instead of SQL text. A database in your process also
 answers with Arrow columns (`query_arrow`), which pyarrow, polars and pandas
@@ -15,9 +15,9 @@ pip install ./chloedb-py          # or from source, from the repository's root; 
 ```
 
 ```python
-import strata
+import chloedb
 
-db = strata.open("books.strata", schema={
+db = chloedb.open("books.strata", schema={
     "table": "books", "key": "id",
     "fields": [
         {"name": "id", "type": "keyword"},
@@ -28,7 +28,7 @@ db = strata.open("books.strata", schema={
 db.insert({"id": "b1", "title": "The river and the dragon", "year": 1999})
 print(db.search("dragon").dicts())
 
-from strata import col, bm25
+from chloedb import col, bm25
 for row in db.table().where(col("year") >= 1990).order_by(bm25("title", "dragon")).limit(5):
     print(row["title"])
 ```
@@ -37,12 +37,12 @@ Frames are lazy dataframes over tables, run where the data is (pyarrow
 needed: `pip install "strata-db[frame]" -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0`):
 
 ```python
-import strata
-from strata import col
+import chloedb
+from chloedb import col
 
-shop = strata.connect("shop.strata")       # or a server: strata.connect("https://...")
+shop = chloedb.connect("shop.strata")       # or a server: chloedb.connect("https://...")
 (shop["orders"].filter(col("status") == "paid")
-     .group_by("country").agg(revenue=col("amount").sum(), n=strata.len())
+     .group_by("country").agg(revenue=col("amount").sum(), n=chloedb.len())
      .sort("revenue", descending=True).to_polars())
 ```
 

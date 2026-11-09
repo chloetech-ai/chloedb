@@ -8,7 +8,7 @@ compiles to one SQL statement with its values as parameters, which runs on
 a file in this process (`Database`) or on a chloedb-server or a coordinator
 (`Client`), and the answer comes back as Arrow::
 
-    import strata as st
+    import chloedb as st
 
     shop = st.connect("shop.strata")          # or st.connect("https://...")
     orders = shop["orders"]
@@ -39,7 +39,7 @@ import os
 import tempfile
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
-from ._native import StrataError
+from ._native import ChloeDBError
 from .build import (
     Expr,
     _Agg,
@@ -74,7 +74,7 @@ _SAMPLE_ROWS = 100_000
 
 def len_() -> Expr:
     """The number of rows (`COUNT(*)`), as Polars' `pl.len()`; a frame
-    names the column `len`. `strata.len` is this function."""
+    names the column `len`. `chloedb.len` is this function."""
     return _Agg("count", None)
 
 
@@ -180,7 +180,7 @@ class _Render:
         if entry is None:
             near = [k for k in scope if k.lower() == name.lower()]
             if len(near) != 1:
-                raise StrataError(f"the frame has no column {name!r}: it has {', '.join(scope) or 'none'}")
+                raise ChloeDBError(f"the frame has no column {name!r}: it has {', '.join(scope) or 'none'}")
             entry = scope[near[0]]
         return entry.sql(self)
 
@@ -206,7 +206,7 @@ class _Render:
             return str(v)
         if isinstance(v, float):
             if not math.isfinite(v):
-                raise StrataError(f"ChloeDB's numbers are finite, not {v!r}")
+                raise ChloeDBError(f"ChloeDB's numbers are finite, not {v!r}")
             return repr(v)
         return self.param(v)
 
@@ -391,9 +391,9 @@ def _frame_name(e: Expr) -> str:
     for k in e._kids():
         try:
             return _frame_name(k)
-        except StrataError:
+        except ChloeDBError:
             pass
-    raise StrataError(f"give {e!r} a name: .alias(name), or name=... as a keyword argument")
+    raise ChloeDBError(f"give {e!r} a name: .alias(name), or name=... as a keyword argument")
 
 
 def _items(exprs: Sequence[Any], named: Mapping[str, Any]) -> list[tuple[str, Expr]]:
@@ -413,7 +413,7 @@ def _items(exprs: Sequence[Any], named: Mapping[str, Any]) -> list[tuple[str, Ex
     seen = set()
     for name, _ in out:
         if name in seen:
-            raise StrataError(f"two columns are named {name!r}: rename one with .alias()")
+            raise ChloeDBError(f"two columns are named {name!r}: rename one with .alias()")
         seen.add(name)
     return out
 
@@ -427,7 +427,7 @@ def _entry(e: Expr, scope: dict) -> Any:
             if len(near) == 1:
                 entry = scope[near[0]]
         if entry is None:
-            raise StrataError(f"the frame has no column {e.name!r}: it has {', '.join(scope) or 'none'}")
+            raise ChloeDBError(f"the frame has no column {e.name!r}: it has {', '.join(scope) or 'none'}")
         return entry
     return _Def(e, scope)
 
@@ -504,7 +504,7 @@ class _Filter(_Node):
 
     def compile(self, c: _Compiler) -> _Block:
         if _has_agg(self.cond) or _has_window(self.cond):
-            raise StrataError("filter takes conditions on rows: filter on an aggregate after group_by().agg(), or on a window column after with_columns()")
+            raise ChloeDBError("filter takes conditions on rows: filter on an aggregate after group_by().agg(), or on a window column after with_columns()")
         b = self.input.compile(c)
         if not b.plain():
             b = c.wrap(b)
@@ -526,17 +526,17 @@ class _Project(_Node):
                 b = c.wrap(b)
         if aggs:
             if self.keep:
-                raise StrataError("with_columns of an aggregate: use .over(...) for a window, or group_by(...).agg(...)")
+                raise ChloeDBError("with_columns of an aggregate: use .over(...) for a window, or group_by(...).agg(...)")
             loose = [n for n, e in self.items if not _has_agg(e) and _names(e)]
             if loose:
-                raise StrataError(f"select mixes aggregates with columns ({', '.join(loose)}): group by them with group_by(...).agg(...)")
+                raise ChloeDBError(f"select mixes aggregates with columns ({', '.join(loose)}): group by them with group_by(...).agg(...)")
             return _Group([], self.items).fold(c, b)
         for old, new in self.rename.items():
             if old not in b.out:
-                raise StrataError(f"the frame has no column {old!r} to rename")
+                raise ChloeDBError(f"the frame has no column {old!r} to rename")
         for name in self.drop:
             if name not in b.out:
-                raise StrataError(f"the frame has no column {name!r} to drop")
+                raise ChloeDBError(f"the frame has no column {name!r} to drop")
         scope = b.scope
         if self.keep or self.drop or self.rename:
             out = {}
@@ -602,12 +602,12 @@ class _Group(_Node):
     def fold(self, c: _Compiler, b: _Block) -> _Block:
         for name, e in self.aggs:
             if not _has_agg(e):
-                raise StrataError(f"agg takes aggregates (col(x).sum(), st.len(), ...), and {name} is not one")
+                raise ChloeDBError(f"agg takes aggregates (col(x).sum(), st.len(), ...), and {name} is not one")
             if _has_window(e):
-                raise StrataError("a window in agg: compute it with with_columns before the group_by")
+                raise ChloeDBError("a window in agg: compute it with with_columns before the group_by")
         for name, e in self.keys:
             if _has_agg(e) or _has_window(e):
-                raise StrataError(f"group_by takes columns and expressions of rows, and {name} is not one")
+                raise ChloeDBError(f"group_by takes columns and expressions of rows, and {name} is not one")
         needed = set()
         for _, e in self.keys + self.aggs:
             needed |= _names(e)
@@ -674,7 +674,7 @@ class _Join(_Node):
                 continue
             name = n if n not in out else n + self.suffix
             if name in out:
-                raise StrataError(f"the join gives two columns named {name!r}: rename one first")
+                raise ChloeDBError(f"the join gives two columns named {name!r}: rename one first")
             out[name] = rb.out[n]
             if n in rb.types:
                 types[name] = rb.types[n]
@@ -735,7 +735,7 @@ class _Rerank(_Node):
     def compile(self, c: _Compiler) -> _Block:
         b = self.input.compile(c)
         if not b.ranked or b.kind != "table" or b.max_per is not None or b.offset:
-            raise StrataError("rerank follows search(), near() or rank_by() on a table: it ranks their rows again")
+            raise ChloeDBError("rerank follows search(), near() or rank_by() on a table: it ranks their rows again")
         cols = [n for n in b.columns if not (isinstance(b.out[n], _Raw) and b.out[n].text == "score()")]
         # A phase reads the rows of the one before, every column of them.
         star = _Block("table", b.source, [], table=b.table)
@@ -762,7 +762,7 @@ class _MaxPer(_Node):
     def compile(self, c: _Compiler) -> _Block:
         b = self.input.compile(c)
         if not b.order:
-            raise StrataError("max_per keeps the first rows of each value in an order: search, rank or sort first")
+            raise ChloeDBError("max_per keeps the first rows of each value in an order: search, rank or sort first")
         if b.max_per is not None or b.offset:
             b = c.wrap(b)
         b.max_per = (self.k, self.field, b.scope)
@@ -781,7 +781,7 @@ class _Union(_Node):
                 cols = list(b.columns)
                 types = dict(b.types)
             elif set(b.columns) != set(cols):
-                raise StrataError(f"union takes frames of the same columns: {', '.join(cols)} and {', '.join(b.columns)}")
+                raise ChloeDBError(f"union takes frames of the same columns: {', '.join(cols)} and {', '.join(b.columns)}")
             else:
                 b.columns = list(cols)
             parts.append(c.render(b))
@@ -833,7 +833,7 @@ class Frame:
         indexes."""
         conds = [_expr(c) for c in conditions] + [_Col(n) == v for n, v in equal.items()]
         if not conds:
-            raise StrataError("filter takes a condition")
+            raise ChloeDBError("filter takes a condition")
         node = self._node
         for cond in conds:
             node = _Filter(node, cond)
@@ -847,7 +847,7 @@ class Frame:
         keys = ([by] if isinstance(by, (str, Expr)) else list(by)) + list(more)
         desc = [descending] * len(keys) if isinstance(descending, bool) else list(descending)
         if len(desc) != len(keys):
-            raise StrataError("descending takes one bool, or one for each key")
+            raise ChloeDBError("descending takes one bool, or one for each key")
         return self._then(_Sort(self._node, [(_colish(k), bool(d), nulls_last) for k, d in zip(keys, desc)]))
 
     def head(self, n: int = 5) -> "Frame":
@@ -859,7 +859,7 @@ class Frame:
 
     def slice(self, offset: int, length: int | None = None) -> "Frame":
         if offset < 0:
-            raise StrataError("slice's offset counts from the first row, from 0")
+            raise ChloeDBError("slice's offset counts from the first row, from 0")
         return self._then(_Slice(self._node, None if length is None else _count(length, "slice"), int(offset)))
 
     def group_by(self, *keys: Any, **named: Any) -> "GroupBy":
@@ -876,24 +876,24 @@ class Frame:
         if not isinstance(other, Frame):
             raise TypeError("join takes a Frame")
         if other._store is not self._store:
-            raise StrataError("join takes frames of one store: copy one with write_to first")
+            raise ChloeDBError("join takes frames of one store: copy one with write_to first")
         if how not in ("inner", "left"):
-            raise StrataError(f"join's how is 'inner' or 'left', not {how!r} (ChloeDB has no right, full or cross joins)")
+            raise ChloeDBError(f"join's how is 'inner' or 'left', not {how!r} (ChloeDB has no right, full or cross joins)")
         if on is not None:
             left_on = right_on = on
         if left_on is None or right_on is None:
-            raise StrataError("join takes on=, or left_on= and right_on=")
+            raise ChloeDBError("join takes on=, or left_on= and right_on=")
         lk = [_colish(k) for k in ([left_on] if isinstance(left_on, (str, Expr)) else left_on)]
         rk = [_colish(k) for k in ([right_on] if isinstance(right_on, (str, Expr)) else right_on)]
         if len(lk) != len(rk) or not lk:
-            raise StrataError("join takes as many left keys as right keys")
+            raise ChloeDBError("join takes as many left keys as right keys")
         return self._then(_Join(self._node, other._node, lk, rk, how, suffix))
 
     def unique(self, subset: Any = None, *, keep: str = "any") -> "Frame":
         """Each row once; with `subset`, one row of each value of those
         columns (the first in the frame's order, `DISTINCT ON`)."""
         if keep not in ("any", "first"):
-            raise StrataError("unique's keep is 'any' or 'first' (the first in the frame's order)")
+            raise ChloeDBError("unique's keep is 'any' or 'first' (the first in the frame's order)")
         if subset is None:
             return self._then(_Distinct(self._node, None))
         keys = [subset] if isinstance(subset, (str, Expr)) else list(subset)
@@ -915,7 +915,7 @@ class Frame:
         told apart by the table's key, or by the columns `on`; a row whose
         `on` is NULL is in no sample."""
         if (n is None) == (fraction is None):
-            raise StrataError("sample takes n= (a number of rows) or fraction= (a share of them)")
+            raise ChloeDBError("sample takes n= (a number of rows) or fraction= (a share of them)")
         if n is not None:
             return self.shuffle(seed=seed, on=on).head(_count(n, "sample"))
         return self.filter(_under(self._row_hash(on, seed, "sample"), fraction, "sample"))
@@ -938,18 +938,18 @@ class Frame:
 
     def _row_hash(self, on: Any, seed: Any, what: str) -> Expr:
         if isinstance(seed, bool) or not isinstance(seed, int):
-            raise StrataError(f"{what}'s seed is an int, not {seed!r}")
+            raise ChloeDBError(f"{what}'s seed is an int, not {seed!r}")
         if on is None:
             node = self._node
             while not isinstance(node, _Table) and getattr(node, "input", None) is not None:
                 node = node.input
             key = node.schema.get("key") if isinstance(node, _Table) else None
             if not key or key not in self.columns:
-                raise StrataError(f"{what} hashes each row's key, and this frame has none: name the columns that tell its rows apart, {what}(..., on=\"user\")")
+                raise ChloeDBError(f"{what} hashes each row's key, and this frame has none: name the columns that tell its rows apart, {what}(..., on=\"user\")")
             on = key
         cols = [on] if isinstance(on, (str, Expr)) else list(on)
         if not cols:
-            raise StrataError(f"{what}'s on= names one or more columns")
+            raise ChloeDBError(f"{what}'s on= names one or more columns")
         h: Any = seed
         for c in cols:
             h = _colish(c).hash(h)
@@ -1015,9 +1015,9 @@ class Frame:
     def __repr__(self) -> str:
         try:
             sql = self.sql()
-        except StrataError as e:
+        except ChloeDBError as e:
             sql = f"(does not compile: {e})"
-        return f"<strata.Frame of {self._store!r}>\n{sql}"
+        return f"<chloedb.Frame of {self._store!r}>\n{sql}"
 
     def _repr_html_(self) -> str:
         t = self.head(10).to_arrow()
@@ -1080,7 +1080,7 @@ class Frame:
                 return numpy.zeros((0, 0), dtype=numpy.float32)
             flat = c.flatten().to_numpy(zero_copy_only=False)
             if c.null_count or len(flat) % len(c):
-                raise StrataError(f"{t.column_names[0]} holds vectors of different lengths or NULLs: filter them out first")
+                raise ChloeDBError(f"{t.column_names[0]} holds vectors of different lengths or NULLs: filter them out first")
             return flat.reshape(len(c), len(flat) // len(c))
         return numpy.column_stack([t.column(i).to_numpy(zero_copy_only=False) for i in range(t.num_columns)]) if t.num_columns else numpy.zeros((t.num_rows, 0))
 
@@ -1110,7 +1110,7 @@ class Frame:
         """The one value of a one-row, one-column answer (a total)."""
         t = self.to_arrow()
         if t.num_rows != 1 or t.num_columns != 1:
-            raise StrataError(f"item() needs one row and one column, and the answer has {t.num_rows} rows and {t.num_columns} columns")
+            raise ChloeDBError(f"item() needs one row and one column, and the answer has {t.num_rows} rows and {t.num_columns} columns")
         return t.column(0)[0].as_py()
 
     # Writes: explicit, on a table's frame.
@@ -1121,7 +1121,7 @@ class Frame:
             conds.append(node.cond)
             node = node.input
         if not isinstance(node, _Table):
-            raise StrataError(f"{what} works on a table's frame and its filters: store['t'].filter(...).{what}(...)")
+            raise ChloeDBError(f"{what} works on a table's frame and its filters: store['t'].filter(...).{what}(...)")
         return node.name, conds[::-1]
 
     def get(self, key: Any) -> dict | None:
@@ -1129,7 +1129,7 @@ class Frame:
         query)."""
         name, conds = self._table("get")
         if conds:
-            raise StrataError("get reads a row by key, from the table's frame itself")
+            raise ChloeDBError("get reads a row by key, from the table's frame itself")
         return self._store.get(key, table=name)
 
     def upsert(self, data: Any) -> int:
@@ -1139,7 +1139,7 @@ class Frame:
         Returns how many."""
         name, conds = self._table("upsert")
         if conds:
-            raise StrataError("upsert writes into the table's frame itself, not a filtered one")
+            raise ChloeDBError("upsert writes into the table's frame itself, not a filtered one")
         return int(self._store._load(name, data)["rows"])
 
     def update(self, values: Mapping[str, Any] | None = None, **set: Any) -> int:
@@ -1149,7 +1149,7 @@ class Frame:
         name, conds = self._table("update")
         given = {**(values or {}), **set}
         if not given:
-            raise StrataError("update takes column=value or column=expression")
+            raise ChloeDBError("update takes column=value or column=expression")
         c = _Compiler()
         b = _Table(name, self._node_schema()).compile(c)
         sc = b.scope
@@ -1164,7 +1164,7 @@ class Frame:
         table only with `all=True`. Returns how many."""
         name, conds = self._table("delete")
         if not conds and not all:
-            raise StrataError("delete() of a frame without a filter deletes every row: pass all=True to mean it")
+            raise ChloeDBError("delete() of a frame without a filter deletes every row: pass all=True to mean it")
         c = _Compiler()
         sc = _Table(name, self._node_schema()).compile(c).scope
         sql = f"DELETE FROM {_q(name)}"
@@ -1197,7 +1197,7 @@ def _under(h: Expr, fraction: Any, what: str) -> Expr:
     """The rows whose hash `h` falls under `fraction`: its low 32 bits
     against the fraction of 2^32."""
     if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 <= fraction <= 1:
-        raise StrataError(f"{what}'s fraction is a number from 0 to 1, not {fraction!r}")
+        raise ChloeDBError(f"{what}'s fraction is a number from 0 to 1, not {fraction!r}")
     return (h % 4294967296) < round(fraction * 4294967296)
 
 
@@ -1228,7 +1228,7 @@ class _Bound:
 
 def _count(n: Any, what: str) -> int:
     if isinstance(n, bool) or not isinstance(n, int) or n < 0:
-        raise StrataError(f"{what} takes a number of rows, not {n!r}")
+        raise ChloeDBError(f"{what} takes a number of rows, not {n!r}")
     return n
 
 
@@ -1243,7 +1243,7 @@ class GroupBy:
 
     def __init__(self, frame: Frame, keys: list[tuple[str, Expr]]):
         if not keys:
-            raise StrataError("group_by takes columns or expressions to group by")
+            raise ChloeDBError("group_by takes columns or expressions to group by")
         self._frame, self._keys = frame, keys
 
     def agg(self, *aggs: Any, **named: Any) -> Frame:
@@ -1254,7 +1254,7 @@ class GroupBy:
         names = {n for n, _ in self._keys}
         clash = [n for n, _ in items if n in names]
         if clash:
-            raise StrataError(f"an aggregate is named as a key ({', '.join(clash)}): rename it with .alias()")
+            raise ChloeDBError(f"an aggregate is named as a key ({', '.join(clash)}): rename it with .alias()")
         return self._frame._then(_Group(self._keys, items, self._frame._node))
 
     def len(self, name: str = "len") -> Frame:
@@ -1267,10 +1267,10 @@ def concat(frames: Sequence[Frame], *, distinct: bool = False) -> Frame:
     once with `distinct`). The frames have the same columns and store."""
     frames = list(frames)
     if not frames:
-        raise StrataError("concat takes frames")
+        raise ChloeDBError("concat takes frames")
     store = frames[0]._store
     if any(f._store is not store for f in frames):
-        raise StrataError("concat takes frames of one store")
+        raise ChloeDBError("concat takes frames of one store")
     if len(frames) == 1:
         return frames[0]
     return Frame(store, _Union([f._node for f in frames], distinct))
@@ -1309,17 +1309,17 @@ def _schema_of(plan: dict, name: str, key: str | None, text: Sequence[str], keyw
     for kind, which in (("text", text), ("keyword", keyword)):
         for n in [which] if isinstance(which, str) else which:
             if n not in names:
-                raise StrataError(f"{kind}={n!r}: the rows have no column {n!r}")
+                raise ChloeDBError(f"{kind}={n!r}: the rows have no column {n!r}")
             for f in fields:
                 if f["name"] == n:
                     f["type"] = kind
                     f.pop("multi", None) if kind == "text" else None
     for n, spec in (embed or {}).items():
         if n in names:
-            raise StrataError(f"embed={n!r}: the rows have a column {n!r} already")
+            raise ChloeDBError(f"embed={n!r}: the rows have a column {n!r} already")
         spec = dict(spec)
         if "from" not in spec or "model" not in spec:
-            raise StrataError(f"embed={{{n!r}: {{'from': [...], 'model': ...}}}} names the fields embedded and the model")
+            raise ChloeDBError(f"embed={{{n!r}: {{'from': [...], 'model': ...}}}} names the fields embedded and the model")
         spec["from"] = [spec["from"]] if isinstance(spec["from"], str) else list(spec["from"])
         fields.append({"name": n, "type": "vector", "embed": spec})
     schema: dict[str, Any] = {"table": name, "fields": fields}
@@ -1340,12 +1340,12 @@ class FrameStore:
         tables = self.tables()
         if table is None:
             if not tables:
-                raise StrataError("the store has no tables yet: create one with create_table(name, data)")
+                raise ChloeDBError("the store has no tables yet: create one with create_table(name, data)")
             schema = tables[0]
         else:
             match = [t for t in tables if t["table"] == table] or [t for t in tables if t["table"].lower() == table.lower()]
             if not match:
-                raise StrataError(f"no table {table!r}: there are {', '.join(t['table'] for t in tables) or 'none'}")
+                raise ChloeDBError(f"no table {table!r}: there are {', '.join(t['table'] for t in tables) or 'none'}")
             schema = match[0]
         return Frame(self, _Table(schema["table"], schema))
 
@@ -1371,12 +1371,12 @@ class FrameStore:
         dropped, so its rows are deleted and the new ones written under
         its schema)."""
         if if_exists not in ("fail", "append", "replace"):
-            raise StrataError("if_exists is 'fail', 'append' or 'replace'")
+            raise ChloeDBError("if_exists is 'fail', 'append' or 'replace'")
         rows = None if data is None else _arrow_table(data)
         existing = [t["table"] for t in self.tables()]
         if name in existing:
             if if_exists == "fail":
-                raise StrataError(f"table {name!r} exists: if_exists='append' adds rows, 'replace' makes it again")
+                raise ChloeDBError(f"table {name!r} exists: if_exists='append' adds rows, 'replace' makes it again")
             if if_exists == "replace":
                 if existing[0] == name:
                     self.sql(f"DELETE FROM {_q(name)}")
@@ -1389,7 +1389,7 @@ class FrameStore:
                 return self[name]
         if schema is None:
             if rows is None:
-                raise StrataError("create_table makes a schema from rows: pass data, or schema=")
+                raise ChloeDBError("create_table makes a schema from rows: pass data, or schema=")
             schema = _schema_of(self._plan_rows(name, rows, key), name, key, text, keyword, embed)
         elif not isinstance(schema, Mapping):
             from . import _schema_json

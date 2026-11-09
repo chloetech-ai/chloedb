@@ -2,11 +2,11 @@
 after the last one or two items, kept in a table and read with stupid
 backoff (Brants et al., 2007)::
 
-    from strata import ngrams
+    from chloedb import ngrams
 
     db.sql(ngrams.create_table("next"))
     db.write(ngrams.ops(["a", "b"], "c", table="next"))  # after each event
-    strata.next_items(db, ["a", "b"], table="next")      # [("c", 1.0)]
+    chloedb.next_items(db, ["a", "b"], table="next")      # [("c", 1.0)]
 
 Each row counts one item after one context: its key is the context's
 items, then the item, so a context's rows sit together with
@@ -49,7 +49,7 @@ def create_table(table: str = "next") -> str:
 
 
 def schema(table: str = "next") -> dict:
-    """The same table as a schema, for `strata.open(path, schema)` or
+    """The same table as a schema, for `chloedb.open(path, schema)` or
     `chloedb-server --schema`."""
     return {
         "table": table,
