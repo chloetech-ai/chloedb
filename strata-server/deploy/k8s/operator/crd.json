@@ -412,6 +412,28 @@
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "sheets": {
+                    "description": "Spreadsheets beside the cluster: a strata-sheets Deployment of one, which the command center shows under Apps; its workbooks are rows of two tables of the cluster, and the cluster's tables open in it as sheets.",
+                    "properties": {
+                      "args": {
+                        "description": "More arguments of strata-sheets serve.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "paused": {
+                        "description": "No spreadsheets pod for now (the workbooks stay).",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of its container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      }
+                    },
+                    "type": "object"
+                  },
                   "storage": {
                     "properties": {
                       "size": {

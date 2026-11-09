@@ -376,4 +376,35 @@ async fn a_crawler_runs_beside_a_cluster_on_an_api_server() {
         let o = k.get(gone).await.unwrap();
         assert!(o.is_none() || !o.unwrap()["metadata"]["deletionTimestamp"].is_null(), "{gone} is deleted");
     }
+
+    // The spreadsheets the same way, beside the crawler: the resource keeps
+    // spec.sheets, its Service and Deployment are applied, the coordinators
+    // list both apps, and both objects go without it.
+    let mut both = shop.clone();
+    both["spec"]["sheets"] = json!({"args": ["--name", "x"]});
+    k.apply(&format!("{CLUSTERS}/shop"), &both).await.unwrap();
+    let stored = get(&k, &format!("{CLUSTERS}/shop")).await;
+    assert_eq!(stored["spec"]["sheets"], both["spec"]["sheets"]);
+    let spec: operator::Spec = serde_json::from_value(stored["spec"].clone()).unwrap();
+    let c = Cluster { spec: spec.clone(), ..c };
+    c.sheets(&spec).await.unwrap();
+    let path = "/apis/apps/v1/namespaces/db/deployments/shop-sheets";
+    let d = get(&k, path).await;
+    let container = &d["spec"]["template"]["spec"]["containers"][0];
+    assert_eq!(container["command"], json!(["strata-sheets"]));
+    assert_eq!(container["args"], json!(["serve", "--listen", "0.0.0.0:7820", "--strata", "http://shop:7700", "--name", "x"]));
+    let svc = get(&k, "/api/v1/namespaces/db/services/shop-sheets").await;
+    assert_eq!((&svc["spec"]["ports"][0]["port"], &svc["spec"]["selector"]), (&json!(7820), &d["spec"]["selector"]["matchLabels"]));
+    let rv = d["metadata"]["resourceVersion"].clone();
+    c.sheets(&spec).await.unwrap();
+    assert_eq!(get(&k, path).await["metadata"]["resourceVersion"], rv, "applied only when it changes");
+    c.set_coordinator(&[vec!["http://shop-s0-0.shop-servers.db.svc:7701".into()]], 1).await.unwrap();
+    let d = get(&k, "/apis/apps/v1/namespaces/db/deployments/shop-coordinator").await;
+    let env = d["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+    assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://shop-crawler:7800,sheets=http://shop-sheets:7820"), "{env:?}");
+    c.sheets(&operator::Spec { sheets: None, ..spec.clone() }).await.unwrap();
+    for gone in [path, "/api/v1/namespaces/db/services/shop-sheets"] {
+        let o = k.get(gone).await.unwrap();
+        assert!(o.is_none() || !o.unwrap()["metadata"]["deletionTimestamp"].is_null(), "{gone} is deleted");
+    }
 }

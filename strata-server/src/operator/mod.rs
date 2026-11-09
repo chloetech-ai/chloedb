@@ -35,10 +35,12 @@ pub mod autoscale;
 pub mod crawler;
 pub mod follow;
 pub mod kube;
+pub mod sheets;
 pub mod upgrade;
 
 pub use crawler::CrawlerSpec;
 pub use follow::FollowSpec;
+pub use sheets::SheetsSpec;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -128,6 +130,10 @@ pub struct Spec {
     /// in a Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crawler: Option<CrawlerSpec>,
+    /// Spreadsheets beside the cluster ([`sheets`]): `strata-sheets
+    /// serve` in a Deployment of one, which the coordinators list as an app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheets: Option<SheetsSpec>,
 }
 
 /// How the operator makes a change (`spec.rollout`). Not part of a
@@ -367,6 +373,7 @@ impl Default for Spec {
             upgrade: upgrade::Upgrade::default(),
             follow: None,
             crawler: None,
+            sheets: None,
         }
     }
 }
@@ -390,10 +397,16 @@ impl Spec {
         }));
         // Only when there is one, so that a cluster without one keeps its
         // hash (and its coordinators) across the operator's upgrade.
-        if self.crawler.is_some() {
-            j["apps"] = json!([crawler::APP]);
+        let apps = self.apps();
+        if !apps.is_empty() {
+            j["apps"] = json!(apps);
         }
         short_hash(&j)
+    }
+
+    /// The apps beside the cluster that the coordinators list, by name.
+    pub fn apps(&self) -> Vec<&'static str> {
+        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
     }
 
     /// `settings` with `secretEnv` when there is one: a cluster without it
@@ -452,6 +465,9 @@ impl Spec {
         }
         if let Some(c) = &self.crawler {
             c.check()?;
+        }
+        if let Some(s) = &self.sheets {
+            s.check()?;
         }
         if let Some(c) = &self.cluster_token_secret {
             if self.token_secret.is_none() {
@@ -609,6 +625,12 @@ pub trait Platform {
     /// Deployment of one and its Service on Kubernetes. Applied once the
     /// coordinators are there.
     async fn crawler(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
+    /// Runs the spreadsheets `spec.sheets` asks for, or none ([`sheets`]):
+    /// a Deployment of one and its Service on Kubernetes. Applied once the
+    /// coordinators are there.
+    async fn sheets(&self, _spec: &Spec) -> Result<(), String> {
         Ok(())
     }
 }
@@ -1022,6 +1044,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
     };
     p.follow(spec).await?;
     p.crawler(spec).await?;
+    p.sheets(spec).await?;
     let view = match admin.view().await {
         Ok(v) => v,
         Err(e) => return Ok(Outcome::new(Phase::Creating, format!("waiting for the coordinator: {e}"))),
@@ -1853,6 +1876,9 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         if new.crawler.is_some() {
             warnings.push("no token: anything that reaches the crawler's pod may start crawls into the cluster and grow it".into());
         }
+        if new.sheets.is_some() {
+            warnings.push("no token: anything that reaches the spreadsheets' pod may read and change the cluster's tables through it".into());
+        }
     }
     if shards < shards_now || new.replicas < copies_now {
         warnings.push("what goes is deleted with its volumes once its data has moved".into());
@@ -1915,6 +1941,16 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
             (Some(a), Some(b)) if a.paused && !b.paused => format!("the crawler starts again, with no crawls; {}", grows(b)),
             (_, Some(b)) => format!("the crawler restarts with the new settings, ending the crawls running in it (their tables stay); {}", grows(b)),
             (None, None) => unreachable!("the crawler specs differ"),
+        });
+    }
+    if new.sheets != old.sheets {
+        steps.push(match (&old.sheets, &new.sheets) {
+            (None, Some(_)) => "spreadsheets start beside the cluster (strata-sheets serve, a Deployment of one) and the coordinators list them, so the command center shows Apps → Sheets; the workbooks are kept in the tables sheets_books and sheets_cells".into(),
+            (Some(_), None) => "the spreadsheets stop (their Deployment and Service go; the workbooks stay in their tables) and the coordinators no longer list them".into(),
+            (Some(a), Some(b)) if b.paused && !a.paused => "the spreadsheets pause: their pod goes (the workbooks stay in their tables)".into(),
+            (Some(a), Some(b)) if a.paused && !b.paused => "the spreadsheets start again, with the workbooks they had".into(),
+            (_, Some(_)) => "the spreadsheets restart with the new settings, with the workbooks they had".into(),
+            (None, None) => unreachable!("the sheets specs differ"),
         });
     }
     if steps.is_empty() && changes.is_empty() {
@@ -1994,6 +2030,7 @@ pub fn crd() -> Json {
             "upgrade": upgrade::schema(),
             "follow": follow::schema(),
             "crawler": crawler::schema(),
+            "sheets": sheets::schema(),
         },
     });
     let status = free("What the operator found and does.");

@@ -355,10 +355,12 @@ impl Cluster {
         }
         args.extend(s.coordinator_args.iter().cloned());
         let mut env = self.coordinator_token_env();
-        // The crawler beside the cluster, as an app the command center
-        // shows; the admin token is the one it requires.
-        if s.crawler.is_some() {
-            env.push(json!({"name": "STRATA_APPS", "value": format!("{}={}", super::crawler::APP, self.crawler_url())}));
+        // The apps beside the cluster (the crawler, the spreadsheets), as
+        // apps the command center shows; the admin token is the one they
+        // require.
+        let apps: Vec<String> = s.apps().into_iter().map(|a| format!("{a}={}", self.app_url(a))).collect();
+        if !apps.is_empty() {
+            env.push(json!({"name": "STRATA_APPS", "value": apps.join(",")}));
             if let Some(t) = &s.token_secret {
                 env.push(secret_env("STRATA_APP_TOKEN", t));
             }
@@ -444,9 +446,10 @@ impl Cluster {
         format!("{}-crawler", self.name)
     }
 
-    /// Where the coordinators reach the crawler: its Service.
-    fn crawler_url(&self) -> String {
-        format!("http://{}:{}", self.crawler_name(), super::crawler::PORT)
+    /// Where the coordinators reach an app beside the cluster: its Service.
+    fn app_url(&self, app: &str) -> String {
+        let port = if app == super::sheets::APP { super::sheets::PORT } else { super::crawler::PORT };
+        format!("http://{}-{app}:{port}", self.name)
     }
 
     fn crawler_labels(&self) -> Json {
@@ -503,8 +506,94 @@ impl Cluster {
     }
 
     fn crawler_paths(&self) -> (String, String) {
-        let name = self.crawler_name();
+        self.app_paths(&self.crawler_name())
+    }
+
+    /// The paths of an app's Service and Deployment.
+    fn app_paths(&self, name: &str) -> (String, String) {
         (format!("{}/{name}", ns_path(&self.ns, "v1", "services")), format!("{}/{name}", ns_path(&self.ns, "apps/v1", "deployments")))
+    }
+
+    /// An app beside the cluster (the crawler, the spreadsheets): its
+    /// Service and Deployment as `want`s, or, with none, both gone. Each is
+    /// applied only when it changes, by the hash of what it is.
+    async fn beside(&self, (service, deployment): (String, String), want: Option<(Json, Json)>) -> Result<(), String> {
+        let Some((svc, dep)) = want else {
+            for path in [deployment, service] {
+                if self.kube.get(&path).await?.is_some() {
+                    self.kube.delete(&path).await?;
+                }
+            }
+            return Ok(());
+        };
+        for (path, mut want) in [(service, svc), (deployment, dep)] {
+            let hash = super::short_hash(&want);
+            want["metadata"]["annotations"] = json!({CONFIG: hash});
+            if self.kube.get(&path).await?.is_some_and(|h| h["metadata"]["annotations"][CONFIG] == hash.as_str()) {
+                continue;
+            }
+            self.kube.apply(&path, &want).await?;
+        }
+        Ok(())
+    }
+
+    fn sheets_name(&self) -> String {
+        format!("{}-{}", self.name, super::sheets::APP)
+    }
+
+    fn sheets_labels(&self) -> Json {
+        let mut labels = self.labels();
+        labels["app.kubernetes.io/component"] = json!("sheets");
+        labels
+    }
+
+    /// The spreadsheets' Deployment ([`super::sheets`]): one pod, or none
+    /// while paused, never two at once (Recreate: each holds the workbooks
+    /// it has open in memory, and saves them), that reads and writes
+    /// through the coordinators' Service with the admin token, which its
+    /// API requires too.
+    pub fn sheets_deployment(&self, c: &super::SheetsSpec) -> Json {
+        let s = &self.spec;
+        let labels = self.sheets_labels();
+        let mut env = vec![json!({"name": "RUST_LOG", "value": "info"})];
+        if let Some(t) = &s.token_secret {
+            env.push(secret_env("STRATA_KEY", t));
+            env.push(secret_env("STRATA_SHEETS_TOKEN", t));
+        }
+        let port = super::sheets::PORT;
+        let mut container = json!({
+            "name": "sheets", "image": s.image, "command": ["strata-sheets"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
+            "ports": [{"name": "http", "containerPort": port}],
+            "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5},
+            "resources": c.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "50m", "memory": "96Mi"}, "limits": {"memory": "1Gi"}})),
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        if let Some(p) = &s.image_pull_policy {
+            container["imagePullPolicy"] = json!(p);
+        }
+        json!({
+            "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&self.sheets_name(), labels.clone()),
+            "spec": {
+                "replicas": if c.paused { 0 } else { 1 },
+                "selector": {"matchLabels": labels},
+                "strategy": {"type": "Recreate"},
+                "template": {
+                    "metadata": {"labels": labels},
+                    // time to save the workbooks it holds (SIGTERM)
+                    "spec": {"automountServiceAccountToken": false, "terminationGracePeriodSeconds": 30, "containers": [container]},
+                },
+            },
+        })
+    }
+
+    /// The spreadsheets' Service, which the coordinators forward
+    /// `/v1/apps/sheets/...` to.
+    pub fn sheets_service(&self) -> Json {
+        let port = super::sheets::PORT;
+        json!({
+            "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.sheets_name(), self.labels()),
+            "spec": {"selector": self.sheets_labels(), "ports": [{"name": "http", "port": port, "targetPort": port}]},
+        })
     }
 
     fn follow_path(&self) -> String {
@@ -776,26 +865,13 @@ impl Platform for Cluster {
     }
 
     async fn crawler(&self, spec: &Spec) -> Result<(), String> {
-        let (service, deployment) = self.crawler_paths();
-        let Some(c) = &spec.crawler else {
-            for path in [deployment, service] {
-                if self.kube.get(&path).await?.is_some() {
-                    self.kube.delete(&path).await?;
-                }
-            }
-            return Ok(());
-        };
-        // Each applied only when it changes, by the hash of what it is.
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
-        for (path, mut want) in [(service, with.crawler_service()), (deployment, with.crawler_deployment(c))] {
-            let hash = super::short_hash(&want);
-            want["metadata"]["annotations"] = json!({CONFIG: hash});
-            if self.kube.get(&path).await?.is_some_and(|h| h["metadata"]["annotations"][CONFIG] == hash.as_str()) {
-                continue;
-            }
-            self.kube.apply(&path, &want).await?;
-        }
-        Ok(())
+        self.beside(self.crawler_paths(), spec.crawler.as_ref().map(|c| (with.crawler_service(), with.crawler_deployment(c)))).await
+    }
+
+    async fn sheets(&self, spec: &Spec) -> Result<(), String> {
+        let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
+        self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), with.sheets_deployment(c)))).await
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
@@ -1438,6 +1514,44 @@ mod tests {
         // Paused: no pod.
         let paused = cluster(json!({"tokenSecret": "admin", "crawler": {"paused": true}}));
         assert_eq!(paused.crawler_deployment(paused.spec.crawler.as_ref().unwrap())["spec"]["replicas"], 0);
+    }
+
+    #[test]
+    fn spreadsheets_run_beside_the_cluster_and_the_coordinators_list_them_with_the_crawler() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "sheets": {}}));
+        let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap());
+        assert_eq!(d["metadata"]["name"], "orders-sheets");
+        assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
+        assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
+        let k = &d["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(k["command"], json!(["strata-sheets"]));
+        assert_eq!(k["image"], c.spec.image.as_str(), "the cluster's image, which carries strata-sheets");
+        assert_eq!(k["args"], json!(["serve", "--listen", "0.0.0.0:7820", "--strata", "http://orders:7700"]));
+        let env = k["env"].as_array().unwrap();
+        let secret = |n: &str| env.iter().find(|e| e["name"] == n).map(|e| e["valueFrom"]["secretKeyRef"].clone()).unwrap_or_default();
+        assert_eq!(secret("STRATA_KEY"), json!({"name": "admin", "key": "token"}));
+        assert_eq!(secret("STRATA_SHEETS_TOKEN"), json!({"name": "admin", "key": "token"}));
+        assert!(!env.iter().any(|e| e["name"] == "STRATA_CLUSTER_TOKEN"), "never the cluster's token");
+        let s = c.sheets_service();
+        assert_eq!(s["metadata"]["name"], "orders-sheets");
+        assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
+        assert_eq!(s["spec"]["ports"][0]["port"], 7820);
+        let env_of = |c: &Cluster| c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let apps = |c: &Cluster| env_of(c).iter().find(|e| e["name"] == "STRATA_APPS").map(|e| e["value"].as_str().unwrap().to_string());
+        assert_eq!(apps(&c).as_deref(), Some("sheets=http://orders-sheets:7820"));
+        let both = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "crawler": {}, "sheets": {}}));
+        assert_eq!(apps(&both).as_deref(), Some("crawler=http://orders-crawler:7800,sheets=http://orders-sheets:7820"));
+        assert_eq!(env_of(&both).iter().filter(|e| e["name"] == "STRATA_APP_TOKEN").count(), 1);
+        // The servers do not restart for it; the coordinators do. A
+        // cluster with the crawler alone keeps the hash it had.
+        let crawler = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "crawler": {}}));
+        assert_eq!(both.spec.server_config(), crawler.spec.server_config());
+        assert_ne!(both.spec.coordinator_config(), crawler.spec.coordinator_config());
+        let mut j = json!({"image": crawler.spec.image, "imagePullPolicy": null, "resources": null, "args": [], "tokenSecret": "admin", "clusterTokenSecret": "inner"});
+        j["apps"] = json!(["crawler"]);
+        assert_eq!(crawler.spec.coordinator_config(), super::super::short_hash(&j));
+        let paused = cluster(json!({"tokenSecret": "admin", "sheets": {"paused": true}}));
+        assert_eq!(paused.sheets_deployment(paused.spec.sheets.as_ref().unwrap())["spec"]["replicas"], 0);
     }
 
     #[test]

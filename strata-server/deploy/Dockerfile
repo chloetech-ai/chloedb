@@ -1,6 +1,6 @@
 # strata-server, its benchmark and engine-compare in a small Linux image,
-# with strata-crawl, the crawler the operator runs beside a cluster
-# (spec.crawler).
+# with strata-crawl and strata-sheets, the crawler and the spreadsheets the
+# operator runs beside a cluster (spec.crawler, spec.sheets).
 #
 #   docker build -f strata-server/deploy/Dockerfile -t strata-server:dev .   # from the repository root
 #
@@ -19,6 +19,7 @@ WORKDIR /src
 COPY strata strata
 COPY strata-server strata-server
 COPY strata-crawl strata-crawl
+COPY strata-sheets strata-sheets
 # Compiled in (src/mcp.rs).
 COPY docs/strata/query-language.md docs/strata/build-an-app.md docs/strata/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -30,6 +31,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/strata-crawl/target \
     cargo build --release --manifest-path strata-crawl/Cargo.toml \
     && cp strata-crawl/target/release/strata-crawl /out/
+# So do the spreadsheets.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/strata-sheets/target \
+    cargo build --release --manifest-path strata-sheets/Cargo.toml \
+    && cp strata-sheets/target/release/strata-sheets /out/
 
 FROM debian:bookworm-slim
 # iproute2 for `tc`, to add network delay to a pod in tests.
@@ -38,5 +44,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /out/ /usr/local/bin/
 # engine-compare's traffic profiles (engine-compare plan/replay --profile).
 COPY strata-server/deploy/compare/profiles /usr/local/share/engine-compare/profiles
-EXPOSE 7700 7701 7800
+EXPOSE 7700 7701 7800 7820
 ENTRYPOINT ["strata-server"]

@@ -19,7 +19,7 @@ import * as data from "../data.js";
 
 const { h, empty, failure, bus } = core;
 
-export default { id: "app", title: "Apps", icon: "box", group: "Apps", range: false, keywords: "apps app plugin crawler", render };
+export default { id: "app", title: "Apps", icon: "box", group: "Apps", range: false, keywords: "apps app plugin crawler sheets spreadsheet", render };
 
 let apps = null;
 let asked = null;
@@ -86,7 +86,7 @@ function render(page, route) {
       page.append(h("div", { class: "page-head" }, h("h1", {}, "Apps")),
         list.length ? h("div", { class: "grid g3" }, list.map((a) => h("a", { class: "card", href: "#/app/" + a.name, style: { padding: "16px", display: "flex", gap: "12px", alignItems: "flex-start" } },
           appIcon(a, "lg"), h("div", {}, h("b", {}, a.title), h("div", { class: "small dim" }, a.up ? a.description || "" : `not answering: ${a.error}`)))))
-          : empty("box", "No apps", "An app is a program of its own that this server forwards to: start the server with --app name=url (strata-crawl, the crawler, is one)."));
+          : empty("box", "No apps", "An app is a program of its own that this server forwards to: start the server with --app name=url (strata-crawl, the crawler, and strata-sheets, the spreadsheets, are two)."));
       return;
     }
     const a = list.find((x) => x.name === name);
