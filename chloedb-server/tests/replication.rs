@@ -264,9 +264,9 @@ async fn replicas_hold_what_their_primary_wrote() {
     assert_eq!((hp.role(), hp.term, hp.seq_no), (pb::Role::Primary, 1, end));
     assert_eq!((hr.role(), hr.term, hr.seq_no), (pb::Role::Replica, 1, end));
     let m = p.prometheus().await;
-    assert!(m.contains(&format!("strata_replica_in_sync{{replica=\"{u1}\"}} 1")), "{m}");
-    assert!(m.contains(&format!("strata_replica_shipped_total{{replica=\"{u2}\"}} {}", end)), "{m}");
-    assert!(r1.prometheus().await.contains(&format!("strata_replica_applied_total {end}")));
+    assert!(m.contains(&format!("chloedb_replica_in_sync{{replica=\"{u1}\"}} 1")), "{m}");
+    assert!(m.contains(&format!("chloedb_replica_shipped_total{{replica=\"{u2}\"}} {}", end)), "{m}");
+    assert!(r1.prometheus().await.contains(&format!("chloedb_replica_applied_total {end}")));
 
     // A replica takes no writes from clients, nor a server that is not
     // one a primary's.
@@ -486,10 +486,10 @@ async fn a_replica_the_log_does_not_reach_is_sent_a_copy() {
         assert_eq!(rows(db), rows(&pdb), "the copy holds the primary's rows, each with the primary's number");
         assert_eq!(r.health().await["replication"]["restores"], 1);
         assert_eq!(r.health().await["replication"]["serves_reads"], true, "back in sync, it serves reads");
-        assert!(r.prometheus().await.contains("strata_replica_restores_total 1"));
+        assert!(r.prometheus().await.contains("chloedb_replica_restores_total 1"));
         db.storage().check().unwrap();
     }
-    assert!(p.prometheus().await.contains(&format!("strata_replica_copies_total{{replica=\"{fresh}\"}} 1")));
+    assert!(p.prometheus().await.contains(&format!("chloedb_replica_copies_total{{replica=\"{fresh}\"}} 1")));
     // Then shipped to as any replica.
     p.write_ops(vec![set("p0000001", "sold", json!(-1))], None).await.unwrap();
     until("both apply the next write", || async { last(&fdb) == last(&pdb) && last(&ddb) == last(&pdb) }).await;
@@ -891,7 +891,7 @@ async fn a_replica_serves_reads_once_caught_up_and_waits_for_a_write() {
     let h = r.health().await["replication"].clone();
     assert!(h["read_waits"].as_u64().unwrap() >= 4 && h["reads_refused"].as_u64().unwrap() >= 8, "{h}");
     let m = r.prometheus().await;
-    assert!(m.contains("strata_replica_serves_reads 0") && m.contains("strata_replica_read_waits_total") && m.contains("strata_replica_reads_refused_total"), "{m}");
+    assert!(m.contains("chloedb_replica_serves_reads 0") && m.contains("chloedb_replica_read_waits_total") && m.contains("chloedb_replica_reads_refused_total"), "{m}");
 }
 
 /// A coordinator's write answers each shard's sequence number, and a read
@@ -1123,13 +1123,13 @@ async fn a_replica_whose_rows_differ_is_sent_a_copy() {
     }
     assert_eq!(follower(&p, 0).await["copies"], 0, "the same rows: no copy");
     for (url, verifications, divergences, copies) in [(&su, "2", "0", "0"), (&hu, "2", "1", "1")] {
-        assert_eq!(counted(&p, "strata_replica_verifications_total", url).await, verifications);
-        assert_eq!(counted(&p, "strata_replica_divergences_total", url).await, divergences);
-        assert_eq!(counted(&p, "strata_replica_copies_total", url).await, copies);
+        assert_eq!(counted(&p, "chloedb_replica_verifications_total", url).await, verifications);
+        assert_eq!(counted(&p, "chloedb_replica_divergences_total", url).await, divergences);
+        assert_eq!(counted(&p, "chloedb_replica_copies_total", url).await, copies);
     }
     for r in [&same, &short] {
         assert_eq!(r.health().await["replication"]["digests"], 2);
-        assert!(r.prometheus().await.contains("strata_replica_digests_total 2"));
+        assert!(r.prometheus().await.contains("chloedb_replica_digests_total 2"));
     }
 
     // A replica answers the primary it follows, at the version pinned.

@@ -151,9 +151,9 @@ export function icon(name, cls = "") {
 
 // ---------------------------------------------------------------- storage
 export const store = {
-  get(k, d) { try { const v = localStorage.getItem("strata.cc." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem("strata.cc." + k, JSON.stringify(v)); } catch { /* private mode */ } },
-  del(k) { try { localStorage.removeItem("strata.cc." + k); } catch { /* private mode */ } },
+  get(k, d) { try { const v = localStorage.getItem("chloedb.cc." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("chloedb.cc." + k, JSON.stringify(v)); } catch { /* private mode */ } },
+  del(k) { try { localStorage.removeItem("chloedb.cc." + k); } catch { /* private mode */ } },
 };
 
 // ---------------------------------------------------------------- events
@@ -195,10 +195,10 @@ export const at = (p) => (BASE && typeof p === "string" && /^\/(v1\/|livez|ready
 
 // The token (or API key) is kept for the tab only, under the key the
 // query console reads too.
-let token = new URLSearchParams(location.search).get("token") || (() => { try { return sessionStorage.getItem("strata.token"); } catch { return null; } })();
-if (token) { try { sessionStorage.setItem("strata.token", token); } catch { /* private mode */ } }
+let token = new URLSearchParams(location.search).get("token") || (() => { try { return sessionStorage.getItem("chloedb.token"); } catch { return null; } })();
+if (token) { try { sessionStorage.setItem("chloedb.token", token); } catch { /* private mode */ } }
 if (new URLSearchParams(location.search).has("token")) { try { history.replaceState(null, "", location.pathname + location.hash); } catch { /* old browser */ } }
-export function setToken(t) { token = t || null; try { if (t) sessionStorage.setItem("strata.token", t); else sessionStorage.removeItem("strata.token"); } catch { /* private mode */ } bus.emit("token"); }
+export function setToken(t) { token = t || null; try { if (t) sessionStorage.setItem("chloedb.token", t); else sessionStorage.removeItem("chloedb.token"); } catch { /* private mode */ } bus.emit("token"); }
 export const hasToken = () => !!token;
 /** The Authorization header, for requests `api` cannot make (an upload with progress). */
 export const authHeader = () => (token ? { authorization: "Bearer " + token } : {});

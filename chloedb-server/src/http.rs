@@ -2085,7 +2085,7 @@ async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMa
     }
     let opts = chloedb::sqlite::ExportOptions { tables: tables_param(&q), fts: flag(&q, "fts", true)?, indexes: flag(&q, "indexes", true)?, meta: flag(&q, "schemas", true)? };
     let (dir, path, done) = app.svc.export_sqlite(opts).await?;
-    let name = done.tables.first().map_or("strata".into(), |t| t.table.clone());
+    let name = done.tables.first().map_or("chloedb".into(), |t| t.table.clone());
     let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
     send_file(dir, &path, "application/vnd.sqlite3", &format!("{name}.sqlite"), &tables).await
 }
@@ -2098,7 +2098,7 @@ async fn export_parquet(app: &App, q: &std::collections::HashMap<String, String>
     }
     let (dir, path, done) = app.svc.export_parquet(tables.pop(), flag(q, "schemas", true)?).await?;
     let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
-    let name = tables.first().cloned().unwrap_or_else(|| "strata".into());
+    let name = tables.first().cloned().unwrap_or_else(|| "chloedb".into());
     send_file(dir, &path, "application/vnd.apache.parquet", &format!("{name}.parquet"), &tables).await
 }
 

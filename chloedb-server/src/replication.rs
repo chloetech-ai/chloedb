@@ -846,16 +846,16 @@ impl Primary {
         let by_peer = |f: &dyn Fn(&shard::Peer) -> f64| peers.iter().map(|p| (format!("replica=\"{}\"", p.url), f(p))).collect();
         let by = |f: &dyn Fn(&Follower) -> f64| self.followers.iter().map(|r| (format!("replica=\"{}\"", r.url), f(r))).collect();
         vec![
-            Family::one("strata_replication_role", "gauge", "1 on a primary (--replicas), 2 on a replica (--replica).", 1.0),
-            Family::one("strata_global_checkpoint", "gauge", "The highest sequence number every in-sync replica holds.", self.global_checkpoint() as f64),
-            Family { name: "strata_replica_in_sync", ty: "gauge", help: "1 while a replica holds what the primary committed, as far as it was shipped.", values: by_peer(&|p| p.in_sync as u8 as f64) },
-            Family { name: "strata_replica_behind", ty: "gauge", help: "Transactions the primary committed that a replica does not hold yet.", values: by_peer(&|p| last.saturating_sub(p.acked) as f64) },
-            Family { name: "strata_replica_shipped_total", ty: "counter", help: "Transactions a replica applied from this primary.", values: by_peer(&|p| p.shipped as f64) },
-            Family { name: "strata_replica_failures_total", ty: "counter", help: "Calls to a replica that failed or that it refused.", values: by_peer(&|p| p.failures as f64) },
-            Family { name: "strata_replica_copies_total", ty: "counter", help: "Copies of the primary a replica installed: the log no longer reached it, or its rows differed.", values: by_peer(&|p| p.copies as f64) },
-            Family { name: "strata_replica_verifications_total", ty: "counter", help: "Times a replica's rows were compared with the primary's.", values: by(&|f| f.verifications.load(Ordering::Relaxed) as f64) },
-            Family { name: "strata_replica_divergences_total", ty: "counter", help: "Times a replica's rows differed from the primary's.", values: by(&|f| f.divergences.load(Ordering::Relaxed) as f64) },
-            Family { name: "strata_replica_verify_failures_total", ty: "counter", help: "Rounds that could not compare a replica's rows with the primary's.", values: by(&|f| f.verify_failures.load(Ordering::Relaxed) as f64) },
+            Family::one("chloedb_replication_role", "gauge", "1 on a primary (--replicas), 2 on a replica (--replica).", 1.0),
+            Family::one("chloedb_global_checkpoint", "gauge", "The highest sequence number every in-sync replica holds.", self.global_checkpoint() as f64),
+            Family { name: "chloedb_replica_in_sync", ty: "gauge", help: "1 while a replica holds what the primary committed, as far as it was shipped.", values: by_peer(&|p| p.in_sync as u8 as f64) },
+            Family { name: "chloedb_replica_behind", ty: "gauge", help: "Transactions the primary committed that a replica does not hold yet.", values: by_peer(&|p| last.saturating_sub(p.acked) as f64) },
+            Family { name: "chloedb_replica_shipped_total", ty: "counter", help: "Transactions a replica applied from this primary.", values: by_peer(&|p| p.shipped as f64) },
+            Family { name: "chloedb_replica_failures_total", ty: "counter", help: "Calls to a replica that failed or that it refused.", values: by_peer(&|p| p.failures as f64) },
+            Family { name: "chloedb_replica_copies_total", ty: "counter", help: "Copies of the primary a replica installed: the log no longer reached it, or its rows differed.", values: by_peer(&|p| p.copies as f64) },
+            Family { name: "chloedb_replica_verifications_total", ty: "counter", help: "Times a replica's rows were compared with the primary's.", values: by(&|f| f.verifications.load(Ordering::Relaxed) as f64) },
+            Family { name: "chloedb_replica_divergences_total", ty: "counter", help: "Times a replica's rows differed from the primary's.", values: by(&|f| f.divergences.load(Ordering::Relaxed) as f64) },
+            Family { name: "chloedb_replica_verify_failures_total", ty: "counter", help: "Rounds that could not compare a replica's rows with the primary's.", values: by(&|f| f.verify_failures.load(Ordering::Relaxed) as f64) },
         ]
     }
 }
@@ -1636,14 +1636,14 @@ impl Follow {
             (c.global_checkpoint, c.serves_reads)
         };
         vec![
-            Family::one("strata_replication_role", "gauge", "1 on a primary (--replicas), 2 on a replica (--replica).", 2.0),
-            Family::one("strata_global_checkpoint", "gauge", "The highest sequence number every in-sync replica holds, as the primary last said.", gc as f64),
-            Family::one("strata_replica_applied_total", "counter", "Transactions this replica applied from its primary.", self.applied.load(Ordering::Relaxed) as f64),
-            Family::one("strata_replica_restores_total", "counter", "Copies of its primary this replica installed.", self.restores.load(Ordering::Relaxed) as f64),
-            Family::one("strata_replica_serves_reads", "gauge", "1 while this replica serves reads: its primary's last call reached the primary's last transaction.", serves as u8 as f64),
-            Family::one("strata_replica_read_waits_total", "counter", "Reads that waited for this replica to apply a write they must see (min_seq_no).", self.read_waits.load(Ordering::Relaxed) as f64),
-            Family::one("strata_replica_reads_refused_total", "counter", "Reads refused while this replica caught up, or because it had not applied a write they must see in time.", self.reads_refused.load(Ordering::Relaxed) as f64),
-            Family::one("strata_replica_digests_total", "counter", "Digests of its rows this replica computed for its primary to compare (Verify).", self.digests.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replication_role", "gauge", "1 on a primary (--replicas), 2 on a replica (--replica).", 2.0),
+            Family::one("chloedb_global_checkpoint", "gauge", "The highest sequence number every in-sync replica holds, as the primary last said.", gc as f64),
+            Family::one("chloedb_replica_applied_total", "counter", "Transactions this replica applied from its primary.", self.applied.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replica_restores_total", "counter", "Copies of its primary this replica installed.", self.restores.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replica_serves_reads", "gauge", "1 while this replica serves reads: its primary's last call reached the primary's last transaction.", serves as u8 as f64),
+            Family::one("chloedb_replica_read_waits_total", "counter", "Reads that waited for this replica to apply a write they must see (min_seq_no).", self.read_waits.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replica_reads_refused_total", "counter", "Reads refused while this replica caught up, or because it had not applied a write they must see in time.", self.reads_refused.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replica_digests_total", "counter", "Digests of its rows this replica computed for its primary to compare (Verify).", self.digests.load(Ordering::Relaxed) as f64),
         ]
     }
 }

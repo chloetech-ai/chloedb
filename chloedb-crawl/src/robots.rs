@@ -34,10 +34,12 @@ impl Robots {
         Robots { unreachable: Some(why), ..Robots::deny_all() }
     }
 
-    /// The rules for `agent` (the product token, as `chloedb-crawl`) in a
-    /// robots.txt: the groups that name it, or else those for `*`.
-    pub fn parse(text: &str, agent: &str) -> Robots {
-        let agent = agent.to_ascii_lowercase();
+    /// The rules for an agent known by `tokens` (product tokens, as
+    /// `chloedb-crawl`) in a robots.txt: the groups that name any of them,
+    /// or else those for `*`.
+    pub fn parse(text: &str, tokens: &[&str]) -> Robots {
+        let tokens: Vec<String> = tokens.iter().map(|t| t.to_ascii_lowercase()).collect();
+        let names_us = |a: &String| a != "*" && tokens.iter().any(|t| t.contains(a.as_str()));
         let mut mine: Vec<(bool, String)> = Vec::new();
         let mut star: Vec<(bool, String)> = Vec::new();
         let (mut mine_delay, mut star_delay) = (None, None);
@@ -66,7 +68,7 @@ impl Robots {
                         continue;
                     }
                     let rule = (k == "allow", v.to_string());
-                    if agents.iter().any(|a| a != "*" && agent.contains(a.as_str())) {
+                    if agents.iter().any(names_us) {
                         matched_mine = true;
                         mine.push(rule);
                     } else if agents.iter().any(|a| a == "*") {
@@ -76,7 +78,7 @@ impl Robots {
                 "crawl-delay" => {
                     in_rules = true;
                     let d = v.parse::<f64>().ok().filter(|d| d.is_finite() && *d >= 0.0);
-                    if agents.iter().any(|a| a != "*" && agent.contains(a.as_str())) {
+                    if agents.iter().any(names_us) {
                         matched_mine = true;
                         mine_delay = d;
                     } else if agents.iter().any(|a| a == "*") {
@@ -151,22 +153,26 @@ Disallow: /*.pdf$
 Allow: /private/open
 Crawl-delay: 2
 
-User-agent: strata-crawl
+User-agent: chloedb-crawl
 User-agent: other
 Disallow: /mine/
 Crawl-delay: 0.5
+
+User-agent: strata-crawl
+Disallow: /old/
 
 Sitemap: https://example.com/sitemap.xml
 ";
 
     #[test]
     fn groups_and_rules() {
-        let r = Robots::parse(TXT, "strata-crawl/0.1");
+        let r = Robots::parse(TXT, &["chloedb-crawl/0.1", "strata-crawl/0.1"]);
         assert!(!r.allowed("/mine/x"));
+        assert!(!r.allowed("/old/x"), "the group of the old token applies too");
         assert!(r.allowed("/private/x"), "our own group replaces *'s");
         assert_eq!(r.crawl_delay, Some(0.5));
         assert_eq!(r.sitemaps, vec!["https://example.com/sitemap.xml"]);
-        let s = Robots::parse(TXT, "somebot");
+        let s = Robots::parse(TXT, &["somebot"]);
         assert!(!s.allowed("/private/x"));
         assert!(s.allowed("/private/open/page"), "the longer allow wins");
         assert!(!s.allowed("/files/a.pdf"));
@@ -177,7 +183,7 @@ Sitemap: https://example.com/sitemap.xml
 
     #[test]
     fn empty_and_deny() {
-        assert!(Robots::parse("User-agent: *\nDisallow:\n", "x").allowed("/anything"));
+        assert!(Robots::parse("User-agent: *\nDisallow:\n", &["x"]).allowed("/anything"));
         assert!(!Robots::deny_all().allowed("/"));
         assert!(Robots::allow_all().allowed("/"));
         assert!(matches("/a*b$", "/a/x/b"));

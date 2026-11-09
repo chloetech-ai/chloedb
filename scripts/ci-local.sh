@@ -582,7 +582,7 @@ job_server_smoke() {
     curl -sf -X POST http://127.0.0.1:$p1/v1/query -H 'content-type: application/json' \
         -d '{"sql": "WITH top AS (SELECT id FROM products ORDER BY bm25(body, '"'"'jaket'"'"', fuzzy => 1) DESC LIMIT 50) SELECT category, COUNT(*), AVG(price) FROM top GROUP BY category"}' \
         | grep -q '"rows"'
-    curl -sf http://127.0.0.1:$p1/metrics | grep -q strata_queries_total
+    curl -sf http://127.0.0.1:$p1/metrics | grep -q chloedb_queries_total
     curl -sf http://127.0.0.1:$p1/ | grep -qi '<html'
     # Rows into a new database from the command line, then over HTTP.
     printf '{"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}]}' > "$t/t.json"

@@ -520,8 +520,8 @@ impl Metrics {
         let m = self.inner();
         let mut out = String::new();
         let o = &mut out;
-        head(o, "strata_build_info", "gauge", "The server's version and the SIMD kernels it runs (always 1).");
-        let _ = writeln!(o, "strata_build_info{{version=\"{}\",simd=\"{}\"}} 1", env!("CARGO_PKG_VERSION"), esc(&chloedb::simd::describe()));
+        head(o, "chloedb_build_info", "gauge", "The server's version and the SIMD kernels it runs (always 1).");
+        let _ = writeln!(o, "chloedb_build_info{{version=\"{}\",simd=\"{}\"}} 1", env!("CARGO_PKG_VERSION"), esc(&chloedb::simd::describe()));
         head(o, "process_start_time_seconds", "gauge", "When the process started, in seconds since the Unix epoch.");
         let _ = writeln!(o, "process_start_time_seconds {}", self.started.duration_since(SystemTime::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64()));
         for p in process() {
@@ -529,64 +529,64 @@ impl Metrics {
             let _ = writeln!(o, "{} {}", p.name, p.values[0].1);
         }
 
-        head(o, "strata_http_requests_total", "counter", "HTTP requests answered, by route and status.");
+        head(o, "chloedb_http_requests_total", "counter", "HTTP requests answered, by route and status.");
         for ((route, status), n) in &m.http {
-            let _ = writeln!(o, "strata_http_requests_total{{route=\"{}\",status=\"{status}\"}} {n}", esc(route));
+            let _ = writeln!(o, "chloedb_http_requests_total{{route=\"{}\",status=\"{status}\"}} {n}", esc(route));
         }
-        head(o, "strata_http_request_duration_seconds", "histogram", "Time to answer an HTTP request, by route.");
+        head(o, "chloedb_http_request_duration_seconds", "histogram", "Time to answer an HTTP request, by route.");
         for (route, h) in &m.http_seconds {
-            h.render(o, "strata_http_request_duration_seconds", &format!("route=\"{}\"", esc(route)));
+            h.render(o, "chloedb_http_request_duration_seconds", &format!("route=\"{}\"", esc(route)));
         }
-        head(o, "strata_grpc_requests_total", "counter", "gRPC calls answered, by method and status code.");
+        head(o, "chloedb_grpc_requests_total", "counter", "gRPC calls answered, by method and status code.");
         for ((method, code), n) in &m.grpc {
-            let _ = writeln!(o, "strata_grpc_requests_total{{method=\"{method}\",code=\"{code}\"}} {n}");
+            let _ = writeln!(o, "chloedb_grpc_requests_total{{method=\"{method}\",code=\"{code}\"}} {n}");
         }
-        head(o, "strata_grpc_request_duration_seconds", "histogram", "Time to answer a gRPC call, by method.");
+        head(o, "chloedb_grpc_request_duration_seconds", "histogram", "Time to answer a gRPC call, by method.");
         for (method, h) in &m.grpc_seconds {
-            h.render(o, "strata_grpc_request_duration_seconds", &format!("method=\"{method}\""));
+            h.render(o, "chloedb_grpc_request_duration_seconds", &format!("method=\"{method}\""));
         }
 
-        head(o, "strata_queries_total", "counter", "Queries by kind (bm25, vector, sparse, hybrid, boosted, expression, reranked, decay, graph, column, facet, aggregate, count, filter, compound, paths, invalid) and outcome (ok, partial, error, timeout: the server's deadline, client_error: a 4xx such as bad SQL, client_deadline: the client's own deadline, below the server's, refused: 429, cancelled).");
+        head(o, "chloedb_queries_total", "counter", "Queries by kind (bm25, vector, sparse, hybrid, boosted, expression, reranked, decay, graph, column, facet, aggregate, count, filter, compound, paths, invalid) and outcome (ok, partial, error, timeout: the server's deadline, client_error: a 4xx such as bad SQL, client_deadline: the client's own deadline, below the server's, refused: 429, cancelled).");
         for (&(k, outcome), n) in &m.queries {
-            let _ = writeln!(o, "strata_queries_total{{kind=\"{k}\",outcome=\"{outcome}\"}} {n}");
+            let _ = writeln!(o, "chloedb_queries_total{{kind=\"{k}\",outcome=\"{outcome}\"}} {n}");
         }
-        head(o, "strata_query_duration_seconds", "histogram", "Time to answer a query, waiting for a slot included, by kind.");
+        head(o, "chloedb_query_duration_seconds", "histogram", "Time to answer a query, waiting for a slot included, by kind.");
         for (k, h) in &m.query_seconds {
-            h.render(o, "strata_query_duration_seconds", &format!("kind=\"{k}\""));
+            h.render(o, "chloedb_query_duration_seconds", &format!("kind=\"{k}\""));
         }
-        head(o, "strata_query_admission_wait_seconds", "histogram", "Time a query waited for a slot to run in (--max-concurrent).");
-        m.admission_seconds.render(o, "strata_query_admission_wait_seconds", "");
-        head(o, "strata_rejected_total", "counter", "Queries refused because no slot came free before their deadline.");
-        let _ = writeln!(o, "strata_rejected_total {}", m.rejected);
+        head(o, "chloedb_query_admission_wait_seconds", "histogram", "Time a query waited for a slot to run in (--max-concurrent).");
+        m.admission_seconds.render(o, "chloedb_query_admission_wait_seconds", "");
+        head(o, "chloedb_rejected_total", "counter", "Queries refused because no slot came free before their deadline.");
+        let _ = writeln!(o, "chloedb_rejected_total {}", m.rejected);
 
-        head(o, "strata_writes_total", "counter", "Write requests that succeeded.");
-        let _ = writeln!(o, "strata_writes_total {}", m.writes);
-        head(o, "strata_written_docs_total", "counter", "Rows written by write requests.");
-        let _ = writeln!(o, "strata_written_docs_total {}", m.written_docs);
-        head(o, "strata_write_errors_total", "counter", "Write requests that failed, by HTTP status.");
+        head(o, "chloedb_writes_total", "counter", "Write requests that succeeded.");
+        let _ = writeln!(o, "chloedb_writes_total {}", m.writes);
+        head(o, "chloedb_written_docs_total", "counter", "Rows written by write requests.");
+        let _ = writeln!(o, "chloedb_written_docs_total {}", m.written_docs);
+        head(o, "chloedb_write_errors_total", "counter", "Write requests that failed, by HTTP status.");
         for (status, n) in &m.write_errors {
-            let _ = writeln!(o, "strata_write_errors_total{{status=\"{status}\"}} {n}");
+            let _ = writeln!(o, "chloedb_write_errors_total{{status=\"{status}\"}} {n}");
         }
-        head(o, "strata_write_duration_seconds", "histogram", "Time from a write request to its commit, embedding and waiting for the writer included.");
-        m.write_seconds.render(o, "strata_write_duration_seconds", "");
-        head(o, "strata_stream_lag_seconds", "histogram", "Time from an event (its source.ts) to the moment the rows written for it were visible.");
-        m.lag_seconds.0.render(o, "strata_stream_lag_seconds", "");
-        head(o, "strata_idempotent_replays_total", "counter", "Writes answered from their idempotency key instead of being applied again.");
-        let _ = writeln!(o, "strata_idempotent_replays_total {}", m.replays);
-        head(o, "strata_slow_requests_total", "counter", "Queries and writes the slow log wrote down (--slow-ms).");
+        head(o, "chloedb_write_duration_seconds", "histogram", "Time from a write request to its commit, embedding and waiting for the writer included.");
+        m.write_seconds.render(o, "chloedb_write_duration_seconds", "");
+        head(o, "chloedb_stream_lag_seconds", "histogram", "Time from an event (its source.ts) to the moment the rows written for it were visible.");
+        m.lag_seconds.0.render(o, "chloedb_stream_lag_seconds", "");
+        head(o, "chloedb_idempotent_replays_total", "counter", "Writes answered from their idempotency key instead of being applied again.");
+        let _ = writeln!(o, "chloedb_idempotent_replays_total {}", m.replays);
+        head(o, "chloedb_slow_requests_total", "counter", "Queries and writes the slow log wrote down (--slow-ms).");
         for (what, n) in &m.slow {
-            let _ = writeln!(o, "strata_slow_requests_total{{what=\"{what}\"}} {n}");
+            let _ = writeln!(o, "chloedb_slow_requests_total{{what=\"{what}\"}} {n}");
         }
-        head(o, "strata_embedded_texts_total", "counter", "Texts embedded by the server's models: rows of writes, query parameters, and rows stored without vectors.");
+        head(o, "chloedb_embedded_texts_total", "counter", "Texts embedded by the server's models: rows of writes, query parameters, and rows stored without vectors.");
         for (what, n) in &m.embedded {
-            let _ = writeln!(o, "strata_embedded_texts_total{{for=\"{what}\"}} {n}");
+            let _ = writeln!(o, "chloedb_embedded_texts_total{{for=\"{what}\"}} {n}");
         }
-        head(o, "strata_embed_duration_seconds", "histogram", "Time to embed the texts of one write request or one query parameter.");
+        head(o, "chloedb_embed_duration_seconds", "histogram", "Time to embed the texts of one write request or one query parameter.");
         for (what, h) in &m.embed_seconds {
-            h.render(o, "strata_embed_duration_seconds", &format!("for=\"{what}\""));
+            h.render(o, "chloedb_embed_duration_seconds", &format!("for=\"{what}\""));
         }
-        head(o, "strata_agent_runs_total", "counter", "Questions the agent was asked.");
-        let _ = writeln!(o, "strata_agent_runs_total {}", m.agent_runs);
+        head(o, "chloedb_agent_runs_total", "counter", "Questions the agent was asked.");
+        let _ = writeln!(o, "chloedb_agent_runs_total {}", m.agent_runs);
 
         for f in more {
             head(o, f.name, f.ty, f.help);
@@ -635,7 +635,7 @@ mod tests {
         m.query("bm25", "ok", 0.0025);
         m.write(3, 0.01);
         m.embedded("write", 3, 0.2);
-        let text = m.render(&[Family { name: "strata_x", ty: "gauge", help: "An example.", values: vec![("table=\"a\"".into(), 2.0)] }]);
+        let text = m.render(&[Family { name: "chloedb_x", ty: "gauge", help: "An example.", values: vec![("table=\"a\"".into(), 2.0)] }]);
         let mut family = "";
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("# HELP ") {
@@ -648,10 +648,10 @@ mod tests {
             }
             assert!(line.starts_with(family), "{line} outside {family}");
         }
-        assert!(text.contains("strata_http_request_duration_seconds_bucket{route=\"/v1/query\",le=\"0.005\"} 1"), "{text}");
-        assert!(text.contains("strata_query_duration_seconds_sum{kind=\"bm25\"} 0.0025"), "{text}");
-        assert!(text.contains("strata_query_admission_wait_seconds_count 0"), "{text}");
-        assert!(text.contains("strata_x{table=\"a\"} 2"), "{text}");
+        assert!(text.contains("chloedb_http_request_duration_seconds_bucket{route=\"/v1/query\",le=\"0.005\"} 1"), "{text}");
+        assert!(text.contains("chloedb_query_duration_seconds_sum{kind=\"bm25\"} 0.0025"), "{text}");
+        assert!(text.contains("chloedb_query_admission_wait_seconds_count 0"), "{text}");
+        assert!(text.contains("chloedb_x{table=\"a\"} 2"), "{text}");
         assert!(text.contains("process_cpu_seconds_total "), "{text}");
     }
 

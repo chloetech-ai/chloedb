@@ -397,15 +397,17 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const k of kids.flat()) if (k != null) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return e;
 };
+// ChloeDB was called Strata: what this browser kept under strata.* moves to chloedb.*, once.
+try { for (const s of [localStorage, sessionStorage]) for (let i = s.length - 1; i >= 0; i--) { const k = s.key(i); if (k && k.startsWith("strata.")) { const n = "chloedb." + k.slice(7); if (s.getItem(n) == null) s.setItem(n, s.getItem(k)); s.removeItem(k); } } } catch (e) {}
 const store = {
-  get(k, d) { try { const v = localStorage.getItem("strata." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch {} },
-  del(k) { try { localStorage.removeItem("strata." + k); } catch {} },
+  get(k, d) { try { const v = localStorage.getItem("chloedb." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("chloedb." + k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem("chloedb." + k); } catch {} },
 };
 
 // ---- connection -------------------------------------------------------------
-let token = new URLSearchParams(location.search).get("token") || (() => { try { return sessionStorage.getItem("strata.token"); } catch { return null; } })();
-if (token) { try { sessionStorage.setItem("strata.token", token); } catch {} }
+let token = new URLSearchParams(location.search).get("token") || (() => { try { return sessionStorage.getItem("chloedb.token"); } catch { return null; } })();
+if (token) { try { sessionStorage.setItem("chloedb.token", token); } catch {} }
 // A token in the address would stay in the history and in shared links.
 if (new URLSearchParams(location.search).has("token")) { try { history.replaceState(null, "", location.pathname + location.hash); } catch {} }
 async function api(path, body, method) {
@@ -419,7 +421,7 @@ async function api(path, body, method) {
   if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
   return j;
 }
-$("tokenSave").onclick = () => { token = $("token").value.trim(); try { sessionStorage.setItem("strata.token", token); } catch {} $("tokenBox").classList.add("hidden"); init(); };
+$("tokenSave").onclick = () => { token = $("token").value.trim(); try { sessionStorage.setItem("chloedb.token", token); } catch {} $("tokenBox").classList.add("hidden"); init(); };
 
 // ---- theme --------------------------------------------------------------------
 const applyTheme = (t) => { if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; };
@@ -1525,7 +1527,7 @@ $("xExport").onclick = async () => {
     if (r.status === 401) $("tokenBox").classList.remove("hidden");
     if (!r.ok) { let j = {}; try { j = await r.json(); } catch {} throw new Error(j.error || "HTTP " + r.status); }
     const blob = await r.blob();
-    const name = (/filename="([^"]+)"/.exec(r.headers.get("content-disposition") || "") || [])[1] || "strata.sqlite";
+    const name = (/filename="([^"]+)"/.exec(r.headers.get("content-disposition") || "") || [])[1] || "chloedb.sqlite";
     const a = el("a", { href: URL.createObjectURL(blob), download: name });
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);

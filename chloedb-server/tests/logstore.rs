@@ -121,7 +121,7 @@ async fn a_server_keeps_its_lines_and_queries_but_not_its_reading_of_them() {
     assert!(st["tables"]["logs"]["rows"].as_u64().unwrap() > 5, "{st}");
     assert!(st["written"]["queries"].as_u64().unwrap() >= 6, "{st}");
     let m = chloedb_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(m.contains("strata_log_store_rows{table=\"logs\"}"), "{m}");
+    assert!(m.contains("chloedb_log_store_rows{table=\"logs\"}"), "{m}");
     let cluster: Json = chloedb_server::http_client().build().unwrap().get(format!("{base}/v1/cluster")).send().await.unwrap().json().await.unwrap();
     assert_eq!(cluster["node"]["log_store"]["node"], "a:7700", "{cluster}");
 

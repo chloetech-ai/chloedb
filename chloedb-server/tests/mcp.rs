@@ -82,7 +82,7 @@ async fn agents_list_query_check_and_change_tables_within_their_keys_scope() {
     // initialize: the version asked for when spoken, the tools and resources.
     let init = rpc(&base, &read, "initialize", json!({"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})).await;
     assert_eq!(init["protocolVersion"], "2025-03-26");
-    assert_eq!(init["serverInfo"]["name"], "strata");
+    assert_eq!(init["serverInfo"]["name"], "chloedb");
     assert!(init["capabilities"]["tools"].is_object() && init["capabilities"]["resources"].is_object(), "{init}");
     assert!(init["instructions"].as_str().unwrap().contains("list_tables"));
     let newest = rpc(&base, &read, "initialize", json!({"protocolVersion": "1999-01-01"})).await;

@@ -393,7 +393,7 @@ def test_server_scrolls_past_the_window(tmp_path, serve):
 
     def scrolls_open():
         lines = c._call("GET", "/metrics", text=True).splitlines()
-        return next(float(l.split()[1]) for l in lines if l.startswith("strata_scrolls_open "))
+        return next(float(l.split()[1]) for l in lines if l.startswith("chloedb_scrolls_open "))
 
     # Leaving early closes the scroll.
     g = c.scroll("SELECT id FROM orders ORDER BY amount")

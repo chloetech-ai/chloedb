@@ -99,7 +99,7 @@ async fn cancels_the_join(base: &str) {
     assert_eq!(q["sql"], JOIN, "{recent}");
     assert_eq!(q["outcome"], "cancelled");
     let metrics = chloedb_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(metrics.contains("strata_queries_total{kind=\"compound\",outcome=\"cancelled\"} 1"), "{metrics}");
+    assert!(metrics.contains("chloedb_queries_total{kind=\"compound\",outcome=\"cancelled\"} 1"), "{metrics}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

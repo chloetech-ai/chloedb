@@ -633,7 +633,7 @@ impl Os {
             (M::GET | M::HEAD, []) => ok(self.info().await),
             (M::GET, ["_cluster", "health", ..]) => ok(self.health().await),
             (M::GET, ["_cluster", "settings"]) => ok(json!({"persistent": {}, "transient": {}})),
-            (M::GET, ["_cluster", "state", ..]) => ok(json!({"cluster_name": self.cluster_name(), "cluster_uuid": "strata"})),
+            (M::GET, ["_cluster", "state", ..]) => ok(json!({"cluster_name": self.cluster_name(), "cluster_uuid": "chloedb"})),
             (M::GET, ["_nodes", ..]) => ok(self.nodes()),
             (M::GET, ["_cat", what, rest @ ..]) => self.cat(what, rest.first().copied(), q).await,
             (M::POST | M::PUT, ["_bulk"]) => {
@@ -732,7 +732,7 @@ impl Os {
     }
 
     fn cluster_name(&self) -> String {
-        chloedb::env::var("CHLOEDB_CLUSTER_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "strata".into())
+        chloedb::env::var("CHLOEDB_CLUSTER_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "chloedb".into())
     }
 
     async fn info(&self) -> Json {
@@ -740,10 +740,10 @@ impl Os {
         let mut j = json!({
             "name": crate::logstore::hostname(),
             "cluster_name": self.cluster_name(),
-            "cluster_uuid": "strata",
+            "cluster_uuid": "chloedb",
             "version": {
                 "number": self.version,
-                "build_type": "strata",
+                "build_type": "chloedb",
                 "build_flavor": "default",
                 "build_hash": env!("CARGO_PKG_VERSION"),
                 "build_date": "2026-11-08T00:00:00Z",
@@ -775,7 +775,7 @@ impl Os {
 
     fn nodes(&self) -> Json {
         let name = crate::logstore::hostname();
-        json!({"_nodes": {"total": 1, "successful": 1, "failed": 0}, "cluster_name": self.cluster_name(), "nodes": {"strata": {"name": name, "version": self.version, "roles": ["data", "ingest", "cluster_manager"]}}})
+        json!({"_nodes": {"total": 1, "successful": 1, "failed": 0}, "cluster_name": self.cluster_name(), "nodes": {"chloedb": {"name": name, "version": self.version, "roles": ["data", "ingest", "cluster_manager"]}}})
     }
 
     // -------------------------------------------------------------- running SQL

@@ -62,7 +62,7 @@
         <div class="say" data-f="graph"><p>grow to <b>shards on Kubernetes</b> with the same queries</p><code>kubectl apply -f operator.yaml -f cluster.yaml</code></div>
         <div class="say" data-f="cols"><p>lose a <b>primary</b> and lose no write</p><code>chloedb-server --seq-no --failover-after-ms 2000</code></div>
         <div class="say" data-f="text"><p>take in <b>logs</b> over OpenTelemetry and keep the old ones <b>on S3</b></p><code>chloedb-server --directory --cold-store s3://my-bucket/logs/ --cold-keep-local-gb 50</code></div>
-        <div class="say" data-f="vec"><p>give <b>Claude Code</b> your tables over MCP</p><code>claude mcp add --transport http strata http://127.0.0.1:7700/v1/mcp</code></div>
+        <div class="say" data-f="vec"><p>give <b>Claude Code</b> your tables over MCP</p><code>claude mcp add --transport http chloedb http://127.0.0.1:7700/v1/mcp</code></div>
         <div class="say" data-f="graph"><p>explain your <b>slow query</b> before your boss asks</p><code>EXPLAIN SELECT …  -- or click Profile</code></div>
       </div>
       <div class="says-nav">
@@ -135,7 +135,7 @@
         <span class="kick">Agents</span>
         <h3>Agents over MCP</h3>
         <p>Claude Code and other agents list the tables, read their schemas, check a statement before it runs, then query and write.</p>
-        <code>claude mcp add --transport http strata http://127.0.0.1:7700/v1/mcp</code>
+        <code>claude mcp add --transport http chloedb http://127.0.0.1:7700/v1/mcp</code>
       </a>
     </div>
     <div class="center-row"><a class="arrow-link" href="features.html">Every feature</a></div>

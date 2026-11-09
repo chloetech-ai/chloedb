@@ -538,7 +538,7 @@ enum Command {
         models: Option<PathBuf>,
     },
     /// Serve the Model Context Protocol over stdin and stdout for an agent
-    /// such as Claude Code (`claude mcp add strata -- chloedb-server mcp
+    /// such as Claude Code (`claude mcp add chloedb -- chloedb-server mcp
     /// --url http://host:7700`): each message goes to the server's
     /// /v1/mcp with the key, whose scope decides what the agent may change.
     Mcp {

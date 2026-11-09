@@ -981,17 +981,17 @@ impl LogStore {
         let get = |a: &AtomicU64| a.load(Ordering::Relaxed) as f64;
         let by = |pairs: &[(&str, f64)], label: &str| pairs.iter().map(|(k, v)| (format!("{label}=\"{k}\""), *v)).collect();
         vec![
-            Family { name: "strata_log_store_rows", ty: "gauge", help: "Rows in the log store, by table.", values: by(&[(LOGS, rows(LOGS)), (QUERIES, rows(QUERIES)), (LOAD, rows(LOAD))], "table") },
-            Family { name: "strata_log_store_written_total", ty: "counter", help: "Rows the log store wrote, by table.", values: by(&[(LOGS, get(&s.lines)), (QUERIES, get(&s.queries)), (LOAD, get(&s.loads))], "table") },
-            Family::one("strata_log_store_bytes", "gauge", "Bytes the log store takes: its live pages and write-ahead log.", self.bytes() as f64),
-            Family::one("strata_log_store_waiting_lines", "gauge", "Log lines waiting for the log store's writer.", waiting as f64),
+            Family { name: "chloedb_log_store_rows", ty: "gauge", help: "Rows in the log store, by table.", values: by(&[(LOGS, rows(LOGS)), (QUERIES, rows(QUERIES)), (LOAD, rows(LOAD))], "table") },
+            Family { name: "chloedb_log_store_written_total", ty: "counter", help: "Rows the log store wrote, by table.", values: by(&[(LOGS, get(&s.lines)), (QUERIES, get(&s.queries)), (LOAD, get(&s.loads))], "table") },
+            Family::one("chloedb_log_store_bytes", "gauge", "Bytes the log store takes: its live pages and write-ahead log.", self.bytes() as f64),
+            Family::one("chloedb_log_store_waiting_lines", "gauge", "Log lines waiting for the log store's writer.", waiting as f64),
             Family {
-                name: "strata_log_store_dropped_total",
+                name: "chloedb_log_store_dropped_total",
                 ty: "counter",
                 help: "Rows the log store did not keep: lines and queries past what may wait, rows of failed writes, and queries past --log-queries a second.",
                 values: by(&[("lines", dropped as f64), ("queries", get(&s.dropped_queries)), ("failed", get(&s.failed)), ("sampled", get(&s.sampled_out))], "reason"),
             },
-            Family { name: "strata_log_store_deleted_total", ty: "counter", help: "Rows the log store deleted, past --log-retain or over --log-store-mb.", values: by(&[("expired", get(&s.expired)), ("size", get(&s.trimmed))], "reason") },
+            Family { name: "chloedb_log_store_deleted_total", ty: "counter", help: "Rows the log store deleted, past --log-retain or over --log-store-mb.", values: by(&[("expired", get(&s.expired)), ("size", get(&s.trimmed))], "reason") },
         ]
     }
 }

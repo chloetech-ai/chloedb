@@ -131,8 +131,8 @@ async fn rows_and_queries_embedded_by_a_hosted_model() {
 
     // What it cost.
     let metrics = c.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(metrics.contains("strata_embed_requests_total{table=\"docs\",field=\"emb\",model=\"gpu\"} 2"), "{metrics}");
-    assert!(metrics.contains("strata_embed_tokens_total{table=\"docs\",field=\"emb\",model=\"gpu\"} 82"), "{metrics}");
+    assert!(metrics.contains("chloedb_embed_requests_total{table=\"docs\",field=\"emb\",model=\"gpu\"} 2"), "{metrics}");
+    assert!(metrics.contains("chloedb_embed_tokens_total{table=\"docs\",field=\"emb\",model=\"gpu\"} 82"), "{metrics}");
     let r: Json = c.get(format!("{base}/v1/schema")).send().await.unwrap().json().await.unwrap();
     assert_eq!(r["embeddings"][0]["usage"], json!({"requests": 2, "retries": 0, "failures": 0, "texts": 41, "tokens": 82}), "{r}");
 
