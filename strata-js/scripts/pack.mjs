@@ -29,7 +29,7 @@ if (!existsSync(join(root, "strata.node"))) {
   process.exit(1);
 }
 
-const files = ["index.js", "index.d.ts", "client.js", "client.d.ts", "common.js", "common.d.ts", "README.md", "strata.node"];
+const files = ["index.js", "index.d.ts", "client.js", "client.d.ts", "common.js", "common.d.ts", "nearby.js", "README.md", "strata.node"];
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const stage = mkdtempSync(join(tmpdir(), "strata-js-pack-"));
 try {
