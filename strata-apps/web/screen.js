@@ -599,6 +599,7 @@
     // line of detail led by its number when its state needs doing, and on
     // the right its next step, or its number.
     const TONE_ORDER = ['bad', 'warn', 'info', '', 'ok'];
+    const NEEDS_DOING = /\b(out|low|overdue|late|due|unpaid|owed|owing|missing|expired|expiring|failed|reorder|to order|urgent|behind|blocked)\b/i;
     const GLYPH = { bad: '✕', warn: '!', ok: '✓', info: '•' };
     function rowCells(rows, cols, fns, acts, onRow, heads, cell, s, path) {
       const R = roles(rows, cols, fns, heads);
@@ -612,6 +613,14 @@
         g.items.push(it);
       }
       groups.sort((a, b) => TONE_ORDER.indexOf(a.tone) - TONE_ORDER.indexOf(b.tone));
+      // Grouped by state only when a state needs doing (out, low, overdue...);
+      // otherwise one list in the query's order (newest runs, most votes), the
+      // state said on each row.
+      const stated = R.badge >= 0 && groups.length > 1 && !groups.some((g) => NEEDS_DOING.test(g.key));
+      if (stated) {
+        groups.splice(0, groups.length, { key: '', tone: '', items });
+        for (const it of items) { const st = it.text(R.badge).trim().replace(/^[-–—]+$/, ''); if (st && !it.sub.some((x) => x.toLowerCase() === st.toLowerCase())) it.sub = [cap(st), ...it.sub].slice(0, 4); }
+      }
       const initials = (t) => t.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
       // a row named by its day ("Nov 8, 2026", "2026-11-08") gets a calendar
       // leaf, the month over the day, rather than initials like "N8"

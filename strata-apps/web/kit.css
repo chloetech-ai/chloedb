@@ -331,6 +331,8 @@ tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; 
   table.stack td.tick + td { flex-basis: calc(100% - 60px); align-self: center; }
   table.stack td:first-child::before, table.stack td.tick::before, table.stack td.tick + td::before, table.stack td.right::before { content: none; }
   table.stack td.right { flex: 1 1 100%; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+  /* a row with many steps wraps them instead of running off the card */
+  table.stack td.right.nowrap { flex-wrap: wrap; white-space: normal; align-items: center; }
 }
 
 /* checks: a check per item per day */
@@ -415,7 +417,7 @@ tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; 
 .hero-line { color: color-mix(in srgb, var(--deep-fg) 82%, transparent); }
 .hero-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: calc(var(--text) * .95); color: color-mix(in srgb, var(--deep-fg) 78%, transparent); }
 .hero-legend b { color: var(--deep-fg); font-weight: 750; font-variant-numeric: tabular-nums; }
-.hero-legend .zero { opacity: .7; }
+.hero-legend .zero b { font-weight: 500; }
 
 /* a row as a card (bold, on a phone) */
 .rcards { display: flex; flex-direction: column; gap: 12px; }
@@ -507,7 +509,7 @@ tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; 
 .say { display: flex; flex-direction: column; gap: 2px; font-size: calc(var(--text) * 1.1); color: var(--muted); }
 .say b { color: var(--fg); font-weight: 650; }
 .say b.attn { color: var(--bad); }
-.say .zero { opacity: .8; }
+.say .zero { font-weight: 400; }
 
 /* a table's rows as list cells, grouped by state (native, on a phone) */
 .rgroups { display: flex; flex-direction: column; gap: 18px; }
