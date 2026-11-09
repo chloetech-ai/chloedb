@@ -23,7 +23,7 @@ use std::time::Instant;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
-use strata::Value;
+use chloedb::Value;
 
 use crate::anchor::Checker;
 use crate::distill::DistillConfig;
@@ -354,7 +354,7 @@ pub fn run_query(store: &Store, q: &Query, filter: &Filter, n: usize) -> Result<
     let out: Vec<Record> = match q.kind.as_str() {
         "text" => recall::search(store, &q.q, &f, &RankParams { n: n.max(20), ..Default::default() })?.0.into_iter().map(|h| h.record).collect(),
         "keywords" => {
-            if strata::text::analyze_query(&q.q).is_empty() {
+            if chloedb::text::analyze_query(&q.q).is_empty() {
                 Vec::new()
             } else {
                 store.bm25_top(&q.q, n, &f)?.into_iter().map(|x| x.0).collect()
@@ -381,7 +381,7 @@ pub fn run_query(store: &Store, q: &Query, filter: &Filter, n: usize) -> Result<
                     }
                 }
                 // Spelling variants ("depot PCs" for "depot PC") match by stem.
-                if !strata::text::analyze_query(name).is_empty() {
+                if !chloedb::text::analyze_query(name).is_empty() {
                     for (r, _) in store.bm25_top(name, 2, &ef)? {
                         if !seeds.contains(&r.id) {
                             seeds.push(r.id);
@@ -393,13 +393,13 @@ pub fn run_query(store: &Store, q: &Query, filter: &Filter, n: usize) -> Result<
             store.reach(&seeds, &qv, n, &f, &reach)?.into_iter().map(|x| x.0).collect()
         }
         "file" => {
-            let terms: Vec<String> = strata::text::analyze(&q.path);
+            let terms: Vec<String> = chloedb::text::analyze(&q.path);
             if terms.is_empty() {
                 Vec::new()
             } else {
                 let mut conds = f.conds();
                 conds.push("MATCH(files, :files)".into());
-                let order = if strata::text::analyze_query(&q.q).is_empty() { "seq DESC" } else { "bm25(body, :q, syntax => 'plain') DESC" };
+                let order = if chloedb::text::analyze_query(&q.q).is_empty() { "seq DESC" } else { "bm25(body, :q, syntax => 'plain') DESC" };
                 let params = f.params().set("files", Value::Str(terms.join(" AND "))).set("q", Value::Str(q.q.clone()));
                 let rs = store.query_with(&format!("SELECT {COLUMNS} FROM memory WHERE {} ORDER BY {order} LIMIT {n}", conds.join(" AND ")), &params)?;
                 rs.rows.iter().filter_map(|r| row_record(r)).collect()
@@ -500,11 +500,11 @@ pub fn rank(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str,
     if cfg.ranker == "local" {
         return rank_local(store, cfg, request, cands);
     }
-    let mut terms: HashSet<String> = strata::text::analyze_query(request).into_iter().collect();
+    let mut terms: HashSet<String> = chloedb::text::analyze_query(request).into_iter().collect();
     for c in cands {
         for s in &c.sources {
             if let Some((_, q)) = s.split_once(':') {
-                terms.extend(strata::text::analyze_query(q));
+                terms.extend(chloedb::text::analyze_query(q));
             }
         }
     }
@@ -562,7 +562,7 @@ pub const LOCAL_PICKS: usize = 5;
 
 /// Each candidate's features (see [`FEATURES`]), in candidate order.
 pub fn features(store: &Store, request: &str, cands: &[Cand]) -> Vec<[f64; 12]> {
-    let terms = strata::text::analyze_query(request);
+    let terms = chloedb::text::analyze_query(request);
     let idf = if terms.is_empty() { Vec::new() } else { store.idf(&terms).unwrap_or_else(|_| vec![1.0; terms.len()]) };
     let idf_total: f64 = idf.iter().sum();
     let qv = store.embedder.embed_query(request).unwrap_or_else(|_| vec![0.0; store.embedder.dim()]);
@@ -577,7 +577,7 @@ pub fn features(store: &Store, request: &str, cands: &[Cand]) -> Vec<[f64; 12]> 
         .enumerate()
         .map(|(i, c)| {
             let r = &c.record;
-            let have: HashSet<String> = strata::text::analyze(&format!("{}\n{}", r.text, r.ctx)).into_iter().collect();
+            let have: HashSet<String> = chloedb::text::analyze(&format!("{}\n{}", r.text, r.ctx)).into_iter().collect();
             let got: f64 = terms.iter().zip(&idf).filter(|(t, _)| have.contains(*t)).map(|(_, w)| w).sum();
             let n_got = terms.iter().filter(|t| have.contains(*t)).count();
             let cos: f64 = vecs.get(i).map(|v| v.iter().zip(&qv).map(|(a, b)| (*a as f64) * (*b as f64)).sum()).unwrap_or(0.0);

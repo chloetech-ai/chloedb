@@ -1,0 +1,50 @@
+[package]
+name = "chloedb-java"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Java bindings for Strata: the database in-process, over JNI"
+publish = false
+
+[lib]
+# libstrata_jni.so (libstrata_jni.dylib on a Mac), which the Java package
+# (src/main/java) loads: from its jar, or from `-Dstrata.library=PATH`.
+name = "strata_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = { version = "0.21", default-features = false }
+chloedb = { path = "../chloedb", features = ["sqlite"] }
+serde_json = "1"
+
+[features]
+# As the Python package's: DataFusion for joins, groups and sorts over many
+# rows, Parquet in and out, and `s3://` URLs wherever a file is read or
+# written.
+default = ["datafusion", "parquet", "s3"]
+datafusion = ["chloedb/datafusion"]
+parquet = ["datafusion", "chloedb/parquet"]
+s3 = ["chloedb/s3"]
+# BERT embedding models (`bert`), with Apple's Accelerate on a Mac
+# (`accelerate`); Model2Vec models need neither.
+bert = ["chloedb/bert"]
+accelerate = ["chloedb/accelerate"]
+# Cross-encoders exported to ONNX (`onnx`), run by ONNX Runtime.
+onnx = ["chloedb/onnx"]
+# Images (`vision`): decoded, and embedded by SigLIP.
+vision = ["chloedb/vision"]
+# Sound (`audio`): decoded, and transcribed by Whisper.
+audio = ["chloedb/audio"]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+# The symbols are a third of the library, which the jar carries.
+strip = "symbols"
+
+# CI's build (mvn -Dcargo.profile=ci): release's optimisation without its
+# link-time optimisation and single codegen unit.
+[profile.ci]
+inherits = "release"
+codegen-units = 16
+lto = false

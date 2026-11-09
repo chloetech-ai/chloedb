@@ -12,7 +12,7 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: cargo
-    directories: [/strata, /engram, /strata-server, /strata-py]
+    directories: [/chloedb, /engram, /chloedb-server, /chloedb-py]
     schedule:
       interval: monthly
     open-pull-requests-limit: 4
@@ -20,7 +20,7 @@ updates:
       minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: pip
-    directory: /strata-py
+    directory: /chloedb-py
     schedule:
       interval: monthly
     groups:

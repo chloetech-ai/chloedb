@@ -1,10 +1,10 @@
 name: Image
 
-# strata-server's image, for clusters the command center's Cloud view
+# chloedb-server's image, for clusters the command center's Cloud view
 # plans: ghcr.io/chloetech-ai/strata-server, for x86-64 and arm64 (AWS
 # Graviton) in one tag.
 #
-# A push to main that changes Strata or the server publishes it as `latest`
+# A push to main that changes ChloeDB or the server publishes it as `latest`
 # and as the commit's full sha. A pull request that changes the Dockerfile
 # or this workflow builds both images and publishes nothing, so a broken
 # image shows before it merges. A run started by hand publishes the branch
@@ -18,15 +18,15 @@ on:
   push:
     branches: [main]
     paths:
-      - "strata/**"
-      - "strata-server/**"
-      - "strata-crawl/**"
-      - "strata-sheets/**"
+      - "chloedb/**"
+      - "chloedb-server/**"
+      - "chloedb-crawl/**"
+      - "chloedb-sheets/**"
       - ".github/workflows/image.yml"
   pull_request:
     paths:
-      - "strata-server/deploy/Dockerfile"
-      - "strata-server/deploy/Dockerfile.dockerignore"
+      - "chloedb-server/deploy/Dockerfile"
+      - "chloedb-server/deploy/Dockerfile.dockerignore"
       - ".github/workflows/image.yml"
   workflow_dispatch:
 
@@ -70,7 +70,7 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
-          file: strata-server/deploy/Dockerfile
+          file: chloedb-server/deploy/Dockerfile
           platforms: linux/${{ matrix.arch }}
           push: ${{ env.PUSH == 'true' }}
           provenance: false
@@ -78,7 +78,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.description=strata-server, its benchmark and engine-compare
+            org.opencontainers.image.description=chloedb-server, its benchmark and engine-compare
           cache-from: type=gha,scope=image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
 

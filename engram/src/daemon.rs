@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
-use strata::query::Params;
-use strata::Value;
+use chloedb::query::Params;
+use chloedb::Value;
 
 use crate::anchor::{self, Checker};
 use crate::capture::{self, EpisodeAcc};
@@ -557,7 +557,7 @@ impl Daemon {
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
                 let done: Vec<String> = d.done.into_iter().filter(|id| known.iter().any(|r| &r.id == id && r.kind == Kind::Todo)).collect();
                 // Near-copies of what is noted (other than what they replace) add nothing.
-                let terms = |t: &str| -> HashSet<String> { strata::text::analyze(t).into_iter().collect() };
+                let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
                 let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id)).map(|r| terms(&r.text)).collect();
                 let ctx = format!("Turn {turn} request: {}", prompt.chars().take(200).collect::<String>());
                 // Each note links to the turn it was written from.
@@ -969,7 +969,7 @@ impl Daemon {
         self.with_session(sid, |s| {
             s.annotated.insert(rel.to_string());
         });
-        let terms: Vec<String> = strata::text::analyze(rel);
+        let terms: Vec<String> = chloedb::text::analyze(rel);
         if terms.is_empty() {
             return Ok(String::new());
         }
@@ -1017,7 +1017,7 @@ impl Daemon {
         let mut shown = shown.to_string();
         let mut ck = self.checker();
         for f in &next {
-            let terms: Vec<String> = strata::text::analyze(f);
+            let terms: Vec<String> = chloedb::text::analyze(f);
             if terms.is_empty() {
                 continue;
             }
@@ -1055,7 +1055,7 @@ impl Daemon {
             f.session = Some(s.to_string());
         }
         let (hits, ev) = recall::search(&self.store, q, &f, &self.cfg.rank)?;
-        let terms: HashSet<String> = strata::text::analyze_query(q).into_iter().collect();
+        let terms: HashSet<String> = chloedb::text::analyze_query(q).into_iter().collect();
         let mut text = String::new();
         for h in hits.iter().take(limit) {
             text += &recall::fmt_record(&h.record, &recall::snippet(&h.record.text, &terms, 700), now());
@@ -1096,10 +1096,10 @@ impl Daemon {
             let cells: Vec<String> = row
                 .iter()
                 .map(|v| match v {
-                    strata::Value::Null => "NULL".into(),
-                    strata::Value::Int(x) => x.to_string(),
-                    strata::Value::Float(x) => format!("{x:.4}"),
-                    strata::Value::Str(s) => {
+                    chloedb::Value::Null => "NULL".into(),
+                    chloedb::Value::Int(x) => x.to_string(),
+                    chloedb::Value::Float(x) => format!("{x:.4}"),
+                    chloedb::Value::Str(s) => {
                         let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
                         if one.chars().count() > 400 {
                             format!("{}…", one.chars().take(400).collect::<String>())
@@ -1107,10 +1107,10 @@ impl Daemon {
                             one
                         }
                     }
-                    strata::Value::Vector(v) => format!("vector({})", v.len()),
-                    strata::Value::List(xs) => format!("list({})", xs.len()),
-                    strata::Value::Bool(b) => b.to_string(),
-                    strata::Value::Timestamp(t) => strata::timestamp::format(*t),
+                    chloedb::Value::Vector(v) => format!("vector({})", v.len()),
+                    chloedb::Value::List(xs) => format!("list({})", xs.len()),
+                    chloedb::Value::Bool(b) => b.to_string(),
+                    chloedb::Value::Timestamp(t) => chloedb::timestamp::format(*t),
                 })
                 .collect();
             text += &cells.join(" | ");
@@ -1179,7 +1179,7 @@ impl Daemon {
             return Err(err(format!("{} is not an absolute path", dest.display())));
         }
         std::fs::create_dir(&dest).map_err(|e| err(format!("create {}: {e}", dest.display())))?;
-        let stats = self.store.db.storage().checkpoint(&dest.join("memory.strata"), &strata::storage::CheckpointOptions::default())?;
+        let stats = self.store.db.storage().checkpoint(&dest.join("memory.strata"), &chloedb::storage::CheckpointOptions::default())?;
         self.persist();
         for name in ["state.json", "config.json"] {
             match std::fs::copy(self.paths.dir.join(name), dest.join(name)) {

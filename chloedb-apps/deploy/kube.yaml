@@ -1,0 +1,111 @@
+# The studio on a Kubernetes cluster, behind the shared-link gate
+# (deploy/README.md). One pod:
+#   - init "chloedb-server" copies chloedb-server out of the cluster's image,
+#   - init "fetch" checks out chloedb-apps at one commit of the public repo and
+#     installs its dependency, Playwright (for the drawn checks) and Claude
+#     Code (the model's client),
+#   - "studio" runs the engine on 127.0.0.1:7730 with its own chloedb-server,
+#   - "gate" (deploy/gate.mjs) is the only thing listening outside, on 8080.
+# The data (Strata, files, the spend count) is on the node's disk, so the pod
+# is pinned to one node; a NodePort Service makes the gate reachable on that
+# node's address.
+#
+# deploy/kube.sh fills in __REF__, __NODE__ and __NODEPORT__ and applies it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apps-studio
+  namespace: strata
+  labels: { app.kubernetes.io/name: apps-studio }
+spec:
+  replicas: 1
+  # One engine per data directory: the old pod stops before the new one starts.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: apps-studio }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: apps-studio }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: __NODE__ }
+      enableServiceLinks: false
+      volumes:
+        - name: code
+          emptyDir: {}
+        - name: data
+          hostPath: { path: /var/lib/strata-apps-studio, type: DirectoryOrCreate }
+      initContainers:
+        - name: chloedb-server
+          image: __STRATA_IMAGE__
+          command: [cp, /usr/local/bin/chloedb-server, /code/chloedb-server]
+          volumeMounts: [{ name: code, mountPath: /code }]
+        - name: fetch
+          image: mcr.microsoft.com/playwright:v1.63.0-noble
+          env:
+            - { name: REF, value: __REF__ }
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              cd /code
+              git init -q src && cd src
+              git remote add origin https://github.com/chloetech-ai/strata
+              git sparse-checkout set chloedb-apps
+              git fetch -q --depth 1 --filter=blob:none origin "$REF"
+              git checkout -q FETCH_HEAD
+              cd chloedb-apps && npm ci --no-audit --no-fund
+              cd /code && npm install --no-audit --no-fund --no-package-lock playwright@1.63.0 @anthropic-ai/claude-code@2.1.310
+              echo "chloedb-apps at $(git -C /code/src rev-parse HEAD)"
+          volumeMounts: [{ name: code, mountPath: /code }]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      containers:
+        - name: studio
+          image: mcr.microsoft.com/playwright:v1.63.0-noble
+          workingDir: /code/src/chloedb-apps
+          command: [node, engine/server.mjs, --host, 127.0.0.1, --port, "7730", --data, /data]
+          env:
+            - { name: STRATA_SERVER_BIN, value: /code/chloedb-server }
+            - { name: STRATA_APPS_CLAUDE, value: /code/node_modules/.bin/claude }
+            - { name: STRATA_APPS_EVOLVE, value: "off" }
+            - { name: STRATA_APPS_SPEND_CAP_USD, value: "__SPEND_CAP__" }
+            - { name: HOME, value: /data/home }
+            - { name: TMPDIR, value: /tmp }
+            - { name: DISABLE_AUTOUPDATER, value: "1" }
+            - name: ANTHROPIC_API_KEY
+              valueFrom: { secretKeyRef: { name: anthropic, key: key } }
+          volumeMounts:
+            - { name: code, mountPath: /code }
+            - { name: data, mountPath: /data }
+          resources:
+            requests: { cpu: 250m, memory: 600Mi }
+            limits: { cpu: "1", memory: 1536Mi }
+        - name: gate
+          image: mcr.microsoft.com/playwright:v1.63.0-noble
+          command: [node, /code/src/chloedb-apps/deploy/gate.mjs, --port, "8080", --to, "http://127.0.0.1:7730"]
+          env:
+            - name: STRATA_APPS_GATE_KEY
+              valueFrom: { secretKeyRef: { name: apps-studio-gate, key: key } }
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts: [{ name: code, mountPath: /code, readOnly: true }]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apps-studio
+  namespace: strata
+  labels: { app.kubernetes.io/name: apps-studio }
+spec:
+  type: NodePort
+  selector: { app.kubernetes.io/name: apps-studio }
+  ports:
+    - { name: http, port: 8080, targetPort: http, nodePort: __NODEPORT__ }

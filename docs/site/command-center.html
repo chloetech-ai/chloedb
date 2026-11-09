@@ -29,8 +29,8 @@
   <div class="gutter head-band"><div class="wrap page-head">
     <span class="eyebrow">Command center</span>
     <h1>The console is part of the server</h1>
-    <p class="lede">Open any strata-server's address to watch a cluster, take a slow query apart, build queries and tune ranking. Nothing else to install, on a laptop or in the cloud.</p>
-    <div class="actions"><a class="btn primary" href="#try">Open it in a minute</a><a class="btn" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#the-ui">Every view, documented</a></div>
+    <p class="lede">Open any chloedb-server's address to watch a cluster, take a slow query apart, build queries and tune ranking. Nothing else to install, on a laptop or in the cloud.</p>
+    <div class="actions"><a class="btn primary" href="#try">Open it in a minute</a><a class="btn" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md#the-ui">Every view, documented</a></div>
   </div></div>
 
   <section class="gutter"><div class="wrap block">
@@ -122,10 +122,10 @@
         <button type="button" data-tab="slices">Slices</button>
         <button type="button" data-tab="crawler">Crawler</button>
       </div>
-      <div data-panel="oncall"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/oncall</span></div><img class="zoomable" src="../assets/img/site-cc-oncall.png" alt="On-call agent: a p99 alert investigated in 12 steps, its evidence and likely cause, a nightly report's scans, and a limit on that report waiting for an admin" loading="lazy"></figure><p>It reads health, alerts, queries and logs, then proposes a limit, a cancel or a silence. Nothing changes until an admin approves. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#the-on-call-agent">How it works</a></p></div>
+      <div data-panel="oncall"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/oncall</span></div><img class="zoomable" src="../assets/img/site-cc-oncall.png" alt="On-call agent: a p99 alert investigated in 12 steps, its evidence and likely cause, a nightly report's scans, and a limit on that report waiting for an admin" loading="lazy"></figure><p>It reads health, alerts, queries and logs, then proposes a limit, a cancel or a silence. Nothing changes until an admin approves. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md#the-on-call-agent">How it works</a></p></div>
       <div data-panel="simulator"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/simulator</span></div><img class="zoomable" src="../assets/img/site-cc-simulator.png" alt="Simulator: a test run on 3 shards × 3 copies graded 90 of 100, what the cluster holds within its SLO, what fills first and what it costs" loading="lazy"></figure><p>A test mix at a rising rate: what the cluster holds within its SLO, what fills first, and what another shape would hold and cost.</p></div>
-      <div data-panel="slices"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/slices</span></div><img class="zoomable" src="../assets/img/site-cc-slices.png" alt="Slices: 477,995 places in 1,775 tiles, and eight devices that answered 70% of their searches themselves" loading="lazy"></figure><p>Which tiles devices fetched, and how many searches they answered themselves. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/slices.md">Search on the device</a></p></div>
-      <div data-panel="crawler"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/app/crawler</span></div><img class="zoomable" src="../assets/img/site-cc-crawler.png" alt="Crawler: a new crawl, a finished crawl of a bookshop site, and the cluster's shards" loading="lazy"></figure><p>An app beside the cluster: give it a site, and it makes a table and adds shards as the table grows. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/crawler.md">The crawler</a></p></div>
+      <div data-panel="slices"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/slices</span></div><img class="zoomable" src="../assets/img/site-cc-slices.png" alt="Slices: 477,995 places in 1,775 tiles, and eight devices that answered 70% of their searches themselves" loading="lazy"></figure><p>Which tiles devices fetched, and how many searches they answered themselves. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/slices.md">Search on the device</a></p></div>
+      <div data-panel="crawler"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/app/crawler</span></div><img class="zoomable" src="../assets/img/site-cc-crawler.png" alt="Crawler: a new crawl, a finished crawl of a bookshop site, and the cluster's shards" loading="lazy"></figure><p>An app beside the cluster: give it a site, and it makes a table and adds shards as the table grows. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/crawler.md">The crawler</a></p></div>
     </div>
   </div></section>
 
@@ -151,9 +151,9 @@
   <section class="gutter band-night" id="try"><div class="wrap cta">
     <h2>Open it on your laptop in a minute</h2>
     <p class="lede" style="color:var(--night-dim)">The demo fills a database with sample products and serves it.</p>
-<pre>strata-server --demo 20000 --db products.strata
+<pre>chloedb-server --demo 20000 --db products.strata
 open http://localhost:7700/</pre>
-    <div class="center-row"><a class="btn primary lg" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#the-ui">Every view, documented</a><a class="btn on-night lg" href="scale.html">Run it as a cluster</a></div>
+    <div class="center-row"><a class="btn primary lg" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md#the-ui">Every view, documented</a><a class="btn on-night lg" href="scale.html">Run it as a cluster</a></div>
   </div></section>
 </main>
 
@@ -161,7 +161,7 @@ open http://localhost:7700/</pre>
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/compare-data.js?v=a298fac88a"></script>

@@ -1,10 +1,10 @@
-name: strata-server release
+name: chloedb-server release
 
-# Prebuilt strata-server, so that running it needs no Rust, no C compiler
+# Prebuilt chloedb-server, so that running it needs no Rust, no C compiler
 # and no 15-minute first build: one archive per platform, holding the
 # server binary, attached to a GitHub release.
 #
-# A tag chloedb-server-v<version> (strata-server/Cargo.toml's version;
+# A tag chloedb-server-v<version> (chloedb-server/Cargo.toml's version;
 # the old name, strata-server-v<version>, works too) builds and tests
 # every platform and attaches the archives and their SHA-256 sums to the
 # tag's release; a run started by hand does the same and keeps them as
@@ -36,7 +36,7 @@ jobs:
       matrix:
         include:
           # Built on glibc 2.35: it runs on that and later (Debian 12,
-          # Ubuntu 22.04, RHEL 10 and newer), as the strata-py wheels do.
+          # Ubuntu 22.04, RHEL 10 and newer), as the chloedb-py wheels do.
           - { platform: linux-x86_64, os: ubuntu-22.04 }
           - { platform: linux-aarch64, os: ubuntu-22.04-arm }
           - { platform: macos-arm64, os: macos-latest }
@@ -53,17 +53,17 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          v=$(sed -n 's/^version = "\(.*\)"/\1/p' strata-server/Cargo.toml | head -1)
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
           test "$GITHUB_REF_NAME" = "chloedb-server-v$v" || test "$GITHUB_REF_NAME" = "strata-server-v$v"
       - name: Build
-        working-directory: strata-server
-        run: cargo build --release --bin strata-server
+        working-directory: chloedb-server
+        run: cargo build --release --bin chloedb-server
       # The binary starts on a new database, takes a table and a row, and
       # answers a query, from outside the checkout.
       - name: Run it
         shell: bash
         run: |
-          bin="$GITHUB_WORKSPACE/strata-server/target/release/strata-server"
+          bin="$GITHUB_WORKSPACE/chloedb-server/target/release/chloedb-server"
           cd "$RUNNER_TEMP"
           "$bin" --version
           "$bin" --db try.strata --demo 20 --listen 127.0.0.1:7790 --grpc 127.0.0.1:7791 > server.log 2>&1 &
@@ -78,20 +78,20 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="strata-server-${{ matrix.platform }}"
+          name="chloedb-server-${{ matrix.platform }}"
           mkdir -p "dist/$name"
-          cp strata-server/target/release/strata-server "dist/$name/"
-          # ChloeDB was called Strata: the server answers to its new name too.
-          ln -s strata-server "dist/$name/chloedb-server"
-          "dist/$name/chloedb-server" --version
+          cp chloedb-server/target/release/chloedb-server "dist/$name/"
+          # ChloeDB was called Strata: the server answers to its old name too.
+          ln -s chloedb-server "dist/$name/strata-server"
+          "dist/$name/strata-server" --version
           cp LICENSE* "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           ls -la dist
       - uses: actions/upload-artifact@v7
         with:
-          name: strata-server-${{ matrix.platform }}
-          path: dist/strata-server-*.tar.gz*
+          name: chloedb-server-${{ matrix.platform }}
+          path: dist/chloedb-server-*.tar.gz*
           if-no-files-found: error
 
   release:
@@ -105,7 +105,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: strata-server-*
+          pattern: chloedb-server-*
           path: dist
           merge-multiple: true
       - name: Attach the archives to the release

@@ -157,13 +157,13 @@ Engram's speed comes from **ChloeDB**, a search database we built for this job. 
 
 ![ChloeDB architecture](showcase/strata-architecture.png)
 
-<sub>ChloeDB architecture, from strata/DESIGN.md and strata/README.md</sub>
+<sub>ChloeDB architecture, from chloedb/DESIGN.md and chloedb/README.md</sub>
 
 We measured ChloeDB against two industry standards on four public BEIR collections, from 5,000 to 523,000 documents, running the same queries on the same machine. The baselines were **SQLite 3.53 with FTS5**, the world's most deployed embedded database, and **Tantivy 0.26**, the Rust engine in the style of Lucene that powers Quickwit. On Quora, the largest collection (523,000 documents), median warm latency per query was:
 
 ![ChloeDB vs Tantivy vs SQLite search latency](showcase/search-latency.png)
 
-<sub>ChloeDB evaluation, strata/results: Quora, 523,000 documents, one thread, warm cache; SQLite 3.53 + FTS5 and Tantivy 0.26</sub>
+<sub>ChloeDB evaluation, chloedb/results: Quora, 523,000 documents, one thread, warm cache; SQLite 3.53 + FTS5 and Tantivy 0.26</sub>
 
 - **Faster without losing quality:** BM25 search was 1.7–3.2× faster than Tantivy and 43–200× faster than SQLite FTS5 across the four collections. ChloeDB won 24 of 28 warm text and filter comparisons. Ranking quality matched both: nDCG@10 was within 0.02 of the baselines everywhere.
 - **Vectors in milliseconds:** HNSW search took 0.05–0.10 ms with recall@10 of 0.99. SQLite has no built-in vector index, so it scans every vector, which takes 7.7 ms to 0.7 s.
@@ -184,13 +184,13 @@ To test whether links make search better, we held out 1,000 recent arXiv papers 
 
 ![Following citations doubles what vector search finds](showcase/citation-quality.png)
 
-<sub>ChloeDB graph evaluation, strata/results/graph/quality\_stats.json: 1,000 held-out ogbn-arxiv papers, 484 reported</sub>
+<sub>ChloeDB graph evaluation, chloedb/results/graph/quality\_stats.json: 1,000 held-out ogbn-arxiv papers, 484 reported</sub>
 
 ChloeDB stores links compactly inside the file, at 27 bytes per citation on arXiv, and indexes them in both directions. Beyond one hop, that makes walking the graph much faster than SQLite's recursive queries:
 
 ![ChloeDB vs SQLite graph traversal latency](showcase/graph-latency.png)
 
-<sub>ChloeDB graph evaluation, strata/results/graph/latency\_arxiv.json: 200 random seeds, warm cache, one thread</sub>
+<sub>ChloeDB graph evaluation, chloedb/results/graph/latency\_arxiv.json: 200 random seeds, warm cache, one thread</sub>
 
 - **More than reachability:** shortest paths and personalized PageRank are built in. PageRank over a million rows and 10 million links takes 3.5 ms. SQLite has no practical way to express either.
 - **Links that never break:** links point at keys, not storage positions, so merges, updates and deletes never rewrite them. A link to a deleted row is skipped, like a foreign key without a constraint.
@@ -205,4 +205,4 @@ ChloeDB stores links compactly inside the file, at 27 bytes per citation on arXi
 - **Fair baseline:** every setup kept Claude Code's own built-in memory notes from the week. Memory, the repository and Engram's store were restored before every run, so no run could learn from another. No user plugins or extra tools were loaded.
 - **One model:** all runs used the same small, fast Claude model. Costs are list prices as reported by Claude Code.
 - **Hard by design:** one task, the booking-form check, was solved by no setup.
-- **Reproduce it:** the scenario, graders and harness are in `engram/eval/ab/scenarios/kestrel` and `engram/scripts/long_session_ab.py` in the [codex-test-2](https://github.com/rkonow/codex-test-2) repository; all 210 graded runs, with each run's code changes, are in `engram/results/long/kestrel` there. ChloeDB's evaluation is in `strata/report` and `strata/results` in the same repository.
+- **Reproduce it:** the scenario, graders and harness are in `engram/eval/ab/scenarios/kestrel` and `engram/scripts/long_session_ab.py` in the [codex-test-2](https://github.com/rkonow/codex-test-2) repository; all 210 graded runs, with each run's code changes, are in `engram/results/long/kestrel` there. ChloeDB's evaluation is in `chloedb/report` and `chloedb/results` in the same repository.

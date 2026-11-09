@@ -1,6 +1,6 @@
 # Engram: how it works
 
-Engram, an application built on [ChloeDB](../strata/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one ChloeDB file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
+Engram, an application built on [ChloeDB](../chloedb/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one ChloeDB file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
 
 ## The problem
 

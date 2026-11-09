@@ -6,17 +6,17 @@
 Nothing here is typed by hand: each value is read from a run's committed
 results and only rounded. The reports it reads:
 
-  cloud-10m      strata-server/results/compare-msmarco-10m-do/  (fanout.sh, one pass, every engine on its own nodes)
-  cloud-10m-h2h  strata-server/results/compare-msmarco-same-nodes-do/10m/  (Strata, Elasticsearch and
+  cloud-10m      chloedb-server/results/compare-msmarco-10m-do/  (fanout.sh, one pass, every engine on its own nodes)
+  cloud-10m-h2h  chloedb-server/results/compare-msmarco-same-nodes-do/10m/  (Strata, Elasticsearch and
                  OpenSearch on the same nodes on latest main, three passes)
-  cloud-1m       strata-server/results/compare-msmarco-same-nodes-do/1m/   (14 engines on latest main,
+  cloud-1m       chloedb-server/results/compare-msmarco-same-nodes-do/1m/   (14 engines on latest main,
                  each lane's engines on the same nodes, three passes)
-  cloud-1m-first strata-server/results/compare-msmarco-1m-do/   (the first 1M run, three passes)
-  laptop     strata-server/results/compare-nq-mac/          (compare.sh on kind, one pass)
-  embedded   strata/results/laptop-2026-11/part-a-do/       (Part A, no server)
-  graph      strata-server/results/graph-compare-mac/README.md
-  bm25-load  strata-server/results/bm25-stats-cache-container/
-  bm25-do    strata-server/results/bm25-do-1m/ (the same before and after on DigitalOcean)
+  cloud-1m-first chloedb-server/results/compare-msmarco-1m-do/   (the first 1M run, three passes)
+  laptop     chloedb-server/results/compare-nq-mac/          (compare.sh on kind, one pass)
+  embedded   chloedb/results/laptop-2026-11/part-a-do/       (Part A, no server)
+  graph      chloedb-server/results/graph-compare-mac/README.md
+  bm25-load  chloedb-server/results/bm25-stats-cache-container/
+  bm25-do    chloedb-server/results/bm25-do-1m/ (the same before and after on DigitalOcean)
   strata-1m-since  Strata's own medians in cloud-1m-first and cloud-1m, kind by kind
 
 A results directory that is not on this checkout is read from the git ref
@@ -686,21 +686,21 @@ def shown(v):
 
 def main():
     runs, reports, suites, missing = {}, {}, [], []
-    c10 = Source("strata-server/results/compare-msmarco-10m-do")
-    c10h = Source("strata-server/results/compare-msmarco-same-nodes-do/10m")
-    c1 = Source("strata-server/results/compare-msmarco-same-nodes-do/1m")
-    c1f = Source("strata-server/results/compare-msmarco-1m-do")
-    mac = Source("strata-server/results/compare-nq-mac")
-    pa = Source("strata/results/laptop-2026-11/part-a-do")
-    gr = Source("strata-server/results/graph-compare-mac", "origin/claude/graph-compare-mac")
-    bl = Source("strata-server/results/bm25-stats-cache-container")
-    bd = Source("strata-server/results/bm25-do-1m")
-    bi1 = Source("strata-server/results/bigger-items-do/1m")
-    bi10 = Source("strata-server/results/bigger-items-do/10m")
-    r1 = Source("strata-server/results/rerun-1106-do/1m")
-    r10 = Source("strata-server/results/rerun-1106-do/10m")
-    n1 = Source("strata-server/results/rerun-1107-do/1m")
-    n10 = Source("strata-server/results/rerun-1107-do/10m")
+    c10 = Source("chloedb-server/results/compare-msmarco-10m-do")
+    c10h = Source("chloedb-server/results/compare-msmarco-same-nodes-do/10m")
+    c1 = Source("chloedb-server/results/compare-msmarco-same-nodes-do/1m")
+    c1f = Source("chloedb-server/results/compare-msmarco-1m-do")
+    mac = Source("chloedb-server/results/compare-nq-mac")
+    pa = Source("chloedb/results/laptop-2026-11/part-a-do")
+    gr = Source("chloedb-server/results/graph-compare-mac", "origin/claude/graph-compare-mac")
+    bl = Source("chloedb-server/results/bm25-stats-cache-container")
+    bd = Source("chloedb-server/results/bm25-do-1m")
+    bi1 = Source("chloedb-server/results/bigger-items-do/1m")
+    bi10 = Source("chloedb-server/results/bigger-items-do/10m")
+    r1 = Source("chloedb-server/results/rerun-1106-do/1m")
+    r10 = Source("chloedb-server/results/rerun-1106-do/10m")
+    n1 = Source("chloedb-server/results/rerun-1107-do/1m")
+    n10 = Source("chloedb-server/results/rerun-1107-do/10m")
     # Strata from its newest rerun (7 November: main + #293-#296 and #299), where
     # that rerun's analysis (recall, load) is committed; 6 November's otherwise
     s1, d1 = (n1, "7 Nov") if n1.ok and n1.json("summary.json") else (r1, "6 Nov")

@@ -1,7 +1,7 @@
 name: Chaos
 
-# Every night, strata-chaos (strata-server/src/bin/strata-chaos) plays its
-# scenarios on a cluster of strata-server processes on one runner: 2 shards
+# Every night, chloedb-chaos (chloedb-server/src/bin/chloedb-chaos) plays its
+# scenarios on a cluster of chloedb-server processes on one runner: 2 shards
 # of 3 copies, 2 spares and 2 coordinators, with clients that search, read
 # by key and add to counters through the coordinators. The scenarios crash
 # and lose nodes, cut and slow links, freeze and throttle processes, fill
@@ -14,7 +14,7 @@ name: Chaos
 #
 # It is not part of CI result: it takes about half an hour, and the
 # timings it records depend on a shared runner. A pull request runs one
-# scenario with its tests instead (strata-server/tests/chaos.rs, a primary
+# scenario with its tests instead (chloedb-server/tests/chaos.rs, a primary
 # killed under writes). The summary of a run is results.md, and the
 # artifact keeps results.json and events.jsonl for 14 days.
 on:
@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: "The scenarios to play, comma-separated (strata-chaos run --list); empty: every one"
+        description: "The scenarios to play, comma-separated (chloedb-chaos run --list); empty: every one"
         required: false
         default: ""
 
@@ -37,7 +37,7 @@ env:
 
 jobs:
   chaos:
-    name: strata-chaos scenarios
+    name: chloedb-chaos scenarios
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -45,15 +45,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: strata-server
-          key: strata-chaos
+          workspaces: chloedb-server
+          key: chloedb-chaos
       - name: Build
-        working-directory: strata-server
-        run: cargo build --profile ci --bin strata-server --bin strata-chaos
+        working-directory: chloedb-server
+        run: cargo build --profile ci --bin chloedb-server --bin chloedb-chaos
       # Cutting links takes iptables rules per process uid, and full disks
       # a tmpfs per server: both need root. Each server runs as a uid of its
       # own, which cannot reach the runner's home, so the binaries (side by
-      # side: strata-chaos starts the strata-server beside it) and the
+      # side: chloedb-chaos starts the chloedb-server beside it) and the
       # cluster's directory are outside it.
       - name: Play the scenarios
         shell: bash
@@ -61,15 +61,15 @@ jobs:
           SCENARIOS: ${{ inputs.scenarios }}
         run: |
           set -o pipefail
-          sudo install -d -m 755 /opt/strata-chaos
-          sudo install -m 755 strata-server/target/ci/strata-chaos strata-server/target/ci/strata-server /opt/strata-chaos/
-          sudo /opt/strata-chaos/strata-chaos run --dir /tmp/strata-chaos --disk-mb 512 ${SCENARIOS:+--scenarios "$SCENARIOS"} 2>&1 | tee "$RUNNER_TEMP/chaos.log"
+          sudo install -d -m 755 /opt/chloedb-chaos
+          sudo install -m 755 chloedb-server/target/ci/chloedb-chaos chloedb-server/target/ci/chloedb-server /opt/chloedb-chaos/
+          sudo /opt/chloedb-chaos/chloedb-chaos run --dir /tmp/chloedb-chaos --disk-mb 512 ${SCENARIOS:+--scenarios "$SCENARIOS"} 2>&1 | tee "$RUNNER_TEMP/chaos.log"
       - name: Summary
         if: always()
         shell: bash
         run: |
-          if [ -f /tmp/strata-chaos/results.md ]; then cat /tmp/strata-chaos/results.md >> "$GITHUB_STEP_SUMMARY"; fi
-          sudo cp /tmp/strata-chaos/results.md /tmp/strata-chaos/results.json /tmp/strata-chaos/events.jsonl "$RUNNER_TEMP/" 2>/dev/null || true
+          if [ -f /tmp/chloedb-chaos/results.md ]; then cat /tmp/chloedb-chaos/results.md >> "$GITHUB_STEP_SUMMARY"; fi
+          sudo cp /tmp/chloedb-chaos/results.md /tmp/chloedb-chaos/results.json /tmp/chloedb-chaos/events.jsonl "$RUNNER_TEMP/" 2>/dev/null || true
           sudo chown "$(id -u)" "$RUNNER_TEMP"/results.* "$RUNNER_TEMP"/events.jsonl 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
