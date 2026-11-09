@@ -1,10 +1,10 @@
 # Baselines: shared workloads, SQLite and Tantivy
 
-This component defines the query workloads that Strata, SQLite and Tantivy all
+This component defines the query workloads that ChloeDB, SQLite and Tantivy all
 run (DESIGN.md §8), the measurement harness, and the two baselines.
 
 * `src/workload.rs` (always compiled): workload types, the deterministic
-  generator, SQL in Strata's dialect, shared text helpers.
+  generator, SQL in ChloeDB's dialect, shared text helpers.
 * `src/workload/run.rs` (always compiled): the `System` trait and the
   harness (warm/cold latency, pages read, nDCG@10).
 * `src/baselines/` (feature `baselines`): `Sqlite` and `Tantivy`.
@@ -34,7 +34,7 @@ let w: Workload = workload::generate(&coll, &WorkloadConfig::default());
 w.save(Path::new("results/workloads/fiqa.json"))?;      // or Workload::load
 for i in w.of_kind(Kind::FilteredVector) {
     let q: &WorkloadQuery = &w.queries[i];
-    // q.sql        SQL in Strata's dialect; bind :q = coll.queries[q.query?].vector
+    // q.sql        SQL in ChloeDB's dialect; bind :q = coll.queries[q.query?].vector
     // q.count_sql  COUNT(*) form, for kinds that report a count
     // q.query      index into coll.queries (text and/or vector)
     // q.words      boolean / facet words
@@ -74,7 +74,7 @@ run.report   // KindReport: queries, reps, warm/cold Latency {n, mean_ms, p50_ms
 run.outputs  // Vec<(workload index, QueryOutput)> from the untimed warm-up pass
 ```
 
-Strata's evaluation driver implements `System` for the engine and calls
+ChloeDB's evaluation driver implements `System` for the engine and calls
 `run_kind` per kind; `BuildReport {seconds, phases, bytes, components}` is the
 shared shape for load reports.
 
@@ -121,7 +121,7 @@ Per collection it loads the data, loads (or generates) the workload, builds
 each system in `--db-dir`, drops the documents from memory, runs every kind
 warm and cold, and writes `<system>_<tag>.json` (`tag` = collection, plus
 `_<limit>` with `--limit`), `truth_<tag>.json` (SQLite's exact vector and
-hybrid top-10 per workload query: the reference for Strata's recall) and
+hybrid top-10 per workload query: the reference for ChloeDB's recall) and
 `compare_<tag>.json` (per kind: identical ids, mean top-10 overlap, identical
 counts, identical facets). Databases are deleted afterwards unless `--keep`;
 `--reuse` reopens kept ones (and their saved build reports).
@@ -133,7 +133,7 @@ seed 20261012, `max_text_queries` 2000, `max_boolean` 300,
 `filter_instances` 5, `per_target` 30, targets 0.1%, 1%, 10%, 50%,
 tolerance 25% (relative).
 
-| kind | queries | SQL (Strata dialect) |
+| kind | queries | SQL (ChloeDB dialect) |
 |---|---|---|
 | `bm25` | every judged query whose text has a non-stopword term (Quora: a seeded 2,000-query sample) | `SELECT id FROM docs ORDER BY bm25(body, '<text>') DESC LIMIT 10` |
 | `and2`, `and3`, `or3` | ≤ 300 queries with enough content words; 2 or 3 of them at random | `SELECT id FROM docs WHERE MATCH(body, 'a AND b') LIMIT 10` + `SELECT COUNT(*) ...` |
@@ -461,7 +461,7 @@ committed yet). Databases are deleted after each run unless `--keep`.
 
 * **BM25 differs by design.** FTS5 and Tantivy fix k1 = 1.2, b = 0.75 and use
   different IDF formulas (FTS5: `ln((N - n + 0.5)/(n + 0.5))` floored at
-  1e-6; Tantivy: `ln(1 + (N - n + 0.5)/(n + 0.5))`); Strata uses k1 = 0.9,
+  1e-6; Tantivy: `ln(1 + (N - n + 0.5)/(n + 0.5))`); ChloeDB uses k1 = 0.9,
   b = 0.4. Stemmers differ (FTS5 original Porter, Tantivy Snowball English),
   so boolean counts agree on 37–99% of queries (an OR of three frequent
   words is the most sensitive) and top-5 facets on 74–97%, while filter
@@ -469,7 +469,7 @@ committed yet). Databases are deleted after each run unless `--keep`.
   `new` and `use` to `us` (FiQA `behind AND news`: 146 vs 33 matches), and
   `bonus` to `bonu` but `bonuses` to `bonus` (`find AND bonus`: 42 vs 60);
   FTS5's unicode61 also folds diacritics. `compare_*.json` lists examples. Both baselines index stopwords and drop them from queries
-  (`query_terms`); Strata drops them from its index too, so its index is
+  (`query_terms`); ChloeDB drops them from its index too, so its index is
   smaller for that reason alone.
 * **SQLite's schema is the one specified**, with the vector in the `docs`
   row after the text. Rows exceed a page, so the record spills into overflow
@@ -488,7 +488,7 @@ committed yet). Databases are deleted after each run unless `--keep`.
   reference (`truth_*.json`); scores are f32 sums in a fixed order, so
   near-ties may order differently from another exact implementation.
 * **Caches**: SQLite runs with its default 2000 KiB page cache, so warm runs
-  rely on the OS page cache (syscall + copy per page); Tantivy and Strata read
+  rely on the OS page cache (syscall + copy per page); Tantivy and ChloeDB read
   through `mmap`. Cold runs reopen the system first; the reopen's own reads
   are excluded from the query's pages and latency and reported as
   `open_pages`. On a small index the reopen's readahead can bring in a
@@ -496,7 +496,7 @@ committed yet). Databases are deleted after each run unless `--keep`.
   reads 1 more page).
 * **Pages read include kernel readahead.** SQLite's `pread` of a random page
   pulls a small readahead window; Tantivy's `mmap` faults read around the
-  faulting page (up to 32 pages by default). Strata maps its file too, so its
+  faulting page (up to 32 pages by default). ChloeDB maps its file too, so its
   page counts behave like Tantivy's unless it advises `MADV_RANDOM`.
 * **Tantivy** indexes with one thread (its default would use all cores);
   ids come from the fast column (cheaper than fetching stored documents);

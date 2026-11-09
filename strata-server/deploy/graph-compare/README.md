@@ -1,6 +1,6 @@
 # Graph engine comparison
 
-Strata against Neo4j (with Graph Data Science), Memgraph (MAGE), FalkorDB and
+ChloeDB against Neo4j (with Graph Data Science), Memgraph (MAGE), FalkorDB and
 ArangoDB on one machine's Docker: neighbours within 1 to 3 hops, shortest
 paths and personalized PageRank on the arXiv citation graph, every answer
 checked against an exact one. Results from a run on a MacBook Air are in
@@ -12,7 +12,7 @@ python prep.py --arxiv arxiv.jsonl --out DATA
 printf '{"id": %d}\n' $(seq 0 169342) > DATA/papers-ids.ndjson   # rows for the edge-table form
 
 # Each engine alone, loaded and queried from a client container.
-# Strata's -grpc setups query over gRPC: PYLIB_GRPC holds grpcio and the
+# ChloeDB's -grpc setups query over gRPC: PYLIB_GRPC holds grpcio and the
 # stubs from strata-server/proto/strata.proto, built for CLIENT_IMAGE.
 DATA=DATA OUT=OUT CLIENT_IMAGE=python:3.12-slim PYLIB=DIR_WITH_httpx_neo4j_redis PYLIB_GRPC=DIR \
   ./compare.sh strata strata-grpc strata-edges strata-edges-grpc neo4j memgraph arangodb

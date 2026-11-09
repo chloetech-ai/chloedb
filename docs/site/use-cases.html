@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>Use cases · Strata</title>
-<meta name="description" content="What people build on Strata: search inside an app, recommendations, retrieval for assistants, media search, logs and knowledge graphs, with demos to try.">
+<title>Use cases · ChloeDB</title>
+<meta name="description" content="What people build on ChloeDB: search inside an app, recommendations, retrieval for assistants, media search, logs and knowledge graphs, with demos to try.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
+<link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
     <a href="scale.html">Laptop to cloud</a>
@@ -29,7 +29,7 @@
   <div class="gutter head-band"><div class="wrap page-head">
     <span class="eyebrow">Use cases</span>
     <h1>What people build on one engine</h1>
-    <p class="lede">Each of these usually takes a database, a search engine and a vector store kept in step. With Strata it is one file, and later one cluster.</p>
+    <p class="lede">Each of these usually takes a database, a search engine and a vector store kept in step. With ChloeDB it is one file, and later one cluster.</p>
     <nav class="toc" aria-label="Use cases">
       <a href="#app-search">App search</a><a href="#recommendations">Recommendations</a><a href="#sessions">Sessions and carts</a><a href="#rag">Retrieval for agents</a><a href="#media">Media</a><a href="#postgres">Search over Postgres</a><a href="#device">Near me, on the phone</a><a href="#logs">Logs</a><a href="#knowledge">Knowledge graphs</a><a href="#demos">Demos</a>
     </nav>
@@ -105,7 +105,7 @@ ORDER BY rrf(bm25(caption, :q), similarity(emb, :v)) DESC LIMIT 12;</pre>
 
   <section class="gutter" id="postgres"><div class="wrap block">
     <div class="uc2">
-      <div><span class="ico cols"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><h2>Search over your Postgres</h2><p>The app keeps writing to Postgres. Strata copies the tables of a publication, then applies every change a moment after it commits, each once, so search, vectors and facets run on the same rows.</p>
+      <div><span class="ico cols"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><h2>Search over your Postgres</h2><p>The app keeps writing to Postgres. ChloeDB copies the tables of a publication, then applies every change a moment after it commits, each once, so search, vectors and facets run on the same rows.</p>
         <dl class="kv"><dt>Replaces</dt><dd>Debezium, Kafka and a sync job into a search engine</dd><dt>Read</dt><dd><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/postgres.md">Following Postgres</a></dd></dl></div>
       <pre data-lang="sh">strata-server follow-postgres \
   --source 'postgres://strata:...@db.example:5432/shop' \
@@ -133,7 +133,7 @@ for row in r:
 
   <section class="gutter" id="logs"><div class="wrap block">
     <div class="uc2">
-      <div><span class="ico text"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h3"/></svg></span><h2>Logs and queries</h2><p>An OpenTelemetry Collector or SDK sends application logs straight in over OTLP, and Strata keeps its own logs and every query it answers the same way. Finding why a service failed is a SQL search, with older data on S3.</p>
+      <div><span class="ico text"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h3"/></svg></span><h2>Logs and queries</h2><p>An OpenTelemetry Collector or SDK sends application logs straight in over OTLP, and ChloeDB keeps its own logs and every query it answers the same way. Finding why a service failed is a SQL search, with older data on S3.</p>
         <dl class="kv"><dt>Replaces</dt><dd>A log search cluster behind the Collector</dd><dt>Read</dt><dd><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#opentelemetry-logs">OpenTelemetry logs</a></dd></dl></div>
       <pre data-lang="sql">SELECT ts, service, severity, body FROM otel_logs
 WHERE severity IN ('ERROR', 'FATAL') AND MATCH(body, 'timeout OR refused')
@@ -171,12 +171,12 @@ ORDER BY hops(), id LIMIT 20;</pre>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/site.js?v=6d78382461"></script>
+<script src="assets/site.js?v=142c29c3e0"></script>
 </body>
 </html>

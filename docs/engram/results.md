@@ -151,7 +151,7 @@ Fisher's exact test gives p = 0.82 on solved runs, and a permutation test within
 
 ## This repository's own 26-hour session
 
-The transcript of the session that built Strata and Engram is the most realistic test available: 26.5 hours, 43.6 MB, three projects, and two compactions whose summaries keep 14,202 and 17,998 characters. Replaying it through Engram's capture gives the records the hooks would have stored; questions are asked at the point just before Engram's own work began.
+The transcript of the session that built ChloeDB and Engram is the most realistic test available: 26.5 hours, 43.6 MB, three projects, and two compactions whose summaries keep 14,202 and 17,998 characters. Replaying it through Engram's capture gives the records the hooks would have stored; questions are asked at the point just before Engram's own work began.
 
 Three probe sets:
 
@@ -387,7 +387,7 @@ At a million records the latency benchmark then ran three times per side, altern
 
 One prompt at a time at a million records, the prompt hook (process start included) fell from 18.7–19.3 to 14.0–14.1 ms at the median. The cost is on the write side: an append returns after 2.6–3.2 ms instead of 0.9–1.0, because it waits for the new version to be built; the daemon stores records after the hook has answered, so no hook waits for that. With four prompt clients at 100,000 records the tool hook's own p99 rose from 8 to 12–13 ms while the daemon answered twice as many prompts. Every table and the variants that were tried and dropped are in [`engram/results/concurrency/`](https://github.com/chloetech-ai/strata/blob/main/engram/results/concurrency/README.md).
 
-Quality is what degrades with size: the filler here is chat on every subject, while real project history is more homogeneous, so this is a stress test rather than a forecast. Strata's filters (session, time, file, kind) are what keep large stores precise, and `memory_sql` gives the model those filters directly.
+Quality is what degrades with size: the filler here is chat on every subject, while real project history is more homogeneous, so this is a stress test rather than a forecast. ChloeDB's filters (session, time, file, kind) are what keep large stores precise, and `memory_sql` gives the model those filters directly.
 
 ## Reproducing the recorded numbers
 

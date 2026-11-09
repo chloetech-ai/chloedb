@@ -1,10 +1,10 @@
-# Graphs in Strata
+# Graphs in ChloeDB
 
 Rows can link to other rows. A traversal, a shortest path or personalized PageRank runs in the same SQL statement as BM25, filters and vector search, and can start from any of them. On arXiv, the papers cited by a new paper's two nearest neighbours find twice as many of its references as vector search alone. A graph built from the vectors themselves does not help.
 
 ## Rows are nodes
 
-Graph databases keep nodes and edges in stores of their own. Strata keeps them in a table: a row is a node, and an `EDGES` field holds the row's outgoing edges as a JSON array of targets, each a primary key of the same table, optionally with a label and a positive weight.
+Graph databases keep nodes and edges in stores of their own. ChloeDB keeps them in a table: a row is a node, and an `EDGES` field holds the row's outgoing edges as a JSON array of targets, each a primary key of the same table, optionally with a label and a positive weight.
 
 ```sql
 -- id KEYWORD PRIMARY KEY, title TEXT, body TEXT, year INT, emb VECTOR(512), cites EDGES
@@ -123,13 +123,13 @@ The baselines answer the same queries, and the benchmark checks that every count
 - **SQLite:** an edge table `(src, dst)` as a `WITHOUT ROWID` primary key, an index on `(dst, src)`, and recursive CTEs.
 - **CSR:** the same traversal code on two in-memory arrays. This is the lower bound: no keys, no segments, no SQL.
 
-![Graph query latency on arXiv: Strata, SQLite and an in-memory CSR, p50 and p95, for REACHABLE, PATH, ppr and vector-seeded queries](../assets/img/table-graph-speed.png)
+![Graph query latency on arXiv: ChloeDB, SQLite and an in-memory CSR, p50 and p95, for REACHABLE, PATH, ppr and vector-seeded queries](../assets/img/table-graph-speed.png)
 
 *arXiv, 200 seeds per query. Source: `strata/results/graph/latency_arxiv.json`.*
 
 On the million-row graph (`strata/results/graph/synthetic_1000000.json`; loaded in 2.7 s into a 307 MB file, 27 bytes per edge):
 
-| query (200 seeds) | result | Strata p50 / p95 ms | SQLite p50 / p95 ms | CSR p50 / p95 ms |
+| query (200 seeds) | result | ChloeDB p50 / p95 ms | SQLite p50 / p95 ms | CSR p50 / p95 ms |
 |---|---|---|---|---|
 | `REACHABLE`, 1 hop out | 10 rows | 0.017 / 0.022 | 0.012 / 0.013 | 0.001 / 0.001 |
 | `REACHABLE`, 2 hops out | 108 rows | 0.032 / 0.045 | 0.061 / 0.066 | 0.004 / 0.005 |
@@ -140,9 +140,9 @@ On the million-row graph (`strata/results/graph/synthetic_1000000.json`; loaded 
 | `ppr`, ε = 10<sup>−4</sup> | 133 pushes | 3.49 / 4.13 | — | 0.66 / 0.80 |
 | `ppr`, ε = 10<sup>−5</sup> | 1,020 pushes | 25.6 / 30.1 | — | 5.47 / 6.32 |
 
-**Against SQLite**, one-hop queries cost about the same, roughly 10–15 µs, mostly parsing and planning on both sides. From two hops on, the gap opens, and the tail is where it shows most: two hops both ways on arXiv touch 3,790 rows on average and up to tens of thousands, and their p95 is 1.6 ms in Strata against 14.8 ms in SQLite. The recursive CTE re-expands rows reached at several depths and joins through a B-tree per row, where Strata reads a CSR slice. Shortest paths and PageRank have no practical CTE form.
+**Against SQLite**, one-hop queries cost about the same, roughly 10–15 µs, mostly parsing and planning on both sides. From two hops on, the gap opens, and the tail is where it shows most: two hops both ways on arXiv touch 3,790 rows on average and up to tens of thousands, and their p95 is 1.6 ms in ChloeDB against 14.8 ms in SQLite. The recursive CTE re-expands rows reached at several depths and joins through a B-tree per row, where ChloeDB reads a CSR slice. Shortest paths and PageRank have no practical CTE form.
 
-**Against the CSR**, Strata pays two costs. About 10 µs of SQL per query dominates small traversals. Key resolution dominates large ones: PageRank takes 2.4 times the CSR's time on arXiv and 5.3 times on the million-row graph, because a target outside its own segment is a hash probe into each segment's primary-key index until found, a cache miss each. Three changes found by profiling on the Xeon VM that first ran these benchmarks cut PageRank on the million-row graph from 21.4 to 5.8 ms there (3.5 ms on the M2):
+**Against the CSR**, ChloeDB pays two costs. About 10 µs of SQL per query dominates small traversals. Key resolution dominates large ones: PageRank takes 2.4 times the CSR's time on arXiv and 5.3 times on the million-row graph, because a target outside its own segment is a hash probe into each segment's primary-key index until found, a cache miss each. Three changes found by profiling on the Xeon VM that first ran these benchmarks cut PageRank on the million-row graph from 21.4 to 5.8 ms there (3.5 ms on the M2):
 
 1. reverse groups by key, with the sources stored inline;
 2. same-segment hints and a per-query memo;
@@ -178,7 +178,7 @@ PageRank from the same seeds reaches 0.211 at its best (from one seed), below th
 
 **Fewer seeds are better.** With more seeds, the citations of papers less similar to the query crowd out those of the nearest ones. In a first version of the experiment the seeds themselves stayed in the candidate set; ranked by similarity they took the top places, and from 20 seeds on the "graph" method returned exactly the vector search's results. Every graph method above removes the seeds with `NOT REACHABLE(cites, seeds, hops => 0, min_hops => 0)`.
 
-**A graph made of vectors adds nothing.** A `VECTOR` field can be traversed as a graph, each row's 10 most similar rows being its neighbours. On this task it returns what vector search already found when the seeds are kept (recall@20 0.112 against 0.111 at 10 seeds, on all queries), and is worse when they are removed (nDCG@20 0.079). A similarity graph only re-expresses the vector space, while citations carry information the text does not. Rows with vectors are useful as the way into a graph of real relations, not as a replacement for one. The implicit similarity graph stays in Strata for exploratory queries, at 0.12 ms per hop of 10 neighbours.
+**A graph made of vectors adds nothing.** A `VECTOR` field can be traversed as a graph, each row's 10 most similar rows being its neighbours. On this task it returns what vector search already found when the seeds are kept (recall@20 0.112 against 0.111 at 10 seeds, on all queries), and is worse when they are removed (nDCG@20 0.079). A similarity graph only re-expresses the vector space, while citations carry information the text does not. Rows with vectors are useful as the way into a graph of real relations, not as a replacement for one. The implicit similarity graph stays in ChloeDB for exploratory queries, at 0.12 ms per hop of 10 neighbours.
 
 ## Edge tables
 
@@ -224,4 +224,4 @@ Graph queries run on one database, not through a [coordinator](server.md#shardin
 - **Walks across shards.** A coordinator refuses graph queries ([above](#on-a-cluster)). It could run them itself, asking the shards for the edges of each frontier and sending them the rows it reached with their distances and PageRank scores, at a round trip per hop. That needs a call to read edges by key and a plan that carries the rows' values, so it is a change of the shard protocol.
 - **Engram.** Its records have natural edges the store does not keep yet: a distilled note to the turn it came from, a superseded decision to its replacement, an error to the edit that fixed it. The arXiv result suggests the pattern to try (recall's best hits as seeds, then the records linked to them), but Engram's earlier study found that widening a hit to its neighbouring records gained little, so this needs its own measurement first.
 
-The full report, with every table, is [Strata graphs](https://chloetech-ai.github.io/strata/reports/graph.html). [Reproducing the results](../reproduce.md#strata-graphs) has the commands.
+The full report, with every table, is [ChloeDB graphs](https://chloetech-ai.github.io/strata/reports/graph.html). [Reproducing the results](../reproduce.md#chloedb-graphs) has the commands.

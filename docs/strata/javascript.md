@@ -1,6 +1,6 @@
-# Strata from JavaScript
+# ChloeDB from JavaScript
 
-The `strata-db` package opens a Strata file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [strata-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
+The `strata-db` package opens a ChloeDB file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [strata-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
 
 ## Install
 
@@ -34,7 +34,7 @@ cd ../my-app
 npm install ../strata/strata-js  # or "strata-db": "file:../strata/strata-js" in package.json
 ```
 
-`npm install` of the directory builds the addon itself when `strata.node` is missing. `npm run build -- --features bert` builds more of Strata's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$STRATA_NODE_ADDON` loads an addon from another place.
+`npm install` of the directory builds the addon itself when `strata.node` is missing. `npm run build -- --features bert` builds more of ChloeDB's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$STRATA_NODE_ADDON` loads an addon from another place.
 
 The client alone (`strata-db/client`) is plain JavaScript with no addon: a bundler takes it into a page, and the package's `browser` and `workerd` conditions give it for `strata-db` too.
 

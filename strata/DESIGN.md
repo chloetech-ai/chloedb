@@ -1,6 +1,6 @@
-# Strata: an embedded, single-file search database
+# ChloeDB: an embedded, single-file search database
 
-Strata is to search what SQLite is to relational data: a library that keeps a
+ChloeDB is to search what SQLite is to relational data: a library that keeps a
 whole database in one file, needs no server or configuration, gives ACID
 transactions, and is queried with SQL. Its tables are indexed three ways at
 once (posting lists, a columnar forward index and vector ANN indexes), and one
@@ -63,7 +63,7 @@ updates: inserting one docID into a Loom partition or a BP128 block means
 re-encoding it, and the best encodings (partitioned Elias-Fano, Entropic) are
 chosen globally per list. SQLite's own FTS5 already stores its index as
 immutable segments merged in the background; Lucene, Tantivy and PISA do the
-same. Strata adopts that log-structured design for the whole table: every
+same. ChloeDB adopts that log-structured design for the whole table: every
 index structure lives in immutable segments, writes go to a WAL and an
 in-memory memtable, and segments are merged in the background.
 
@@ -223,7 +223,7 @@ need no table.
 * **Formats.** A manifest with only the table the database was created
   with is written in format 1, field for field as before there were tables;
   a database that never gets a second table is unchanged on disk, and older
-  versions of Strata open it. With more tables the manifest is format 2
+  versions of ChloeDB open it. With more tables the manifest is format 2
   (`{format, ..., next_table_id, tables: [{id, schema, segments}]}`) and the
   meta slot (or, in the directory layout, `CURRENT`) says so. Older versions
   refuse such a file: a single file with "unsupported format version 2", a
@@ -252,7 +252,7 @@ need no table.
   searches, write, flush and merge them and check the format they stay in.
   The writes behind formats 2 and 3 are deterministic, and a test writes
   them again and compares the bytes (but for the database id), so a change
-  to what Strata writes fails until its pull request keeps the old set
+  to what ChloeDB writes fails until its pull request keeps the old set
   under a new name and adds one written by the new code
   (`tests/fixtures/README.md`).
 * **BOOL and TIMESTAMP** are logical types over an `INT` column (1 and 0;
@@ -337,7 +337,7 @@ reader (sections to a zero-copy view). Global docIDs are
   by name and version (absent: `english`), and its queries (`MATCH`
   words, phrases, prefixes and typos, `bm25` terms, synonym rules) use
   the same one. Any other than `english` is a format 3 feature named
-  after it (`analyzer:simple:1`), so a version of Strata that lacks it, or
+  after it (`analyzer:simple:1`), so a version of ChloeDB that lacks it, or
   analyses differently, refuses the database rather than misread its
   terms; a change to an analyzer's output is a new version.
 * **Term dictionary.** Sorted terms in blocks of 32, front-coded, with a
@@ -417,7 +417,7 @@ reader (sections to a zero-copy view). Global docIDs are
 
 ### 5.4 Graphs
 
-Graph databases keep nodes and edges in their own stores. Strata keeps its
+Graph databases keep nodes and edges in their own stores. ChloeDB keeps its
 one table: a row is a node, and an `EDGES` field holds its outgoing edges as
 a JSON array of targets, each a primary key of the same table, optionally
 with a label and a positive weight:

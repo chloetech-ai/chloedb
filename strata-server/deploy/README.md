@@ -1,6 +1,6 @@
 # strata-server on Kubernetes
 
-An operator that runs Strata clusters on Kubernetes and changes them as
+An operator that runs ChloeDB clusters on Kubernetes and changes them as
 their resource says (below), a Docker image, the manifests of a fixed
 layout of shards behind a coordinator, and a script that runs them on a
 local multi-node cluster
@@ -52,7 +52,7 @@ kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 | `secretEnv` | | environment variables of every server and coordinator taken from Secrets, `[{name, secret, key}]` (`key` defaults to `key`): the keys of models behind an API, `ANTHROPIC_API_KEY` for the agents, LLM fields and reranking, `OPENAI_API_KEY` and the like for hosted embeddings ([model keys](#model-keys)). Changing it restarts the copies one at a time |
 | `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `strata-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
 | `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0, onFailure: rollback, progressDeadlineSeconds: 600, verifySeconds: 60, extraCopies: true}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), `soakSeconds`, how long a restarted copy serves before the next restarts, `progressDeadlineSeconds`, how long a step of a restart may take, `verifySeconds`, how long the new version must be healthy in a row before it is ready, and `onFailure`, what a version that fails becomes: `rollback` (to the last version that ran everywhere) or `hold`, and `extraCopies`, whether a shard of fewer than three copies takes extra ones while its copies restart. Not part of a version: changing it restarts nothing |
-| `upgrade` | `{mode: off, checkMinutes: 10}` | the upgrader: every `checkMinutes` it asks the registry which image the tag `track` names (by default the tag of `image`), and with `mode` `suggest` shows it, with `on` rolls it out, pinned by its digest, once the cluster is ready. Not part of a version ([upgrading](#upgrading-strata)) |
+| `upgrade` | `{mode: off, checkMinutes: 10}` | the upgrader: every `checkMinutes` it asks the registry which image the tag `track` names (by default the tag of `image`), and with `mode` `suggest` shows it, with `on` rolls it out, pinned by its digest, once the cluster is ready. Not part of a version ([upgrading](#upgrading-chloedb)) |
 | `autoscale` | `{mode: off, cooldownMinutes: 20}` | rules that change `replicas`, `shards` or `storage.size` from how busy and full the servers are: `grow` (`busyAbove`, `forMinutes`, `add`, `max`), `shrink` (`busyBelow`, `forMinutes`, `min`), `volumes` (`fullAbove`, `action`: `grow` or `addShard`), `freeze` (weekly windows in UTC, `from`/`to` like `Fri 16:00`, `allowGrow`) and `cooldownMinutes`; `mode` `on` (the operator acts), `suggest` (a person applies or dismisses) or `off`. Not part of a version: the changes it makes are ([autoscaling](../../docs/strata/server.md#autoscaling)) |
 | `crawler` | | a crawler beside the cluster: the operator runs `strata-crawl serve` (in the same image) as a Deployment of one, `<cluster>-crawler`, with a Service of that name on port 7800, and the coordinators list it as an app, so the command center shows **Apps → Crawler**. It writes, and its API requires, the `tokenSecret` token. `grow` (default true) adds a shard through this resource when a crawl's table holds more than `splitRows` rows on one (default 100,000), up to `maxShards` (8); `paused` keeps it at no pod; `args` and `resources` for its container. Turning it on or off restarts the coordinators, not the servers ([the crawler](../../docs/strata/crawler.md#on-kubernetes)) |
 
@@ -83,7 +83,7 @@ What a change does:
   finish. Every row stays served, and every shard of three copies or more
   keeps taking writes; a write that meets a handover waits for the new
   primary. Once every server runs the new settings, the version is
-  verified ([upgrading](#upgrading-strata)).
+  verified ([upgrading](#upgrading-chloedb)).
 - **New settings for the coordinators** (`coordinatorArgs`,
   `coordinatorResources`, the image): their Deployment rolls them, one
   coordinator at a time, a new one ready before an old one stops
@@ -195,9 +195,9 @@ variable, as for any other setting; `GET /v1/config` then says
 `"server_key": true`. A variable named `STRATA_...` is refused: those are
 the operator's own, and tokens go in `tokenSecret`.
 
-### Upgrading Strata
+### Upgrading ChloeDB
 
-A new version of Strata is a new image of the servers, rolled out while
+A new version of ChloeDB is a new image of the servers, rolled out while
 the cluster answers queries and takes writes:
 
 ```bash
@@ -353,7 +353,7 @@ which would otherwise stay and cost.
 
 ## The fixed layout
 
-The rest of this page runs Strata from the manifests under `k8s/` without
+The rest of this page runs ChloeDB from the manifests under `k8s/` without
 the operator, to test what sharding costs.
 
 The databases are files on a volume: the manifests read them from a

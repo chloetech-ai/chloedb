@@ -1,4 +1,4 @@
-/* Strata showcase site: code highlighting, copy buttons, tabs, tooltips,
+/* ChloeDB showcase site: code highlighting, copy buttons, tabs, tooltips,
  * and the renderers for benchmark charts (bench-data.js) and the capability
  * matrix (compare-data.js). No dependencies. */
 (function () {
@@ -224,7 +224,7 @@
       h += "</tr>";
     });
     h += "</tbody></table></div>";
-    h += '<div class="chart-foot"><span class="k"><i class="s"></i>Strata</span><span class="k"><i></i>others</span>';
+    h += '<div class="chart-foot"><span class="k"><i class="s"></i>ChloeDB</span><span class="k"><i></i>others</span>';
     if (statuses.placeholder) h += '<span class="k"><i class="h"></i>placeholder, no value yet</span>';
     if (chart.scale === "row") h += "<span>bars scaled within each row</span>";
     if (chart.scale === "log") h += "<span>bars on a log scale</span>";
@@ -587,7 +587,7 @@
     }, { threshold: 0.3 }).observe(p);
   }
 
-  /* ---------- the home hero: what Strata can do, one statement at a time.
+  /* ---------- the home hero: what ChloeDB can do, one statement at a time.
      Arrows and dots always work; it plays by itself only when motion is
      welcome, and holds while the pointer or focus is on it */
   function says() {

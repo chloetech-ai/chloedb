@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>No server · Strata benchmarks</title>
-<meta name="description" content="Strata as one file inside an app, against SQLite, DuckDB, LanceDB, Tantivy and FAISS: an app's reads and writes, BM25, vector and hybrid search on five BEIR collections, writes and streams with indexes, and recommendations, on one DigitalOcean node.">
+<title>No server · ChloeDB benchmarks</title>
+<meta name="description" content="ChloeDB as one file inside an app, against SQLite, DuckDB, LanceDB, Tantivy and FAISS: an app's reads and writes, BM25, vector and hybrid search on five BEIR collections, writes and streams with indexes, and recommendations, on one DigitalOcean node.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
+<link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
     <a href="scale.html">Laptop to cloud</a>
@@ -30,7 +30,7 @@
     <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html">Overview</a><a href="bench-10m.html">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop cluster</a><a href="bench-embedded.html" aria-current="page">No server</a><a href="bench-graph.html">Graph</a><a href="bench-method.html">How we test</a></nav>
     <span class="eyebrow">No server · one file in an app · 2, 3 and 6 November 2026</span>
     <h1>One file in your app, against what apps embed today</h1>
-    <p class="lede">Apps keep rows in SQLite, analytics in DuckDB, vectors in LanceDB or FAISS and search in Tantivy. Strata does all of it in one file. Here it runs as a Python library against each, one at a time on an idle 8-vCPU node. Strata on main ran again on 6 November, beside its 2 November build on the same node; the others ran on 2 November.</p>
+    <p class="lede">Apps keep rows in SQLite, analytics in DuckDB, vectors in LanceDB or FAISS and search in Tantivy. ChloeDB does all of it in one file. Here it runs as a Python library against each, one at a time on an idle 8-vCPU node. ChloeDB on main ran again on 6 November, beside its 2 November build on the same node; the others ran on 2 November.</p>
     <p class="verdict"><b>First on search, hybrid search, recommendations and reads beside a writer.</b> Behind SQLite on single-row work and price updates, and DuckDB on aggregates and the heavy join.</p>
     <dl class="atglance">
       <div><dt>Machine</dt><dd>DigitalOcean 8 vCPU, Xeon Platinum 8358 at 2.60 GHz, 31 GiB; a new node of the same type on 6 November</dd></div>
@@ -63,7 +63,7 @@
     <div class="block-head">
       <span class="eyebrow">The app</span>
       <h2>Pages and joins faster than SQLite; single rows slower</h2>
-      <p>Strata is 7 to 10× faster than SQLite at filtered, sorted pages, about 5× at the heavy join and at reads beside a writer, and 3.4× and 180× at the two aggregates. SQLite reads one row in 8 µs, against Strata's 21 µs by key. DuckDB is fastest at aggregates and the heavy join. Compare writes through the 2 November build's column: this node commits single rows faster.</p>
+      <p>ChloeDB is 7 to 10× faster than SQLite at filtered, sorted pages, about 5× at the heavy join and at reads beside a writer, and 3.4× and 180× at the two aggregates. SQLite reads one row in 8 µs, against ChloeDB's 21 µs by key. DuckDB is fastest at aggregates and the heavy join. Compare writes through the 2 November build's column: this node commits single rows faster.</p>
     </div>
     <div class="grid">
       <div data-chart="emb-a1-reads"></div>
@@ -75,7 +75,7 @@
     <div class="block-head">
       <span class="eyebrow">Writes and streams</span>
       <h2>Indexed writes, and reads beside a stream</h2>
-      <p>With a text and a vector index, Strata commits single rows 3.0 to 3.2× faster than SQLite and 9 to 15× faster than DuckDB and LanceDB; LanceDB takes 10,000-row batches fastest. Title and vector updates are now 26 and 36× the 2 November build's; price updates are 2.4× slower than that build's on the same node, and 13× slower than SQLite's. While 10,000 rows a second stream in, Strata answers 8,781 reads a second, 9 to 16× DuckDB's and SQLite's.</p>
+      <p>With a text and a vector index, ChloeDB commits single rows 3.0 to 3.2× faster than SQLite and 9 to 15× faster than DuckDB and LanceDB; LanceDB takes 10,000-row batches fastest. Title and vector updates are now 26 and 36× the 2 November build's; price updates are 2.4× slower than that build's on the same node, and 13× slower than SQLite's. While 10,000 rows a second stream in, ChloeDB answers 8,781 reads a second, 9 to 16× DuckDB's and SQLite's.</p>
     </div>
     <div class="grid">
       <div data-chart="emb-writes"></div>
@@ -88,7 +88,7 @@
     <div class="block-head">
       <span class="eyebrow">Recommendations</span>
       <h2>Similar items in under a millisecond, under filters</h2>
-      <p>Strata answers similar items in 0.51 ms, against FAISS beside SQLite's 0.57, and at the 99th percentile in 0.91 against 8.5; LanceDB takes 25× longer. Strata's home feed fuses vectors with a PageRank walk in one statement: 4.87 ms, 20× its 2 November build, and 5.8× faster than LanceDB's with the walk in app code.</p>
+      <p>ChloeDB answers similar items in 0.51 ms, against FAISS beside SQLite's 0.57, and at the 99th percentile in 0.91 against 8.5; LanceDB takes 25× longer. ChloeDB's home feed fuses vectors with a PageRank walk in one statement: 4.87 ms, 20× its 2 November build, and 5.8× faster than LanceDB's with the walk in app code.</p>
     </div>
     <div data-chart="emb-a3"></div>
   </div></section>
@@ -97,7 +97,7 @@
     <div class="block-head">
       <span class="eyebrow">Against Tantivy</span>
       <h2>Tantivy as the app's store, and BM25 side by side</h2>
-      <p>On a newer node (Xeon Gold 6548N) with Strata of 3 November, not run again: Strata commits single rows and updates 30× faster and reads rows faster; Tantivy aggregates, joins and bulk-loads faster. With the same stopwords their BM25 ties on nDCG@10.</p>
+      <p>On a newer node (Xeon Gold 6548N) with ChloeDB of 3 November, not run again: ChloeDB commits single rows and updates 30× faster and reads rows faster; Tantivy aggregates, joins and bulk-loads faster. With the same stopwords their BM25 ties on nDCG@10.</p>
     </div>
     <div class="grid">
       <div data-chart="emb-tantivy"></div>
@@ -107,12 +107,12 @@
 
   <section class="gutter" id="behind"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Where Strata is behind</span>
+      <span class="eyebrow">Where ChloeDB is behind</span>
       <h2>Single rows, aggregates, price updates and a fast stream</h2>
     </div>
     <ul class="gaps">
-      <li><b>Single rows.</b> SQLite reads one by id in 8 µs against Strata's 30 through SQL (21 by key), and joins a user's reviews in 22 µs against 465.</li>
-      <li><b>Aggregates.</b> DuckDB counts reviews per brand in 5.2 ms and per month in 10.1, against Strata's 29.3 and 19.2 (SQLite 99.5 and 3,569). DuckDB's heavy join takes 215 ms, Strata's 524.</li>
+      <li><b>Single rows.</b> SQLite reads one by id in 8 µs against ChloeDB's 30 through SQL (21 by key), and joins a user's reviews in 22 µs against 465.</li>
+      <li><b>Aggregates.</b> DuckDB counts reviews per brand in 5.2 ms and per month in 10.1, against ChloeDB's 29.3 and 19.2 (SQLite 99.5 and 3,569). DuckDB's heavy join takes 215 ms, ChloeDB's 524.</li>
       <li><b>Price updates.</b> 3,276 a second without indexes against SQLite's 6,640 at FULL, and 571 with them against 7,670; the latter was 1,389 on the 2 November build.</li>
       <li><b>Reads beside a fast stream.</b> 89 to 160 a second while 50,000 rows a second arrive, down from 3,190.</li>
       <li><b>Tail latency on larger collections.</b> BM25's 99th percentile is 1.2 to 1.6× its 2 November build's on fiqa, trec-covid and quora, and filtered hybrid's 1.8× on quora (one run).</li>
@@ -127,7 +127,7 @@
     <ul class="files">
       <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata/results/laptop-2026-11/part-a-do/README.md">README.md</a>: machines, builds, caveats and every table</li>
       <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata/results/laptop-2026-11/part-a-do/part-a">part-a/</a>: one JSON report per system and part (2 November)</li>
-      <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata/results/laptop-2026-11/part-a-do/part-a-1106">part-a-1106/</a> and <a href="https://github.com/chloetech-ai/strata/tree/main/strata/results/laptop-2026-11/part-a-do/part-a-1106-check">part-a-1106-check/</a>: Strata on main and its 2 November build on 6 November's node (README, "6 November")</li>
+      <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata/results/laptop-2026-11/part-a-do/part-a-1106">part-a-1106/</a> and <a href="https://github.com/chloetech-ai/strata/tree/main/strata/results/laptop-2026-11/part-a-do/part-a-1106-check">part-a-1106-check/</a>: ChloeDB on main and its 2 November build on 6 November's node (README, "6 November")</li>
       <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata/results/laptop-2026-11/part-a-do/part-a-tantivy">part-a-tantivy/</a> and <a href="https://github.com/chloetech-ai/strata/tree/main/strata/results/laptop-2026-11/part-a-do/part-a-tantivy-2">part-a-tantivy-2/</a>: the Tantivy runs, each on its own node</li>
       <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata-py/bench/laptop">strata-py/bench/laptop/</a>: the scripts, and <code>do_part_a.sh</code>, which runs it all on one node</li>
     </ul>
@@ -135,14 +135,14 @@
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=5344f0f990"></script>
-<script src="assets/site.js?v=6d78382461"></script>
-<script src="assets/bench.js?v=6ebeb97e93"></script>
+<script src="assets/bench-data.js?v=7f52b41b8a"></script>
+<script src="assets/site.js?v=142c29c3e0"></script>
+<script src="assets/bench.js?v=c61344792b"></script>
 </body>
 </html>

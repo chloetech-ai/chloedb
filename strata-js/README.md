@@ -1,6 +1,6 @@
-# strata-db: Strata from JavaScript
+# strata-db: ChloeDB from JavaScript
 
-Strata opened from its file inside a Node, Bun or Deno process, with no
+ChloeDB opened from its file inside a Node, Bun or Deno process, with no
 server, the way better-sqlite3 opens a SQLite file; or a client of a running
 strata-server from any JavaScript runtime with `fetch`. Both have the same
 methods. Documentation: [docs/strata/javascript.md](../docs/strata/javascript.md).

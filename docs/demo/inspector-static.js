@@ -1,12 +1,12 @@
 // Static mode for the Engram live inspector (engram/demo/index.html).
 //
 // The inspector normally talks to demo/server.py, which runs Claude Code and
-// asks Engram's daemon to query its Strata store. On a static site there is
+// asks Engram's daemon to query its ChloeDB store. On a static site there is
 // no server, so this file answers the same HTTP calls in the browser:
 //
 // * /api/chat replays a recorded session (inspector-data.js), turn by turn,
 //   with the records Engram wrote for each turn appearing as the turn runs.
-// * inspect_query runs the SQL in a small JavaScript model of Strata over the
+// * inspect_query runs the SQL in a small JavaScript model of ChloeDB over the
 //   recorded records and their recorded vectors: the same analyser, BM25,
 //   hash embedder, rank fusion, graph traversal and personalized PageRank.
 // * timeline and inspect_layout return what the real daemon returned at the
@@ -21,7 +21,7 @@ const QUERY_STOPWORDS = new Set(["a","about","above","after","again","against","
 const FOLD = {"ß": "ss", "æ": "ae", "œ": "oe", "ø": "o", "đ": "d", "ł": "l", "ı": "i", "ĳ": "ij", "þ": "th", "ð": "d"};
 const words = text => text.match(/[\p{L}\p{N}][\p{L}\p{N}̀-ͯ]*/gu) || [];
 const fold = w => w.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[ßæœøđłıĳþð]/g, c => FOLD[c]);
-// Porter (1980). Strata uses Snowball English (Porter 2), which differs on a few suffixes.
+// Porter (1980). ChloeDB uses Snowball English (Porter 2), which differs on a few suffixes.
 const stem = (() => {
   const step2 = {ational: "ate", tional: "tion", enci: "ence", anci: "ance", izer: "ize", bli: "ble", alli: "al", entli: "ent", eli: "e", ousli: "ous", ization: "ize", ation: "ate", ator: "ate", alism: "al", iveness: "ive", fulness: "ful", ousness: "ous", aliti: "al", iviti: "ive", biliti: "ble", logi: "log"};
   const step3 = {icate: "ic", ative: "", alize: "al", iciti: "ic", ical: "ic", ful: "", ness: ""};
@@ -218,7 +218,7 @@ function query(req) {
   const ctx = {T, plan, log: s => plan.push(s), stats: {filter: T.n, scored: 0},
     val: x => { if (x.param !== undefined) { if (!(x.param in params)) throw new Error(`no value bound for :${x.param}`); return params[x.param]; } return x.lit; }};
   const q = parse(req.sql || "");
-  ctx.log(`static model of Strata: ${T.n} rows in one segment`);
+  ctx.log(`static model of ChloeDB: ${T.n} rows in one segment`);
   const res = run(q, ctx);
   const maxDims = req.max_dims, maxRows = req.max_rows ?? 1000;
   const rows = res.rows.slice(0, maxRows).map(r => r.map(v => v && v.vec ? {dim: v.vec.length, values: maxDims ? v.vec.slice(0, maxDims) : v.vec} : v));

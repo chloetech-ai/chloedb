@@ -1,8 +1,8 @@
 # The live inspector
 
-A local web app for watching Engram work: what the hooks store, what the distiller writes down and what recall injects, for your own sessions or for a chat in a scratch project. Every panel is a query against the project's Strata file, made through the same daemon the hooks talk to. Nothing is simulated: chat turns are real `claude -p` runs.
+A local web app for watching Engram work: what the hooks store, what the distiller writes down and what recall injects, for your own sessions or for a chat in a scratch project. Every panel is a query against the project's ChloeDB file, made through the same daemon the hooks talk to. Nothing is simulated: chat turns are real `claude -p` runs.
 
-[Try it in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) A static copy replays a recorded session. Its SQL runs in a JavaScript model of Strata over the recorded records and vectors.
+[Try it in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) A static copy replays a recorded session. Its SQL runs in a JavaScript model of ChloeDB over the recorded records and vectors.
 
 The inspector runs in two ways: `engram ui` points it at the stores of your own sessions, and `demo/run.sh` runs it with a chat column against a scratch project.
 
@@ -88,7 +88,7 @@ The `memory` table itself, paged, filterable by kind, session and a `MATCH` expr
 
 ![Graph: records, their links and the entities they mention](../assets/img/inspector-graph.png)
 
-Records are linked to the turn they came from, the files they touch (`f:loans.json`) and the entities they are about (`e:receipt printer`). These are Strata `EDGES` fields, so the panel can run `REACHABLE` traversals from any seed, as in the [graph queries](../strata/graphs.md).
+Records are linked to the turn they came from, the files they touch (`f:loans.json`) and the entities they are about (`e:receipt printer`). These are ChloeDB `EDGES` fields, so the panel can run `REACHABLE` traversals from any seed, as in the [graph queries](../strata/graphs.md).
 
 ### Vectors
 

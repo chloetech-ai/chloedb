@@ -39,7 +39,7 @@ is in `results/scale/README.md`. Cloud containers drift from day to day (see
   the query (`topic` = the query's own cluster `AND year >= 2000`).
 * **Recall**: vector recall@10 is measured against an exact float32 top-k
   over the same rows (`scripts/exact_topk.py`). Filtered vector recall is
-  measured against Strata's prefilter scan with rerank 100.
+  measured against ChloeDB's prefilter scan with rerank 100.
 * **Latency**: warm. Each query runs once to warm up, then once timed. 1,000
   queries are used for BM25 and vector; 300 for filtered, hybrid, parallel
   and throughput runs.
@@ -133,7 +133,7 @@ The cells are p50 / p99 in ms, one query at a time.
   gives 0.88 recall, and ef 256 is needed to reach 0.96. faiss
   `IndexHNSWFlat` (M 16, efConstruction 200) on the first 200K passages
   gave 0.824 at ef 64 and 0.939 at ef 256 with the same queries, so this
-  comes from the data and the queries, not from Strata's HNSW. Filtered
+  comes from the data and the queries, not from ChloeDB's HNSW. Filtered
   vector recall against the prefilter scan is 0.92-0.98.
 
 ### Segment-parallel prototype

@@ -1,7 +1,7 @@
 # Storage engine (DESIGN.md §3)
 
 `strata/src/storage/`: one `.strata` file plus a `-wal` sidecar, a single
-writer, any number of snapshot readers. Everything else in Strata sees the
+writer, any number of snapshot readers. Everything else in ChloeDB sees the
 database through `Snapshot::segments()`: segment files viewed in place from
 the mapping, each with a live-documents filter.
 

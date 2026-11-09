@@ -1,6 +1,6 @@
-# Strata from Python
+# ChloeDB from Python
 
-The `strata` package runs a Strata database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [strata-server](server.md). Both have the same methods, so a script written against a local file works against a server.
+The `strata` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [strata-server](server.md). Both have the same methods, so a script written against a local file works against a server.
 
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
@@ -53,7 +53,7 @@ maturin develop --release                  # builds the extension into the virtu
 pytest tests                               # the client tests also need strata-server built
 ```
 
-The package includes [DataFusion](query-language.md#subqueries-with-and-joins), which runs joins, groups and sorts over many joined rows (`--no-default-features` leaves it out). Model2Vec embedding models need nothing more. For the BERT models, build with `--features bert` (`--features accelerate` on a Mac): `maturin develop --release --features bert`, or `MATURIN_PEP517_ARGS="--features bert" pip install ./strata-py`. The extension runs on any CPU of its architecture: Strata picks its SIMD kernels (AVX2, AVX-512, the aarch64 dot product instructions) at run time. `RUSTFLAGS="-C target-cpu=native"` builds one for the building machine only.
+The package includes [DataFusion](query-language.md#subqueries-with-and-joins), which runs joins, groups and sorts over many joined rows (`--no-default-features` leaves it out). Model2Vec embedding models need nothing more. For the BERT models, build with `--features bert` (`--features accelerate` on a Mac): `maturin develop --release --features bert`, or `MATURIN_PEP517_ARGS="--features bert" pip install ./strata-py`. The extension runs on any CPU of its architecture: ChloeDB picks its SIMD kernels (AVX2, AVX-512, the aarch64 dot product instructions) at run time. `RUSTFLAGS="-C target-cpu=native"` builds one for the building machine only.
 
 ## A database in your process
 
@@ -88,7 +88,7 @@ db.close()
 
 `strata.open(path, schema)` opens the database at `path`, or creates it with `schema` if it does not exist. The schema is a dict, JSON text or the path of a JSON file, in the [form the server takes](server.md#schemas). `Database.create(path, schema)` and `Database.open(path)` do one or the other. `models=` says where embedding and [ranking](query-language.md#ranking-models-gbdtmodel-features) models, and the captioners of [text made from media](server.md#text-from-media), are (default `$STRATA_MODELS`, else `~/.local/share/strata/models`; `strata-server fetch-model NAME` downloads one there), and `directory=True` creates the database as a directory of segment files.
 
-A database written by a version of Strata from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `strata.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
+A database written by a version of ChloeDB from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `strata.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
 One process at a time can have a database open to write it. Others can open it with `strata.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `StrataError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `strata-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
 
@@ -108,9 +108,9 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 | `import_file(path, format=None)` | loads a JSON Lines, JSON, CSV or TSV file ([how files are read](server.md#loading-rows)); returns `{rows, bulk, skipped_fields}` |
 | `write(ops)` | applies write operations in one transaction, as the server's `/v1/write` takes them: `insert`, `upsert` and `delete`, `set` of a field (`{"op": "set", "key": k, "field": "status", "value": "SOLD"}`: a number in place, another by writing the row again with the value), and `add` to a number in place (`{"op": "add", "key": k, "field": "n", "value": 1}`; with a `doc` instead of a `key`, an `add` inserts the row when no row has its key); each names its `table` or writes the first; returns the rows written |
 | `import_sqlite(path, tables=None, schemas=None)` | imports a SQLite database's tables, each into the table of its name, created when missing ([SQLite in and out](sqlite.md)); returns what it did and what did not carry over |
-| `export_sqlite(path, tables=None, fts=True, indexes=True)` | writes the tables to a new SQLite file, with indexes, an FTS5 index over the text and the Strata schemas |
+| `export_sqlite(path, tables=None, fts=True, indexes=True)` | writes the tables to a new SQLite file, with indexes, an FTS5 index over the text and the ChloeDB schemas |
 | `import_parquet(path, table=None, schema=None, key=None)` | imports a Parquet file or a directory of them (Spark's part files, Hive partitions) into one table, created from the columns when missing ([Parquet and S3](parquet.md)); returns what it did |
-| `export_parquet(path, tables=None)` | writes the tables to Parquet: a `.parquet` file for one table, else a directory of them, each keeping its Strata schema |
+| `export_parquet(path, tables=None)` | writes the tables to Parquet: a `.parquet` file for one table, else a directory of them, each keeping its ChloeDB schema |
 | `import_arrow(data, table=None)` | writes the rows of a pyarrow Table or RecordBatchReader, a polars DataFrame, a DuckDB relation or anything with `__arrow_c_stream__`, columns into the fields of their names; bulk-loaded into an empty table, else upserted |
 
 `strata.from_sqlite("shop.sqlite", "shop.strata")` creates a database from a SQLite file's tables, and `strata.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `strata.from_parquet("events.parquet", "lake.strata")` and `strata.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
@@ -121,7 +121,7 @@ Vectors of embedded fields that a row leaves out are computed by the field's mod
 
 ## Querying
 
-`query(sql, params)` runs a `SELECT` in [Strata's SQL](query-language.md). Parameters bind `:name` placeholders, from a dict, keyword arguments, or both:
+`query(sql, params)` runs a `SELECT` in [ChloeDB's SQL](query-language.md). Parameters bind `:name` placeholders, from a dict, keyword arguments, or both:
 
 ```python
 db.query("SELECT id, title FROM books WHERE year >= :y ORDER BY bm25(title, :q) DESC LIMIT 10", {"y": 2000}, q="dragon")
@@ -153,7 +153,7 @@ pyarrow.table(r)          # any library that reads Arrow streams reads r
 duckdb.sql("SELECT avg(rating) FROM r")
 ```
 
-| Strata | Arrow |
+| ChloeDB | Arrow |
 |---|---|
 | `int` | `int64` |
 | `float` | `float64` |

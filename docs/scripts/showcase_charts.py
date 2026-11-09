@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Draws the two latency charts of the Engram showcase from Strata's results:
-docs/showcase/search-latency.png (Quora workload, Strata against Tantivy and
-SQLite) and docs/showcase/graph-latency.png (arXiv traversals, Strata against
+"""Draws the two latency charts of the Engram showcase from ChloeDB's results:
+docs/showcase/search-latency.png (Quora workload, ChloeDB against Tantivy and
+SQLite) and docs/showcase/graph-latency.png (arXiv traversals, ChloeDB against
 SQLite). Titles and labels are computed from the numbers.
 
   python3 docs/scripts/showcase_charts.py        (needs matplotlib)
@@ -21,7 +21,7 @@ RESULTS = ROOT / "strata" / "results"
 OUT = ROOT / "docs" / "showcase"
 
 BLUE, GREY, INK, INK2, GRID = "#2b78d6", "#c3c2b8", "#1a1a1a", "#555555", "#e4e4e4"
-plt.rcParams.update({"font.family": ["Arial", "DejaVu Sans"], "font.size": 12})
+plt.rcParams.update({"font.family": ["Arial", "Liberation Sans", "DejaVu Sans"], "font.size": 12})
 
 
 def load(path):
@@ -103,7 +103,7 @@ def search_latency():
 
     kinds = [("bm25", "Keyword search (BM25)"), ("vector", "Vector search (1,024 dims)"), ("hybrid", "Hybrid: keywords + vectors"),
              ("filter", "Structured filter"), ("facet", "Facet counts")]
-    names = [("strata", "Strata"), ("tantivy", "Tantivy"), ("sqlite", "SQLite + FTS5")]
+    names = [("strata", "ChloeDB"), ("tantivy", "Tantivy"), ("sqlite", "SQLite + FTS5")]
     groups, vals = [], []
     for kind, heading in kinds:
         bars = []
@@ -117,7 +117,7 @@ def search_latency():
     sqlite_max = max(v for s, v in vals if s == "sqlite")
     bound = next(b for b in (0.5, 1, 2, 5, 10, 20, 50, 100) if strata_max < b)
     worst = ms(sqlite_max) if sqlite_max < 700 else f"{sqlite_max / 1000:.1f} s"
-    title = f"Strata answers every search in under {bound:g} ms; SQLite takes up to {worst}"
+    title = f"ChloeDB answers every search in under {bound:g} ms; SQLite takes up to {worst}"
     lo = 10 ** math.floor(math.log10(min(v for _, v in vals)))
     hi = max(v for _, v in vals) * 1.6
     draw(groups, title, f"Median warm latency per query on Quora ({round(n, -3):,} documents), log scale", OUT / "search-latency.png", lo, hi)
@@ -137,9 +137,9 @@ def graph_latency():
         rows = q.get("mean_rows") or q.get("rows") or q.get("mean_results")
         note = f"({ratio:.1f}× slower)" if ratio >= 1.5 else ""
         groups.append((heading, f"{rows:,.0f} rows on average" if rows else None,
-                       [("Strata", st, "", True), ("SQLite", sq, note, False)]))
+                       [("ChloeDB", st, "", True), ("SQLite", sq, note, False)]))
     best = max(ratios)
-    title = f"Past one hop, Strata walks the graph up to {best:.0f}× faster than SQLite"
+    title = f"Past one hop, ChloeDB walks the graph up to {best:.0f}× faster than SQLite"
     lo = 10 ** math.floor(math.log10(min(vals)))
     hi = max(vals) * 1.6
     sub = f"95th-percentile latency, arXiv: {round(d['rows'], -3):,} papers, {d['edges'] / 1e6:.2f} million citations; SQLite uses a recursive query; log scale"

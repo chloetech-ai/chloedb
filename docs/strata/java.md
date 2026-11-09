@@ -1,6 +1,6 @@
-# Strata from Java
+# ChloeDB from Java
 
-The `ai.chloetech.strata` package runs a Strata database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by Strata's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:strata:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
+The `ai.chloetech.strata` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:strata:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
 
 ## Build it
 
@@ -65,7 +65,7 @@ Only one process may have a database open to write it at a time; another gets a 
 
 A row is a map of field name to value, and a query's answer gives values back as Java types:
 
-| Strata | written as | read as |
+| ChloeDB | written as | read as |
 |---|---|---|
 | KEYWORD, TEXT | `String` | `String` |
 | INT | `Integer`, `Long` (any integer type, `BigInteger` within 64 bits) | `Long` |
@@ -150,12 +150,12 @@ try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
 
 Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:strata:books.strata?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:strata:file:books.strata`.
 
-- **Statements** are Strata's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
+- **Statements** are ChloeDB's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
 - **Results** come back whole, so a result set can scroll if the statement is made with `ResultSet.TYPE_SCROLL_INSENSITIVE`; result sets are read-only. `getObject` gives an INT as `Long`, a FLOAT as `Double`, a TIMESTAMP as `java.sql.Timestamp`, a vector as `float[]` and a list as `List`; the getters convert (`getInt`, `getString`, `getObject(i, Instant.class)`, `getArray` for vectors). Times are in UTC.
-- **Transactions**: each statement commits as it runs, as it does through the rest of the package. Auto-commit is always on: `setAutoCommit(false)` throws `SQLFeatureNotSupportedException` rather than pretending a rollback could undo anything, and `commit()` and `rollback()` throw too. A tool or framework that needs transactions across statements cannot use Strata through JDBC yet.
+- **Transactions**: each statement commits as it runs, as it does through the rest of the package. Auto-commit is always on: `setAutoCommit(false)` throws `SQLFeatureNotSupportedException` rather than pretending a rollback could undo anything, and `commit()` and `rollback()` throw too. A tool or framework that needs transactions across statements cannot use ChloeDB through JDBC yet.
 - **Connections share the database.** A process may have a database open once, so the connections to one file (a pool's, say) share one `Database`, which the last of them to close closes. `connection.unwrap(Database.class)` gives it, for what SQL does not do: `search`, `importParquet`, `embed`.
-- **Metadata** (`getMetaData()`) lists tables, columns with their types (KEYWORD and TEXT as `VARCHAR`, INT as `BIGINT`, FLOAT as `DOUBLE`, BOOL, TIMESTAMP, vectors and lists as `ARRAY`), keys, references and the SQL types: what database browsers ask a driver. Tables have no catalog or schema, and table and column patterns match regardless of case, as Strata's SQL names do.
-- **Errors** are `SQLException`s: a statement Strata cannot parse or plan a `SQLSyntaxErrorException`, what the driver does not do a `SQLFeatureNotSupportedException`.
+- **Metadata** (`getMetaData()`) lists tables, columns with their types (KEYWORD and TEXT as `VARCHAR`, INT as `BIGINT`, FLOAT as `DOUBLE`, BOOL, TIMESTAMP, vectors and lists as `ARRAY`), keys, references and the SQL types: what database browsers ask a driver. Tables have no catalog or schema, and table and column patterns match regardless of case, as ChloeDB's SQL names do.
+- **Errors** are `SQLException`s: a statement ChloeDB cannot parse or plan a `SQLSyntaxErrorException`, what the driver does not do a `SQLFeatureNotSupportedException`.
 
 ## Errors
 

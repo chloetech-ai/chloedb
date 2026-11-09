@@ -1,4 +1,4 @@
-# Strata: results
+# ChloeDB: results
 
 The design holds up. One file, with ACID commits and a SQL front end, serves full text, structured filters, vectors and their combinations. Warm, it is faster than both specialised baselines on most of the workload, and its ranking quality matches theirs. It pays for that in build time and in cold structured filters.
 
@@ -7,7 +7,7 @@ The design holds up. One file, with ACID commits and a SQL front end, serves ful
 | goal | met | missed |
 |---|---|---|
 | **One embedded file for three index families** | Every query of the workload, and ten compound statements, run as SQL against one file. Durable commits take 4.1 ms, nearly all of it macOS's `F_FULLFSYNC`; every crash test recovered a committed prefix; snapshots cost at most 0.13 µs; the file is near SQLite's size. | A query reads one table (it joins a table only with itself). Building the HNSW graph makes loads 1.7–5.9× slower than SQLite's (0.2–0.5× without it). |
-| **Faster than the specialised engines** | Warm BM25 is 1.7–3.2× faster than Tantivy and conjunctions 2.7–4.1× faster; Strata wins 24 of 28 warm text and filter comparisons. Vector queries take 0.05–0.10 ms against SQLite's 7.7 ms to 0.7 s scans, and are 28–63× faster cold. | Tantivy counts facets 1.1–2.1× faster on three of the four collections. Cold structured filters are 1.4–3.4× slower than Tantivy's. |
+| **Faster than the specialised engines** | Warm BM25 is 1.7–3.2× faster than Tantivy and conjunctions 2.7–4.1× faster; ChloeDB wins 24 of 28 warm text and filter comparisons. Vector queries take 0.05–0.10 ms against SQLite's 7.7 ms to 0.7 s scans, and are 28–63× faster cold. | Tantivy counts facets 1.1–2.1× faster on three of the four collections. Cold structured filters are 1.4–3.4× slower than Tantivy's. |
 | **Hybrid ranking as one plan** | RRF and weighted fusion are single SQL expressions under the same filter as their inputs. Weighted fusion adds 0.02–0.04 nDCG@10 over vectors alone on three collections, at 0.2–0.8 ms. | The top-100 shortcut recovers 89–95% of the exact fused top 10. The best weight differs by collection (0.1–0.3); the relevance lab picks it, the normaliser and RRF's `k` from judged queries ([score fusion](#score-fusion)). |
 | **A planner that adapts per query** | For filtered vector search, 1.8–6.1× faster than the best fixed strategy on the three larger collections, with recall@10 0.991–0.998. For filtered BM25 and filters alone, geometric-mean regret is 1.06–1.18. | It spends 1.0–1.6× an oracle's time. On SciFact, always pre-filtering takes 17% less time. |
 
@@ -15,7 +15,7 @@ The design holds up. One file, with ACID commits and a SQL front end, serves ful
 
 **Data.** Four BEIR collections with Cohere embed-english-v3 vectors (1,024 dimensions) for documents and queries, their relevance judgments, and synthetic structured fields: `year`, `category` and `rating` drawn at random, and `topic`, the k-means cluster of the same embeddings, which correlates with vector queries by construction.
 
-| collection | documents | Strata file | build |
+| collection | documents | ChloeDB file | build |
 |---|---|---|---|
 | SciFact | 5,183 | 33 MiB | 0.5 s |
 | FiQA | 57,638 | 334 MiB | 14.2 s |
@@ -28,17 +28,17 @@ The design holds up. One file, with ACID commits and a SQL front end, serves ful
 
 ## Build time and size
 
-Strata builds every index of the table in one pass: text, structured, doc store, keys, float32 and 8-bit vectors, and an HNSW graph. That takes 0.5 s for SciFact and 153.1 s for Quora, against 0.3–30.7 s for SQLite and 0.4–9.3 s for Tantivy, neither of which builds a vector index. The graph is most of the difference: 12.9 s of FiQA's 14.2 s, 37 s of TREC-COVID's 40.6 s and 146 s of Quora's 153.1 s, on four threads. The rest of the load is 0.2–0.5× SQLite's time; with IVF instead of HNSW, TREC-COVID builds in 19.2 s and Quora in 60.1 s.
+ChloeDB builds every index of the table in one pass: text, structured, doc store, keys, float32 and 8-bit vectors, and an HNSW graph. That takes 0.5 s for SciFact and 153.1 s for Quora, against 0.3–30.7 s for SQLite and 0.4–9.3 s for Tantivy, neither of which builds a vector index. The graph is most of the difference: 12.9 s of FiQA's 14.2 s, 37 s of TREC-COVID's 40.6 s and 146 s of Quora's 153.1 s, on four threads. The rest of the load is 0.2–0.5× SQLite's time; with IVF instead of HNSW, TREC-COVID builds in 19.2 s and Quora in 60.1 s.
 
-The Strata and SQLite files are close in size because both are dominated by float32 vectors, 4 KiB per document (83% of Strata's TREC-COVID file, 97% of Quora's). Without vectors, Strata's text index is the smallest of the three: with positions it takes 44.5 MiB on TREC-COVID against 60.0 MiB for Tantivy and 70.0 MiB for FTS5. A posting, with its docID and frequency, costs 12.2–12.7 bits.
+The ChloeDB and SQLite files are close in size because both are dominated by float32 vectors, 4 KiB per document (83% of ChloeDB's TREC-COVID file, 97% of Quora's). Without vectors, ChloeDB's text index is the smallest of the three: with positions it takes 44.5 MiB on TREC-COVID against 60.0 MiB for Tantivy and 70.0 MiB for FTS5. A posting, with its docID and frequency, costs 12.2–12.7 bits.
 
 ## Query latency
 
-![Median warm latency by query kind on TREC-COVID: Strata against SQLite with FTS5 and Tantivy, log scale](../assets/img/chart-strata-latency.png)
+![Median warm latency by query kind on TREC-COVID: ChloeDB against SQLite with FTS5 and Tantivy, log scale](../assets/img/chart-strata-latency.png)
 
 *TREC-COVID, warm cache. The [full report](https://chloetech-ai.github.io/strata/reports/strata.html) has the chart for every collection, warm and cold.*
 
-Warm, Strata is faster than Tantivy in 24 of the 28 text and filter comparisons:
+Warm, ChloeDB is faster than Tantivy in 24 of the 28 text and filter comparisons:
 
 - **BM25 top-10:** 1.7–3.2× faster than Tantivy, and 43–200× faster than FTS5, which scores every match.
 - **Two-term conjunctions:** 2.7–4.1× faster than Tantivy.
@@ -48,31 +48,31 @@ Warm, Strata is faster than Tantivy in 24 of the 28 text and filter comparisons:
 
 | median warm ms | SciFact | FiQA | TREC-COVID | Quora |
 |---|---|---|---|---|
-| BM25 top-10: Strata | **0.048** | **0.158** | **0.391** | **0.098** |
+| BM25 top-10: ChloeDB | **0.048** | **0.158** | **0.391** | **0.098** |
 | BM25 top-10: Tantivy | 0.153 | 0.368 | 0.681 | 0.193 |
 | BM25 top-10: SQLite FTS5 | 2.06 | 12.0 | 78.3 | 9.72 |
-| vector top-10: Strata (HNSW) | **0.046** | **0.072** | **0.066** | **0.097** |
+| vector top-10: ChloeDB (HNSW) | **0.046** | **0.072** | **0.066** | **0.097** |
 | vector top-10: SQLite (scan) | 7.66 | 82.3 | 265 | 695 |
-| hybrid (RRF): Strata | **0.170** | **0.418** | **0.772** | **0.343** |
+| hybrid (RRF): ChloeDB | **0.170** | **0.418** | **0.772** | **0.343** |
 | hybrid (RRF): SQLite | 10.1 | 95.0 | 344 | 714 |
 
 *Source: `strata/results/strata/strata_<collection>.json` and `strata/results/baselines/{tantivy,sqlite}_<collection>.json`.*
 
-The exceptions are facet counts on SciFact, FiQA and Quora, where Tantivy is 1.1–2.1× faster (on TREC-COVID Strata is 1.5× faster), and SciFact's three-term conjunctions. These queries take 9–27 µs in Tantivy. At that size the fixed cost of a SQL statement shows: even a query that matches nothing is parsed, bound, planned and run. Strata also materialises the match before reading category codes, while Tantivy's collector reads its column inside the intersection.
+The exceptions are facet counts on SciFact, FiQA and Quora, where Tantivy is 1.1–2.1× faster (on TREC-COVID ChloeDB is 1.5× faster), and SciFact's three-term conjunctions. These queries take 9–27 µs in Tantivy. At that size the fixed cost of a SQL statement shows: even a query that matches nothing is parsed, bound, planned and run. ChloeDB also materialises the match before reading category codes, while Tantivy's collector reads its column inside the intersection.
 
 **Cold**, every system waits on page faults and the gaps narrow. Text queries are within 0.5–1.5× of Tantivy (BM25 is faster on SciFact and TREC-COVID, 6.6 ms against 7.2 ms on the latter). Structured filters are 1.4–3.4× slower than Tantivy's columns, because a range touches histogram buckets, boundary blocks, zone maps and the key index, each on different pages. A cold vector query is 28–63× faster than SQLite's on the two large collections: HNSW touches about 3,700–4,400 pages where the scan reads all 239,000 or 592,000. Pages are counted in 4 KiB units, but macOS pages are 16 KiB, so a random fault reads four times the data of a 4 KiB page; random-access queries such as HNSW therefore read more and run slower cold here than on the earlier VM.
 
 ### Cold reads and page-cache hints
 
-Cold latency depends on what the kernel reads around each page fault, and the right policy differs by section. With the kernel's default read-ahead everywhere, a cold HNSW query on TREC-COVID reads 7,364 pages and takes 117 ms, twice the pages it reads when the graph is advised random access. With no read-ahead anywhere, vector queries drop to 3,676 pages on TREC-COVID and 4,416 on Quora and take 102–115 ms, but BM25, facets and filters, which read postings and columns in order, become up to 1.5× slower. Strata's default advises random access only for the sections read at random (doc store, key index, dictionaries, float32 vectors, the graph and its codes), which keeps vector and hybrid queries at the random-access cost and BM25 at 0.8–1.0× its read-ahead time. Structured filters are the exception, 1.2–1.5× slower than with read-ahead everywhere: their key tie-breaks fault one page per key.
+Cold latency depends on what the kernel reads around each page fault, and the right policy differs by section. With the kernel's default read-ahead everywhere, a cold HNSW query on TREC-COVID reads 7,364 pages and takes 117 ms, twice the pages it reads when the graph is advised random access. With no read-ahead anywhere, vector queries drop to 3,676 pages on TREC-COVID and 4,416 on Quora and take 102–115 ms, but BM25, facets and filters, which read postings and columns in order, become up to 1.5× slower. ChloeDB's default advises random access only for the sections read at random (doc store, key index, dictionaries, float32 vectors, the graph and its codes), which keeps vector and hybrid queries at the random-access cost and BM25 at 0.8–1.0× its read-ahead time. Structured filters are the exception, 1.2–1.5× slower than with read-ahead everywhere: their key tie-breaks fault one page per key.
 
 ## Ranking quality
 
-Strata's BM25 is within 0.018 nDCG@10 of both baselines on every collection, and no system is consistently ahead; the analysers differ (Snowball with stopwords dropped in Strata, Porter in FTS5, Snowball keeping stopwords in Tantivy). HNSW is within 0.006 of the exact scan on three collections; on the 300 Quora queries SQLite also ran, it scores 0.867 against 0.880 exact, with recall@10 0.989, and four queries that lost a relevant duplicate account for the whole difference.
+ChloeDB's BM25 is within 0.018 nDCG@10 of both baselines on every collection, and no system is consistently ahead; the analysers differ (Snowball with stopwords dropped in ChloeDB, Porter in FTS5, Snowball keeping stopwords in Tantivy). HNSW is within 0.006 of the exact scan on three collections; on the 300 Quora queries SQLite also ran, it scores 0.867 against 0.880 exact, with recall@10 0.989, and four queries that lost a relevant duplicate account for the whole difference.
 
 | nDCG@10, BM25 | SciFact | FiQA | TREC-COVID | Quora |
 |---|---|---|---|---|
-| Strata | 0.689 | 0.252 | 0.658 | 0.756 |
+| ChloeDB | 0.689 | 0.252 | 0.658 | 0.756 |
 | Tantivy | 0.687 | 0.251 | 0.667 | 0.758 |
 | SQLite FTS5 | 0.684 | 0.254 | 0.641 | 0.760 |
 
@@ -160,7 +160,7 @@ The price is paid when rows are written. Embedding every token takes 0.1 to 0.16
 
 ![Weighted hybrid ranking: nDCG@10 by BM25 weight on four collections, with RRF of the same two rankings as dashed lines](../assets/img/chart-strata-fusion.png)
 
-Weighted fusion beats both of its inputs on three of the four collections. The best BM25 weight is small, 0.1–0.3: the score scales differ, and on these collections the embeddings are the stronger ranking. On TREC-COVID it reaches nDCG@10 0.851, against 0.815 for vectors alone, 0.835 for RRF and 0.658 for BM25; on Quora 0.920 against 0.899 and 0.860. On FiQA, where BM25 is weak, fusion only matches the vector ranking (0.437) and RRF falls below it (0.381), because RRF gives both rankings equal weight. Strata's RRF is within 0.005 of SQLite's RRF over the same two rankings.
+Weighted fusion beats both of its inputs on three of the four collections. The best BM25 weight is small, 0.1–0.3: the score scales differ, and on these collections the embeddings are the stronger ranking. On TREC-COVID it reaches nDCG@10 0.851, against 0.815 for vectors alone, 0.835 for RRF and 0.658 for BM25; on Quora 0.920 against 0.899 and 0.860. On FiQA, where BM25 is weak, fusion only matches the vector ranking (0.437) and RRF falls below it (0.381), because RRF gives both rankings equal weight. ChloeDB's RRF is within 0.005 of SQLite's RRF over the same two rankings.
 
 The top-100 shortcut is cheap and close to exact. Against weighted ranking computed over every document, it recovers 89–95% of the exact top 10 with nDCG@10 within 0.01–0.03, at 0.2–0.8 ms per query, where the exact computation costs 0.9 ms on SciFact, 12 ms on FiQA and 62 ms on TREC-COVID.
 
@@ -333,4 +333,4 @@ Ten statements combine the workload's shapes: phrases with negation, prefixes, `
 - **Fusion without tuning:** fit the weighted-fusion weight per collection from score distributions, or learn it from clicks.
 - **Incremental HNSW merges**, so that merges stop rebuilding the graph.
 
-The long-form report, with every table and an interactive chart for each collection, is [Strata: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html). [Reproducing the results](../reproduce.md#strata) has the commands.
+The long-form report, with every table and an interactive chart for each collection, is [ChloeDB: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html). [Reproducing the results](../reproduce.md#chloedb) has the commands.

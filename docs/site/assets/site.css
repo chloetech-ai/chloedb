@@ -1,9 +1,9 @@
-/* Strata showcase site.
+/* ChloeDB showcase site.
  * Layout: full-width bands (white, tint, night) holding one 1180px column.
  * Each page opens on a night band; sections alternate white and tint; the
  * footer is night again. The four index families (full text, columns,
  * vectors, graph) each keep one fixed hue, used for the mark, the layer
- * stripe under every page head, and wherever a family is named. Strata's own
+ * stripe under every page head, and wherever a family is named. ChloeDB's own
  * marks are the accent; every other system is a neutral grey. */
 :root {
   --paper: #ffffff;
@@ -581,7 +581,7 @@ table.e2e td.na { color: var(--ink-3); font-family: var(--body); font-size: 0.8r
 
 /* ------------------------------------------------------------ benchmarks
  * Places run from strong green (1st) through neutral to warm (last); the
- * same five steps in every view. Strata's row or column is the accent. */
+ * same five steps in every view. ChloeDB's row or column is the accent. */
 :root { --pl1: #0b7a3b; --pl1-ink: #ffffff; --pl2: #cfe9d9; --pl2-ink: #0b4f28; --pl3: var(--sunk); --pl3-ink: var(--ink-2); --pl4: #f6dfcf; --pl4-ink: #7a3a10; --pl5: #f1c4b0; --pl5-ink: #6b2208; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --pl1: #2f9c5e; --pl1-ink: #06120b; --pl2: #1d3b2a; --pl2-ink: #9ee0b7; --pl4: #3d2617; --pl4-ink: #f2b48d; --pl5: #55251a; --pl5-ink: #ffb9a0; } }
 :root[data-theme="dark"] { --pl1: #2f9c5e; --pl1-ink: #06120b; --pl2: #1d3b2a; --pl2-ink: #9ee0b7; --pl4: #3d2617; --pl4-ink: #f2b48d; --pl5: #55251a; --pl5-ink: #ffb9a0; }
@@ -683,7 +683,7 @@ a.report:hover { border-color: var(--ink-3); text-decoration: none; }
 .loss .fix.open { color: var(--ink-2); }
 @media (max-width: 760px) { .loss { grid-template-columns: minmax(0, 1fr); } }
 
-/* Strata's speed over each engine's: a log track per engine, a hollow dot
+/* ChloeDB's speed over each engine's: a log track per engine, a hollow dot
  * at one client and a filled one at 16 clients; each row opens to its kinds. */
 .vs { display: grid; background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 6px 14px 4px; margin-top: 12px; }
 .vs-head, .vs-row > summary { display: grid; grid-template-columns: minmax(7.5rem, 11rem) minmax(0, 1fr) 8rem 5.5rem; gap: 14px; align-items: center; }
