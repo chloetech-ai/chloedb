@@ -12,7 +12,7 @@
 //! the rows of the moment it was taken, whatever was written, merged or
 //! vacuumed since. Seeds alternate the single-file and directory layouts,
 //! and snapshots published by the writer or built by readers.
-//! `STRATA_MODEL_SEEDS` sets how many seeds run (default 8).
+//! `CHLOEDB_MODEL_SEEDS` sets how many seeds run (default 8).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -379,7 +379,7 @@ fn run(seed: u64, steps: usize) {
 
 #[test]
 fn random_operations_match_the_model() {
-    let seeds: u64 = std::env::var("STRATA_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let seeds: u64 = chloedb::env::var("CHLOEDB_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
     for seed in 0..seeds {
         run(seed, 300);
     }

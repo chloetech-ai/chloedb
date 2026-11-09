@@ -938,7 +938,7 @@ function render(page, r) {
       ["request_id", (e) => e.request_id || ""], ["detail", (e) => e.detail || ""]];
     const cell = (v) => { const s = String(v ?? ""); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const csv = [cols.map((c) => c[0]).join(","), ...es.map((e) => cols.map(([, g]) => cell(g(e))).join(","))].join("\r\n");
-    const a = h("a", { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `strata-${tab === "all" ? "audit" : tab}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "")}.csv` });
+    const a = h("a", { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `chloedb-${tab === "all" ? "audit" : tab}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "")}.csv` });
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     toast(`${fmt.n(es.length)} entries exported`, "ok");

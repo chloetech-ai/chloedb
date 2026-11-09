@@ -371,6 +371,9 @@ impl Local {
             args.push("--app".into());
             args.push(format!("crawler={url}"));
             if let Some(t) = token {
+                // Under both names: the binary may be one from before the
+                // rename, which reads only STRATA_APP_TOKEN.
+                env.push(("CHLOEDB_APP_TOKEN", t.clone()));
                 env.push(("STRATA_APP_TOKEN", t.clone()));
             }
         }

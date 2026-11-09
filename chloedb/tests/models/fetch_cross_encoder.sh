@@ -5,7 +5,7 @@
 # against its SHA-256. Files already there with the right hash are kept.
 #
 #   chloedb/tests/models/fetch_cross_encoder.sh DIR
-#   STRATA_BEIR_DIR=... STRATA_MODELS=DIR cargo test --release --features bert --test relevance_gate cross_encoder
+#   CHLOEDB_BEIR_DIR=... CHLOEDB_MODELS=DIR cargo test --release --features bert --test relevance_gate cross_encoder
 set -euo pipefail
 
 dir=${1:?usage: fetch_cross_encoder.sh DIR}

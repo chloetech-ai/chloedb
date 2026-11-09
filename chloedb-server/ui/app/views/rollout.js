@@ -1150,7 +1150,7 @@ function render(page, r) {
         h("div", { class: "row" }, find, only),
         h("div", { class: "small" }, curRow ? ["The cluster runs ", h("b", {}, vname({ ...curRow, track: reg.track })), curRow.created ? `, built ${clock(sec(curRow.created))} ${TZ}` : "", ". ", newer ? h("b", {}, `${plural(newer, "newer build")}.`) : "Nothing newer is published.", cmp ? [" ", h("a", { href: cmp, target: "_blank", rel: "noopener" }, "What changed since")] : null]
           : map.length ? ["Your servers run ", map.map((x, i) => [i ? ", " : "", h("b", {}, vname(x.v)), ` (${plural(x.count, "copy", "copies")})`]), ". ",
-            list.some(runOf) ? "Its row is marked." : "They report no image digest and no image here has that tag, so no row is marked: start them with STRATA_IMAGE set to the image they run.", " Published images, newest first."]
+            list.some(runOf) ? "Its row is marked." : "They report no image digest and no image here has that tag, so no row is marked: start them with CHLOEDB_IMAGE set to the image they run.", " Published images, newest first."]
           : "Published images, newest first."),
         readOnly ? h("div", { class: "notice" }, "This server is not run by the Kubernetes operator, so nothing here changes the cluster. Copy an image's pull command, then restart your machines with it one copy at a time.") : null,
         moving(m) ? h("div", { class: "ro-warnline" }, icon("warn"), h("span", {}, "A change is under way: picking a version replaces it, from where it is.")) : null,

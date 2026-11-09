@@ -14,14 +14,14 @@ classifiers = ["Programming Language :: Python :: 3", "Programming Language :: R
 
 [project.optional-dependencies]
 test = ["pytest"]
-# strata.Frame (dataframes run in ChloeDB; Arrow in and out)
+# chloedb.Frame (dataframes run in ChloeDB; Arrow in and out)
 frame = ["pyarrow>=14"]
-# strata.ingest.kafka
+# chloedb.ingest.kafka
 kafka = ["confluent-kafka>=2.3"]
 
 [tool.maturin]
 python-source = "python"
-module-name = "strata._strata"
-# `import chloedb` (the new name: ChloeDB was called Strata) is `import strata`.
-python-packages = ["chloedb"]
+module-name = "chloedb._chloedb"
+# `import strata` (ChloeDB's old name) is `import chloedb`, with a warning.
+python-packages = ["strata"]
 features = ["pyo3/extension-module"]

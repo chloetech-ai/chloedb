@@ -183,7 +183,7 @@ async fn a_full_write_queue_refuses_writes_until_it_drains() {
     let second = tokio::spawn(write(1));
     let gauge = || async {
         let m = client.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-        m.lines().find_map(|l| l.strip_prefix("strata_write_queue_requests ")).unwrap().parse::<f64>().unwrap()
+        m.lines().find_map(|l| l.strip_prefix("chloedb_write_queue_requests ")).unwrap().parse::<f64>().unwrap()
     };
     let t0 = std::time::Instant::now();
     while gauge().await < 2.0 {
@@ -202,7 +202,7 @@ async fn a_full_write_queue_refuses_writes_until_it_drains() {
     // Drained: writes go through again.
     assert_eq!(write(3).await.unwrap().status(), 200);
     let m = client.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(m.contains("strata_write_errors_total{status=\"429\"} 2"), "{m}");
+    assert!(m.contains("chloedb_write_errors_total{status=\"429\"} 2"), "{m}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -257,9 +257,9 @@ async fn queries_past_the_memory_budget_get_429() {
     out_of_memory(&base, "SELECT id FROM products WHERE id IN (SELECT id FROM products WHERE price > 0) LIMIT 5").await;
     let (status, body) = query(&base, "SELECT COUNT(*) FROM products").await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(metric(&base, "strata_query_memory_trips_total").await, 2.0);
-    assert_eq!(metric(&base, "strata_query_memory_limit_bytes").await, (16 << 10) as f64);
-    assert_eq!(metric(&base, "strata_query_memory_bytes").await, 0.0);
+    assert_eq!(metric(&base, "chloedb_query_memory_trips_total").await, 2.0);
+    assert_eq!(metric(&base, "chloedb_query_memory_limit_bytes").await, (16 << 10) as f64);
+    assert_eq!(metric(&base, "chloedb_query_memory_bytes").await, 0.0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -284,7 +284,7 @@ async fn a_coordinator_passes_on_its_shards_429_and_counts_its_joins() {
     let (status, body) = query(&base, WIDE).await;
     assert_eq!(status, 200, "{body}");
     out_of_memory(&base, "SELECT x.id, y.title FROM products x JOIN products y ON x.brand = y.brand LIMIT 5").await;
-    assert_eq!(metric(&base, "strata_query_memory_trips_total").await, 1.0);
+    assert_eq!(metric(&base, "chloedb_query_memory_trips_total").await, 1.0);
 }
 
 /// A shard that refuses its part of a write for its load (429: here its
@@ -323,13 +323,13 @@ async fn a_coordinator_sends_a_busy_shard_its_part_again() {
     let held = busy.storage().begin().unwrap();
     let first = tokio::spawn(write(N));
     let t0 = std::time::Instant::now();
-    while metric("strata_write_queue_requests ").await < 1.0 {
+    while metric("chloedb_write_queue_requests ").await < 1.0 {
         assert!(t0.elapsed() < Duration::from_secs(5), "the first write never queued");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let second = tokio::spawn(write(N + 10));
-    while metric("strata_write_errors_total{status=\"429\"} ").await < 2.0 {
-        assert!(t0.elapsed() < Duration::from_secs(5), "the shard refused the second write's part {} times", metric("strata_write_errors_total{status=\"429\"} ").await);
+    while metric("chloedb_write_errors_total{status=\"429\"} ").await < 2.0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the shard refused the second write's part {} times", metric("chloedb_write_errors_total{status=\"429\"} ").await);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     // The shard catches up: both writes are taken, each once.

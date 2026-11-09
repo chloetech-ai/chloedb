@@ -334,7 +334,7 @@ mod onnx {
     /// ONNX Runtime's environment, made once in a process.
     fn environment() -> Res<&'static Environment> {
         static ENV: OnceLock<std::result::Result<Environment, String>> = OnceLock::new();
-        ENV.get_or_init(|| ort::init().with_name("strata").build().map_err(|e| e.to_string())).as_ref().map_err(|e| e.clone().into())
+        ENV.get_or_init(|| ort::init().with_name("chloedb").build().map_err(|e| e.to_string())).as_ref().map_err(|e| e.clone().into())
     }
 
     /// A sequence classifier exported to ONNX, and its tokenizer.

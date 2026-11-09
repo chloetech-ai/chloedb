@@ -11,7 +11,7 @@
 //! ```
 //!
 //! `build` and `load` read the collection prepared by
-//! `chloedb/scripts/prepare_beir.py` as a stream (`$STRATA_DATA`), so they
+//! `chloedb/scripts/prepare_beir.py` as a stream (`$CHLOEDB_DATA`), so they
 //! fit in a pod's memory. `load` creates the index (Elasticsearch,
 //! OpenSearch) or the collection and its schema (Solr) first, untimed (Vespa's
 //! application package is deployed by `compare.sh`), then times the bulk
@@ -61,7 +61,7 @@ mod snapshot;
 #[derive(Parser)]
 #[command(about = "ChloeDB, Elasticsearch, OpenSearch, Solr and Vespa on the same BEIR collection")]
 struct Cli {
-    /// A collection under $STRATA_DATA.
+    /// A collection under $CHLOEDB_DATA.
     #[arg(long, global = true, default_value = "quora")]
     collection: String,
     #[command(subcommand)]
@@ -403,11 +403,11 @@ struct Meta {
 
 /// The HTTP client of `run`, `writes` and `stream`. Strata's servers listen
 /// beyond loopback only with a token, so for Strata it sends
-/// $STRATA_TOKEN (compare.sh gives the servers and this client the same).
+/// $CHLOEDB_TOKEN (compare.sh gives the servers and this client the same).
 fn http_client(engine: Engine, timeout_s: u64) -> Result<reqwest::Client, String> {
     let mut headers = reqwest::header::HeaderMap::new();
-    if let (Engine::Strata, Ok(t)) = (engine, std::env::var("STRATA_TOKEN")) {
-        let v = format!("Bearer {t}").parse().map_err(|_| "STRATA_TOKEN must be printable ASCII".to_string())?;
+    if let (Engine::Strata, Ok(t)) = (engine, chloedb::env::var("CHLOEDB_TOKEN")) {
+        let v = format!("Bearer {t}").parse().map_err(|_| "CHLOEDB_TOKEN must be printable ASCII".to_string())?;
         headers.insert(reqwest::header::AUTHORIZATION, v);
     }
     reqwest::Client::builder().default_headers(headers).pool_max_idle_per_host(1024).timeout(Duration::from_secs(timeout_s)).build().map_err(s)

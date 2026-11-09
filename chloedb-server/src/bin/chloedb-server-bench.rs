@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! cd chloedb-server
-//! STRATA_DATA=/path/to/beir caffeinate -i cargo run --release --bin chloedb-server-bench -- \
+//! CHLOEDB_DATA=/path/to/beir caffeinate -i cargo run --release --bin chloedb-server-bench -- \
 //!     --collection quora --work /path/outside/the/repo
 //! ```
 //!
@@ -69,7 +69,7 @@ use tokio::net::TcpListener;
 #[derive(Parser)]
 #[command(about = "End-to-end benchmark of ChloeDB and chloedb-server on a BEIR collection")]
 struct Args {
-    /// A collection under $STRATA_DATA.
+    /// A collection under $CHLOEDB_DATA.
     #[arg(long, default_value = "quora")]
     collection: String,
     /// Where the databases are built (several GB for Quora).

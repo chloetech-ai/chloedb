@@ -176,7 +176,7 @@ fn rerank(model: &str) -> String {
 fn each_api_reranks_in_its_own_shape() {
     let dir = tempfile::tempdir().unwrap();
     let docs = docs();
-    std::env::set_var("STRATA_TEST_RERANK_KEY", "rk-1");
+    std::env::set_var("CHLOEDB_TEST_RERANK_KEY", "rk-1");
     let cases = [
         // (name, api as the mock answers, endpoint.json's api, path, batch)
         ("ours-cohere", "cohere", "cohere", "/v2/rerank", None),
@@ -187,7 +187,7 @@ fn each_api_reranks_in_its_own_shape() {
     ];
     for (name, shape, api, path, batch) in cases {
         let mock = Mock::start(move |r, _| answer(shape, &r.body));
-        let mut config = json!({"api": api, "base_url": mock.url, "model": "m-1", "key_env": "STRATA_TEST_RERANK_KEY", "headers": {"x-team": "search"}});
+        let mut config = json!({"api": api, "base_url": mock.url, "model": "m-1", "key_env": "CHLOEDB_TEST_RERANK_KEY", "headers": {"x-team": "search"}});
         if let Some(b) = batch {
             config["batch"] = json!(b);
         }
@@ -273,12 +273,12 @@ fn rate_limits_are_tried_again_and_failures_fail_the_query() {
     assert_eq!(mock.seen().len(), 3);
 
     // A refused key fails at once, and the key is not shown.
-    std::env::set_var("STRATA_TEST_RERANK_SECRET", "rk-very-secret");
+    std::env::set_var("CHLOEDB_TEST_RERANK_SECRET", "rk-very-secret");
     let mock = Mock::start(|_, _| (401, Vec::new(), json!({"message": "invalid api token"}).to_string()));
-    let models = models_with(dir.path(), "refused", json!({"api": "cohere", "url": format!("{}/v2/rerank", mock.url), "key_env": "STRATA_TEST_RERANK_SECRET"}));
+    let models = models_with(dir.path(), "refused", json!({"api": "cohere", "url": format!("{}/v2/rerank", mock.url), "key_env": "CHLOEDB_TEST_RERANK_SECRET"}));
     let db = create(&dir.path().join("c.strata"), &models, &docs);
     let e = db.query(&rerank("refused"), &params).unwrap_err().to_string();
-    assert!(e.contains("401") && e.contains("invalid api token") && e.contains("$STRATA_TEST_RERANK_SECRET"), "{e}");
+    assert!(e.contains("401") && e.contains("invalid api token") && e.contains("$CHLOEDB_TEST_RERANK_SECRET"), "{e}");
     assert!(!e.contains("rk-very-secret"), "{e}");
     assert_eq!(mock.seen().len(), 1);
 }

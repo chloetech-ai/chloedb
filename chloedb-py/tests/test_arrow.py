@@ -6,7 +6,7 @@ import datetime
 
 import pytest
 
-import strata
+import chloedb
 
 pa = pytest.importorskip("pyarrow")
 
@@ -47,7 +47,7 @@ def row(i):
 
 @pytest.fixture
 def tdb(tmp_path):
-    with strata.Database.create(tmp_path / "t.strata", ALL) as d:
+    with chloedb.Database.create(tmp_path / "t.strata", ALL) as d:
         d.insert([row(i) for i in range(5000)])
         yield d
 
@@ -103,7 +103,7 @@ def test_queries(tdb):
         same_as_query(tdb, sql)
     r = tdb.query_arrow("SELECT n, COUNT(*) AS c FROM t GROUP BY n")
     assert isinstance(r.stats, dict) and "plan" in r.stats
-    assert repr(r) == "<strata.ArrowResult 17 rows: n, c>"
+    assert repr(r) == "<chloedb.ArrowResult 17 rows: n, c>"
 
 
 def test_no_rows_and_mixed_columns(tdb):
@@ -113,13 +113,13 @@ def test_no_rows_and_mixed_columns(tdb):
     # error that says which.
     t = tdb.query_arrow("SELECT CASE WHEN n > 3 THEN n ELSE 0.5 END AS m FROM t LIMIT 20").to_pyarrow()
     assert t.schema.field("m").type == pa.float64()
-    with pytest.raises(strata.StrataError, match="column m: a column of values of several types"):
+    with pytest.raises(chloedb.ChloeDBError, match="column m: a column of values of several types"):
         tdb.query_arrow("SELECT CASE WHEN n > 3 THEN n ELSE 'small' END AS m FROM t LIMIT 20")
 
 
 def test_multi_vector_field(tmp_path):
     schema = {"table": "m", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "tok", "type": "vector", "dim": 2, "multi": True}]}
-    with strata.Database.create(tmp_path / "m.strata", schema) as db:
+    with chloedb.Database.create(tmp_path / "m.strata", schema) as db:
         db.insert([{"id": f"a{i}", "tok": [[1.0, 0.0], [0.0, float(i)]][: 1 + i % 2]} for i in range(4)] + [{"id": "none"}])
         t = same_as_query(db, "SELECT id, tok FROM m")
         assert t.schema.field("tok").type == pa.list_(pa.list_(pa.float32()))

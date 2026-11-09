@@ -2,9 +2,9 @@
 //! and the workbooks it keeps there are made, changed, imported, filled from
 //! queries, saved as tables, searched, and read back after a restart.
 //!
-//! It needs the chloedb-server binary (`STRATA_SERVER_BIN`, else
+//! It needs the chloedb-server binary (`CHLOEDB_SERVER_BIN`, else
 //! `../chloedb-server/target/{ci,release}/chloedb-server`), and is skipped
-//! without it unless `STRATA_SHEETS_NEED_SERVER` is set (as CI does).
+//! without it unless `CHLOEDB_SHEETS_NEED_SERVER` is set (as CI does).
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 const TOKEN: &str = "sheets-test-token";
 
 fn server_bin() -> Option<PathBuf> {
-    if let Some(b) = std::env::var_os("STRATA_SERVER_BIN") {
+    if let Some(b) = std::env::var_os("CHLOEDB_SERVER_BIN").or_else(|| std::env::var_os("STRATA_SERVER_BIN")) {
         return Some(PathBuf::from(b));
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../chloedb-server/target");
@@ -127,8 +127,8 @@ impl Api {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workbooks_live_in_a_cluster() {
     let Some(bin) = server_bin().filter(|b| b.exists()) else {
-        assert!(std::env::var_os("STRATA_SHEETS_NEED_SERVER").is_none(), "no chloedb-server binary (STRATA_SERVER_BIN)");
-        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set STRATA_SERVER_BIN)");
+        assert!(std::env::var_os("CHLOEDB_SHEETS_NEED_SERVER").is_none(), "no chloedb-server binary (CHLOEDB_SERVER_BIN)");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
         return;
     };
     let dir = tempfile::tempdir().unwrap();

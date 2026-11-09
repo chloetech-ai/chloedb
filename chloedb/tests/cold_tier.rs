@@ -187,13 +187,13 @@ fn answer_and_reopen(d: &Path, store: Arc<dyn ObjectStore>, objects: impl Fn() -
 }
 
 /// [`answer_and_reopen`] on S3 or a store that speaks its API, at the URL
-/// in `STRATA_COLD_S3_URL` (`s3://bucket/prefix/`, configured by
+/// in `CHLOEDB_COLD_S3_URL` (`s3://bucket/prefix/`, configured by
 /// environment as [`chloedb::objects`] says); skipped without it.
 #[cfg(feature = "s3")]
 #[test]
 fn cold_segments_on_s3() {
-    let Ok(url) = std::env::var("STRATA_COLD_S3_URL") else {
-        eprintln!("STRATA_COLD_S3_URL is not set: skipped");
+    let Ok(url) = chloedb::env::var("CHLOEDB_COLD_S3_URL") else {
+        eprintln!("CHLOEDB_COLD_S3_URL is not set: skipped");
         return;
     };
     let url = format!("{}/{}/", url.trim_end_matches('/'), std::process::id());

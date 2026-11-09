@@ -52,7 +52,7 @@ async fn arrow(url: &str, sql: &str) -> (String, bool, Vec<String>, Vec<String>,
     let r = chloedb_server::http_client().build().unwrap().post(format!("{url}/v1/query")).json(&json!({"sql": sql, "format": "arrow"})).send().await.unwrap();
     assert_eq!(r.status().as_u16(), 200, "{sql}");
     let ct = r.headers().get("content-type").unwrap().to_str().unwrap().to_string();
-    let took = r.headers().get("x-strata-took-ms").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok()).is_some();
+    let took = ["x-chloedb-took-ms", "x-strata-took-ms"].iter().all(|n| r.headers().get(*n).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok()).is_some());
     let batch = chloedb::query::arrow::batch_of_ipc(&r.bytes().await.unwrap()).unwrap();
     let names = batch.schema().fields().iter().map(|f| f.name().clone()).collect();
     let types = batch.schema().fields().iter().map(|f| f.data_type().to_string()).collect();
@@ -95,7 +95,7 @@ async fn arrow_matches_json(url: &str) {
         assert_eq!(s, 200, "{sql}: {want}");
         let (ct, took, names, _, rows) = arrow(url, sql).await;
         assert_eq!(ct, "application/vnd.apache.arrow.stream");
-        assert!(took, "{sql}: x-strata-took-ms");
+        assert!(took, "{sql}: x-chloedb-took-ms and x-strata-took-ms");
         assert_eq!(json!(names), want["columns"], "{sql}");
         assert_eq!(rows, want["rows"], "{sql}");
     }

@@ -3,11 +3,11 @@ name = "chloedb-node"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "JavaScript bindings for Strata: the database in-process, as a Node-API addon"
+description = "JavaScript bindings for ChloeDB: the database in-process, as a Node-API addon"
 publish = false
 
 [lib]
-name = "strata_node"
+name = "chloedb_node"
 crate-type = ["cdylib"]
 
 [dependencies]

@@ -32,8 +32,8 @@ use chloedb::storage::{Database, DbOptions, MergePolicy};
 use chloedb::value::Document;
 use chloedb::Value;
 
-const CHILD_ENV: &str = "STRATA_CRASH_CHILD";
-const CREATE_ENV: &str = "STRATA_CREATE_CHILD";
+const CHILD_ENV: &str = "CHLOEDB_CRASH_CHILD";
+const CREATE_ENV: &str = "CHLOEDB_CREATE_CHILD";
 
 fn id_of(k: &str) -> u64 {
     k[1..].parse().unwrap()
@@ -236,7 +236,7 @@ fn killed_writer_recovers(name: &str, clustered: bool) {
     let mut rng = rand::rngs::StdRng::seed_from_u64(99);
     let mut state: BTreeSet<u64> = BTreeSet::new();
     let src = Arc::new(MapSource::default());
-    let iterations = std::env::var("STRATA_CRASH_ITERS").map_or(20, |v| v.parse().unwrap());
+    let iterations = chloedb::env::var("CHLOEDB_CRASH_ITERS").map_or(20, |v| v.parse().unwrap());
     for iter in 0..iterations {
         let log_path = dir.path().join(format!("log{iter}"));
         let spec = format!("{}|{}|{iter}|{}", db_path.display(), log_path.display(), if clustered { "clustered" } else { "plain" });

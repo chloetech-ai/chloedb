@@ -7,7 +7,7 @@ import urllib.request
 
 import pytest
 
-import strata
+import chloedb
 
 BOOKS = {
     "table": "books",
@@ -40,13 +40,13 @@ def book(i):
 
 @pytest.fixture
 def db(tmp_path):
-    with strata.Database.create(tmp_path / "books.strata", BOOKS) as d:
+    with chloedb.Database.create(tmp_path / "books.strata", BOOKS) as d:
         d.insert([book(i) for i in range(200)])
         yield d
 
 
 def server_binary():
-    path = os.environ.get("STRATA_SERVER") or os.path.join(os.path.dirname(__file__), "..", "..", "chloedb-server", "target", "release", "chloedb-server")
+    path = os.environ.get("CHLOEDB_SERVER") or os.path.join(os.path.dirname(__file__), "..", "..", "chloedb-server", "target", "release", "chloedb-server")
     return path if os.path.exists(path) else shutil.which("chloedb-server")
 
 
@@ -60,7 +60,7 @@ def free_port():
 def serve(tmp_path):
     """Starts chloedb-server on a database; returns its URL. Skips when the
     binary is not built (cargo build --release in chloedb-server, or
-    STRATA_SERVER=path)."""
+    CHLOEDB_SERVER=path)."""
     binary = server_binary()
     if not binary:
         pytest.skip("chloedb-server is not built")

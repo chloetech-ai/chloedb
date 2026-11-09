@@ -22,13 +22,13 @@ use pyo3::types::PyCapsule;
 use chloedb::query::arrow::answer_batch;
 use chloedb::query::exec::Leaf;
 
-use crate::StrataError;
+use crate::ChloeDBError;
 
 const STREAM: &CStr = c"arrow_array_stream";
 const SCHEMA: &CStr = c"arrow_schema";
 
 /// A query's answer as Arrow columns.
-#[pyclass(frozen, module = "strata._strata")]
+#[pyclass(frozen, module = "chloedb._chloedb")]
 pub struct Arrow {
     batch: RecordBatch,
     /// What the engine did, as JSON text.
@@ -75,7 +75,7 @@ impl Arrow {
 
     /// The columns' Arrow schema, in a capsule.
     fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyCapsule>> {
-        let schema = FFI_ArrowSchema::try_from(self.batch.schema().as_ref()).map_err(|e| StrataError::new_err(e.to_string()))?;
+        let schema = FFI_ArrowSchema::try_from(self.batch.schema().as_ref()).map_err(|e| ChloeDBError::new_err(e.to_string()))?;
         PyCapsule::new_with_value(py, schema, SCHEMA)
     }
 
@@ -101,5 +101,5 @@ pub fn stream_of(data: &Bound<'_, PyAny>) -> PyResult<arrow_array::ffi_stream::A
     // The stream is moved out, and the capsule left a released one, which
     // its destructor does nothing with (as arrow's pyarrow module does).
     let stream = unsafe { FFI_ArrowArrayStream::from_raw(ptr) };
-    arrow_array::ffi_stream::ArrowArrayStreamReader::try_new(stream).map_err(|e| StrataError::new_err(format!("the Arrow stream: {e}")))
+    arrow_array::ffi_stream::ArrowArrayStreamReader::try_new(stream).map_err(|e| ChloeDBError::new_err(format!("the Arrow stream: {e}")))
 }

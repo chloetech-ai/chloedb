@@ -3,7 +3,7 @@
 //! ```text
 //! chloedb-server --demo 20000 --db products.strata      # a demo catalogue, UI at http://127.0.0.1:7700
 //! chloedb-server --db my.strata                         # an existing database, or a new one with no tables yet
-//! STRATA_TOKEN=... chloedb-server --db my.strata --listen 0.0.0.0:7700   # beyond loopback: a token
+//! CHLOEDB_TOKEN=... chloedb-server --db my.strata --listen 0.0.0.0:7700   # beyond loopback: a token
 //! chloedb-server --shards http://a:7701,http://b:7701   # a coordinator over shard servers
 //! chloedb-server --shards 'http://a0:7701|http://a1:7701,http://b0:7701|http://b1:7701'   # two replicas each
 //! chloedb-server --db a0.strata --seq-no --replicas http://a1:7701   # a primary shipping its writes to a replica
@@ -53,7 +53,7 @@ struct Args {
     #[arg(long)]
     copy_from: Option<PathBuf>,
     /// Where embedded fields' models are (see `fetch-model`).
-    #[arg(long, env = "STRATA_MODELS")]
+    #[arg(long, env = "CHLOEDB_MODELS")]
     models: Option<PathBuf>,
     /// Leave rows stored while their embedded field had no model open
     /// without vectors. By default they get them once the model opens.
@@ -163,7 +163,7 @@ struct Args {
     /// With --shards: the StrataCluster (namespace/name) that runs this
     /// coordinator on Kubernetes, read and scaled through the API server as
     /// the pod's service account (the operator sets it).
-    #[arg(long, env = "STRATA_KUBE_CLUSTER")]
+    #[arg(long, env = "CHLOEDB_KUBE_CLUSTER")]
     kube_cluster: Option<String>,
     /// With --db, --grpc and --shards: this shard server also coordinates
     /// --shards, serving the coordinator's HTTP API at this address, in
@@ -187,15 +187,15 @@ struct Args {
     /// applications written for OpenSearch or Elasticsearch 7: the same
     /// data, credentials and TLS as the HTTP API (a key or the token as a
     /// Bearer token, or as Basic authentication's password).
-    #[arg(long, env = "STRATA_OPENSEARCH_LISTEN")]
+    #[arg(long, env = "CHLOEDB_OPENSEARCH_LISTEN")]
     opensearch_listen: Option<String>,
     /// The version the OpenSearch API's root reports: OpenSearch 2's by
     /// default; 7.10.2 for clients of Elasticsearch 7 that check it.
-    #[arg(long, env = "STRATA_OPENSEARCH_VERSION", default_value = chloedb_server::opensearch::VERSION_NUMBER)]
+    #[arg(long, env = "CHLOEDB_OPENSEARCH_VERSION", default_value = chloedb_server::opensearch::VERSION_NUMBER)]
     opensearch_version: String,
     /// Require "Authorization: Bearer TOKEN" on the API and on gRPC (the
     /// UI asks for it). Needed to listen beyond loopback.
-    #[arg(long, env = "STRATA_TOKEN", hide_env_values = true)]
+    #[arg(long, env = "CHLOEDB_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Listen beyond loopback without --token: anyone who can reach the
     /// ports can read and write.
@@ -218,7 +218,7 @@ struct Args {
     /// servers (replication, slots, keys), and --token is an admin's
     /// credential that may not; clients get API keys. Without it, --token
     /// plays both parts.
-    #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+    #[arg(long, env = "CHLOEDB_CLUSTER_TOKEN", hide_env_values = true)]
     cluster_token: Option<String>,
     /// With --shards or --replicas: a CA certificate (PEM) for https://
     /// shards or replicas, besides the public roots.
@@ -405,7 +405,7 @@ struct Args {
     /// The book of connections to other clusters that this server's command
     /// center reaches (default: DB.hub.json beside --db). Their keys are
     /// kept in the macOS Keychain or the Secret Service where there is one,
-    /// else in DB.hub-keys.json (mode 600); STRATA_HUB_SECRETS=file keeps
+    /// else in DB.hub-keys.json (mode 600); CHLOEDB_HUB_SECRETS=file keeps
     /// them in the file anyway.
     #[arg(long)]
     hub_file: Option<PathBuf>,
@@ -423,14 +423,14 @@ struct Args {
     alert_webhook: Option<String>,
     /// Keep only the types of queries' parameters (not their values) in
     /// the running and finished queries, statements and the log store.
-    #[arg(long, env = "STRATA_REDACT_PARAMS")]
+    #[arg(long, env = "CHLOEDB_REDACT_PARAMS")]
     redact_params: bool,
     /// What to log: a level (error, warn, info, debug, trace), or levels
     /// per module ("info,chloedb=debug"). debug logs every request.
-    #[arg(long, env = "STRATA_LOG", default_value = "info")]
+    #[arg(long, env = "CHLOEDB_LOG", default_value = "info")]
     log: String,
     /// How to write log lines: text, or json (one object per line).
-    #[arg(long, env = "STRATA_LOG_FORMAT", default_value = "text")]
+    #[arg(long, env = "CHLOEDB_LOG_FORMAT", default_value = "text")]
     log_format: String,
     /// Where the server keeps its log lines and the queries it answered, a
     /// ChloeDB database of its own searched with SQL (POST /v1/logs/query,
@@ -452,17 +452,17 @@ struct Args {
     /// This server's name in the log stores' rows (`node`), as a
     /// coordinator shows its servers' logs (default: the host's name and
     /// the HTTP port).
-    #[arg(long, env = "STRATA_NODE_NAME")]
+    #[arg(long, env = "CHLOEDB_NODE_NAME")]
     node_name: Option<String>,
     /// The image repository whose versions the command center offers
     /// (`GET /v1/admin/kube/versions`) when no StrataCluster names one.
-    #[arg(long, env = "STRATA_IMAGE_REPOSITORY")]
+    #[arg(long, env = "CHLOEDB_IMAGE_REPOSITORY")]
     image_repository: Option<String>,
     /// Once told to stop (SIGTERM, Ctrl-C), serve on this many
     /// milliseconds with /readyz answering 503, so that a load balancer
     /// (a Kubernetes Service) sends no more clients before the server
     /// stops taking connections; then end the requests under way and stop.
-    #[arg(long, env = "STRATA_DRAIN_MS", default_value_t = 0)]
+    #[arg(long, env = "CHLOEDB_DRAIN_MS", default_value_t = 0)]
     drain_ms: u64,
     /// Do not count how often each document is retrieved and each key
     /// asked for (the index inspector's reads; counted in memory by
@@ -471,27 +471,27 @@ struct Args {
     no_read_stats: bool,
     /// The cluster's name, as the command center shows it (default: the
     /// StrataCluster, namespace/name, that runs a coordinator).
-    #[arg(long, env = "STRATA_CLUSTER_NAME")]
+    #[arg(long, env = "CHLOEDB_CLUSTER_NAME")]
     cluster_name: Option<String>,
     /// The cluster's environment ("production", "staging"...): the
     /// command center treats one starting with "prod", or none, as
     /// production.
-    #[arg(long, env = "STRATA_ENVIRONMENT")]
+    #[arg(long, env = "CHLOEDB_ENVIRONMENT")]
     environment: Option<String>,
     /// Where people reach this server's command center
     /// (https://strata.example.com), for links in alerts' webhooks.
-    #[arg(long, env = "STRATA_PUBLIC_URL")]
+    #[arg(long, env = "CHLOEDB_PUBLIC_URL")]
     public_url: Option<String>,
     /// The address other coordinators reach this coordinator's HTTP API at
     /// (http://10.0.0.5:7700); it names itself so to its shards, which tell
-    /// the others. Default: $STRATA_POD_IP and the --listen port, else the
+    /// the others. Default: $CHLOEDB_POD_IP and the --listen port, else the
     /// --listen address.
-    #[arg(long, env = "STRATA_PEER_URL")]
+    #[arg(long, env = "CHLOEDB_PEER_URL")]
     peer_url: Option<String>,
     /// A coordinator's Contain rules' file, which they are kept in across a
     /// restart. Default: contain.json beside --alerts' file (in memory
     /// without either).
-    #[arg(long, env = "STRATA_CONTAIN")]
+    #[arg(long, env = "CHLOEDB_CONTAIN")]
     contain: Option<PathBuf>,
     /// The share of queries that may fail on the server's side before
     /// fleet health says so (GET /v1/health/fleet).
@@ -503,15 +503,15 @@ struct Args {
     /// Proxies (addresses or networks, comma-separated: 10.0.0.0/8) whose
     /// X-Forwarded-For names the client in the audit log; others' is
     /// ignored.
-    #[arg(long, env = "STRATA_TRUST_PROXY", value_delimiter = ',')]
+    #[arg(long, env = "CHLOEDB_TRUST_PROXY", value_delimiter = ',')]
     trust_proxy: Vec<String>,
     /// An app the command center shows as a view, as name=url
     /// (crawler=http://127.0.0.1:7800; repeatable, or comma-separated in
-    /// $STRATA_APPS): the server forwards /v1/apps/<name>/... to it.
-    #[arg(long = "app", env = "STRATA_APPS", value_delimiter = ',')]
+    /// $CHLOEDB_APPS): the server forwards /v1/apps/<name>/... to it.
+    #[arg(long = "app", env = "CHLOEDB_APPS", value_delimiter = ',')]
     apps: Vec<String>,
     /// The token the server sends its apps (Authorization: Bearer).
-    #[arg(long, env = "STRATA_APP_TOKEN", hide_env_values = true)]
+    #[arg(long, env = "CHLOEDB_APP_TOKEN", hide_env_values = true)]
     app_token: Option<String>,
 }
 
@@ -532,21 +532,21 @@ enum Command {
         /// blip-image-captioning-base, whisper-small, clap-htsat-unfused) or a
         /// repository, owner/name.
         name: String,
-        /// Where to put it (default: --models, $STRATA_MODELS, or
+        /// Where to put it (default: --models, $CHLOEDB_MODELS, or
         /// ~/.local/share/strata/models).
-        #[arg(long, env = "STRATA_MODELS")]
+        #[arg(long, env = "CHLOEDB_MODELS")]
         models: Option<PathBuf>,
     },
     /// Serve the Model Context Protocol over stdin and stdout for an agent
-    /// such as Claude Code (`claude mcp add strata -- chloedb-server mcp
+    /// such as Claude Code (`claude mcp add chloedb -- chloedb-server mcp
     /// --url http://host:7700`): each message goes to the server's
     /// /v1/mcp with the key, whose scope decides what the agent may change.
     Mcp {
         /// The server's HTTP URL (a coordinator, or a single server).
-        #[arg(long, env = "STRATA_URL", default_value = "http://127.0.0.1:7700")]
+        #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
         url: String,
         /// The API key (or the server's token) to send as a bearer.
-        #[arg(long, env = "STRATA_KEY", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
         key: Option<String>,
         /// A CA certificate (PEM) to trust for an https URL, beside the
         /// system's.
@@ -579,7 +579,7 @@ enum Command {
         #[arg(long)]
         force: bool,
         /// The replica's --token.
-        #[arg(long, env = "STRATA_TOKEN", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_TOKEN", hide_env_values = true)]
         token: Option<String>,
     },
     /// Follow another cluster: copy its rows, tables and rank profiles into
@@ -596,7 +596,7 @@ enum Command {
         #[arg(long)]
         source: String,
         /// A key of the source of the feed scope (or above).
-        #[arg(long, env = "STRATA_FOLLOW_KEY", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_FOLLOW_KEY", hide_env_values = true)]
         source_key: Option<String>,
         /// A CA certificate (PEM) to check the source's TLS certificate by.
         #[arg(long)]
@@ -606,7 +606,7 @@ enum Command {
         target: String,
         /// This cluster's token (its --cluster-token, or the --token of a
         /// server of its own).
-        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_CLUSTER_TOKEN", hide_env_values = true)]
         target_token: Option<String>,
         /// A CA certificate (PEM) to check the target's TLS certificate by.
         #[arg(long)]
@@ -652,7 +652,7 @@ enum Command {
         /// The database, as postgres://user:password@host:5432/database
         /// (?sslmode=require and the like; PGPASSWORD gives a password the
         /// URL leaves out).
-        #[arg(long, env = "STRATA_POSTGRES_URL", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_POSTGRES_URL", hide_env_values = true)]
         source: String,
         /// A CA certificate (PEM) to check the database's TLS certificate by.
         #[arg(long)]
@@ -667,7 +667,7 @@ enum Command {
         #[arg(long)]
         target: String,
         /// ChloeDB's token (a server's --token, or a cluster's --cluster-token).
-        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_CLUSTER_TOKEN", hide_env_values = true)]
         target_token: Option<String>,
         /// A CA certificate (PEM) to check the target's TLS certificate by.
         #[arg(long)]
@@ -703,7 +703,7 @@ enum Command {
         #[arg(long)]
         target: String,
         /// The follower's cluster token.
-        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_CLUSTER_TOKEN", hide_env_values = true)]
         target_token: Option<String>,
         /// A CA certificate (PEM) to check the follower's TLS certificate by.
         #[arg(long)]
@@ -716,7 +716,7 @@ enum Command {
         #[arg(long)]
         source: Option<String>,
         /// An admin key of the source (or its token), which holds its writes.
-        #[arg(long, env = "STRATA_SOURCE_KEY", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_SOURCE_KEY", hide_env_values = true)]
         source_key: Option<String>,
         /// A CA certificate (PEM) to check the source's TLS certificate by.
         #[arg(long)]
@@ -752,7 +752,7 @@ enum Command {
         #[arg(long)]
         kube_api: Option<String>,
         /// A bearer token for --kube-api.
-        #[arg(long, env = "STRATA_KUBE_TOKEN", hide_env_values = true)]
+        #[arg(long, env = "CHLOEDB_KUBE_TOKEN", hide_env_values = true)]
         kube_token: Option<String>,
         /// The CA of --kube-api, PEM.
         #[arg(long)]
@@ -806,7 +806,7 @@ enum Command {
         #[arg(long)]
         plan: bool,
         /// Where embedded fields' models are (see `fetch-model`).
-        #[arg(long, env = "STRATA_MODELS")]
+        #[arg(long, env = "CHLOEDB_MODELS")]
         models: Option<PathBuf>,
         /// Create a new database as a directory of segment files.
         #[arg(long)]
@@ -854,7 +854,7 @@ fn main() {
     // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
     // clap and the code read the old names, so the new ones are copied over
     // before the runtime starts any thread.
-    chloedb::env::adopt_new_names();
+    chloedb::env::adopt_old_names();
     run();
 }
 
@@ -1204,7 +1204,7 @@ async fn run() {
             let l = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}")));
             let ip = l.local_addr().unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}"))).ip();
             if open && !ip.is_loopback() {
-                fail(&format!("{addr} is reachable beyond this machine: set --token (or $STRATA_TOKEN), make an API key, or pass --no-token to serve it open"));
+                fail(&format!("{addr} is reachable beyond this machine: set --token (or $CHLOEDB_TOKEN), make an API key, or pass --no-token to serve it open"));
             }
             (l, ip)
         }

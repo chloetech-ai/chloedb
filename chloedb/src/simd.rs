@@ -7,8 +7,8 @@
 //! aarch64 target that includes it) is a compile-time `true`, and the check
 //! folds away.
 //!
-//! `STRATA_SIMD=portable` turns every check off (the portable kernels run,
-//! as on a CPU without these features); `STRATA_SIMD=avx2` stops x86_64 at
+//! `CHLOEDB_SIMD=portable` turns every check off (the portable kernels run,
+//! as on a CPU without these features); `CHLOEDB_SIMD=avx2` stops x86_64 at
 //! AVX2. Features the build assumes stay on.
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -49,7 +49,7 @@ fn detect() -> u32 {
             f |= DOTPROD;
         }
     }
-    match crate::env::var("STRATA_SIMD").as_deref() {
+    match crate::env::var("CHLOEDB_SIMD").as_deref() {
         Ok("portable") | Ok("scalar") | Ok("none") => f = 0,
         Ok("avx2") => f &= AVX2 | BMI2 | SSSE3,
         _ => {}

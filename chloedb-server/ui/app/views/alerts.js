@@ -1315,7 +1315,7 @@ function routesDrawer() {
   const d = drawer({ title: "Routes", sub: "where alert messages go, by severity; each with its delivery status", wide: true, body });
   if (!m?.fleet) {
     clear(body, h("div", { class: "notice" }, m?.routes.length ? "This server posts every alert that fires or resolves to one webhook (--alert-webhook). It does not track deliveries, route by severity or send a test: a newer chloedb-server does." : "No webhook: this server tells nobody when an alert fires. Start it with --alert-webhook URL, or run a newer chloedb-server to set routes here."),
-      h("p", { class: "small muted" }, "A message reads: [strata FIRING critical] <rule> on <cluster>/<where>: <metric> = <value> (<op> <threshold>, <eval> over <window>). <description> Runbook: <url>, then a link to the alert's page."));
+      h("p", { class: "small muted" }, "A message reads: [chloedb FIRING critical] <rule> on <cluster>/<where>: <metric> = <value> (<op> <threshold>, <eval> over <window>). <description> Runbook: <url>, then a link to the alert's page."));
     return d;
   }
   let routes = m.routes.map((r) => ({ ...r, severities: r.severities || [] }));
@@ -1356,7 +1356,7 @@ function routesDrawer() {
         editing ? h("button", { class: "btn sm primary", onclick: save }, icon("check"), "Save routes")
           : h("button", { class: "btn sm", disabled: !adm, title: adm ? "" : Needs("admin"), onclick: () => { editing = true; routes = routes.map((y) => ({ ...y, shown: y.url, was: y.name, wasKind: y.kind || "webhook", url: "", key: "" })); draw(); } }, icon("edit"), "Edit routes")),
       h("p", { class: "small muted" }, "A PagerDuty route opens an incident through the Events API and its RESOLVED closes it; an Opsgenie route creates and closes an alert. Both name the alert with one key, chloedb/<cluster>/<rule>/<when it fired>, so a message sent twice (by two coordinators, or retried) makes one incident. A webhook gets the same key as dedup_key, and every try of a message carries an Idempotency-Key."),
-      h("p", { class: "small muted" }, "A rule with a route is sent only there; a rule without one goes to every route that takes its severity. A message reads: [strata FIRING critical] <rule> on <cluster>/<where>: <metric> = <value> (<op> <threshold>, <eval> over <window>). <description> Runbook: <url>, and a link to the alert's page when the server has --public-url. A RESOLVED message follows when it resolves, also when its rule is edited or deleted. The server shows only the start of each URL."));
+      h("p", { class: "small muted" }, "A rule with a route is sent only there; a rule without one goes to every route that takes its severity. A message reads: [chloedb FIRING critical] <rule> on <cluster>/<where>: <metric> = <value> (<op> <threshold>, <eval> over <window>). <description> Runbook: <url>, and a link to the alert's page when the server has --public-url. A RESOLVED message follows when it resolves, also when its rule is edited or deleted. The server shows only the start of each URL."));
   };
   async function save() {
     // The server shows a saved URL cut to its host ("https://hooks.slack.com/..."): sending that back would

@@ -219,5 +219,5 @@ async fn the_threads_are_listed_with_their_cpu_time() {
     }
     assert!(ts.iter().any(|t| t["name"].as_str().unwrap().starts_with("tokio")), "{j}");
     // The heap's watcher keeps the peak.
-    assert!(ts.iter().any(|t| t["name"] == "strata-heap"), "{j}");
+    assert!(ts.iter().any(|t| t["name"] == "chloedb-heap"), "{j}");
 }

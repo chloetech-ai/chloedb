@@ -1,11 +1,11 @@
 // Builds the native addon with cargo and puts it beside index.js as
-// strata.node, which index.js loads.
+// chloedb.node, which index.js loads.
 //
 //   node scripts/build.mjs                 # release (link-time optimised)
 //   node scripts/build.mjs --profile ci    # CI's: optimised, built faster
 //   node scripts/build.mjs --features bert # more of ChloeDB's features
 //   node scripts/build.mjs --target aarch64-apple-darwin   # for another target
-//   node scripts/build.mjs --if-missing    # only when strata.node is missing (npm install)
+//   node scripts/build.mjs --if-missing    # only when chloedb.node is missing (npm install)
 //
 // It needs Rust (https://rustup.rs) and a C compiler; cargo's target
 // directory is $CARGO_TARGET_DIR, else target/ here.
@@ -17,7 +17,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const out = join(root, "strata.node");
+const out = join(root, "chloedb.node");
 const args = process.argv.slice(2);
 
 function option(name, fallback) {
@@ -45,6 +45,6 @@ if (r.status !== 0) process.exit(r.status ?? 1);
 const target = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(root, "target");
 const dir = join(target, ...(triple ? [triple] : []), profile === "dev" ? "debug" : profile);
 const os = triple ? (triple.includes("apple") ? "darwin" : triple.includes("windows") ? "win32" : "linux") : process.platform;
-const lib = { darwin: "libstrata_node.dylib", win32: "strata_node.dll" }[os] ?? "libstrata_node.so";
+const lib = { darwin: "libchloedb_node.dylib", win32: "chloedb_node.dll" }[os] ?? "libchloedb_node.so";
 copyFileSync(join(dir, lib), out);
 console.error(`chloedb-js: built ${out}`);

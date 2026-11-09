@@ -2,7 +2,7 @@
 //! (`chloedb-server follow-postgres`), against a real Postgres: a server
 //! started for the test from the binaries installed (`initdb` and
 //! `postgres` on the PATH, or in /usr/lib/postgresql/*/bin and Homebrew's
-//! places), or the one `STRATA_TEST_POSTGRES_URL` names (a superuser's
+//! places), or the one `CHLOEDB_TEST_POSTGRES_URL` names (a superuser's
 //! URL, of a server with `wal_level = logical`). Without either the tests
 //! say so and pass, but on GitHub's Linux runners, which have Postgres.
 //!
@@ -91,13 +91,13 @@ const PASSWORD: &str = "s3cret pass";
 
 /// A Postgres to test with, or `None` (said) when there is none here.
 async fn postgres() -> Option<Pg> {
-    if let Ok(url) = std::env::var("STRATA_TEST_POSTGRES_URL") {
+    if let Ok(url) = chloedb::env::var("CHLOEDB_TEST_POSTGRES_URL") {
         return Some(Pg { url, child: None, _dir: None });
     }
     let Some(bin) = bin_dir() else {
         let required = std::env::var("GITHUB_ACTIONS").is_ok() && cfg!(target_os = "linux");
         assert!(!required, "GitHub's Linux runners have Postgres: initdb not found");
-        eprintln!("no Postgres here (initdb not found, STRATA_TEST_POSTGRES_URL not set): skipping");
+        eprintln!("no Postgres here (initdb not found, CHLOEDB_TEST_POSTGRES_URL not set): skipping");
         return None;
     };
     let dir = tempfile::tempdir().unwrap();

@@ -82,7 +82,7 @@ async fn agents_list_query_check_and_change_tables_within_their_keys_scope() {
     // initialize: the version asked for when spoken, the tools and resources.
     let init = rpc(&base, &read, "initialize", json!({"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})).await;
     assert_eq!(init["protocolVersion"], "2025-03-26");
-    assert_eq!(init["serverInfo"]["name"], "strata");
+    assert_eq!(init["serverInfo"]["name"], "chloedb");
     assert!(init["capabilities"]["tools"].is_object() && init["capabilities"]["resources"].is_object(), "{init}");
     assert!(init["instructions"].as_str().unwrap().contains("list_tables"));
     let newest = rpc(&base, &read, "initialize", json!({"protocolVersion": "1999-01-01"})).await;
@@ -222,7 +222,7 @@ async fn next(out: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::Ch
 }
 
 /// `chloedb-server mcp` speaks MCP over stdio: one message a line, sent to
-/// the server with the key from STRATA_KEY.
+/// the server with the key from CHLOEDB_KEY.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_stdio_bridge_sends_each_line_to_the_server() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -230,7 +230,7 @@ async fn the_stdio_bridge_sends_each_line_to_the_server() {
     let (base, read, _, _) = start(dir.path()).await;
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_chloedb-server"))
         .args(["mcp", "--url", &base])
-        .env("STRATA_KEY", &read)
+        .env("CHLOEDB_KEY", &read)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

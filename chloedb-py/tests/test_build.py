@@ -1,12 +1,12 @@
-"""Queries built from Python values (`strata.build`): each runs as the SQL
+"""Queries built from Python values (`chloedb.build`): each runs as the SQL
 it stands for, names any field, and takes values as they are."""
 
 import datetime
 
 import pytest
 
-import strata
-from strata import at_least, bm25, case, clamp, coalesce, col, count, count_true, exp, features, greatest, least, lit, ln, log, match, maxsim, minmax, rank, ranked, rrf, score, similarity, sigmoid, sqrt, tmm, zscore
+import chloedb
+from chloedb import at_least, bm25, case, clamp, coalesce, col, count, count_true, exp, features, greatest, least, lit, ln, log, match, maxsim, minmax, rank, ranked, rrf, score, similarity, sigmoid, sqrt, tmm, zscore
 from conftest import BOOKS, book
 
 
@@ -56,7 +56,7 @@ def test_bm25_weighs_requires_and_excludes_words(db):
     plain = same(db, t.select("id", score()).order_by(bm25("description", q, syntax="plain")).limit(20),
                  f"SELECT id, score() FROM books ORDER BY bm25(description, '{q}', syntax => 'plain') DESC LIMIT 20")
     assert plain.rows != r.rows
-    with pytest.raises(strata.StrataError, match="'query' or 'plain'"):
+    with pytest.raises(chloedb.ChloeDBError, match="'query' or 'plain'"):
         db.run(t.select("id").order_by(bm25("description", q, syntax="lucene")).limit(5))
 
 
@@ -72,7 +72,7 @@ def test_min_asks_for_some_of_the_words(db):
          f"SELECT id FROM books WHERE MATCH(description, '{q}', min => 3) ORDER BY year LIMIT 100")
     same(db, t.select("id").where(match("description", "(dragon ship river)@2 -secret")).order_by(col("year")).limit(100),
          "SELECT id FROM books WHERE MATCH(description, '(dragon ship river)@2 -secret') ORDER BY year LIMIT 100")
-    with pytest.raises(strata.StrataError, match="count or a percentage"):
+    with pytest.raises(chloedb.ChloeDBError, match="count or a percentage"):
         bm25("description", q, min=1.5)
 
 
@@ -92,9 +92,9 @@ def test_at_least_and_count_true_run_as_their_sql(db):
     r = same(db, t.select("id", count_true(*conds).alias("k")).order_by(bm25("description", "river") * (1 + count_true(*conds))).limit(20),
              f"SELECT id, count_true({sql}) AS k FROM books ORDER BY bm25(description, 'river') * (1 + count_true({sql})) DESC LIMIT 20")
     assert len(r) == 20 and all(0 <= k <= 4 for _, k in r.rows) and len({k for _, k in r.rows}) > 1
-    with pytest.raises(strata.StrataError, match="a count .2. or a percentage"):
+    with pytest.raises(chloedb.ChloeDBError, match="a count .2. or a percentage"):
         at_least("120%", *conds)
-    with pytest.raises(strata.StrataError, match="one or more conditions"):
+    with pytest.raises(chloedb.ChloeDBError, match="one or more conditions"):
         count_true()
 
 
@@ -111,9 +111,9 @@ def test_guards_run_as_their_sql(db):
         q = t.select("id", score()).order_by(bm25("description", "dragon ship river winter", min=1, **opts)).limit(10)
         same(db, q, f"SELECT id, score() FROM books ORDER BY bm25(description, 'dragon ship river winter', min => 1, {text}) DESC LIMIT 10")
     assert len(r) > 0
-    with pytest.raises(strata.StrataError, match="relax its min, which it needs"):
+    with pytest.raises(chloedb.ChloeDBError, match="relax its min, which it needs"):
         match("description", "dragon ship", max_rows=10)
-    with pytest.raises(strata.StrataError, match="a count of rows"):
+    with pytest.raises(chloedb.ChloeDBError, match="a count of rows"):
         at_least(1, *conds, max_rows=2.5)
     guarded = at_least(1, *conds, max_rows=40)
     for q, msg in [
@@ -122,7 +122,7 @@ def test_guards_run_as_their_sql(db):
         (t.select("id").where(guarded, match("description", "dragon ship", min=1, max_rows=5)), "one guard"),
         (t.select("id").order_by(bm25("description", "dragon")).rerank(bm25("description", "ship river", min=1, max_rows=5), 20), "not a rerank phase"),
     ]:
-        with pytest.raises(strata.StrataError, match=msg):
+        with pytest.raises(chloedb.ChloeDBError, match=msg):
             db.run(q)
 
 
@@ -169,11 +169,11 @@ def test_ranking_expressions_run_as_their_sql(db):
         same(db, t.select("id", score()).order_by(q).limit(8), f"SELECT id, score() FROM books ORDER BY {sql} DESC LIMIT 8")
     with pytest.raises(TypeError):
         col("rating") + "x"
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         tmm(col("rating"), hi=5)
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         tmm(col("rating"), lo=5, hi=5)
-    with pytest.raises(strata.StrataError, match="lo"):
+    with pytest.raises(chloedb.ChloeDBError, match="lo"):
         db.run(t.select("id").order_by(tmm(col("rating"))).limit(3))
 
 
@@ -193,9 +193,9 @@ def test_rerank_phases_run_as_their_sql(db):
         same(db, q, sql)
     phases = first.rerank(col("rating"), 40).rerank(rank(col("year")), 20).rerank(col("rating"), 10).plan()["root"]["input"]["phases"]
     assert [p.get("global", False) for p in phases] == [False, True, True]
-    with pytest.raises(strata.StrataError, match="at least one row"):
+    with pytest.raises(chloedb.ChloeDBError, match="at least one row"):
         first.rerank(col("rating"), 0)
-    with pytest.raises(strata.StrataError, match="follow an order_by"):
+    with pytest.raises(chloedb.ChloeDBError, match="follow an order_by"):
         t.select("id").rerank(col("rating"), 10).plan()
 
 
@@ -223,11 +223,11 @@ def test_features_run_as_their_sql(db):
         got, want = db.run(q), db.query(sql)
         assert got.columns == names, sql
         assert got.rows == want.rows, sql
-    with pytest.raises(strata.StrataError, match="no order_by"):
+    with pytest.raises(chloedb.ChloeDBError, match="no order_by"):
         t.select("id", features()).plan()
-    with pytest.raises(strata.StrataError, match="not of groups"):
+    with pytest.raises(chloedb.ChloeDBError, match="not of groups"):
         t.select("genres", count(), features()).group_by("genres").plan()
-    with pytest.raises(strata.StrataError, match="against each other"):
+    with pytest.raises(chloedb.ChloeDBError, match="against each other"):
         db.run(t.select("id", minmax(col("rating")).alias("m")).order_by(col("rating").desc()).limit(3))
 
 
@@ -258,7 +258,7 @@ def test_distinct_on(db):
     r = same(db, t.select("id").distinct_on("rating", col("year") % 2).order_by(col("year")),
              "SELECT DISTINCT ON (rating, year % 2) id FROM books ORDER BY year")
     assert len(r) == 40  # a rating fixes the parity of the year
-    with pytest.raises(strata.StrataError, match="distinct_on"):
+    with pytest.raises(chloedb.ChloeDBError, match="distinct_on"):
         t.select("genres", count()).group_by("genres").distinct_on("genres").plan()
 
 
@@ -277,7 +277,7 @@ def test_max_per(db):
     assert t.select("id").order_by(col("year")).max_per(1, "rating").limit(3).plan()["features"] == ["operators", "distinct_on"]
     for bad, msg in [(lambda: t.select("id").max_per(2, "rating").limit(3), "order_by"), (lambda: t.select("id").order_by(col("year")).max_per(2, "genres"), "multi-valued"),
                      (lambda: t.select("id").order_by(col("year")).max_per(0, "rating"), "1 or more")]:
-        with pytest.raises(strata.StrataError, match=msg):
+        with pytest.raises(chloedb.ChloeDBError, match=msg):
             bad().plan()
 
 
@@ -292,7 +292,7 @@ def test_values_need_no_quoting(tmp_path):
         {"name": "when", "type": "timestamp"},
         {"name": "done", "type": "bool"},
     ]}
-    with strata.Database.create(tmp_path / "n.strata", schema) as db:
+    with chloedb.Database.create(tmp_path / "n.strata", schema) as db:
         db.insert([
             {"id": "a", "order": 1, "doc no": "O'Brien \"7\"", "say \"hi\"": "it's a 'quoted' word", "when": "2026-10-01T00:00:00Z", "done": True},
             {"id": "b", "order": 2, "doc no": "x", "say \"hi\"": "plain words", "when": "2026-10-20T12:00:00Z", "done": False},
@@ -343,27 +343,27 @@ def test_maxsim_runs_as_its_sql(db):
     assert one.rows == t.select("id").order_by(similarity("emb", vs[0])).limit(3).run().rows
     fused = t.select("id").order_by(rrf(bm25("description", "dragon"), maxsim("emb", vs))).limit(5)
     assert fused.run().rows == db.query("SELECT id FROM books ORDER BY rrf(bm25(description, 'dragon'), maxsim(emb, (:a, :b, :c))) DESC LIMIT 5", {k: {"embed": x} for k, x in zip("abc", texts)}).rows
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         t.order_by(maxsim("title", vs)).plan()
 
 
 def test_mistakes_are_errors(db):
     t = db.table()
-    with pytest.raises(strata.StrataError, match="no field 'nope'"):
+    with pytest.raises(chloedb.ChloeDBError, match="no field 'nope'"):
         t.where(col("nope") == 1).plan()
     with pytest.raises(TypeError, match="&, \\| and ~"):
         t.where(col("year") > 1950 and col("year") < 2000)
     with pytest.raises(TypeError):
         t.where(1950 < col("year") < 2000)
-    with pytest.raises(strata.StrataError, match="is_null"):
+    with pytest.raises(chloedb.ChloeDBError, match="is_null"):
         t.where(col("year") == None).plan()  # noqa: E711
-    with pytest.raises(strata.StrataError, match="group_by"):
+    with pytest.raises(chloedb.ChloeDBError, match="group_by"):
         t.select("id").having(count() > 1).plan()
-    with pytest.raises(strata.StrataError, match="not a group key"):
+    with pytest.raises(chloedb.ChloeDBError, match="not a group key"):
         t.select("id", count()).group_by("genres").plan()
-    with pytest.raises(strata.StrataError, match="embed the text"):
+    with pytest.raises(chloedb.ChloeDBError, match="embed the text"):
         t.order_by(similarity("emb", "dragon")).plan()
-    with pytest.raises(strata.StrataError, match="no table"):
+    with pytest.raises(chloedb.ChloeDBError, match="no table"):
         db.table("other")
     with pytest.raises(TypeError):
         t.where(col("year") == object()).plan()

@@ -35,9 +35,9 @@ Before a device trusts its slice it asks `GET /v1/slices/<table>/status` (every 
 ## From Python
 
 ```python
-import strata
+import chloedb
 
-near = strata.nearby("http://127.0.0.1:7700", "places", "./slice")
+near = chloedb.nearby("http://127.0.0.1:7700", "places", "./slice")
 near.move_to(40.7484, -73.9857)       # fetches the tiles around the user
 r = near.search("pizza", k=10, d0=1000)
 print(r.where, r.why)                 # "device" or "server", and why
@@ -46,7 +46,7 @@ for row in r:
 near.close()
 ```
 
-`strata.nearby(url, table, dir, token=None, reach=2, status_every=30, max_lag=0, report_every=20)`: `reach` is how many tiles each way it holds (2 is a 5 by 5 square), `dir` a cache it may delete. The result is a `Result` with `where`, `why`, `bound`, `edge_m`, `device_ms`, `server_ms`, and `ask`, the request that asks the server.
+`chloedb.nearby(url, table, dir, token=None, reach=2, status_every=30, max_lag=0, report_every=20)`: `reach` is how many tiles each way it holds (2 is a 5 by 5 square), `dir` a cache it may delete. The result is a `Result` with `where`, `why`, `bound`, `edge_m`, `device_ms`, `server_ms`, and `ask`, the request that asks the server.
 
 ## From JavaScript
 
@@ -76,7 +76,7 @@ curl -X POST localhost:7700/v1/admin/slices -d '{"table": "tracks", "vector": "e
 The manifest holds each cluster's centre, radius, angular radius and longest and shortest vector, from which a device bounds the most a row of a cluster it lacks could score. In many dimensions that bound is loose (a cluster's rows point every way from its centre, so none comes near the worst case), and on its own it proves few answers. So the slice also holds `codes.bin.gz`: every row's vector as one byte a dimension (64 bytes a row for 64 dimensions, a sixteenth of the rows' JSON), which bounds each row within half a step a dimension. A device that fetched the codes proves most searches near its user's taste, and when it cannot, the answer names the few clusters (`need`) whose rows could still beat its k-th. Once it holds them its answer is proved, so the helpers fetch them when they come to at most `refine` bytes (2 MB by default) and answer on the device.
 
 ```python
-tracks = strata.nearby("http://127.0.0.1:7700", "tracks", "./tracks")
+tracks = chloedb.nearby("http://127.0.0.1:7700", "tracks", "./tracks")
 tracks.focus(taste, rows=20_000)      # the clusters nearest the taste, up to 20,000 rows
 r = tracks.similar(taste, k=10)       # or any vector
 print(r.where, r.why, r.fetched)      # "device", "proved", clusters it fetched to prove it

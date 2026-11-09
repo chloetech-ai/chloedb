@@ -22,7 +22,7 @@ function family(name) {
   return "var(--s7)";
 }
 
-const LEGEND = [["var(--s1)", "strata"], ["var(--s3)", "chloedb-server"], ["var(--s4)", "async runtime, HTTP, gRPC"], ["var(--muted)", "standard library"], ["var(--s5)", "serde"], ["var(--s7)", "other crates"], ["var(--s6)", "system and C library"], ["var(--s2)", "thread"]];
+const LEGEND = [["var(--s1)", "chloedb"], ["var(--s3)", "chloedb-server"], ["var(--s4)", "async runtime, HTTP, gRPC"], ["var(--muted)", "standard library"], ["var(--s5)", "serde"], ["var(--s7)", "other crates"], ["var(--s6)", "system and C library"], ["var(--s2)", "thread"]];
 
 /**
  * How many of a stack's first frames only start its thread (the system's

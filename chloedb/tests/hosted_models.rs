@@ -195,8 +195,8 @@ fn rows(n: usize, from: usize) -> Vec<(String, String, String)> {
 fn writes_and_queries_by_an_openai_compatible_server() {
     let mock = Mock::start(|r, _| answer("openai", &texts_of("openai", &r.body), 16));
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("STRATA_TEST_HOSTED_KEY_1", "sk-test-1");
-    let config = json!({"api": "openai", "url": format!("{}/v1/embeddings", mock.url), "model": "bge-m3", "dim": 16, "key_env": "STRATA_TEST_HOSTED_KEY_1", "batch": 64, "document_prefix": "passage: ", "query_prefix": "query: ", "headers": {"x-team": "search"}});
+    std::env::set_var("CHLOEDB_TEST_HOSTED_KEY_1", "sk-test-1");
+    let config = json!({"api": "openai", "url": format!("{}/v1/embeddings", mock.url), "model": "bge-m3", "dim": 16, "key_env": "CHLOEDB_TEST_HOSTED_KEY_1", "batch": 64, "document_prefix": "passage: ", "query_prefix": "query: ", "headers": {"x-team": "search"}});
     let models = models(dir.path(), "gpu-box", config);
     let db = open(dir.path(), "gpu-box", 16, &models);
 
@@ -268,11 +268,11 @@ fn a_model_that_keeps_failing_fails_the_write() {
 fn a_refused_key_fails_at_once_without_showing_it() {
     let mock = Mock::start(|_, _| (401, Vec::new(), json!({"error": {"message": "Incorrect API key provided"}}).to_string()));
     let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("STRATA_TEST_HOSTED_KEY_2", "sk-very-secret");
-    let models = models(dir.path(), "m", json!({"api": "openai", "url": format!("{}/v1/embeddings", mock.url), "dim": 16, "key_env": "STRATA_TEST_HOSTED_KEY_2"}));
+    std::env::set_var("CHLOEDB_TEST_HOSTED_KEY_2", "sk-very-secret");
+    let models = models(dir.path(), "m", json!({"api": "openai", "url": format!("{}/v1/embeddings", mock.url), "dim": 16, "key_env": "CHLOEDB_TEST_HOSTED_KEY_2"}));
     let db = open(dir.path(), "m", 16, &models);
     let m = insert(&db, &rows(3, 0)).unwrap_err().to_string();
-    assert!(m.contains("401") && m.contains("Incorrect API key") && m.contains("$STRATA_TEST_HOSTED_KEY_2"), "{m}");
+    assert!(m.contains("401") && m.contains("Incorrect API key") && m.contains("$CHLOEDB_TEST_HOSTED_KEY_2"), "{m}");
     assert!(!m.contains("sk-very-secret"), "{m}");
     assert_eq!(mock.seen().len(), 1);
     assert_eq!(count(&db), 0);
@@ -321,7 +321,7 @@ fn texts_too_long_for_the_model_are_cut_and_sent_again() {
 
 #[test]
 fn each_api_in_its_own_shape() {
-    for (api, path, key_var, key_header) in [("cohere", "/v2/embed", "STRATA_TEST_COHERE", "authorization"), ("voyage", "/v1/embeddings", "STRATA_TEST_VOYAGE", "authorization"), ("gemini", "/v1beta/models/gemini-embedding-001:batchEmbedContents", "STRATA_TEST_GEMINI", "x-goog-api-key"), ("jina", "/v1/embeddings", "STRATA_TEST_JINA", "authorization"), ("ollama", "/api/embed", "STRATA_TEST_OLLAMA", "authorization")] {
+    for (api, path, key_var, key_header) in [("cohere", "/v2/embed", "CHLOEDB_TEST_COHERE", "authorization"), ("voyage", "/v1/embeddings", "CHLOEDB_TEST_VOYAGE", "authorization"), ("gemini", "/v1beta/models/gemini-embedding-001:batchEmbedContents", "CHLOEDB_TEST_GEMINI", "x-goog-api-key"), ("jina", "/v1/embeddings", "CHLOEDB_TEST_JINA", "authorization"), ("ollama", "/api/embed", "CHLOEDB_TEST_OLLAMA", "authorization")] {
         let (model, dim) = match api {
             "gemini" => ("gemini-embedding-001", 768),
             "jina" => ("jina-embeddings-v3", 1024),
@@ -368,11 +368,11 @@ fn each_api_in_its_own_shape() {
 fn a_hosted_model_without_its_key_does_not_open() {
     let dir = tempfile::tempdir().unwrap();
     // Not a key Strata reads, so no test sets it.
-    let models = models(dir.path(), "m", json!({"api": "openai", "url": "http://127.0.0.1:9/v1/embeddings", "dim": 16, "key_env": "STRATA_TEST_UNSET_KEY"}));
+    let models = models(dir.path(), "m", json!({"api": "openai", "url": "http://127.0.0.1:9/v1/embeddings", "dim": 16, "key_env": "CHLOEDB_TEST_UNSET_KEY"}));
     let db = Db::create(&dir.path().join("h.strata"), schema("m", 16), DbOptions::default()).unwrap();
     let failed = db.open_embedders(&models);
     assert_eq!(failed.len(), 1);
-    assert!(failed[0].1.to_string().contains("$STRATA_TEST_UNSET_KEY is not set"), "{}", failed[0].1);
+    assert!(failed[0].1.to_string().contains("$CHLOEDB_TEST_UNSET_KEY is not set"), "{}", failed[0].1);
     // A model Strata knows opens for a field of its size, and for fewer
     // dimensions when it can make them.
     let models = dir.path().join("none");

@@ -545,7 +545,7 @@ async fn a_follower_behind_the_log_catches_up() {
     assert!(m.contains_key("copied") && m.contains_key("0/since") && m.contains_key("1/since"), "{m:?}");
     assert!(m.contains_key("whole/events") && m.contains_key("whole/notes") && m.contains_key("whole/fresh"), "{m:?}");
     let text = chloedb_server::http_client().build().unwrap().get(format!("{url_b}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(text.contains("strata_follow_lag_seconds{name=\"east\"}") && text.contains("strata_follow_behind_transactions{name=\"east\"}"), "{text}");
+    assert!(text.contains("chloedb_follow_lag_seconds{name=\"east\"}") && text.contains("chloedb_follow_behind_transactions{name=\"east\"}"), "{text}");
 
     // It follows on.
     sql(&svc_a, "INSERT INTO notes (id, body, stars) VALUES (7, 'after the catch-up', 2)").await;

@@ -2,7 +2,7 @@
 //
 // `Database` opens a ChloeDB file (or a directory of segment files) in this
 // process, with no server, as a SQLite library opens a SQLite file: Node,
-// Bun and Deno load the native addon (strata.node) that runs it. `Client`
+// Bun and Deno load the native addon (chloedb.node) that runs it. `Client`
 // (client.js) talks to a running chloedb-server over HTTP instead, from any
 // JavaScript runtime with fetch. Both answer queries with the same
 // `Result` and write rows the same way, so code can move from one to the
@@ -34,7 +34,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { Nearby } from "./nearby.js";
-import { StrataError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
 export { ChloeDBError, StrataError, Result } from "./common.js";
 export { Client, connect } from "./client.js";
@@ -42,22 +42,22 @@ export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The native addon: `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`), else strata.node beside this
+/** The native addon: `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`), else chloedb.node beside this
  * file (`npm run build` makes it). */
 function load() {
-  const path = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON || join(here, "strata.node");
+  const path = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON || join(here, "chloedb.node");
   if (!existsSync(path)) {
-    throw new StrataError(`the ChloeDB addon is not built: ${path} is missing (run \`npm run build\` in chloedb-js, which needs Rust and a C compiler)`);
+    throw new ChloeDBError(`the ChloeDB addon is not built: ${path} is missing (run \`npm run build\` in chloedb-js, which needs Rust and a C compiler)`);
   }
   return createRequire(import.meta.url)(path);
 }
 
 const native = load();
 
-/** A native error (a failed call) as a StrataError. */
+/** A native error (a failed call) as a ChloeDBError. */
 function failed(e) {
-  if (e instanceof StrataError) return e;
-  return new StrataError(e?.message ?? String(e), { cause: e });
+  if (e instanceof ChloeDBError) return e;
+  return new ChloeDBError(e?.message ?? String(e), { cause: e });
 }
 
 async function callStatic(op, args) {
@@ -152,7 +152,7 @@ export class Database extends Searchable {
    * Creates a database at `path` with `schema` (an object, JSON text, or
    * the path of a JSON file; the short form or the long one). `directory`
    * keeps it as a directory of segment files instead of one file. `models`
-   * is where embedded fields' models are (default $STRATA_MODELS or
+   * is where embedded fields' models are (default $CHLOEDB_MODELS or
    * ~/.local/share/strata/models). `threads` is how many cores vector
    * indexes build on and each query searches segments on (default: every
    * core).
@@ -423,7 +423,7 @@ export class Database extends Searchable {
  */
 export async function open(path, { schema, directory = false, models, threads, readOnly = false } = {}) {
   if (existsSync(paths(path)) || readOnly) return Database.open(path, { models, threads, readOnly });
-  if (schema == null) throw new StrataError(`${paths(path)} does not exist: pass a schema to create it`);
+  if (schema == null) throw new ChloeDBError(`${paths(path)} does not exist: pass a schema to create it`);
   return Database.create(path, schema, { directory, models, threads });
 }
 

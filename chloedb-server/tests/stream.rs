@@ -186,7 +186,7 @@ async fn a_replayed_stream_applies_each_event_once() {
 
     // Each event's lag was measured once, when its rows became visible.
     let m = chloedb_server::http_client().build().unwrap().get(format!("{url}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(m.contains("strata_stream_lag_seconds_count 4002\n"), "{}", m.lines().filter(|l| l.contains("lag")).collect::<Vec<_>>().join("\n"));
+    assert!(m.contains("chloedb_stream_lag_seconds_count 4002\n"), "{}", m.lines().filter(|l| l.contains("lag")).collect::<Vec<_>>().join("\n"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

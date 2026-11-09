@@ -267,7 +267,8 @@ impl Cluster {
         }
         chown_r(&p.dir, p.uid);
         let mut cmd = Command::new(&l.bin);
-        cmd.env("HOME", &p.dir).env_remove("STRATA_TOKEN").env_remove("STRATA_CLUSTER_TOKEN");
+        cmd.env("HOME", &p.dir).env_remove("CHLOEDB_TOKEN").env_remove("CHLOEDB_CLUSTER_TOKEN");
+        cmd.env_remove("STRATA_TOKEN").env_remove("STRATA_CLUSTER_TOKEN");
         cmd.args(["--listen", &format!("127.0.0.1:{}", p.http), "--log", "info", "--node-name", &p.name, "--cluster-name", "chaos", "--environment", "chaos"]);
         cmd.args(["--cluster-token", p.cluster_token.as_deref().unwrap_or(&l.cluster_token)]);
         match &p.kind {

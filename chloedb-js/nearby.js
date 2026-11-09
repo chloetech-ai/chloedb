@@ -40,7 +40,7 @@ import { Buffer } from "node:buffer";
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 
-import { Result, StrataError, decode } from "./common.js";
+import { Result, ChloeDBError, decode } from "./common.js";
 
 const REASONS = ["proved", "no_match", "short", "bound", "stale"];
 
@@ -101,13 +101,13 @@ export class Nearby {
       try {
         text = JSON.parse(text).error ?? text;
       } catch {}
-      throw new StrataError(`${method} ${path}: ${r.status}: ${text}`, { status: r.status });
+      throw new ChloeDBError(`${method} ${path}: ${r.status}: ${text}`, { status: r.status });
     }
     return bytes;
   }
 
   get #d() {
-    if (!this.#dev) throw new StrataError("the slice is closed");
+    if (!this.#dev) throw new ChloeDBError("the slice is closed");
     return this.#dev;
   }
 
@@ -198,7 +198,7 @@ export class Nearby {
    * the server's. */
   async search(q, { k = 10, d0 = 1000, lat, lon } = {}) {
     if (lat === undefined || lon === undefined) {
-      if (!this.position) throw new StrataError("moveTo(lat, lon) first, or pass lat and lon");
+      if (!this.position) throw new ChloeDBError("moveTo(lat, lon) first, or pass lat and lon");
       [lat, lon] = this.position;
     }
     return this.#answer(() => this.#d.search(q, lat, lon, k, d0));

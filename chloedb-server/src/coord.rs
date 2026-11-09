@@ -1566,21 +1566,21 @@ impl Coordinator {
         let now = self.now_ms();
         let avoided = t.replicas.iter().flatten().filter(|r| r.avoid_until.load(Ordering::Relaxed) > now).count();
         vec![
-            Family { name: "strata_shard_calls_total", ty: "counter", help: "Calls to a shard (its replicas, hedges and retries together), by outcome: ok, error, timeout, client_deadline (the client's own deadline, below the server's, passed).", values: calls },
-            Family::one("strata_shard_retries_total", "counter", "Calls asked of another replica after one failed.", self.retries.load(Ordering::Relaxed) as f64),
-            Family::one("strata_shard_hedges_total", "counter", "Calls asked of another replica too after the first had not answered within --hedge-ms.", self.hedges.load(Ordering::Relaxed) as f64),
-            Family::one("strata_replicas_avoided", "gauge", "Replicas asked last for now, after they failed or were outrun.", avoided as f64),
-            Family::one("strata_shard_protocol", "gauge", "The protocol reads speak to the shards: the oldest a replica speaks.", t.protocol() as f64),
-            Family::one("strata_slot_epoch", "gauge", "The epoch of the slot map writes are routed by; 0 while they go by the hash before slots.", t.epoch() as f64),
-            Family::one("strata_fetch_queries_total", "counter", "Queries answered by query then fetch.", self.fetches.load(Ordering::Relaxed) as f64),
-            Family::one("strata_fetch_lost_rows_total", "counter", "Rows of query-then-fetch pages that no fetch found: their shard did not answer the fetch (partial answers), or another replica did, without them.", self.fetch_lost.load(Ordering::Relaxed) as f64),
+            Family { name: "chloedb_shard_calls_total", ty: "counter", help: "Calls to a shard (its replicas, hedges and retries together), by outcome: ok, error, timeout, client_deadline (the client's own deadline, below the server's, passed).", values: calls },
+            Family::one("chloedb_shard_retries_total", "counter", "Calls asked of another replica after one failed.", self.retries.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_shard_hedges_total", "counter", "Calls asked of another replica too after the first had not answered within --hedge-ms.", self.hedges.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replicas_avoided", "gauge", "Replicas asked last for now, after they failed or were outrun.", avoided as f64),
+            Family::one("chloedb_shard_protocol", "gauge", "The protocol reads speak to the shards: the oldest a replica speaks.", t.protocol() as f64),
+            Family::one("chloedb_slot_epoch", "gauge", "The epoch of the slot map writes are routed by; 0 while they go by the hash before slots.", t.epoch() as f64),
+            Family::one("chloedb_fetch_queries_total", "counter", "Queries answered by query then fetch.", self.fetches.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_fetch_lost_rows_total", "counter", "Rows of query-then-fetch pages that no fetch found: their shard did not answer the fetch (partial answers), or another replica did, without them.", self.fetch_lost.load(Ordering::Relaxed) as f64),
             Family {
-                name: "strata_stats_cache_total",
+                name: "chloedb_stats_cache_total",
                 ty: "counter",
                 help: "BM25 queries over shards by where their statistics came from: hit (kept by the coordinator, no statistics round), miss (a statistics round), stale (a copy had moved on: sent again with a round).",
                 values: [("hit", &self.stats.hits), ("miss", &self.stats.misses), ("stale", &self.stats.stale)].iter().map(|(o, n)| (format!("outcome=\"{o}\""), n.load(Ordering::Relaxed) as f64)).collect(),
             },
-            Family::one("strata_stats_cache_terms", "gauge", "Terms whose BM25 statistics the coordinator keeps, over every shard copy (--stats-cache-terms each).", self.stats.terms() as f64),
+            Family::one("chloedb_stats_cache_terms", "gauge", "Terms whose BM25 statistics the coordinator keeps, over every shard copy (--stats-cache-terms each).", self.stats.terms() as f64),
         ]
     }
 
@@ -3283,7 +3283,7 @@ impl Coordinator {
             Ok(r) => r?.into_inner(),
         };
         if a.folded {
-            let file = if a.kind == crate::profiling::Kind::Heap { "strata-heap.folded" } else { "strata-cpu.folded" };
+            let file = if a.kind == crate::profiling::Kind::Heap { "chloedb-heap.folded" } else { "chloedb-cpu.folded" };
             return Ok(Answer::Folded(file, String::from_utf8_lossy(&answered.body).into_owned()));
         }
         let mut j: Json = serde_json::from_slice(&answered.body).map_err(|e| ApiError { status: 502, message: format!("{node} answered a profile that is not JSON: {e}") })?;

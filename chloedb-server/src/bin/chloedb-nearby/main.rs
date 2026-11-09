@@ -71,7 +71,7 @@ struct Args {
     #[arg(long)]
     check: bool,
     /// A key for the cloud, sent as a bearer token.
-    #[arg(long, env = "STRATA_KEY")]
+    #[arg(long, env = "CHLOEDB_KEY")]
     key: Option<String>,
     /// The name it reports its searches under.
     #[arg(long)]
@@ -210,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
     // clap and the code read the old names, so the new ones are copied over
     // before the runtime starts any thread.
-    chloedb::env::adopt_new_names();
+    chloedb::env::adopt_old_names();
     run()
 }
 

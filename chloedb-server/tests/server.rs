@@ -180,10 +180,10 @@ async fn http_answers_like_the_embedded_database() {
     let health: Json = c.get(format!("{base}/v1/health")).send().await.unwrap().json().await.unwrap();
     assert_eq!(health["docs"], N);
     let metrics = c.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(metrics.contains("strata_queries_total{kind=\"bm25\",outcome=\"ok\"} 3"), "{metrics}");
-    assert!(metrics.contains("strata_queries_total{kind=\"invalid\",outcome=\"client_error\"} 1"), "{metrics}");
+    assert!(metrics.contains("chloedb_queries_total{kind=\"bm25\",outcome=\"ok\"} 3"), "{metrics}");
+    assert!(metrics.contains("chloedb_queries_total{kind=\"invalid\",outcome=\"client_error\"} 1"), "{metrics}");
     let cores = std::thread::available_parallelism().unwrap().get();
-    assert!(metrics.contains(&format!("strata_query_pool_threads {cores}\n")) && metrics.contains("strata_query_pool_queued 0\n"), "{metrics}");
+    assert!(metrics.contains(&format!("chloedb_query_pool_threads {cores}\n")) && metrics.contains("chloedb_query_pool_queued 0\n"), "{metrics}");
 }
 
 /// Writes over HTTP: operations, SQL, counters, versions; then reads.
@@ -351,7 +351,7 @@ async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
     for i in 0..64 {
         before.push(sold(key(i)).await);
     }
-    let batches0 = metric("strata_write_batches_total").await;
+    let batches0 = metric("chloedb_write_batches_total").await;
     // A transaction held here keeps the writer waiting while they queue.
     let held = db.storage().begin().unwrap();
     let requests: Vec<_> = (0..64)
@@ -368,7 +368,7 @@ async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
         })
         .collect();
     let t0 = std::time::Instant::now();
-    while metric("strata_write_queue_requests").await < 64.0 {
+    while metric("chloedb_write_queue_requests").await < 64.0 {
         assert!(t0.elapsed() < Duration::from_secs(10), "the writes never queued");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -386,7 +386,7 @@ async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
     let (_, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT count(*) FROM products WHERE id LIKE 'new%'"})).await;
     assert_eq!(r["rows"][0][0], json!(24), "{r}");
     // The 16 UPDATEs of one row took a commit each; the rest shared them.
-    let batches = metric("strata_write_batches_total").await - batches0;
+    let batches = metric("chloedb_write_batches_total").await - batches0;
     assert!((16.0..40.0).contains(&batches), "{batches} commits for 64 statements");
 }
 
@@ -1296,7 +1296,7 @@ async fn bm25_statistics_kept_by_the_coordinator() {
     check(coord.clone(), sql).await;
     assert_eq!((rounds(), stale()), (vec![3, 3], vec![1, 0]));
     let m = coord.prometheus().await;
-    for line in ["strata_stats_cache_total{outcome=\"hit\"} 4", "strata_stats_cache_total{outcome=\"miss\"} 2", "strata_stats_cache_total{outcome=\"stale\"} 1"] {
+    for line in ["chloedb_stats_cache_total{outcome=\"hit\"} 4", "chloedb_stats_cache_total{outcome=\"miss\"} 2", "chloedb_stats_cache_total{outcome=\"stale\"} 1"] {
         assert!(m.contains(line), "{line}: {m}");
     }
 
@@ -1780,7 +1780,7 @@ async fn a_page_is_fetched_from_the_snapshot_it_was_ranked_on() {
         assert!(kept.len() < 10, "{sql}");
         let lost = 10 - kept.len();
         assert!(a["stats"]["plan"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains(&format!("fetch: {lost} rows of the page left out"))), "{a}");
-        assert!(lenient.prometheus().await.contains(&format!("strata_fetch_lost_rows_total {lost}\n")));
+        assert!(lenient.prometheus().await.contains(&format!("chloedb_fetch_lost_rows_total {lost}\n")));
         assert_eq!(coord.query(QueryReq { sql: sql.into(), ..Default::default() }).await.err().unwrap().status, 503);
     }
 }
@@ -2414,7 +2414,8 @@ async fn sqlite_files_over_http() {
     assert_eq!(r.status().as_u16(), 200);
     assert_eq!(r.headers()["content-type"], "application/vnd.sqlite3");
     assert_eq!(r.headers()["content-disposition"], "attachment; filename=\"items.sqlite\"");
-    assert_eq!(r.headers()["x-strata-tables"], "items,notes");
+    assert_eq!(r.headers()["x-chloedb-tables"], "items,notes");
+    assert_eq!(r.headers()["x-strata-tables"], "items,notes", "and under the old name");
     let out = dir.path().join("out.sqlite");
     std::fs::write(&out, r.bytes().await.unwrap()).unwrap();
     let (back, done) = chloedb::sqlite::import_new(&out, &dir.path().join("back.strata"), DbOptions::default(), &Default::default()).unwrap();
@@ -2727,7 +2728,7 @@ async fn health_reports_a_database_that_cannot_write() {
     assert_eq!((open("/livez").await, open("/readyz").await), (503, 503));
     assert_eq!(write(21).await.err().unwrap().status, 500);
     let (_, m) = get("/metrics").await;
-    assert!(m.contains("strata_write_errors_total{status=\"500\"} 1") && m.contains("strata_failing 1"), "{m}");
+    assert!(m.contains("chloedb_write_errors_total{status=\"500\"} 1") && m.contains("chloedb_failing 1"), "{m}");
 }
 
 
@@ -2762,7 +2763,7 @@ async fn a_scrub_finds_data_damaged_on_disk() {
     let h: Json = c.get(format!("{url}/v1/health")).send().await.unwrap().json().await.unwrap();
     assert_eq!(h["damaged"], json!(damaged), "{h}");
     let m = c.get(format!("{url}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(m.contains("strata_damaged_segments 1"), "{m}");
+    assert!(m.contains("chloedb_damaged_segments 1"), "{m}");
     assert_eq!(svc.sample().gauges.get("damaged_segments").copied(), Some(1.0));
 }
 

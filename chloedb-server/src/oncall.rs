@@ -22,7 +22,7 @@
 //! be stopped, and followed up with another question in the same
 //! conversation (`follows`). The latest [`RUNS`] runs and the proposals
 //! are kept beside the audit log (`<audit>.oncall.json`, or
-//! `STRATA_ONCALL_STATE`), so a restart does not lose them; the whole
+//! `CHLOEDB_ONCALL_STATE`), so a restart does not lose them; the whole
 //! conversations of the latest [`CONVERSATIONS`] are kept in memory only
 //! (an older run is followed up from its questions and reports).
 
@@ -192,7 +192,7 @@ impl Desk {
     /// Loads what an earlier start of this server kept, once.
     pub fn ready(&self, svc: &Service) {
         if self.file.get().is_none() {
-            let path = match std::env::var("STRATA_ONCALL_STATE") {
+            let path = match chloedb::env::var("CHLOEDB_ONCALL_STATE") {
                 Ok(p) if !p.is_empty() => Some(PathBuf::from(p)),
                 _ => svc.audit.path().map(|p| p.with_extension("oncall.json")),
             };

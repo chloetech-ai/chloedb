@@ -6,10 +6,10 @@
 #[allow(dead_code)]
 mod harness;
 
-/// `n` inputs of 1 to `max` bytes, the same on every run (STRATA_FUZZ_RUNS
+/// `n` inputs of 1 to `max` bytes, the same on every run (CHLOEDB_FUZZ_RUNS
 /// scales `n`).
 fn inputs(seed: u64, n: usize, max: usize) -> impl Iterator<Item = Vec<u8>> {
-    let scale: f64 = std::env::var("STRATA_FUZZ_RUNS").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let scale: f64 = chloedb::env::var("CHLOEDB_FUZZ_RUNS").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
     let mut x = seed;
     let mut next = move || {
         x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);

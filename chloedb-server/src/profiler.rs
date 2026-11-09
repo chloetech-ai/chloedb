@@ -56,7 +56,7 @@ pub struct CpuProfile {
     /// their place here.
     pub names: Vec<String>,
     /// The threads, by name with the number that tells a pool's threads
-    /// apart taken off (`strata-query`, `tokio-runtime-worker`), the most
+    /// apart taken off (`chloedb-query`, `tokio-runtime-worker`), the most
     /// sampled first.
     pub threads: Vec<Threads>,
     /// Each distinct stack, with the threads it ran on and its samples.
@@ -343,7 +343,7 @@ where
 }
 
 /// A thread's name without the number that tells a pool's threads apart
-/// (`strata-query-3` is `strata-query`); a thread with no name is named by
+/// (`chloedb-query-3` is `chloedb-query`); a thread with no name is named by
 /// its id.
 pub(crate) fn pool_name(name: &str, id: u64) -> String {
     if name.is_empty() {

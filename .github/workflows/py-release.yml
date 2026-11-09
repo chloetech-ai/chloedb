@@ -82,10 +82,10 @@ jobs:
           hits = db.search("river")
           assert hits.keys == [1], hits.dicts()
           db.close()
-          print("chloedb installed and searched:", strata.__file__)
+          print("chloedb installed and searched:", chloedb.__file__)
           '
           # The tests, and the models they read from beside them, outside
-          # the checkout, so that `import strata` is the wheel's.
+          # the checkout, so that `import chloedb` is the wheel's.
           mkdir -p "$RUNNER_TEMP/chloedb-py" "$RUNNER_TEMP/chloedb/tests"
           cp -r "$GITHUB_WORKSPACE/chloedb-py/tests" "$RUNNER_TEMP/chloedb-py/tests"
           cp -r "$GITHUB_WORKSPACE/chloedb/tests/models" "$RUNNER_TEMP/chloedb/tests/models"

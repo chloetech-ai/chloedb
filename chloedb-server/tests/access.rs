@@ -424,7 +424,7 @@ async fn alert_rules_fire_on_points_and_post_to_the_webhook() {
     assert_eq!(sent.len(), 1);
     assert!(sent[0]["text"].as_str().unwrap().contains("Many rows"), "{sent:?}");
     let metrics = chloedb_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(metrics.contains("strata_alerts_firing{severity=\"critical\"} 1"), "{metrics}");
+    assert!(metrics.contains("chloedb_alerts_firing{severity=\"critical\"} 1"), "{metrics}");
     // Kept in the file.
     assert_eq!(Alerts::new(Some(dir.path().join("alerts.json")), None).unwrap().rules()[0].id, "rows");
 }

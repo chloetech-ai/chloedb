@@ -161,9 +161,9 @@ pub enum Secrets {
 
 impl Secrets {
     /// The platform's keychain if it has one, else `file`.
-    /// `STRATA_HUB_SECRETS=file` keeps them in the file anyway.
+    /// `CHLOEDB_HUB_SECRETS=file` keeps them in the file anyway.
     pub fn detect(file: Option<PathBuf>) -> Secrets {
-        let want = std::env::var("STRATA_HUB_SECRETS").unwrap_or_default();
+        let want = chloedb::env::var("CHLOEDB_HUB_SECRETS").unwrap_or_default();
         if want == "file" {
             return Secrets::File(file);
         }
@@ -881,10 +881,13 @@ impl Hub {
 /// The request headers a forwarded call keeps: what the body is and what
 /// the command center says of the call. Not the caller's credential,
 /// cookies, `Host` or `Origin`.
-const PASSED: [&str; 7] = ["content-type", "accept", "x-strata-client", "x-strata-reason", "x-request-id", "idempotency-key", "x-strata-confirm"];
+const PASSED: [&str; 10] = [
+    "content-type", "accept", "x-strata-client", "x-strata-reason", "x-request-id", "idempotency-key", "x-strata-confirm",
+    "x-chloedb-client", "x-chloedb-reason", "x-chloedb-confirm",
+];
 
 /// The answer headers passed back.
-const RETURNED: [&str; 6] = ["content-type", "content-disposition", "x-request-id", "retry-after", "cache-control", "x-strata-shards"];
+const RETURNED: [&str; 7] = ["content-type", "content-disposition", "x-request-id", "retry-after", "cache-control", "x-strata-shards", "x-chloedb-shards"];
 
 fn answer(name: &str, r: reqwest::Response) -> axum::response::Response {
     use axum::response::IntoResponse;

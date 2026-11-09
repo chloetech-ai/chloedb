@@ -27,8 +27,8 @@ chloedb-server follow-postgres \
 
 | option | |
 |---|---|
-| `--source` | the database's URL (or `STRATA_POSTGRES_URL`); `PGPASSWORD` gives a password it leaves out; `sslmode` is `disable`, `prefer` (the default), `require`, `verify-ca` or `verify-full`, and `sslrootcert` (or `--source-ca`) a CA certificate to check the server's by; with `verify-*` and no CA given, the public CAs are trusted |
-| `--target` | ChloeDB's HTTP URL: a server, or a cluster's coordinator (`--target-token` or `STRATA_CLUSTER_TOKEN`, `--target-ca`) |
+| `--source` | the database's URL (or `CHLOEDB_POSTGRES_URL`); `PGPASSWORD` gives a password it leaves out; `sslmode` is `disable`, `prefer` (the default), `require`, `verify-ca` or `verify-full`, and `sslrootcert` (or `--source-ca`) a CA certificate to check the server's by; with `verify-*` and no CA given, the public CAs are trusted |
+| `--target` | ChloeDB's HTTP URL: a server, or a cluster's coordinator (`--target-token` or `CHLOEDB_CLUSTER_TOKEN`, `--target-ca`) |
 | `--name` | the name ChloeDB knows the database by, which its marks in `_sources` name |
 | `--publication` | the publication (`strata`) |
 | `--slot` | the replication slot it makes and reads (`strata_<name>`) |

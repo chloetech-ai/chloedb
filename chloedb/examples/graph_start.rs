@@ -14,7 +14,7 @@
 //!
 //! With a number, the vectors are unit vectors around 100 random centres;
 //! with `beir:NAME`, the first documents of a collection prepared under
-//! `STRATA_DATA` (`doc_vecs.f32`, `query_vecs.f32`, `meta.json`), and as
+//! `CHLOEDB_DATA` (`doc_vecs.f32`, `query_vecs.f32`, `meta.json`), and as
 //! queries its queries and the 500 documents after those indexed (a BEIR
 //! collection can have as few as 50 queries). `KEY=VALUE` pairs are build options, such as
 //! `vector.threads=4` or `vector.hnsw.build=f32`. The inputs are equal in

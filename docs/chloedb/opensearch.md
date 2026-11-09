@@ -15,8 +15,8 @@ curl -s localhost:9200/books/_search -H 'content-type: application/json' -d '{"q
 
 | flag | environment | what |
 |---|---|---|
-| `--opensearch-listen ADDR` | `STRATA_OPENSEARCH_LISTEN` | where the API listens (off when not given) |
-| `--opensearch-version V` | `STRATA_OPENSEARCH_VERSION` | the version `GET /` reports, `2.11.0` by default; a `7.x` version (`7.10.2`) answers as Elasticsearch 7 does, which clients of Elasticsearch 7 check for (elasticsearch-ruby 7.17, which Mastodon uses, refuses OpenSearch 2.x itself) |
+| `--opensearch-listen ADDR` | `CHLOEDB_OPENSEARCH_LISTEN` | where the API listens (off when not given) |
+| `--opensearch-version V` | `CHLOEDB_OPENSEARCH_VERSION` | the version `GET /` reports, `2.11.0` by default; a `7.x` version (`7.10.2`) answers as Elasticsearch 7 does, which clients of Elasticsearch 7 check for (elasticsearch-ruby 7.17, which Mastodon uses, refuses OpenSearch 2.x itself) |
 
 It shares the server's TLS (`--tls-cert`), hosts (`--allow-host`) and credentials. With a token or keys, a request carries one as `Authorization: Bearer <token>`, or as the password of Basic authentication (any user name), which is how most OpenSearch clients send one: `http://user:<token>@host:9200`. Reads need a key of scope `read`, writes of documents `write`, and changes to indexes, mappings, aliases and settings `admin`; an index made by its first document needs `admin` too. On a coordinator, or beside one (`--coordinator-listen`), the indexes are tables of the cluster, split over its shards.
 
