@@ -4,7 +4,7 @@
 
 New to it? [Build an app](build-an-app.md) is one page from an empty server to search, stock, holds, events counted once and a cluster; this page is the reference.
 
-**Old and new names.** ChloeDB was called Strata, and this page still uses the old names. Each also works under the new one: every `STRATA_*` setting can be set as `CHLOEDB_*` (`CHLOEDB_TOKEN` for `STRATA_TOKEN`; when both are set, the new one wins), the headers a client sets (`x-strata-client`, `x-strata-app`, `x-strata-reason`, `x-strata-confirm`) can be sent as `x-chloedb-*` (over HTTP and as gRPC metadata), and the server image runs `chloedb-server`, `chloedb-crawl` and `chloedb-sheets` as well as `chloedb-server`, `chloedb-crawl` and `chloedb-sheets`.
+**Old and new names.** ChloeDB was called Strata. The programs carry the new name (`chloedb-server`, `chloedb-crawl`, `chloedb-sheets`), and the server image and the release archives also run them by the old one (`strata-server`, `strata-crawl`, `strata-sheets`). Settings and headers still use the old names on this page, and each also works under the new one: every `STRATA_*` setting can be set as `CHLOEDB_*` (`CHLOEDB_TOKEN` for `STRATA_TOKEN`; when both are set, the new one wins), and the headers a client sets (`x-strata-client`, `x-strata-app`, `x-strata-reason`, `x-strata-confirm`) can be sent as `x-chloedb-*` (over HTTP and as gRPC metadata).
 
 ## Run it
 

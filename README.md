@@ -2,7 +2,7 @@
 
 **An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.**
 
-> ChloeDB was called Strata until November 2026. The rename is landing in steps: until it is done, folders, crates, commands, settings and the repository still carry the old name (`chloedb-server`, `import strata`, `STRATA_*`), and they keep working afterwards.
+> ChloeDB was called Strata until November 2026. The rename is landing in steps: the folders, crates and commands carry the new name (`chloedb-server`), while settings, the Python module and the repository still carry the old one (`STRATA_*`, `import strata`). Old names keep working afterwards (the image and the release archives run `strata-server` too).
 
 ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions with snapshot isolation, and is queried with SQL. Every table is indexed three ways at once (posting lists for full text, a columnar forward index for structured fields, and vector indexes), rows can hold typed, weighted edges to other rows, and a cost-based planner chooses, per segment and from exact statistics, how to run each part of a statement. A database holds several tables, and queries join them. ChloeDB's posting lists come from its own study of compressed posting-list formats (the `postings` module), which produced the Loom and Pyramid codecs it uses.
 

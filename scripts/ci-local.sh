@@ -7,13 +7,13 @@
 #
 #   scripts/ci-local.sh                          # HEAD merged into main, every job
 #   scripts/ci-local.sh --pr 203 --post-status   # a pull request's head, from GitHub
-#   scripts/ci-local.sh test-strata miri         # some jobs only
+#   scripts/ci-local.sh test-chloedb miri         # some jobs only
 #   scripts/ci-local.sh --list                   # the jobs and what each runs
 #   scripts/ci-local.sh --fast                   # quicker, and less like GitHub
 #
 # A whole run is slower than GitHub's, which spreads the jobs over 17
 # runners: on an 8-core M2 with warm caches it took 70 minutes, against 27
-# for the same commit on GitHub (1 November 2026). CI compiles Strata in
+# for the same commit on GitHub (1 November 2026). CI compiles ChloeDB in
 # about ten feature sets, and a Mac builds them one after another. It is
 # for some jobs while working on a change, a pull request GitHub has not
 # got to, or a check of what GitHub cannot run. --fast runs the crates'
@@ -23,9 +23,9 @@
 # It runs on macOS (Apple silicon) and on Linux. On a Mac every job runs on
 # macOS, the ones GitHub runs on Linux only included, and so:
 #
-# - x86-64 is not tested natively. The kernels job builds Strata for a
+# - x86-64 is not tested natively. The kernels job builds ChloeDB for a
 #   generic x86-64 CPU as CI does and runs it under Rosetta 2, which has no
-#   AVX2 or AVX-512: the scalar and SSE kernels are tested there, Strata's
+#   AVX2 or AVX-512: the scalar and SSE kernels are tested there, ChloeDB's
 #   AVX2 and AVX-512 kernels only on GitHub's Linux runners.
 # - Linux's file systems and syncs are not exercised (the fault-injection
 #   tests run on macOS, as main's own runs do on GitHub).
@@ -33,9 +33,9 @@
 #   Docker for it. Without it the test is skipped, as on GitHub's macOS
 #   runners.
 # - Miri interprets x86-64 Linux, as on GitHub: it runs neither the NEON
-#   intrinsics nor the inline assembly Strata compiles in on aarch64.
+#   intrinsics nor the inline assembly ChloeDB compiles in on aarch64.
 # - The tests' temporary files are on a RAM disk (--no-ramdisk keeps them on
-#   the disk): a durable sync takes 20 ms on a Mac's SSD, and Strata's
+#   the disk): a durable sync takes 20 ms on a Mac's SSD, and ChloeDB's
 #   tests sync at every commit.
 #
 # A push to main still runs GitHub's whole matrix, Linux and macOS, so what a
@@ -90,23 +90,23 @@ ci-result 05940e7f0565
 
 # This script's jobs: name, the ci.yml job it mirrors, what it runs.
 JOBS="
-test-strata|test|strata's tests (feature sqlite) and clippy
+test-chloedb|test|chloedb's tests (feature sqlite) and clippy
 test-engram|test|engram's tests and clippy
-test-strata-server|test|chloedb-server's tests, the simulator's seeds, and clippy
-test-strata-crawl|test|chloedb-crawl's tests and clippy
-test-strata-sheets|test|chloedb-sheets' tests and clippy
-kernels|kernels|Strata's SIMD kernels in a generic build, then with SIMD off (x86-64 under Rosetta on a Mac, then the native generic build)
+test-chloedb-server|test|chloedb-server's tests, the simulator's seeds, and clippy
+test-chloedb-crawl|test|chloedb-crawl's tests and clippy
+test-chloedb-sheets|test|chloedb-sheets' tests and clippy
+kernels|kernels|ChloeDB's SIMD kernels in a generic build, then with SIMD off (x86-64 under Rosetta on a Mac, then the native generic build)
 faults|faults|power losses, full disks and failing syncs (feature fault-injection)
 datafusion|datafusion|DataFusion as the engine (feature datafusion) and the compound-query suites on it
-audio|audio|sound (feature audio): tests and clippy, Strata and chloedb-server
-vision|vision|images (feature vision): tests and clippy, Strata and chloedb-server
+audio|audio|sound (feature audio): tests and clippy, ChloeDB and chloedb-server
+vision|vision|images (feature vision): tests and clippy, ChloeDB and chloedb-server
 relevance-gate|relevance-gate|BM25 on three BEIR collections against the committed baseline
 relevance-gate-cross-encoder|relevance-gate-cross-encoder|BM25 reranked by ms-marco-MiniLM-L-6-v2 against its baseline
 server-smoke|server-smoke|a release chloedb-server with a demo catalogue, queried over HTTP; imports and exports; a crawl into a growing cluster
 python|python|the Python package's tests against a real server, the recommender gate, clippy
 javascript|javascript|the JavaScript package on Node, Bun and Deno, against a real server; clippy
 java|java|the Java package on Java 11 and 25, the native library's tests, clippy
-miri|miri|Miri over Strata's byte views, in CI's four parts, beside the other jobs
+miri|miri|Miri over ChloeDB's byte views, in CI's four parts, beside the other jobs
 "
 
 # Miri's four parts, as ci.yml's matrix has them.
@@ -223,7 +223,7 @@ while [ $# -gt 0 ]; do
         -*) die "unknown option $1 (see --help)" ;;
         *)
             if [ "$1" = test ]; then
-                SELECTED="$SELECTED test-strata test-engram test-strata-server test-strata-crawl test-strata-sheets"
+                SELECTED="$SELECTED test-chloedb test-engram test-chloedb-server test-chloedb-crawl test-chloedb-sheets"
             elif job_names | grep -qx -- "$1"; then
                 SELECTED="$SELECTED $1"
             else
@@ -392,7 +392,7 @@ setup_rust() {
 PY_VENV=$CI_HOME/venv-py312
 # On a Mac the tests' temporary files go to a RAM disk: a durable sync there
 # (F_FULLFSYNC, which Rust's sync_all is on macOS) takes 0.2 ms rather than
-# the 20 ms it takes on this Mac's SSD, and Strata's tests sync at every
+# the 20 ms it takes on this Mac's SSD, and ChloeDB's tests sync at every
 # commit: the fault-injection tests alone took half an hour on the SSD.
 # Builds stay on the disk. Detached when the run ends.
 RAMDISK_GB=${STRATA_CI_RAMDISK_GB:-6}
@@ -425,7 +425,7 @@ setup_python() {
 
 # A crate's whole test suite, as `cargo test --profile ci`. With --nextest,
 # cargo-nextest runs it: the tests of every test binary at once rather than
-# one binary after another (strata has 137), each test in a process of its
+# one binary after another (chloedb has 137), each test in a process of its
 # own; then the doctests, which nextest does not run.
 crate_tests() {
     if [ "$NEXTEST" = 1 ]; then
@@ -445,8 +445,8 @@ crate_tests() {
 # Builds in chloedb/ on x86-64 Linux name x86-64-v3, as CI's do (so that one
 # cache serves every runner there); on other machines the variable does
 # nothing. Builds in chloedb-server/ leave it unset, as CI does.
-in_strata() {
-    cd "$CI_LOCAL_TREE/strata"
+in_chloedb() {
+    cd "$CI_LOCAL_TREE/chloedb"
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v3"
 }
 in_server() {
@@ -454,8 +454,8 @@ in_server() {
     unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS
 }
 
-job_test_strata() {
-    in_strata
+job_test_chloedb() {
+    in_chloedb
     crate_tests --features sqlite
     cargo clippy --release --all-targets --features sqlite -- $CLIPPY_LINTS
 }
@@ -466,7 +466,7 @@ job_test_engram() {
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
 
-job_test_strata_server() {
+job_test_chloedb_server() {
     cd chloedb-server
     crate_tests
     # The cluster simulator over more seeds than its tests run (the build
@@ -478,13 +478,13 @@ job_test_strata_server() {
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
 
-job_test_strata_crawl() {
+job_test_chloedb_crawl() {
     cd chloedb-crawl
     crate_tests
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
 
-job_test_strata_sheets() {
+job_test_chloedb_sheets() {
     cd chloedb-sheets
     crate_tests
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
@@ -507,7 +507,7 @@ job_kernels() {
             # CI's build, for a generic x86-64 CPU, run under Rosetta 2.
             kernels "-C target-cpu=x86-64" --target x86_64-apple-darwin
             # And the build chloedb-server and the Python package have here:
-            # no target-cpu, so Strata picks its kernels at run time.
+            # no target-cpu, so ChloeDB picks its kernels at run time.
             kernels "" ;;
         *)
             kernels "" ;;
@@ -515,12 +515,12 @@ job_kernels() {
 }
 
 job_faults() {
-    in_strata
+    in_chloedb
     cargo test --profile ci --features fault-injection --test storage_faults
 }
 
 job_datafusion() {
-    in_strata
+    in_chloedb
     cargo test --profile ci --features datafusion --test datafusion_engine
     cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
     STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
@@ -530,7 +530,7 @@ job_datafusion() {
 }
 
 job_audio() {
-    in_strata
+    in_chloedb
     cargo test --profile ci --features audio --test derived_audio --test audio_vectors
     cargo test --profile ci --features audio --lib -- audio:: clap::
     cargo clippy --profile ci --features audio --all-targets -- $CLIPPY_LINTS
@@ -539,7 +539,7 @@ job_audio() {
 }
 
 job_vision() {
-    in_strata
+    in_chloedb
     cargo test --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
     cargo clippy --profile ci --features vision --all-targets -- $CLIPPY_LINTS
     in_server
@@ -548,14 +548,14 @@ job_vision() {
 
 job_relevance_gate() {
     chloedb/tests/fixtures/beir/fetch.sh "$CI_HOME/beir"
-    in_strata
+    in_chloedb
     STRATA_BEIR_DIR="$CI_HOME/beir" STRATA_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
 }
 
 job_relevance_gate_cross_encoder() {
     chloedb/tests/fixtures/beir/fetch.sh "$CI_HOME/beir"
     chloedb/tests/models/fetch_cross_encoder.sh "$CI_HOME/models"
-    in_strata
+    in_chloedb
     STRATA_BEIR_DIR="$CI_HOME/beir" STRATA_MODELS="$CI_HOME/models" STRATA_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
 }
 
@@ -710,7 +710,7 @@ job_java() {
 
 # Miri, on the pinned nightly, with no RUSTFLAGS (a portable build: Miri has
 # no CPUID), interpreting x86-64 Linux as on GitHub whatever the machine: on
-# aarch64 Strata's NEON kernels are compiled in unconditionally, and Miri
+# aarch64 ChloeDB's NEON kernels are compiled in unconditionally, and Miri
 # runs neither their intrinsics nor their inline assembly. Each part has a
 # target directory of its own, so that the three run at once, each on one
 # thread as Miri does.
@@ -735,7 +735,7 @@ miri_part() {
 # lanes. Each job's outcome is a line of $RUN_DIR/results.
 
 MIRI_PIDS="" LANE_PIDS=""
-LANE2_JOBS="test-engram test-strata-server test-strata-crawl test-strata-sheets server-smoke python javascript java"
+LANE2_JOBS="test-engram test-chloedb-server test-chloedb-crawl test-chloedb-sheets server-smoke python javascript java"
 record() { printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$RUN_DIR/results"; }
 failed_any() { [ -f "$RUN_DIR/results" ] && grep -qv '|success|' "$RUN_DIR/results"; }
 lane_of() {
@@ -752,7 +752,7 @@ signal_tree() {
     for p in $list; do kill -"$1" "$p" 2>/dev/null; done
 }
 
-# The executables a job linked, tests and the crates' tools (strata's are
+# The executables a job linked, tests and the crates' tools (chloedb's are
 # 50 to 115 MB each, one set per feature set): most of a target directory,
 # and linked again after any change to their crate, so keeping them saves
 # little. Compiled dependencies, release builds and Miri's stay.
@@ -763,7 +763,7 @@ prune_dirs() {
 }
 
 # After a job: with one lane, every crate's; with two, the target directories
-# only this lane's jobs link into (strata's for lane 1, engram's and the
+# only this lane's jobs link into (chloedb's for lane 1, engram's and the
 # Python package's for lane 2), and in chloedb-server's, which both use, the
 # test executables the job's log names (cargo test's Running lines,
 # nextest's list). The rest goes when the run ends.
@@ -907,7 +907,7 @@ EOF
 
 # --fast runs only the jobs a change can affect: a job whose crate, and the
 # crates it builds on, are as on main runs main's code, which main's own run
-# tested. strata, ci.yml and this script reach every job; anything outside
+# tested. chloedb, ci.yml and this script reach every job; anything outside
 # the packages' directories but docs and Markdown is taken to as well.
 AFFECTED=""
 find_affected() {
@@ -919,9 +919,9 @@ find_affected() {
             chloedb-py/*) AFFECTED="$AFFECTED python" ;;
             chloedb-js/*) AFFECTED="$AFFECTED javascript" ;;
             chloedb-java/*) AFFECTED="$AFFECTED java" ;;
-            chloedb-crawl/*) AFFECTED="$AFFECTED test-strata-crawl server-smoke" ;;
-            chloedb-sheets/*) AFFECTED="$AFFECTED test-strata-sheets server-smoke" ;;
-            chloedb-server/*) AFFECTED="$AFFECTED test-strata-server server-smoke python javascript audio vision" ;;
+            chloedb-crawl/*) AFFECTED="$AFFECTED test-chloedb-crawl server-smoke" ;;
+            chloedb-sheets/*) AFFECTED="$AFFECTED test-chloedb-sheets server-smoke" ;;
+            chloedb-server/*) AFFECTED="$AFFECTED test-chloedb-server server-smoke python javascript audio vision" ;;
             *) all=1 ;;
         esac
     done

@@ -84,7 +84,7 @@ jobs:
           '
       - uses: actions/upload-artifact@v7
         with:
-          name: strata-js-${{ matrix.platform }}
+          name: chloedb-js-${{ matrix.platform }}
           path: chloedb-js/dist/*.tgz
           if-no-files-found: error
 
@@ -99,7 +99,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: strata-js-*
+          pattern: chloedb-js-*
           path: dist
           merge-multiple: true
       - name: Attach the tarballs to the release

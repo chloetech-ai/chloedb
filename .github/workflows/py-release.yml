@@ -92,7 +92,7 @@ jobs:
           python -m pytest -q "$RUNNER_TEMP/chloedb-py/tests/test_database.py"
       - uses: actions/upload-artifact@v7
         with:
-          name: strata-py-${{ matrix.platform }}
+          name: chloedb-py-${{ matrix.platform }}
           path: chloedb-py/dist/*.whl
           if-no-files-found: error
 
@@ -107,7 +107,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: strata-py-*
+          pattern: chloedb-py-*
           path: dist
           merge-multiple: true
       - name: Attach the wheels to the release

@@ -78,20 +78,20 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="strata-server-${{ matrix.platform }}"
+          name="chloedb-server-${{ matrix.platform }}"
           mkdir -p "dist/$name"
           cp chloedb-server/target/release/chloedb-server "dist/$name/"
-          # ChloeDB was called Strata: the server answers to its new name too.
-          ln -s chloedb-server "dist/$name/chloedb-server"
-          "dist/$name/chloedb-server" --version
+          # ChloeDB was called Strata: the server answers to its old name too.
+          ln -s chloedb-server "dist/$name/strata-server"
+          "dist/$name/strata-server" --version
           cp LICENSE* "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           ls -la dist
       - uses: actions/upload-artifact@v7
         with:
-          name: strata-server-${{ matrix.platform }}
-          path: dist/strata-server-*.tar.gz*
+          name: chloedb-server-${{ matrix.platform }}
+          path: dist/chloedb-server-*.tar.gz*
           if-no-files-found: error
 
   release:
@@ -105,7 +105,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: strata-server-*
+          pattern: chloedb-server-*
           path: dist
           merge-multiple: true
       - name: Attach the archives to the release
@@ -116,6 +116,6 @@ jobs:
         run: |
           ls -la dist
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.strata\` (\`./chloedb-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it."
+            gh release create "$TAG" --repo "$REPO" --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.strata\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it."
           fi
           gh release upload "$TAG" dist/* --repo "$REPO" --clobber

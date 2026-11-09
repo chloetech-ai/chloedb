@@ -2,12 +2,12 @@
 # with chloedb-crawl and chloedb-sheets, the crawler and the spreadsheets the
 # operator runs beside a cluster (spec.crawler, spec.sheets).
 #
-#   docker build -f chloedb-server/deploy/Dockerfile -t strata-server:dev .   # from the repository root
+#   docker build -f chloedb-server/deploy/Dockerfile -t chloedb-server:dev .   # from the repository root
 #
 # The build context is the repository root, since chloedb-server depends on
 # ../chloedb by path.
 #
-# The image runs on any x86-64 (or aarch64) CPU: Strata picks its SIMD
+# The image runs on any x86-64 (or aarch64) CPU: ChloeDB picks its SIMD
 # kernels at run time (AVX2, AVX-512 and VNNI; the aarch64 dot product
 # instructions), and the server logs which at start. To tune the whole
 # binary to the build machine instead, which may then not start elsewhere:
@@ -16,7 +16,7 @@ FROM rust:1-bookworm AS build
 ARG RUSTFLAGS=""
 ENV RUSTFLAGS=${RUSTFLAGS}
 WORKDIR /src
-COPY strata strata
+COPY chloedb chloedb
 COPY chloedb-server chloedb-server
 COPY chloedb-crawl chloedb-crawl
 COPY chloedb-sheets chloedb-sheets
@@ -42,12 +42,12 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/ /usr/local/bin/
-# ChloeDB was called Strata: each program answers to its new name too
-# (chloedb-server, chloedb-crawl, chloedb-sheets), and its old one keeps
-# working.
-RUN ln -s chloedb-server /usr/local/bin/chloedb-server \
-    && ln -s chloedb-crawl /usr/local/bin/chloedb-crawl \
-    && ln -s chloedb-sheets /usr/local/bin/chloedb-sheets
+# ChloeDB was called Strata: each program answers to its old name too
+# (strata-server, strata-crawl, strata-sheets), which the operator's pods
+# run it by.
+RUN ln -s chloedb-server /usr/local/bin/strata-server \
+    && ln -s chloedb-crawl /usr/local/bin/strata-crawl \
+    && ln -s chloedb-sheets /usr/local/bin/strata-sheets
 # engine-compare's traffic profiles (engine-compare plan/replay --profile).
 COPY chloedb-server/deploy/compare/profiles /usr/local/share/engine-compare/profiles
 EXPOSE 7700 7701 7800 7820

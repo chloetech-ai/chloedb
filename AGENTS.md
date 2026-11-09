@@ -7,9 +7,11 @@ user, or to work on this repository. People should start with
 [README.md](README.md) and [the install guide](docs/engram/setup.md).
 
 ChloeDB was called Strata until November 2026, and the rename lands in steps.
-Until it is done, the folders, crates, binaries, `STRATA_*` settings and the
-repository keep the old name: use the names as this file and the code spell
-them, and say ChloeDB in prose.
+The folders, crates and programs are `chloedb*` now; the `STRATA_*` settings,
+the `x-strata-*` headers, `import strata`, the Java package and the
+repository keep the old name for now: use the names as this file and the code
+spell them, and say ChloeDB in prose. A branch started before the folders
+moved comes across with `scripts/chloedb-port.sh`.
 
 ## Set Engram up for the user's Claude Code
 

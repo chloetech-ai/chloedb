@@ -44,7 +44,7 @@ env:
 # billed by the minute even for a public repository, so no job uses them.
 #
 # macOS jobs are the scarcest: the account runs five at once. A pull
-# request, the merge queue and a push to main run only Strata's tests on
+# request, the merge queue and a push to main run only ChloeDB's tests on
 # macOS, where its NEON kernels and syncs differ from Linux, and CI result
 # does not wait for them (job `macos`): a pull request waited 9 to 12
 # minutes for a macOS runner and then 16 more, after every Linux job had
@@ -61,7 +61,7 @@ env:
 # Python job took 26 to 39 minutes that way, 20 with a cache). For the same
 # reason Linux builds in chloedb/ name x86-64-v3 (AVX2, which every runner
 # has) instead of its config's target-cpu=native, so that one cache serves
-# every runner's CPU; on a runner with AVX-512 Strata still picks those
+# every runner's CPU; on a runner with AVX-512 ChloeDB still picks those
 # kernels at run time (chloedb::simd). macOS builds keep native, and the CPU
 # in their cache's key.
 jobs:
@@ -102,8 +102,8 @@ jobs:
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
           grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
-          if grep -qvE '^(strata|chloedb-server|engram)/results/' "$RUNNER_TEMP/rest" \
-            || grep -qE '^(strata|chloedb-server|engram)/results/.*\.py$|^chloedb/results/workloads/' "$RUNNER_TEMP/rest"; then
+          if grep -qvE '^(chloedb|chloedb-server|engram)/results/' "$RUNNER_TEMP/rest" \
+            || grep -qE '^(chloedb|chloedb-server|engram)/results/.*\.py$|^chloedb/results/workloads/' "$RUNNER_TEMP/rest"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -120,7 +120,7 @@ jobs:
         # chloedb-crawl's crawl into a real cluster, and chloedb-sheets'
         # workbooks in one, run in server-smoke, which builds chloedb-server;
         # here their other tests and clippy.
-        crate: [strata, engram, chloedb-server, chloedb-crawl, chloedb-sheets]
+        crate: [chloedb, engram, chloedb-server, chloedb-crawl, chloedb-sheets]
     runs-on: ${{ matrix.os }}
     # rust-cache saves only from a job that passed, so a macOS job that ran
     # out of time starts the next one cold too: chloedb-server's tests took
@@ -128,13 +128,13 @@ jobs:
     # after them did not fit in 60.
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 90 || 60 }}
     env: &test-env
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'strata' && '-C target-cpu=x86-64-v3' || '' }}
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'chloedb' && '-C target-cpu=x86-64-v3' || '' }}
     steps: &test-steps
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # On macOS the strata crate builds with -C target-cpu=native
+      # On macOS the chloedb crate builds with -C target-cpu=native
       # (chloedb/.cargo/config.toml), so its cache must not be restored on a
       # runner with another CPU: the key hashes the model and its
       # instruction sets (runners with the same model name differ in them,
@@ -150,19 +150,19 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: ${{ matrix.crate }}
-          shared-key: ${{ matrix.crate }}${{ runner.os == 'macOS' && matrix.crate == 'strata' && format('-{0}', steps.cpu.outputs.model) || '' }}-test
+          shared-key: ${{ matrix.crate }}${{ runner.os == 'macOS' && matrix.crate == 'chloedb' && format('-{0}', steps.cpu.outputs.model) || '' }}-test
       # The ci profile is release without link-time optimisation and with
       # 16 codegen units (each crate's Cargo.toml): with release's, building
-      # Strata's test binaries took 37 of the 40 minutes of its tests.
-      # Strata's SQLite import and export (feature `sqlite`) are tested and
-      # linted in the strata job; chloedb-server and the Python package turn
+      # ChloeDB's test binaries took 37 of the 40 minutes of its tests.
+      # ChloeDB's SQLite import and export (feature `sqlite`) are tested and
+      # linted in the chloedb job; chloedb-server and the Python package turn
       # the feature on. --no-fail-fast runs every test binary even after one
       # fails: cargo stops at the first otherwise, and from 11-05 to 11-07 a
       # failing unit test of engine-compare kept chloedb-server's integration
       # tests from running on macOS at all.
       - name: Tests
         working-directory: ${{ matrix.crate }}
-        run: cargo test --profile ci --no-fail-fast ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
+        run: cargo test --profile ci --no-fail-fast ${{ matrix.crate == 'chloedb' && '--features sqlite' || '' }}
       # The cluster simulator over more seeds than its tests run (`cargo
       # test` built chloedb-sim): the first 3,000 of each world on every
       # change, and in the nightly run and a run started by hand 30,000 of
@@ -198,9 +198,9 @@ jobs:
       # the build; style, complexity and performance lints are advice.
       - name: Clippy
         working-directory: ${{ matrix.crate }}
-        run: cargo clippy --release --all-targets ${{ matrix.crate == 'strata' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+        run: cargo clippy --release --all-targets ${{ matrix.crate == 'chloedb' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
-  # Strata's tests on macOS for a pull request, the merge queue and a push
+  # ChloeDB's tests on macOS for a pull request, the merge queue and a push
   # to main: the `test` job's steps, in a job of its own that CI result does
   # not wait for (see the top of this file). In the nightly run and a run
   # started by hand they run in `test`, and this job is skipped. A push to
@@ -212,18 +212,18 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest]
-        crate: [strata]
+        crate: [chloedb]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env: *test-env
     steps: *test-steps
 
   # chloedb-server, engram and the Python package build for a generic CPU,
-  # where Strata chooses its SIMD kernels at run time: test the kernels in
+  # where ChloeDB chooses its SIMD kernels at run time: test the kernels in
   # such a build, then with every SIMD path turned off. A job of its own, so
-  # that it runs beside the strata tests rather than after them.
+  # that it runs beside the chloedb tests rather than after them.
   kernels:
-    name: strata kernels on a generic build
+    name: chloedb kernels on a generic build
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -238,7 +238,7 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
-          key: strata-generic
+          key: chloedb-generic
       - name: Kernels
         working-directory: chloedb
         run: |
@@ -247,7 +247,7 @@ jobs:
 
   # Images (feature `vision`: the image crate and SigLIP through candle),
   # which the default build leaves out: the tests of vectors of images in
-  # Strata and through a server, with the `hash` model (SigLIP's weights
+  # ChloeDB and through a server, with the `hash` model (SigLIP's weights
   # are not fetched here), and clippy over the feature's code. `vision`
   # includes `bert`, so the cross-encoder tests against transformers'
   # scores of the small models in chloedb/tests/models run here too.
@@ -266,10 +266,10 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
-            strata
+            chloedb
             chloedb-server
           key: vision
-      - name: Strata
+      - name: ChloeDB
         working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -283,7 +283,7 @@ jobs:
   # Sound (feature `audio`: symphonia's decoders, and Whisper and CLAP
   # through candle): decoding, resampling and mel features, text derived
   # from sound and vectors of it with test models (the real models' weights
-  # are not fetched here), and clippy over the feature's code in Strata and
+  # are not fetched here), and clippy over the feature's code in ChloeDB and
   # the server.
   audio:
     name: sound (feature audio)
@@ -300,10 +300,10 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
-            strata
+            chloedb
             chloedb-server
           key: audio
-      - name: Strata
+      - name: ChloeDB
         working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -316,7 +316,7 @@ jobs:
         run: cargo clippy --profile ci --features audio -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # DataFusion as the engine of plans' operators (feature `datafusion`,
-  # chloedb::query::df): the differential test against Strata's own
+  # chloedb::query::df): the differential test against ChloeDB's own
   # operators, window functions on both engines against SQLite's answers,
   # the compound-query suites again with DataFusion as the engine
   # (STRATA_ENGINE=datafusion: a plan it does not lower runs on the
@@ -340,7 +340,7 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
           key: datafusion
-      - name: Strata
+      - name: ChloeDB
         working-directory: chloedb
         run: |
           cargo test --profile ci --features datafusion --test datafusion_engine --test hash_function
@@ -353,7 +353,7 @@ jobs:
 
   # Power losses, full disks and failing syncs at every write of a storage
   # workload (storage::io, tests/storage_faults.rs). A job of its own: after
-  # the strata tests, it took the macOS job past its hour.
+  # the chloedb tests, it took the macOS job past its hour.
   faults:
     name: fault injection on ${{ matrix.os }}
     needs: changes
@@ -377,7 +377,7 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
-          key: strata-faults${{ runner.os == 'macOS' && format('-{0}', steps.cpu.outputs.model) || '' }}
+          key: chloedb-faults${{ runner.os == 'macOS' && format('-{0}', steps.cpu.outputs.model) || '' }}
       - name: Fault injection
         working-directory: chloedb
         run: cargo test --profile ci --features fault-injection --test storage_faults
@@ -447,7 +447,7 @@ jobs:
         working-directory: chloedb
         run: STRATA_BEIR_DIR="$HOME/beir" STRATA_MODELS="$HOME/models" STRATA_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
 
-  # Miri runs the tests of Strata's zero-copy byte views (postings::bytes)
+  # Miri runs the tests of ChloeDB's zero-copy byte views (postings::bytes)
   # and of the structures read through them, checking every access for
   # undefined behaviour: misaligned or out-of-bounds reads, dangling
   # pointers, aliasing. It interprets the code about a thousand times
@@ -510,7 +510,7 @@ jobs:
             chloedb-server
             chloedb-crawl
             chloedb-sheets
-          key: strata-server-smoke
+          key: chloedb-server-smoke
       - name: Build
         working-directory: chloedb-server
         run: cargo build --release
@@ -783,7 +783,7 @@ jobs:
 
   # The one check main requires: every job above passed, or was skipped
   # because the change touches only the documentation. A failed or
-  # cancelled job fails it. It does not wait for `macos`, the Strata tests
+  # cancelled job fails it. It does not wait for `macos`, the ChloeDB tests
   # on macOS of a pull request and a push to main (see the top of this file).
   ci-result:
     name: CI result
