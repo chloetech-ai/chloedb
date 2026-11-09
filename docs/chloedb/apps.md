@@ -38,7 +38,7 @@ kubectl -n strata patch strata demo --type merge -p '{"spec": {
   "apps": {"serviceType": "NodePort", "nodePort": 30731, "publicUrl": "http://203.0.113.5:30731"}}}'
 ```
 
-The operator runs the engine's own image (`ghcr.io/chloetech-ai/strata-apps`: Node, Playwright's Chromium for the drawn checks, and Claude Code) as a Deployment of one pod, `<cluster>-apps`, behind a Service of that name, and restarts the coordinators so that they list it: **Apps → App engine** appears in the command center, with the engine's apps, what the model has cost and **Open the studio**.
+The operator runs the engine's own image (`ghcr.io/chloetech-ai/chloedb-apps`: Node, Playwright's Chromium for the drawn checks, and Claude Code) as a Deployment of one pod, `<cluster>-apps`, behind a Service of that name, and restarts the coordinators so that they list it: **Apps → App engine** appears in the command center, with the engine's apps, what the model has cost and **Open the studio**.
 
 - **Its apps are rows of the cluster.** It keeps them through the coordinators with the cluster's admin token (`tokenSecret`, which it needs). A coordinator over shards walks no graphs, so the engine walks its own (`engine/walk.mjs`), and it tells the model that an app reads its links a step at a time.
 - **The studio has an address of its own.** It runs code a model wrote, so the command center does not serve it: browsers reach it at `publicUrl`, through a node's port, a load balancer, or an Ingress of your own in front of the Service. **Open the studio** asks the engine, through chloedb-server and so only with an admin key, for a link that signs the browser in once, within two minutes, for 30 days. Anything else that reaches the studio's address gets a page that says where to sign in.
@@ -51,12 +51,12 @@ The operator runs the engine's own image (`ghcr.io/chloetech-ai/strata-apps`: No
 | `serviceType`, `nodePort` | `ClusterIP` | the Service's type: `ClusterIP` (put an Ingress in front), `NodePort` (30000 to 32767) or `LoadBalancer` (most clouds bill for one) |
 | `spendCapUsd` | `25` | what the model may cost, in US dollars, counted across restarts |
 | `storage` | `1Gi` | its volume's `size` (it only grows) and `storageClassName` |
-| `image` | `ghcr.io/chloetech-ai/strata-apps:latest` | the engine's image |
+| `image` | `ghcr.io/chloetech-ai/chloedb-apps:latest` | the engine's image |
 | `env` | | the engine's own settings (`STRATA_APPS_MODEL`, `STRATA_APPS_SMALL_MODEL`, ...); secrets go in `secretEnv` |
 | `paused` | `false` | no pod for now (the apps stay in their tables) |
 | `args`, `resources` | | more arguments of the engine, and its container's resources (250m CPU and 600 MiB asked, 1.5 GiB at most) |
 
-The image runs alone as well, with a chloedb-server of its own on its volume: `docker run -p 7730:7730 -v apps:/data -e ANTHROPIC_API_KEY ghcr.io/chloetech-ai/strata-apps` (without `STRATA_APP_TOKEN` there is no login, so keep that on your own machine).
+The image runs alone as well, with a chloedb-server of its own on its volume: `docker run -p 7730:7730 -v apps:/data -e ANTHROPIC_API_KEY ghcr.io/chloetech-ai/chloedb-apps` (without `STRATA_APP_TOKEN` there is no login, so keep that on your own machine).
 
 ## A model and the web, per app
 

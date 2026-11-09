@@ -1,7 +1,7 @@
 name: Image (app engine)
 
 # The app engine's image, which the operator runs beside a cluster
-# (spec.apps): ghcr.io/chloetech-ai/strata-apps, for x86-64 and arm64 in
+# (spec.apps): ghcr.io/chloetech-ai/chloedb-apps, for x86-64 and arm64 in
 # one tag, as image.yml does for chloedb-server.
 #
 # A push to main that changes the engine publishes it as `latest` and as
@@ -35,7 +35,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/chloetech-ai/strata-apps
+  IMAGE: ghcr.io/chloetech-ai/chloedb-apps
   PUSH: ${{ github.event_name != 'pull_request' }}
 
 jobs:

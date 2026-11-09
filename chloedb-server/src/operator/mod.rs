@@ -136,7 +136,7 @@ pub struct Spec {
     /// serve` in a Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sheets: Option<SheetsSpec>,
-    /// The app engine beside the cluster ([`apps`]): strata-apps in a
+    /// The app engine beside the cluster ([`apps`]): chloedb-apps in a
     /// Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apps: Option<AppsSpec>,
@@ -1992,7 +1992,7 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         };
         steps.push(match (&old.apps, &new.apps) {
             (None, Some(a)) => format!(
-                "the app engine starts beside the cluster (strata-apps, a Deployment of one, with a {} volume) and the coordinators list it, so the command center shows Apps → App engine; its apps are kept in this cluster's tables; {}",
+                "the app engine starts beside the cluster (chloedb-apps, a Deployment of one, with a {} volume) and the coordinators list it, so the command center shows Apps → App engine; its apps are kept in this cluster's tables; {}",
                 a.storage.size,
                 what(a)
             ),

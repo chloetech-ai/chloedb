@@ -53,7 +53,7 @@
               "spec": {
                 "properties": {
                   "apps": {
-                    "description": "The app engine beside the cluster: strata-apps in a Deployment of one, which the command center shows under Apps. It keeps the apps it builds as rows of the cluster, calls the model with secretEnv's ANTHROPIC_API_KEY, and needs tokenSecret: its studio, at publicUrl, signs admins in with a link the command center hands out.",
+                    "description": "The app engine beside the cluster: chloedb-apps in a Deployment of one, which the command center shows under Apps. It keeps the apps it builds as rows of the cluster, calls the model with secretEnv's ANTHROPIC_API_KEY, and needs tokenSecret: its studio, at publicUrl, signs admins in with a link the command center hands out.",
                     "properties": {
                       "args": {
                         "description": "More arguments of the engine.",
@@ -82,7 +82,7 @@
                         "type": "array"
                       },
                       "image": {
-                        "description": "The engine's image (default ghcr.io/chloetech-ai/strata-apps:latest).",
+                        "description": "The engine's image (default ghcr.io/chloetech-ai/chloedb-apps:latest).",
                         "type": "string"
                       },
                       "nodePort": {

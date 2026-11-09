@@ -3,12 +3,12 @@
 # client). The operator runs it beside a cluster (spec.apps), on the
 # cluster's coordinators:
 #
-#   docker build -f chloedb-apps/deploy/Dockerfile -t strata-apps:dev chloedb-apps   # from the repository root
+#   docker build -f chloedb-apps/deploy/Dockerfile -t chloedb-apps:dev chloedb-apps   # from the repository root
 #
 # The build context is chloedb-apps. Run alone, without --strata, it starts a
 # chloedb-server of its own (copied from STRATA_SERVER_IMAGE) on /data:
 #
-#   docker run --rm -p 7730:7730 -v apps:/data -e ANTHROPIC_API_KEY strata-apps:dev
+#   docker run --rm -p 7730:7730 -v apps:/data -e ANTHROPIC_API_KEY chloedb-apps:dev
 #
 # Nothing in it updates itself: Claude Code's updater is off, the engine's
 # self-evolving is off (its code is the image's), and the versions below
