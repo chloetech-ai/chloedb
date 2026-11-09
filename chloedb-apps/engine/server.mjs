@@ -9,8 +9,10 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
+import { Login } from './login.mjs';
+import { useSelfCookie } from './checks.mjs';
 import { Engine } from './engine.mjs';
-import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions } from './forge.mjs';
+import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions, useCluster } from './forge.mjs';
 import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
@@ -59,6 +61,23 @@ if (!strataUrl) {
   process.on('SIGTERM', stop);
 }
 const db = new Strata(strataUrl, process.env.STRATA_TOKEN);
+// A Strata of its own answers before startServer returns; one named by
+// --strata may start after the engine does (a cluster's coordinators
+// beside its pod): wait for it, up to STRATA_APPS_WAIT_S (default 300 s).
+const strataHealth = await (async () => {
+  const until = Date.now() + 1000 * (Number(process.env.STRATA_APPS_WAIT_S) || (child ? 0 : 300));
+  for (let said = false; ; said = true) {
+    try { return await db.health(); } catch (e) {
+      if (Date.now() >= until) { console.error(`Strata at ${strataUrl} does not answer: ${e.message}`); process.exit(1); }
+      if (!said) log(`waiting for Strata at ${strataUrl}: ${e.message}`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+})();
+// A cluster's coordinator walks no graphs: the engine walks its own, and
+// tells the model that apps read their links a step at a time (walk.mjs).
+const ON_CLUSTER = strataHealth.role === 'coordinator';
+if (ON_CLUSTER) { useCluster(true); log(`Strata at ${strataUrl} is a coordinator over ${strataHealth.shards?.length ?? '?'} shards`); }
 const engine = new Engine(db, { log });
 // Where the build opens the views it made (engine/checks.mjs).
 engine.baseUrl = `http://127.0.0.1:${PORT}`;
@@ -90,6 +109,11 @@ engine.services = services;
 // A model and the web for apps, each switched on per app (reach.mjs).
 const reach = new Reach({ store: engine.store, log });
 engine.reach = reach;
+// Beside a cluster, who may use the studio (login.mjs): chloedb-server with
+// its app token, and browsers it hands a login to.
+const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
+useSelfCookie(login.selfCookie);
+if (login.on) log(`the studio needs a login, handed over by the command center${login.publicUrl ? `; it is reached at ${login.publicUrl}` : ' (set STRATA_APPS_PUBLIC_URL to say where browsers reach it)'}`);
 log(services.smtpUrl && services.smtpFrom ? `email goes out through ${new URL(services.smtpUrl).host}` : 'email is held in the outbox (set SMTP_URL and SMTP_FROM to send it)');
 
 // ---- who is asking: a session cookie, the same for every app here
@@ -373,6 +397,17 @@ const STATIC = {
   '/kit.css': ['web/kit.css', 'text/css; charset=utf-8'],
   '/design.js': ['web/design.js', 'text/javascript; charset=utf-8'],
   '/activity.js': ['web/activity.js', 'text/javascript; charset=utf-8'],
+  // The engine's page in a cluster's command center (Apps -> App engine).
+  '/cc/view.js': ['web/cc-view.js', 'text/javascript; charset=utf-8'],
+};
+
+// What chloedb-server shows of the engine (its apps, GET /v1/apps).
+const MANIFEST = {
+  name: 'apps',
+  title: 'App engine',
+  description: 'Apps built from a description: written by a model, checked, kept in this cluster as rows, and changed by asking',
+  icon_svg: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/>',
+  view: 'cc/view.js',
 };
 
 async function body(req) {
@@ -467,7 +502,11 @@ async function reachOf(appId, view) {
 }
 
 const routes = [
-  ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, feed: engine.feed, data: child ? DATA : null, autorepair: AUTOREPAIR,
+  ['GET', /^\/app\.json$/, async () => MANIFEST],
+  // A one-time link into the studio, for the command center (login.mjs).
+  ['POST', /^\/api\/handoff$/, async (b, m, url, cx) => login.handoff(cx.req, String(b.next || ''))],
+  ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, cluster: ON_CLUSTER, feed: engine.feed, data: child ? DATA : null, autorepair: AUTOREPAIR,
+    login: login.on ? { publicUrl: login.publicUrl } : null,
     spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
   ['GET', /^\/api\/apps$/, async () => ({ apps: await engine.store.listApps() })],
   ['POST', /^\/api\/apps$/, async (b) => {
@@ -646,6 +685,14 @@ const routes = [
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
+    if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+    if (req.method === 'GET' && url.pathname === '/login' && login.on) return await login.redeem(url, res);
+    const refused = await login.check(req, url);
+    if (refused) {
+      if (refused.json) return send(res, refused.status, refused.json);
+      res.writeHead(refused.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(refused.html);
+    }
     // An app on its own, without the studio around it (for phones and sharing).
     const page = req.method === 'GET' && /^\/a\/[a-z0-9]+\/?$/.test(url.pathname) ? STATIC['/'] : STATIC[url.pathname];
     if (req.method === 'GET' && page) {
@@ -678,10 +725,7 @@ const server = http.createServer(async (req, res) => {
     }
     // Only this page may call the API: a page on another site could otherwise
     // post to localhost.
-    if (req.method === 'POST') {
-      const origin = req.headers.origin;
-      if (origin && origin !== `http://${req.headers.host}`) return send(res, 403, { error: 'cross-origin request refused' });
-    }
+    if (req.method === 'POST' && !login.sameOrigin(req)) return send(res, 403, { error: 'cross-origin request refused' });
     // An upload is the file's bytes as the body; its name and type in the query.
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
       const bytes = await rawBody(req, MAX_FILE);

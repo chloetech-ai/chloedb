@@ -150,6 +150,9 @@ cd chloedb-apps
 | `--data DIR` (or `STRATA_APPS_DATA`) | where the engine keeps its database |
 | `--strata URL` (or `STRATA_URL`, with `STRATA_TOKEN`) | use a chloedb-server that is already running (started with `--seq-no` for live updates) |
 | `STRATA_SERVER_BIN` | the chloedb-server to start |
+| `STRATA_APPS_WAIT_S` | how long the engine waits at start for a chloedb-server named by `--strata` to answer (default 300 s: beside a cluster, its coordinators may start after it) |
+| `STRATA_APP_TOKEN`, `STRATA_APPS_PUBLIC_URL` | beside a cluster: the token chloedb-server sends when it forwards `/v1/apps/apps/...` here (set, it turns the studio's login on), and where browsers reach the studio, for the one-time links the command center hands out ([On a cluster](../docs/chloedb/apps.md#on-a-cluster)) |
+| `STRATA_APPS_TEST_SHARDS` | `npm test` against a coordinator over this many shards, in place of one server |
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
@@ -324,9 +327,10 @@ that fails gets one more try with the problems listed.
 
 ## What it is not (yet)
 
-A prototype on one machine: people can sign in to apps, but the studio
-itself has no sign-in (anyone who can reach it can change any app; put it
-behind `deploy/gate.mjs` to share it), app data is not yet limited by row
+A prototype: people can sign in to apps, but run alone the studio itself
+has no sign-in (anyone who can reach it can change any app; put it behind
+`deploy/gate.mjs` to share it, or run it beside a cluster, where it signs in
+the cluster's admins), app data is not yet limited by row
 rules on the server (`lib.access` checks in views and functions only), what
 the model costs is limited only in all (`STRATA_APPS_SPEND_CAP_USD`) and per
 app for apps' own questions, and a capability that passes the checks can

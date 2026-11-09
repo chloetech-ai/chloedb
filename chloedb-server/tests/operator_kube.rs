@@ -407,4 +407,44 @@ async fn a_crawler_runs_beside_a_cluster_on_an_api_server() {
         let o = k.get(gone).await.unwrap();
         assert!(o.is_none() || !o.unwrap()["metadata"]["deletionTimestamp"].is_null(), "{gone} is deleted");
     }
+
+    // The app engine the same way, with its volume: the resource keeps
+    // spec.apps and refuses a node port out of range; its Service, volume
+    // and Deployment are applied; the coordinators list it; the Service
+    // and Deployment go without it, and the volume stays.
+    let mut apps = shop.clone();
+    apps["spec"]["secretEnv"] = json!([{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}]);
+    apps["spec"]["apps"] = json!({"publicUrl": "http://203.0.113.5:30731", "serviceType": "NodePort", "nodePort": 30731, "storage": {"size": "1Gi"}});
+    let mut bad = apps.clone();
+    bad["spec"]["apps"]["nodePort"] = json!(80);
+    let e = k.apply(&format!("{CLUSTERS}/shop"), &bad).await.unwrap_err();
+    assert!(e.contains("nodePort"), "{e}");
+    k.apply(&format!("{CLUSTERS}/shop"), &apps).await.unwrap();
+    let stored = get(&k, &format!("{CLUSTERS}/shop")).await;
+    assert_eq!(stored["spec"]["apps"], apps["spec"]["apps"]);
+    let spec: operator::Spec = serde_json::from_value(stored["spec"].clone()).unwrap();
+    let c = Cluster { spec: spec.clone(), ..c };
+    c.apps(&spec).await.unwrap();
+    let path = "/apis/apps/v1/namespaces/db/deployments/shop-apps";
+    let d = get(&k, path).await;
+    let pod = &d["spec"]["template"]["spec"];
+    assert_eq!(pod["volumes"][0]["persistentVolumeClaim"]["claimName"], "shop-apps");
+    assert_eq!(pod["containers"][0]["args"], json!(["--strata", "http://shop:7700", "--host", "0.0.0.0", "--port", "7730", "--data", "/data"]));
+    let svc = get(&k, "/api/v1/namespaces/db/services/shop-apps").await;
+    assert_eq!((&svc["spec"]["type"], &svc["spec"]["ports"][0]["nodePort"]), (&json!("NodePort"), &json!(30731)));
+    let claim = "/api/v1/namespaces/db/persistentvolumeclaims/shop-apps";
+    assert_eq!(get(&k, claim).await["spec"]["resources"]["requests"]["storage"], "1Gi");
+    let rv = d["metadata"]["resourceVersion"].clone();
+    c.apps(&spec).await.unwrap();
+    assert_eq!(get(&k, path).await["metadata"]["resourceVersion"], rv, "applied only when it changes");
+    c.set_coordinator(&[vec!["http://shop-s0-0.shop-servers.db.svc:7701".into()]], 1).await.unwrap();
+    let d = get(&k, "/apis/apps/v1/namespaces/db/deployments/shop-coordinator").await;
+    let env = d["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+    assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://shop-crawler:7800,apps=http://shop-apps:7730"), "{env:?}");
+    c.apps(&operator::Spec { apps: None, ..spec.clone() }).await.unwrap();
+    for gone in [path, "/api/v1/namespaces/db/services/shop-apps"] {
+        let o = k.get(gone).await.unwrap();
+        assert!(o.is_none() || !o.unwrap()["metadata"]["deletionTimestamp"].is_null(), "{gone} is deleted");
+    }
+    assert!(k.get(claim).await.unwrap().is_some(), "its volume stays until the cluster goes");
 }

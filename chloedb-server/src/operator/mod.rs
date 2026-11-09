@@ -31,6 +31,7 @@
 //! Failover is the servers' own (`--failover-after-ms`): the operator does
 //! not choose primaries, except to hand one over before its pod goes.
 
+pub mod apps;
 pub mod autoscale;
 pub mod crawler;
 pub mod follow;
@@ -38,6 +39,7 @@ pub mod kube;
 pub mod sheets;
 pub mod upgrade;
 
+pub use apps::AppsSpec;
 pub use crawler::CrawlerSpec;
 pub use follow::FollowSpec;
 pub use sheets::SheetsSpec;
@@ -134,6 +136,10 @@ pub struct Spec {
     /// serve` in a Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sheets: Option<SheetsSpec>,
+    /// The app engine beside the cluster ([`apps`]): strata-apps in a
+    /// Deployment of one, which the coordinators list as an app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apps: Option<AppsSpec>,
 }
 
 /// How the operator makes a change (`spec.rollout`). Not part of a
@@ -374,6 +380,7 @@ impl Default for Spec {
             follow: None,
             crawler: None,
             sheets: None,
+            apps: None,
         }
     }
 }
@@ -406,7 +413,7 @@ impl Spec {
 
     /// The apps beside the cluster that the coordinators list, by name.
     pub fn apps(&self) -> Vec<&'static str> {
-        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
+        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP), (self.apps.is_some(), apps::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
     }
 
     /// `settings` with `secretEnv` when there is one: a cluster without it
@@ -468,6 +475,12 @@ impl Spec {
         }
         if let Some(s) = &self.sheets {
             s.check()?;
+        }
+        if let Some(a) = &self.apps {
+            a.check()?;
+            if self.token_secret.is_none() {
+                return Err("apps needs tokenSecret: without the cluster's token anyone who reached the studio would build apps on its model key".into());
+            }
         }
         if let Some(c) = &self.cluster_token_secret {
             if self.token_secret.is_none() {
@@ -631,6 +644,12 @@ pub trait Platform {
     /// a Deployment of one and its Service on Kubernetes. Applied once the
     /// coordinators are there.
     async fn sheets(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
+    /// Runs the app engine `spec.apps` asks for, or none ([`apps`]): a
+    /// Deployment of one, its Service and its volume on Kubernetes.
+    /// Applied once the coordinators are there.
+    async fn apps(&self, _spec: &Spec) -> Result<(), String> {
         Ok(())
     }
 }
@@ -1045,6 +1064,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
     p.follow(spec).await?;
     p.crawler(spec).await?;
     p.sheets(spec).await?;
+    p.apps(spec).await?;
     let view = match admin.view().await {
         Ok(v) => v,
         Err(e) => return Ok(Outcome::new(Phase::Creating, format!("waiting for the coordinator: {e}"))),
@@ -1815,6 +1835,14 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
     } else if to.is_none() {
         refused = Some(format!("the volume size {:?} is not one Kubernetes reads (10Gi, 500Mi, 1Ti)", new.storage.size));
     }
+    if let (Some(a), Some(b)) = (&old.apps, &new.apps) {
+        if quantity(&b.storage.size) < quantity(&a.storage.size) {
+            refused = Some(format!("the app engine's volume only grows: {} is smaller than {}", b.storage.size, a.storage.size));
+        }
+        if b.storage.storage_class_name != a.storage.storage_class_name {
+            warnings.push("apps.storage.storageClassName applies to a volume made from now on: the app engine keeps the one it has".into());
+        }
+    }
     if new.coordinators != old.coordinators {
         steps.push(format!("{} coordinators, from {}", new.coordinators, old.coordinators));
     }
@@ -1943,6 +1971,39 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
             (None, None) => unreachable!("the crawler specs differ"),
         });
     }
+    if let Some(a) = &new.apps {
+        if !new.secret_env.iter().any(|e| e.name == "ANTHROPIC_API_KEY") {
+            warnings.push("the app engine has no model key: name ANTHROPIC_API_KEY in secretEnv, or it builds no app".into());
+        }
+        if a.public_url.is_none() {
+            warnings.push("apps.publicUrl is not set: the command center lists the engine's apps but cannot open the studio".into());
+        }
+        if a.service_type == "LoadBalancer" && old.apps.as_ref().is_none_or(|o| o.service_type != "LoadBalancer") {
+            warnings.push("a LoadBalancer Service is billed by most clouds (on DigitalOcean about $12 a month)".into());
+        }
+        if a.spend_cap_usd == 0.0 {
+            warnings.push("apps.spendCapUsd is 0: nothing limits what the model may cost".into());
+        }
+    }
+    if new.apps != old.apps {
+        let what = |a: &AppsSpec| match a.spend_cap_usd {
+            c if c == 0.0 => "with no limit on what the model may cost".to_string(),
+            _ => format!("the model may cost ${} before calls are refused", a.spend_cap()),
+        };
+        steps.push(match (&old.apps, &new.apps) {
+            (None, Some(a)) => format!(
+                "the app engine starts beside the cluster (strata-apps, a Deployment of one, with a {} volume) and the coordinators list it, so the command center shows Apps → App engine; its apps are kept in this cluster's tables; {}",
+                a.storage.size,
+                what(a)
+            ),
+            (Some(_), None) => "the app engine stops (its Deployment and Service go; the apps stay in their tables, and its volume stays until the cluster goes) and the coordinators no longer list it".into(),
+            (Some(a), Some(b)) if b.paused && !a.paused => "the app engine pauses: its pod goes (the apps stay in their tables)".into(),
+            (Some(a), Some(b)) if a.paused && !b.paused => format!("the app engine starts again, with the apps it had; {}", what(b)),
+            (Some(a), Some(b)) if quantity(&b.storage.size) > quantity(&a.storage.size) => format!("the app engine's volume grows from {} to {} (the storage class must allow it)", a.storage.size, b.storage.size),
+            (_, Some(b)) => format!("the app engine restarts with the new settings, with the apps it had; {}", what(b)),
+            (None, None) => unreachable!("the apps specs differ"),
+        });
+    }
     if new.sheets != old.sheets {
         steps.push(match (&old.sheets, &new.sheets) {
             (None, Some(_)) => "spreadsheets start beside the cluster (strata-sheets serve, a Deployment of one) and the coordinators list them, so the command center shows Apps → Sheets; the workbooks are kept in the tables sheets_books and sheets_cells".into(),
@@ -2031,6 +2092,7 @@ pub fn crd() -> Json {
             "follow": follow::schema(),
             "crawler": crawler::schema(),
             "sheets": sheets::schema(),
+            "apps": apps::schema(),
         },
     });
     let status = free("What the operator found and does.");
@@ -2082,6 +2144,47 @@ mod tests {
         serde_json::from_value::<Spec>(json!({"demo": 1, "clusterTokenSecret": "c", "tokenSecret": "t"})).unwrap().check().unwrap();
         let s: Spec = serde_json::from_value(json!({"demo": 30})).unwrap();
         assert_eq!(chloedb::schema::Schema::from_json(&s.schema_json()).unwrap(), crate::demo::schema(30));
+    }
+
+    #[test]
+    fn the_app_engine_needs_the_clusters_token_and_says_what_it_costs() {
+        let none: Spec = serde_json::from_value(json!({"demo": 10, "tokenSecret": "t"})).unwrap();
+        let open: Spec = serde_json::from_value(json!({"demo": 10, "apps": {}})).unwrap();
+        assert!(open.check().unwrap_err().contains("apps needs tokenSecret"));
+        let bad: Spec = serde_json::from_value(json!({"demo": 10, "tokenSecret": "t", "apps": {"nodePort": 30731}})).unwrap();
+        assert!(bad.check().unwrap_err().contains("needs serviceType NodePort"));
+        let (_, new) = patched(&serde_json::to_value(&none).unwrap(), &json!({"apps": {}})).unwrap();
+        assert_eq!(new.apps(), ["apps"]);
+        let p = plan(&none, &new, 1, 3);
+        assert!(p["refused"].is_null(), "{p}");
+        let (steps, warnings) = (p["steps"].to_string(), p["warnings"].to_string());
+        for want in ["the coordinators restart", "the app engine starts beside the cluster", "1Gi volume", "Apps → App engine", "may cost $25 before calls are refused"] {
+            assert!(steps.contains(want), "{want}: {steps}");
+        }
+        for want in ["no model key", "publicUrl is not set"] {
+            assert!(warnings.contains(want), "{want}: {warnings}");
+        }
+        assert_eq!(p["restarts"], false, "no server restarts for it");
+        let with_key = |patch: Json| patched(&serde_json::to_value(&new).unwrap(), &patch).unwrap().1;
+        let all = with_key(json!({"secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}], "apps": {"publicUrl": "https://studio.example", "serviceType": "LoadBalancer", "spendCapUsd": 0}}));
+        let p = plan(&new, &all, 1, 3);
+        let warnings = p["warnings"].to_string();
+        assert!(!warnings.contains("no model key") && !warnings.contains("publicUrl"), "{warnings}");
+        assert!(warnings.contains("LoadBalancer Service is billed"), "{warnings}");
+        assert!(warnings.contains("nothing limits what the model may cost"), "{warnings}");
+        assert!(p["steps"].to_string().contains("no limit on what the model may cost"), "{p}");
+        let steps = |a: &Spec, b: &Spec| plan(a, b, 1, 3)["steps"].to_string();
+        assert!(steps(&new, &with_key(json!({"apps": {"paused": true}}))).contains("the app engine pauses"));
+        assert!(steps(&new, &with_key(json!({"apps": {"storage": {"size": "5Gi"}}}))).contains("volume grows from 1Gi to 5Gi"));
+        assert!(steps(&new, &none).contains("its volume stays until the cluster goes"));
+        let smaller = plan(&with_key(json!({"apps": {"storage": {"size": "5Gi"}}})), &new, 1, 3);
+        assert!(smaller["refused"].as_str().unwrap_or_default().contains("the app engine's volume only grows"), "{smaller}");
+        // A cluster without it keeps its coordinators' hash.
+        let mut j = json!({"image": none.image, "imagePullPolicy": null, "resources": null, "args": [], "tokenSecret": "t", "clusterTokenSecret": null});
+        assert_eq!(none.coordinator_config(), short_hash(&j));
+        j["apps"] = json!(["apps"]);
+        assert_eq!(new.coordinator_config(), short_hash(&j));
+        assert!(!serde_json::to_value(&none).unwrap().as_object().unwrap().contains_key("apps"));
     }
 
     #[test]
