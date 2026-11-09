@@ -3,7 +3,7 @@
 //
 // It needs only `fetch`, so it runs in Node 18 and later, Bun, Deno,
 // browsers and edge workers, with no native code: `import { connect } from
-// "strata-db/client"`. In a browser, the server answers pages of its own
+// "chloedb/client"`. In a browser, the server answers pages of its own
 // origin (a page it serves, or one behind the same reverse proxy): it
 // sends no CORS headers, and refuses writes from other origins.
 

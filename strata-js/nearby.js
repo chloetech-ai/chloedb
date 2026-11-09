@@ -18,7 +18,7 @@
 // old). It reports its counts to the server every `reportEvery` searches
 // (`POST /v1/slices/<table>/usage`), which the command center shows.
 //
-//   import { openNearby } from "strata-db";
+//   import { openNearby } from "chloedb";
 //
 //   const near = await openNearby("http://127.0.0.1:7700", "places", "./slice");
 //   await near.moveTo(40.7484, -73.9857);

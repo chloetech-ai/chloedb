@@ -3,7 +3,7 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [project]
-name = "strata-db"
+name = "chloedb"
 version = "0.1.0"
 description = "ChloeDB from Python: an embedded search database (full text, vectors, graphs, SQL), or a strata-server over HTTP"
 readme = "README.md"

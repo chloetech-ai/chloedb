@@ -8,7 +8,7 @@
 // `Result` and write rows the same way, so code can move from one to the
 // other:
 //
-//   import { open } from "strata-db";
+//   import { open } from "chloedb";
 //
 //   const db = await open("books.strata", { schema: {
 //     table: "books", key: "id",

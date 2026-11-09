@@ -10,11 +10,13 @@ The package is in [`strata-py/`](https://github.com/chloetech-ai/strata/tree/mai
 
 ### Prebuilt
 
-Each `strata-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/strata/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+Each `chloedb-py-v<version>` release (`strata-py-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/strata/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
 
 ```sh
 pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
 ```
+
+Release 0.1.0 was made before the rename, as `strata-db`; releases after it are `chloedb` (`pip install chloedb -f <its assets page>`), and `import chloedb` is `import strata` in them, the same package by either name.
 
 | platform | wheel |
 |---|---|

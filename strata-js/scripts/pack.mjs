@@ -1,7 +1,7 @@
 // Packs the package with its built addon (strata.node) for one platform,
 // as a tarball that `npm install` takes with no Rust and no build:
 //
-//   node scripts/pack.mjs linux-x64-gnu     # dist/strata-db-<version>-linux-x64-gnu.tgz
+//   node scripts/pack.mjs linux-x64-gnu     # dist/chloedb-<version>-linux-x64-gnu.tgz
 //
 // The platform is <os>-<cpu>[-<libc>], as Node names them: linux-x64-gnu,
 // linux-arm64-gnu, darwin-arm64, darwin-x64. The tarball says so (`os`,

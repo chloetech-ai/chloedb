@@ -1,4 +1,4 @@
-# strata-db: ChloeDB from JavaScript
+# chloedb: ChloeDB from JavaScript
 
 ChloeDB opened from its file inside a Node, Bun or Deno process, with no
 server, the way better-sqlite3 opens a SQLite file; or a client of a running
@@ -6,7 +6,7 @@ strata-server from any JavaScript runtime with `fetch`. Both have the same
 methods. Documentation: [docs/strata/javascript.md](../docs/strata/javascript.md).
 
 ```js
-import { open } from "strata-db";
+import { open } from "chloedb";
 
 const db = await open("books.strata", {
   schema: { table: "books", key: "id", fields: [
@@ -38,5 +38,5 @@ cd ../my-app && npm install ../strata/strata-js
 | `client.js`, `client.d.ts` | `Client` and `connect`: strata-server over HTTP with `fetch`, no addon |
 | `common.js`, `common.d.ts` | what both share: `Result`, `StrataError`, `search`, the rank log, JSON with 64-bit integers |
 | `scripts/build.mjs` | builds the addon with cargo and copies it to `strata.node` |
-| `scripts/pack.mjs` | packs the package with its addon for one platform (`dist/strata-db-<version>-<platform>.tgz`); `.github/workflows/js-release.yml` runs it per platform on a tag |
+| `scripts/pack.mjs` | packs the package with its addon for one platform (`dist/chloedb-<version>-<platform>.tgz`); `.github/workflows/js-release.yml` runs it per platform on a tag |
 | `test/` | `node --test`: the database in-process, and the client against a strata-server |

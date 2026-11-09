@@ -5,13 +5,14 @@ name: strata-js release
 # tarball of the JavaScript and its addon (strata-js/scripts/pack.mjs),
 # which `npm install <tarball or its URL>` takes as it is.
 #
-# A tag strata-js-v<version> (strata-js/package.json's version) builds and
-# tests every platform and attaches the tarballs to the tag's GitHub
-# release; a run started by hand does the same and keeps them as the run's
-# artifacts. Publishing to npm comes later.
+# A tag chloedb-js-v<version> (strata-js/package.json's version; the old
+# name, strata-js-v<version>, works too) builds and tests every platform
+# and attaches the tarballs to the tag's GitHub release; a run started
+# by hand does the same and keeps them as the run's artifacts.
+# Publishing to npm comes later.
 on:
   push:
-    tags: ["strata-js-v*"]
+    tags: ["chloedb-js-v*", "strata-js-v*"]
   workflow_dispatch:
   # A change to the release itself builds every platform as a release does,
   # without releasing.
@@ -53,7 +54,9 @@ jobs:
           node-version: "22"
       - name: The tag names package.json's version
         if: startsWith(github.ref, 'refs/tags/')
-        run: test "strata-js-v$(node -p 'require("./strata-js/package.json").version')" = "$GITHUB_REF_NAME"
+        run: |
+          v=$(node -p 'require("./strata-js/package.json").version')
+          test "$GITHUB_REF_NAME" = "chloedb-js-v$v" || test "$GITHUB_REF_NAME" = "strata-js-v$v"
       - name: Build
         working-directory: strata-js
         run: node scripts/build.mjs
@@ -71,13 +74,13 @@ jobs:
           npm init -y > /dev/null
           CARGO=false npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/strata-js/dist/*.tgz
           node --input-type=module -e '
-            import { open, version } from "strata-db";
+            import { open, version } from "chloedb";
             const db = await open("notes.strata", { schema: { table: "notes", key: "id", fields: [{ name: "id", type: "int" }, { name: "body", type: "text" }] } });
             await db.upsert([{ id: 1, body: "rivers and mountains" }, { id: 2, body: "the sea" }]);
             const hits = await db.search("river");
             if (hits.length !== 1 || hits.at(0).id !== 1) throw new Error("search found " + JSON.stringify(hits.objects()));
             await db.close();
-            console.log(`strata-db ${version}: installed and searched on ${process.platform}-${process.arch}`);
+            console.log(`chloedb ${version}: installed and searched on ${process.platform}-${process.arch}`);
           '
       - uses: actions/upload-artifact@v7
         with:
@@ -107,6 +110,6 @@ jobs:
         run: |
           ls -la dist
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" --title "strata-js ${TAG#strata-js-v}" --notes "Prebuilt strata-db for Node, Bun and Deno: \`npm install\` the tarball of your platform (its URL works too); no Rust needed. Platforms: linux-x64-gnu, linux-arm64-gnu (glibc 2.35 or later), darwin-arm64, darwin-x64 (macOS 11 or later)."
+            gh release create "$TAG" --repo "$REPO" --title "chloedb for JavaScript ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) for Node, Bun and Deno: \`npm install\` the tarball of your platform (its URL works too); no Rust needed. Platforms: linux-x64-gnu, linux-arm64-gnu (glibc 2.35 or later), darwin-arm64, darwin-x64 (macOS 11 or later)."
           fi
           gh release upload "$TAG" dist/*.tgz --repo "$REPO" --clobber
