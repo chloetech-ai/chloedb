@@ -113,7 +113,7 @@ def test_no_rows_and_mixed_columns(tdb):
     # error that says which.
     t = tdb.query_arrow("SELECT CASE WHEN n > 3 THEN n ELSE 0.5 END AS m FROM t LIMIT 20").to_pyarrow()
     assert t.schema.field("m").type == pa.float64()
-    with pytest.raises(chloedb.StrataError, match="column m: a column of values of several types"):
+    with pytest.raises(chloedb.ChloeDBError, match="column m: a column of values of several types"):
         tdb.query_arrow("SELECT CASE WHEN n > 3 THEN n ELSE 'small' END AS m FROM t LIMIT 20")
 
 

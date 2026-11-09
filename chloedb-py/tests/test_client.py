@@ -37,7 +37,7 @@ def test_client_reads_and_writes(client):
     assert len(client) == 2198
     got = client.query("SELECT title FROM books WHERE id = 'b0001'").scalar()
     assert got == "Changed"
-    with pytest.raises(chloedb.StrataError, match="HTTP 400") as e:
+    with pytest.raises(chloedb.ChloeDBError, match="HTTP 400") as e:
         client.query("SELECT nope FROM books")
     assert e.value.status == 400
 
@@ -51,7 +51,7 @@ def test_client_rank_profiles(client):
     plan = client.explain(sql, q="dragon")["ir"]
     assert "rank_profiles" in plan["features"] and client.run(plan).keys == r.keys
     assert client.sql("CREATE OR REPLACE RANK PROFILE liked ON books AS SELECT * FROM books ORDER BY rating DESC") == 0
-    with pytest.raises(chloedb.StrataError, match="is not the one the plan was made with"):
+    with pytest.raises(chloedb.ChloeDBError, match="is not the one the plan was made with"):
         client.run(plan)
     assert client.sql("DROP RANK PROFILE liked ON books") == 0
 
@@ -67,7 +67,7 @@ def test_client_writes_to_any_table(client, tmp_path):
     assert client.import_file(f, table="events") == {"rows": 2, "bulk": False, "skipped_fields": []}
     assert client.query("SELECT COUNT(*) FROM events").scalar() == 1500
     assert len(client.table("events").select("id").where(chloedb.col("usr") == "u9").run()) == 2
-    with pytest.raises(chloedb.StrataError, match="no such table: nope"):
+    with pytest.raises(chloedb.ChloeDBError, match="no such table: nope"):
         client.insert({"id": 1}, table="nope")
     assert client.sql("DROP TABLE events") == 0
     assert [t["table"] for t in client.tables()] == ["books"]
@@ -102,10 +102,10 @@ def test_client_builder_and_embed(client, tmp_path):
         assert local.embed("dragon ship", "emb") == pytest.approx(v)
     near = client.run(t.select("id").order_by(similarity("emb", v)).limit(3))
     assert near.rows == client.query("SELECT id FROM books ORDER BY similarity(emb, :v) DESC LIMIT 3", v={"embed": "dragon ship"}).rows
-    with pytest.raises(chloedb.StrataError, match="HTTP 400"):
+    with pytest.raises(chloedb.ChloeDBError, match="HTTP 400"):
         client.embed("x", "title")
     # A sound file's vector is a model of sound's: the books' reads text.
-    with pytest.raises(chloedb.StrataError, match="does not embed sound"):
+    with pytest.raises(chloedb.ChloeDBError, match="does not embed sound"):
         client.embed(audio=tone_wav())
     a = client.search("dragon", limit=5, where=col("year") >= 1950)
     b = client.search("dragon", limit=5, where="year >= 1950")
@@ -116,7 +116,7 @@ def test_client_token(tmp_path, serve):
     path = tmp_path / "t.strata"
     chloedb.Database.create(path, BOOKS).close()
     url = serve(path, "--token", "s3cret")
-    with pytest.raises(chloedb.StrataError) as e:
+    with pytest.raises(chloedb.ChloeDBError) as e:
         chloedb.connect(url, token="wrong").query("SELECT id FROM books")
     assert e.value.status == 401
     assert len(chloedb.connect(url, token="s3cret")) == 0
@@ -137,7 +137,7 @@ def test_client_bool_and_timestamp(tmp_path, serve):
     r = client.query("SELECT id, done, at FROM tasks WHERE at >= :t ORDER BY n", t=datetime(2026, 10, 1))
     assert [list(row.values()) for row in r] == [["a", True, "2026-10-01T09:00:00Z"], ["b", False, "2026-10-02T00:00:00Z"]]
     assert client.query("SELECT id FROM tasks WHERE done = :d", d=False).keys == ["b"]
-    with pytest.raises(chloedb.StrataError, match="HTTP 400"):
+    with pytest.raises(chloedb.ChloeDBError, match="HTTP 400"):
         client.insert({"id": "x", "done": 2})
 
 
@@ -158,7 +158,7 @@ def test_client_gbdt(tmp_path, serve):
     assert "rank_models" in plan["ir"]["features"] and any(line.startswith("ranking model: m (hash ") for line in plan["tree"])
     assert client.run(plan["ir"]).keys == r.keys
     model_dir(tmp_path, "xgb_rank")
-    with pytest.raises(chloedb.StrataError, match="is not the one the plan was made with"):
+    with pytest.raises(chloedb.ChloeDBError, match="is not the one the plan was made with"):
         client.run(plan["ir"])
 
 
@@ -174,7 +174,7 @@ def test_client_cross_encoder(tmp_path, serve):
     q = client.table().select("id", chloedb.score()).order_by(chloedb.bm25("description", "dragon ship winter"))
     got = client.run(q.rerank(chloedb.cross_encoder("builtin:overlap", ["title", "description"], "dragon ship winter"), 20).limit(5))
     assert (got.keys, got.scores) == (r.keys, r.scores)
-    with pytest.raises(chloedb.StrataError, match="at most 20 rows"):
+    with pytest.raises(chloedb.ChloeDBError, match="at most 20 rows"):
         client.query(sql.replace("LIMIT 20", "LIMIT 21"), q="dragon ship winter")
 
 
@@ -208,7 +208,7 @@ def test_client_streams_events_once(client):
     # is refused, after the lines before it.
     assert client.stream(events(10, 20))["skipped"] == 20
     twice = [*events(4000, 4001), *events(4000, 4001)]
-    with pytest.raises(chloedb.StrataError, match="offset 4000 comes after 4000") as e:
+    with pytest.raises(chloedb.ChloeDBError, match="offset 4000 comes after 4000") as e:
         client.stream(twice)
     assert e.value.answer["lines"] == 1
     assert client.source("views/0") == 4000
@@ -236,7 +236,7 @@ def test_client_sqlite_in_and_out(client, tmp_path):
     assert [(t["table"], t["rows"], t["created"]) for t in r["tables"]] == [("books", 1, False), ("reviews", 2, True)]
     assert client.query("SELECT title FROM books WHERE id = 'b0001'").scalar() == "River of stars"
     assert client.query("SELECT r.stars FROM reviews r JOIN books b ON r.book = b.id WHERE MATCH(r.said, 'ending')").scalar() == 3
-    with pytest.raises(chloedb.StrataError, match="no table nope"):
+    with pytest.raises(chloedb.ChloeDBError, match="no table nope"):
         client.import_sqlite(src, tables="nope")
 
     out = tmp_path / "out.sqlite"
@@ -256,7 +256,7 @@ def test_client_rank_log(client):
     records = client.export_rank_log()
     assert [x["row_key"] for x in records] == served.keys and [x["id"] for x in records] == [f"req-1#{i}" for i in range(4)]
     assert [x["features"] for x in records] == [dict(zip(served.columns[2:], row[2:])) for row in served.rows]
-    with pytest.raises(chloedb.StrataError, match="not a log table"):
+    with pytest.raises(chloedb.ChloeDBError, match="not a log table"):
         client.export_rank_log(table="books")
 
 
@@ -308,14 +308,14 @@ def test_client_sends_a_refused_request_again():
         seen.clear()
         partial = (429, {"error": "busy. shard 0 (1 rows) took the write before it failed, and keep it", "partial": True, "shards": []})
         answers[:] = [partial]
-        with pytest.raises(chloedb.StrataError) as e:
+        with pytest.raises(chloedb.ChloeDBError) as e:
             c.write([{"op": "upsert", "doc": {"id": "a"}}, {"op": "upsert", "doc": {"id": "b"}}])
         assert e.value.status == 429 and e.value.answer["partial"] is True and len(seen) == 1
         # ...nor anything once retry_for has passed.
         seen.clear()
         answers[:] = [busy]
         c = chloedb.connect(f"http://127.0.0.1:{server.server_port}", retry_for=0)
-        with pytest.raises(chloedb.StrataError):
+        with pytest.raises(chloedb.ChloeDBError):
             c.write([{"op": "upsert", "doc": {"id": "a"}}])
         assert len(seen) == 1
     finally:
@@ -343,7 +343,7 @@ assert [r["id"] for r in c.query("SELECT id FROM notes WHERE MATCH(body, 'tent')
 try:
     c.query("SELECT nope FROM notes")
     raise AssertionError("an unknown column is refused")
-except chloedb.StrataError as e:
+except chloedb.ChloeDBError as e:
     assert e.status == 400, e.status
 try:
     chloedb.open(sys.argv[2], schema={"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}]})

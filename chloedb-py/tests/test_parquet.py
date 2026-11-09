@@ -50,14 +50,14 @@ def test_from_parquet_and_back(tmp_path):
         out = tmp_path / "copy.parquet"
         done = db.export_parquet(out)
         assert [(t["table"], t["rows"], t["file"]) for t in done["tables"]] == [("events", 3, "copy.parquet")]
-        with pytest.raises(chloedb.StrataError, match="exists"):
+        with pytest.raises(chloedb.ChloeDBError, match="exists"):
             db.export_parquet(out)
         t = pq.read_table(out)
         assert t.schema.field("emb").type == pa.list_(pa.float32(), 3)
         assert t.schema.field("at").type == pa.timestamp("us", tz="UTC")
         assert t.schema.field("ok").type == pa.bool_()
         assert t.schema.field("tags").type == pa.list_(pa.string())
-        assert b"chloedb.schema" in pq.read_metadata(out).metadata
+        assert b"strata.schema" in pq.read_metadata(out).metadata
         assert sorted(t.column("id").to_pylist()) == [1, 2, 3]
         with chloedb.from_parquet(out, tmp_path / "back.strata") as back:
             assert back.schema == db.schema
@@ -165,12 +165,12 @@ def test_s3_urls(s3, tmp_path):
         db.export_parquet("s3://lake/out/events.parquet", tables="events")
         got = s3.get_object(Bucket="lake", Key="out/events.parquet")["Body"].read()
         assert got[:4] == b"PAR1"
-        with pytest.raises(chloedb.StrataError, match="exists"):
+        with pytest.raises(chloedb.ChloeDBError, match="exists"):
             db.export_parquet("s3://lake/out/events.parquet", tables="events")
         db.export_parquet("s3://lake/out/all/")
         keys = sorted(o["Key"] for o in s3.list_objects_v2(Bucket="lake", Prefix="out/all/")["Contents"])
         assert keys == ["out/all/events.parquet", "out/all/y2026.parquet"]
-        with pytest.raises(chloedb.StrataError, match="exists"):
+        with pytest.raises(chloedb.ChloeDBError, match="exists"):
             db.export_parquet("s3://lake/out/all")
         # Other formats read and write URLs too.
         db.export_sqlite("s3://lake/out/e.sqlite")
@@ -180,7 +180,7 @@ def test_s3_urls(s3, tmp_path):
     with chloedb.Database.open(tmp_path / "e.strata") as db:
         assert db.import_file("s3://lake/rows/more.jsonl", table="events")["rows"] == 1
         assert len(db.query("SELECT id FROM events WHERE id = 7").rows) == 1
-    with pytest.raises(chloedb.StrataError, match="no such object"):
+    with pytest.raises(chloedb.ChloeDBError, match="no such object"):
         chloedb.plan_parquet("s3://lake/nothing/here")
     # Keys are read as written: a Hive value Spark percent-encodes stays one.
     p = tmp_path / "city.parquet"

@@ -184,7 +184,7 @@ def test_a_bad_event_stops_the_consumer_after_the_events_before_it(server):
     assert totals(c) == (60, 60)
     assert c.source("clicks/0") == 59
     # A write the server refuses (no such table) is not retried either.
-    with pytest.raises(chloedb.StrataError, match="HTTP 400"):
+    with pytest.raises(chloedb.ChloeDBError, match="HTTP 400"):
         ingest.consume(c, Memory({("views", 0): [b"{}"]}), lambda e: {"op": "insert", "table": "views", "doc": {}}, idle=0.2)
     # None writes only the offset.
     assert ingest.consume(c, Memory({("views", 0): [b"{}"] * 5}), lambda e: None, idle=0.2)["written"] == 0
@@ -193,7 +193,7 @@ def test_a_bad_event_stops_the_consumer_after_the_events_before_it(server):
 
 KAFKA = os.environ.get("CHLOEDB_KAFKA")
 CONSUMER = """
-import json, sys, time, strata
+import json, sys, time, chloedb
 from chloedb import ingest
 url, topic, group, idle = sys.argv[1:5]
 # At most 5,000 events a second, so that a consumer is still writing when it

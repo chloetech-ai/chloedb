@@ -57,7 +57,7 @@ def test_from_sqlite_and_back(tmp_path):
         out = tmp_path / "copy.sqlite"
         done = db.export_sqlite(out)
         assert [(t["table"], t["rows"], t["fts"]) for t in done["tables"]] == [("authors", 2, None), ("books", 2, "books_fts")]
-        with pytest.raises(chloedb.StrataError, match="exists"):
+        with pytest.raises(chloedb.ChloeDBError, match="exists"):
             db.export_sqlite(out)
 
     c = sqlite3.connect(out)

@@ -76,7 +76,7 @@ def test_tables_and_types(shop):
     assert t.num_rows == 2
     assert t.schema.field("amount").type == pa.float64() and pa.types.is_timestamp(t.schema.field("ts").type)
     assert o.count() == N and shop["users"].count() == 30
-    with pytest.raises(chloedb.StrataError, match="no table 'nope'"):
+    with pytest.raises(chloedb.ChloeDBError, match="no table 'nope'"):
         shop["nope"]
 
 
@@ -93,7 +93,7 @@ def test_filter_select_sort(shop):
     assert o.drop("emb", "note").rename({"amount": "amt"}).columns == ["id", "user", "country", "status", "amt", "ts"]
     top = o.with_columns(x=col("amount") * 2).sort("x", descending=True).head(1).to_dicts()[0]
     assert top["x"] == max(r["amount"] for r in ORDERS) * 2
-    with pytest.raises(chloedb.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         o.select("amount", "amount")
 
 
@@ -221,14 +221,14 @@ def test_writes(shop, tmp_path):
     assert o.filter(col("id") == "o0005").update(amount=col("amount") + 1000, status="void") == 1
     assert o.get("o0005")["amount"] == ORDERS[5]["amount"] + 1000 and o.get("o0005")["status"] == "void"
     assert o.filter(col("id").is_in(["o0006", "o0007"])).delete() == 2 and o.count() == N - 2
-    with pytest.raises(chloedb.StrataError, match="all=True"):
+    with pytest.raises(chloedb.ChloeDBError, match="all=True"):
         o.delete()
-    with pytest.raises(chloedb.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         o.filter(country="cl").upsert([order(1)])
     assert o.upsert([order(6)]) == 1 and o.count() == N - 1
     churn = shop.create_table("churn", o.select("user").unique().with_columns(p=chloedb.lit(0.5)), key="user")
     assert churn.count() == 40 and shop["churn"].get("u1")["p"] == 0.5
-    with pytest.raises(chloedb.StrataError, match="exists"):
+    with pytest.raises(chloedb.ChloeDBError, match="exists"):
         shop.create_table("churn", [{"user": "u1", "p": 0.1}], key="user")
     shop.create_table("churn", [{"user": "u1", "p": 0.9}, {"user": "zz", "p": 0.1}], key="user", if_exists="append")
     assert shop["churn"].count() == 41 and shop["churn"].get("u1")["p"] == 0.9
@@ -239,7 +239,7 @@ def test_writes(shop, tmp_path):
     cl = o.filter(country="cl").select("id", "user", "amount").write_to(copy, "orders_cl")
     assert cl.count() == sum(r["country"] == "cl" for r in ORDERS) and copy.tables()[0]["key"] == "id"
     assert cl.filter(col("amount") > 50).write_to(shop, "big").count() == cl.filter(col("amount") > 50).count()
-    with pytest.raises(chloedb.StrataError, match="one store"):
+    with pytest.raises(chloedb.ChloeDBError, match="one store"):
         o.join(cl, on="id")
     copy.close()
 
@@ -295,13 +295,13 @@ def test_sample_split_shuffle(shop):
     assert o.with_columns(h=col("id").hash()).to_arrow().schema.field("h").type == pa.int64()
     # A frame of groups has no key: it names the columns that tell rows apart.
     g = o.group_by("user").agg(n=chloedb.len())
-    with pytest.raises(chloedb.StrataError, match="has none: name the columns"):
+    with pytest.raises(chloedb.ChloeDBError, match="has none: name the columns"):
         g.sample(fraction=0.5)
     assert sorted(r["user"] for r in g.sample(fraction=0.5, seed=1, on="user").to_dicts()) == sorted(users_tr)
     for bad, msg in [(lambda: o.sample(), "n= .* or fraction="), (lambda: o.sample(3, fraction=0.1), "n= .* or fraction="),
                      (lambda: o.split(1.5), "a number from 0 to 1"), (lambda: o.sample(fraction=0.1, seed="x"), "seed is an int"),
                      (lambda: col("id").hash(1.5), "seed is an int")]:
-        with pytest.raises(chloedb.StrataError, match=msg):
+        with pytest.raises(chloedb.ChloeDBError, match=msg):
             bad()
 
 
@@ -309,7 +309,7 @@ def test_pending_store(tmp_path):
     s = chloedb.connect(tmp_path / "new.strata")
     assert "no tables" in repr(s) or "new.strata" in repr(s)
     assert s.tables() == []
-    with pytest.raises(chloedb.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         s["t"]
     t = s.create_table("t", {"id": "a", "n": 1})
     assert t.to_dicts() == [{"id": "a", "n": 1}] and (tmp_path / "new.strata").exists()
@@ -378,7 +378,7 @@ def test_server_scrolls_past_the_window(tmp_path, serve):
     assert [t.num_rows for t in s.scroll("SELECT id FROM orders WHERE amount < 0", arrow=True)] == [0]
     s.close()
     c = chloedb.connect(serve(path, "--max-result-window", "100"))
-    with pytest.raises(chloedb.StrataError, match="more than 100 rows"):
+    with pytest.raises(chloedb.ChloeDBError, match="more than 100 rows"):
         c.query("SELECT id FROM orders")
     assert c["orders"].select("id", "amount", "ts").to_dicts() == local["all"]
     assert c["orders"].select("id", "amount").sort("amount", descending=True).to_dicts() == local["sorted"]
@@ -408,5 +408,5 @@ def test_server_scrolls_past_the_window(tmp_path, serve):
     s.close()
     small = chloedb.connect(serve(other, "--max-result-window", "100", "--max-scroll-rows", "50"))
     assert len(small["orders"].select("id").to_dicts()) == N
-    with pytest.raises(chloedb.StrataError, match="max-scroll-rows"):
+    with pytest.raises(chloedb.ChloeDBError, match="max-scroll-rows"):
         small["orders"].sort("amount").to_arrow()

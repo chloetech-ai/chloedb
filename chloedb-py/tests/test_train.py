@@ -34,7 +34,7 @@ def test_a_codebook_from_vectors_gives_a_table_its_codes(tmp_path):
     assert len(h) == 64 and (models / "grid" / "codebook.safetensors").exists()
     # The same vectors and options give the same file; another under the
     # same name is refused.
-    with pytest.raises(chloedb.StrataError, match="grid"):
+    with pytest.raises(chloedb.ChloeDBError, match="grid"):
         chloedb.train.codebook(grid(400)[::-1][:50], "grid", models=models, levels=2, k=3)
     db = chloedb.Database.create(tmp_path / "items.strata", items_schema("grid"), models=models)
     assert db.schema["fields"][2]["semantic_id"]["hash"] == h
@@ -69,10 +69,10 @@ def test_a_codebook_from_a_tables_vectors(tmp_path):
     assert len(a) == 64 and len(b) == 64
     with pytest.raises(TypeError, match="field"):
         chloedb.train.codebook(src, "x", models=models)
-    with pytest.raises(chloedb.StrataError, match="VECTOR"):
+    with pytest.raises(chloedb.ChloeDBError, match="VECTOR"):
         chloedb.train.codebook(src, "x", field="id", models=models)
     # A table cannot name a codebook that is not there.
-    with pytest.raises(chloedb.StrataError, match="train"):
+    with pytest.raises(chloedb.ChloeDBError, match="train"):
         chloedb.Database.create(tmp_path / "none.strata", items_schema("missing"), models=models)
 
 
@@ -102,7 +102,7 @@ def test_next_codes_in_process_and_over_http(tmp_path, serve):
     assert db.sid_next(prefixes, field="sid") == want
     red = {p: brute_next(rows, p, lambda r: r["tag"] == "red") for p in prefixes}
     assert db.sid_next(prefixes, field="sid", where="tag = :t", t="red") == red
-    with pytest.raises(chloedb.StrataError, match="not a prefix"):
+    with pytest.raises(chloedb.ChloeDBError, match="not a prefix"):
         db.sid_next(["1..2"], field="sid")
     db.close()
     url = serve(path, "--models", str(models))
@@ -142,7 +142,7 @@ def test_a_sequence_model_trained_from_a_table_ranks_in_strata_as_in_pytorch(tmp
     assert list(saved) == list(out["vectors"]) and all(max(abs(a - b) for a, b in zip(saved[k], v)) < 1e-6 for k, v in out["vectors"].items())
     history = "(SELECT item, action, ts FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 200)"
     sql = f"SELECT id, score() FROM items ORDER BY similarity(emb, encode('walk', {history}, now => :t)) DESC LIMIT 5"
-    with pytest.raises(chloedb.StrataError, match="not those sequence model walk was trained with"):
+    with pytest.raises(chloedb.ChloeDBError, match="not those sequence model walk was trained with"):
         db.query(sql, {"u": "u0", "t": iso(1_800_000_000)})
     assert chloedb.train.write_vectors(db, "walk", models=models) == 30
     # Only the field changed.

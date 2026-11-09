@@ -138,7 +138,7 @@ def test_database_write_ops(tmp_path):
             ({"op": "merge", "key": "b"}, "unknown op"),
             ({"op": "insert", "doc": {"id": "b"}}, "duplicate"),
         ]:
-            with pytest.raises(chloedb.StrataError, match=msg):
+            with pytest.raises(chloedb.ChloeDBError, match=msg):
                 db.write([{"op": "insert", "doc": {"id": "y"}}, bad])
         # All or none: the first operation of each refused batch is not written.
         assert db.query("SELECT COUNT(*) FROM t WHERE id = 'y'").scalar() == 0

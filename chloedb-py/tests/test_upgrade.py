@@ -16,7 +16,7 @@ def test_upgrade_copies_a_database_from_before_field_ids(tmp_path):
     for name in ["db.strata", "db.strata-wal"]:
         shutil.copy(FIXTURE / name, tmp_path / name)
     path = tmp_path / "db.strata"
-    with pytest.raises(chloedb.StrataError, match="before field ids"):
+    with pytest.raises(chloedb.ChloeDBError, match="before field ids"):
         chloedb.Database.open(path)
 
     old, tables, rows = chloedb.upgrade(path)

@@ -88,7 +88,7 @@ def test_nearby_asks_the_server_while_the_table_has_changed(cloud, tmp_path):
     r = near.search("nothing")
     assert (r.where, r.why) == ("device", "no_match")
     near.close()
-    with pytest.raises(chloedb.StrataError, match="closed"):
+    with pytest.raises(chloedb.ChloeDBError, match="closed"):
         near.held()
 
 
@@ -143,7 +143,7 @@ def test_a_vector_slice_answers_on_the_device_what_the_server_would(tmp_path, se
         assert r.keys == cloud_r["keys"] and r.scores == cloud_r["scores"]
         assert near.stats["fetched_bytes"] >= built["codes_bytes"]
         # A geo search of a vector slice is refused.
-        with pytest.raises(chloedb.StrataError, match="search it with a vector"):
+        with pytest.raises(chloedb.ChloeDBError, match="search it with a vector"):
             near.search("pizza", lat=40.7, lon=-74.0)
     usage = call(url, "/v1/admin/slices")["slices"][0]["usage"]
     assert usage["codes"] == 1 and usage["codes_bytes"] == built["codes_bytes"]
