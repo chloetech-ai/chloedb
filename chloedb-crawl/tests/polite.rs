@@ -73,8 +73,8 @@ async fn the_user_agent_names_the_crawler_its_page_and_the_contact() {
     fetcher(&user_agent(Some("AcmeBot/2.0"), None)).page(&url(&base, "/b")).await.unwrap();
     let agents = site.agents.lock().unwrap().clone();
     // Each fetcher read robots.txt with the same agent first.
-    assert_eq!(agents[1], format!("strata-crawl/{v} (+{ABOUT}; mailto:ops@example.com)"));
-    assert_eq!(agents[3], format!("AcmeBot/2.0 strata-crawl/{v} (+{ABOUT})"));
+    assert_eq!(agents[1], format!("chloedb-crawl/{v} (+{ABOUT}; mailto:ops@example.com)"));
+    assert_eq!(agents[3], format!("AcmeBot/2.0 chloedb-crawl/{v} (+{ABOUT})"));
     assert_eq!(site.hits("robots.txt"), 2);
 }
 

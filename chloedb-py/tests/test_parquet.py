@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-import strata
+import chloedb
 from conftest import BOOKS, book
 
 pa = pytest.importorskip("pyarrow")
@@ -34,12 +34,12 @@ def events(first=1, n=3):
 def test_from_parquet_and_back(tmp_path):
     src = tmp_path / "events.parquet"
     pq.write_table(events(), src)
-    plan = strata.plan_parquet(src)
+    plan = chloedb.plan_parquet(src)
     assert plan["table"] == "events" and plan["key"] == "id" and plan["rows"] == 3
     types = {f["name"]: f["type"] for f in plan["fields"]}
     assert types == {"id": "int", "title": "text", "kind": "keyword", "at": "timestamp", "emb": "vector", "tags": "keyword", "price": "float", "ok": "bool", "extra": "json"}
 
-    with strata.from_parquet(src, tmp_path / "events.strata") as db:
+    with chloedb.from_parquet(src, tmp_path / "events.strata") as db:
         assert db.last_import["rows"] == 3 and db.last_import["created"] and db.last_import["bulk"]
         assert db.query("SELECT id FROM events WHERE MATCH(title, 'foxes') AND kind = 'view'").scalar() == 2
         assert db.query("SELECT id FROM events WHERE tags = 'sale' ORDER BY id").column("id") == [1, 3]
@@ -50,7 +50,7 @@ def test_from_parquet_and_back(tmp_path):
         out = tmp_path / "copy.parquet"
         done = db.export_parquet(out)
         assert [(t["table"], t["rows"], t["file"]) for t in done["tables"]] == [("events", 3, "copy.parquet")]
-        with pytest.raises(strata.StrataError, match="exists"):
+        with pytest.raises(chloedb.ChloeDBError, match="exists"):
             db.export_parquet(out)
         t = pq.read_table(out)
         assert t.schema.field("emb").type == pa.list_(pa.float32(), 3)
@@ -59,7 +59,7 @@ def test_from_parquet_and_back(tmp_path):
         assert t.schema.field("tags").type == pa.list_(pa.string())
         assert b"strata.schema" in pq.read_metadata(out).metadata
         assert sorted(t.column("id").to_pylist()) == [1, 2, 3]
-        with strata.from_parquet(out, tmp_path / "back.strata") as back:
+        with chloedb.from_parquet(out, tmp_path / "back.strata") as back:
             assert back.schema == db.schema
             assert back.query("SELECT emb FROM events WHERE id = 3").scalar() == [3.0, 1.0, 0.0]
 
@@ -79,7 +79,7 @@ def test_a_spark_directory(tmp_path):
         d.mkdir(parents=True)
         pq.write_table(events(first), d / "part-00000-abc.snappy.parquet", compression="snappy")
     (root / "_SUCCESS").write_text("")
-    with strata.from_parquet(root, tmp_path / "s.strata", key="") as db:
+    with chloedb.from_parquet(root, tmp_path / "s.strata", key="") as db:
         assert db.last_import["files"] == 2 and db.last_import["rows"] == 6
         assert db.schema["table"] == "sales" and "key" not in db.schema
         assert db.query("SELECT COUNT(*) FROM sales WHERE year = 2026").scalar() == 3
@@ -99,7 +99,7 @@ def test_import_arrow(db, tmp_path):
     df = pl.DataFrame([{**book(i), "rating": 5.0} for i in range(205, 207)])
     assert db.import_arrow(df)["rows"] == 2
     assert db.query("SELECT rating FROM books WHERE id = 'b0205'").scalar() == 5.0
-    with strata.Database.create(tmp_path / "copy.strata", BOOKS) as copy:
+    with chloedb.Database.create(tmp_path / "copy.strata", BOOKS) as copy:
         r = copy.import_arrow(db.query_arrow("SELECT id, title, description, genres, year, rating FROM books"))
         assert (r["rows"], r["bulk"]) == (210, True)
         assert copy.query("SELECT genres FROM books WHERE id = 'b0005'").scalar() == book(5)["genres"]
@@ -109,9 +109,9 @@ def test_import_arrow(db, tmp_path):
 
 def test_client_parquet_in_and_out(tmp_path, serve):
     path = tmp_path / "served.strata"
-    with strata.Database.create(path, BOOKS) as db:
+    with chloedb.Database.create(path, BOOKS) as db:
         db.insert([book(i) for i in range(20)])
-    client = strata.connect(serve(path))
+    client = chloedb.connect(serve(path))
     src = tmp_path / "events.parquet"
     pq.write_table(events(), src)
     plan = client.plan_parquet(src, table="events")
@@ -153,10 +153,10 @@ def test_s3_urls(s3, tmp_path):
         s3.upload_file(str(p), "lake", f"raw/events/year={year}/part-00000.parquet")
     s3.put_object(Bucket="lake", Key="raw/events/", Body=b"")
     s3.put_object(Bucket="lake", Key="raw/events/_SUCCESS", Body=b"")
-    plan = strata.plan_parquet("s3://lake/raw/events")
+    plan = chloedb.plan_parquet("s3://lake/raw/events")
     assert (plan["table"], plan["files"], plan["rows"]) == ("events", 2, 6)
     assert plan["partitions"] == {"year": "year"}
-    with strata.from_parquet("s3://lake/raw/events/", tmp_path / "e.strata") as db:
+    with chloedb.from_parquet("s3://lake/raw/events/", tmp_path / "e.strata") as db:
         assert db.query("SELECT COUNT(*) FROM events WHERE year = 2025").scalar() == 3
         # One object, by its key.
         r = db.import_parquet("s3://lake/raw/events/year=2026/part-00000.parquet", table="y2026")
@@ -165,26 +165,26 @@ def test_s3_urls(s3, tmp_path):
         db.export_parquet("s3://lake/out/events.parquet", tables="events")
         got = s3.get_object(Bucket="lake", Key="out/events.parquet")["Body"].read()
         assert got[:4] == b"PAR1"
-        with pytest.raises(strata.StrataError, match="exists"):
+        with pytest.raises(chloedb.ChloeDBError, match="exists"):
             db.export_parquet("s3://lake/out/events.parquet", tables="events")
         db.export_parquet("s3://lake/out/all/")
         keys = sorted(o["Key"] for o in s3.list_objects_v2(Bucket="lake", Prefix="out/all/")["Contents"])
         assert keys == ["out/all/events.parquet", "out/all/y2026.parquet"]
-        with pytest.raises(strata.StrataError, match="exists"):
+        with pytest.raises(chloedb.ChloeDBError, match="exists"):
             db.export_parquet("s3://lake/out/all")
         # Other formats read and write URLs too.
         db.export_sqlite("s3://lake/out/e.sqlite")
-        with strata.from_sqlite("s3://lake/out/e.sqlite", tmp_path / "from-s3.strata") as copy:
+        with chloedb.from_sqlite("s3://lake/out/e.sqlite", tmp_path / "from-s3.strata") as copy:
             assert copy.query("SELECT COUNT(*) FROM events").scalar() == 6
     s3.put_object(Bucket="lake", Key="rows/more.jsonl", Body=b'{"id": 7, "title": "seven"}\n')
-    with strata.Database.open(tmp_path / "e.strata") as db:
+    with chloedb.Database.open(tmp_path / "e.strata") as db:
         assert db.import_file("s3://lake/rows/more.jsonl", table="events")["rows"] == 1
         assert len(db.query("SELECT id FROM events WHERE id = 7").rows) == 1
-    with pytest.raises(strata.StrataError, match="no such object"):
-        strata.plan_parquet("s3://lake/nothing/here")
+    with pytest.raises(chloedb.ChloeDBError, match="no such object"):
+        chloedb.plan_parquet("s3://lake/nothing/here")
     # Keys are read as written: a Hive value Spark percent-encodes stays one.
     p = tmp_path / "city.parquet"
     pq.write_table(events(1, 2), p)
     s3.upload_file(str(p), "lake", "raw/cities/city=S%C3%A3o%20Paulo/part-0.parquet")
-    with strata.from_parquet("s3://lake/raw/cities", tmp_path / "c.strata") as db:
+    with chloedb.from_parquet("s3://lake/raw/cities", tmp_path / "c.strata") as db:
         assert db.query("SELECT city FROM cities WHERE id = 1").scalar() == "São Paulo"

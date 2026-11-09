@@ -54,10 +54,10 @@ export function tempDir() {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** chloedb-server: $STRATA_SERVER, else the release build of this checkout,
+/** chloedb-server: $CHLOEDB_SERVER, else the release build of this checkout,
  * else null (the client tests are skipped). */
 export function serverBinary() {
-  const p = process.env.STRATA_SERVER || join(here, "..", "..", "chloedb-server", "target", "release", "chloedb-server");
+  const p = process.env.CHLOEDB_SERVER || join(here, "..", "..", "chloedb-server", "target", "release", "chloedb-server");
   return existsSync(p) ? p : null;
 }
 

@@ -381,9 +381,9 @@ impl Default for Slo {
 }
 
 /// Where a server runs: its name if given (`--node-name`), the machine
-/// and zone (`STRATA_NODE` or `NODE_NAME`, `STRATA_ZONE`), and its image
-/// (`STRATA_IMAGE`, which the operator sets; its digest when it pins one,
-/// or `STRATA_IMAGE_DIGEST`).
+/// and zone (`CHLOEDB_NODE` or `NODE_NAME`, `CHLOEDB_ZONE`), and its image
+/// (`CHLOEDB_IMAGE`, which the operator sets; its digest when it pins one,
+/// or `CHLOEDB_IMAGE_DIGEST`).
 #[derive(Clone, Debug, Default)]
 pub struct Place {
     pub name: Option<String>,
@@ -397,10 +397,10 @@ impl Place {
     /// From the environment, with `name` given or not.
     pub fn from_env(name: Option<String>) -> Place {
         let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-        let image = var("STRATA_IMAGE");
-        let digest = var("STRATA_IMAGE_DIGEST").or_else(|| image.as_deref().and_then(crate::operator::upgrade::digest_of));
-        // On Kubernetes the operator names the pod (`STRATA_POD`).
-        Place { name: name.or_else(|| var("STRATA_POD")), node: var("STRATA_NODE").or_else(|| var("NODE_NAME")), zone: var("STRATA_ZONE"), image, digest }
+        let image = var("CHLOEDB_IMAGE");
+        let digest = var("CHLOEDB_IMAGE_DIGEST").or_else(|| image.as_deref().and_then(crate::operator::upgrade::digest_of));
+        // On Kubernetes the operator names the pod (`CHLOEDB_POD`).
+        Place { name: name.or_else(|| var("CHLOEDB_POD")), node: var("CHLOEDB_NODE").or_else(|| var("NODE_NAME")), zone: var("CHLOEDB_ZONE"), image, digest }
     }
 
     /// Its version: this build's, and the image's.
@@ -551,7 +551,7 @@ pub struct Service {
     /// `None`: not counted).
     pub query_memory: Option<Arc<MemoryBudget>>,
     /// The engine of compound queries' joins, groups and sorts, here or
-    /// above a coordinator's shards ([`Engine`]; `STRATA_ENGINE`, by
+    /// above a coordinator's shards ([`Engine`]; `CHLOEDB_ENGINE`, by
     /// default `auto`).
     pub engine: Engine,
     /// The most write requests in the write path at once (embedding,
@@ -669,7 +669,7 @@ impl Service {
             Backend::Local(db) => {
                 let (tx, rx) = mpsc::channel();
                 let (db, state) = (db.clone(), writer_state.clone());
-                std::thread::Builder::new().name("strata-writer".into()).spawn(move || writer(&db, rx, &state)).expect("spawn the writer thread");
+                std::thread::Builder::new().name("chloedb-writer".into()).spawn(move || writer(&db, rx, &state)).expect("spawn the writer thread");
                 Some(tx)
             }
             Backend::Cluster(_) => None,
@@ -4347,16 +4347,16 @@ impl Service {
     pub async fn prometheus(self: &Arc<Self>) -> String {
         let one = Family::one;
         let mut more = vec![
-            one("strata_queries_running", "gauge", "Queries running now, those whose callers stopped waiting included.", self.running() as f64),
-            Family { name: "strata_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
-            one("strata_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
+            one("chloedb_queries_running", "gauge", "Queries running now, those whose callers stopped waiting included.", self.running() as f64),
+            Family { name: "chloedb_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
+            one("chloedb_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
         ];
         let lags = self.follow_lags();
         if !lags.is_empty() {
             let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
             more.extend([
-                family("strata_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
-                family("strata_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
+                family("chloedb_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
+                family("chloedb_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
             ]);
         }
         if let Some(s) = &self.log_store {
@@ -4371,24 +4371,24 @@ impl Service {
         if !hosted.is_empty() {
             let family = |name, help, f: fn(&chloedb::embed::Usage) -> u64| Family { name, ty: "counter", help, values: hosted.iter().map(|(l, u)| (l.clone(), f(u) as f64)).collect() };
             more.extend([
-                family("strata_embed_requests_total", "Requests sent to a hosted embedding model, by field.", |u| u.requests),
-                family("strata_embed_retries_total", "Requests to a hosted embedding model sent again after a rate limit or a failure.", |u| u.retries),
-                family("strata_embed_failures_total", "Requests to a hosted embedding model that failed for good, failing their write or query.", |u| u.failures),
-                family("strata_embed_tokens_total", "Tokens a hosted embedding model counted, where its answers say.", |u| u.tokens),
+                family("chloedb_embed_requests_total", "Requests sent to a hosted embedding model, by field.", |u| u.requests),
+                family("chloedb_embed_retries_total", "Requests to a hosted embedding model sent again after a rate limit or a failure.", |u| u.retries),
+                family("chloedb_embed_failures_total", "Requests to a hosted embedding model that failed for good, failing their write or query.", |u| u.failures),
+                family("chloedb_embed_tokens_total", "Tokens a hosted embedding model counted, where its answers say.", |u| u.tokens),
             ]);
         }
         // Language models' answers to queries' llm() calls.
         let u = chloedb::query::llm::usage();
         more.extend([
-            one("strata_llm_requests_total", "counter", "Requests this server made to language models for queries' llm() calls.", u.requests as f64),
-            one("strata_llm_cached_total", "counter", "Answers to llm() calls this server found in memory, with no request.", u.cached as f64),
-            one("strata_llm_failures_total", "counter", "Requests to language models for llm() calls that failed for good, failing their query.", u.failures as f64),
+            one("chloedb_llm_requests_total", "counter", "Requests this server made to language models for queries' llm() calls.", u.requests as f64),
+            one("chloedb_llm_cached_total", "counter", "Answers to llm() calls this server found in memory, with no request.", u.cached as f64),
+            one("chloedb_llm_failures_total", "counter", "Requests to language models for llm() calls that failed for good, failing their query.", u.failures as f64),
         ]);
         if let Some(b) = &self.query_memory {
             more.extend([
-                one("strata_query_memory_bytes", "gauge", "Memory the running queries hold, as counted against their budget.", b.used() as f64),
-                one("strata_query_memory_limit_bytes", "gauge", "Memory the running queries may hold together (--query-memory-mb).", b.limit() as f64),
-                one("strata_query_memory_trips_total", "counter", "Queries refused because the running queries' memory budget was spent.", b.trips() as f64),
+                one("chloedb_query_memory_bytes", "gauge", "Memory the running queries hold, as counted against their budget.", b.used() as f64),
+                one("chloedb_query_memory_limit_bytes", "gauge", "Memory the running queries may hold together (--query-memory-mb).", b.limit() as f64),
+                one("chloedb_query_memory_trips_total", "counter", "Queries refused because the running queries' memory budget was spent.", b.trips() as f64),
             ]);
         }
         match &self.backend {
@@ -4400,42 +4400,42 @@ impl Service {
                 let deleted: u64 = f.segments.iter().map(|s| s.n_deleted as u64).sum::<u64>() + f.pending_deletes as u64;
                 let pool = chloedb::query::pool::Pool::global();
                 more.extend([
-                    one("strata_query_pool_threads", "gauge", "Threads in the pool queries borrow from to search segments in parallel.", pool.threads() as f64),
-                    one("strata_query_pool_queued", "gauge", "Threads queries asked the pool for that none was free to give yet.", pool.queued() as f64),
-                    one("strata_docs", "gauge", "Rows in the database.", s.n_live_docs() as f64),
-                    one("strata_segments", "gauge", "Segments on disk.", s.segments().len() as f64),
-                    one("strata_deleted_docs", "gauge", "Deleted rows that merges have not dropped yet.", deleted as f64),
-                    one("strata_memtable_docs", "gauge", "Rows written but not yet flushed to a segment.", f.memtable_docs as f64),
-                    one("strata_file_bytes", "gauge", "Bytes the database takes on disk, without its write-ahead log.", f.file_bytes as f64),
-                    one("strata_free_bytes", "gauge", "Bytes of the database file free for reuse (0 in the directory layout).", (f.free_pages * chloedb::storage::pager::PAGE) as f64),
-                    one("strata_wal_bytes", "gauge", "Bytes of the write-ahead log.", f.wal_bytes as f64),
-                    one("strata_snapshot_leases", "gauge", "Snapshot leases held.", self.sweep_leases() as f64),
-                    one("strata_scrolls_open", "gauge", "Scrolls open: queries read a page at a time (page_size).", self.sweep_scrolls().0 as f64),
-                    one("strata_scroll_rows_held", "gauge", "Rows, or rows' places, the open scrolls hold between pages (at most --max-scroll-rows).", self.sweep_scrolls().1 as f64),
-                    one("strata_stale_stats_total", "counter", "Queries a coordinator sent with kept BM25 statistics of an older version, answered without running.", self.stale_stats.load(Ordering::Relaxed) as f64),
-                    one("strata_failing", "gauge", "1 when the database cannot write until the server restarts.", self.failing().is_some() as u8 as f64),
-                    one("strata_flush_failing", "gauge", "1 while flushes fail (a full disk).", db.storage().flush_error().is_some() as u8 as f64),
-                    one("strata_write_queue_requests", "gauge", "Write requests in the write path: embedding, waiting for the writer, or being applied.", w.queued.load(Ordering::Relaxed) as f64),
-                    one("strata_write_batches_total", "counter", "Groups of write requests the writer applied in one transaction.", w.batches.load(Ordering::Relaxed) as f64),
-                    one("strata_writer_panics_total", "counter", "Groups of writes whose application panicked.", w.panics.load(Ordering::Relaxed) as f64),
-                    one("strata_merges_running", "gauge", "Merges running now.", m.running as f64),
-                    one("strata_merge_memory_bytes", "gauge", "Memory the running merges are estimated to use.", m.memory as f64),
-                    one("strata_merges_total", "counter", "Merges finished.", m.merges as f64),
-                    one("strata_merges_limited_total", "counter", "Merges cut, or put off, to fit the memory budget or an interrupted merge's.", m.merges_limited as f64),
-                    one("strata_merges_interrupted", "gauge", "Groups of segments whose merge a crash interrupted.", m.interrupted as f64),
-                    one("strata_merge_failing", "gauge", "1 while merges fail.", m.error.is_some() as u8 as f64),
-                    one("strata_damaged_segments", "gauge", "Segments the last scrub found failing their checksums (--scrub-every-s).", self.scrubs.damaged().len() as f64),
+                    one("chloedb_query_pool_threads", "gauge", "Threads in the pool queries borrow from to search segments in parallel.", pool.threads() as f64),
+                    one("chloedb_query_pool_queued", "gauge", "Threads queries asked the pool for that none was free to give yet.", pool.queued() as f64),
+                    one("chloedb_docs", "gauge", "Rows in the database.", s.n_live_docs() as f64),
+                    one("chloedb_segments", "gauge", "Segments on disk.", s.segments().len() as f64),
+                    one("chloedb_deleted_docs", "gauge", "Deleted rows that merges have not dropped yet.", deleted as f64),
+                    one("chloedb_memtable_docs", "gauge", "Rows written but not yet flushed to a segment.", f.memtable_docs as f64),
+                    one("chloedb_file_bytes", "gauge", "Bytes the database takes on disk, without its write-ahead log.", f.file_bytes as f64),
+                    one("chloedb_free_bytes", "gauge", "Bytes of the database file free for reuse (0 in the directory layout).", (f.free_pages * chloedb::storage::pager::PAGE) as f64),
+                    one("chloedb_wal_bytes", "gauge", "Bytes of the write-ahead log.", f.wal_bytes as f64),
+                    one("chloedb_snapshot_leases", "gauge", "Snapshot leases held.", self.sweep_leases() as f64),
+                    one("chloedb_scrolls_open", "gauge", "Scrolls open: queries read a page at a time (page_size).", self.sweep_scrolls().0 as f64),
+                    one("chloedb_scroll_rows_held", "gauge", "Rows, or rows' places, the open scrolls hold between pages (at most --max-scroll-rows).", self.sweep_scrolls().1 as f64),
+                    one("chloedb_stale_stats_total", "counter", "Queries a coordinator sent with kept BM25 statistics of an older version, answered without running.", self.stale_stats.load(Ordering::Relaxed) as f64),
+                    one("chloedb_failing", "gauge", "1 when the database cannot write until the server restarts.", self.failing().is_some() as u8 as f64),
+                    one("chloedb_flush_failing", "gauge", "1 while flushes fail (a full disk).", db.storage().flush_error().is_some() as u8 as f64),
+                    one("chloedb_write_queue_requests", "gauge", "Write requests in the write path: embedding, waiting for the writer, or being applied.", w.queued.load(Ordering::Relaxed) as f64),
+                    one("chloedb_write_batches_total", "counter", "Groups of write requests the writer applied in one transaction.", w.batches.load(Ordering::Relaxed) as f64),
+                    one("chloedb_writer_panics_total", "counter", "Groups of writes whose application panicked.", w.panics.load(Ordering::Relaxed) as f64),
+                    one("chloedb_merges_running", "gauge", "Merges running now.", m.running as f64),
+                    one("chloedb_merge_memory_bytes", "gauge", "Memory the running merges are estimated to use.", m.memory as f64),
+                    one("chloedb_merges_total", "counter", "Merges finished.", m.merges as f64),
+                    one("chloedb_merges_limited_total", "counter", "Merges cut, or put off, to fit the memory budget or an interrupted merge's.", m.merges_limited as f64),
+                    one("chloedb_merges_interrupted", "gauge", "Groups of segments whose merge a crash interrupted.", m.interrupted as f64),
+                    one("chloedb_merge_failing", "gauge", "1 while merges fail.", m.error.is_some() as u8 as f64),
+                    one("chloedb_damaged_segments", "gauge", "Segments the last scrub found failing their checksums (--scrub-every-s).", self.scrubs.damaged().len() as f64),
                 ]);
                 if let Some(c) = db.storage().cold_stats() {
                     more.extend([
-                        one("strata_cold_segments", "gauge", "Segments kept on object storage.", c.segments as f64),
-                        one("strata_cold_bytes", "gauge", "Bytes of the segments kept on object storage.", c.bytes as f64),
-                        one("strata_cold_cache_bytes", "gauge", "Bytes of cold segments in the local cache, their headers and keys included.", c.cached_bytes as f64),
-                        one("strata_cold_cache_limit_bytes", "gauge", "The local cache's limit, headers and keys apart.", c.cache_limit as f64),
-                        one("strata_cold_fetches_total", "counter", "Reads of object storage for cold segments' parts.", c.fetches as f64),
-                        one("strata_cold_fetched_bytes_total", "counter", "Bytes read from object storage.", c.fetched_bytes as f64),
-                        one("strata_cold_evictions_total", "counter", "Cold segments whose cached parts were dropped.", c.evictions as f64),
-                        one("strata_cold_offloaded_total", "counter", "Segments made cold.", c.segments_offloaded as f64),
+                        one("chloedb_cold_segments", "gauge", "Segments kept on object storage.", c.segments as f64),
+                        one("chloedb_cold_bytes", "gauge", "Bytes of the segments kept on object storage.", c.bytes as f64),
+                        one("chloedb_cold_cache_bytes", "gauge", "Bytes of cold segments in the local cache, their headers and keys included.", c.cached_bytes as f64),
+                        one("chloedb_cold_cache_limit_bytes", "gauge", "The local cache's limit, headers and keys apart.", c.cache_limit as f64),
+                        one("chloedb_cold_fetches_total", "counter", "Reads of object storage for cold segments' parts.", c.fetches as f64),
+                        one("chloedb_cold_fetched_bytes_total", "counter", "Bytes read from object storage.", c.fetched_bytes as f64),
+                        one("chloedb_cold_evictions_total", "counter", "Cold segments whose cached parts were dropped.", c.evictions as f64),
+                        one("chloedb_cold_offloaded_total", "counter", "Segments made cold.", c.segments_offloaded as f64),
                     ]);
                 }
                 match &self.replication() {

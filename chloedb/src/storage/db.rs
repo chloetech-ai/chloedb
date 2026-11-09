@@ -1061,7 +1061,7 @@ impl Database {
             cold_thread: Mutex::new(None),
             images_swapped: AtomicU64::new(0),
         };
-        let h = std::thread::Builder::new().name("strata-reader".into()).spawn(move || reader.run())?;
+        let h = std::thread::Builder::new().name("chloedb-reader".into()).spawn(move || reader.run())?;
         *lock(&db.flusher) = Some(h);
         Ok(db)
     }
@@ -2517,7 +2517,7 @@ impl Database {
             return;
         }
         let db = Arc::downgrade(self);
-        let h = std::thread::Builder::new().name("strata-flusher".into()).spawn(move || flusher(db, sig)).expect("spawn the flusher thread");
+        let h = std::thread::Builder::new().name("chloedb-flusher".into()).spawn(move || flusher(db, sig)).expect("spawn the flusher thread");
         *lock(&self.flusher) = Some(h);
         if self.flush_due() {
             if let Some(sig) = self.flush_signal.get() {
@@ -2895,7 +2895,7 @@ impl Database {
             let (db, m, nice) = (Arc::downgrade(self), m.clone(), opts.nice);
             threads.push(
                 std::thread::Builder::new()
-                    .name(format!("strata-merger-{i}"))
+                    .name(format!("chloedb-merger-{i}"))
                     .spawn(move || {
                         lower_priority(nice);
                         merger(db, m)
@@ -3869,7 +3869,7 @@ impl Database {
             return;
         }
         let db = Arc::downgrade(self);
-        let thread = std::thread::Builder::new().name("strata-cold".into()).spawn(move || {
+        let thread = std::thread::Builder::new().name("chloedb-cold".into()).spawn(move || {
             let mut last: Option<String> = None;
             let mut next_offload = Instant::now();
             while cold.signal.wait(every.min(Duration::from_secs(1))) {

@@ -474,8 +474,8 @@ function showCpu(out, p, req) {
   const hot = thin ? null : hottest(p);
   clear(out, h("div", { class: "stack" },
     ...profileHead(p, req, `at ${p.hz} Hz`, [
-      h("button", { class: "btn sm", title: "Folded stacks (thread;root;…;leaf samples) for flamegraph.pl, inferno or speedscope", onclick: () => save(`strata-cpu-${stamp}.folded`, folded(p), "text/plain") }, icon("download"), "Folded"),
-      h("button", { class: "btn sm", onclick: () => save(`strata-cpu-${stamp}.json`, JSON.stringify(p), "application/json") }, icon("download"), "JSON")]),
+      h("button", { class: "btn sm", title: "Folded stacks (thread;root;…;leaf samples) for flamegraph.pl, inferno or speedscope", onclick: () => save(`chloedb-cpu-${stamp}.folded`, folded(p), "text/plain") }, icon("download"), "Folded"),
+      h("button", { class: "btn sm", onclick: () => save(`chloedb-cpu-${stamp}.json`, JSON.stringify(p), "application/json") }, icon("download"), "JSON")]),
     h("div", { class: "grid g6 prof-kpis wl-kpis" },
       kpi("CPU time", fmt.ms(p.cpu_seconds * 1000), `of every thread, in ${fmt.n(p.seconds)} s`, "The process's CPU time (user and system) while the profile was taken, from the system"),
       kpi("Cores busy", p.cores.toFixed(2), `of ${fmt.n(p.seconds)} s`, "CPU seconds over wall seconds: the cores the process kept busy on average"),
@@ -634,8 +634,8 @@ function showHeap(out, p, req) {
   }
   clear(out, h("div", { class: "stack" },
     ...profileHead(p, req, `a sample every ${everyName(p.every)}`, [
-      h("button", { class: "btn sm", title: "Folded stacks of the bytes allocated, for flamegraph.pl, inferno or speedscope", onclick: () => save(`strata-heap-${stamp}.folded`, folded({ ...p, stacks: p.stacks.map((s) => ({ ...s, samples: s.bytes })) }), "text/plain") }, icon("download"), "Folded"),
-      h("button", { class: "btn sm", onclick: () => save(`strata-heap-${stamp}.json`, JSON.stringify(p), "application/json") }, icon("download"), "JSON")]),
+      h("button", { class: "btn sm", title: "Folded stacks of the bytes allocated, for flamegraph.pl, inferno or speedscope", onclick: () => save(`chloedb-heap-${stamp}.folded`, folded({ ...p, stacks: p.stacks.map((s) => ({ ...s, samples: s.bytes })) }), "text/plain") }, icon("download"), "Folded"),
+      h("button", { class: "btn sm", onclick: () => save(`chloedb-heap-${stamp}.json`, JSON.stringify(p), "application/json") }, icon("download"), "JSON")]),
     h("div", { class: "grid g6 prof-kpis wl-kpis" },
       kpi("Allocated", fmt.bytes(p.allocated_bytes), `${fmt.bytes(p.allocated_bytes / Math.max(0.001, p.seconds))}/s, counted`, "Bytes every thread allocated while the profile was taken, counted at each allocation"),
       kpi("Allocations", fmt.si(p.allocs), `${fmt.si(p.allocs / Math.max(0.001, p.seconds))} a second`),

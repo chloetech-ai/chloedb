@@ -35,14 +35,14 @@ At the default pace, a page a second for one site ([below](#what-it-does-with-a-
 The crawler writes to any chloedb-server, one server or a coordinator, with a key that can write (and an admin key to grow a cluster):
 
 ```bash
-chloedb-crawl serve --strata http://coordinator:7700 --key "$STRATA_KEY" --token "$CRAWL_TOKEN" \
+chloedb-crawl serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$CRAWL_TOKEN" \
   --listen 0.0.0.0:7800 --grow kube --split-rows 5000000
 ```
 
 and the coordinator shows it as an app when told where it is, with the crawler's token:
 
 ```bash
-STRATA_APP_TOKEN="$CRAWL_TOKEN" chloedb-server --shards ... --app crawler=http://crawler-host:7800
+CHLOEDB_APP_TOKEN="$CRAWL_TOKEN" chloedb-server --shards ... --app crawler=http://crawler-host:7800
 ```
 
 `--grow` says how the cluster gets a shard: `kube` asks the Kubernetes operator for one more (`POST /v1/admin/kube`, the coordinator must run under the operator), `servers=URL,URL` adds empty servers started for it, by their gRPC URLs, one at a time, and `off` never grows. Each new shard gets its share of the slots by a rebalance (`POST /v1/admin/rebalance`) while the crawl keeps writing.
@@ -69,7 +69,7 @@ The upgrader moves the crawler with the servers, since it runs their image. Remo
 
 ## What it does with a page
 
-**Fetching.** One queue per host, read breadth first. robots.txt is read before a site's first page and again once a day (RFC 9309: the longest rule wins, `*` and `$` in paths, its own group `strata-crawl` or `*`); a 4xx answer for it allows everything, and a 5xx, a 429 or no answer keeps the crawler off the site until it reads it again, a minute later (or when its `Retry-After` says, up to 10 minutes). Sitemaps named there, or at `/sitemap.xml`, add their pages as seeds. Only HTML is kept, at most `max_bytes` a page; a URL is normalised once (no fragment, no tracking parameters, the query's parameters sorted) and fetched once, redirects included; a page whose text another page already had is counted as a duplicate and not written. Links are queued in turn from each shape of link on the page (`/catalogue/*/index.html`, `/catalogue/category/...`), so the first pages read are a site's items as well as its lists. `rel="nofollow"` links and pages with `noindex` or `nofollow` robots meta tags are honoured.
+**Fetching.** One queue per host, read breadth first. robots.txt is read before a site's first page and again once a day (RFC 9309: the longest rule wins, `*` and `$` in paths, its own groups, `chloedb-crawl` and `strata-crawl` (its old name), or else `*`); a 4xx answer for it allows everything, and a 5xx, a 429 or no answer keeps the crawler off the site until it reads it again, a minute later (or when its `Retry-After` says, up to 10 minutes). Sitemaps named there, or at `/sitemap.xml`, add their pages as seeds. Only HTML is kept, at most `max_bytes` a page; a URL is normalised once (no fragment, no tracking parameters, the query's parameters sorted) and fetched once, redirects included; a page whose text another page already had is counted as a duplicate and not written. Links are queued in turn from each shape of link on the page (`/catalogue/*/index.html`, `/catalogue/category/...`), so the first pages read are a site's items as well as its lists. `rel="nofollow"` links and pages with `noindex` or `nofollow` robots meta tags are honoured.
 
 **Politeness.** A site gets at most `per_host` requests at once (1), and between the starts of two the longest of `delay_ms` (1 s), its robots.txt's `Crawl-delay` (up to 10 minutes; every site the crawl reaches, not only the seeds') and twice the time it has been taking to answer (up to 30 s), so a site that slows down is asked less often. A site that pushes back waits before its next request: a 429, 502, 503 or 504 as long as its `Retry-After` says, else 5 s, doubled at each refusal in a row up to 5 minutes, and the page is asked again later (4 times at most); a 403 or no answer waits the same, and the page is not asked again. After 10 refusals in a row, or when a site asks to wait more than 10 minutes, the crawl gives up on that site and drops its queued pages; the crawl's events say when a site was made to wait and when it was given up. The user agent names the crawler and links to [the page for site owners](crawler-bot.md), with the crawl's `contact`; a crawl's own `user_agent` keeps the crawler's name after it. Answers are asked compressed (gzip, Brotli).
 
@@ -98,7 +98,7 @@ The upgrader moves the crawler with the servers, since it runs their image. Remo
 
 A crawl's page shows pages fetched and rows written a second, with the moments the table was made and shards were added; the shards filling and splitting; the table's columns, with when each was added, and the fields found so far with the column each went to; a search of the table through ChloeDB (`MATCH` and `bm25` over the body, or the latest rows); what it did, with the SQL it ran; the last pages read; and problems (robots.txt, timeouts, answers that were not HTML, refused rows). Pause, Resume and Stop act at once; a stopped crawl writes the pages it has read.
 
-The view is a module the crawler serves (`chloedb-crawl/ui/view.js`, compiled in; `STRATA_CRAWL_UI_DIR=chloedb-crawl/ui` reads it from disk), loaded and run by the command center as the [apps](server.md#apps) section describes.
+The view is a module the crawler serves (`chloedb-crawl/ui/view.js`, compiled in; `CHLOEDB_CRAWL_UI_DIR=chloedb-crawl/ui` reads it from disk), loaded and run by the command center as the [apps](server.md#apps) section describes.
 
 ## Options
 
@@ -121,13 +121,13 @@ The same names are the JSON fields of `POST /v1/crawls` and `POST /v1/preview`, 
 | `rules` | | fields from CSS selectors, as above |
 | `learn` | on | learn the site's template |
 | `embed` | | a model to embed the title and body with, into `emb` |
-| `user_agent` | `strata-crawl/0.1.0 (+https://chloetech-ai.github.io/strata/chloedb/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `strata-crawl` |
-| `contact` | `--contact` of `chloedb-crawl serve` (or `STRATA_CRAWL_CONTACT`) | whom a site's owner reaches about the crawl, an email address or a URL, sent in the user agent: `strata-crawl/0.1.0 (+https://...; ops@example.com)` |
+| `user_agent` | `chloedb-crawl/0.1.0 (+https://chloetech-ai.github.io/strata/chloedb/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `chloedb-crawl` (or `strata-crawl`, its old name) |
+| `contact` | `--contact` of `chloedb-crawl serve` (or `CHLOEDB_CRAWL_CONTACT`) | whom a site's owner reaches about the crawl, an email address or a URL, sent in the user agent: `strata-crawl/0.1.0 (+https://...; ops@example.com)` |
 | `timeout_ms`, `max_bytes`, `batch` | 20,000, 5 MB, 200 | |
 
 ## API
 
-`chloedb-crawl serve` answers on `--listen` (`127.0.0.1:7800`). It takes no request that carries an `Origin` header, so no web page can drive it from a browser, and with `--token` (or `STRATA_CRAWL_TOKEN`) none without `Authorization: Bearer <token>`; with `--local` and no token it makes one and gives it to the coordinator it starts.
+`chloedb-crawl serve` answers on `--listen` (`127.0.0.1:7800`). It takes no request that carries an `Origin` header, so no web page can drive it from a browser, and with `--token` (or `CHLOEDB_CRAWL_TOKEN`) none without `Authorization: Bearer <token>`; with `--local` and no token it makes one and gives it to the coordinator it starts.
 
 | request | |
 |---|---|

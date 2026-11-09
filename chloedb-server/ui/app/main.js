@@ -101,7 +101,7 @@ brand.onclick = async () => {
   menu(brand, items);
 };
 function askCoordinator() {
-  const inp = h("input", { class: "input", placeholder: "https://strata.example.com or 10.0.3.7:7700", style: { width: "100%" } });
+  const inp = h("input", { class: "input", placeholder: "https://chloedb.example.com or 10.0.3.7:7700", style: { width: "100%" } });
   const ok = h("button", { class: "btn primary" }, "Open");
   const m = modal({ title: "Open another coordinator", body: [h("p", { class: "dim", style: { margin: 0 } }, "Its command center opens in this tab. You sign in there with its own key."), inp], foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), ok] });
   ok.onclick = () => { const v = inp.value.trim(); if (v) { m.close(); switchTo(/^https?:\/\//.test(v) ? v : "http://" + v); } };

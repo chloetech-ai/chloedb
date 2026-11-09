@@ -555,7 +555,7 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
             ok(&id, json!({
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false, "subscribe": false}},
-                "serverInfo": {"name": "strata", "title": "ChloeDB", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": "chloedb", "title": "ChloeDB", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS,
             }))
         }

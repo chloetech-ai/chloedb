@@ -4,7 +4,7 @@
 //! references.
 //!
 //! ```text
-//! STRATA_DATA=~/data/beir cargo run --release --bin chloedb-embed-eval -- --dataset scifact --model potion-retrieval-32M
+//! CHLOEDB_DATA=~/data/beir cargo run --release --bin chloedb-embed-eval -- --dataset scifact --model potion-retrieval-32M
 //! cargo run --release --features bert --bin chloedb-embed-eval -- --dataset trec-covid --model bge-small-en-v1.5 --out results/embed-fields/trec-covid-bge.json
 //! ```
 //!
@@ -28,13 +28,13 @@ use chloedb::VectorIndexKind;
 
 #[derive(Parser)]
 struct Args {
-    /// A collection under $STRATA_DATA (scifact, trec-covid, fiqa, quora).
+    /// A collection under $CHLOEDB_DATA (scifact, trec-covid, fiqa, quora).
     #[arg(long)]
     dataset: String,
     /// The model, by the name a schema gives it (see `chloedb::embed::open`).
     #[arg(long, default_value = "potion-retrieval-32M")]
     model: String,
-    /// Where models are (default $STRATA_MODELS or ~/.local/share/strata/models).
+    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/strata/models).
     #[arg(long)]
     models: Option<PathBuf>,
     /// Keep the first n documents.

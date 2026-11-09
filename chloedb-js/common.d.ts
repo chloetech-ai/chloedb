@@ -33,7 +33,7 @@ export interface Schema {
 /** A plan of the plan IR, as `Database.plan` and `Client.explain` give it. */
 export type Plan = Record<string, unknown>;
 
-export declare class StrataError extends Error {
+export declare class ChloeDBError extends Error {
   constructor(message: string, options?: { status?: number; answer?: unknown; cause?: unknown });
   /** The HTTP status, for an error a server answered. */
   status?: number;
@@ -41,8 +41,8 @@ export declare class StrataError extends Error {
   answer?: unknown;
 }
 
-/** `StrataError` by the database's new name: the same class. */
-export { StrataError as ChloeDBError };
+/** `ChloeDBError` by its name when ChloeDB was called Strata: the same class. */
+export { ChloeDBError as StrataError };
 
 /** A query's answer. Iterating gives each row as an object. */
 export declare class Result<T extends Record<string, Value> = Record<string, Value>> implements Iterable<T> {

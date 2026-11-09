@@ -7,18 +7,18 @@
 /** An error from the database: a bad schema, query, value or file, or an
  * error a server answered (`status`, the HTTP status, and `answer`, its
  * JSON, are set then). */
-export class StrataError extends Error {
+export class ChloeDBError extends Error {
   constructor(message, { status, answer, cause } = {}) {
     super(message, cause === undefined ? undefined : { cause });
-    this.name = "StrataError";
+    this.name = "ChloeDBError";
     if (status !== undefined) this.status = status;
     if (answer !== undefined) this.answer = answer;
   }
 }
 
-/** `StrataError` by the database's new name (it was called Strata): the
- * same class, so `instanceof` either one holds for every error. */
-export const ChloeDBError = StrataError;
+/** `ChloeDBError` by its name when ChloeDB was called Strata: the same
+ * class, so `instanceof` either one holds for every error. */
+export const StrataError = ChloeDBError;
 
 // ---------------------------------------------------------------- JSON
 
@@ -123,7 +123,7 @@ export class Result {
   /** One column's values. */
   column(name) {
     const i = this.columns.indexOf(name);
-    if (i < 0) throw new StrataError(`no column ${name}: the columns are ${this.columns.join(", ")}`);
+    if (i < 0) throw new ChloeDBError(`no column ${name}: the columns are ${this.columns.join(", ")}`);
     return this.rows.map((r) => r[i]);
   }
 
@@ -223,14 +223,14 @@ export class Searchable {
       vectorField = embedded[0] ?? null;
     }
     if (mode === "auto") mode = vectorField && textFields.length ? "hybrid" : vectorField ? "vector" : "text";
-    if (!["text", "vector", "hybrid"].includes(mode)) throw new StrataError('mode is "auto", "text", "vector" or "hybrid"');
+    if (!["text", "vector", "hybrid"].includes(mode)) throw new ChloeDBError('mode is "auto", "text", "vector" or "hybrid"');
     const scores = [];
     if (mode === "text" || mode === "hybrid") {
-      if (!textFields.length) throw new StrataError(`${s.table} has no indexed text field to search`);
+      if (!textFields.length) throw new ChloeDBError(`${s.table} has no indexed text field to search`);
       for (const f of textFields) scores.push(`bm25(${quote(f)}, :_q)`);
     }
     if (mode === "vector" || mode === "hybrid") {
-      if (!vectorField) throw new StrataError(`${s.table} has no embedded vector field with its model open`);
+      if (!vectorField) throw new ChloeDBError(`${s.table} has no embedded vector field with its model open`);
       scores.push(`similarity(${quote(vectorField)}, :_v)`);
     }
     const fields = new Set(s.fields.map((f) => f.name.toLowerCase()));
@@ -251,6 +251,6 @@ export class Searchable {
 export function pickTable(tables, table) {
   if (table == null) return tables[0];
   const t = tables.find((t) => t.table.toLowerCase() === String(table).toLowerCase());
-  if (!t) throw new StrataError(`no such table: ${table}`);
+  if (!t) throw new ChloeDBError(`no such table: ${table}`);
   return t;
 }

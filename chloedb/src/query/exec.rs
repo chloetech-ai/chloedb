@@ -351,7 +351,7 @@ impl Engine {
     /// ([`Engine::Auto`] with the feature `datafusion`, the operators
     /// without).
     pub fn from_env() -> Engine {
-        match crate::env::var("STRATA_ENGINE").as_deref() {
+        match crate::env::var("CHLOEDB_ENGINE").as_deref() {
             Ok("operators") => Engine::Operators,
             Ok("auto") => Engine::Auto,
             Ok("datafusion") => Engine::DataFusion,

@@ -1,6 +1,6 @@
 # DataFrames in Python
 
-`store["table"]` is a `strata.Frame`: a lazy dataframe written the way Polars writes one. Nothing is read until you ask for rows. Then the whole chain compiles to one SQL statement, which runs where the data is (a file in your process, or a chloedb-server), and the answer comes back as an Arrow table, which pandas, Polars, NumPy, DuckDB and PyTorch read without a copy. The same code runs on a file and on a server.
+`store["table"]` is a `chloedb.Frame`: a lazy dataframe written the way Polars writes one. Nothing is read until you ask for rows. Then the whole chain compiles to one SQL statement, which runs where the data is (a file in your process, or a chloedb-server), and the answer comes back as an Arrow table, which pandas, Polars, NumPy, DuckDB and PyTorch read without a copy. The same code runs on a file and on a server.
 
 ## Install
 
@@ -14,8 +14,8 @@ pip install "strata-db[frame]" polars pandas -f https://github.com/chloetech-ai/
 
 ```python
 import polars as pl
-import strata as st
-from strata import col
+import chloedb as st
+from chloedb import col
 
 shop = st.connect("shop.strata")              # a file; st.connect("https://...") for a server
 orders = shop.create_table("orders", pl.read_parquet("orders.parquet"), key="id", text=["note"])

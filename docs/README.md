@@ -4,7 +4,7 @@ An embedded search database with SQL: full text, structured columns, vectors and
 
 [How ChloeDB works](chloedb/index.md) · [Query language](chloedb/query-language.md) · [Server](chloedb/server.md) · [Python](chloedb/python.md) · [JavaScript](chloedb/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
 
-> ChloeDB was called Strata until November 2026. The rename is landing in steps: the folders, crates and commands carry the new name (`chloedb-server`), while settings, the Python module and the repository still carry the old one (`STRATA_*`, `import strata`). Old names keep working afterwards (the image and the release archives run `strata-server` too).
+> ChloeDB was called Strata until November 2026. The folders, crates, commands, settings (`CHLOEDB_*`), headers (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`, `ai.chloetech.chloedb`) carry the new name; the repository, the Kubernetes operator and the container image still carry the old one. The old names keep working for a release: `STRATA_*` settings, `x-strata-*` headers, `import strata`, `jdbc:strata:` URLs, and the `strata-server` command in the image and the release archives.
 
 ---
 

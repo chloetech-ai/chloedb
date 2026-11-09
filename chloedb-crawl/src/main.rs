@@ -34,16 +34,16 @@ enum Cmd {
 #[derive(Args)]
 struct Target {
     /// The chloedb-server (one server, or a cluster's coordinator) to write to.
-    #[arg(long, env = "STRATA_URL")]
+    #[arg(long, env = "CHLOEDB_URL")]
     strata: Option<String>,
     /// Its API key (write scope; admin to grow a cluster).
-    #[arg(long, env = "STRATA_KEY", hide_env_values = true)]
+    #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
     key: Option<String>,
     /// Start a cluster on this machine, with its databases and logs in this directory (again on the same directory: the same cluster).
     #[arg(long)]
     local: Option<PathBuf>,
     /// The chloedb-server binary for --local (default: next to this one, or on the PATH).
-    #[arg(long, env = "STRATA_SERVER_BIN")]
+    #[arg(long, env = "CHLOEDB_SERVER_BIN")]
     server_bin: Option<PathBuf>,
     /// Where the --local cluster's coordinator listens (and its command center).
     #[arg(long, default_value = "127.0.0.1:7700")]
@@ -119,7 +119,7 @@ struct SpecArgs {
     #[arg(long)]
     user_agent: Option<String>,
     /// Whom a site's owner reaches about this crawl: an email address or a URL, sent in the user agent.
-    #[arg(long, env = "STRATA_CRAWL_CONTACT")]
+    #[arg(long, env = "CHLOEDB_CRAWL_CONTACT")]
     contact: Option<String>,
 }
 
@@ -157,11 +157,11 @@ struct ServeArgs {
     /// Where the API listens.
     #[arg(long, default_value = "127.0.0.1:7800")]
     listen: String,
-    /// A token every request must carry (Authorization: Bearer); chloedb-server sends its STRATA_APP_TOKEN. With --local and no token, one is made for the coordinator.
-    #[arg(long, env = "STRATA_CRAWL_TOKEN", hide_env_values = true)]
+    /// A token every request must carry (Authorization: Bearer); chloedb-server sends its CHLOEDB_APP_TOKEN. With --local and no token, one is made for the coordinator.
+    #[arg(long, env = "CHLOEDB_CRAWL_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// The contact of crawls that give none: whom a site's owner reaches (an email address or a URL), sent in the user agent.
-    #[arg(long, env = "STRATA_CRAWL_CONTACT")]
+    #[arg(long, env = "CHLOEDB_CRAWL_CONTACT")]
     contact: Option<String>,
     #[command(flatten)]
     target: Target,
@@ -273,7 +273,7 @@ fn main() {
     // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
     // clap and the code read the old names, so the new ones are copied over
     // before the runtime starts any thread.
-    chloedb_crawl::adopt_new_env_names();
+    chloedb_crawl::adopt_old_env_names();
     run();
 }
 
@@ -300,7 +300,7 @@ async fn run() {
             let svc = Service::with_contact(strata.clone(), grower, token.clone(), local.is_some(), a.contact.clone());
             eprintln!("chloedb-crawl: the API answers at {me}{}", if token.is_some() && a.token.is_none() { " (token made for the coordinator)" } else { "" });
             if local.is_none() {
-                eprintln!("chloedb-crawl: to see it in the command center, start the coordinator with --app crawler={me}{}", if token.is_some() { " and STRATA_APP_TOKEN set to the crawler's token" } else { "" });
+                eprintln!("chloedb-crawl: to see it in the command center, start the coordinator with --app crawler={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN set to the crawler's token" } else { "" });
             }
             let svc2 = svc.clone();
             let server = axum::serve(listener, api::router(svc)).with_graceful_shutdown(async move {

@@ -1038,14 +1038,14 @@ function render(page, r) {
       h("div", { class: "cc-cells" }, n.copies.slice().sort((a, b) => a.shard - b.shard).map(cell)),
       failBtn([n.key], n.known ? `node ${n.key}` : n.key, true));
     let content;
-    const unknownNote = !M.nodesKnown ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The copies report no node (STRATA_NODE or NODE_NAME): they are grouped by the host in their URL, which on one machine is the same for all.") : null;
+    const unknownNote = !M.nodesKnown ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The copies report no node (CHLOEDB_NODE or NODE_NAME): they are grouped by the host in their URL, which on one machine is the same for all.") : null;
     if (group === "node") {
       const ns = [...M.nodes.values()].sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
       content = [unknownNote, h("div", { class: "cc-nodes" }, ns.map(nodeBox))];
     } else {
       const zs = [...M.zones.values()].sort((a, b) => String(a.key ?? "~").localeCompare(String(b.key ?? "~")));
       content = [
-        !M.zonesKnown ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The copies report no zone (STRATA_ZONE): every node is in one group.") : unknownNote,
+        !M.zonesKnown ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The copies report no zone (CHLOEDB_ZONE): every node is in one group.") : unknownNote,
         h("div", { class: "cc-zones", style: { "--zones": Math.min(3, zs.length) } }, zs.map((z) => {
           const keys = z.nodes.map((n) => n.key);
           const on = keys.every((k) => failed.has(k));
@@ -2120,7 +2120,7 @@ function render(page, r) {
           ? h("div", { class: "small" }, [...P.removes.map((x) => `${cname(M.all.find((c) => c.url === x.url) || { id: short(x.url) })} from shard ${x.shard} (${x.why === "replaced" ? "replaced" : "you asked"})`), ...P.drops.map((i) => `shard ${i} (you asked)`)].join("; ") + ". Nothing else.")
           : h("div", { class: "small dim" }, "Nothing is removed.")),
       h("div", { class: "ft" },
-        h("button", { class: "btn sm", title: "The call that applies this plan on the coordinator, as a curl command", onclick: () => copy(`curl -sf -H "authorization: Bearer $STRATA_TOKEN" -H "content-type: application/json" -H "x-strata-reason: ..." -X POST ${location.origin}/v1/admin/plan/apply -d '${JSON.stringify({ steps: P.steps.map(serverStep) }).replace(/'/g, "'\\''")}'`, "Copied the call") }, icon("copy"), "Copy as a call"),
+        h("button", { class: "btn sm", title: "The call that applies this plan on the coordinator, as a curl command", onclick: () => copy(`curl -sf -H "authorization: Bearer $CHLOEDB_TOKEN" -H "content-type: application/json" -H "x-chloedb-reason: ..." -X POST ${location.origin}/v1/admin/plan/apply -d '${JSON.stringify({ steps: P.steps.map(serverStep) }).replace(/'/g, "'\\''")}'`, "Copied the call") }, icon("copy"), "Copy as a call"),
         h("span", { class: "grow" }),
         h("button", { class: "btn primary", disabled: !!blocked, title: blocked ? cap(blocked.text) : "", onclick: () => applyOwn(P) }, `Apply ${plural(P.steps.length, "step")}…`)));
   }

@@ -5,8 +5,8 @@ import threading
 
 import pytest
 
-import strata
-from strata import bm25, col, cross_encoder, gbdt, score
+import chloedb
+from chloedb import bm25, col, cross_encoder, gbdt, score
 from conftest import BOOKS, book, tone_wav
 
 
@@ -14,27 +14,27 @@ def test_create_open_and_schema(tmp_path):
     path = tmp_path / "s.strata"
     schema_file = tmp_path / "books.json"
     schema_file.write_text(json.dumps(BOOKS))
-    with strata.open(path, schema=schema_file) as db:
+    with chloedb.open(path, schema=schema_file) as db:
         assert db.schema["key"] == "id"
         assert [f["name"] for f in db.schema["fields"]][:2] == ["id", "title"]
         assert list(db.schema["fields"][0])[:2] == ["name", "type"]
         db.insert({"id": "a", "title": "one"})
-    with strata.open(path) as db:
+    with chloedb.open(path) as db:
         assert len(db) == 1
-        assert db.schema == strata.Database.create(tmp_path / "t.strata", json.dumps(BOOKS)).schema
-    with pytest.raises(strata.StrataError, match="does not exist"):
-        strata.open(tmp_path / "missing.strata")
-    with pytest.raises(strata.StrataError, match="dim"):
-        strata.Database.create(tmp_path / "bad.strata", {"table": "t", "fields": [{"name": "v", "type": "vector"}]})
+        assert db.schema == chloedb.Database.create(tmp_path / "t.strata", json.dumps(BOOKS)).schema
+    with pytest.raises(chloedb.ChloeDBError, match="does not exist"):
+        chloedb.open(tmp_path / "missing.strata")
+    with pytest.raises(chloedb.ChloeDBError, match="dim"):
+        chloedb.Database.create(tmp_path / "bad.strata", {"table": "t", "fields": [{"name": "v", "type": "vector"}]})
 
 
 def test_writes(db):
     assert len(db) == 200
     # Small inserts go through the log, large ones are bulk-loaded; both
     # write all rows or none.
-    with pytest.raises(strata.StrataError, match="b0001"):
+    with pytest.raises(chloedb.ChloeDBError, match="b0001"):
         db.insert([book(1000), book(1)])
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         db.insert([book(i) for i in range(1000, 2500)] + [book(3)])
     assert len(db) == 200
     assert db.insert([book(i) for i in range(1000, 2500)]) == 1500
@@ -43,9 +43,9 @@ def test_writes(db):
     assert db.delete(["b0005", "nope"]) == 1
     assert db.delete("b9000") == 1
     assert len(db) == 1699
-    with pytest.raises(strata.StrataError, match="colour"):
+    with pytest.raises(chloedb.ChloeDBError, match="colour"):
         db.insert({"id": "x", "colour": "red"})
-    with pytest.raises(strata.StrataError, match="year"):
+    with pytest.raises(chloedb.ChloeDBError, match="year"):
         db.insert({"id": "x", "year": "soon"})
     with pytest.raises(ValueError, match="cannot store"):
         db.insert({"id": "x", "title": object()})
@@ -64,7 +64,7 @@ def test_queries_and_results(db):
     assert plan["version"] == 1 and plan["root"]["node"] == "project"
     assert db.run(plan).keys == db.query("SELECT id FROM books WHERE year >= 2000 ORDER BY year DESC LIMIT 3").keys
     assert db.run(db.plan("UPDATE books SET rating = 1 WHERE id = 'b0002'")) == 1
-    with pytest.raises(strata.StrataError, match="newer"):
+    with pytest.raises(chloedb.ChloeDBError, match="newer"):
         db.run({**plan, "version": 2})
     # A compound query's plan has operators over single-table queries.
     sql = "SELECT id FROM books WHERE year > (SELECT AVG(year) FROM books) ORDER BY year DESC LIMIT 5"
@@ -81,7 +81,7 @@ def test_queries_and_results(db):
     assert a == b
     near = db.query("SELECT id FROM books ORDER BY similarity(emb, :v) DESC LIMIT 1", v={"vector_of": "b0007"}).keys
     assert near == ["b0007"]
-    with pytest.raises(strata.StrataError):
+    with pytest.raises(chloedb.ChloeDBError):
         db.query("SELECT nope FROM books")
 
 
@@ -98,7 +98,7 @@ def test_a_field_of_token_vectors(tmp_path):
             {"name": "tok", "type": "vector", "dim": 32, "multi": True, "index": "flat", "embed": {"from": ["body"], "model": "hash:32"}},
         ],
     }
-    db = strata.Database.create(str(tmp_path / "d.strata"), schema)
+    db = chloedb.Database.create(str(tmp_path / "d.strata"), schema)
     db.insert([{"id": "a", "body": "green apples"}, {"id": "b", "body": "red apples"}, {"id": "c", "body": "pears"}])
     assert len(db.query("SELECT tok FROM d WHERE id = 'a'").scalar()) == 2
     q = db.embed_tokens("green apples", "tok")
@@ -121,21 +121,21 @@ def test_a_query_by_sound_needs_a_model_of_sound(db):
         db.embed(audio=wav)
     with pytest.raises(ValueError, match="one of them"):
         db.embed(image=b"x", audio=wav)
-    with pytest.raises(strata.StrataError, match="does not embed sound"):
+    with pytest.raises(chloedb.ChloeDBError, match="does not embed sound"):
         db.embed(audio=wav, field="emb")
-    with pytest.raises(strata.StrataError, match="not a sound file"):
+    with pytest.raises(chloedb.ChloeDBError, match="not a sound file"):
         db.embed(audio=b"not a sound", field="emb")
     q = "SELECT id FROM books ORDER BY similarity(emb, :v) DESC LIMIT 1"
-    with pytest.raises(strata.StrataError, match="not a sound file"):
+    with pytest.raises(chloedb.ChloeDBError, match="not a sound file"):
         db.query(q, v={"embed": {"audio": base64.b64encode(b"not a sound").decode()}})
-    with pytest.raises(strata.StrataError, match="is a sound file"):
+    with pytest.raises(chloedb.ChloeDBError, match="is a sound file"):
         db.query(q, v={"embed": {"image": base64.b64encode(wav).decode()}})
 
 
 def test_vector_of_any_field_name(tmp_path):
     # The SQL it ran did not quote the names, so a space broke it.
     schema = {"table": "t", "primary_key": "doc id", "fields": [{"name": "doc id", "type": "keyword"}, {"name": "my vec", "type": "vector", "dim": 2}]}
-    with strata.open(tmp_path / "v.strata", schema) as db:
+    with chloedb.open(tmp_path / "v.strata", schema) as db:
         db.insert([{"doc id": f"n{i}", "my vec": [1.0, float(i)]} for i in range(4)])
         near = db.query('SELECT "doc id" FROM t ORDER BY similarity("my vec", :v) DESC LIMIT 1', v={"vector_of": "n3", "field": "my vec"}).keys
         assert near == ["n3"]
@@ -145,13 +145,13 @@ def test_vector_of_any_field_name(tmp_path):
 def test_multi_vector_field(tmp_path):
     # A row holds several vectors; maxsim sums each query vector's best match.
     schema = {"table": "pages", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "patches", "type": "vector", "dim": 3, "multi": True, "index": "flat", "keep_f32": True}]}
-    with strata.open(tmp_path / "m.strata", schema) as db:
+    with chloedb.open(tmp_path / "m.strata", schema) as db:
         db.insert([{"id": "a", "patches": [[1, 0, 0], [0, 1, 0]]}, {"id": "b", "patches": [[0, 0, 1]]}, {"id": "c", "patches": [0.5, 0.5, 0]}, {"id": "d"}])
         r = db.query("SELECT id, patches FROM pages ORDER BY maxsim(patches, :qs) DESC LIMIT 5", qs=[[1, 0, 0], [0, 1, 0]])
         assert r.keys == ["a", "c", "b"] and r.scores == [2.0, 1.0, 0.0]
         assert r.rows[0][1] == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
         assert db.query("SELECT patches FROM pages WHERE id = 'd'").scalar() is None
-        with pytest.raises(strata.StrataError, match="maxsim"):
+        with pytest.raises(chloedb.ChloeDBError, match="maxsim"):
             db.query("SELECT id FROM pages ORDER BY similarity(patches, :q) DESC LIMIT 1", q=[1, 0, 0])
 
 def test_numpy_values(db):
@@ -176,14 +176,14 @@ def test_numpy_vectors_are_read_from_their_bytes(tmp_path):
         "be": np.array([1, 2, 3, 4], dtype=">f4"),
         "int": np.array([1, 0, 0, 1], dtype=np.int32),
     }
-    with strata.open(tmp_path / "n.strata", schema) as db:
+    with chloedb.open(tmp_path / "n.strata", schema) as db:
         db.insert([{"id": k, "emb": v} for k, v in rows.items()])
         emb = lambda k: db.query("SELECT emb FROM t WHERE id = :k", k=k).scalar()  # noqa: E731
         for k, v in rows.items():
             assert emb(k) == [float(np.float32(x)) for x in np.asarray(v, dtype=np.float64)], k
-        with pytest.raises(strata.StrataError):
+        with pytest.raises(chloedb.ChloeDBError):
             db.insert({"id": "short", "emb": np.zeros(3, dtype=np.float32)})
-        with pytest.raises(strata.StrataError):
+        with pytest.raises(chloedb.ChloeDBError):
             db.insert({"id": "nan", "emb": np.array([0.0, np.nan, 0.0, 1.0], dtype=np.float32)})
         db.upsert([{"id": "f4", "emb": np.ones(4, dtype=np.float32)}])
         assert emb("f4") == [1.0] * 4
@@ -195,7 +195,7 @@ def test_inserts_gather_in_memory_until_a_segment_fills(tmp_path):
     # segment once it fills; optimize() writes the rest out.
     schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}, {"name": "body", "type": "text"}]}
     path = tmp_path / "g.strata"
-    with strata.open(path, schema) as db:
+    with chloedb.open(path, schema) as db:
         for b in range(13):
             db.insert([{"id": f"r{b}-{i}", "n": b, "body": f"batch {b} row {i}"} for i in range(1_000)])
             assert len(db) == 1_000 * (b + 1)
@@ -203,7 +203,7 @@ def test_inserts_gather_in_memory_until_a_segment_fills(tmp_path):
         db.optimize()
         assert db.query("SELECT count(*) FROM t WHERE MATCH(body, 'batch')").scalar() == 13_000
         db.insert([{"id": f"big{i}", "n": -1, "body": "bulk"} for i in range(10_000)])
-    with strata.open(path) as db:
+    with chloedb.open(path) as db:
         assert len(db) == 23_000 and db.get("r12-999")["n"] == 12 and db.get("big9999")["n"] == -1
 
 
@@ -212,7 +212,7 @@ def test_optimize_leaves_one_segment_and_a_compact_file(tmp_path):
     # deleted rows are dropped and the file shrinks to about its live data.
     schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "body", "type": "text"}]}
     path = tmp_path / "o.strata"
-    with strata.open(path, schema) as db:
+    with chloedb.open(path, schema) as db:
         db.sql("CREATE TABLE u (id KEYWORD PRIMARY KEY, n INT)")
         for b in range(4):
             db.insert([{"id": f"r{b}-{i}", "body": f"batch {b} row {i} " * 4} for i in range(10_000)])
@@ -226,7 +226,7 @@ def test_optimize_leaves_one_segment_and_a_compact_file(tmp_path):
         assert len(db) == 20_000 and db.query("SELECT count(*) FROM u").scalar() == 40_000
         plan = db.query("SELECT id FROM t WHERE MATCH(body, 'batch') ORDER BY bm25(body, 'batch') DESC LIMIT 1").stats
         assert all(s.get("seg", 0) == 0 for s in plan.get("steps", []))
-    with strata.open(path) as db:
+    with chloedb.open(path) as db:
         assert len(db) == 20_000 and db.get("r1-9999") is not None and db.get("r3-0") is None
 
 
@@ -239,14 +239,14 @@ def test_a_table_rewritten_crawl_after_crawl_closes_near_its_size(tmp_path):
     schema = {"table": "listings", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}, {"name": "total", "type": "float"}]}
     path = tmp_path / "c.strata"
     crawls, items = 60, 1_000
-    with strata.open(path, schema) as db:
+    with chloedb.open(path, schema) as db:
         db.sql("CREATE TABLE snapshots (item KEYWORD NOT NULL, ts TIMESTAMP NOT NULL, total FLOAT) OPTIONS(cluster_by = 'item')")
         for c in range(crawls):
             ts = f"2026-09-{1 + c // 6:02d}T{c % 6 * 4:02d}:00:00Z"
             db.insert([{"item": f"v{i}", "ts": ts, "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)], table="snapshots")
             db.upsert([{"id": f"v{i}", "title": f"vintage camera lens {i}, boxed and tested", "status": "ACTIVE", "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)])
     closed = path.stat().st_size
-    with strata.open(path) as db:
+    with chloedb.open(path) as db:
         assert len(db) == items and db.query("SELECT count(*) FROM snapshots").scalar() == crawls * items
         assert db.get("v7")["total"] == (7 * 31 + (crawls - 1) * 7) % 500 + 0.5
         db.optimize()
@@ -269,12 +269,12 @@ def test_import_file(tmp_path):
     rows.write_text("\n".join(json.dumps({**book(i), "publisher": "Acme"}) for i in range(50)))
     csv = tmp_path / "more.csv"
     csv.write_text('id,title,genres,year\nb0001,"Re, titled",a|b,1999\nc1,New,,\n')
-    with strata.Database.create(tmp_path / "i.strata", BOOKS) as db:
+    with chloedb.Database.create(tmp_path / "i.strata", BOOKS) as db:
         assert db.import_file(rows) == {"rows": 50, "bulk": True, "skipped_fields": ["publisher"]}
         assert db.import_file(csv) == {"rows": 2, "bulk": False, "skipped_fields": []}
         assert len(db) == 51
         assert db.query("SELECT title, genres FROM books WHERE id = 'b0001'").rows == [["Re, titled", ["a", "b"]]]
-        with pytest.raises(strata.StrataError, match="line 1"):
+        with pytest.raises(chloedb.ChloeDBError, match="line 1"):
             bad = tmp_path / "bad.jsonl"
             bad.write_text('{"id": 1, "year": "x"}\n')
             db.import_file(bad)
@@ -282,13 +282,13 @@ def test_import_file(tmp_path):
 
 def test_models_that_do_not_open(tmp_path):
     schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "body", "type": "text"}, {"name": "v", "type": "vector", "embed": {"from": "body", "model": "potion-base-8M"}}]}
-    with strata.Database.create(tmp_path / "m.strata", schema, models=tmp_path) as db:
+    with chloedb.Database.create(tmp_path / "m.strata", schema, models=tmp_path) as db:
         assert "v" in db.embed_errors
         db.insert({"id": "a", "body": "no vector"})
         db.insert({"id": "b", "body": "a vector", "v": [0.1] * 256})
         assert len(db) == 2
         assert db.search("vector").keys  # text only: the model is not open
-        with pytest.raises(strata.StrataError, match="model"):
+        with pytest.raises(chloedb.ChloeDBError, match="model"):
             db.embed("x")
 
 
@@ -310,7 +310,7 @@ def test_threads_and_close(tmp_path, db):
     assert not errors
     db.close()
     assert db.closed and "closed" in repr(db)
-    with pytest.raises(strata.StrataError, match="closed"):
+    with pytest.raises(chloedb.ChloeDBError, match="closed"):
         db.query("SELECT id FROM books")
 
 
@@ -318,7 +318,7 @@ def test_threads_write_at_once(tmp_path):
     # Threads that write at once wait for each other and share commits;
     # none fails as busy, and no increment is lost.
     schema = {"table": "c", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}]}
-    with strata.Database.create(tmp_path / "w.strata", schema) as db:
+    with chloedb.Database.create(tmp_path / "w.strata", schema) as db:
         db.insert([{"id": f"k{k}", "n": 0} for k in range(4)])
         errors = []
 
@@ -356,7 +356,7 @@ TASKS = {
 def test_bool_and_timestamp(tmp_path):
     from datetime import date, datetime, timedelta, timezone
 
-    with strata.Database.create(tmp_path / "tasks.strata", TASKS) as db:
+    with chloedb.Database.create(tmp_path / "tasks.strata", TASKS) as db:
         assert [f["type"] for f in db.schema["fields"]] == ["keyword", "bool", "timestamp", "int"]
         db.insert([
             {"id": "a", "done": True, "at": datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc), "n": 1},
@@ -380,15 +380,15 @@ def test_bool_and_timestamp(tmp_path):
         assert db.query("SELECT MAX(at) FROM tasks").scalar() == "2026-10-03T12:00:00.250Z"
         assert db.sql("UPDATE tasks SET done = :d, at = :t WHERE id = 'c'", d=False, t=date(2026, 11, 1)) == 1
         assert db.query("SELECT done, at FROM tasks WHERE id = 'c'")[0] == {"done": False, "at": "2026-11-01T00:00:00Z"}
-        with pytest.raises(strata.StrataError, match="done"):
+        with pytest.raises(chloedb.ChloeDBError, match="done"):
             db.insert({"id": "x", "done": 2})
-        with pytest.raises(strata.StrataError, match="at"):
+        with pytest.raises(chloedb.ChloeDBError, match="at"):
             db.insert({"id": "x", "at": "next week"})
 
 
 def test_json_fields(tmp_path):
     schema = {"table": "items", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "attrs", "type": "json"}]}
-    with strata.Database.create(tmp_path / "items.strata", schema) as db:
+    with chloedb.Database.create(tmp_path / "items.strata", schema) as db:
         assert [f["type"] for f in db.schema["fields"]] == ["keyword", "json"]
         db.insert([
             {"id": "a", "attrs": {"color": "red", "dims": {"w": 4}, "certs": ["CE", "UL"]}},
@@ -400,7 +400,7 @@ def test_json_fields(tmp_path):
         assert db.query("SELECT id FROM items WHERE attrs.certs = 'UL' OR attrs.voltage >= 5 ORDER BY id").keys == ["a", "b"]
         assert db.query("SELECT id FROM items WHERE attrs.color IS NULL").keys == ["c"]
         assert db.query("SELECT attrs.dims.w AS w, attrs FROM items WHERE id = 'a'")[0] == {"w": 4, "attrs": '{"certs":["CE","UL"],"color":"red","dims":{"w":4}}'}
-        with pytest.raises(strata.StrataError, match="object"):
+        with pytest.raises(chloedb.ChloeDBError, match="object"):
             db.insert({"id": "x", "attrs": [1, 2]})
 
 
@@ -415,16 +415,16 @@ def test_not_null_and_default(tmp_path):
             {"name": "at", "type": "timestamp", "default": "now"},
         ],
     }
-    with strata.Database.create(tmp_path / "events.strata", schema) as db:
+    with chloedb.Database.create(tmp_path / "events.strata", schema) as db:
         assert db.schema["fields"][1] == {"name": "kind", "type": "keyword", "not_null": True, "default": "click"}
         db.insert([{"id": "a"}, {"id": "b", "kind": "view", "n": None}])
         r = db.query("SELECT id, kind, n FROM events WHERE at IS NOT NULL ORDER BY n")
         assert sorted(list(row.values()) for row in r) == [["a", "click", 1], ["b", "view", None]]
-        with pytest.raises(strata.StrataError, match="kind is NOT NULL"):
+        with pytest.raises(chloedb.ChloeDBError, match="kind is NOT NULL"):
             db.insert({"id": "x", "kind": None})
         assert db.sql("INSERT INTO events (id, n) VALUES ('c', DEFAULT)") == 1
         assert db.query("SELECT kind, n FROM events WHERE id = 'c'")[0] == {"kind": "click", "n": 1}
-        with pytest.raises(strata.StrataError, match="kind is NOT NULL"):
+        with pytest.raises(chloedb.ChloeDBError, match="kind is NOT NULL"):
             db.sql("UPDATE events SET kind = NULL WHERE id = 'a'")
 
 
@@ -438,7 +438,7 @@ def test_simple_analyzer(tmp_path):
             {"name": "body", "type": "text"},
         ],
     }
-    with strata.Database.create(tmp_path / "notes.strata", schema) as db:
+    with chloedb.Database.create(tmp_path / "notes.strata", schema) as db:
         assert db.schema["fields"][1] == {"name": "title", "type": "text", "analyzer": "simple"}
         db.insert([{"id": "a", "title": "The Running Cats", "body": "The Running Cats"}, {"id": "b", "title": "they run", "body": "they run"}])
 
@@ -448,8 +448,8 @@ def test_simple_analyzer(tmp_path):
         assert ids("title", "run") == ["b"]
         assert ids("body", "run") == ["a", "b"]
         assert ids("title", "the") == ["a"]
-    with pytest.raises(strata.StrataError, match="analyzer"):
-        strata.Database.create(tmp_path / "bad.strata", {"table": "t", "fields": [{"name": "t", "type": "text", "analyzer": "klingon"}]})
+    with pytest.raises(chloedb.ChloeDBError, match="analyzer"):
+        chloedb.Database.create(tmp_path / "bad.strata", {"table": "t", "fields": [{"name": "t", "type": "text", "analyzer": "klingon"}]})
 
 
 def test_joins_across_tables(db):
@@ -476,14 +476,14 @@ def test_writes_to_any_table(db, tmp_path):
     assert db.import_file(f, table="events") == {"rows": 2, "bulk": False, "skipped_fields": []}
     assert db.query("SELECT COUNT(*) FROM events").scalar() == 1500
     assert len(db) == 200
-    r = db.table("events").select("book").where(strata.col("usr") == "u9").order_by(strata.col("ts")).run()
+    r = db.table("events").select("book").where(chloedb.col("usr") == "u9").order_by(chloedb.col("ts")).run()
     assert r.column("book") == [None, None]
     assert db.query("SELECT book FROM events WHERE id = 1").scalar() == "b0007"
-    with pytest.raises(strata.StrataError, match="no such table: nope"):
+    with pytest.raises(chloedb.ChloeDBError, match="no such table: nope"):
         db.insert({"id": 1}, table="nope")
-    with pytest.raises(strata.StrataError, match="no table nope"):
+    with pytest.raises(chloedb.ChloeDBError, match="no table nope"):
         db.table("nope")
-    with pytest.raises(strata.StrataError, match="shard_by"):
+    with pytest.raises(chloedb.ChloeDBError, match="shard_by"):
         db.sql("UPDATE events SET usr = 'u2' WHERE id = 1")
 
 
@@ -497,7 +497,7 @@ def test_an_edge_table_walked_from_another_table(db):
     assert sorted((r["id"], r["hops()"]) for r in hops) == [("b0002", 1), ("b0003", 2)]
     top = db.query("SELECT id FROM books ORDER BY ppr(cooc, 'b0002') DESC LIMIT 3").column("id")
     assert top[0] == "b0002" and set(top[1:]) == {"b0001", "b0003"}
-    with pytest.raises(strata.StrataError, match="not an edge table"):
+    with pytest.raises(chloedb.ChloeDBError, match="not an edge table"):
         db.query("SELECT id FROM books ORDER BY ppr(books, 'b0001') DESC LIMIT 3")
 
 
@@ -506,7 +506,7 @@ def test_a_table_ordered_by_a_column_and_kept_for_a_period(db):
     t = db.tables()[1]
     assert list(t)[:5] == ["table", "key", "cluster_by", "retain", "retain_by"]
     assert (t["cluster_by"], t["retain"], t["retain_by"]) == ("usr", "30 days", "ts")
-    with pytest.raises(strata.StrataError, match="cluster_by"):
+    with pytest.raises(chloedb.ChloeDBError, match="cluster_by"):
         db.sql("CREATE TABLE bad (id INT PRIMARY KEY, body TEXT) OPTIONS(cluster_by = 'body')")
 
 
@@ -524,14 +524,14 @@ def test_rank_profiles(db):
     plan = db.plan(sql, q="dragon")
     assert "rank_profiles" in plan["features"]
     assert db.run(plan).keys == db.query(sql, q="dragon").keys
-    with pytest.raises(strata.StrataError, match="already"):
+    with pytest.raises(chloedb.ChloeDBError, match="already"):
         db.sql(liked)
     assert db.sql(liked.replace("CREATE", "CREATE OR REPLACE").replace("w => 0.5", "w => 2")) == 0
-    with pytest.raises(strata.StrataError, match="is not the one the plan was made with"):
+    with pytest.raises(chloedb.ChloeDBError, match="is not the one the plan was made with"):
         db.run(plan)
     assert db.query(sql, q="dragon").keys == db.query(written.format(w=2), q="dragon").keys
     assert db.sql("DROP RANK PROFILE liked") == 0
-    with pytest.raises(strata.StrataError, match="books has no rank profile named liked"):
+    with pytest.raises(chloedb.ChloeDBError, match="books has no rank profile named liked"):
         db.query(sql, q="dragon")
     assert db.sql("DROP RANK PROFILE IF EXISTS liked ON books") == 0
 
@@ -549,7 +549,7 @@ def model_dir(tmp_path, source="lgb_rank"):
 
 def test_gbdt(tmp_path):
     models = model_dir(tmp_path)
-    with strata.Database.create(tmp_path / "books.strata", BOOKS, models=str(models)) as db:
+    with chloedb.Database.create(tmp_path / "books.strata", BOOKS, models=str(models)) as db:
         db.insert([book(i) for i in range(200)])
         by = "gbdt('m', bm25(description, :q), rating, year % 6)"
         sql = f"SELECT id, score(), features() FROM books ORDER BY {by} DESC LIMIT 5"
@@ -565,17 +565,17 @@ def test_gbdt(tmp_path):
         assert "rank_models" in plan["features"] and '"hash":"' in json.dumps(plan, separators=(",", ":"))
         assert db.run(plan).keys == r.keys
         model_dir(tmp_path, "xgb_rank")
-        with pytest.raises(strata.StrataError, match="ranking model m here is not the one the plan was made with"):
+        with pytest.raises(chloedb.ChloeDBError, match="ranking model m here is not the one the plan was made with"):
             db.run(plan)
         assert db.query(sql, q="dragon ship").keys != r.keys or db.query(sql, q="dragon ship").scores != r.scores
-        with pytest.raises(strata.StrataError, match="reads 3 features, not 2"):
+        with pytest.raises(chloedb.ChloeDBError, match="reads 3 features, not 2"):
             db.query("SELECT id FROM books ORDER BY gbdt('m', rating, year) DESC LIMIT 5")
-        with pytest.raises(strata.StrataError, match="no ranking model named nope"):
+        with pytest.raises(chloedb.ChloeDBError, match="no ranking model named nope"):
             db.query("SELECT id FROM books ORDER BY gbdt('nope', rating, year, year) DESC LIMIT 5")
 
 
 def test_cross_encoder(tmp_path):
-    with strata.Database.create(tmp_path / "books.strata", BOOKS) as db:
+    with chloedb.Database.create(tmp_path / "books.strata", BOOKS) as db:
         db.insert([book(i) for i in range(200)])
         ce = "cross_encoder('builtin:overlap', title, description, :q)"
         top = "WITH top AS (SELECT * FROM books ORDER BY bm25(description, :q) DESC LIMIT 30)"
@@ -593,9 +593,9 @@ def test_cross_encoder(tmp_path):
         plan = db.plan(sql, q="dragon ship winter")
         assert "rank_models" in plan["features"] and '"cross_encoder":{"model":"builtin:overlap","hash":"builtin"' in json.dumps(plan, separators=(",", ":"))
         assert db.run(plan).keys == r.keys
-        with pytest.raises(strata.StrataError, match="a cross-encoder reranks the top rows of a cheaper ranking"):
+        with pytest.raises(chloedb.ChloeDBError, match="a cross-encoder reranks the top rows of a cheaper ranking"):
             db.query(f"SELECT id FROM books ORDER BY {ce} DESC LIMIT 5", q="dragon")
-        with pytest.raises(strata.StrataError, match="no cross-encoder named nope"):
+        with pytest.raises(chloedb.ChloeDBError, match="no cross-encoder named nope"):
             db.query(f"{top} SELECT id FROM top ORDER BY cross_encoder('nope', title, :q) DESC LIMIT 5", q="dragon")
 
 
@@ -628,7 +628,7 @@ def test_the_rank_log(db):
     assert records[0]["history_items"] == ["b0002"] and records[0]["history_actions"] == ["view"]
     assert records[0]["context"] == "u1" and records[0]["variant"] == "a"
     assert len(db.export_rank_log(since=t0 + dt.timedelta(seconds=1))) == 0
-    with pytest.raises(strata.StrataError, match="ORDER BY"):
+    with pytest.raises(chloedb.ChloeDBError, match="ORDER BY"):
         db.query_logged("SELECT id FROM books WHERE year > 2000")
 
 
@@ -652,9 +652,9 @@ def test_two_rankings_interleaved(db):
 def test_columns_added_dropped_and_renamed(tmp_path):
     schema = {"table": "items", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}, {"name": "n", "type": "int"}]}
     path = tmp_path / "items.strata"
-    with strata.Database.create(path, schema) as db:
+    with chloedb.Database.create(path, schema) as db:
         db.insert([{"id": "a", "title": "red apple", "n": 1}, {"id": "b", "title": "green pear", "n": 2}])
-        with pytest.raises(strata.StrataError, match="price"):
+        with pytest.raises(chloedb.ChloeDBError, match="price"):
             db.insert({"id": "c", "price": 3.0})
         db.add_column("price", "float", default=1.5)
         db.add_column("tag", "keyword", table="items")
@@ -666,13 +666,13 @@ def test_columns_added_dropped_and_renamed(tmp_path):
         db.rename_column("title", "headline")
         assert [row["id"] for row in db.query("SELECT id FROM items WHERE MATCH(headline, 'pear')")] == ["b"]
         db.drop_column("n")
-        with pytest.raises(strata.StrataError, match="no such column"):
+        with pytest.raises(chloedb.ChloeDBError, match="no such column"):
             db.query("SELECT n FROM items")
-        with pytest.raises(strata.StrataError, match="primary key"):
+        with pytest.raises(chloedb.ChloeDBError, match="primary key"):
             db.drop_column("id")
         # SQL does the same.
         assert db.sql("ALTER TABLE items ADD COLUMN stock INT NOT NULL DEFAULT 0, DROP COLUMN tag") == 0
-    with strata.Database.open(path) as db:
+    with chloedb.Database.open(path) as db:
         assert [f["name"] for f in db.schema["fields"]] == ["id", "headline", "price", "stock"]
         assert db.query("SELECT price, stock FROM items WHERE id = 'a'")[0] == {"price": 1.5, "stock": 0}
 
@@ -698,20 +698,20 @@ def test_rows_by_key(db, tmp_path):
 
 def test_read_only_follows_another_process(tmp_path):
     path = tmp_path / "shared.strata"
-    with strata.open(path, schema=BOOKS) as w:
+    with chloedb.open(path, schema=BOOKS) as w:
         w.insert([book(i) for i in range(10)])
         # The other workers of a server, in another process: a script that
         # opens the database read-only and counts its rows as they come.
         script = (
-            "import sys, time, strata\n"
-            "db = strata.open(sys.argv[1], read_only=True)\n"
+            "import sys, time, chloedb\n"
+            "db = chloedb.open(sys.argv[1], read_only=True)\n"
             "assert db.read_only\n"
             "print(len(db), flush=True)\n"
             "for line in sys.stdin:\n"
             "    print(db.sql('SELECT COUNT(*) FROM books').scalar(), flush=True)\n"
             "try:\n"
             "    db.insert({'id': 'x'})\n"
-            "except strata.StrataError as e:\n"
+            "except chloedb.ChloeDBError as e:\n"
             "    print('refused', 'read-only' in str(e), flush=True)\n"
         )
         import subprocess
@@ -731,10 +731,10 @@ def test_read_only_follows_another_process(tmp_path):
         assert p.stdout.readline().strip() == "refused True"
         assert p.wait(timeout=30) == 0
     # A second writer is refused, a reader in this process is not.
-    with strata.open(path) as w:
-        r = strata.open(path, read_only=True)
-        with pytest.raises(strata.StrataError, match="busy"):
-            strata.open(path)
+    with chloedb.open(path) as w:
+        r = chloedb.open(path, read_only=True)
+        with pytest.raises(chloedb.ChloeDBError, match="busy"):
+            chloedb.open(path)
         w.insert(book(100))
         assert r.refresh() in (True, False)
         assert len(r) == 30

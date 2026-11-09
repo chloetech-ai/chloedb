@@ -351,7 +351,7 @@ function render(page, r0) {
       clear(whereBody, note, grid, legend, zoneCards(m));
     } else {
       const groups = group === "node" ? (m.nodes.size ? m.nodes : byHost(m)) : m.zones;
-      if (!groups.size) { clear(whereBody, empty("cloud", "Zones not known", "Each copy says its zone when the server runs with STRATA_ZONE set (the operator sets it on Kubernetes)."), legend); return; }
+      if (!groups.size) { clear(whereBody, empty("cloud", "Zones not known", "Each copy says its zone when the server runs with CHLOEDB_ZONE set (the operator sets it on Kubernetes)."), legend); return; }
       const list = [...groups.entries()].map(([k, xs]) => ({ k, xs, bad: xs.filter((x) => copyTone(x) === "crit").length, warn: xs.filter((x) => copyTone(x) === "warn").length }))
         .sort((a, b) => (b.bad - a.bad) || (b.warn - a.warn) || String(a.k).localeCompare(String(b.k), undefined, { numeric: true }));
       clear(whereBody, h("div", { class: "home-groups" + (group === "zone" ? " zones" : "") }, list.map((g) => h("div", { class: "home-group" + (g.bad ? " crit" : g.warn ? " warn" : "") },

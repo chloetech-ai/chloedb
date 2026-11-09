@@ -578,7 +578,7 @@ fn random_operations(seed: u64, name: &str) {
     db.as_ref().unwrap().check().unwrap();
 }
 
-const CHILD_ENV: &str = "STRATA_TABLES_CRASH_CHILD";
+const CHILD_ENV: &str = "CHLOEDB_TABLES_CRASH_CHILD";
 
 /// Tables as the crash log names them: one letter each.
 type Tables = BTreeMap<char, BTreeSet<u64>>;
@@ -776,7 +776,7 @@ fn killed_writer_recovers(name: &str) {
     let mut rng = rand::rngs::StdRng::seed_from_u64(7);
     let mut state: Tables = BTreeMap::from([('t', BTreeSet::new())]);
     let src = Arc::new(Source::default());
-    let iterations = std::env::var("STRATA_CRASH_ITERS").map_or(20, |v| v.parse().unwrap());
+    let iterations = chloedb::env::var("CHLOEDB_CRASH_ITERS").map_or(20, |v| v.parse().unwrap());
     for iter in 0..iterations {
         let log_path = dir.path().join(format!("log{iter}"));
         let spec = format!("{}|{}|{iter}", db_path.display(), log_path.display());

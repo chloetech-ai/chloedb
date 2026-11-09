@@ -22,7 +22,7 @@
 //! in segments and in the memtable, deleted and updated rows, NULLs in
 //! every column and multi-valued fields with no values.
 //!
-//! `STRATA_SQL_ORACLE_RUNS` scales the number of queries (1 by default).
+//! `CHLOEDB_SQL_ORACLE_RUNS` scales the number of queries (1 by default).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -41,7 +41,7 @@ use chloedb::value::Value;
 const TABLE: &str = "CREATE TABLE t (id INT PRIMARY KEY, a INT, b FLOAT, c KEYWORD, d KEYWORD, flag BOOL, tags KEYWORD[])";
 
 fn runs(n: usize) -> usize {
-    let scale: f64 = std::env::var("STRATA_SQL_ORACLE_RUNS").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let scale: f64 = chloedb::env::var("CHLOEDB_SQL_ORACLE_RUNS").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
     ((n as f64) * scale).max(1.0) as usize
 }
 

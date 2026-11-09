@@ -8,7 +8,7 @@ unit length).
 Usage: python3 scripts/prepare_query_pool.py COLLECTION_DIR [--n N] [--model DIR] [--raw DIR]
        (needs numpy, onnxruntime, tokenizers; curl on PATH)
 
-COLLECTION_DIR (say $STRATA_DATA/msmarco-1000k) gets pool_queries.jsonl
+COLLECTION_DIR (say $CHLOEDB_DATA/msmarco-1000k) gets pool_queries.jsonl
 {"id", "text", "source"}, pool_vecs.f32 (N x dim float32, dim from its
 meta.json) and pool_meta.json. A profile with `queries.source = "pool"`
 draws from them: its head is a seeded draw of the pool, its tail the

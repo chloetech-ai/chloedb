@@ -31,7 +31,7 @@ function onParams(r) { reopen?.(r); }
 
 function render(page, r0) {
   let shardFilter = r0.params.get("shard"), focusId = r0.params.get("event");
-  const hidden = new Set(JSON.parse(localStorage.getItem("strata.cc.tl.hidden") || "[]"));
+  const hidden = new Set(JSON.parse(localStorage.getItem("chloedb.cc.tl.hidden") || "[]"));
   let events = [], source = "events", stats = [], statsSince = null, q = "";
   const open = new Set(); // grouped rows shown in full
 
@@ -169,7 +169,7 @@ function render(page, r0) {
     clear(chips, LANES.map(([id, name]) => {
       const n = evs.filter((e) => laneOf(e.kind) === id).length;
       const b = h("button", { class: "chip", "aria-pressed": String(!hidden.has(id)), title: hidden.has(id) ? "Show this lane" : "Hide this lane" }, name.split(" ")[0].toLowerCase(), n ? h("span", { class: "muted" }, " " + n) : null);
-      b.onclick = () => { if (hidden.has(id)) hidden.delete(id); else hidden.add(id); try { localStorage.setItem("strata.cc.tl.hidden", JSON.stringify([...hidden])); } catch { /* private mode */ } drawAxis(); };
+      b.onclick = () => { if (hidden.has(id)) hidden.delete(id); else hidden.add(id); try { localStorage.setItem("chloedb.cc.tl.hidden", JSON.stringify([...hidden])); } catch { /* private mode */ } drawAxis(); };
       return b;
     }));
     clear(lanes, LANES.filter(([id]) => !hidden.has(id)).map(([id, name]) => {

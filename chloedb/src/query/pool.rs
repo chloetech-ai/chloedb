@@ -75,14 +75,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Pool {
-    /// A pool of `threads` threads (at least one), named `strata-query-N`.
+    /// A pool of `threads` threads (at least one), named `chloedb-query-N`.
     pub fn new(threads: usize) -> Pool {
         let threads = threads.max(1);
         let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), ready: Condvar::new() });
         let handles = (0..threads)
             .map(|i| {
                 let shared = shared.clone();
-                std::thread::Builder::new().name(format!("strata-query-{i}")).spawn(move || shared.serve()).expect("start a query thread")
+                std::thread::Builder::new().name(format!("chloedb-query-{i}")).spawn(move || shared.serve()).expect("start a query thread")
             })
             .collect();
         Pool { shared, handles }
@@ -222,7 +222,7 @@ mod tests {
     use std::time::Duration;
 
     fn on_pool() -> bool {
-        std::thread::current().name().is_some_and(|n| n.starts_with("strata-query-"))
+        std::thread::current().name().is_some_and(|n| n.starts_with("chloedb-query-"))
     }
 
     /// Takes tasks from a counter until none are left, as callers should.

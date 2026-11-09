@@ -126,7 +126,7 @@ export function rowDrawer(i, j) {
 }
 
 /** The tools over a grid: copy and download in four forms. */
-export function exportMenu(j, name = "strata") {
+export function exportMenu(j, name = "chloedb") {
   const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, "");
   return [
     h("button", { class: "btn sm ghost", title: "Copy as tab-separated text, for a spreadsheet", onclick: () => copy(asDelimited(j, "\t"), `${fmt.plural(j.rows.length, "row")} copied`) }, icon("copy"), "Copy"),

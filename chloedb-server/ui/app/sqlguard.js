@@ -213,7 +213,7 @@ export function runLabel(p, explain = false) {
 // Production starts read-only; writes are allowed for 15 minutes with a
 // reason, in this tab only (sessionStorage), for this server.
 const ALLOW_MS = 15 * 60e3;
-const allowKey = () => "strata.cc.sql.writes." + location.host;
+const allowKey = () => "chloedb.cc.sql.writes." + location.host;
 
 /** Whether writes are allowed here: {until_ms, reason} while allowed, else null. */
 export function writesAllowed() {

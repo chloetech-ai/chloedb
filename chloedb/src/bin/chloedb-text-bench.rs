@@ -40,7 +40,7 @@ use chloedb::text::{
 #[derive(Parser)]
 #[command(about = "Full-text index experiments")]
 struct Args {
-    /// BEIR collections under $STRATA_DATA (default /home/user/data/beir).
+    /// BEIR collections under $CHLOEDB_DATA (default /home/user/data/beir).
     #[arg(long, value_delimiter = ',', default_value = "scifact,fiqa,trec-covid,quora")]
     collections: Vec<String>,
     /// Keep only the first N documents of each collection.

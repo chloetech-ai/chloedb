@@ -152,7 +152,7 @@ async fn a_server_asks_a_model_about_the_rows_it_returns() {
     let SqlAnswer::Rows(a) = sql(&svc, q).await else { panic!("rows") };
     assert_eq!((a.rs.rows, mock.requests()), (rs.rows, 4));
     let metrics = svc.prometheus().await;
-    assert!(metrics.lines().any(|l| l.starts_with("strata_llm_requests_total ") && l != "strata_llm_requests_total 0"), "{metrics}");
+    assert!(metrics.lines().any(|l| l.starts_with("chloedb_llm_requests_total ") && l != "chloedb_llm_requests_total 0"), "{metrics}");
     // A scroll is refused, and so is a call where it would ask about rows
     // the query does not return.
     let e = svc.query(QueryReq { sql: q.into(), scroll: Some(ScrollAsk { page: 2, keep_alive: None, owner: "ops".into() }), ..Default::default() }).await.err().unwrap().message;

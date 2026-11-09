@@ -146,7 +146,7 @@ function stepper(value, min, max, onChange, label, unit = "") {
     h("div", { class: "row nw" }, less, inp, more));
 }
 
-const remembered = () => { try { return localStorage.getItem("strata.cloud") || "aws"; } catch { return "aws"; } };
+const remembered = () => { try { return localStorage.getItem("chloedb.cloud") || "aws"; } catch { return "aws"; } };
 
 function render(page, r) {
   let prov = PROVIDERS[r?.params?.get("provider")] ? r.params.get("provider") : remembered();
@@ -180,7 +180,7 @@ function render(page, r) {
   switchProvider = (p) => {
     if (!PROVIDERS[p] || p === prov) return;
     prov = p; P = PROVIDERS[p];
-    try { localStorage.setItem("strata.cloud", p); } catch { /* private mode */ }
+    try { localStorage.setItem("chloedb.cloud", p); } catch { /* private mode */ }
     reset(); clear(creds); clear(where); clear(machines); clear(planEl); load();
   };
 

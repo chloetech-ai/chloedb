@@ -13,18 +13,19 @@ pub mod ops;
 pub mod store;
 pub mod strata;
 
-/// Copies every `CHLOEDB_X` setting into `STRATA_X`, the name the code and
-/// clap read: ChloeDB was called Strata, and a setting may carry either
-/// name (the new one wins). As `chloedb::env::adopt_new_names`, which this
-/// crate does not depend on. Call it first in `main`, before any thread.
-pub fn adopt_new_env_names() {
-    let new: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+/// Copies every `STRATA_X` setting into `CHLOEDB_X` when that one is not
+/// set: ChloeDB was called Strata, and a setting may carry either name (the
+/// new one wins). As `chloedb::env::adopt_old_names`, which this crate does
+/// not depend on. Call it first in `main`, before any thread.
+pub fn adopt_old_env_names() {
+    let old: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
         .filter_map(|(k, v)| {
-            let rest = k.to_str()?.strip_prefix("CHLOEDB_")?;
-            (!rest.is_empty()).then(|| (format!("STRATA_{rest}").into(), v))
+            let rest = k.to_str()?.strip_prefix("STRATA_")?;
+            let new = format!("CHLOEDB_{rest}");
+            (!rest.is_empty() && std::env::var_os(&new).is_none()).then(|| (new.into(), v))
         })
         .collect();
-    for (k, v) in new {
+    for (k, v) in old {
         std::env::set_var(k, v);
     }
 }

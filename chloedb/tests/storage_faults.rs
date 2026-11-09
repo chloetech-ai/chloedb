@@ -220,10 +220,10 @@ fn calls_of(name: &str, sync: bool, seed: u64, ops: usize) -> u64 {
     n
 }
 
-/// The failure points to try: all of them, or (`STRATA_FAULT_STRIDE`)
+/// The failure points to try: all of them, or (`CHLOEDB_FAULT_STRIDE`)
 /// every so many.
 fn points(calls: u64) -> impl Iterator<Item = u64> {
-    let stride = std::env::var("STRATA_FAULT_STRIDE").map_or(1, |v| v.parse().unwrap());
+    let stride = chloedb::env::var("CHLOEDB_FAULT_STRIDE").map_or(1, |v| v.parse().unwrap());
     (1..=calls).step_by(stride)
 }
 
@@ -282,14 +282,14 @@ fn strata_damaged(copy: &Path) -> PathBuf {
     s.into()
 }
 
-/// The workloads' seeds: `STRATA_FAULT_SEEDS` more than the default.
+/// The workloads' seeds: `CHLOEDB_FAULT_SEEDS` more than the default.
 fn seeds(first: u64, default: u64) -> impl Iterator<Item = u64> {
-    let n = std::env::var("STRATA_FAULT_SEEDS").map_or(default, |v| v.parse().unwrap());
+    let n = chloedb::env::var("CHLOEDB_FAULT_SEEDS").map_or(default, |v| v.parse().unwrap());
     (0..n).map(move |i| first + 100 * i)
 }
 
 fn ops() -> usize {
-    std::env::var("STRATA_FAULT_OPS").map_or(80, |v| v.parse().unwrap())
+    chloedb::env::var("CHLOEDB_FAULT_OPS").map_or(80, |v| v.parse().unwrap())
 }
 
 #[test]

@@ -29,11 +29,11 @@ Open `http://127.0.0.1:7700` and go to **Apps → Sheets**.
 Against a cluster that runs elsewhere, give chloedb-sheets the server (a coordinator or one server) and a key, and give the server the app. Its first start creates the two tables it keeps workbooks in, which takes an admin key; after that a key that can write is enough:
 
 ```bash
-chloedb-sheets serve --strata http://coordinator:7700 --key "$STRATA_KEY" --token "$SHEETS_TOKEN" --listen 0.0.0.0:7820
-chloedb-server ... --app sheets=http://sheets-host:7820   # with STRATA_APP_TOKEN=$SHEETS_TOKEN
+chloedb-sheets serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$SHEETS_TOKEN" --listen 0.0.0.0:7820
+chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOKEN=$SHEETS_TOKEN
 ```
 
-`--token` (or `STRATA_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `STRATA_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.
+`--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.
 
 ### On Kubernetes
 

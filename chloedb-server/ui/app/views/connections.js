@@ -66,7 +66,7 @@ function render(page) {
   }
   function drawSide() {
     const name = h("input", { class: "input mono", placeholder: "prod-search", autocomplete: "off", spellcheck: "false" });
-    const url = h("input", { class: "input mono", placeholder: "https://strata.example.com", autocomplete: "off", spellcheck: "false" });
+    const url = h("input", { class: "input mono", placeholder: "https://chloedb.example.com", autocomplete: "off", spellcheck: "false" });
     const key = h("input", { class: "input mono", type: "password", placeholder: "sk_…", autocomplete: "off" });
     let color = COLORS[(hub.connections || []).length % COLORS.length];
     const swatches = h("div", { class: "row", style: { gap: "6px" } });

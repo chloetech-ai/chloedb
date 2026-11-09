@@ -309,8 +309,8 @@ struct Conn {
 impl Conn {
     fn new(e: Eng, timeout: Duration) -> Result<Conn, String> {
         let mut h = reqwest::header::HeaderMap::new();
-        if let (Eng::Strata, Ok(t)) = (e, std::env::var("STRATA_TOKEN")) {
-            h.insert(reqwest::header::AUTHORIZATION, format!("Bearer {t}").parse().map_err(|_| "STRATA_TOKEN must be printable ASCII".to_string())?);
+        if let (Eng::Strata, Ok(t)) = (e, chloedb::env::var("CHLOEDB_TOKEN")) {
+            h.insert(reqwest::header::AUTHORIZATION, format!("Bearer {t}").parse().map_err(|_| "CHLOEDB_TOKEN must be printable ASCII".to_string())?);
         }
         let http = reqwest::Client::builder().default_headers(h).pool_max_idle_per_host(1024).timeout(timeout).build().map_err(s)?;
         let wire = match e {

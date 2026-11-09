@@ -206,7 +206,7 @@ pub struct Options {
     pub image_repository: Option<String>,
     /// `--app name=url`: apps the command center shows ([`crate::apps`]).
     pub apps: Vec<String>,
-    /// What the server sends apps as its token (`STRATA_APP_TOKEN`).
+    /// What the server sends apps as its token (`CHLOEDB_APP_TOKEN`).
     pub app_token: Option<String>,
 }
 

@@ -9,13 +9,13 @@
 //! A failure reports the paired randomization p-value of nDCG@10 over the
 //! queries, to tell a real change from a few queries moving.
 //!
-//! The collections are read from `$STRATA_BEIR_DIR` (`tests/fixtures/beir/
+//! The collections are read from `$CHLOEDB_BEIR_DIR` (`tests/fixtures/beir/
 //! fetch.sh` downloads them, pinned by hash). Without them the test is
-//! skipped, unless `STRATA_RELEVANCE_GATE=required` (CI's relevance gate
+//! skipped, unless `CHLOEDB_RELEVANCE_GATE=required` (CI's relevance gate
 //! job), when it fails.
 //!
 //! With feature `bert`, a cross-encoder variant runs too: BM25's top 20
-//! reranked by `ms-marco-MiniLM-L-6-v2` from `$STRATA_MODELS`
+//! reranked by `ms-marco-MiniLM-L-6-v2` from `$CHLOEDB_MODELS`
 //! (`tests/models/fetch_cross_encoder.sh` downloads it, pinned by hash), on
 //! SciFact and NFCorpus, nDCG@10 and recall@10 against
 //! `tests/fixtures/relevance_gate_cross_encoder.json`. Twenty rows, not the
@@ -23,7 +23,7 @@
 //! keep it to minutes on a CPU.
 //!
 //! After an intended change, write the new baseline and commit it:
-//! `STRATA_RELEVANCE_GATE=update cargo test --release --test relevance_gate`
+//! `CHLOEDB_RELEVANCE_GATE=update cargo test --release --test relevance_gate`
 //! (with `--features bert` for the cross-encoder's).
 //! Settings are tuned on the dev or train split (`chloedb-bm25-eval
 //! --split`), never on these test queries.
@@ -114,14 +114,14 @@ fn round4(x: f64) -> f64 {
     (x * 1e4).round() / 1e4
 }
 
-/// The collections at `$STRATA_BEIR_DIR`, or `None` when the gate is
+/// The collections at `$CHLOEDB_BEIR_DIR`, or `None` when the gate is
 /// skipped.
 fn collections(names: &[&str]) -> Option<PathBuf> {
-    let mode = std::env::var("STRATA_RELEVANCE_GATE").unwrap_or_default();
-    let data = std::env::var_os("STRATA_BEIR_DIR").map(PathBuf::from).filter(|d| names.iter().all(|c| d.join(c).join("corpus.jsonl").exists()));
+    let mode = chloedb::env::var("CHLOEDB_RELEVANCE_GATE").unwrap_or_default();
+    let data = chloedb::env::var_os("CHLOEDB_BEIR_DIR").map(PathBuf::from).filter(|d| names.iter().all(|c| d.join(c).join("corpus.jsonl").exists()));
     if data.is_none() {
-        assert!(mode != "required", "the relevance gate needs $STRATA_BEIR_DIR with {names:?} (tests/fixtures/beir/fetch.sh)");
-        eprintln!("$STRATA_BEIR_DIR not set or incomplete; skipping the relevance gate");
+        assert!(mode != "required", "the relevance gate needs $CHLOEDB_BEIR_DIR with {names:?} (tests/fixtures/beir/fetch.sh)");
+        eprintln!("$CHLOEDB_BEIR_DIR not set or incomplete; skipping the relevance gate");
     }
     data
 }
@@ -158,7 +158,7 @@ fn check(name: &str, variant: &str, metrics: &[(&str, &[f64])], b: &Json, update
 #[test]
 fn bm25_relevance_holds() {
     let Some(data) = collections(&COLLECTIONS) else { return };
-    let update = std::env::var("STRATA_RELEVANCE_GATE").is_ok_and(|m| m == "update");
+    let update = chloedb::env::var("CHLOEDB_RELEVANCE_GATE").is_ok_and(|m| m == "update");
     let file = "relevance_gate.json";
     let baseline: Json = if update { Json::Null } else { serde_json::from_str(&std::fs::read_to_string(baseline_path(file)).unwrap()).unwrap() };
     let tmp = tempfile::tempdir().unwrap();
@@ -184,7 +184,7 @@ fn bm25_relevance_holds() {
         }
         report.insert(name.to_string(), json!({ "docs": c.docs.len(), "queries": ids, "variants": measured }));
     }
-    finish(file, "BM25 through SQL on BEIR test splits: the baseline of tests/relevance_gate.rs, written by it with STRATA_RELEVANCE_GATE=update; not edited by hand.", update, &report, &failures);
+    finish(file, "BM25 through SQL on BEIR test splits: the baseline of tests/relevance_gate.rs, written by it with CHLOEDB_RELEVANCE_GATE=update; not edited by hand.", update, &report, &failures);
 }
 
 /// Writes the baseline when updating, else fails with what moved.
@@ -196,7 +196,7 @@ fn finish(file: &str, about: &str, update: bool, report: &serde_json::Map<String
     }
     assert!(
         failures.is_empty(),
-        "relevance moved beyond {TOLERANCE}:\n  {}\nIf the change is intended, write the new baseline with STRATA_RELEVANCE_GATE=update and commit tests/fixtures/{file}.",
+        "relevance moved beyond {TOLERANCE}:\n  {}\nIf the change is intended, write the new baseline with CHLOEDB_RELEVANCE_GATE=update and commit tests/fixtures/{file}.",
         failures.join("\n  ")
     );
 }
@@ -208,11 +208,11 @@ fn cross_encoder_relevance_holds() {
     const MODEL: &str = "ms-marco-MiniLM-L-6-v2";
     const COLLECTIONS: [&str; 2] = ["scifact", "nfcorpus"];
     let Some(data) = collections(&COLLECTIONS) else { return };
-    let mode = std::env::var("STRATA_RELEVANCE_GATE").unwrap_or_default();
-    let models = std::env::var_os("STRATA_MODELS").map(PathBuf::from).filter(|d| d.join(MODEL).join("model.safetensors").exists());
+    let mode = chloedb::env::var("CHLOEDB_RELEVANCE_GATE").unwrap_or_default();
+    let models = chloedb::env::var_os("CHLOEDB_MODELS").map(PathBuf::from).filter(|d| d.join(MODEL).join("model.safetensors").exists());
     let Some(models) = models else {
-        assert!(mode != "required", "the cross-encoder gate needs $STRATA_MODELS with {MODEL} (tests/models/fetch_cross_encoder.sh)");
-        eprintln!("$STRATA_MODELS has no {MODEL}; skipping the cross-encoder gate");
+        assert!(mode != "required", "the cross-encoder gate needs $CHLOEDB_MODELS with {MODEL} (tests/models/fetch_cross_encoder.sh)");
+        eprintln!("$CHLOEDB_MODELS has no {MODEL}; skipping the cross-encoder gate");
         return;
     };
     let update = mode == "update";
@@ -248,6 +248,6 @@ fn cross_encoder_relevance_holds() {
         let line = check(name, "ce_rerank20", &metrics, &base["variants"]["ce_rerank20"], update, &mut failures);
         report.insert(name.to_string(), json!({ "docs": c.docs.len(), "queries": ids, "variants": { "ce_rerank20": line } }));
     }
-    let about = format!("BM25's top 20 reranked by the cross-encoder {MODEL} on BEIR test splits: the baseline of tests/relevance_gate.rs (feature bert), written by it with STRATA_RELEVANCE_GATE=update; not edited by hand.");
+    let about = format!("BM25's top 20 reranked by the cross-encoder {MODEL} on BEIR test splits: the baseline of tests/relevance_gate.rs (feature bert), written by it with CHLOEDB_RELEVANCE_GATE=update; not edited by hand.");
     finish(file, &about, update, &report, &failures);
 }

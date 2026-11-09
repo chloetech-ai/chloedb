@@ -272,7 +272,7 @@ const PHASES: &[(&str, &str)] = &[
 impl Simulator {
     fn file(&self, svc: &Service) -> Option<PathBuf> {
         self.file
-            .get_or_init(|| match std::env::var("STRATA_SIMULATOR_STATE") {
+            .get_or_init(|| match chloedb::env::var("CHLOEDB_SIMULATOR_STATE") {
                 Ok(p) if !p.is_empty() => Some(PathBuf::from(p)),
                 _ => svc.audit.path().map(|p| p.with_extension("simulator.json")),
             })

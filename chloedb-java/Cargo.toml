@@ -3,13 +3,13 @@ name = "chloedb-java"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Java bindings for Strata: the database in-process, over JNI"
+description = "Java bindings for ChloeDB: the database in-process, over JNI"
 publish = false
 
 [lib]
-# libstrata_jni.so (libstrata_jni.dylib on a Mac), which the Java package
-# (src/main/java) loads: from its jar, or from `-Dstrata.library=PATH`.
-name = "strata_jni"
+# libchloedb_jni.so (libchloedb_jni.dylib on a Mac), which the Java package
+# (src/main/java) loads: from its jar, or from `-Dchloedb.library=PATH`.
+name = "chloedb_jni"
 crate-type = ["cdylib"]
 
 [dependencies]

@@ -26,7 +26,7 @@ your platform from a `strata-js-v<version>` GitHub release
 compiler), test, and use from an app:
 
 ```sh
-npm run build                         # cargo build --release; strata.node beside index.js
+npm run build                         # cargo build --release; chloedb.node beside index.js
 npm run build -- --profile ci && npm test
 cd ../my-app && npm install ../strata/chloedb-js
 ```
@@ -36,7 +36,7 @@ cd ../my-app && npm install ../strata/chloedb-js
 | `src/lib.rs` | the Node-API addon (napi-rs): one entry point per database, an operation's name and its arguments as JSON, run on libuv's thread pool |
 | `index.js`, `index.d.ts` | `Database`, `open`, `fromSqlite`, `fromParquet` and the rest, over the addon |
 | `client.js`, `client.d.ts` | `Client` and `connect`: chloedb-server over HTTP with `fetch`, no addon |
-| `common.js`, `common.d.ts` | what both share: `Result`, `StrataError`, `search`, the rank log, JSON with 64-bit integers |
-| `scripts/build.mjs` | builds the addon with cargo and copies it to `strata.node` |
+| `common.js`, `common.d.ts` | what both share: `Result`, `ChloeDBError` (`StrataError` by its old name), `search`, the rank log, JSON with 64-bit integers |
+| `scripts/build.mjs` | builds the addon with cargo and copies it to `chloedb.node` |
 | `scripts/pack.mjs` | packs the package with its addon for one platform (`dist/chloedb-<version>-<platform>.tgz`); `.github/workflows/js-release.yml` runs it per platform on a tag |
 | `test/` | `node --test`: the database in-process, and the client against a chloedb-server |

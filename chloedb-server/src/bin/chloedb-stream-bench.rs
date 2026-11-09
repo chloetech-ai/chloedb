@@ -19,7 +19,7 @@
 //!    `--seconds`, each event stamped with the time it is due. An event's
 //!    lag runs from that time to the answer of the batch holding it (the
 //!    server answers a batch once its rows are visible), so it includes
-//!    the trip back to the client; the server's `strata_stream_lag_seconds`
+//!    the trip back to the client; the server's `chloedb_stream_lag_seconds`
 //!    measures the same from the server's side.
 //! 3. Throughput through a coordinator over `--shards` shards (gRPC on
 //!    localhost): every shard keeps every batch's offsets.
@@ -278,10 +278,10 @@ async fn server_lag(url: &str) -> Json {
     let mut buckets = Vec::new();
     let mut count = 0.0;
     for l in m.lines() {
-        if let Some(rest) = l.strip_prefix("strata_stream_lag_seconds_bucket{le=\"") {
+        if let Some(rest) = l.strip_prefix("chloedb_stream_lag_seconds_bucket{le=\"") {
             let (le, v) = rest.split_once("\"} ").unwrap();
             buckets.push((le.to_string(), v.parse::<f64>().unwrap()));
-        } else if let Some(v) = l.strip_prefix("strata_stream_lag_seconds_count ") {
+        } else if let Some(v) = l.strip_prefix("chloedb_stream_lag_seconds_count ") {
             count = v.parse().unwrap();
         }
     }

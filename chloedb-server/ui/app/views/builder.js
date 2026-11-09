@@ -609,7 +609,7 @@ function render(page, r) {
       if (mine !== running) return;
       last = { ...last, j, ran: q.sql };
       clear(out, h("section", { class: "card" },
-        h("div", { class: "hd" }, h("h3", {}, "Answer"), h("div", { class: "tools" }, j.rows?.length ? exportMenu(j, `strata-${st.table}`) : null)),
+        h("div", { class: "hd" }, h("h3", {}, "Answer"), h("div", { class: "tools" }, j.rows?.length ? exportMenu(j, `chloedb-${st.table}`) : null)),
         h("div", { class: "bd", style: { paddingBottom: "4px" } }, answerStats(j)),
         h("div", { class: "bd flush" }, j.rows?.length ? h("div", { class: "tbl-wrap" }, grid(j, { max: 200 })) : empty("search", "No rows", "Loosen a filter, or try other words."))));
       drawConns();

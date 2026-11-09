@@ -10,7 +10,7 @@
 //!
 //! The browser reaches an app only through this server: `GET /v1/apps`
 //! lists them, and `/v1/apps/<name>/<path>` is forwarded to the app's
-//! `<path>`, with the server's `STRATA_APP_TOKEN` (`Authorization:
+//! `<path>`, with the server's `CHLOEDB_APP_TOKEN` (`Authorization:
 //! Bearer`) in place of the caller's key. So an app needs no address
 //! that browsers reach, and no keys of its own: the server checks the
 //! caller's (read scope for `GET`, admin for the rest).

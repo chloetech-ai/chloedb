@@ -52,7 +52,7 @@ function render(page) {
       h("div", { class: "dt-empty-hd" }, icon("sid", "lg"), h("div", {}, h("h3", {}, "Semantic IDs need a semantic-ID field"), h("div", { class: "small dim" }, `None of the ${fmt.plural(all.length, "table")} here has one. A semantic ID is a short code per row, cut from its vector by a codebook; the view draws the codes as a tree and decodes them as /v1/sid/next does.`))),
       h("ol", { class: "dt-needs" },
         need(!!v, "A VECTOR field with the rows' embeddings", v ? `This server has ${vecs.slice(0, 3).map((x) => `${x.t}.${x.f.name}`).join(", ")}${vecs.length > 3 ? ` and ${vecs.length - 3} more` : ""}.` : "Add one to a table, embedded by the server or written by your own model."),
-        need(false, "A codebook in the server's models directory", "Train it with strata.train.codebook in Python (residual k-means, up to 4 levels of up to 256 codes), or export an RQ-VAE's levels as safetensors."),
+        need(false, "A codebook in the server's models directory", "Train it with chloedb.train.codebook in Python (residual k-means, up to 4 levels of up to 256 codes), or export an RQ-VAE's levels as safetensors."),
         need(false, "A KEYWORD[] field declared as the semantic IDs of that vector", "It holds every prefix of each row's code, so a prefix finds its rows with an ordinary filter.")),
       sqlBlock(sql),
       h("div", { class: "row", style: { gap: "8px" } },

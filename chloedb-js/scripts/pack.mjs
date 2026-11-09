@@ -1,4 +1,4 @@
-// Packs the package with its built addon (strata.node) for one platform,
+// Packs the package with its built addon (chloedb.node) for one platform,
 // as a tarball that `npm install` takes with no Rust and no build:
 //
 //   node scripts/pack.mjs linux-x64-gnu     # dist/chloedb-<version>-linux-x64-gnu.tgz
@@ -24,12 +24,12 @@ if (!m) {
   process.exit(2);
 }
 const [, os, cpu, libc] = m;
-if (!existsSync(join(root, "strata.node"))) {
-  console.error("chloedb-js: strata.node is missing: build it first (node scripts/build.mjs)");
+if (!existsSync(join(root, "chloedb.node"))) {
+  console.error("chloedb-js: chloedb.node is missing: build it first (node scripts/build.mjs)");
   process.exit(1);
 }
 
-const files = ["index.js", "index.d.ts", "client.js", "client.d.ts", "common.js", "common.d.ts", "nearby.js", "README.md", "strata.node"];
+const files = ["index.js", "index.d.ts", "client.js", "client.d.ts", "common.js", "common.d.ts", "nearby.js", "README.md", "chloedb.node"];
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const stage = mkdtempSync(join(tmpdir(), "strata-js-pack-"));
 try {

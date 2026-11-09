@@ -944,10 +944,10 @@ fn recent_p99(svc: &Service) -> Option<f64> {
     crate::telemetry::quantile(&crate::metrics::BUCKETS, &w.hist, 0.99).map(|s| (s * 1e4).round() / 10.0)
 }
 
-/// Where a coordinator keeps the plan it applies: `STRATA_PLAN_STATE`,
+/// Where a coordinator keeps the plan it applies: `CHLOEDB_PLAN_STATE`,
 /// else beside its audit log (`audit.log` keeps it in `audit.plan.json`).
 fn state_file(svc: &Service) -> Option<PathBuf> {
-    match std::env::var("STRATA_PLAN_STATE") {
+    match chloedb::env::var("CHLOEDB_PLAN_STATE") {
         Ok(p) if !p.is_empty() => Some(PathBuf::from(p)),
         _ => svc.audit.path().map(|p| p.with_extension("plan.json")),
     }

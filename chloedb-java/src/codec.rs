@@ -1,5 +1,5 @@
 //! The values that cross between Java and Rust: one tagged binary form,
-//! little-endian, which `ai.chloetech.strata.Codec` writes and reads on the
+//! little-endian, which `ai.chloetech.chloedb.Codec` writes and reads on the
 //! Java side. A call's arguments are one value (a list) and its answer is
 //! another, so the native boundary is a few functions taking and giving
 //! bytes, whatever the method, and no JNI call is made per value.

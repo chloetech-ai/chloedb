@@ -1350,7 +1350,9 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
 /// column typed as an Arrow answer in a client's own process is
 /// ([`chloedb::query::arrow::answer_batch`]). How long it took and what the
 /// engine did go in headers; an answer without some shards (`partial`)
-/// names them in `x-strata-missing-shards`.
+/// names them in `x-chloedb-missing-shards`. Each header goes under its
+/// old name too (`x-strata-missing-shards`), for clients from before the
+/// rename.
 #[cfg(feature = "datafusion")]
 async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
     let took = a.took_ms;
@@ -1365,18 +1367,20 @@ async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
     let mut r = (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apache.arrow.stream")], bytes).into_response();
     // A header holds visible ASCII: one that would not is left out rather
     // than failing the answer.
-    let mut put = |name: &'static str, v: String| {
+    let mut put = |name: &str, v: String| {
         if let Ok(v) = axum::http::HeaderValue::from_str(&v) {
-            r.headers_mut().insert(name, v);
+            for n in crate::names::both(name) {
+                r.headers_mut().insert(n, v.clone());
+            }
         }
     };
-    put("x-strata-took-ms", format!("{took:.3}"));
-    put("x-strata-stats", serde_json::to_string(&stats).unwrap_or_default());
+    put("took-ms", format!("{took:.3}"));
+    put("stats", serde_json::to_string(&stats).unwrap_or_default());
     if !missing.is_empty() {
-        put("x-strata-missing-shards", missing);
+        put("missing-shards", missing);
     }
     if let Some(c) = cursor {
-        put("x-strata-cursor", c);
+        put("cursor", c);
     }
     Ok(r)
 }
@@ -2085,7 +2089,7 @@ async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMa
     }
     let opts = chloedb::sqlite::ExportOptions { tables: tables_param(&q), fts: flag(&q, "fts", true)?, indexes: flag(&q, "indexes", true)?, meta: flag(&q, "schemas", true)? };
     let (dir, path, done) = app.svc.export_sqlite(opts).await?;
-    let name = done.tables.first().map_or("strata".into(), |t| t.table.clone());
+    let name = done.tables.first().map_or("chloedb".into(), |t| t.table.clone());
     let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
     send_file(dir, &path, "application/vnd.sqlite3", &format!("{name}.sqlite"), &tables).await
 }
@@ -2098,7 +2102,7 @@ async fn export_parquet(app: &App, q: &std::collections::HashMap<String, String>
     }
     let (dir, path, done) = app.svc.export_parquet(tables.pop(), flag(q, "schemas", true)?).await?;
     let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
-    let name = tables.first().cloned().unwrap_or_else(|| "strata".into());
+    let name = tables.first().cloned().unwrap_or_else(|| "chloedb".into());
     send_file(dir, &path, "application/vnd.apache.parquet", &format!("{name}.parquet"), &tables).await
 }
 
@@ -2126,12 +2130,14 @@ async fn send_file(dir: tempfile::TempDir, path: &std::path::Path, content_type:
             Err(e) => Some((Err(e), (file, None))),
         }
     });
+    let [new, old] = crate::names::both("tables");
     Ok((
         [
             (header::CONTENT_TYPE, content_type.to_string()),
             (header::CONTENT_LENGTH, len.to_string()),
             (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
-            (header::HeaderName::from_static("x-strata-tables"), tables.join(",")),
+            (new, tables.join(",")),
+            (old, tables.join(",")),
         ],
         axum::body::Body::from_stream(chunks),
     )

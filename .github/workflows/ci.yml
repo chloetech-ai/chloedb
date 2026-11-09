@@ -243,7 +243,7 @@ jobs:
         working-directory: chloedb
         run: |
           cargo test --profile ci --lib -- vector:: postings:: forward:: simd
-          STRATA_SIMD=portable cargo test --profile ci --lib -- vector:: postings:: forward::
+          CHLOEDB_SIMD=portable cargo test --profile ci --lib -- vector:: postings:: forward::
 
   # Images (feature `vision`: the image crate and SigLIP through candle),
   # which the default build leaves out: the tests of vectors of images in
@@ -319,7 +319,7 @@ jobs:
   # chloedb::query::df): the differential test against ChloeDB's own
   # operators, window functions on both engines against SQLite's answers,
   # the compound-query suites again with DataFusion as the engine
-  # (STRATA_ENGINE=datafusion: a plan it does not lower runs on the
+  # (CHLOEDB_ENGINE=datafusion: a plan it does not lower runs on the
   # operators), Parquet files in and out (feature parquet, on DataFusion's
   # Arrow) with s3:// URLs (feature s3), and clippy over the features' code.
   datafusion:
@@ -345,7 +345,7 @@ jobs:
         run: |
           cargo test --profile ci --features datafusion --test datafusion_engine --test hash_function
           cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
-          STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
+          CHLOEDB_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
           cargo test --profile ci --features datafusion,parquet,s3 --test parquet
           cargo test --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
@@ -409,7 +409,7 @@ jobs:
         run: chloedb/tests/fixtures/beir/fetch.sh "$HOME/beir"
       - name: Gate
         working-directory: chloedb
-        run: STRATA_BEIR_DIR="$HOME/beir" STRATA_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
+        run: CHLOEDB_BEIR_DIR="$HOME/beir" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
 
   # BM25's top 20 reranked by the cross-encoder ms-marco-MiniLM-L-6-v2 on
   # SciFact and NFCorpus, against its own baseline
@@ -445,7 +445,7 @@ jobs:
           chloedb/tests/models/fetch_cross_encoder.sh "$HOME/models"
       - name: Gate
         working-directory: chloedb
-        run: STRATA_BEIR_DIR="$HOME/beir" STRATA_MODELS="$HOME/models" STRATA_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
+        run: CHLOEDB_BEIR_DIR="$HOME/beir" CHLOEDB_MODELS="$HOME/models" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
 
   # Miri runs the tests of ChloeDB's zero-copy byte views (postings::bytes)
   # and of the structures read through them, checking every access for
@@ -529,7 +529,7 @@ jobs:
           curl -sf -X POST http://127.0.0.1:7700/v1/query -H 'content-type: application/json' \
             -d '{"sql": "WITH top AS (SELECT id FROM products ORDER BY bm25(body, '"'"'jaket'"'"', fuzzy => 1) DESC LIMIT 50) SELECT category, COUNT(*), AVG(price) FROM top GROUP BY category"}' \
             | grep -q '"rows"'
-          curl -sf http://127.0.0.1:7700/metrics | grep -q strata_queries_total
+          curl -sf http://127.0.0.1:7700/metrics | grep -q chloedb_queries_total
           curl -sf http://127.0.0.1:7700/ | grep -qi '<html'
           # Rows into a new database from the command line, then over HTTP.
           printf '{"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}]}' > "$RUNNER_TEMP/t.json"
@@ -553,8 +553,8 @@ jobs:
       - name: Crawl a site into a growing cluster
         working-directory: chloedb-crawl
         env:
-          STRATA_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
-          STRATA_CRAWL_NEED_SERVER: "1"
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
+          CHLOEDB_CRAWL_NEED_SERVER: "1"
         run: cargo test --profile ci --test site
       # Spreadsheets kept in a server of this build: made, changed,
       # imported (CSV, SQLite), filled by a query, saved as a table,
@@ -562,8 +562,8 @@ jobs:
       - name: Workbooks in a cluster
         working-directory: chloedb-sheets
         env:
-          STRATA_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
-          STRATA_SHEETS_NEED_SERVER: "1"
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
+          CHLOEDB_SHEETS_NEED_SERVER: "1"
         run: cargo test --profile ci --test cluster
       # The app engine (chloedb-apps, a prototype in Node): apps built from
       # plans, stored as SQL rows in a server of this build, run, tested and
@@ -574,6 +574,7 @@ jobs:
       - name: App engine against a server
         working-directory: chloedb-apps
         env:
+          # The app engine reads its settings by their old names for now.
           STRATA_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           STRATA_APPS_NEED_SERVER: "1"
         # The library is searched by meaning too: the model its meaning
@@ -626,7 +627,7 @@ jobs:
             --pandaproxy-addr 127.0.0.1:18082 --schema-registry-addr 127.0.0.1:18081
           for i in $(seq 1 60); do docker exec redpanda rpk cluster health 2>/dev/null | grep -q 'Healthy: *true' && break; sleep 1; done
           docker exec redpanda rpk cluster health
-          echo "STRATA_KAFKA=127.0.0.1:19092" >> "$GITHUB_ENV"
+          echo "CHLOEDB_KAFKA=127.0.0.1:19092" >> "$GITHUB_ENV"
       - name: Build and test
         working-directory: chloedb-py
         run: |

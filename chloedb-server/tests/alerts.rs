@@ -215,7 +215,7 @@ async fn a_route_is_told_what_fired_and_resolved() {
     };
     wait(1).await;
     let text = got.lock().unwrap()[0]["text"].as_str().unwrap().to_string();
-    assert_eq!(text, "[strata FIRING critical] Slow search on prod/search: p99_ms = 300 (> 100, mean over 60 s). Searches are slow. Runbook: https://runbook.example.com/slow https://cc.example.com/#/alert/slow");
+    assert_eq!(text, "[chloedb FIRING critical] Slow search on prod/search: p99_ms = 300 (> 100, mean over 60 s). Searches are slow. Runbook: https://runbook.example.com/slow https://cc.example.com/#/alert/slow");
     assert_eq!(got.lock().unwrap()[0]["alert"]["rule"], "slow");
 
     // An edit it still breaks: it stays firing, and nothing is sent.
@@ -236,7 +236,7 @@ async fn a_route_is_told_what_fired_and_resolved() {
     alerts::deliver(&svc, svc.alerts.check(&series(t, 31, |_| json!({"p99_ms": 300.0})), t));
     wait(2).await;
     let text = got.lock().unwrap()[1]["text"].as_str().unwrap().to_string();
-    assert!(text.starts_with("[strata RESOLVED critical] Slow search on prod/search: p99_ms = 300 after "), "{text}");
+    assert!(text.starts_with("[chloedb RESOLVED critical] Slow search on prod/search: p99_ms = 300 after "), "{text}");
     assert!(text.contains("(the rule was edited by open)"), "{text}");
     // The audit entry holds the rule before and after.
     let (_, audit) = call(&base, "GET", "/v1/admin/audit", None).await;
@@ -251,7 +251,7 @@ async fn a_route_is_told_what_fired_and_resolved() {
     assert_eq!((status, j["ok"].as_bool()), (200, Some(true)), "{j}");
     let (status, j) = call(&base, "POST", "/v1/alerts/routes/chat/test", Some(json!({}))).await;
     assert_eq!((status, j["ok"].as_bool()), (200, Some(false)), "a 404 is a failed delivery: {j}");
-    assert!(got.lock().unwrap()[2]["text"].as_str().unwrap().starts_with("[strata TEST]"));
+    assert!(got.lock().unwrap()[2]["text"].as_str().unwrap().starts_with("[chloedb TEST]"));
 }
 
 /// A backtest replays a rule over the log store's minutes of load (7
@@ -560,7 +560,7 @@ async fn a_failing_route_holds_up_no_other_and_the_cluster_is_named_from_the_sta
     assert_eq!(status, 200, "{j}");
     let (status, j) = call(&base, "POST", "/v1/alerts/routes/oncall/test", Some(json!({}))).await;
     assert_eq!((status, j["ok"].as_bool()), (200, Some(true)), "{j}");
-    assert_eq!(j["text"], "[strata TEST] A test of route oncall on search-demo, sent by open.", "{j}");
+    assert_eq!(j["text"], "[chloedb TEST] A test of route oncall on search-demo, sent by open.", "{j}");
     got.lock().unwrap().clear();
 
     // Three alerts that fire at once.
@@ -576,7 +576,7 @@ async fn a_failing_route_holds_up_no_other_and_the_cluster_is_named_from_the_sta
     let spread = got[2].0.duration_since(got[0].0);
     assert!(spread < Duration::from_millis(1500), "the busy route held them up: {spread:?}");
     let texts: Vec<&str> = got.iter().map(|(_, j)| j["text"].as_str().unwrap()).collect();
-    assert!(texts.iter().all(|t| t.starts_with("[strata FIRING critical] Docs ") && t.contains(" on search-demo: docs = ")), "{texts:?}");
+    assert!(texts.iter().all(|t| t.starts_with("[chloedb FIRING critical] Docs ") && t.contains(" on search-demo: docs = ")), "{texts:?}");
     // The busy route was tried, and says how it failed.
     let t1 = Instant::now();
     loop {
@@ -690,7 +690,7 @@ async fn a_restart_keeps_what_fired_and_does_not_page_again() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let first = got.lock().unwrap()[0].clone();
-    assert!(first["text"].as_str().unwrap().starts_with("[strata FIRING critical] Docs on kept"), "{first}");
+    assert!(first["text"].as_str().unwrap().starts_with("[chloedb FIRING critical] Docs on kept"), "{first}");
     let key = first["dedup_key"].as_str().expect("a key that names the alert").to_string();
     assert!(first["idempotency_key"].as_str().is_some_and(|k| k.starts_with(&format!("{key}/firing/"))), "the same key on each try of one message: {first}");
     assert_eq!(call(&base, "POST", "/v1/alerts/docs/ack", Some(json!({"note": "mine"}))).await.0, 200);
@@ -715,6 +715,6 @@ async fn a_restart_keeps_what_fired_and_does_not_page_again() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let second = got.lock().unwrap()[1].clone();
-    assert!(second["text"].as_str().unwrap().starts_with("[strata RESOLVED critical] Docs on kept"), "{second}");
+    assert!(second["text"].as_str().unwrap().starts_with("[chloedb RESOLVED critical] Docs on kept"), "{second}");
     assert_eq!(second["dedup_key"].as_str(), Some(key.as_str()), "{second}");
 }

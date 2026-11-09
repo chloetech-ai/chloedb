@@ -125,15 +125,15 @@ async fn ids_reach_the_shards_and_name_the_log_lines() {
 
     // The coordinator's metrics: requests by route, calls by shard.
     let m = client.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(m.contains("strata_http_requests_total{route=\"/v1/query\",status=\"200\"} 3"), "{m}");
+    assert!(m.contains("chloedb_http_requests_total{route=\"/v1/query\",status=\"200\"} 3"), "{m}");
     for s in 0..2 {
-        assert!(m.contains(&format!("strata_shard_calls_total{{shard=\"{s}\",outcome=\"ok\"}} 4")), "{m}");
+        assert!(m.contains(&format!("chloedb_shard_calls_total{{shard=\"{s}\",outcome=\"ok\"}} 4")), "{m}");
     }
-    assert!(m.contains("strata_shard_hedges_total "), "{m}");
+    assert!(m.contains("chloedb_shard_hedges_total "), "{m}");
     let r = client.get(format!("{base}/no/such/route")).send().await.unwrap();
     assert_eq!(r.status(), 404);
     let m = client.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(m.contains("strata_http_requests_total{route=\"other\",status=\"404\"} 1"), "{m}");
+    assert!(m.contains("chloedb_http_requests_total{route=\"other\",status=\"404\"} 1"), "{m}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -159,10 +159,10 @@ async fn slow_queries_and_writes_are_logged_and_counted() {
     assert_eq!(slow["rows"].as_u64(), Some(1));
 
     let m = client.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
-    assert!(m.contains("strata_slow_requests_total{what=\"query\"} 1") && m.contains("strata_slow_requests_total{what=\"write\"} 1"), "{m}");
-    assert!(m.contains("strata_write_duration_seconds_count 1") && m.contains("strata_query_duration_seconds_count{kind=\"filter\"} 1"), "{m}");
-    assert!(m.contains("strata_write_queue_requests 0") && m.contains("strata_write_batches_total 1"), "{m}");
-    assert!(m.contains("strata_docs 601") && m.contains("strata_memtable_docs "), "{m}");
+    assert!(m.contains("chloedb_slow_requests_total{what=\"query\"} 1") && m.contains("chloedb_slow_requests_total{what=\"write\"} 1"), "{m}");
+    assert!(m.contains("chloedb_write_duration_seconds_count 1") && m.contains("chloedb_query_duration_seconds_count{kind=\"filter\"} 1"), "{m}");
+    assert!(m.contains("chloedb_write_queue_requests 0") && m.contains("chloedb_write_batches_total 1"), "{m}");
+    assert!(m.contains("chloedb_docs 601") && m.contains("chloedb_memtable_docs "), "{m}");
     // Every series follows its family's help and type.
     let mut family = String::new();
     for line in m.lines() {

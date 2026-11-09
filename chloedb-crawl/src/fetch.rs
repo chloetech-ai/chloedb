@@ -12,7 +12,11 @@ use url::Url;
 
 use crate::robots::Robots;
 
-pub const AGENT_TOKEN: &str = "strata-crawl";
+pub const AGENT_TOKEN: &str = "chloedb-crawl";
+/// The tokens whose robots.txt groups apply to this crawler: its own, and
+/// the one it had when ChloeDB was called Strata, which sites' robots.txt
+/// files may still name.
+pub const AGENT_TOKENS: [&str; 2] = [AGENT_TOKEN, "strata-crawl"];
 /// The page for site owners the user agent links to: what the crawler is,
 /// how it behaves, and how to slow it down or keep it out.
 pub const ABOUT: &str = "https://chloetech-ai.github.io/strata/chloedb/crawler-bot.html";
@@ -136,14 +140,14 @@ pub fn secs(d: Duration) -> String {
 /// site owners, and whom to reach about this crawl (`contact`). A crawl's
 /// own user agent keeps the token after it, unless it names the crawler
 /// already, so that a site can always tell it is this crawler (and its
-/// robots.txt group `strata-crawl` applies).
+/// robots.txt group `chloedb-crawl`, or `strata-crawl`, applies).
 pub fn user_agent(custom: Option<&str>, contact: Option<&str>) -> String {
     let ours = match contact.map(str::trim).filter(|c| !c.is_empty()) {
         Some(c) => format!("{AGENT_TOKEN}/{} (+{ABOUT}; {c})", env!("CARGO_PKG_VERSION")),
         None => format!("{AGENT_TOKEN}/{} (+{ABOUT})", env!("CARGO_PKG_VERSION")),
     };
     match custom.map(str::trim).filter(|c| !c.is_empty()) {
-        Some(c) if c.to_ascii_lowercase().contains(AGENT_TOKEN) => c.to_string(),
+        Some(c) if AGENT_TOKENS.iter().any(|t| c.to_ascii_lowercase().contains(t)) => c.to_string(),
         Some(c) => format!("{c} {ours}"),
         None => ours,
     }
@@ -228,7 +232,7 @@ impl Fetcher {
             return (Robots::allow_all(), ROBOTS_TTL);
         }
         match r.text().await {
-            Ok(t) => (Robots::parse(&t[..t.floor_char_boundary(500_000)], AGENT_TOKEN), ROBOTS_TTL),
+            Ok(t) => (Robots::parse(&t[..t.floor_char_boundary(500_000)], &AGENT_TOKENS), ROBOTS_TTL),
             Err(e) => (Robots::unreachable(format!("robots.txt could not be read ({})", short_error(&e))), ROBOTS_RETRY),
         }
     }
@@ -373,9 +377,10 @@ mod tests {
     #[test]
     fn the_user_agent_names_the_crawler_and_its_page() {
         let v = env!("CARGO_PKG_VERSION");
-        assert_eq!(user_agent(None, None), format!("strata-crawl/{v} (+{ABOUT})"));
-        assert_eq!(user_agent(Some(" "), Some("ops@example.com")), format!("strata-crawl/{v} (+{ABOUT}; ops@example.com)"));
-        assert_eq!(user_agent(Some("AcmeBot/2.0"), None), format!("AcmeBot/2.0 strata-crawl/{v} (+{ABOUT})"), "the token stays");
+        assert_eq!(user_agent(None, None), format!("chloedb-crawl/{v} (+{ABOUT})"));
+        assert_eq!(user_agent(Some(" "), Some("ops@example.com")), format!("chloedb-crawl/{v} (+{ABOUT}; ops@example.com)"));
+        assert_eq!(user_agent(Some("AcmeBot/2.0"), None), format!("AcmeBot/2.0 chloedb-crawl/{v} (+{ABOUT})"), "the token stays");
+        assert_eq!(user_agent(Some("AcmeBot/2.0 strata-crawl"), None), "AcmeBot/2.0 strata-crawl", "the old token names it too");
         assert_eq!(user_agent(Some("Strata-Crawl/9 (team x)"), Some("x")), "Strata-Crawl/9 (team x)", "it names the crawler already");
         assert!(header_text("ops@example.com") && !header_text("a\nb") && !header_text("café") && !header_text(&"x".repeat(301)));
     }

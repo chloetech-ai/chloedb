@@ -44,7 +44,7 @@ struct Args {
     /// The model, by the name a schema gives it.
     #[arg(long, default_value = "clap-htsat-unfused")]
     model: String,
-    /// Where models are (default $STRATA_MODELS or ~/.local/share/strata/models).
+    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/strata/models).
     #[arg(long)]
     models: Option<PathBuf>,
     /// Keep the first n recordings.
@@ -192,7 +192,7 @@ fn main() {
     let vec_of = |v: &Value| v.as_vector().unwrap().to_vec();
     let mut report = json!({
         "split": a.captions.file_name().map(|f| f.to_string_lossy().into_owned()), "recordings": split.len(), "captions": n_captions,
-        "audio_seconds": audio_s, "model": a.model, "dimensions": dim, "machine": std::env::var("STRATA_MACHINE").ok(),
+        "audio_seconds": audio_s, "model": a.model, "dimensions": dim, "machine": chloedb::env::var("CHLOEDB_MACHINE").ok(),
         "recordings_load_seconds": clips_s, "captions_load_seconds": captions_s,
     });
     if let Some(out) = &a.vectors_out {

@@ -13,7 +13,7 @@
 //! `/v1/coordinators` lists it under `gone` until the shards forget it.
 //!
 //! The URL a coordinator names itself by is `--peer-url`, else its pod's
-//! address (`STRATA_POD_IP`) and port, else the address it listens on
+//! address (`CHLOEDB_POD_IP`) and port, else the address it listens on
 //! ([`own_url`]). It is not `--public-url`, which on Kubernetes is the
 //! address every coordinator shares behind its Service.
 //!
@@ -159,7 +159,7 @@ fn host_of(url: &str) -> String {
 }
 
 /// The URL a coordinator names itself by ([`crate::peers`]): `given`
-/// (`--peer-url`), else `STRATA_POD_IP` and the port it listens on, else
+/// (`--peer-url`), else `CHLOEDB_POD_IP` and the port it listens on, else
 /// the address it listens on, with the machine's name for an address of
 /// every interface.
 pub fn own_url(given: Option<&str>, listen: std::net::SocketAddr, tls: bool) -> String {
@@ -168,7 +168,7 @@ pub fn own_url(given: Option<&str>, listen: std::net::SocketAddr, tls: bool) -> 
     }
     let scheme = if tls { "https" } else { "http" };
     let port = listen.port();
-    if let Some(ip) = std::env::var("STRATA_POD_IP").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+    if let Some(ip) = chloedb::env::var("CHLOEDB_POD_IP").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
         let host = if ip.contains(':') { format!("[{ip}]") } else { ip };
         return format!("{scheme}://{host}:{port}");
     }
@@ -636,7 +636,7 @@ mod tests {
     fn a_coordinator_names_itself_by_its_given_url_else_its_address() {
         let a: std::net::SocketAddr = "127.0.0.1:8100".parse().unwrap();
         assert_eq!(own_url(Some("http://c1:7700/"), a, false), "http://c1:7700");
-        if std::env::var("STRATA_POD_IP").is_err() {
+        if chloedb::env::var("CHLOEDB_POD_IP").is_err() {
             assert_eq!(own_url(None, a, false), "http://127.0.0.1:8100");
             assert_eq!(own_url(None, "[::1]:8100".parse().unwrap(), true), "https://[::1]:8100");
             let any = own_url(None, "0.0.0.0:7700".parse().unwrap(), false);

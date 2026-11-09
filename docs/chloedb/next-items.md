@@ -15,18 +15,18 @@ CREATE TABLE next (
 ) OPTIONS(cluster_by = 'id');
 ```
 
-In Python, `strata.ngrams` writes the statement (`ngrams.create_table()`) or the schema (`ngrams.schema()`, for `strata.open` or `chloedb-server --schema`), the writes of an event and the read:
+In Python, `chloedb.ngrams` writes the statement (`ngrams.create_table()`) or the schema (`ngrams.schema()`, for `chloedb.open` or `chloedb-server --schema`), the writes of an event and the read:
 
 ```python
-import strata
-from strata import ngrams
+import chloedb
+from chloedb import ngrams
 
-db = strata.open("next.strata", ngrams.schema())
+db = chloedb.open("next.strata", ngrams.schema())
 
 # after each event: item "c" after the user's history [..., "a", "b"]
 db.write(ngrams.ops(["a", "b"], "c"))
 
-strata.next_items(db, ["a", "b"], k=10)   # [("c", 1.0), ...]
+chloedb.next_items(db, ["a", "b"], k=10)   # [("c", 1.0), ...]
 ```
 
 `ngrams.ops(history, item)` returns one `add` per order, each of which creates its row on the context's first event, so an event costs two writes; `order=3` also counts the last three items. They are the operations chloedb-server's `/v1/write` takes ([writes](server.md#writes)), so `Client.write` sends them and `Database.write` applies them in-process. Items are strings without the two separators the keys use (`\x1f` between a context's items, `\x1e` before the next item).

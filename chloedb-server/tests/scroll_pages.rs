@@ -252,7 +252,7 @@ async fn scrolls_hold_at_most_max_scroll_rows_between_them() {
     // Two open: the scan (none held) and the last (a place a row).
     let text = chloedb_server::http_client().build().unwrap().get(format!("{url}/metrics")).send().await.unwrap().text().await.unwrap();
     let gauge = |name: &str| text.lines().find_map(|l| l.strip_prefix(name)?.strip_prefix(' ')?.parse::<f64>().ok());
-    assert_eq!((gauge("strata_scrolls_open"), gauge("strata_scroll_rows_held")), (Some(2.0), Some(1000.0)), "{}", text.lines().filter(|l| l.contains("scroll")).collect::<Vec<_>>().join("\n"));
+    assert_eq!((gauge("chloedb_scrolls_open"), gauge("chloedb_scroll_rows_held")), (Some(2.0), Some(1000.0)), "{}", text.lines().filter(|l| l.contains("scroll")).collect::<Vec<_>>().join("\n"));
 }
 
 /// Three shards and a coordinator over them, each with a window of

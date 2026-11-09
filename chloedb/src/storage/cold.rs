@@ -499,7 +499,7 @@ impl Cold {
             lock(&now.0).remove(k);
             now.1.notify_all();
         };
-        let spawned = std::thread::Builder::new().name("strata-cold-delete".into()).spawn({
+        let spawned = std::thread::Builder::new().name("chloedb-cold-delete".into()).spawn({
             let keys = keys.clone();
             let done = done.clone();
             move || {

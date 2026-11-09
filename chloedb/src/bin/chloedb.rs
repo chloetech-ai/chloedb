@@ -154,7 +154,7 @@ fn run(db: &Db, sql: &str, params: &Params, args: &Args, out: &mut impl Write) -
 
 fn main() {
     // CHLOEDB_* settings are read under their STRATA_* names (chloedb::env).
-    chloedb::env::adopt_new_names();
+    chloedb::env::adopt_old_names();
     let args = Args::parse();
     let read_only = DbOptions { read_only: true, ..DbOptions::default() };
     let opened = match args.read_only {

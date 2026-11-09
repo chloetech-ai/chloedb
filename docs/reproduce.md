@@ -90,7 +90,7 @@ The first long-session A/B (`engram/results/long/*_v1_leaky`) is kept for the re
 
 - Rust (stable; 1.92 on the laptop above) and Python 3.
 - For Engram's live tests, A/B runs and distillation: the [Claude Code](https://claude.com/claude-code) CLI. Those runs call a model and cost money; retrieval, scale and latency studies do not.
-- Several scripts default to data under `/home/user/data/…`; pass paths explicitly, or set `STRATA_DATA` to the BEIR directory. `chloedb/scripts/run_eval.sh` uses `bash` 4 features (`declare -A`); on macOS, whose `bash` is 3.2, run its steps directly or use a newer `bash`.
+- Several scripts default to data under `/home/user/data/…`; pass paths explicitly, or set `CHLOEDB_DATA` to the BEIR directory. `chloedb/scripts/run_eval.sh` uses `bash` 4 features (`declare -A`); on macOS, whose `bash` is 3.2, run its steps directly or use a newer `bash`.
 - On macOS, ChloeDB's cold-cache measurements need no privileges: eviction invalidates a mapping of each file.
 - Benchmarks are single-threaded unless a flag says otherwise. Run them on an otherwise idle machine.
 

@@ -3,7 +3,7 @@
 //! serves keep the cluster's promises, a seed replays exactly, and each bug
 //! the simulator found in map changes and moves, put back, is found again.
 //!
-//! `STRATA_SIM_CLUSTER_SEEDS=A..B` runs those seeds instead of the first
+//! `CHLOEDB_SIM_CLUSTER_SEEDS=A..B` runs those seeds instead of the first
 //! few hundred; `chloedb-sim --cluster --seed N --trace` shows what happened
 //! in one. Two coordinators changing the map at once (`--racing`), and a
 //! coordinator that forgets when it crashes a map it gave that a server may
@@ -21,8 +21,8 @@ fn jobs() -> usize {
 }
 
 fn seeds() -> Range<u64> {
-    let Ok(s) = std::env::var("STRATA_SIM_CLUSTER_SEEDS") else { return 0..400 };
-    let (a, b) = s.split_once("..").expect("STRATA_SIM_CLUSTER_SEEDS is A..B");
+    let Ok(s) = chloedb::env::var("CHLOEDB_SIM_CLUSTER_SEEDS") else { return 0..400 };
+    let (a, b) = s.split_once("..").expect("CHLOEDB_SIM_CLUSTER_SEEDS is A..B");
     a.parse().expect("a seed")..b.parse().expect("a seed")
 }
 

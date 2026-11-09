@@ -8,7 +8,7 @@
 //! build's page names new paths. Under `/ui/` itself, or another build's
 //! tag, they are asked for again each time.
 //!
-//! With `STRATA_UI_DIR` set to a checkout's `chloedb-server/ui`, the server
+//! With `CHLOEDB_UI_DIR` set to a checkout's `chloedb-server/ui`, the server
 //! reads the files from there on every request instead, so that an edit
 //! shows on a reload without a rebuild; the page then names them under
 //! `/ui/` alone.
@@ -81,9 +81,9 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/apps.js", JS, include_str!("../ui/app/views/apps.js")),
 ];
 
-/// A file from `STRATA_UI_DIR`, when it is set: `rel` under it.
+/// A file from `CHLOEDB_UI_DIR`, when it is set: `rel` under it.
 fn from_disk(rel: &str) -> Option<String> {
-    let dir = std::env::var_os("STRATA_UI_DIR")?;
+    let dir = chloedb::env::var_os("CHLOEDB_UI_DIR")?;
     std::fs::read_to_string(std::path::Path::new(&dir).join(rel)).ok()
 }
 
@@ -91,10 +91,10 @@ fn from_disk(rel: &str) -> Option<String> {
 const KEEP: &str = "public, max-age=31536000, immutable";
 
 /// This build's tag for its files under `/ui/`: `v-` and the hash of them
-/// all; none when they come from `STRATA_UI_DIR`, where they change.
+/// all; none when they come from `CHLOEDB_UI_DIR`, where they change.
 pub fn tag() -> Option<&'static str> {
     static TAG: OnceLock<String> = OnceLock::new();
-    if std::env::var_os("STRATA_UI_DIR").is_some() {
+    if chloedb::env::var_os("CHLOEDB_UI_DIR").is_some() {
         return None;
     }
     Some(TAG.get_or_init(|| {

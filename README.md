@@ -2,7 +2,7 @@
 
 **An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.**
 
-> ChloeDB was called Strata until November 2026. The rename is landing in steps: the folders, crates and commands carry the new name (`chloedb-server`), while settings, the Python module and the repository still carry the old one (`STRATA_*`, `import strata`). Old names keep working afterwards (the image and the release archives run `strata-server` too).
+> ChloeDB was called Strata until November 2026. The folders, crates, commands, settings (`CHLOEDB_*`), headers (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`, `ai.chloetech.chloedb`) carry the new name; the repository, the Kubernetes operator and the container image still carry the old one. The old names keep working for a release: `STRATA_*` settings, `x-strata-*` headers, `import strata`, `jdbc:strata:` URLs, and the `strata-server` command in the image and the release archives.
 
 ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions with snapshot isolation, and is queried with SQL. Every table is indexed three ways at once (posting lists for full text, a columnar forward index for structured fields, and vector indexes), rows can hold typed, weighted edges to other rows, and a cost-based planner chooses, per segment and from exact statistics, how to run each part of a statement. A database holds several tables, and queries join them. ChloeDB's posting lists come from its own study of compressed posting-list formats (the `postings` module), which produced the Loom and Pyramid codecs it uses.
 
@@ -10,7 +10,7 @@ Around the library:
 
 - **[chloedb-server](docs/chloedb/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
 - **[chloedb-py](docs/chloedb/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods. Its [frames](docs/chloedb/frames.md) are lazy dataframes written as Polars writes them (filters, groups, joins, windows, and search as verbs), run as one SQL query where the data is, with the answer as Arrow for pandas, Polars and NumPy.
-- **[chloedb-java](docs/chloedb/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:strata:books.strata`.
+- **[chloedb-java](docs/chloedb/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:chloedb:books.strata`.
 - **[chloedb-js](docs/chloedb/javascript.md)** does the same from JavaScript: a ChloeDB file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
 - **[Parquet and S3](docs/chloedb/parquet.md)**: `chloedb-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
 - **[Following Postgres](docs/chloedb/postgres.md)**: `chloedb-server follow-postgres` copies a Postgres publication's tables into ChloeDB and then applies their inserts, updates, deletes, truncates and new columns by logical replication (pgoutput), a moment behind, each change once across restarts: search over Postgres's rows without a Debezium or PGSync pipeline.
@@ -116,7 +116,7 @@ target/release/chloedb-server --demo 20000 --db products.strata
 Or from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
 
 ```sh
-docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
+docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v strata:/data \
   ghcr.io/chloetech-ai/strata-server:latest --db /data/my.strata --listen 0.0.0.0:7700
 ```
 
@@ -129,11 +129,11 @@ pip install ./chloedb-py
 ChloeDB from Java ([more](docs/chloedb/java.md)):
 
 ```sh
-cd chloedb-java && mvn install    # ai.chloetech:strata:0.1.0, the native library inside the jar
+cd chloedb-java && mvn install    # ai.chloetech:chloedb:0.1.0, the native library inside the jar
 ```
 
 ```java
-try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
+try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
      ResultSet rs = c.createStatement().executeQuery("SELECT id, title FROM books ORDER BY bm25(title, 'dragon') DESC LIMIT 5")) {
     while (rs.next()) System.out.println(rs.getString("id") + " " + rs.getString("title"));
 }
@@ -218,7 +218,7 @@ demo/run.sh --embedder hash:256 ...                           # without download
 | [`chloedb/`](chloedb/) | the database: storage engine, segments, text / structured / vector / graph indexes, SQL binder, planner and executor, baselines and benchmarks; [`src/postings/`](chloedb/src/postings/) holds the compressed posting lists and set algorithms, the Pyramid, Loom and Entropic designs, and their testbed (`chloedb-posting-bench`) |
 | [`chloedb-server/`](chloedb-server/) | ChloeDB over HTTP JSON and gRPC: a coordinator over shards, replicas, deadlines, Prometheus metrics, a query-builder UI and an agent that answers questions with SQL ([docs](docs/chloedb/server.md)) |
 | [`chloedb-py/`](chloedb-py/) | ChloeDB from Python: the database in-process (a Rust extension) or a client of chloedb-server, with the same methods ([docs](docs/chloedb/python.md)) |
-| [`chloedb-java/`](chloedb-java/) | ChloeDB from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.strata` package, built by Maven) ([docs](docs/chloedb/java.md)) |
+| [`chloedb-java/`](chloedb-java/) | ChloeDB from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.chloedb` package, built by Maven) ([docs](docs/chloedb/java.md)) |
 | [`chloedb-js/`](chloedb-js/) | ChloeDB from JavaScript: the database in-process (a Node-API addon for Node, Bun and Deno) or a `fetch` client of chloedb-server, with the same methods ([docs](docs/chloedb/javascript.md)) |
 | [`chloedb-crawl/`](chloedb-crawl/) | the crawler: polite fetching, field extraction, a table's schema inferred from the pages, batched writes and a cluster grown a shard at a time; its command center view (`ui/view.js`) ([docs](docs/chloedb/crawler.md)) |
 | [`chloedb-sheets/`](chloedb-sheets/) | the spreadsheet app: workbooks kept as ChloeDB rows (IronCalc's formulas), live sheets of the cluster's tables, SQL query blocks, xlsx, CSV and SQLite in and out; its command center view (`ui/view.js`) ([docs](docs/chloedb/sheets.md)) |

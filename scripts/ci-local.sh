@@ -46,25 +46,26 @@
 # jobs no longer match this script, and posts no success status until the
 # script is brought up to date (--ci-hashes prints the new hashes).
 #
-# What it keeps is under $STRATA_CI_HOME (default ~/.cache/strata-ci-local):
+# What it keeps is under $CHLOEDB_CI_HOME ($STRATA_CI_HOME, its old name, works
+# too; default ~/.cache/strata-ci-local):
 # work/, a clone the jobs run in, whose target directories stay between runs
 # as rust-cache keeps them on GitHub; rustup/, the toolchains CI uses (the
 # current stable and Miri's pinned nightly), apart from the machine's own;
 # a Python 3.12 virtualenv; the BEIR collections, model and ratings the gates
 # read; and runs/, each run's logs.
 #
-# Sharing the machine with benchmarks: while $STRATA_CI_HOME/running exists a
-# run is going (the file holds its pid). Creating $STRATA_CI_HOME/pause stops a
+# Sharing the machine with benchmarks: while $CHLOEDB_CI_HOME/running exists a
+# run is going (the file holds its pid). Creating $CHLOEDB_CI_HOME/pause stops a
 # run before its next job and freezes Miri, which runs beside the other jobs;
-# $STRATA_CI_HOME/paused appears once nothing of the run is working, and the
+# $CHLOEDB_CI_HOME/paused appears once nothing of the run is working, and the
 # run goes on when pause is removed. A run does not start while pause exists.
 set -o pipefail
 
-CI_HOME=${STRATA_CI_HOME:-$HOME/.cache/strata-ci-local}
+CI_HOME=${CHLOEDB_CI_HOME:-${STRATA_CI_HOME:-$HOME/.cache/strata-ci-local}}
 WORK=$CI_HOME/work
 PAUSE=$CI_HOME/pause
 STATUS_CONTEXT=ci-local
-MIN_FREE_GB=${STRATA_CI_MIN_FREE_GB:-10}
+MIN_FREE_GB=${CHLOEDB_CI_MIN_FREE_GB:-${STRATA_CI_MIN_FREE_GB:-10}}
 SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 
 # ci.yml's jobs, each with the first 12 hex digits of the SHA-256 of its lines
@@ -395,7 +396,7 @@ PY_VENV=$CI_HOME/venv-py312
 # the 20 ms it takes on this Mac's SSD, and ChloeDB's tests sync at every
 # commit: the fault-injection tests alone took half an hour on the SSD.
 # Builds stay on the disk. Detached when the run ends.
-RAMDISK_GB=${STRATA_CI_RAMDISK_GB:-6}
+RAMDISK_GB=${CHLOEDB_CI_RAMDISK_GB:-${STRATA_CI_RAMDISK_GB:-6}}
 RAM_VOL=strata-ci-ram
 setup_ramdisk() {
     [ "$RAMDISK" = 1 ] && [ "$(uname -s)" = Darwin ] || return 0
@@ -495,7 +496,7 @@ kernels() {
     export RUSTFLAGS=$1
     shift
     cargo test --profile ci "$@" --lib -- vector:: postings:: forward:: simd
-    STRATA_SIMD=portable cargo test --profile ci "$@" --lib -- vector:: postings:: forward::
+    CHLOEDB_SIMD=portable cargo test --profile ci "$@" --lib -- vector:: postings:: forward::
 }
 
 job_kernels() {
@@ -523,7 +524,7 @@ job_datafusion() {
     in_chloedb
     cargo test --profile ci --features datafusion --test datafusion_engine
     cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
-    STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
+    CHLOEDB_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
     cargo test --profile ci --features datafusion,parquet,s3 --test parquet
     cargo test --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
     cargo clippy --profile ci --features datafusion,parquet,s3 --all-targets -- $CLIPPY_LINTS
@@ -549,14 +550,14 @@ job_vision() {
 job_relevance_gate() {
     chloedb/tests/fixtures/beir/fetch.sh "$CI_HOME/beir"
     in_chloedb
-    STRATA_BEIR_DIR="$CI_HOME/beir" STRATA_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
+    CHLOEDB_BEIR_DIR="$CI_HOME/beir" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
 }
 
 job_relevance_gate_cross_encoder() {
     chloedb/tests/fixtures/beir/fetch.sh "$CI_HOME/beir"
     chloedb/tests/models/fetch_cross_encoder.sh "$CI_HOME/models"
     in_chloedb
-    STRATA_BEIR_DIR="$CI_HOME/beir" STRATA_MODELS="$CI_HOME/models" STRATA_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
+    CHLOEDB_BEIR_DIR="$CI_HOME/beir" CHLOEDB_MODELS="$CI_HOME/models" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
 }
 
 # A free port on the loopback: CI's 7700 and 7702 may be taken here.
@@ -581,7 +582,7 @@ job_server_smoke() {
     curl -sf -X POST http://127.0.0.1:$p1/v1/query -H 'content-type: application/json' \
         -d '{"sql": "WITH top AS (SELECT id FROM products ORDER BY bm25(body, '"'"'jaket'"'"', fuzzy => 1) DESC LIMIT 50) SELECT category, COUNT(*), AVG(price) FROM top GROUP BY category"}' \
         | grep -q '"rows"'
-    curl -sf http://127.0.0.1:$p1/metrics | grep -q strata_queries_total
+    curl -sf http://127.0.0.1:$p1/metrics | grep -q chloedb_queries_total
     curl -sf http://127.0.0.1:$p1/ | grep -qi '<html'
     # Rows into a new database from the command line, then over HTTP.
     printf '{"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}]}' > "$t/t.json"
@@ -603,10 +604,10 @@ job_server_smoke() {
     # The crawler on a site its test serves, into a cluster of this build's
     # servers that it starts and grows to three shards.
     cd ../chloedb-crawl
-    STRATA_SERVER_BIN="$CI_LOCAL_TREE/chloedb-server/target/release/chloedb-server" STRATA_CRAWL_NEED_SERVER=1 cargo test --profile ci --test site
+    CHLOEDB_SERVER_BIN="$CI_LOCAL_TREE/chloedb-server/target/release/chloedb-server" CHLOEDB_CRAWL_NEED_SERVER=1 cargo test --profile ci --test site
     # Spreadsheets kept in a server of this build, read back after a restart.
     cd ../chloedb-sheets
-    STRATA_SERVER_BIN="$CI_LOCAL_TREE/chloedb-server/target/release/chloedb-server" STRATA_SHEETS_NEED_SERVER=1 cargo test --profile ci --test cluster
+    CHLOEDB_SERVER_BIN="$CI_LOCAL_TREE/chloedb-server/target/release/chloedb-server" CHLOEDB_SHEETS_NEED_SERVER=1 cargo test --profile ci --test cluster
 }
 
 # Redpanda for the Kafka consumer's exactly-once test: CI's container on
@@ -629,7 +630,7 @@ start_redpanda() {
     trap "docker rm -f $name >/dev/null 2>&1" EXIT
     for i in $(seq 1 60); do docker exec "$name" rpk cluster health 2>/dev/null | grep -q 'Healthy: *true' && break; sleep 1; done
     docker exec "$name" rpk cluster health
-    export STRATA_KAFKA=127.0.0.1:19092
+    export CHLOEDB_KAFKA=127.0.0.1:19092
 }
 
 job_python() {

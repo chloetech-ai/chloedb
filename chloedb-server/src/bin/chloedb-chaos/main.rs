@@ -140,7 +140,7 @@ enum Cmd {
 #[derive(Args, Clone)]
 struct Control {
     /// The control API of `up` (its --port + 99).
-    #[arg(long, env = "STRATA_CHAOS_CONTROL", default_value = "http://127.0.0.1:7999")]
+    #[arg(long, env = "CHLOEDB_CHAOS_CONTROL", default_value = "http://127.0.0.1:7999")]
     control: String,
 }
 
@@ -197,7 +197,7 @@ struct Setup {
     #[arg(long, default_value_t = 1)]
     seed: u64,
     /// The coordinators' admin token (default: drawn).
-    #[arg(long, env = "STRATA_CHAOS_TOKEN")]
+    #[arg(long, env = "CHLOEDB_CHAOS_TOKEN")]
     token: Option<String>,
     /// Extra arguments for every server.
     #[arg(long, allow_hyphen_values = true, value_delimiter = ' ')]
@@ -517,7 +517,7 @@ fn main() {
     // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
     // clap and the code read the old names, so the new ones are copied over
     // before the runtime starts any thread.
-    chloedb::env::adopt_new_names();
+    chloedb::env::adopt_old_names();
     run();
 }
 

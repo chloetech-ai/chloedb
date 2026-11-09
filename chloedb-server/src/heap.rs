@@ -243,13 +243,13 @@ pub fn stats() -> Stats {
 }
 
 /// Keeps the peak of the heap in use, sampled every 100 ms on a thread of
-/// its own (`strata-heap`). Once per process; later calls do nothing.
+/// its own (`chloedb-heap`). Once per process; later calls do nothing.
 pub fn watch() {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if !installed() || STARTED.swap(true, Ordering::Relaxed) {
         return;
     }
-    let _ = std::thread::Builder::new().name("strata-heap".into()).spawn(|| loop {
+    let _ = std::thread::Builder::new().name("chloedb-heap".into()).spawn(|| loop {
         PEAK.fetch_max(in_use(), Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(100));
     });
