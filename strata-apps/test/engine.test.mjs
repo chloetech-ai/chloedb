@@ -21,6 +21,14 @@ import net from 'node:net';
 const P = (t) => `app_abc123_${t}`;
 const T = ['tasks', 'tags', 'people'];
 
+
+// Tests that need a strata-server skip without one, unless
+// STRATA_APPS_NEED_SERVER=1 (CI) makes a missing server a failure.
+function noServer(t) {
+  if (process.env.STRATA_APPS_NEED_SERVER === '1') throw new Error('no strata-server binary: build strata-server or set STRATA_SERVER_BIN');
+  return t.skip('no strata-server binary');
+}
+
 test('table names become physical names, keeping the declared name as alias', () => {
   assert.equal(rewriteSql("SELECT * FROM tasks WHERE status = 'from tasks' LIMIT 5", T, P).sql,
     "SELECT * FROM app_abc123_tasks AS tasks WHERE status = 'from tasks' LIMIT 5");
@@ -1266,7 +1274,7 @@ test('pieces are searched by words and by meaning', async (t) => {
   const { findServerBinary, startServer } = await import('../engine/strata.mjs');
   const { Store } = await import('../engine/store.mjs');
   const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
-  if (!bin) return t.skip('no strata-server binary');
+  if (!bin) return noServer(t);
   const dir = mkdtempSync(join(tmpdir(), 'sa-meaning-'));
   const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
@@ -1342,7 +1350,7 @@ test('graph questions are answered from Strata', async (t) => {
   const { Store } = await import('../engine/store.mjs');
   const { ask } = await import('../engine/ask.mjs');
   const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
-  if (!bin) return t.skip('no strata-server binary');
+  if (!bin) return noServer(t);
   const dir = mkdtempSync(join(tmpdir(), 'sa-ask-'));
   const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
@@ -1466,7 +1474,7 @@ test('the store keeps SQL in Strata and compiles it when read', async (t) => {
   const { findServerBinary, startServer } = await import('../engine/strata.mjs');
   const { Store } = await import('../engine/store.mjs');
   const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
-  if (!bin) return t.skip('no strata-server binary');
+  if (!bin) return noServer(t);
   const dir = mkdtempSync(join(tmpdir(), 'sa-sql-'));
   const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
@@ -1541,7 +1549,7 @@ test('the library SQL functions run in Strata', async (t) => {
   const { findServerBinary, startServer } = await import('../engine/strata.mjs');
   const { readSqlLibrary, install } = await import('../engine/sqlfns.mjs');
   const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
-  if (!bin) return t.skip('no strata-server binary');
+  if (!bin) return noServer(t);
   const dir = mkdtempSync(join(tmpdir(), 'sa-fns-'));
   const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
@@ -1588,7 +1596,7 @@ test('the patterns of use are counted in Strata', async (t) => {
   const { readSqlFile, install } = await import('../engine/sqlfns.mjs');
   const { signalsFromSql } = await import('../engine/evolve.mjs');
   const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
-  if (!bin) return t.skip('no strata-server binary');
+  if (!bin) return noServer(t);
   const dir = mkdtempSync(join(tmpdir(), 'sa-sig-'));
   const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
@@ -1674,7 +1682,7 @@ test('what apps change next is learned across apps, in Strata', async (t) => {
   const { Store } = await import('../engine/store.mjs');
   const { Changes } = await import('../engine/changes.mjs');
   const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
-  if (!bin) return t.skip('no strata-server binary');
+  if (!bin) return noServer(t);
   const dir = mkdtempSync(join(tmpdir(), 'sa-next-'));
   const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });

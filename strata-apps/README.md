@@ -171,6 +171,8 @@ cd strata-apps
 | `STRATA_APPS_TILES` | the map tile URL template (default OpenStreetMap's, fetched by the engine with a user agent and kept under `DATA/tiles`; `off` turns maps off) |
 | `STRATA_APPS_UNSPLASH_KEY` | an Unsplash access key (free at unsplash.com/developers): front pages get photos of any subject from Unsplash, credited as its guidelines ask |
 | `STRATA_APPS_PHOTOS=builtin` | photos from the built-in set only (no Openverse) |
+| `STRATA_APPS_SPEND_CAP_USD` | stop every model call (builds, checks and apps' own questions) once the engine has spent this much, in US dollars, counted from what Claude Code reports and kept in `DATA/spend.json` across restarts |
+| `STRATA_APPS_ASK_MODEL`, `STRATA_APPS_ASKS_PER_DAY`, `STRATA_APPS_FETCHES_PER_DAY` | apps' own model (`app.ask`, default `claude-haiku-5-5`), the questions an app may ask it each day unless its owner sets another number (default 200), and the pages an app may fetch each day (default 1000); see [A model and the web](../docs/strata/apps.md#a-model-and-the-web-per-app) |
 | `STRATA_APPS_EMBED_MODEL` | the embedding model of meaning columns and of the library's search (default `potion-retrieval-32M`); a Strata that cannot load it searches the library by words alone |
 | `STRATA_APPS_MEANING_MIN` | the least cosine at which a piece found by meaning alone is offered (default 0.2) |
 
@@ -323,11 +325,13 @@ that fails gets one more try with the problems listed.
 ## What it is not (yet)
 
 A prototype on one machine: people can sign in to apps, but the studio
-itself has no sign-in (anyone who can reach it can change any app), app data
-is not yet limited by row rules on the server (`lib.access` checks in views
-and functions only), there is no limit on what a request costs, and a capability that
-passes the checks can still be wrong (the repair loop and going back are the
-safety net). The doc lists what a real version needs.
+itself has no sign-in (anyone who can reach it can change any app; put it
+behind `deploy/gate.mjs` to share it), app data is not yet limited by row
+rules on the server (`lib.access` checks in views and functions only), what
+the model costs is limited only in all (`STRATA_APPS_SPEND_CAP_USD`) and per
+app for apps' own questions, and a capability that passes the checks can
+still be wrong (the repair loop and going back are the safety net). The doc
+lists what a real version needs.
 
 ## Tests
 
