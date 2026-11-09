@@ -47,7 +47,7 @@ fn a_store_from_before_field_ids_is_copied_on_first_open() {
     assert!(!chloedb::upgrade::needs_upgrade(&path).unwrap());
     assert!(chloedb::upgrade::old_path(&path).exists());
     assert_eq!(s.len(), before.len() as u64);
-    assert_eq!(rows(&s.db), before);
+    assert_eq!(rows(s.db().unwrap()), before);
     // Its words and its vectors are searched as before.
     let hits = s.query("SELECT text FROM memory WHERE MATCH(body, 'semicolons') AND kind = 'decision' ORDER BY seq LIMIT 100").unwrap().rows;
     assert_eq!(hits.len(), 4, "{hits:?}");

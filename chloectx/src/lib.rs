@@ -8,8 +8,10 @@
 //! the model search, timeline and SQL tools over the same store.
 
 pub mod anchor;
+pub mod app;
 pub mod benchdata;
 pub mod capture;
+pub mod cluster;
 pub mod consolidate;
 pub mod context;
 pub mod daemon;

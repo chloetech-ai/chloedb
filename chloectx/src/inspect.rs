@@ -72,7 +72,8 @@ pub fn query(store: &Store, req: &Json) -> Result<Json> {
 /// The table's schema and how it is laid out on disk: segments (with their
 /// sections' sizes), the memtable, the WAL and the file.
 pub fn layout(store: &Store) -> Result<Json> {
-    let snap = store.db.snapshot();
+    let db = store.db().ok_or_else(|| crate::err("the store is a table of a ChloeDB server: see the server for its layout"))?;
+    let snap = db.snapshot();
     let schema = serde_json::to_value(snap.schema())?;
     let segments: Vec<Json> = snap
         .segments()
@@ -84,7 +85,7 @@ pub fn layout(store: &Store) -> Result<Json> {
             json!({"id": v.id, "in_memory": v.in_memory, "n_docs": v.file.n_docs(), "n_live": v.n_live, "sections": sections})
         })
         .collect();
-    let fs = store.db.storage().file_stats();
+    let fs = db.storage().file_stats();
     Ok(json!({
         "schema": schema, "segments": segments, "live_docs": snap.n_live_docs(), "embedder": store.embedder.name(), "dim": store.embedder.dim(),
         "file": {"file_bytes": fs.file_bytes, "page_count": fs.page_count, "live_pages": fs.live_pages, "free_pages": fs.free_pages,

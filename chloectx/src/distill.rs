@@ -61,7 +61,7 @@ impl DistillConfig {
     }
 }
 
-const SYSTEM: &str = "You keep the long-term notes of a software project. You read one exchange between a developer and a coding assistant and write down what a future session will need. Output JSON lines only.";
+pub const SYSTEM: &str = "You keep the long-term notes of a software project. You read one exchange between a developer and a coding assistant and write down what a future session will need. Output JSON lines only.";
 
 const PROMPT: &str = r#"Here is one exchange from a software project.{when}
 

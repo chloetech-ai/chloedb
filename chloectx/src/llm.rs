@@ -120,6 +120,35 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
     })
 }
 
+/// Runs the model once through Anthropic's Messages API with `key`
+/// (`ANTHROPIC_BASE_URL` overrides where it is sent): for a process with no
+/// `claude` CLI, such as `chloectx app` in a cluster.
+pub fn complete_api(key: &str, model: &str, system: &str, prompt: &str, timeout: Duration) -> Result<Reply> {
+    let t0 = Instant::now();
+    let base = std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into());
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(timeout)).http_status_as_error(false).build().into();
+    let body = serde_json::json!({
+        "model": model, "max_tokens": 4096, "system": system,
+        "messages": [{"role": "user", "content": prompt}],
+    });
+    let mut r = agent
+        .post(format!("{}/v1/messages", base.trim_end_matches('/')))
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .send(body.to_string())
+        .map_err(|e| err(format!("model call: {e}")))?;
+    let status = r.status().as_u16();
+    let text = r.body_mut().read_to_string().map_err(|e| err(format!("model call: {e}")))?;
+    let v: Json = serde_json::from_str(&text).unwrap_or(Json::Null);
+    if !(200..300).contains(&status) {
+        let m = v["error"]["message"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(300).collect());
+        return Err(err(format!("model call failed (HTTP {status}): {m}")));
+    }
+    let out: String = v["content"].as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("");
+    Ok(Reply { text: out, cost_usd: 0.0, usage: Usage::of(&v["usage"]), ms: t0.elapsed().as_millis() as u64 })
+}
+
 /// The first JSON object in `text` (models sometimes wrap it in prose or a
 /// code fence).
 pub fn json_object(text: &str) -> Option<Json> {

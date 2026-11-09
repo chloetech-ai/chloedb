@@ -1179,7 +1179,8 @@ impl Daemon {
             return Err(err(format!("{} is not an absolute path", dest.display())));
         }
         std::fs::create_dir(&dest).map_err(|e| err(format!("create {}: {e}", dest.display())))?;
-        let stats = self.store.db.storage().checkpoint(&dest.join("memory.strata"), &chloedb::storage::CheckpointOptions::default())?;
+        let db = self.store.db().ok_or_else(|| err("the store is a table of a ChloeDB server"))?;
+        let stats = db.storage().checkpoint(&dest.join("memory.strata"), &chloedb::storage::CheckpointOptions::default())?;
         self.persist();
         for name in ["state.json", "config.json"] {
             match std::fs::copy(self.paths.dir.join(name), dest.join(name)) {
@@ -1195,7 +1196,8 @@ impl Daemon {
     }
 
     fn op_stats(&self) -> Result<Json> {
-        let fs = self.store.db.storage().file_stats();
+        let db = self.store.db().ok_or_else(|| err("the store is a table of a ChloeDB server"))?;
+        let fs = db.storage().file_stats();
         let kinds = self.store.query("SELECT kind, COUNT(*) FROM memory GROUP BY kind ORDER BY 2 DESC LIMIT 20")?;
         let by_kind: serde_json::Map<String, Json> = kinds.rows.iter().filter_map(|r| Some((r[0].as_str()?.to_string(), json!(r[1].as_i64()?)))).collect();
         // Entity records belong to no session.

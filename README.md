@@ -211,6 +211,10 @@ demo/run.sh --model <model> --distill-model <small model>     # http://127.0.0.1
 demo/run.sh --embedder hash:256 ...                           # without downloading the embedding model
 ```
 
+### ChloeCtx beside a cluster
+
+`chloectx app` runs ChloeCtx as an app of a ChloeDB cluster, shown in the command center as the crawler and Sheets are, with its memory in the cluster's tables. **Context** gives any agent memory *spaces* to write notes and conversations to and to ask for context within a token budget, by search alone, with the reasons for every pick and what was left out. **Seen before** puts each firing alert beside the past incidents it looks like and the fix that worked, and hands it to the on-call agent with them ([ChloeCtx as an app](docs/chloectx/app.md)).
+
 ## Repository layout
 
 | path | what |
@@ -223,7 +227,7 @@ demo/run.sh --embedder hash:256 ...                           # without download
 | [`chloedb-crawl/`](chloedb-crawl/) | the crawler: polite fetching, field extraction, a table's schema inferred from the pages, batched writes and a cluster grown a shard at a time; its command center view (`ui/view.js`) ([docs](docs/chloedb/crawler.md)) |
 | [`chloedb-sheets/`](chloedb-sheets/) | the spreadsheet app: workbooks kept as ChloeDB rows (IronCalc's formulas), live sheets of the cluster's tables, SQL query blocks, xlsx, CSV and SQLite in and out; its command center view (`ui/view.js`) ([docs](docs/chloedb/sheets.md)) |
 | [`chloedb-apps/`](chloedb-apps/) | the app engine (a prototype, in Node.js): the forge that has a model plan and write apps, their pieces stored as SQL rows, the checks, the studio, sandboxed views and QuickJS functions, a library of 150 shared pieces, and the services apps get ([docs](docs/chloedb/apps.md)) |
-| [`chloectx/`](chloectx/) | ChloeCtx, the memory system built on ChloeDB: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), evaluation harnesses and results |
+| [`chloectx/`](chloectx/) | ChloeCtx, the memory system built on ChloeDB: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), `chloectx app` for a cluster and its command center view (`ui/view.js`) ([docs](docs/chloectx/app.md)), evaluation harnesses and results |
 | [`docs/`](docs/) | this documentation, as Markdown and as a GitHub Pages site |
 | [`install.sh`](install.sh) | builds ChloeCtx, installs it to `~/.local/bin` and wires it into Claude Code |
 | [`AGENTS.md`](AGENTS.md) | instructions for a coding agent setting ChloeCtx up or working on this repository (`CLAUDE.md` imports it) |
@@ -235,7 +239,7 @@ Each crate also carries its own design document ([ChloeDB](chloedb/DESIGN.md), [
 - [Overview](docs/README.md)
 - **ChloeDB:** [design](docs/chloedb/index.md) · [query language](docs/chloedb/query-language.md) · [graphs](docs/chloedb/graphs.md) · [server](docs/chloedb/server.md) · [Python](docs/chloedb/python.md) · [Java](docs/chloedb/java.md) · [JavaScript](docs/chloedb/javascript.md) · [SQLite](docs/chloedb/sqlite.md) · [Postgres](docs/chloedb/postgres.md) · [results](docs/chloedb/results.md)
 - [Posting lists](docs/posting-lists.md)
-- **ChloeCtx, built on ChloeDB:** [install on your machine](docs/chloectx/setup.md) · [how it works](docs/chloectx/index.md) · [live inspector](docs/chloectx/inspector.md) · [results](docs/chloectx/results.md) · [why ChloeCtx](https://chloetech-ai.github.io/strata/why/)
+- **ChloeCtx, built on ChloeDB:** [install on your machine](docs/chloectx/setup.md) · [how it works](docs/chloectx/index.md) · [live inspector](docs/chloectx/inspector.md) · [as an app of a cluster](docs/chloectx/app.md) · [results](docs/chloectx/results.md) · [why ChloeCtx](https://chloetech-ai.github.io/strata/why/)
 - [Reproducing the results](docs/reproduce.md)
 
 ## Status and limits
