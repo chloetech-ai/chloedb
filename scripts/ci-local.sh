@@ -92,7 +92,7 @@ ci-result 05940e7f0565
 # This script's jobs: name, the ci.yml job it mirrors, what it runs.
 JOBS="
 test-chloedb|test|chloedb's tests (feature sqlite) and clippy
-test-engram|test|engram's tests and clippy
+test-chloectx|test|chloectx's tests and clippy
 test-chloedb-server|test|chloedb-server's tests, the simulator's seeds, and clippy
 test-chloedb-crawl|test|chloedb-crawl's tests and clippy
 test-chloedb-sheets|test|chloedb-sheets' tests and clippy
@@ -224,7 +224,7 @@ while [ $# -gt 0 ]; do
         -*) die "unknown option $1 (see --help)" ;;
         *)
             if [ "$1" = test ]; then
-                SELECTED="$SELECTED test-chloedb test-engram test-chloedb-server test-chloedb-crawl test-chloedb-sheets"
+                SELECTED="$SELECTED test-chloedb test-chloectx test-chloedb-server test-chloedb-crawl test-chloedb-sheets"
             elif job_names | grep -qx -- "$1"; then
                 SELECTED="$SELECTED $1"
             else
@@ -461,8 +461,8 @@ job_test_chloedb() {
     cargo clippy --release --all-targets --features sqlite -- $CLIPPY_LINTS
 }
 
-job_test_engram() {
-    cd engram
+job_test_chloectx() {
+    cd chloectx
     crate_tests
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
@@ -736,7 +736,7 @@ miri_part() {
 # lanes. Each job's outcome is a line of $RUN_DIR/results.
 
 MIRI_PIDS="" LANE_PIDS=""
-LANE2_JOBS="test-engram test-chloedb-server test-chloedb-crawl test-chloedb-sheets server-smoke python javascript java"
+LANE2_JOBS="test-chloectx test-chloedb-server test-chloedb-crawl test-chloedb-sheets server-smoke python javascript java"
 record() { printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$RUN_DIR/results"; }
 failed_any() { [ -f "$RUN_DIR/results" ] && grep -qv '|success|' "$RUN_DIR/results"; }
 lane_of() {
@@ -764,19 +764,19 @@ prune_dirs() {
 }
 
 # After a job: with one lane, every crate's; with two, the target directories
-# only this lane's jobs link into (chloedb's for lane 1, engram's and the
+# only this lane's jobs link into (chloedb's for lane 1, chloectx's and the
 # Python package's for lane 2), and in chloedb-server's, which both use, the
 # test executables the job's log names (cargo test's Running lines,
 # nextest's list). The rest goes when the run ends.
 prune_job() {
     local rel crate
     if [ "$LANES" = 1 ]; then
-        prune_dirs chloedb/target chloedb-server/target engram/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
+        prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
         return 0
     fi
     case "$LANE" in
         1) prune_dirs chloedb/target ;;
-        2) prune_dirs engram/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target ;;
+        2) prune_dirs chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target ;;
     esac
     { sed -n 's/^ *Running .* (\(target\/[^)]*\))$/\1/p' "$1"; cat "$1.binaries" 2>/dev/null; } | sort -u | while read -r rel; do
         case "$rel" in
@@ -916,7 +916,7 @@ find_affected() {
     for f in $(git diff --name-only "$BASE_SHA" HEAD); do
         case "$f" in
             docs/*|*.md) ;;
-            engram/*|install.sh) AFFECTED="$AFFECTED test-engram" ;;
+            chloectx/*|install.sh) AFFECTED="$AFFECTED test-chloectx" ;;
             chloedb-py/*) AFFECTED="$AFFECTED python" ;;
             chloedb-js/*) AFFECTED="$AFFECTED javascript" ;;
             chloedb-java/*) AFFECTED="$AFFECTED java" ;;
@@ -997,7 +997,7 @@ else
         LANE_PIDS="$LANE_PIDS $!"
     done
     supervise
-    [ "$KEEP_BINARIES" = 1 ] || prune_dirs chloedb/target chloedb-server/target engram/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
+    [ "$KEEP_BINARIES" = 1 ] || prune_dirs chloedb/target chloedb-server/target chloectx/target chloedb-py/target chloedb-crawl/target chloedb-sheets/target chloedb-js/target chloedb-java/target
     finish_miri
 fi
 

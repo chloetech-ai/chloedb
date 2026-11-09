@@ -61,7 +61,8 @@ export function ask({ system, prompt, images = [], model = MODEL, effort = proce
     if (maxBudgetUsd) args.push('--max-budget-usd', String(maxBudgetUsd));
     if (effort) args.push('--effort', effort);
     if (images.length) args.push('--input-format', 'stream-json');
-    const env = { ...process.env, ENGRAM_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
+    const env = { ...process.env, CHLOECTX_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
+    env.ENGRAM_DISABLE = '1'; // read by ChloeCtx's hooks from before the rename
     const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
     let buf = '';
     let err = '';

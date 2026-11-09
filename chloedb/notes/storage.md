@@ -220,7 +220,7 @@ builds the new version's snapshot before a commit, flush, bulk load, merge
 or vacuum returns, and stores it in `published`. `snapshot()` then only
 clones that `Arc`: a reader never builds a segment or waits for one, and a
 write returns once readers can see it. The write pays for the build instead
-of the next query. Engram turns this on.
+of the next query. ChloeCtx turns this on.
 
 **Merges.** `merge(policy)` loops: take an on-disk snapshot, let the policy
 pick a group, and fetch the group's live documents through `doc_source`.

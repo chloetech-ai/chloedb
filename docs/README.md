@@ -4,13 +4,13 @@ An embedded search database with SQL: full text, structured columns, vectors and
 
 [How ChloeDB works](chloedb/index.md) · [Query language](chloedb/query-language.md) · [Server](chloedb/server.md) · [Python](chloedb/python.md) · [JavaScript](chloedb/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
 
-> ChloeDB was called Strata until November 2026. The folders, crates, commands, settings (`CHLOEDB_*`), headers (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`, `ai.chloetech.chloedb`) carry the new name; the repository, the Kubernetes operator and the container image still carry the old one. The old names keep working for a release: `STRATA_*` settings, `x-strata-*` headers, `import strata`, `jdbc:strata:` URLs, and the `strata-server` command in the image and the release archives.
+> ChloeDB was called Strata until November 2026. The folders, crates, commands, settings (`CHLOEDB_*`), headers (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`, `ai.chloetech.chloedb`) carry the new name; the repository, the Kubernetes operator and the container image still carry the old one. The old names keep working for a release: `STRATA_*` settings, `x-strata-*` headers, `import strata`, `jdbc:strata:` URLs, and the `strata-server` command in the image and the release archives. ChloeCtx, its memory for Claude Code, was called Engram: the command is `chloectx` (`engram` still runs it), its settings are `CHLOECTX_*` (`ENGRAM_*` still read), and an install keeps its stores where they were ([what changes](chloectx/setup.md#chloectx-was-called-engram)).
 
 ---
 
 ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions with snapshot isolation, and is queried with SQL. Every table is indexed three ways at once (posting lists for full text, a columnar forward index for structured fields, and vector indexes), rows can hold typed, weighted edges to other rows, and a cost-based planner chooses, per segment and from exact statistics, how to run each part of a statement. A database holds several tables, and queries join them.
 
-This repository holds ChloeDB, the pieces around it, and Engram, an application built on it.
+This repository holds ChloeDB, the pieces around it, and ChloeCtx, an application built on it.
 
 | part | what it is | read more |
 |---|---|---|
@@ -21,7 +21,7 @@ This repository holds ChloeDB, the pieces around it, and Engram, an application 
 | **chloedb-py** | ChloeDB from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of chloedb-server with the same methods. | [Python](chloedb/python.md) |
 | **chloedb-js** | ChloeDB from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of chloedb-server for any runtime, with the same methods. | [JavaScript](chloedb/javascript.md) |
 | **ChloeDB's posting lists** | A study of compressed posting lists and their intersection and union algorithms, which produced three new formats. ChloeDB's text and keyword indexes use two of them. | [Posting lists](posting-lists.md) |
-| **Engram**, built on ChloeDB | Long-term memory for Claude Code. Hooks store every event of a session in a ChloeDB file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](engram/index.md) · [Install](engram/setup.md) · [Inspector](engram/inspector.md) · [Results](engram/results.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/) |
+| **ChloeCtx**, built on ChloeDB | Long-term memory for Claude Code. Hooks store every event of a session in a ChloeDB file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](chloectx/index.md) · [Install](chloectx/setup.md) · [Inspector](chloectx/inspector.md) · [Results](chloectx/results.md) · [Why ChloeCtx](https://chloetech-ai.github.io/strata/why/) |
 
 ## One query
 
@@ -57,7 +57,7 @@ flowchart LR
     py["chloedb-py<br/>in-process or HTTP client"] --> lib
     py -.-> srv
     srv["chloedb-server<br/>HTTP JSON · gRPC · UI · agent<br/>coordinator over shards · replicas"] --> lib
-    engram["Engram<br/>memory for Claude Code"] --> lib
+    engram["ChloeCtx<br/>memory for Claude Code"] --> lib
 ```
 
 A statement is parsed and bound into a predicate tree and a scorer; the planner picks, per segment and from exact statistics, how to evaluate each part (MaxScore or Block-Max WAND for text, range scans or postings for structured fields, an exact scan, IVF or HNSW with the filter inside for vectors); operators read zero-copy views of the segment's sections, and per-segment results are merged. [ChloeDB's design](chloedb/index.md) covers the file format, transactions, every index and the planner.
@@ -78,17 +78,17 @@ A statement is parsed and bound into a predicate tree and a scorer; the planner 
 
 ![Median latency by query kind, ChloeDB against SQLite with FTS5 and Tantivy on TREC-COVID](assets/img/chart-strata-latency.png)
 
-## Engram: an application of ChloeDB
+## ChloeCtx: an application of ChloeDB
 
 A coding agent's context window is its whole working memory. When a long session fills it, Claude Code *compacts*: it replaces the history with a summary of about 15,000 characters. The plan survives; the particulars do not. Exact error messages, the reason an approach was dropped, and a rule the user stated once three hours earlier all go. A new session starts with almost nothing.
 
-Engram keeps all of it in a ChloeDB file per project and brings back what a prompt needs. ChloeDB answers every question Engram asks with SQL: recall is two searches (BM25 and vectors) under a filter that excludes what the model can still see, the briefing is a handful of structured queries, and the model's `memory_sql` tool is ChloeDB's SQL itself, read-only.
+ChloeCtx keeps all of it in a ChloeDB file per project and brings back what a prompt needs. ChloeDB answers every question ChloeCtx asks with SQL: recall is two searches (BM25 and vectors) under a filter that excludes what the model can still see, the briefing is a handful of structured queries, and the model's `memory_sql` tool is ChloeDB's SQL itself, read-only.
 
-[How Engram works](engram/index.md) · [Install it](engram/setup.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/)
+[How ChloeCtx works](chloectx/index.md) · [Install it](chloectx/setup.md) · [Why ChloeCtx](https://chloetech-ai.github.io/strata/why/)
 
-![The Engram live inspector: a new session answers from memory](assets/img/inspector-new-session.png)
+![The ChloeCtx live inspector: a new session answers from memory](assets/img/inspector-new-session.png)
 
-*A fresh Claude Code session, asked what storage was chosen earlier and why, answers from the briefing Engram injected at session start. Right: the records the hooks wrote and the knowledge a small model distilled from the previous session. See [the live inspector](engram/inspector.md).*
+*A fresh Claude Code session, asked what storage was chosen earlier and why, answers from the briefing ChloeCtx injected at session start. Right: the records the hooks wrote and the knowledge a small model distilled from the previous session. See [the live inspector](chloectx/inspector.md).*
 
 [Try the inspector in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) It replays a recorded session, and every panel queries the recorded store with ChloeDB's SQL, run by a JavaScript model of ChloeDB.
 
@@ -101,7 +101,7 @@ flowchart TB
     end
     hooks -- "event out, context in<br/>(unix socket, one JSON line each way)" --> daemon
     tools -- "stdio JSON-RPC" --> daemon
-    subgraph daemon["engram serve (one per project, started on demand)"]
+    subgraph daemon["chloectx serve (one per project, started on demand)"]
         direction LR
         cap["capture<br/>redact · cut to 400 B · salience"] --> emb["embed<br/>static Model2Vec 512-d"]
         rec["recall<br/>exclude live window · hybrid search<br/>priors · gate · pack"]
@@ -114,15 +114,15 @@ flowchart TB
 
 | question | answer |
 |---|---|
-| Does Claude Code do better with Engram on work that depends on earlier sessions? | **100 of 100** held-out tasks solved with Engram against **60 of 100** without; all of the gap is on facts that were only said in conversation (60/60 vs 20/60), p < 0.0001. |
+| Does Claude Code do better with ChloeCtx on work that depends on earlier sessions? | **100 of 100** held-out tasks solved with ChloeCtx against **60 of 100** without; all of the gap is on facts that were only said in conversation (60/60 vs 20/60), p < 0.0001. |
 | After a compaction, do the lost details come back? | **13 of 15** automatically, 14 with one search. None were in the summary. |
-| Can a new session answer questions about a 26-hour history? | **8 of 8** with Engram, **0 of 4** without. |
+| Can a new session answer questions about a 26-hour history? | **8 of 8** with ChloeCtx, **0 of 4** without. |
 | How good is retrieval on a public benchmark? | LongMemEval-S: evidence in the top 10 for **90%** of questions; inside the default 4,000-character injection for 87%. |
 | What does it cost per prompt? | **14–26 ms** for a full hook at 10k–1M records, most of it starting the hook process; a million records take 3.1 GB. |
 
 </div>
 
-For the short version, with the week-long Kestrel benchmark and its cost comparison, read [the Engram showcase](engram-showcase.md).
+For the short version, with the week-long Kestrel benchmark and its cost comparison, read [the ChloeCtx showcase](engram-showcase.md).
 
 ## Full reports
 
@@ -131,8 +131,8 @@ Each project also has a long-form report with interactive charts, formulas and e
 - [ChloeDB: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html)
 - [ChloeDB graphs](https://chloetech-ai.github.io/strata/reports/graph.html)
 - [Posting lists: formats and algorithms](https://chloetech-ai.github.io/strata/reports/posting-lists.html) and [the three new designs](https://chloetech-ai.github.io/strata/reports/posting-list-designs.html)
-- [Engram: the memory system](https://chloetech-ai.github.io/strata/reports/engram.html)
-- [Engram: what a record should be](https://chloetech-ai.github.io/strata/reports/structure.html)
+- [ChloeCtx: the memory system](https://chloetech-ai.github.io/strata/reports/engram.html)
+- [ChloeCtx: what a record should be](https://chloetech-ai.github.io/strata/reports/structure.html)
 
 ## Where the numbers come from
 

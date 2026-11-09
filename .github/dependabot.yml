@@ -12,7 +12,7 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: cargo
-    directories: [/chloedb, /engram, /chloedb-server, /chloedb-py]
+    directories: [/chloedb, /chloectx, /chloedb-server, /chloedb-py]
     schedule:
       interval: monthly
     open-pull-requests-limit: 4

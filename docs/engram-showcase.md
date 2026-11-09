@@ -1,19 +1,19 @@
-# Engram: Remember the Whole Project, Pay for a Fraction of It
+# ChloeCtx: Remember the Whole Project, Pay for a Fraction of It
 
 October 13, 2026
 
-**Start every day with a fresh session and lose nothing.** In a week-long coding project with about 20 rules said once in chat, Claude Code with Engram solved **86%** of follow-up tasks from a brand-new session, against **71%** without it, at the same **$0.008 per task**.
+**Start every day with a fresh session and lose nothing.** In a week-long coding project with about 20 rules said once in chat, Claude Code with ChloeCtx solved **86%** of follow-up tasks from a brand-new session, against **71%** without it, at the same **$0.008 per task**.
 
-- **Quality:** Engram lifts the solve rate by 15 points in fresh sessions (71% → 86%) and by 12 points in long sessions that compact (81% → 93%).
-- **Cost:** keeping the whole week in context reaches 93%, but at **$0.49 per task, about 60× the price** of a fresh session with Engram.
-- **Speed:** with Engram the agent needed **28% fewer steps** per task (8.8 → 6.3) and read **23% fewer tokens**, because it stopped searching the repository for decisions that were never written into it.
-- **Engine:** Engram stores memory in ChloeDB, our single-file search database. It ran keyword search **99× faster than SQLite** and **2.0× faster than Tantivy** on 523,000 documents, ran vector search in 0.1 ms, and walked a citation graph up to 9× faster than SQLite.
+- **Quality:** ChloeCtx lifts the solve rate by 15 points in fresh sessions (71% → 86%) and by 12 points in long sessions that compact (81% → 93%).
+- **Cost:** keeping the whole week in context reaches 93%, but at **$0.49 per task, about 60× the price** of a fresh session with ChloeCtx.
+- **Speed:** with ChloeCtx the agent needed **28% fewer steps** per task (8.8 → 6.3) and read **23% fewer tokens**, because it stopped searching the repository for decisions that were never written into it.
+- **Engine:** ChloeCtx stores memory in ChloeDB, our single-file search database. It ran keyword search **99× faster than SQLite** and **2.0× faster than Tantivy** on 523,000 documents, ran vector search in 0.1 ms, and walked a citation graph up to 9× faster than SQLite.
 
-![Engram matches full-context quality at a fraction of the cost](showcase/quality-vs-cost.png)
+![ChloeCtx matches full-context quality at a fraction of the cost](showcase/quality-vs-cost.png)
 
-<sub>Kestrel benchmark: 210 graded runs, 42 per setup (engram/results/long/kestrel)</sub>
+<sub>Kestrel benchmark: 210 graded runs, 42 per setup (chloectx/results/long/kestrel)</sub>
 
-*Compact + Engram matched full context on quality (39 of 42 runs each) at 43% of its cost per task.*
+*Compact + ChloeCtx matched full context on quality (39 of 42 runs each) at 43% of its cost per task.*
 
 ## The problem: your agent forgets what you told it
 
@@ -27,77 +27,77 @@ We had Claude Code build a booking library for a three-clinic physiotherapy prac
 
 Then we asked for **14 follow-up tasks**, each run 3 times in each of 5 setups, and graded every result with code, not opinion:
 
-| Setup | How the week was kept | Engram |
+| Setup | How the week was kept | ChloeCtx |
 | --- | --- | --- |
 | Fresh | A new session each day and for each task | No |
-| Fresh + Engram | A new session each day and for each task | Yes |
+| Fresh + ChloeCtx | A new session each day and for each task | Yes |
 | Compact | One long session, compacted at the end of each day | No |
-| Compact + Engram | One long session, compacted at the end of each day | Yes |
+| Compact + ChloeCtx | One long session, compacted at the end of each day | Yes |
 | Full context | One long session, never compacted | No |
 
 Most tasks need several of those facts at once, so forgetting any one of them fails the task.
 
-## Quality: Engram recovers what sessions and summaries drop
+## Quality: ChloeCtx recovers what sessions and summaries drop
 
-Engram raised the solve rate in both everyday workflows: **71% → 86%** with a fresh session each day, and **81% → 93%** with a long session that compacts. Compact + Engram tied keeping the entire week in context (93% each), with a slightly higher average grade (0.99 vs 0.97).
+ChloeCtx raised the solve rate in both everyday workflows: **71% → 86%** with a fresh session each day, and **81% → 93%** with a long session that compacts. Compact + ChloeCtx tied keeping the entire week in context (93% each), with a slightly higher average grade (0.99 vs 0.97).
 
 The gains come from the tasks that hinge on something said once in chat (runs solved out of 3):
 
-| Task | What it needed | Fresh | Fresh + Engram | Compact | Compact + Engram | Full context |
+| Task | What it needed | Fresh | Fresh + ChloeCtx | Compact | Compact + ChloeCtx | Full context |
 | --- | --- | --- | --- | --- | --- | --- |
 | Advise on `match` statements | Reception PCs run Python 3.9 | 0 | 3 | 0 | 3 | 3 |
 | Price an appointment | April price rise, 20% card-holder discount | 0 | 3 | 3 | 3 | 3 |
 | Find free slots | Opening hours, lengths, 15-min notes buffer | 0 | 1 | 3 | 3 | 3 |
 | Advise on double-booking | It was tried and the regulator objected | 3 | 3 | 1 | 3 | 3 |
 
-In the Python case, the agent without Engram advised against the upgrade but never gave the real reason, that reception PCs run Python 3.9, in 6 tries. With Engram it gave that reason every time. After compaction, asked whether to double-book 07:30, the agent without Engram remembered the board's complaint 1 time in 3; with Engram, 3 times in 3.
+In the Python case, the agent without ChloeCtx advised against the upgrade but never gave the real reason, that reception PCs run Python 3.9, in 6 tries. With ChloeCtx it gave that reason every time. After compaction, asked whether to double-book 07:30, the agent without ChloeCtx remembered the board's complaint 1 time in 3; with ChloeCtx, 3 times in 3.
 
 ## Cost and speed: memory is cheaper than context
 
-A fresh session with Engram is the **cheapest way to a correct answer: $0.009 per solved task**, against $0.530 when the whole week stays in context. Engram adds nothing measurable per task, and writing down the week's knowledge cost about **$0.09, once**.
+A fresh session with ChloeCtx is the **cheapest way to a correct answer: $0.009 per solved task**, against $0.530 when the whole week stays in context. ChloeCtx adds nothing measurable per task, and writing down the week's knowledge cost about **$0.09, once**.
 
 | Setup | Solved | $ per task | $ per solved task | Whole week, history + 42 tasks | Steps per task | Input tokens per task |
 | --- | --- | --- | --- | --- | --- | --- |
 | Fresh | 71% | $0.008 | $0.012 | $0.77 | 8.8 | 288k |
-| **Fresh + Engram** | **86%** | **$0.008** | **$0.009** | **$0.88** | **6.3** | **221k** |
+| **Fresh + ChloeCtx** | **86%** | **$0.008** | **$0.009** | **$0.88** | **6.3** | **221k** |
 | Compact | 81% | $0.176 | $0.217 | $10.43 | 6.4 | 248k |
-| **Compact + Engram** | **93%** | $0.212 | $0.228 | $12.66 | 6.2 | 278k |
+| **Compact + ChloeCtx** | **93%** | $0.212 | $0.228 | $12.66 | 6.2 | 278k |
 | Full context | 93% | $0.492 | $0.530 | $25.11 | 3.5 | 517k |
 
-The week's totals include Engram's one-time cost of writing down what was said ($0.09 per setup). Compact + Engram reached the same quality as full context for half the week's bill.
+The week's totals include ChloeCtx's one-time cost of writing down what was said ($0.09 per setup). Compact + ChloeCtx reached the same quality as full context for half the week's bill.
 
-On speed, the setups averaged 24 to 27 seconds per task (Compact averaged 42 s because of one 13-minute run). Engram's gain shows up as work avoided: 28% fewer steps than a fresh session without it, because the agent stops hunting through files for decisions that were only ever spoken.
+On speed, the setups averaged 24 to 27 seconds per task (Compact averaged 42 s because of one 13-minute run). ChloeCtx's gain shows up as work avoided: 28% fewer steps than a fresh session without it, because the agent stops hunting through files for decisions that were only ever spoken.
 
 ## How it works
 
-Engram is automatic long-term context for Claude Code, stored in **ChloeDB**, an embedded single-file search database. Nothing depends on the model remembering to save.
+ChloeCtx is automatic long-term context for Claude Code, stored in **ChloeDB**, an embedded single-file search database. Nothing depends on the model remembering to save.
 
 - **Records everything:** hooks store every prompt, tool call, answer and compaction summary in one ChloeDB file per project.
 - **Writes down what matters:** after each turn, a small model notes the rules, decisions and planned work the turn stated, and updates or closes earlier ones.
 - **Brings it back when it helps:** each prompt triggers a hybrid search (keywords plus vectors) over older history. The best records are injected only when the evidence is strong. The model can also search memory itself through MCP tools.
 
-## How the agent gets faster with Engram and ChloeDB
+## How the agent gets faster with ChloeCtx and ChloeDB
 
-An agent without memory spends its time rediscovering things. It greps the repository for a rule that was only ever said in chat, re-reads files to rebuild context, or carries the whole history in every request. Engram replaces all of that with one lookup that takes milliseconds.
+An agent without memory spends its time rediscovering things. It greps the repository for a rule that was only ever said in chat, re-reads files to rebuild context, or carries the whole history in every request. ChloeCtx replaces all of that with one lookup that takes milliseconds.
 
-![Engram recall loop](showcase/recall-loop.png)
+![ChloeCtx recall loop](showcase/recall-loop.png)
 
-<sub>Engram's recall loop, from engram/src (hooks, recall, distill) and the kestrel runs' recall timings</sub>
+<sub>ChloeCtx's recall loop, from chloectx/src (hooks, recall, distill) and the kestrel runs' recall timings</sub>
 
-The model works with Engram in two ways:
+The model works with ChloeCtx in two ways:
 
-- **Automatically, before it reads the prompt.** A hook runs one recall query against the project's ChloeDB file and puts the strongest matches into the prompt. The model never has to know what to search for. In the kestrel runs this was nearly all of Engram's work: the agent called a memory tool in only 4 of 84 Engram runs.
+- **Automatically, before it reads the prompt.** A hook runs one recall query against the project's ChloeDB file and puts the strongest matches into the prompt. The model never has to know what to search for. In the kestrel runs this was nearly all of ChloeCtx's work: the agent called a memory tool in only 4 of 84 ChloeCtx runs.
 - **On demand, through tools.** When the model wants more, it can call `memory_search` (hybrid search), `memory_timeline` (what happened around a record), `memory_sql` (read-only SQL over the whole memory) and `memory_remember` (save a rule for later sessions).
 
 Here is a real run from the benchmark. In a brand-new session the owner asked: *"For the next importer I'd like to use `match` statements. Any objection?"* Recall found a note from day 3 of the history and put it in the prompt. The agent answered with no searching and no tool calls:
 
 > *"Yes, I'd object: `match` needs Python 3.10, and the reception PCs are stuck on 3.9 because of the practice-management software."*
 
-That is where the savings in the benchmark come from. Compared with a fresh session without Engram, the agent took **28% fewer steps** and read **23% fewer tokens** per task, because the answer arrived with the question. Compared with keeping the whole history in context, it read **less than half the tokens** per task (221k against 517k) for the same or better quality.
+That is where the savings in the benchmark come from. Compared with a fresh session without ChloeCtx, the agent took **28% fewer steps** and read **23% fewer tokens** per task, because the answer arrived with the question. Compared with keeping the whole history in context, it read **less than half the tokens** per task (221k against 517k) for the same or better quality.
 
 ### One question, four indexes
 
-Every record Engram stores (a prompt, a tool call, an answer, a distilled rule) is one row in ChloeDB, indexed four ways at once. Each index answers a different kind of question, and one query can use all four.
+Every record ChloeCtx stores (a prompt, a tool call, an answer, a distilled rule) is one row in ChloeDB, indexed four ways at once. Each index answers a different kind of question, and one query can use all four.
 
 ![One question, four ways into memory](showcase/four-indexes.png)
 
@@ -123,7 +123,7 @@ ORDER BY ts DESC LIMIT 5;
 SELECT kind, COUNT(*) FROM memory GROUP BY kind ORDER BY 2 DESC;
 ```
 
-**Vectors: the same idea in different words.** "Can we squeeze an extra patient in?" shares no words with "the board complained about overbooking", but the two mean nearly the same thing. Engram embeds each prompt and finds the nearest records in ChloeDB's HNSW index.
+**Vectors: the same idea in different words.** "Can we squeeze an extra patient in?" shares no words with "the board complained about overbooking", but the two mean nearly the same thing. ChloeCtx embeds each prompt and finds the nearest records in ChloeDB's HNSW index.
 
 ```sql
 -- the records closest in meaning to the prompt
@@ -132,7 +132,7 @@ WHERE kind IN ('decision', 'fact', 'preference')
 ORDER BY similarity(emb, :prompt) DESC LIMIT 5;
 ```
 
-Engram's automatic recall runs a keyword search and a vector search over the same filtered rows and fuses the two, so both exact terms and meaning count.
+ChloeCtx's automatic recall runs a keyword search and a vector search over the same filtered rows and fuses the two, so both exact terms and meaning count.
 
 **Graph: everything connected to a topic.** Each distilled note links to the turn it came from, the topics and files it is about, and the older note it replaces. When the cancellation window changed from 24 to 48 hours, the new rule superseded the old one, and recall leaves superseded notes out.
 
@@ -147,13 +147,13 @@ WHERE REACHABLE(links, (SELECT id FROM memory ORDER BY similarity(emb, :prompt) 
 ORDER BY similarity(emb, :prompt) DESC LIMIT 20;
 ```
 
-The model can run any of these itself through `memory_sql`. Graph-expanded recall is opt-in (`ENGRAM_GRAPH=1`) and was off in the kestrel runs.
+The model can run any of these itself through `memory_sql`. Graph-expanded recall is opt-in (`CHLOECTX_GRAPH=1`) and was off in the kestrel runs.
 
 Because all four indexes live in one ChloeDB file, the planner combines them in a single statement. No search server runs alongside the agent, and no vector database has to be kept in sync with a text index.
 
 ## Under the hood: ChloeDB, one file that beats specialist engines
 
-Engram's speed comes from **ChloeDB**, a search database we built for this job. Like SQLite, it is one file with ACID transactions and SQL. Unlike SQLite, every table is indexed three ways at once: full-text, structured columns and vectors. One SQL statement can mix all three. In the kestrel benchmark, run on the cloud VM, Engram's recall step took a median of **1.6–1.7 ms** (2.7 ms at p95), so remembering adds no wait you can notice.
+ChloeCtx's speed comes from **ChloeDB**, a search database we built for this job. Like SQLite, it is one file with ACID transactions and SQL. Unlike SQLite, every table is indexed three ways at once: full-text, structured columns and vectors. One SQL statement can mix all three. In the kestrel benchmark, run on the cloud VM, ChloeCtx's recall step took a median of **1.6–1.7 ms** (2.7 ms at p95), so remembering adds no wait you can notice.
 
 ![ChloeDB architecture](showcase/strata-architecture.png)
 
@@ -196,13 +196,13 @@ ChloeDB stores links compactly inside the file, at 27 bytes per citation on arXi
 - **Links that never break:** links point at keys, not storage positions, so merges, updates and deletes never rewrite them. A link to a deleted row is skipped, like a foreign key without a constraint.
 - **Part of every query:** a traversal can start from any subquery, such as a vector search, a keyword search or a filter. Its result then combines with BM25, filters and vectors in the same plan.
 
-**In Engram,** every note links to the turn it came from, the files and topics it is about, and any older note it replaces. The agent can ask its memory for everything about one topic as a single graph query through Engram's SQL tool. Recall that expands along these links is an option (`ENGRAM_GRAPH=1`); the kestrel results above use the default recall, without it.
+**In ChloeCtx,** every note links to the turn it came from, the files and topics it is about, and any older note it replaces. The agent can ask its memory for everything about one topic as a single graph query through ChloeCtx's SQL tool. Recall that expands along these links is an option (`CHLOECTX_GRAPH=1`); the kestrel results above use the default recall, without it.
 
 ## Fine print
 
-- **Regraded runs:** in 7 of 210 runs the grader first crashed instead of judging the code. After a grader fix, every one was regraded from its saved code. The 3 Compact export runs passed (they had renamed a field the grader expected), which moved Compact from 74% to 81%. The other 4 still fail on their merits: two Fresh pricing runs declined to write the function, one raised an error for card holders, and one Fresh + Engram reminder run crashed in its own code.
-- **Sample size:** 42 runs per setup gives wide error bars. Fresh is 71% (95% CI 56–83%) and Fresh + Engram is 86% (72–93%); Compact is 81% (67–90%) and Compact + Engram and Full context are both 93% (81–98%). The direction is consistent across tasks, but these are not yet statistically separated.
-- **Fair baseline:** every setup kept Claude Code's own built-in memory notes from the week. Memory, the repository and Engram's store were restored before every run, so no run could learn from another. No user plugins or extra tools were loaded.
+- **Regraded runs:** in 7 of 210 runs the grader first crashed instead of judging the code. After a grader fix, every one was regraded from its saved code. The 3 Compact export runs passed (they had renamed a field the grader expected), which moved Compact from 74% to 81%. The other 4 still fail on their merits: two Fresh pricing runs declined to write the function, one raised an error for card holders, and one Fresh + ChloeCtx reminder run crashed in its own code.
+- **Sample size:** 42 runs per setup gives wide error bars. Fresh is 71% (95% CI 56–83%) and Fresh + ChloeCtx is 86% (72–93%); Compact is 81% (67–90%) and Compact + ChloeCtx and Full context are both 93% (81–98%). The direction is consistent across tasks, but these are not yet statistically separated.
+- **Fair baseline:** every setup kept Claude Code's own built-in memory notes from the week. Memory, the repository and ChloeCtx's store were restored before every run, so no run could learn from another. No user plugins or extra tools were loaded.
 - **One model:** all runs used the same small, fast Claude model. Costs are list prices as reported by Claude Code.
 - **Hard by design:** one task, the booking-form check, was solved by no setup.
-- **Reproduce it:** the scenario, graders and harness are in `engram/eval/ab/scenarios/kestrel` and `engram/scripts/long_session_ab.py` in the [codex-test-2](https://github.com/rkonow/codex-test-2) repository; all 210 graded runs, with each run's code changes, are in `engram/results/long/kestrel` there. ChloeDB's evaluation is in `chloedb/report` and `chloedb/results` in the same repository.
+- **Reproduce it:** the scenario, graders and harness are in `chloectx/eval/ab/scenarios/kestrel` and `chloectx/scripts/long_session_ab.py` in the [codex-test-2](https://github.com/rkonow/codex-test-2) repository; all 210 graded runs, with each run's code changes, are in `chloectx/results/long/kestrel` there. ChloeDB's evaluation is in `chloedb/report` and `chloedb/results` in the same repository.

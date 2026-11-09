@@ -207,7 +207,7 @@ passages, 4 threads then reach 0.871 at ef 64 and 0.983 at ef 256 (1
 thread in docID order: 0.859 and 0.975).
 
 A shuffled order also helps a single thread (0.878 at ef 64), but
-single-threaded builds were left in docID order. engram builds with one
+single-threaded builds were left in docID order. ChloeCtx builds with one
 thread, and its results stay as measured. The BEIR runs in
 `notes/vector.md` were built with 2 and 4 threads on collections whose
 order carries little locality, and reached 0.98-0.99 recall at ef 64. They

@@ -331,7 +331,7 @@ SELECT id FROM papers ORDER BY rrf(bm25(body, :t), similarity(emb, :q),
     <ul>
       <li>1,000 papers of OGB's test split (809 published in 2019, 191 in 2020, each citing at least five papers) are held out of the table.</li>
       <li>Each held-out paper's title and abstract is the query. Its references in the table (15.3 on average) are the relevant rows.</li>
-      <li>Vectors come from a static embedder (Model2Vec potion-retrieval-32M, 512 dimensions), the same one Engram uses.</li>
+      <li>Vectors come from a static embedder (Model2Vec potion-retrieval-32M, 512 dimensions), the same one ChloeCtx uses.</li>
     </ul>
     <p>Each method returns 20 papers. Methods that start from vector seeds have one parameter, the number of seeds \(S\), swept from 1 to 50. Papers with even ids choose \(S\) by nDCG@20 (516 queries) and odd ids report it (484 queries), so no reported number was tuned on its own queries. Comparisons are paired over the same queries, with a 95% bootstrap interval and a two-sided sign-flip test:</p>
     \[ \mathrm{recall@}k = \frac{|R_k \cap T|}{|T|}, \qquad \mathrm{nDCG@}k = \frac{\sum_{i \le k} \mathbb{1}[r_i \in T] / \log_2(i + 1)}{\sum_{i \le \min(k, |T|)} 1 / \log_2(i + 1)}. \]
@@ -364,7 +364,7 @@ SELECT id FROM papers ORDER BY rrf(bm25(body, :t), similarity(emb, :q),
     <li><b>Cross-segment hops cost lookups.</b> Two to five times the in-memory CSR on these graphs. A snapshot-wide resolved CSR, rebuilt when the segment set changes, would close the gap for read-mostly tables. Merging into fewer segments narrows it today.</li>
     <li><b>Patterns.</b> There is no multi-hop pattern matching with a predicate per step (<code>(a:error)-[fixes]-&gt;(b)-[touches]-&gt;(f)</code>). <code>through</code> and labels cover one constraint per traversal; SQL/PGQ's <code>MATCH</code> would be the standard syntax for more.</li>
     <li><b>Weighted shortest paths.</b> Paths are unweighted; weights are used by PageRank only.</li>
-    <li><b>Engram.</b> Its records have natural edges that the store does not keep yet: a distilled note to the turn it came from, a superseded decision to its replacement, an error to the edit that fixed it. The arXiv result suggests the pattern to try: recall's best hits as seeds, then the notes and records linked to them. Engram's earlier study found that widening a hit to its neighbouring records gained little, so this needs its own measurement before it changes Engram's defaults.</li>
+    <li><b>ChloeCtx.</b> Its records have natural edges that the store does not keep yet: a distilled note to the turn it came from, a superseded decision to its replacement, an error to the edit that fixed it. The arXiv result suggests the pattern to try: recall's best hits as seeds, then the notes and records linked to them. ChloeCtx's earlier study found that widening a hit to its neighbouring records gained little, so this needs its own measurement before it changes ChloeCtx's defaults.</li>
   </ul>
 </section>
 
@@ -376,7 +376,7 @@ SELECT id FROM papers ORDER BY rrf(bm25(body, :t), similarity(emb, :q),
 curl -O https://snap.stanford.edu/ogb/data/nodeproppred/arxiv.zip          # into /home/user/data/graph/arxiv, unzipped into raw/
 curl -O https://snap.stanford.edu/ogb/data/misc/ogbn_arxiv/titleabs.tsv.gz
 python3 -I scripts/prepare_arxiv.py /home/user/data/graph/arxiv
-engram-bench embed --input /home/user/data/graph/arxiv/arxiv.jsonl --out /home/user/data/graph/arxiv/arxiv.f32
+chloectx-bench embed --input /home/user/data/graph/arxiv/arxiv.jsonl --out /home/user/data/graph/arxiv/arxiv.f32
 cargo build --release --features baselines --bin chloedb-graph-bench
 target/release/chloedb-graph-bench load                      # holds out 1,000 papers of OGB's test split
 target/release/chloedb-graph-bench latency --sqlite /home/user/data/graph/arxiv/edges.sqlite

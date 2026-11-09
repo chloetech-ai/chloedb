@@ -237,7 +237,7 @@ pub fn models_dir() -> PathBuf {
 /// Models [`open`] knows how to fetch: name, Hugging Face repository, and
 /// what it is.
 pub const KNOWN_MODELS: &[(&str, &str, &str)] = &[
-    ("potion-retrieval-32M", "minishlab/potion-retrieval-32M", "Model2Vec, 512 dimensions, fast (the model engram uses)"),
+    ("potion-retrieval-32M", "minishlab/potion-retrieval-32M", "Model2Vec, 512 dimensions, fast (the model ChloeCtx uses)"),
     ("potion-base-8M", "minishlab/potion-base-8M", "Model2Vec, 256 dimensions, smallest"),
     ("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "BERT, 384 dimensions (feature bert)"),
     ("snowflake-arctic-embed-m-v1.5", "Snowflake/snowflake-arctic-embed-m-v1.5", "BERT, 768 dimensions (feature bert)"),

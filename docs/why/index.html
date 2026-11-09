@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Engram, long-term memory for Claude Code: where it wins, where it loses, and what it saves on coding sessions.">
-<title>Engram for Claude Code</title>
+<meta name="description" content="ChloeCtx, long-term memory for Claude Code: where it wins, where it loses, and what it saves on coding sessions.">
+<title>ChloeCtx for Claude Code</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -218,7 +218,7 @@ footer p { max-width: 90ch; }
 
 <div class="wrap">
   <header class="top">
-    <a class="mark" href="#top" aria-label="Engram"><i aria-hidden="true"><b></b><b></b><b></b><b></b></i>Engram</a>
+    <a class="mark" href="#top" aria-label="ChloeCtx"><i aria-hidden="true"><b></b><b></b><b></b><b></b></i>ChloeCtx</a>
     <nav aria-label="Sections">
       <a href="#wins">Where it wins</a>
       <a href="#same-reader">Head to head</a>
@@ -234,7 +234,7 @@ footer p { max-width: 90ch; }
   <div class="hero" id="top">
     <p class="eyebrow">Long-term memory for Claude Code</p>
     <h1>Keep every session. Re-read only what matters.</h1>
-    <p class="lede">Engram records every session of a project on your machine, without a model call, and at each prompt hands the agent the few thousand tokens that answer it. On 208 coding follow-ups it solved as many tasks as keeping the whole history in context, for about a quarter of the cost per run.</p>
+    <p class="lede">ChloeCtx records every session of a project on your machine, without a model call, and at each prompt hands the agent the few thousand tokens that answer it. On 208 coding follow-ups it solved as many tasks as keeping the whole history in context, for about a quarter of the cost per run.</p>
 
     <figure class="ctx" style="margin:0" aria-label="Context re-read on every step, to scale">
       <div class="ctx-row">
@@ -242,20 +242,20 @@ footer p { max-width: 90ch; }
         <div class="ctx-track"></div>
       </div>
       <div class="ctx-row">
-        <div class="ctx-label"><span><strong>Engram's injection</strong></span><span>3,100 tokens</span></div>
+        <div class="ctx-label"><span><strong>ChloeCtx's injection</strong></span><span>3,100 tokens</span></div>
         <div class="ctx-track eng"><b></b></div>
       </div>
-      <small>Drawn to scale. The history is the mean of the four test projects (55,000 to 121,000 tokens); the injection is Engram's mean per run (12,400 characters). Every step of a session re-reads what is in context.</small>
+      <small>Drawn to scale. The history is the mean of the four test projects (55,000 to 121,000 tokens); the injection is ChloeCtx's mean per run (12,400 characters). Every step of a session re-reads what is in context.</small>
     </figure>
 
     <div class="stats">
       <div class="stat"><strong>196 of 208</strong><span>coding follow-ups solved. Whole history in context: 194. Next best memory, mem0: 178.</span></div>
-      <div class="stat"><strong>$0.009</strong><span>a run, Engram's own model calls included. Whole history: $0.032.</span></div>
+      <div class="stat"><strong>$0.009</strong><span>a run, ChloeCtx's own model calls included. Whole history: $0.032.</span></div>
       <div class="stat"><strong>$0</strong><span>in model calls to store a history. Hindsight: about $1. mem0: $0.13.</span></div>
     </div>
     <div class="cta">
       <a class="btn primary" href="#install">Install in one command</a>
-      <a class="btn" href="https://github.com/chloetech-ai/strata/blob/main/docs/engram/results.md">Every result and its method</a>
+      <a class="btn" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloectx/results.md">Every result and its method</a>
     </div>
   </div>
 
@@ -268,14 +268,14 @@ footer p { max-width: 90ch; }
 
     <figure class="chart" style="margin:0" aria-label="Follow-up runs solved out of 208, per memory system">
       <div class="chart-head"><span>Memory system</span><span>Runs solved, out of 208</span><span>Solved</span><span>$ / run</span></div>
-      <div class="bar-row us"><span>Engram</span><div class="track"><b style="width:94.2%"></b></div><span class="v">196 · 94%</span><span class="v cost">0.009</span></div>
+      <div class="bar-row us"><span>ChloeCtx</span><div class="track"><b style="width:94.2%"></b></div><span class="v">196 · 94%</span><span class="v cost">0.009</span></div>
       <div class="bar-row ref"><span>Whole history in context</span><div class="track"><b style="width:93.3%"></b></div><span class="v">194 · 93%</span><span class="v cost">0.032</span></div>
       <div class="bar-row"><span>mem0</span><div class="track"><b style="width:85.6%"></b></div><span class="v">178 · 86%</span><span class="v cost">0.006</span></div>
       <div class="bar-row"><span>Past transcripts + grep</span><div class="track"><b style="width:77.9%"></b></div><span class="v">162 · 78%</span><span class="v cost">0.006</span></div>
       <div class="bar-row"><span>Claude Code auto memory</span><div class="track"><b style="width:74.0%"></b></div><span class="v">154 · 74%</span><span class="v cost">0.006</span></div>
       <div class="bar-row"><span>claude-mem</span><div class="track"><b style="width:60.1%"></b></div><span class="v">125 · 60%</span><span class="v cost">0.015</span></div>
       <div class="bar-row"><span>No memory</span><div class="track"><b style="width:44.2%"></b></div><span class="v">92 · 44%</span><span class="v cost">0.005</span></div>
-      <p class="foot">The agent and every memory system's own model calls use Haiku; cost is per run, agent plus memory. Engram is the shipped build. The previous release solved 195 and two variants of the new build 201. mem0 is behind even the previous release (p = 0.009); the gap to the whole history is noise.</p>
+      <p class="foot">The agent and every memory system's own model calls use Haiku; cost is per run, agent plus memory. ChloeCtx is the shipped build. The previous release solved 195 and two variants of the new build 201. mem0 is behind even the previous release (p = 0.009); the gap to the whole history is noise.</p>
     </figure>
 
     <div class="cards">
@@ -287,12 +287,12 @@ footer p { max-width: 90ch; }
       <article class="card">
         <span class="big">$0 to store</span>
         <h3>It pays per question, not per history</h3>
-        <p>Engram stores raw records without a model call. Hindsight spent about $1.00 of model calls per LongMemEval history and mem0 $0.13. Engram's query engine spends $0.0012 a question, in the background, and in Claude Code its distiller about $0.001 a turn (counted in the costs above).</p>
+        <p>ChloeCtx stores raw records without a model call. Hindsight spent about $1.00 of model calls per LongMemEval history and mem0 $0.13. ChloeCtx's query engine spends $0.0012 a question, in the background, and in Claude Code its distiller about $0.001 a turn (counted in the costs above).</p>
       </article>
       <article class="card">
         <span class="big">79.0% · 43.1</span>
         <h3>Level or ahead at the same context size</h3>
-        <p>Same reader, judge and questions, with 1,600 to 4,900 characters of context each: on LongMemEval-S and BEAM 100K, mem0 scores 79.0% and 41.9, Hindsight 78.0% and 39.8. Engram also declines what it cannot answer more often: BEAM abstention 73.8 against Hindsight's 62.5.</p>
+        <p>Same reader, judge and questions, with 1,600 to 4,900 characters of context each: on LongMemEval-S and BEAM 100K, mem0 scores 79.0% and 41.9, Hindsight 78.0% and 39.8. ChloeCtx also declines what it cannot answer more often: BEAM abstention 73.8 against Hindsight's 62.5.</p>
       </article>
       <article class="card">
         <span class="big">81.8%</span>
@@ -324,22 +324,22 @@ footer p { max-width: 90ch; }
           <tr><th>System</th><th class="n">LongMemEval-S</th><th class="n">BEAM 100K</th><th class="n">Text to the reader, chars</th><th class="n">Model calls to store a history</th></tr>
         </thead>
         <tbody>
-          <tr class="us"><td>Engram, query engine</td><td class="n">79.0%</td><td class="n">43.1</td><td class="n">4,500 / 1,600</td><td class="n">$0</td></tr>
+          <tr class="us"><td>ChloeCtx, query engine</td><td class="n">79.0%</td><td class="n">43.1</td><td class="n">4,500 / 1,600</td><td class="n">$0</td></tr>
           <tr><td>mem0 2.2.1</td><td class="n">79.0%</td><td class="n">41.9</td><td class="n">4,400 / 4,900</td><td class="n">$0.13 / $0.22</td></tr>
-          <tr><td>Hindsight 1.0.0 at Engram's context size</td><td class="n">78.0%</td><td class="n">39.8</td><td class="n">4,600 / 4,300</td><td class="n">about $1.00 / $1.20</td></tr>
+          <tr><td>Hindsight 1.0.0 at ChloeCtx's context size</td><td class="n">78.0%</td><td class="n">39.8</td><td class="n">4,600 / 4,300</td><td class="n">about $1.00 / $1.20</td></tr>
           <tr><td>Hindsight 1.0.0 at its benchmark budgets<small>38 to 75 times more text per question</small></td><td class="n">88.0%</td><td class="n">46.7</td><td class="n">170,000 / 121,000</td><td class="n">about $1.00 / $1.20</td></tr>
           <tr><td>Whole history in context<small>$0.17 a question to read</small></td><td class="n">87.0%</td><td class="n">–</td><td class="n">498,000 / –</td><td class="n">$0</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">Two numbers per cell are LongMemEval-S / BEAM 100K. Engram's plain search, without the query engine, scores 69.0% and 36.6. Mem0's optional keyword search and entity extras change nothing (78.0% and 41.4). Measured 2026-10-16 in the cloud container (4 CPUs).</p>
+    <p class="note">Two numbers per cell are LongMemEval-S / BEAM 100K. ChloeCtx's plain search, without the query engine, scores 69.0% and 36.6. Mem0's optional keyword search and entity extras change nothing (78.0% and 41.4). Measured 2026-10-16 in the cloud container (4 CPUs).</p>
   </section>
 
   <section id="engine">
     <div class="head">
       <p class="eyebrow">How it searches</p>
       <h2>Every kind of search, and a planner that picks among them</h2>
-      <p class="lede">Engram runs on <a href="https://github.com/chloetech-ai/strata/tree/main/docs">ChloeDB</a>, the embedded search database it is built on. One file per project indexes every record as full text, structured fields, vectors and a graph at once, and one SQL statement can combine them. For each request, Engram decides which searches are worth running and how to run each one.</p>
+      <p class="lede">ChloeCtx runs on <a href="https://github.com/chloetech-ai/strata/tree/main/docs">ChloeDB</a>, the embedded search database it is built on. One file per project indexes every record as full text, structured fields, vectors and a graph at once, and one SQL statement can combine them. For each request, ChloeCtx decides which searches are worth running and how to run each one.</p>
     </div>
     <div class="kinds">
       <div class="kind"><span class="k">Full text</span><p>BM25 ranking with Block-Max WAND, plus boolean and phrase queries.</p><small>Finds the exact error message or function name.</small></div>
@@ -372,13 +372,13 @@ footer p { max-width: 90ch; }
     <div class="head">
       <p class="eyebrow">Where it loses</p>
       <h2>What it does not do well yet</h2>
-      <p class="lede">These are measured too, in the same runs. Most come down to one thing: Engram picks a few records per question, so anything that needs many messages at once, or a second search, suffers.</p>
+      <p class="lede">These are measured too, in the same runs. Most come down to one thing: ChloeCtx picks a few records per question, so anything that needs many messages at once, or a second search, suffers.</p>
     </div>
     <div class="losses">
       <div class="loss"><span class="tag">−9.0</span><div><h3>Hindsight at full budget scores higher</h3><p>88.0% against 79.0% on LongMemEval-S (p = 0.02) and 46.7 against 43.1 on BEAM (p = 0.09). It hands the reader 38 to 75 times more text, near what the whole history scores, after about $1 of model calls per history.</p></div></div>
-      <div class="loss"><span class="tag">17%</span><div><h3>Questions that chain two facts</h3><p>When one answer says what to look up next ("the citizenship of X's spouse"), Engram answers 17% and the whole history in context 71%. A second round of searches is the missing step.</p></div></div>
-      <div class="loss"><span class="tag">17.0</span><div><h3>Answers spread over many messages</h3><p>BEAM summaries: Engram 17.0, Hindsight 37.5, the whole history 40 on a sample. Contradiction resolution stays at 14 to 26 at every history length.</p></div></div>
-      <div class="loss"><span class="tag">40 vs 56</span><div><h3>Facts that were overwritten</h3><p>mem0 rewrites facts when it stores them and does better on BEAM's knowledge updates: 56 against 40. Engram stores the raw record and has to find the latest one.</p></div></div>
+      <div class="loss"><span class="tag">17%</span><div><h3>Questions that chain two facts</h3><p>When one answer says what to look up next ("the citizenship of X's spouse"), ChloeCtx answers 17% and the whole history in context 71%. A second round of searches is the missing step.</p></div></div>
+      <div class="loss"><span class="tag">17.0</span><div><h3>Answers spread over many messages</h3><p>BEAM summaries: ChloeCtx 17.0, Hindsight 37.5, the whole history 40 on a sample. Contradiction resolution stays at 14 to 26 at every history length.</p></div></div>
+      <div class="loss"><span class="tag">40 vs 56</span><div><h3>Facts that were overwritten</h3><p>mem0 rewrites facts when it stores them and does better on BEAM's knowledge updates: 56 against 40. ChloeCtx stores the raw record and has to find the latest one.</p></div></div>
       <div class="loss"><span class="tag">43/400</span><div><h3>The planner can skip memory</h3><p>On FactConsolidation it judged 43 of 400 questions to be general knowledge ("What is the capital of Japan?") and searched nothing, in a benchmark whose facts are deliberately counterfactual: 85.3% against 95.5% for plain search. In Claude Code the per-prompt recall still runs beside it.</p></div></div>
       <div class="loss"><span class="tag">59%</span><div><h3>The injection gate is imprecise</h3><p>59% of its injections hold evidence (42% when always injecting). In a multi-day test it skipped the prompts where a compaction had dropped a fact, so it brought nothing back: 27 of 30 against 26 with compaction alone.</p></div></div>
       <div class="loss"><span class="tag">91–95%</span><div><h3>Vendors report higher scores</h3><p>On LongMemEval-S, OMEGA reports 95.4%, Mastra 94.9%, Hindsight 91.4%; on BEAM 100K, Exabase 76.9 and Hindsight 73.4. These are self-reported, with bigger answer models than Haiku, and we have not reproduced them. In our harness Hindsight scored 88.0% and 46.7.</p></div></div>
@@ -390,7 +390,7 @@ footer p { max-width: 90ch; }
     <div class="head">
       <p class="eyebrow">What it saves</p>
       <h2>Replace a big context with a small one</h2>
-      <p class="lede">Every model call in a coding session re-reads everything in context: a long session kept alive for its history, or docs and old transcripts pasted in. Engram lets that context go and injects about 3,100 tokens per prompt instead. The estimate below counts what the big context costs on every call against what Engram's injections cost, at Anthropic's current list prices.</p>
+      <p class="lede">Every model call in a coding session re-reads everything in context: a long session kept alive for its history, or docs and old transcripts pasted in. ChloeCtx lets that context go and injects about 3,100 tokens per prompt instead. The estimate below counts what the big context costs on every call against what ChloeCtx's injections cost, at Anthropic's current list prices.</p>
     </div>
 
     <div class="calc">
@@ -424,7 +424,7 @@ footer p { max-width: 90ch; }
         <div class="field">
           <label for="p">Prompts per session <output for="p" id="po"></output></label>
           <input type="range" id="p" min="1" max="40" step="1" value="10">
-          <small>Engram injects at each prompt, and each injection stays for the rest of the session.</small>
+          <small>ChloeCtx injects at each prompt, and each injection stays for the rest of the session.</small>
         </div>
         <div class="field">
           <label for="c">Calls that hit the prompt cache <output for="c" id="co"></output></label>
@@ -455,14 +455,14 @@ footer p { max-width: 90ch; }
           <div class="save"><strong id="monthly">–</strong><span id="monthly-note">saved a month</span></div>
           <div class="cmp">
             <div class="cmp-row"><div class="lab"><span>Big context, per session</span><span id="bigTotal">–</span></div><div class="track"><b id="bigBar"></b></div></div>
-            <div class="cmp-row us"><div class="lab"><span><strong>With Engram</strong>, per session</span><span id="engTotal">–</span></div><div class="track"><b id="engBar"></b></div></div>
+            <div class="cmp-row us"><div class="lab"><span><strong>With ChloeCtx</strong>, per session</span><span id="engTotal">–</span></div><div class="track"><b id="engBar"></b></div></div>
           </div>
           <div class="kv">
-            <span class="h">Per session</span><span class="h">Big context</span><span class="h">Engram</span>
+            <span class="h">Per session</span><span class="h">Big context</span><span class="h">ChloeCtx</span>
             <span class="rule"></span>
             <span>Context tokens re-read</span><span class="n" id="tokBig">–</span><span class="n" id="tokEng">–</span>
             <span>Cost of that context</span><span class="n" id="ctxBig">–</span><span class="n" id="ctxEng">–</span>
-            <span>Engram's own model calls</span><span class="n">–</span><span class="n" id="engCalls">–</span>
+            <span>ChloeCtx's own model calls</span><span class="n">–</span><span class="n" id="engCalls">–</span>
             <span>Rest of the session</span><span class="n" id="restBig">–</span><span class="n" id="restEng">–</span>
             <span class="rule"></span>
             <span><strong>Whole session</strong></span><span class="n" id="allBig">–</span><span class="n" id="allEng">–</span>
@@ -472,12 +472,12 @@ footer p { max-width: 90ch; }
 
         <div class="measured">
           <p class="eyebrow">Measured, not estimated</p>
-          <p>In the coding test above (Haiku agent, cloud container), a run with the whole history in context cost $0.016 while the history was in the prompt cache and about $0.07 when it was not. Engram's shipped build cost $0.0087 a run, its own model calls included, and solved 196 runs to the whole history's 194.</p>
+          <p>In the coding test above (Haiku agent, cloud container), a run with the whole history in context cost $0.016 while the history was in the prompt cache and about $0.07 when it was not. ChloeCtx's shipped build cost $0.0087 a run, its own model calls included, and solved 196 runs to the whole history's 194.</p>
           <p>On a Claude subscription the same tokens count against your usage limits instead of a bill.</p>
         </div>
 
         <ul class="assume">
-          <li>Engram's injection: 3,100 tokens a prompt, its mean in the coding test. Its own model calls: $0.0019 a prompt (distiller and query engine on Haiku), measured there.</li>
+          <li>ChloeCtx's injection: 3,100 tokens a prompt, its mean in the coding test. Its own model calls: $0.0019 a prompt (distiller and query engine on Haiku), measured there.</li>
           <li>The percentage saved on the context alone is about the ratio of tokens, whatever the price or the cache rate.</li>
           <li>Quality held on coding follow-ups. On chat questions that need many messages at once, the whole history still answers more (see the losses above).</li>
           <li>Prices: Anthropic's list prices, read 2026-10-17. Cache reads are 0.05× input on Opus 5.5 and Sonnet 5.5 and 0.025× on Fable 5.1.</li>
@@ -490,7 +490,7 @@ footer p { max-width: 90ch; }
     <div class="head">
       <p class="eyebrow">Install</p>
       <h2>One command, and every new Claude Code session remembers</h2>
-      <p class="lede">Engram plugs into Claude Code's own hooks and MCP, so nothing changes in how you work. One script builds it, downloads its 129 MB embedding model, wires it into Claude Code for every session or for one project, and checks the result.</p>
+      <p class="lede">ChloeCtx plugs into Claude Code's own hooks and MCP, so nothing changes in how you work. One script builds it, downloads its 129 MB embedding model, wires it into Claude Code for every session or for one project, and checks the result.</p>
     </div>
     <div class="install">
       <div class="panel">
@@ -499,25 +499,25 @@ footer p { max-width: 90ch; }
 cd chloedb &amp;&amp; ./install.sh
 <span class="c"># or only for one project:</span>
 ./install.sh --project ~/code/app</pre>
-        <p class="note">It needs macOS or Linux (Windows through WSL 2), Rust, a C compiler, curl and the Claude Code CLI logged in. The first build takes a few minutes. Run it again after <code>git pull</code> to upgrade. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/engram/setup.md">The install guide</a> covers remote machines, dev containers and troubleshooting.</p>
+        <p class="note">It needs macOS or Linux (Windows through WSL 2), Rust, a C compiler, curl and the Claude Code CLI logged in. The first build takes a few minutes. Run it again after <code>git pull</code> to upgrade. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloectx/setup.md">The install guide</a> covers remote machines, dev containers and troubleshooting.</p>
       </div>
       <div class="panel">
         <h3>Or ask Claude Code to do it</h3>
-        <p class="ask" id="ask-text">Clone https://github.com/chloetech-ai/strata and set Engram up for my Claude Code by following its AGENTS.md.</p>
+        <p class="ask" id="ask-text">Clone https://github.com/chloetech-ai/strata and set ChloeCtx up for my Claude Code by following its AGENTS.md.</p>
         <button type="button" class="copy" id="copy-ask">Copy the sentence</button>
         <p class="note">Paste it into any session. The agent checks the prerequisites without installing anything unasked, asks whether you want every session or one project, runs the installer and reports anything that failed.</p>
       </div>
     </div>
     <div class="gets">
       <div class="get"><h3>Nothing to remember to save</h3><p>Every prompt, tool call, error and answer is recorded by the hooks. A new session starts out knowing what earlier sessions decided.</p></div>
-      <div class="get"><h3>It stays on your machine</h3><p>One store file per project under <code>~/.local/share/engram/projects/</code>. Its only model calls are Haiku, through your own Claude Code login.</p></div>
-      <div class="get"><h3>Checked, visible, reversible</h3><p><code>engram doctor</code> checks every piece and says how to fix what fails. <code>engram ui</code> shows what was stored. <code>engram uninstall --user</code> removes it and keeps the stores.</p></div>
+      <div class="get"><h3>It stays on your machine</h3><p>One store file per project under <code>~/.local/share/chloectx/projects/</code>. Its only model calls are Haiku, through your own Claude Code login.</p></div>
+      <div class="get"><h3>Checked, visible, reversible</h3><p><code>chloectx doctor</code> checks every piece and says how to fix what fails. <code>chloectx ui</code> shows what was stored. <code>chloectx uninstall --user</code> removes it and keeps the stores.</p></div>
     </div>
   </section>
 
   <footer>
     <p>Measured 2026-10-15 and 2026-10-16 in a cloud container (4 CPUs, 16 GB), except where a number names the M2 MacBook Air. Haiku is the agent, reader and judge throughout. The cost figures in the calculator are estimates; everything else on this page is measured.</p>
-    <p>Sources: <a href="https://github.com/chloetech-ai/strata/blob/main/docs/engram/results.md">results page</a>, <a href="https://github.com/chloetech-ai/strata/blob/main/engram/results/v3/competitors/README.md">Hindsight and mem0 write-up</a>, <a href="https://github.com/chloetech-ai/strata/pull/9">pull request #9</a>, <a href="https://github.com/chloetech-ai/strata">rkonow/strata</a>.</p>
+    <p>Sources: <a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloectx/results.md">results page</a>, <a href="https://github.com/chloetech-ai/strata/blob/main/chloectx/results/v3/competitors/README.md">Hindsight and mem0 write-up</a>, <a href="https://github.com/chloetech-ai/strata/pull/9">pull request #9</a>, <a href="https://github.com/chloetech-ai/strata">rkonow/strata</a>.</p>
   </footer>
 </div>
 
@@ -533,8 +533,8 @@ cd chloedb &amp;&amp; ./install.sh
       { in: 0.50, w: 0.625, hit: 0.05, out: 2.50 } ] },
     haiku45: { name: "Haiku 4.5",  in: 1,    w: 1.25,  hit: 0.10, out: 5 }
   };
-  var ENGRAM_TOKENS = 3100;      // mean injection per prompt, coding test
-  var ENGRAM_CALLS = 0.0019;     // $ per prompt, Engram's own model calls, coding test
+  var CHLOECTX_TOKENS = 3100;      // mean injection per prompt, coding test
+  var CHLOECTX_CALLS = 0.0019;     // $ per prompt, ChloeCtx's own model calls, coding test
 
   function rates(key, prompt) {
     var p = PRICES[key];
@@ -544,7 +544,7 @@ cd chloedb &amp;&amp; ./install.sh
   function perTok(r, hit) { return (hit * r.hit + (1 - hit) * r.w) / 1e6; }
 
   function estimate(v) {
-    var avgE = ENGRAM_TOKENS * (v.p + 1) / 2;
+    var avgE = CHLOECTX_TOKENS * (v.p + 1) / 2;
     var rb = rates(v.m, v.h + v.r), re = rates(v.m, avgE + v.r);
     var big = {
       tok: v.s * v.h,
@@ -555,7 +555,7 @@ cd chloedb &amp;&amp; ./install.sh
     var eng = {
       tok: v.s * avgE,
       ctx: v.s * avgE * perTok(re, v.c),
-      calls: v.p * ENGRAM_CALLS,
+      calls: v.p * CHLOECTX_CALLS,
       rest: v.s * (v.r * perTok(re, v.c) + v.o * re.out / 1e6)
     };
     big.all = big.ctx + big.rest;
@@ -603,7 +603,7 @@ cd chloedb &amp;&amp; ./install.sh
         Math.round(pctAll) + "% of the session bill, " + Math.round(pctCtx) + "% of what the context costs";
     } else {
       $("monthly").textContent = money(-saved);
-      $("monthly-note").textContent = "more a month: with a context this small, Engram's injections and model calls cost more than they replace";
+      $("monthly-note").textContent = "more a month: with a context this small, ChloeCtx's injections and model calls cost more than they replace";
     }
     $("bigTotal").textContent = money(e.big.all);
     $("engTotal").textContent = money(e.eng.all);

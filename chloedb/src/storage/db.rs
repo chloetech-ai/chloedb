@@ -1201,7 +1201,7 @@ impl Database {
     ) -> Result<Database> {
         if manifest.is_legacy() && !opts.open_old {
             return Err(Error::Schema(format!(
-                "{} was written by a version of ChloeDB from before field ids, which this one opens only to copy it into a new database: run chloedb::upgrade on it (chloedb-server upgrade, or strata.upgrade in Python; engram upgrades its stores itself)",
+                "{} was written by a version of ChloeDB from before field ids, which this one opens only to copy it into a new database: run chloedb::upgrade on it (chloedb-server upgrade, or chloedb.upgrade in Python; ChloeCtx upgrades its stores itself)",
                 path.display()
             )));
         }

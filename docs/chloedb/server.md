@@ -248,7 +248,7 @@ The model can be computed here (the table below) or sit behind an API, such as `
 
 | model | what it is | |
 |---|---|---|
-| `potion-retrieval-32M` | Model2Vec (a static token table, averaged), 512 dimensions; the model engram uses | tens of microseconds a row on one core |
+| `potion-retrieval-32M` | Model2Vec (a static token table, averaged), 512 dimensions; the model ChloeCtx uses | tens of microseconds a row on one core |
 | `potion-base-8M` | Model2Vec, 256 dimensions | smallest |
 | `bge-small-en-v1.5` | BERT encoder, 384 dimensions | build with `--features bert`; milliseconds a row |
 | `snowflake-arctic-embed-m-v1.5` | BERT encoder, 768 dimensions | build with `--features bert`; slower, better |

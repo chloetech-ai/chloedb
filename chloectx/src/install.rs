@@ -1,0 +1,536 @@
+//! `chloectx install`: wires ChloeCtx into Claude Code settings.
+//!
+//! For one project, hooks go to `.claude/settings.local.json` (personal, not
+//! committed) by default, or `.claude/settings.json` with `--shared`. The MCP
+//! server goes to `.mcp.json` and is pre-approved in the same settings file.
+//!
+//! For every session (`--user`), hooks and the permission go to the user
+//! settings (`~/.claude/settings.json`) and the MCP server is registered at
+//! user scope with `claude mcp add-json`. Those hooks run as
+//! `chloectx hook --user <Event>` and step aside in a project that has its own
+//! install, so nothing is recorded twice. Each project still gets its own
+//! store, keyed by its directory.
+//!
+//! `chloectx uninstall` removes what `install` wrote and keeps the stores.
+//!
+//! ChloeCtx was called Engram. `install` and `uninstall` also replace or
+//! remove what an install from before the rename wrote under its old names:
+//! hooks that call the engram program, the MCP server named engram with the
+//! permission for its tools, and the setting ENGRAM_DISTILL_MODEL (before the rename).
+//! The server and the permission are taken for ChloeCtx's only where the
+//! same settings hold hooks of the program the server runs, since other
+//! tools are named Engram too.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{json, Value as Json};
+
+use crate::{err, Result};
+
+const EVENTS: [(&str, Option<&str>, u64); 9] = [
+    ("SessionStart", None, 15),
+    // Long enough for query understanding in `sync` mode.
+    ("UserPromptSubmit", None, 90),
+    ("PreToolUse", Some("Edit|MultiEdit|Write"), 5),
+    ("PostToolUse", None, 10),
+    ("PostToolUseFailure", None, 10),
+    // Long enough to wait for a query-understanding search still running.
+    ("Stop", None, 40),
+    ("PreCompact", None, 15),
+    ("PostCompact", None, 15),
+    ("SessionEnd", None, 10),
+];
+
+/// The MCP server's name; its tools are `mcp__chloectx__*`.
+pub const SERVER: &str = "chloectx";
+/// The server's name before the rename.
+pub const OLD_SERVER: &str = "engram";
+/// The setting that names the model distilling turns.
+const DISTILL_MODEL: &str = "CHLOECTX_DISTILL_MODEL";
+
+fn permission(server: &str) -> String {
+    format!("mcp__{server}")
+}
+
+fn read_json(path: &Path) -> Json {
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
+}
+
+/// A settings file, or `{}` when it is missing or empty; an error when it is
+/// not JSON, so that rewriting it cannot lose what it held.
+fn read_settings(path: &Path) -> Result<Json> {
+    match std::fs::read_to_string(path) {
+        Ok(s) if !s.trim().is_empty() => serde_json::from_str(&s).map_err(|e| err(format!("{} is not valid JSON ({e}); fix it first", path.display()))),
+        _ => Ok(json!({})),
+    }
+}
+
+fn write_json(path: &Path, v: &Json) -> Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(v)? + "\n")?;
+    Ok(())
+}
+
+/// Copies `path` to `path.chloectx-<time>.bak` before it is rewritten.
+fn backup(path: &Path) -> Result<Option<PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".chloectx-{}.bak", crate::now()));
+    let to = path.with_file_name(name);
+    std::fs::copy(path, &to)?;
+    Ok(Some(to))
+}
+
+/// The commands of a hooks entry.
+fn entry_commands(entry: &Json) -> impl Iterator<Item = &str> {
+    entry.get("hooks").and_then(|h| h.as_array()).into_iter().flatten().filter_map(|h| h.get("command").and_then(|c| c.as_str()))
+}
+
+/// The program a ChloeCtx hook command calls: `<exe> hook [--user] <Event>`,
+/// where the program is chloectx, or engram (its name before the rename).
+pub fn hook_exe(command: &str) -> Option<&str> {
+    let (exe, _) = command.split_once(" hook ")?;
+    let name = Path::new(exe.trim()).file_name()?.to_str()?;
+    (name.contains(SERVER) || name.contains(OLD_SERVER)).then(|| exe.trim())
+}
+
+/// Whether a hooks entry calls ChloeCtx.
+fn is_own_hook(entry: &Json) -> bool {
+    entry_commands(entry).any(|c| hook_exe(c).is_some())
+}
+
+/// Whether a hooks entry is a user-level ChloeCtx hook.
+fn is_user_hook(entry: &Json) -> bool {
+    entry_commands(entry).any(|c| hook_exe(c).is_some() && c.contains(" hook --user "))
+}
+
+/// The programs that the ChloeCtx hooks of a settings object call under the
+/// old name (`.../engram`): an install from before the rename.
+fn old_exes(settings: &Json) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for list in settings.get("hooks").and_then(|h| h.as_object()).into_iter().flat_map(|h| h.values()) {
+        for c in list.as_array().into_iter().flatten().flat_map(entry_commands) {
+            if let Some(exe) = hook_exe(c).filter(|e| !Path::new(e).file_name().map_or(false, |n| n.to_string_lossy().contains(SERVER))) {
+                if !out.iter().any(|o| o == exe) {
+                    out.push(exe.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether an MCP server entry is ChloeCtx's from before the rename: it
+/// runs `<exe> mcp` for a program the old hooks call.
+fn is_old_server(server: Option<&Json>, old_exes: &[String]) -> bool {
+    let Some(s) = server else { return false };
+    let cmd = s.get("command").and_then(|c| c.as_str()).unwrap_or("");
+    s.get("args") == Some(&json!(["mcp"])) && old_exes.iter().any(|e| e == cmd)
+}
+
+/// Removes the entries of an install from before the rename that are not
+/// hooks (those go with ChloeCtx's own): the `chloectx` MCP approval and
+/// permission, when the settings hold the old hooks, and the old setting.
+fn remove_old_names(settings: &mut Json, had_old_hooks: bool) {
+    if had_old_hooks {
+        remove_item(settings, "enabledMcpjsonServers", OLD_SERVER);
+        if let Some(p) = settings.get_mut("permissions").filter(|p| p.is_object()) {
+            remove_item(p, "allow", &permission(OLD_SERVER));
+        }
+    }
+    if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
+        let old = crate::env::old_name(DISTILL_MODEL).unwrap();
+        if let Some(v) = env.remove(&old) {
+            env.entry(DISTILL_MODEL).or_insert(v);
+        }
+    }
+}
+
+/// The hooks block for `exe` (merged into an existing settings object).
+pub fn hooks(exe: &str, user: bool) -> Json {
+    let flag = if user { " --user" } else { "" };
+    let mut h = serde_json::Map::new();
+    for (event, matcher, timeout) in EVENTS {
+        let mut entry = json!({"hooks": [{"type": "command", "command": format!("{exe} hook{flag} {event}"), "timeout": timeout}]});
+        if let Some(m) = matcher {
+            entry["matcher"] = json!(m);
+        }
+        h.insert(event.to_string(), json!([entry]));
+    }
+    Json::Object(h)
+}
+
+fn push_unique(v: &mut Json, key: &str, item: &str) {
+    let mut list: Vec<Json> = v.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if !list.iter().any(|v| v == item) {
+        list.push(json!(item));
+    }
+    v[key] = Json::Array(list);
+}
+
+fn remove_item(v: &mut Json, key: &str, item: &str) {
+    if let Some(list) = v.get_mut(key).and_then(|l| l.as_array_mut()) {
+        list.retain(|v| v != item);
+        if list.is_empty() {
+            v.as_object_mut().unwrap().remove(key);
+        }
+    }
+}
+
+/// Adds ChloeCtx's hooks, the memory tools' permission and (for a project) the
+/// MCP approval to a settings object, replacing earlier ChloeCtx entries.
+pub fn add_to_settings(settings: &mut Json, exe: &str, user: bool, distill_model: Option<&str>) {
+    if !settings.is_object() {
+        *settings = json!({});
+    }
+    let had_old_hooks = !old_exes(settings).is_empty();
+    let mut existing = settings.get("hooks").cloned().filter(|h| h.is_object()).unwrap_or_else(|| json!({}));
+    for (event, entries) in hooks(exe, user).as_object().unwrap() {
+        let list = existing.get(event).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        // Drop earlier ChloeCtx entries, keep everything else.
+        let mut kept: Vec<Json> = list.into_iter().filter(|e| !is_own_hook(e)).collect();
+        kept.extend(entries.as_array().unwrap().iter().cloned());
+        existing[event] = Json::Array(kept);
+    }
+    settings["hooks"] = existing;
+    remove_old_names(settings, had_old_hooks);
+    if !user {
+        push_unique(settings, "enabledMcpjsonServers", SERVER);
+    }
+    // The memory tools read and write only ChloeCtx's own store.
+    if !settings.get("permissions").map_or(false, |p| p.is_object()) {
+        settings["permissions"] = json!({});
+    }
+    push_unique(&mut settings["permissions"], "allow", &permission(SERVER));
+    if let Some(m) = distill_model.filter(|m| !m.is_empty()) {
+        if !settings.get("env").map_or(false, |e| e.is_object()) {
+            settings["env"] = json!({});
+        }
+        settings["env"][DISTILL_MODEL] = json!(m);
+    }
+}
+
+/// Removes everything [`add_to_settings`] adds. Returns whether anything changed.
+pub fn remove_from_settings(settings: &mut Json) -> bool {
+    let before = settings.clone();
+    let had_old_hooks = !old_exes(settings).is_empty();
+    if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for list in hooks.values_mut() {
+            if let Some(l) = list.as_array_mut() {
+                l.retain(|e| !is_own_hook(e));
+            }
+        }
+        hooks.retain(|_, l| l.as_array().map_or(true, |l| !l.is_empty()));
+        if hooks.is_empty() {
+            settings.as_object_mut().unwrap().remove("hooks");
+        }
+    }
+    if settings.is_object() {
+        remove_item(settings, "enabledMcpjsonServers", SERVER);
+        remove_old_names(settings, had_old_hooks);
+    }
+    if let Some(p) = settings.get_mut("permissions").filter(|p| p.is_object()) {
+        remove_item(p, "allow", &permission(SERVER));
+    }
+    if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
+        env.remove(DISTILL_MODEL);
+    }
+    if let Some(obj) = settings.as_object_mut() {
+        obj.retain(|k, v| !((k == "permissions" || k == "env") && v.as_object().map_or(false, |o| o.is_empty())));
+    }
+    *settings != before
+}
+
+/// Whether the project's own settings install ChloeCtx's hooks. The user
+/// settings are skipped even when they are the project's (a session in the
+/// home directory).
+pub fn project_has_hooks(project: &Path) -> bool {
+    let user = crate::paths::user_settings().canonicalize().ok();
+    ["settings.json", "settings.local.json"].iter().any(|f| {
+        let path = project.join(".claude").join(f);
+        if path.canonicalize().ok().map_or(true, |p| Some(p) == user) {
+            return false;
+        }
+        let settings = read_json(&path);
+        let Some(hooks) = settings.get("hooks").and_then(|h| h.as_object()) else { return false };
+        hooks.values().filter_map(|l| l.as_array()).flatten().any(|e| is_own_hook(e) && !is_user_hook(e))
+    })
+}
+
+pub fn install(project: &Path, exe: &str, shared: bool, distill_model: Option<&str>) -> Result<String> {
+    let settings_path = project.join(".claude").join(if shared { "settings.json" } else { "settings.local.json" });
+    let mut settings = read_settings(&settings_path)?;
+    let mcp_path = project.join(".mcp.json");
+    let mut mcp = read_settings(&mcp_path)?;
+    let old = project_old_exes(project);
+    add_to_settings(&mut settings, exe, false, distill_model);
+    write_json(&settings_path, &settings)?;
+
+    if !mcp.is_object() {
+        mcp = json!({});
+    }
+    if mcp.get("mcpServers").map_or(true, |v| !v.is_object()) {
+        mcp["mcpServers"] = json!({});
+    }
+    let servers = mcp["mcpServers"].as_object_mut().unwrap();
+    if is_old_server(servers.get(OLD_SERVER), &old) {
+        servers.remove(OLD_SERVER);
+    }
+    servers.insert(SERVER.into(), json!({"command": exe, "args": ["mcp"]}));
+    write_json(&mcp_path, &mcp)?;
+    Ok(format!(
+        "ChloeCtx installed for {}:\n  hooks and MCP approval: {}\n  MCP server: {}\n  store: {}",
+        project.display(),
+        settings_path.display(),
+        mcp_path.display(),
+        crate::paths::store_dir(project).display()
+    ))
+}
+
+/// The programs the old-named ChloeCtx hooks of a project's settings call.
+fn project_old_exes(project: &Path) -> Vec<String> {
+    ["settings.local.json", "settings.json"].iter().flat_map(|f| old_exes(&read_json(&project.join(".claude").join(f)))).collect()
+}
+
+/// Removes the user-scope `chloectx` MCP server when it is ChloeCtx's from
+/// before the rename (it runs a program the old user hooks call).
+fn remove_old_user_server(old: &[String]) -> Option<String> {
+    let cfg = read_json(&crate::paths::claude_json());
+    if !is_old_server(cfg.pointer(&format!("/mcpServers/{OLD_SERVER}")), old) {
+        return None;
+    }
+    Some(match claude_mcp(&["remove", OLD_SERVER, "--scope", "user"]) {
+        Ok(()) => format!("; the old `{OLD_SERVER}` one removed"),
+        Err(e) => format!("; the old `{OLD_SERVER}` one is still registered ({e}): claude mcp remove {OLD_SERVER} --scope user"),
+    })
+}
+
+/// Runs `claude mcp <args>`; `Err` carries what went wrong.
+fn claude_mcp(args: &[&str]) -> std::result::Result<(), String> {
+    let out = std::process::Command::new("claude").arg("mcp").args(args).output().map_err(|e| format!("claude: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// Installs ChloeCtx for every Claude Code session of this user.
+pub fn install_user(exe: &str, distill_model: Option<&str>) -> Result<String> {
+    let settings_path = crate::paths::user_settings();
+    let mut settings = read_settings(&settings_path)?;
+    let old = old_exes(&settings);
+    add_to_settings(&mut settings, exe, true, distill_model);
+
+    // Before the hooks are written: `claude mcp` runs them too.
+    let server = json!({"type": "stdio", "command": exe, "args": ["mcp"]}).to_string();
+    let _ = claude_mcp(&["remove", SERVER, "--scope", "user"]);
+    let mut mcp = match claude_mcp(&["add-json", SERVER, &server, "--scope", "user"]) {
+        Ok(()) => format!("registered at user scope (claude mcp get {SERVER})"),
+        Err(e) => format!("not registered ({e}); run: claude mcp add-json {SERVER} '{server}' --scope user"),
+    };
+    mcp += &remove_old_user_server(&old).unwrap_or_default();
+    let saved = backup(&settings_path)?;
+    write_json(&settings_path, &settings)?;
+    Ok(format!(
+        "ChloeCtx installed for every Claude Code session:\n  hooks and permission: {}{}\n  MCP server: {mcp}\n  stores: {}/<project>/memory.strata, one per project directory\n  \
+         projects with their own `chloectx install` keep using it",
+        settings_path.display(),
+        saved.map(|p| format!(" (previous version saved as {})", p.display())).unwrap_or_default(),
+        crate::paths::home().join("projects").display(),
+    ))
+}
+
+/// Removes ChloeCtx from a project's settings and `.mcp.json`; keeps the store.
+pub fn uninstall(project: &Path) -> Result<String> {
+    let mut changed = Vec::new();
+    let old = project_old_exes(project);
+    for f in ["settings.local.json", "settings.json"] {
+        let path = project.join(".claude").join(f);
+        let mut settings = read_settings(&path)?;
+        if path.exists() && remove_from_settings(&mut settings) {
+            write_json(&path, &settings)?;
+            changed.push(path);
+        }
+    }
+    let mcp_path = project.join(".mcp.json");
+    let mut mcp = read_json(&mcp_path);
+    if let Some(servers) = mcp.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+        let old_server = is_old_server(servers.get(OLD_SERVER), &old) && servers.remove(OLD_SERVER).is_some();
+        if servers.remove(SERVER).is_some() || old_server {
+            write_json(&mcp_path, &mcp)?;
+            changed.push(mcp_path);
+        }
+    }
+    if changed.is_empty() {
+        return Ok(format!("ChloeCtx was not installed in {}", project.display()));
+    }
+    Ok(format!(
+        "ChloeCtx removed from {}\n  store kept: {}",
+        changed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+        crate::paths::store_dir(project).display()
+    ))
+}
+
+/// Removes the user-level install; keeps the stores.
+pub fn uninstall_user() -> Result<String> {
+    let settings_path = crate::paths::user_settings();
+    let mut settings = read_settings(&settings_path)?;
+    let old = old_exes(&settings);
+    let hooks = if settings_path.exists() && remove_from_settings(&mut settings) {
+        let saved = backup(&settings_path)?;
+        write_json(&settings_path, &settings)?;
+        format!("removed from {}{}", settings_path.display(), saved.map(|p| format!(" (previous version saved as {})", p.display())).unwrap_or_default())
+    } else {
+        format!("none in {}", settings_path.display())
+    };
+    let mut mcp = match claude_mcp(&["remove", SERVER, "--scope", "user"]) {
+        Ok(()) => "removed".to_string(),
+        Err(e) => format!("not removed ({e})"),
+    };
+    mcp += &remove_old_user_server(&old).unwrap_or_default();
+    Ok(format!(
+        "ChloeCtx uninstalled for every session:\n  hooks: {hooks}\n  MCP server: {mcp}\n  stores kept in {}",
+        crate::paths::home().join("projects").display()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn commands(settings: &Json) -> Vec<String> {
+        settings["hooks"].as_object().unwrap().values().flat_map(|l| l.as_array().unwrap()).map(|e| e["hooks"][0]["command"].as_str().unwrap_or("").to_string()).collect()
+    }
+
+    #[test]
+    fn user_install_merges_and_uninstall_restores() {
+        let original = json!({
+            "model": "sonnet",
+            "env": {"DISABLE_AUTOUPDATER": "1"},
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]},
+            "permissions": {"allow": ["Bash(ls:*)"]}
+        });
+        let mut s = original.clone();
+        add_to_settings(&mut s, "/bin/chloectx", true, Some("haiku"));
+        add_to_settings(&mut s, "/bin/chloectx", true, Some("haiku")); // idempotent
+        let cmds = commands(&s);
+        assert_eq!(cmds.iter().filter(|c| c.contains("chloectx hook --user ")).count(), EVENTS.len());
+        assert!(cmds.contains(&"say done".to_string()));
+        assert_eq!(s["permissions"]["allow"], json!(["Bash(ls:*)", "mcp__chloectx"]));
+        assert_eq!(s["env"]["CHLOECTX_DISTILL_MODEL"], "haiku");
+        assert!(s.get("enabledMcpjsonServers").is_none());
+        assert!(remove_from_settings(&mut s));
+        assert_eq!(s, original);
+        assert!(!remove_from_settings(&mut s));
+    }
+
+    #[test]
+    fn project_uninstall_removes_only_chloectx() {
+        let mut s = json!({"enabledMcpjsonServers": ["other"]});
+        add_to_settings(&mut s, "/x/chloectx", false, None);
+        assert_eq!(s["enabledMcpjsonServers"], json!(["other", "chloectx"]));
+        assert!(commands(&s).iter().all(|c| c.starts_with("/x/chloectx hook ") && !c.contains("--user")));
+        remove_from_settings(&mut s);
+        assert_eq!(s, json!({"enabledMcpjsonServers": ["other"]}));
+    }
+
+    /// Settings as an install from before the rename wrote them, with
+    /// another tool's entries beside them.
+    fn old_settings(user: bool) -> Json {
+        let mut s = json!({
+            "enabledMcpjsonServers": ["other"],
+            "env": {"DISABLE_AUTOUPDATER": "1"},
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]},
+            "permissions": {"allow": ["Bash(ls:*)"]}
+        });
+        add_to_settings(&mut s, "/old/engram", user, Some("haiku"));
+        // What the old install wrote under its names.
+        let text = s.to_string().replace("mcp__chloectx", "mcp__engram").replace("\"chloectx\"", "\"engram\"").replace(DISTILL_MODEL, &crate::env::old_name(DISTILL_MODEL).unwrap());
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn install_replaces_the_entries_of_an_install_from_before_the_rename() {
+        for user in [true, false] {
+            let mut s = old_settings(user);
+            assert_eq!(old_exes(&s), vec!["/old/engram".to_string()]);
+            assert_eq!(s["env"][crate::env::old_name(DISTILL_MODEL).unwrap()], "haiku");
+            add_to_settings(&mut s, "/new/bin/chloectx", user, None);
+            let cmds = commands(&s);
+            assert_eq!(cmds.iter().filter(|c| c.starts_with("/new/bin/chloectx hook ")).count(), EVENTS.len());
+            assert!(!cmds.iter().any(|c| c.contains("engram")), "{cmds:?}");
+            assert!(cmds.contains(&"say done".to_string()));
+            assert_eq!(s["permissions"]["allow"], json!(["Bash(ls:*)", "mcp__chloectx"]));
+            // The model the old install chose stays, under the new name.
+            assert_eq!(s["env"], json!({"DISABLE_AUTOUPDATER": "1", "CHLOECTX_DISTILL_MODEL": "haiku"}));
+            let servers = if user { json!(["other"]) } else { json!(["other", "chloectx"]) };
+            assert_eq!(s["enabledMcpjsonServers"], servers);
+            assert!(old_exes(&s).is_empty());
+            // And uninstall leaves the other tool's entries.
+            let mut u = old_settings(user);
+            assert!(remove_from_settings(&mut u));
+            assert_eq!(u, json!({"enabledMcpjsonServers": ["other"], "env": {"DISABLE_AUTOUPDATER": "1"}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}, "permissions": {"allow": ["Bash(ls:*)"]}}));
+        }
+    }
+
+    #[test]
+    fn another_tool_named_engram_is_left_alone() {
+        // No old ChloeCtx hooks: a server and a permission named engram are another tool's.
+        let mut s = json!({"enabledMcpjsonServers": ["engram"], "permissions": {"allow": ["mcp__engram"]}});
+        add_to_settings(&mut s, "/bin/chloectx", false, None);
+        assert_eq!(s["enabledMcpjsonServers"], json!(["engram", "chloectx"]));
+        assert_eq!(s["permissions"]["allow"], json!(["mcp__engram", "mcp__chloectx"]));
+        remove_from_settings(&mut s);
+        assert_eq!(s, json!({"enabledMcpjsonServers": ["engram"], "permissions": {"allow": ["mcp__engram"]}}));
+
+        let old = vec!["/old/engram".to_string()];
+        assert!(is_old_server(Some(&json!({"command": "/old/engram", "args": ["mcp"]})), &old));
+        assert!(!is_old_server(Some(&json!({"command": "/opt/other/engram", "args": ["mcp"]})), &old));
+        assert!(!is_old_server(Some(&json!({"command": "/old/engram", "args": ["serve"]})), &old));
+        assert!(!is_old_server(None, &old));
+        assert_eq!(hook_exe("/a b/engram hook --user Stop"), Some("/a b/engram"));
+        assert_eq!(hook_exe("/bin/chloectx hook Stop"), Some("/bin/chloectx"));
+        assert_eq!(hook_exe("/bin/other hook Stop"), None);
+        assert_eq!(hook_exe("say done"), None);
+    }
+
+    #[test]
+    fn a_project_install_moves_the_old_server_in_mcp_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        write_json(&project.join(".claude/settings.local.json"), &old_settings(false)).unwrap();
+        let other = json!({"command": "/opt/homebrew/bin/engram-other", "args": ["mcp"]});
+        write_json(&project.join(".mcp.json"), &json!({"mcpServers": {"engram": {"command": "/old/engram", "args": ["mcp"]}, "other": other}})).unwrap();
+        install(project, "/new/bin/chloectx", false, None).unwrap();
+        assert_eq!(
+            read_json(&project.join(".mcp.json")),
+            json!({"mcpServers": {"chloectx": {"command": "/new/bin/chloectx", "args": ["mcp"]}, "other": other}})
+        );
+        assert!(project_has_hooks(project));
+        uninstall(project).unwrap();
+        assert_eq!(read_json(&project.join(".mcp.json")), json!({"mcpServers": {"other": other}}));
+        assert!(!project_has_hooks(project));
+    }
+
+    #[test]
+    fn user_hooks_step_aside_only_for_a_project_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        assert!(!project_has_hooks(project));
+        let local = project.join(".claude/settings.local.json");
+        let mut s = json!({});
+        add_to_settings(&mut s, "/bin/chloectx", true, None);
+        write_json(&local, &s).unwrap();
+        assert!(!project_has_hooks(project), "user-level hooks copied into a project are not a project install");
+        install(project, "/bin/chloectx", false, None).unwrap();
+        assert!(project_has_hooks(project));
+        uninstall(project).unwrap();
+        assert!(!project_has_hooks(project));
+        assert_eq!(read_json(&project.join(".mcp.json")), json!({"mcpServers": {}}));
+    }
+}
