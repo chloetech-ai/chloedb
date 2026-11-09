@@ -35,7 +35,26 @@ strata-server ... --app sheets=http://sheets-host:7820   # with STRATA_APP_TOKEN
 
 `--token` (or `STRATA_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `STRATA_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.
 
-From the command line, `import` and `export` move files without the UI:
+### On Kubernetes
+
+A cluster the [operator](server.md#on-kubernetes) runs gets spreadsheets of its own from its `StrataCluster`, with nothing to start by hand:
+
+```bash
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"sheets": {}}}'
+```
+
+The operator runs `strata-sheets serve` from the cluster's own image (it carries it, as it carries the crawler) as a Deployment of one pod, `<cluster>-sheets`, behind a Service of that name, and restarts the coordinators so that they list it: **Apps → Sheets** appears in the command center. It reads and writes with the cluster's admin token (`tokenSecret`), which its API requires too, so the coordinators send it that token and nothing else reaches it. Its workbooks are rows of the cluster's tables, so a pod started again (a new image, a node replaced) has them all; the upgrader moves it with the servers, since it runs their image.
+
+| `spec.sheets` | default | |
+|---|---|---|
+| `paused` | `false` | no pod for now (the coordinators still list it, as an app that does not answer; the workbooks stay) |
+| `args`, `resources` | | more arguments of `strata-sheets serve`, and its container's resources (50m CPU and 96 MiB asked, 1 GiB at most) |
+
+Removing `spec.sheets` deletes its Deployment and Service and restarts the coordinators without it; the workbooks stay in `sheets_books` and `sheets_cells`.
+
+### From the command line
+
+`import` and `export` move files without the UI:
 
 ```bash
 target/release/strata-sheets import budget.xlsx --strata http://127.0.0.1:7700
