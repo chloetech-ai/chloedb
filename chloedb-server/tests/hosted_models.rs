@@ -87,7 +87,7 @@ async fn rows_and_queries_embedded_by_a_hosted_model() {
     let url = mock(down.clone(), seen.clone());
     let dir = tempfile::tempdir().unwrap();
     let models = dir.path().join("models");
-    for (name, config) in [("gpu", json!({"api": "openai", "url": url, "dim": 16, "retries": 0})), ("needs-key", json!({"api": "openai", "url": url, "dim": 16, "key_env": "STRATA_SERVER_TEST_UNSET_KEY"}))] {
+    for (name, config) in [("gpu", json!({"api": "openai", "url": url, "dim": 16, "retries": 0})), ("needs-key", json!({"api": "openai", "url": url, "dim": 16, "key_env": "CHLOEDB_SERVER_TEST_UNSET_KEY"}))] {
         std::fs::create_dir_all(models.join(name)).unwrap();
         std::fs::write(models.join(name).join("endpoint.json"), config.to_string()).unwrap();
     }
@@ -125,7 +125,7 @@ async fn rows_and_queries_embedded_by_a_hosted_model() {
     let named = |n: &str| m["models"].as_array().unwrap().iter().find(|x| x["name"] == n).cloned().unwrap_or(Json::Null);
     assert_eq!((named("gpu")["ready"].clone(), named("gpu")["hosted"].clone(), named("gpu")["dim"].clone()), (json!(true), json!(true), json!(16)), "{m}");
     assert_eq!(named("needs-key")["ready"], false, "{m}");
-    assert!(named("needs-key")["error"].as_str().unwrap().contains("$STRATA_SERVER_TEST_UNSET_KEY is not set"), "{m}");
+    assert!(named("needs-key")["error"].as_str().unwrap().contains("$CHLOEDB_SERVER_TEST_UNSET_KEY is not set"), "{m}");
     assert_eq!(named("openai/text-embedding-3-small")["dim"], 1536, "{m}");
     assert_eq!(named("hash:64"), Json::Null);
 

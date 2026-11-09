@@ -95,7 +95,7 @@ fn a_query_s_steps_are_its_operators_and_segments() {
 
     // A compound query: its operators, each leaf's executor steps inside
     // the leaf's. Strata's operators are steps around the leaves;
-    // DataFusion's (STRATA_ENGINE=datafusion) are inside a `datafusion`
+    // DataFusion's (CHLOEDB_ENGINE=datafusion) are inside a `datafusion`
     // step after them. With the feature `datafusion`, DataFusion runs the
     // leaves first, and leaves so few rows to the operators, which reuse
     // them.

@@ -1,6 +1,6 @@
 // The client of chloedb-server, against a running server, and against the
 // database in-process: the two answer alike. Skipped when chloedb-server is
-// not built (cargo build --release in chloedb-server, or STRATA_SERVER).
+// not built (cargo build --release in chloedb-server, or CHLOEDB_SERVER).
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";

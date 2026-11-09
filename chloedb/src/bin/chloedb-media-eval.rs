@@ -53,7 +53,7 @@ struct Args {
     /// The model, by the name a schema gives it.
     #[arg(long, default_value = "siglip-base-patch16-224")]
     model: String,
-    /// Where models are (default $STRATA_MODELS or ~/.local/share/strata/models).
+    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/strata/models).
     #[arg(long)]
     models: Option<PathBuf>,
     /// Keep the first n images.
@@ -214,7 +214,7 @@ fn main() {
     if let Some(out) = &a.out {
         let report = json!({
             "split": a.csv.file_name().map(|f| f.to_string_lossy().into_owned()), "images": split.len(), "captions": n_captions,
-            "model": a.model, "dimensions": dim, "captioner": a.captioner, "machine": std::env::var("STRATA_MACHINE").ok(),
+            "model": a.model, "dimensions": dim, "captioner": a.captioner, "machine": chloedb::env::var("CHLOEDB_MACHINE").ok(),
             "images_load_seconds": images_s, "captions_load_seconds": captions_s, "search_seconds": search_s,
             "captioned": made, "captions_given": if captioner.is_some() { split.len() - made } else { 0 },
         });

@@ -2,7 +2,7 @@
 // the device what the server would, asks the server when it cannot prove
 // that or the table changed, and reports its counts. Skipped when
 // chloedb-server is not built (cargo build --release in chloedb-server, or
-// STRATA_SERVER).
+// CHLOEDB_SERVER).
 
 import assert from "node:assert/strict";
 import { join } from "node:path";

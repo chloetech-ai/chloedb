@@ -7,7 +7,7 @@
 # there with the right hash are kept.
 #
 #   chloedb/tests/fixtures/beir/fetch.sh DIR
-#   STRATA_BEIR_DIR=DIR cargo test --release --test relevance_gate
+#   CHLOEDB_BEIR_DIR=DIR cargo test --release --test relevance_gate
 #
 # Besides the test splits it fetches SciFact's train and NFCorpus's dev
 # judgements, for tuning (chloedb-bm25-eval --split).

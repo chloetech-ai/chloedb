@@ -161,9 +161,9 @@ pub enum Secrets {
 
 impl Secrets {
     /// The platform's keychain if it has one, else `file`.
-    /// `STRATA_HUB_SECRETS=file` keeps them in the file anyway.
+    /// `CHLOEDB_HUB_SECRETS=file` keeps them in the file anyway.
     pub fn detect(file: Option<PathBuf>) -> Secrets {
-        let want = std::env::var("STRATA_HUB_SECRETS").unwrap_or_default();
+        let want = chloedb::env::var("CHLOEDB_HUB_SECRETS").unwrap_or_default();
         if want == "file" {
             return Secrets::File(file);
         }

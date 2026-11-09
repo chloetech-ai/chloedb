@@ -50,7 +50,7 @@ The guide is [docs/chloedb/python.md](../docs/chloedb/python.md), and frames
 have [their own page](../docs/chloedb/frames.md). Tests:
 `maturin develop --release && pytest tests` in a virtualenv (the client
 tests use `../chloedb-server/target/release/chloedb-server`, or
-`$STRATA_SERVER`, and are skipped without it; the Kafka consumer's test
-needs a broker at `$STRATA_KAFKA`, such as Redpanda in Docker, and
+`$CHLOEDB_SERVER`, and are skipped without it; the Kafka consumer's test
+needs a broker at `$CHLOEDB_KAFKA`, such as Redpanda in Docker, and
 `confluent-kafka`; the Arrow tests need `pyarrow`, and `polars` and `pandas`
 for theirs).

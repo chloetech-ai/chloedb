@@ -314,7 +314,7 @@ per file across processes; the kernel drops it if the process dies.
   * `check()` passes.
 
   Each iteration continues from the previous iteration's recovered state.
-  The test runs 20 iterations (`STRATA_CRASH_ITERS`); 60 and 80 iterations
+  The test runs 20 iterations (`CHLOEDB_CRASH_ITERS`); 60 and 80 iterations
   were also run, all passing.
 
 Limitation: with the component builders still stubs, segments contain only

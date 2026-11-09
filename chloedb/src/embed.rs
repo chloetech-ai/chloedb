@@ -224,10 +224,10 @@ fn model_err(what: impl std::fmt::Display) -> Error {
 }
 
 /// Where [`open`] looks for models by default: `$CHLOEDB_MODELS` (or
-/// `$STRATA_MODELS`), else
+/// `$CHLOEDB_MODELS`), else
 /// `~/.local/share/strata/models`.
 pub fn models_dir() -> PathBuf {
-    if let Some(d) = crate::env::var_os("STRATA_MODELS") {
+    if let Some(d) = crate::env::var_os("CHLOEDB_MODELS") {
         return PathBuf::from(d);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();

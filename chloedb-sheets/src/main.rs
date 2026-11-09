@@ -34,16 +34,16 @@ enum Cmd {
 #[derive(Args)]
 struct Target {
     /// The chloedb-server (one server, or a cluster's coordinator) that keeps the workbooks.
-    #[arg(long, env = "STRATA_URL")]
+    #[arg(long, env = "CHLOEDB_URL")]
     strata: Option<String>,
     /// Its API key (admin: the first start creates the two tables; then write).
-    #[arg(long, env = "STRATA_KEY", hide_env_values = true)]
+    #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
     key: Option<String>,
     /// Start a chloedb-server on this machine, its database in this directory (again on the same directory: the same workbooks).
     #[arg(long)]
     local: Option<PathBuf>,
     /// The chloedb-server binary for --local (default: next to this one, or on the PATH).
-    #[arg(long, env = "STRATA_SERVER_BIN")]
+    #[arg(long, env = "CHLOEDB_SERVER_BIN")]
     server_bin: Option<PathBuf>,
     /// Where the --local server listens (and its command center).
     #[arg(long, default_value = "127.0.0.1:7700")]
@@ -55,8 +55,8 @@ struct ServeArgs {
     /// Where the API listens.
     #[arg(long, default_value = "127.0.0.1:7820")]
     listen: String,
-    /// A token every request must carry (Authorization: Bearer); chloedb-server sends its STRATA_APP_TOKEN. With --local and no token, one is made for the server.
-    #[arg(long, env = "STRATA_SHEETS_TOKEN", hide_env_values = true)]
+    /// A token every request must carry (Authorization: Bearer); chloedb-server sends its CHLOEDB_APP_TOKEN. With --local and no token, one is made for the server.
+    #[arg(long, env = "CHLOEDB_SHEETS_TOKEN", hide_env_values = true)]
     token: Option<String>,
     #[command(flatten)]
     target: Target,
@@ -141,7 +141,9 @@ impl Local {
         if let Some((url, token)) = &app {
             cmd.args(["--app", &format!("sheets={url}")]);
             if let Some(t) = token {
-                cmd.env("STRATA_APP_TOKEN", t);
+                // Under both names: the binary may be one from before the
+                // rename, which reads only STRATA_APP_TOKEN.
+                cmd.env("CHLOEDB_APP_TOKEN", t).env("STRATA_APP_TOKEN", t);
             }
         }
         cmd.stdout(Stdio::from(log)).stderr(Stdio::from(err)).stdin(Stdio::null()).kill_on_drop(true);
@@ -212,7 +214,7 @@ fn main() {
     // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
     // clap and the code read the old names, so the new ones are copied over
     // before the runtime starts any thread.
-    chloedb_sheets::adopt_new_env_names();
+    chloedb_sheets::adopt_old_env_names();
     run();
 }
 
@@ -234,7 +236,7 @@ async fn run() {
             let svc = Arc::new(Service { books: books.clone(), token: token.clone(), local: local.is_some() });
             eprintln!("chloedb-sheets: the API answers at {me}{}", if token.is_some() && a.token.is_none() { " (token made for the server)" } else { "" });
             if local.is_none() {
-                eprintln!("chloedb-sheets: to see it in the command center, start chloedb-server with --app sheets={me}{}", if token.is_some() { " and STRATA_APP_TOKEN set to this token" } else { "" });
+                eprintln!("chloedb-sheets: to see it in the command center, start chloedb-server with --app sheets={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN set to this token" } else { "" });
             }
             let server = axum::serve(listener, api::router(svc)).with_graceful_shutdown(shutdown_signal());
             if let Err(e) = server.await {

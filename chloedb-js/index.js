@@ -152,7 +152,7 @@ export class Database extends Searchable {
    * Creates a database at `path` with `schema` (an object, JSON text, or
    * the path of a JSON file; the short form or the long one). `directory`
    * keeps it as a directory of segment files instead of one file. `models`
-   * is where embedded fields' models are (default $STRATA_MODELS or
+   * is where embedded fields' models are (default $CHLOEDB_MODELS or
    * ~/.local/share/strata/models). `threads` is how many cores vector
    * indexes build on and each query searches segments on (default: every
    * core).

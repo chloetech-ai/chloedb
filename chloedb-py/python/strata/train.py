@@ -49,7 +49,7 @@ def codebook(
     seed: int = 0,
 ) -> str:
     """Trains a semantic-ID codebook and saves it as `name` under `models`
-    (default $STRATA_MODELS or ~/.local/share/strata/models); returns its
+    (default $CHLOEDB_MODELS or ~/.local/share/strata/models); returns its
     SHA-256.
 
     `source` is a `Database`, whose VECTOR `field` (of `table`, the first
@@ -149,7 +149,7 @@ def sequence(
     log: Any = None,
 ) -> dict:
     """Trains a sequence encoder with PyTorch and saves it as `name` under
-    `models` (default $STRATA_MODELS or ~/.local/share/strata/models), for
+    `models` (default $CHLOEDB_MODELS or ~/.local/share/strata/models), for
     `encode('name', (SELECT item, action, ts FROM ... ORDER BY ts DESC))`
     to turn a history into a vector of VECTOR `field` of `table`.
 

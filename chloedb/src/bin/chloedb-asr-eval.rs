@@ -41,7 +41,7 @@ struct Args {
     /// The model, by the name a schema gives it.
     #[arg(long, default_value = "whisper-small")]
     model: String,
-    /// Where models are (default $STRATA_MODELS or ~/.local/share/strata/models).
+    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/strata/models).
     #[arg(long)]
     models: Option<PathBuf>,
     /// Keep n utterances, spread evenly over the split by ID.
@@ -177,7 +177,7 @@ fn main() {
     println!("{:<44} {:>7.2}%  {exact} of {n} exact", "WER, strata", w * 100.0);
     let mut report = json!({
         "split": a.librispeech.file_name().map(|f| f.to_string_lossy().into_owned()), "utterances": split.len(), "audio_seconds": audio_s,
-        "model": a.model, "machine": std::env::var("STRATA_MACHINE").ok(), "load_seconds": load_s,
+        "model": a.model, "machine": chloedb::env::var("CHLOEDB_MACHINE").ok(), "load_seconds": load_s,
         "wer": w, "exact": exact, "transcribed": made_n, "transcripts_given": split.len() - made_n,
     });
     if let Some(p) = &a.reference {

@@ -100,9 +100,9 @@ editing their settings by hand.
 | `engram/demo/index.html` | the inspector page; it is compiled into the binary with `include_str!`, so rebuild after editing it |
 | `chloedb/` | the database (Rust crate), including the posting-list study in `src/postings/` |
 | `chloedb/fuzz/` | cargo-fuzz targets (nightly: `cargo +nightly fuzz run <target>` there) feeding ChloeDB damaged files and arbitrary SQL; `chloedb/tests/corrupt_input.rs` runs the same targets on stable |
-| `chloedb-server/` | ChloeDB over HTTP JSON and gRPC, a coordinator over shards, and the UI: the command center (`ui/index.html` and the modules under `ui/app/`, listed in `src/ui.rs`) and the query console (`ui/classic.html`), compiled in with `include_str!`; `STRATA_UI_DIR=chloedb-server/ui` serves them from disk without a rebuild |
-| `chloedb-crawl/` | the crawler (Rust, a client of chloedb-server over HTTP): `chloedb-crawl crawl URL --local DIR` crawls into a cluster it starts and grows; `serve` is its API, which the command center shows as an app (`chloedb-server --app crawler=URL`); its view is `ui/view.js`, compiled in (`STRATA_CRAWL_UI_DIR=chloedb-crawl/ui` reads it from disk) |
-| `chloedb-sheets/` | the spreadsheet app (Rust, a client of chloedb-server over HTTP, as the crawler is): workbooks whose cells are rows of ChloeDB tables, with IronCalc's formulas, the cluster's tables opened as live sheets, SQL query blocks, xlsx, CSV and SQLite in and out; `serve --local DIR` starts a server and is its app `sheets`; its view is `ui/view.js`, compiled in (`STRATA_SHEETS_UI_DIR=chloedb-sheets/ui` reads it from disk); `tests/cluster.rs` runs it against a real chloedb-server |
+| `chloedb-server/` | ChloeDB over HTTP JSON and gRPC, a coordinator over shards, and the UI: the command center (`ui/index.html` and the modules under `ui/app/`, listed in `src/ui.rs`) and the query console (`ui/classic.html`), compiled in with `include_str!`; `CHLOEDB_UI_DIR=chloedb-server/ui` serves them from disk without a rebuild |
+| `chloedb-crawl/` | the crawler (Rust, a client of chloedb-server over HTTP): `chloedb-crawl crawl URL --local DIR` crawls into a cluster it starts and grows; `serve` is its API, which the command center shows as an app (`chloedb-server --app crawler=URL`); its view is `ui/view.js`, compiled in (`CHLOEDB_CRAWL_UI_DIR=chloedb-crawl/ui` reads it from disk) |
+| `chloedb-sheets/` | the spreadsheet app (Rust, a client of chloedb-server over HTTP, as the crawler is): workbooks whose cells are rows of ChloeDB tables, with IronCalc's formulas, the cluster's tables opened as live sheets, SQL query blocks, xlsx, CSV and SQLite in and out; `serve --local DIR` starts a server and is its app `sheets`; its view is `ui/view.js`, compiled in (`CHLOEDB_SHEETS_UI_DIR=chloedb-sheets/ui` reads it from disk); `tests/cluster.rs` runs it against a real chloedb-server |
 | `chloedb-js/` | ChloeDB from JavaScript (`import { open } from "chloedb"`): a Node-API addon (napi-rs) that Node, Bun and Deno load, and a `fetch` client of chloedb-server (`client.js`); `npm run build -- --profile ci && npm test` there |
 | `chloedb-py/` | ChloeDB from Python (`import strata`): a PyO3 extension built with maturin, and an HTTP client of chloedb-server; tests in `chloedb-py/tests` |
 | `chloedb-java/` | ChloeDB from Java (`ai.chloetech.strata`, and a JDBC driver, `jdbc:strata:`, in `ai.chloetech.strata.jdbc`): a JNI library (the Rust crate, `src/*.rs`) and the Java package (`src/main/java`), built together by `mvn package` (Maven's output in `target/java`); JUnit tests in `src/test/java` |
@@ -122,8 +122,8 @@ Build and test each crate from its own directory (`engram` and
 cd chloedb && cargo test --release
 cd engram && cargo test --release
 cd chloedb-server && cargo test --release
-cd chloedb-crawl && cargo test --release   # its crawl into a cluster needs chloedb-server built (or STRATA_SERVER_BIN)
-cd chloedb-sheets && cargo test --release  # its cluster test needs chloedb-server built (or STRATA_SERVER_BIN)
+cd chloedb-crawl && cargo test --release   # its crawl into a cluster needs chloedb-server built (or CHLOEDB_SERVER_BIN)
+cd chloedb-sheets && cargo test --release  # its cluster test needs chloedb-server built (or CHLOEDB_SERVER_BIN)
 ```
 
 chloedb-server's integration tests build as one test binary, `tests/all.rs`,
@@ -172,7 +172,7 @@ are committed. The test writes them:
 
 ```bash
 chloedb/tests/fixtures/beir/fetch.sh ~/beir    # pinned by hash
-cd chloedb && STRATA_BEIR_DIR=~/beir STRATA_RELEVANCE_GATE=update cargo test --release --test relevance_gate
+cd chloedb && CHLOEDB_BEIR_DIR=~/beir CHLOEDB_RELEVANCE_GATE=update cargo test --release --test relevance_gate
 ```
 
 Say in the pull request why the numbers moved.

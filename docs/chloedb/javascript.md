@@ -65,7 +65,7 @@ r.rows;          // [[1999, 1]]
 await db.close();
 ```
 
-`open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$STRATA_MODELS`, else `~/.local/share/strata/models`; `chloedb-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
+`open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$CHLOEDB_MODELS`, else `~/.local/share/strata/models`; `chloedb-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
 
 Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open to write it (a second one gets "busy: the database is open elsewhere"). Others can open it with `Database.open(path, { readOnly: true })` to read it while it is written, the workers of a cluster, say: each query sees the writer's commits so far, every write fails, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). For writes from several processes, serve it with chloedb-server.
 
@@ -117,7 +117,7 @@ Errors reject with a `StrataError`, whose message is the database's.
 ```js
 import { connect } from "chloedb/client";   // or from "chloedb"
 
-const client = connect("http://127.0.0.1:7700", { token: process.env.STRATA_TOKEN });
+const client = connect("http://127.0.0.1:7700", { token: process.env.CHLOEDB_TOKEN });
 await client.upsert([{ id: "b2", title: "A second book", year: 2001 }]);
 const r = await client.search("book", { limit: 5 });
 ```
@@ -143,7 +143,7 @@ console.log(r.where, r.why);   // device proved
 
 ## Bun and Deno
 
-Bun loads the addon as Node does: `bun run app.js`. Deno loads it through its Node compatibility with `--allow-ffi` (and `--allow-read`, `--allow-write`, `--allow-env` for the files and `$STRATA_MODELS`); the client needs only `--allow-net`.
+Bun loads the addon as Node does: `bun run app.js`. Deno loads it through its Node compatibility with `--allow-ffi` (and `--allow-read`, `--allow-write`, `--allow-env` for the files and `$CHLOEDB_MODELS`); the client needs only `--allow-net`.
 
 ## Tests
 
@@ -153,4 +153,4 @@ npm run build -- --profile ci             # optimised, built faster than release
 npm test                                  # node --test
 ```
 
-The client's tests start `chloedb-server/target/release/chloedb-server` (or `$STRATA_SERVER`) and are skipped when it is not built.
+The client's tests start `chloedb-server/target/release/chloedb-server` (or `$CHLOEDB_SERVER`) and are skipped when it is not built.

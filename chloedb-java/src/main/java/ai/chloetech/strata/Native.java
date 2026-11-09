@@ -16,7 +16,7 @@ import java.util.Map;
  * <p>It is loaded from, in order: the path in the system property
  * {@code chloedb.library} (or {@code strata.library}, its old name), or
  * the environment variable {@code CHLOEDB_JNI_LIBRARY} (or
- * {@code STRATA_JNI_LIBRARY}); the jar, which holds it under
+ * {@code CHLOEDB_JNI_LIBRARY}); the jar, which holds it under
  * {@code ai/chloetech/strata/native/<os>-<arch>/} for the platform it was
  * built on, unpacked into a temporary directory ({@code chloedb.tmpdir} or {@code strata.tmpdir}, else
  * {@code java.io.tmpdir}, which must allow running what it holds); and

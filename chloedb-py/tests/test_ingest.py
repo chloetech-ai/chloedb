@@ -191,7 +191,7 @@ def test_a_bad_event_stops_the_consumer_after_the_events_before_it(server):
     assert c.source("views/0") == 4
 
 
-KAFKA = os.environ.get("STRATA_KAFKA")
+KAFKA = os.environ.get("CHLOEDB_KAFKA")
 CONSUMER = """
 import json, sys, time, strata
 from strata import ingest
@@ -210,7 +210,7 @@ print(json.dumps(ingest.kafka(strata.Client(url), topic, to_ops, brokers=sys.arg
 """
 
 
-@pytest.mark.skipif(not KAFKA, reason="STRATA_KAFKA (a Kafka or Redpanda broker, host:port) is not set")
+@pytest.mark.skipif(not KAFKA, reason="CHLOEDB_KAFKA (a Kafka or Redpanda broker, host:port) is not set")
 def test_kafka_exactly_once_across_consumer_and_server_restarts(server):
     """Against a real broker: a consumer killed with SIGKILL partway, then
     a second one during which the server is killed with SIGKILL and started

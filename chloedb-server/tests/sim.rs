@@ -3,7 +3,7 @@
 //! promises, a seed replays exactly, and each bug the simulator found, put
 //! back, is found again.
 //!
-//! `STRATA_SIM_SEEDS=A..B` runs those seeds instead of the first few
+//! `CHLOEDB_SIM_SEEDS=A..B` runs those seeds instead of the first few
 //! hundred; `chloedb-sim --seed N --trace` shows what happened in one.
 
 use std::ops::Range;
@@ -15,8 +15,8 @@ fn jobs() -> usize {
 }
 
 fn seeds() -> Range<u64> {
-    let Ok(s) = std::env::var("STRATA_SIM_SEEDS") else { return 0..400 };
-    let (a, b) = s.split_once("..").expect("STRATA_SIM_SEEDS is A..B");
+    let Ok(s) = chloedb::env::var("CHLOEDB_SIM_SEEDS") else { return 0..400 };
+    let (a, b) = s.split_once("..").expect("CHLOEDB_SIM_SEEDS is A..B");
     a.parse().expect("a seed")..b.parse().expect("a seed")
 }
 

@@ -237,7 +237,7 @@ class Database(Search, FrameStore):
         the path of a JSON file; the short form or the long one).
         `directory` keeps it as a directory of segment files instead of one
         file. `models` is where embedded fields' models are (default
-        $STRATA_MODELS or ~/.local/share/strata/models; see `chloedb-server
+        $CHLOEDB_MODELS or ~/.local/share/strata/models; see `chloedb-server
         fetch-model`). `threads` is how many cores vector indexes build on
         and each query searches segments on (default: every core)."""
         return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads))

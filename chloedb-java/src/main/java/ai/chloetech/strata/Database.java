@@ -69,7 +69,7 @@ public final class Database implements AutoCloseable {
 
         /**
          * Where embedding models are, by name: a directory of model
-         * directories. Unless set, {@code STRATA_MODELS} or ChloeDB's
+         * directories. Unless set, {@code CHLOEDB_MODELS} or ChloeDB's
          * default.
          */
         public Options models(String dir) {

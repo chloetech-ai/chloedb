@@ -379,7 +379,7 @@ fn s(v: &str) -> Value {
 
 // ---- across processes ----
 
-const CHILD: &str = "STRATA_READ_ONLY_CHILD";
+const CHILD: &str = "CHLOEDB_READ_ONLY_CHILD";
 
 /// The writer: run by `writer_in_another_process` in a child process (the
 /// test binary again, with this test alone); does nothing otherwise.
@@ -389,7 +389,7 @@ const CHILD: &str = "STRATA_READ_ONLY_CHILD";
 fn child_writer() {
     let Ok(path) = std::env::var(CHILD) else { return };
     let path = PathBuf::from(path);
-    let total: u64 = std::env::var("STRATA_READ_ONLY_TOTAL").unwrap().parse().unwrap();
+    let total: u64 = chloedb::env::var("CHLOEDB_READ_ONLY_TOTAL").unwrap().parse().unwrap();
     let src = Arc::new(MapSource::default());
     let layout = if path.extension().is_some_and(|e| e == "dir") { Layout::Directory } else { Layout::SingleFile };
     let db = Arc::new(Database::open(&path, DbOptions { memtable_max_docs: 300, segment_max_docs: 200, ..writer_opts(&src, layout) }).unwrap());
@@ -429,7 +429,7 @@ fn spawn_writer(path: &Path, total: u64) -> std::process::Child {
     Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "child_writer", "--test-threads=1", "--nocapture", "-q"])
         .env(CHILD, path)
-        .env("STRATA_READ_ONLY_TOTAL", total.to_string())
+        .env("CHLOEDB_READ_ONLY_TOTAL", total.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()

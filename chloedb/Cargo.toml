@@ -92,7 +92,7 @@ baselines = ["dep:rusqlite", "dep:tantivy"]
 # Power losses, full disks and failing syncs for tests (`storage::io`).
 fault-injection = []
 # DataFusion runs plans' operators with `ExecOptions::engine` (or
-# STRATA_ENGINE=datafusion): `chloedb::query::df`.
+# CHLOEDB_ENGINE=datafusion): `chloedb::query::df`.
 datafusion = ["dep:datafusion", "dep:tokio"]
 # Importing Parquet files into Strata tables and exporting tables to
 # Parquet (`chloedb::parquet`), and rows as Arrow batches and back

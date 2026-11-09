@@ -381,9 +381,9 @@ impl Default for Slo {
 }
 
 /// Where a server runs: its name if given (`--node-name`), the machine
-/// and zone (`STRATA_NODE` or `NODE_NAME`, `STRATA_ZONE`), and its image
-/// (`STRATA_IMAGE`, which the operator sets; its digest when it pins one,
-/// or `STRATA_IMAGE_DIGEST`).
+/// and zone (`CHLOEDB_NODE` or `NODE_NAME`, `CHLOEDB_ZONE`), and its image
+/// (`CHLOEDB_IMAGE`, which the operator sets; its digest when it pins one,
+/// or `CHLOEDB_IMAGE_DIGEST`).
 #[derive(Clone, Debug, Default)]
 pub struct Place {
     pub name: Option<String>,
@@ -397,10 +397,10 @@ impl Place {
     /// From the environment, with `name` given or not.
     pub fn from_env(name: Option<String>) -> Place {
         let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-        let image = var("STRATA_IMAGE");
-        let digest = var("STRATA_IMAGE_DIGEST").or_else(|| image.as_deref().and_then(crate::operator::upgrade::digest_of));
-        // On Kubernetes the operator names the pod (`STRATA_POD`).
-        Place { name: name.or_else(|| var("STRATA_POD")), node: var("STRATA_NODE").or_else(|| var("NODE_NAME")), zone: var("STRATA_ZONE"), image, digest }
+        let image = var("CHLOEDB_IMAGE");
+        let digest = var("CHLOEDB_IMAGE_DIGEST").or_else(|| image.as_deref().and_then(crate::operator::upgrade::digest_of));
+        // On Kubernetes the operator names the pod (`CHLOEDB_POD`).
+        Place { name: name.or_else(|| var("CHLOEDB_POD")), node: var("CHLOEDB_NODE").or_else(|| var("NODE_NAME")), zone: var("CHLOEDB_ZONE"), image, digest }
     }
 
     /// Its version: this build's, and the image's.
@@ -551,7 +551,7 @@ pub struct Service {
     /// `None`: not counted).
     pub query_memory: Option<Arc<MemoryBudget>>,
     /// The engine of compound queries' joins, groups and sorts, here or
-    /// above a coordinator's shards ([`Engine`]; `STRATA_ENGINE`, by
+    /// above a coordinator's shards ([`Engine`]; `CHLOEDB_ENGINE`, by
     /// default `auto`).
     pub engine: Engine,
     /// The most write requests in the write path at once (embedding,

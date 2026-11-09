@@ -119,7 +119,7 @@ async fn manifest() -> Json<Value> {
 }
 
 async fn view() -> Response {
-    let body = match std::env::var_os("STRATA_SHEETS_UI_DIR") {
+    let body = match std::env::var_os("CHLOEDB_SHEETS_UI_DIR") {
         Some(d) => std::fs::read_to_string(std::path::Path::new(&d).join("view.js")).unwrap_or_else(|_| VIEW.into()),
         None => VIEW.into(),
     };

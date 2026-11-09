@@ -116,7 +116,7 @@ target/release/chloedb-server --demo 20000 --db products.strata
 Or from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
 
 ```sh
-docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
+docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v strata:/data \
   ghcr.io/chloetech-ai/strata-server:latest --db /data/my.strata --listen 0.0.0.0:7700
 ```
 

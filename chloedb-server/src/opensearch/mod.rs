@@ -732,7 +732,7 @@ impl Os {
     }
 
     fn cluster_name(&self) -> String {
-        std::env::var("STRATA_CLUSTER_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "strata".into())
+        chloedb::env::var("CHLOEDB_CLUSTER_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "strata".into())
     }
 
     async fn info(&self) -> Json {

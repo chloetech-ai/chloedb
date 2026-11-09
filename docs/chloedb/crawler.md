@@ -35,14 +35,14 @@ At the default pace, a page a second for one site ([below](#what-it-does-with-a-
 The crawler writes to any chloedb-server, one server or a coordinator, with a key that can write (and an admin key to grow a cluster):
 
 ```bash
-chloedb-crawl serve --strata http://coordinator:7700 --key "$STRATA_KEY" --token "$CRAWL_TOKEN" \
+chloedb-crawl serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$CRAWL_TOKEN" \
   --listen 0.0.0.0:7800 --grow kube --split-rows 5000000
 ```
 
 and the coordinator shows it as an app when told where it is, with the crawler's token:
 
 ```bash
-STRATA_APP_TOKEN="$CRAWL_TOKEN" chloedb-server --shards ... --app crawler=http://crawler-host:7800
+CHLOEDB_APP_TOKEN="$CRAWL_TOKEN" chloedb-server --shards ... --app crawler=http://crawler-host:7800
 ```
 
 `--grow` says how the cluster gets a shard: `kube` asks the Kubernetes operator for one more (`POST /v1/admin/kube`, the coordinator must run under the operator), `servers=URL,URL` adds empty servers started for it, by their gRPC URLs, one at a time, and `off` never grows. Each new shard gets its share of the slots by a rebalance (`POST /v1/admin/rebalance`) while the crawl keeps writing.
@@ -98,7 +98,7 @@ The upgrader moves the crawler with the servers, since it runs their image. Remo
 
 A crawl's page shows pages fetched and rows written a second, with the moments the table was made and shards were added; the shards filling and splitting; the table's columns, with when each was added, and the fields found so far with the column each went to; a search of the table through ChloeDB (`MATCH` and `bm25` over the body, or the latest rows); what it did, with the SQL it ran; the last pages read; and problems (robots.txt, timeouts, answers that were not HTML, refused rows). Pause, Resume and Stop act at once; a stopped crawl writes the pages it has read.
 
-The view is a module the crawler serves (`chloedb-crawl/ui/view.js`, compiled in; `STRATA_CRAWL_UI_DIR=chloedb-crawl/ui` reads it from disk), loaded and run by the command center as the [apps](server.md#apps) section describes.
+The view is a module the crawler serves (`chloedb-crawl/ui/view.js`, compiled in; `CHLOEDB_CRAWL_UI_DIR=chloedb-crawl/ui` reads it from disk), loaded and run by the command center as the [apps](server.md#apps) section describes.
 
 ## Options
 
@@ -122,12 +122,12 @@ The same names are the JSON fields of `POST /v1/crawls` and `POST /v1/preview`, 
 | `learn` | on | learn the site's template |
 | `embed` | | a model to embed the title and body with, into `emb` |
 | `user_agent` | `strata-crawl/0.1.0 (+https://chloetech-ai.github.io/strata/chloedb/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `strata-crawl` |
-| `contact` | `--contact` of `chloedb-crawl serve` (or `STRATA_CRAWL_CONTACT`) | whom a site's owner reaches about the crawl, an email address or a URL, sent in the user agent: `strata-crawl/0.1.0 (+https://...; ops@example.com)` |
+| `contact` | `--contact` of `chloedb-crawl serve` (or `CHLOEDB_CRAWL_CONTACT`) | whom a site's owner reaches about the crawl, an email address or a URL, sent in the user agent: `strata-crawl/0.1.0 (+https://...; ops@example.com)` |
 | `timeout_ms`, `max_bytes`, `batch` | 20,000, 5 MB, 200 | |
 
 ## API
 
-`chloedb-crawl serve` answers on `--listen` (`127.0.0.1:7800`). It takes no request that carries an `Origin` header, so no web page can drive it from a browser, and with `--token` (or `STRATA_CRAWL_TOKEN`) none without `Authorization: Bearer <token>`; with `--local` and no token it makes one and gives it to the coordinator it starts.
+`chloedb-crawl serve` answers on `--listen` (`127.0.0.1:7800`). It takes no request that carries an `Origin` header, so no web page can drive it from a browser, and with `--token` (or `CHLOEDB_CRAWL_TOKEN`) none without `Authorization: Bearer <token>`; with `--local` and no token it makes one and gives it to the coordinator it starts.
 
 | request | |
 |---|---|

@@ -7,9 +7,9 @@
 //! - a crawl into a local cluster of real strata-servers makes the table
 //!   from the first pages, adds a column a later field needs, writes every
 //!   page once, and grows the cluster past one shard as the table fills.
-//!   It needs the chloedb-server binary (`STRATA_SERVER_BIN`, else
+//!   It needs the chloedb-server binary (`CHLOEDB_SERVER_BIN`, else
 //!   `../chloedb-server/target/{ci,release,debug}/chloedb-server`), and is
-//!   skipped without it unless `STRATA_CRAWL_NEED_SERVER` is set.
+//!   skipped without it unless `CHLOEDB_CRAWL_NEED_SERVER` is set.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -182,7 +182,7 @@ async fn the_api_takes_no_browsers_and_needs_its_token() {
 }
 
 fn server_bin() -> Option<PathBuf> {
-    if let Some(b) = std::env::var_os("STRATA_SERVER_BIN") {
+    if let Some(b) = std::env::var_os("CHLOEDB_SERVER_BIN").or_else(|| std::env::var_os("STRATA_SERVER_BIN")) {
         return Some(PathBuf::from(b));
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../chloedb-server/target");
@@ -205,8 +205,8 @@ fn free_base(n: u16) -> u16 {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crawl_fills_a_table_and_grows_the_cluster() {
     let Some(bin) = server_bin() else {
-        assert!(std::env::var_os("STRATA_CRAWL_NEED_SERVER").is_none(), "no chloedb-server binary (STRATA_SERVER_BIN)");
-        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set STRATA_SERVER_BIN)");
+        assert!(std::env::var_os("CHLOEDB_CRAWL_NEED_SERVER").is_none(), "no chloedb-server binary (CHLOEDB_SERVER_BIN)");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
         return;
     };
     let (site, base) = serve_site().await;
@@ -292,8 +292,8 @@ async fn a_crawl_fills_a_table_and_grows_the_cluster() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crawl_grows_onto_servers_it_was_given() {
     let Some(bin) = server_bin() else {
-        assert!(std::env::var_os("STRATA_CRAWL_NEED_SERVER").is_none(), "no chloedb-server binary (STRATA_SERVER_BIN)");
-        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set STRATA_SERVER_BIN)");
+        assert!(std::env::var_os("CHLOEDB_CRAWL_NEED_SERVER").is_none(), "no chloedb-server binary (CHLOEDB_SERVER_BIN)");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
         return;
     };
     let (_site, base) = serve_site().await;
@@ -359,8 +359,8 @@ async fn a_crawl_grows_onto_servers_it_was_given() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crawl_waits_for_busy_pages_and_every_sites_crawl_delay() {
     let Some(bin) = server_bin() else {
-        assert!(std::env::var_os("STRATA_CRAWL_NEED_SERVER").is_none(), "no chloedb-server binary (STRATA_SERVER_BIN)");
-        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set STRATA_SERVER_BIN)");
+        assert!(std::env::var_os("CHLOEDB_CRAWL_NEED_SERVER").is_none(), "no chloedb-server binary (CHLOEDB_SERVER_BIN)");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
         return;
     };
     // The other site, linked as localhost: its pages a link apart, the time of each hit kept.

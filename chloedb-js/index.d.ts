@@ -10,7 +10,7 @@ type Tables = string | Iterable<string>;
 type Bytes = Uint8Array | ArrayBuffer | ArrayBufferView;
 
 export interface OpenOptions {
-  /** Where embedded fields' models are ($STRATA_MODELS or
+  /** Where embedded fields' models are ($CHLOEDB_MODELS or
    * ~/.local/share/strata/models by default). */
   models?: Path;
   /** Cores vector indexes build on and each query searches segments on
