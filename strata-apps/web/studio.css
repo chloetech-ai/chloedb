@@ -604,3 +604,13 @@ body.bare.designed { background: var(--bg); }
   .bare.designed.look-native #tabs { background: color-mix(in srgb, var(--card) 88%, transparent); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); }
   .bare.designed.look-native #tabs .tab.on { font-weight: 650; }
 }
+
+/* Model and web, per app (reach.mjs) */
+.reach-row { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; background: var(--card); cursor: pointer; }
+.reach-row input { margin-top: 3px; }
+.reach-row .grow { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.reach-row .what { color: var(--muted); font-size: 12.5px; }
+.reach-row.wants { border-color: color-mix(in srgb, #d97706 55%, var(--line)); }
+.reach-row .pill { white-space: nowrap; font-size: 11px; }
+.reach-row .pill.ok { color: #15803d; }
+.reach-row .pill.warn { color: #b45309; }

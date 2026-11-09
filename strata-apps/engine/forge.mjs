@@ -18,6 +18,7 @@ import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.
 import { checkRule, RULES_DOC } from './rules.mjs';
 import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
 import { LOOK, checkDrawn } from './look.mjs';
+import { ABILITIES, usesOf } from './reach.mjs';
 import { madeUp, tidyTitle } from './taste.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
@@ -130,13 +131,16 @@ A helper is a set of plain functions in the library, called as lib.NAME.fn(...) 
 
 returning an object of functions. Helpers get no app and no page (no app.*, document, window, ui, h): plain values in, plain values out, synchronous, so they run in the browser and in the server sandbox alike. Write a new helper (in "helpers") for logic that is not about one app's data and that another app could use; a new version may add functions and optional arguments, never change what an existing function returns.
 
-# Services: people, files, email, places
+# Services: people, files, email, places, a model, the web
 
 Every app gets these from the runtime. In views and components each call returns a Promise; the ones marked (functions too) also work in functions, where they return directly.
 - People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker) and lib.access for who may do what. An app that only one person uses needs none of it.
 - Files. app.upload(file) takes a File from <input type="file"> or a drop (a FileList or an array uploads each) and returns {id, name, type, size, url}; files are at most 15 MB. Keep the id in a keyword column, or a keyword[] for several. app.fileUrl(id) is the URL to show it (an img's src, a link); app.fileUrl(id, {download: true}) downloads it. app.files(ids) -> [{id, name, type, size, url}] (functions too). The shared ui.uploader, ui.image, ui.gallery, ui.imageViewer and ui.fileList do the rest.
 - Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
 - Places. app.geocode(address) -> up to 5 matches [{label, lat, lng}] (functions too). app.tiles is the URL template of map tiles; ui.map and ui.locationPicker use it, with lib.geo for distances.
+- A model. app.ask(prompt, {json, system, web}) -> the model's answer as text, or as a JSON value with json: true (functions too). A small, quick model answers in a few seconds; the same question gets the same kept answer at no cost, and each app has a daily number of questions. Use it for what needs judgement over words and no query or code can do: summarize notes, sort a message into one of the app's categories, pull fields out of pasted text, draft a reply, suggest tags or a next step. Never for what SQL, an "=expression" or a helper computes (totals, dates, sorting, search). Put the data it needs in the prompt (the rows, as short text or JSON), say exactly what to answer, and keep the answer in a column when it is worth keeping, so it is asked once. Call it on a person's tap (a button, or a function a button calls) or in a trigger on insert, never on every load, and show "Thinking..." while it answers. {web: true} lets the model search the web for current facts (prices, opening hours, news, a product's details): slower, 10 to 40 seconds, and its sources come in the last line.
+- The web. app.fetch(url, {method, json, headers}) -> {ok, status, url, type, json, text, title, body} (functions too): public pages and APIs over http and https (JSON comes parsed in json; an HTML page's readable words in text and its title in title). Addresses on this machine or its network are refused; at most 2 MB and 10 seconds; GET answers are kept for 10 minutes. Prefer an API that answers JSON over reading a page.
+- The owner switches a model, web search and the web on for each app; until then app.ask and app.fetch throw an error that says so (an error with refused set). Catch it where you call them and show the screen without the answer, saying in one line that it is off. In a build's tests they answer "" (null with json; {ok: false} from app.fetch) and call nothing: test what the app does with rows, not the model's words.
 Components may call these services (ui.signIn, ui.uploader and ui.map do), but still never the app's tables. Helpers call none of them.
 
 # Functions
@@ -148,8 +152,8 @@ A function's code defines
 a plain synchronous function: app calls return their results directly (no async, no await, no Promises). app in a function:
 - app.sql(sql, params) -> rows; app.insert(table, row) -> row; app.update(table, id, fields) -> row; app.remove(table, id)
 - app.call(slug, input); app.now() -> ISO time; app.log(...)
-- app.user (the signed-in person or null), app.people(), app.files(ids), app.email(msg), app.geocode(address): the services above
-It returns any JSON value. It runs in QuickJS with a 10 s limit, no network, no files, no require or import. Date, Math, JSON, RegExp, Array and the rest of standard JavaScript work.
+- app.user (the signed-in person or null), app.people(), app.files(ids), app.email(msg), app.geocode(address), app.ask(prompt, opts), app.fetch(url, opts): the services above
+It returns any JSON value. It runs in QuickJS with a 10 s limit (time spent waiting for app.ask and app.fetch does not count), no network but app.fetch, no files, no require or import. Date, Math, JSON, RegExp, Array and the rest of standard JavaScript work.
 
 A function may declare a trigger, "on": {"table": "tasks", "event": "insert"} (or "update" or "delete"): it then runs after each such write with input {row, table, event}, where row is the row as stored (the old row for delete). Writes a trigger makes run their own triggers, at most 3 deep. Use a trigger when something must happen whenever rows change (keep a counter, log history, fill a derived column); use a plain function that views call for work on demand.
 
@@ -1692,6 +1696,18 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   progress(candidate
     ? `Version ${n} is ready to try: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written; the app stays on version ${view.comp.n} until it is kept`
     : `Version ${n} is live: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written`);
+  // What the code uses of the model and the web, said in the build, with what
+  // is still switched off (reach.mjs: the owner switches each on).
+  if (engine.reach) {
+    const now = await store.resolve(appId, candidate ? n : undefined).catch(() => null);
+    const uses = now ? usesOf(now) : {};
+    const on = await engine.reach.switches(appId).catch(() => ({}));
+    const used = Object.keys(ABILITIES).filter((k) => uses[k]);
+    if (used.length) {
+      const off = used.filter((k) => !on[k]);
+      progress(`It uses ${used.map((k) => ABILITIES[k].title.toLowerCase()).join(', ')}${off.length ? `; switch on ${off.map((k) => `"${ABILITIES[k].title}"`).join(' and ')} for it in the studio, under "Model and web"; until then ${off.length === 1 ? 'it answers' : 'they answer'} that ${off.length === 1 ? 'it is' : 'they are'} off` : ''}`);
+    }
+  }
   const problemsLeft = [];
   // The app's tests run on the tables this version creates, while they are
   // empty; a failure goes to the repair like an error a person saw.

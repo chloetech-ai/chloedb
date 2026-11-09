@@ -43,6 +43,10 @@ const SYSTEM_TABLES = {
   sa_candidates: `CREATE TABLE sa_candidates (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT, signal KEYWORD,
     measure TEXT, suggestion KEYWORD, request KEYWORD, base INT, n INT, kept INT, status KEYWORD, summary TEXT, problems TEXT,
     cost FLOAT, ms INT, decided TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // What apps asked a model (reach.mjs app.ask), by "<app>:<hash of the
+  // question>": the kept answer, given again for the same question.
+  sa_asks: `CREATE TABLE sa_asks (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, kind KEYWORD, prompt TEXT, answer TEXT,
+    cost FLOAT, ms INT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // Per-app settings, by "<app>:<name>".
   sa_settings: `CREATE TABLE sa_settings (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name KEYWORD, value TEXT)`,
   // Apps, their pieces and the shared library as a graph (graph.mjs).

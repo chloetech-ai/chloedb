@@ -22,6 +22,8 @@ const app = Object.freeze({
   email: (msg) => __call('email', [msg || {}]),
   geocode: (q) => __call('geocode', [String(q || '')]),
   files: (ids) => __call('files', [[].concat(ids || [])]),
+  ask: (prompt, opts) => __call('ask', [prompt, opts || {}]),
+  fetch: (url, opts) => __call('fetch', [String(url || ''), opts || {}]),
   now: () => new Date().toISOString(),
   log: (...a) => __log(__fmt(a)),
 });
@@ -60,23 +62,36 @@ export async function checkFunction(code) {
 // Runs `code`'s run(input, app). `host(method, args)` answers app calls.
 // `helpers` are the shared helpers the app pins, available as lib.<name>.
 // `user` is the signed-in person whose action led to the call, or null.
-export async function runFunction(code, input, host, { timeoutMs = 10000, memoryBytes = 64 * 1024 * 1024, helpers = [], user = null } = {}) {
+// Waiting for a model or a web page (app.ask, app.fetch) does not count in
+// the function's time, up to waitMs in all.
+const WAITS = new Set(['ask', 'fetch']);
+export async function runFunction(code, input, host, { timeoutMs = 10000, waitMs = 180000, memoryBytes = 64 * 1024 * 1024, helpers = [], user = null } = {}) {
   const vm = await newAsyncContext();
   const logs = [];
   const started = Date.now();
+  let waited = 0;
+  // Refusals (a service switched off, a limit reached) stay refusals when the
+  // function lets them through: an answer for the person, not a bug.
+  const refusals = new Set();
+  const used = () => Date.now() - started - waited;
   try {
     vm.runtime.setMemoryLimit(memoryBytes);
     vm.runtime.setMaxStackSize(1024 * 1024);
-    vm.runtime.setInterruptHandler(shouldInterruptAfterDeadline(started + timeoutMs));
+    vm.runtime.setInterruptHandler(() => used() > timeoutMs);
     const hostFn = vm.newAsyncifiedFunction('__host', async (mH, aH) => {
       const method = vm.getString(mH);
       const args = JSON.parse(vm.getString(aH));
+      const t0 = Date.now();
       try {
-        if (Date.now() - started > timeoutMs) throw new Error('the function ran out of time');
+        if (used() > timeoutMs) throw new Error('the function ran out of time');
+        if (WAITS.has(method) && waited >= waitMs) throw new Error(`the function waited more than ${Math.round(waitMs / 1000)} s for app.ask and app.fetch`);
         const out = await host(method, args);
         return vm.newString(JSON.stringify({ ok: out === undefined ? null : out }));
       } catch (e) {
+        if (e && e.refused) refusals.add(String(e.message));
         return vm.newString(JSON.stringify({ err: String(e && e.message || e) }));
+      } finally {
+        if (WAITS.has(method)) waited += Date.now() - t0;
       }
     });
     vm.setProp(vm.global, '__host', hostFn);
@@ -94,6 +109,7 @@ export async function runFunction(code, input, host, { timeoutMs = 10000, memory
       res.error.dispose();
       const err = new Error(text);
       err.logs = logs;
+      if ([...refusals].some((m) => text.includes(m))) err.refused = true;
       throw err;
     }
     const out = JSON.parse(vm.getString(res.value));

@@ -1235,6 +1235,9 @@ function changeTab(draft) {
   } else if (st.version.n && st.version.summary && !st.version.trying) {
     out.push(h('div', { class: 'where' }, h('b', `Version ${st.version.n}: `), st.version.summary));
   }
+  // Model and web: in the Change tab once the app uses one or has one on.
+  const r = st.reach;
+  if (st.version.n && r && Object.keys(r.abilities || {}).some((k) => r.uses?.[k] || r.on?.[k])) out.push(reachBox(st));
   if (st.version.n && st.evolve) out.push(evolveBox(st));
   if (st.version.n) {
     const sugBtn = h('button', { class: 'btn small ghost', disabled: S.suggesting, onclick: async () => {
@@ -1258,6 +1261,32 @@ function changeTab(draft) {
         : h('div', { class: 'hint' }, 'No suggestions open.')));
   }
   return out;
+}
+
+// A model and the web for this app (engine/reach.mjs): each off until the
+// owner switches it on here; the app's code says which it uses.
+function reachBox(st) {
+  const r = st.reach;
+  const set = async (patch, said) => {
+    try { await api('POST', `/api/apps/${S.appId}/reach`, patch); toast(said); } catch (e) { toast(e.message); }
+    refreshApp();
+  };
+  const rows = Object.entries(r.abilities).map(([k, a]) => {
+    const used = !!r.uses?.[k];
+    const on = !!r.on?.[k];
+    return h('label', { class: `reach-row${used && !on ? ' wants' : ''}` },
+      h('input', { type: 'checkbox', checked: on, onchange: (e) => set({ [k]: e.target.checked }, `${a.title} ${e.target.checked ? 'switched on' : 'switched off'} for this app`) }),
+      h('span', { class: 'grow' }, h('b', a.title), h('span', { class: 'what' }, a.what)),
+      h('span', { class: `pill${used ? (on ? ' ok' : ' warn') : ''}` }, used ? (on ? 'in use' : 'used, off') : 'not used'));
+  });
+  const t = r.today || {};
+  const dollars = (n) => '$' + (n || 0).toFixed(3);
+  const perDay = h('select', { class: 'evmode', title: 'How many questions the app may send the model each day (kept answers are free)', onchange: (e) => set({ perDay: Number(e.target.value) }, `At most ${e.target.value} questions to the model a day`) },
+    [...new Set([20, 50, 200, 1000, r.on.perDay])].sort((a, b) => a - b).map((n) => h('option', { value: n, selected: n === r.on.perDay }, `${n} a day`)));
+  return h('div', { class: 'col reach', style: 'display:flex;flex-direction:column;gap:8px' },
+    h('div', { style: 'display:flex;align-items:center;gap:8px' }, h('h2', { class: 'label' }, 'Model and web'), h('span', { style: 'margin-left:auto' }, perDay)),
+    ...rows,
+    h('div', { class: 'hint' }, `Today: ${t.asks || 0} question${t.asks === 1 ? '' : 's'} to the model${t.cached ? ` and ${t.cached} answered from kept answers` : ''}, ${dollars(t.usd)}; ${t.fetches || 0} page${t.fetches === 1 ? '' : 's'} fetched. Model calls count in this studio's spending limit.`));
 }
 
 // Built from use: the changes the engine made on its own from patterns in
@@ -1425,6 +1454,7 @@ function insideTab() {
     c.forked_from ? h('span', { class: 'pill library' }, 'library') : null,
     extra ? h('span', { class: 'v' }, extra) : null, h('span', { class: 'v' }, `v${c.version}`));
   return [
+    ...(st.version.n && st.reach ? [reachBox(st)] : []),
     h('div', { class: 'where' }, `This app is data in Strata: version ${st.version.n} is the row `, h('span', { class: 'mono' }, `${st.app.id}#${st.version.n}`),
       ' of sa_compositions; each piece below is a row of sa_capabilities, stored as its SQL; the app\'s data is in tables named ', h('span', { class: 'mono' }, `app_${st.app.id}_*`), '. Click a piece to read its SQL.'),
     st.version.n ? h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
@@ -1520,6 +1550,8 @@ window.addEventListener('message', async (e) => {
         case 'files': value = (await api('POST', `${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: location.origin + f.url })); break;
         case 'email': value = (await api('POST', `${base}/email`, a)).email; break;
         case 'geocode': value = (await api('GET', `/api/geocode?q=${encodeURIComponent(a || '')}`)).places; break;
+        case 'ask': value = (await api('POST', `${base}/ask`, { prompt: a, opts: b || {} })).answer; break;
+        case 'fetch': value = (await api('POST', `${base}/fetch`, { url: a, opts: b || {} })).page; break;
         case 'upload': value = await upload(base, a); break;
         default: throw new Error(`no app.${m.method}`);
       }

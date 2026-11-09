@@ -159,6 +159,8 @@
     files: (ids) => rpc('files', [[].concat(ids || [])]),
     email: (msg) => rpc('email', [msg || {}]),
     geocode: (q) => rpc('geocode', [String(q || '')]),
+    ask: (prompt, opts) => rpc('ask', [prompt, opts || {}]),
+    fetch: (url, opts) => rpc('fetch', [String(url || ''), opts || {}]),
     tiles: `${origin}/api/tiles/{z}/{x}/{y}.png`,
     sql: (sql, params) => rpc('sql', [sql, params || {}]),
     insert: (table, row) => rpc('insert', [table, row || {}]),

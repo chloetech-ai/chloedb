@@ -49,12 +49,16 @@ export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
 // {chars, thinking}: characters of answer and of thinking so far, and the
 // answer so far. images: [{data (base64), type ('image/png')}] go before the
 // prompt, in one message.
-export function ask({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE }) {
+// tools: built-in tools the model may use (WebSearch, WebFetch for an app's
+// web ask); none by default. maxBudgetUsd stops a call that costs more.
+export function ask({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd }) {
   const over = overCap();
   if (over) return Promise.reject(over);
   return new Promise((resolve, reject) => {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
-      '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
+      '--tools', tools.join(','), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
+    if (tools.length) args.push('--allowedTools', tools.join(','));
+    if (maxBudgetUsd) args.push('--max-budget-usd', String(maxBudgetUsd));
     if (effort) args.push('--effort', effort);
     if (images.length) args.push('--input-format', 'stream-json');
     const env = { ...process.env, ENGRAM_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };

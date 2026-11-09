@@ -62,6 +62,7 @@ export class Engine extends EventEmitter {
     // triggers included, runs on that version.
     this.at = new AsyncLocalStorage();
     this.services = null; // set by the server: people, files, email, places
+    this.reach = null; // set by the server: a model and the web for apps (reach.mjs)
   }
 
   async init() {
@@ -208,10 +209,16 @@ export class Engine extends EventEmitter {
     // The person whose action led here (a view's call, or a write that fired
     // a trigger) stays the user all the way down.
     const user = ctx.user || null;
-    const inner = { depth, by: fn.id, user };
+    // A build's tests (checks.mjs) reach no model and no web: app.ask and
+    // app.fetch answer empty there.
+    const inner = { depth, by: fn.id, user, test: !!ctx.test };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
+    };
+    const reach = () => {
+      if (!this.reach) throw new Error('this engine runs without a model or the web for apps');
+      return this.reach;
     };
     // A rule with steps writes through a batch (its own, or the one of the
     // rule that called it), committed when the outermost rule ends.
@@ -232,6 +239,8 @@ export class Engine extends EventEmitter {
         case 'email': if (batch) { const msg = args[0]; batch.later(() => services().email(appId, msg, fn.id)); return { queued: true }; } return services().email(appId, args[0], fn.id);
         case 'geocode': return services().geocode(args[0]);
         case 'files': return services().fileInfo(appId, args[0]);
+        case 'ask': return reach().ask(appId, args[0], args[1] || {}, { test: inner.test });
+        case 'fetch': return reach().fetch(appId, args[0], args[1] || {}, { test: inner.test });
         default: throw new Error(`no app.${method}`);
       }
     };
@@ -342,7 +351,7 @@ export class Engine extends EventEmitter {
       if (!on || on.table !== table || ![].concat(on.event || 'insert').includes(event)) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
-      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null })
+      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test })
         .catch((e) => this.log(`trigger ${fn.id}: ${e.message}`));
       this.pending.add(run);
       run.finally(() => this.pending.delete(run));

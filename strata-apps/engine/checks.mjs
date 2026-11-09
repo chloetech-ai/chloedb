@@ -82,10 +82,10 @@ export async function runTests(engine, appId, tests, fresh) {
     const host = async (method, args) => {
       switch (method) {
         case 'sql': return engine.sql(appId, args[0], args[1]);
-        case 'insert': return engine.insert(appId, args[0], args[1], {});
-        case 'update': return engine.update(appId, args[0], args[1], args[2], {});
-        case 'remove': return engine.remove(appId, args[0], args[1], {});
-        case 'call': return (await engine.call(appId, args[0], args[1], { depth: 0 })).result;
+        case 'insert': return engine.insert(appId, args[0], args[1], { test: true });
+        case 'update': return engine.update(appId, args[0], args[1], args[2], { test: true });
+        case 'remove': return engine.remove(appId, args[0], args[1], { test: true });
+        case 'call': return (await engine.call(appId, args[0], args[1], { depth: 0, test: true })).result;
         default: throw new Error(`no ${method} in a test`);
       }
     };

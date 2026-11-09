@@ -2078,3 +2078,85 @@ test("Doable's lessons: an art direction the designs follow, three designs of di
   assert.deepEqual(rules({ ...m, front: true, tinyFields: 0, rowsShown: 0 }, 'phone'), [], 'a front page scrolls');
   assert.deepEqual(rules(m, 'computer'), []);
 });
+
+test('apps reach a model and the web only when switched on: cached answers, daily limits, public addresses only', async () => {
+  const { Reach, privateAddress, checkUrl, fetchPublic, usesOf, pageText } = await import('../engine/reach.mjs');
+  // addresses that are not the public internet
+  for (const ip of ['127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '::1', '::', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '64:ff9b::a00:1', '2002:c0a8:101::1']) assert.ok(privateAddress(ip), ip);
+  for (const ip of ['8.8.8.8', '1.1.1.1', '172.32.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8']) assert.ok(!privateAddress(ip), ip);
+  for (const u of ['http://localhost/', 'http://127.0.0.1:8080/', 'http://[::1]/', 'file:///etc/passwd', 'http://printer.local/', 'http://intranet/', 'http://a:b@example.com/', 'https://example.com:22/', 'http://169.254.169.254/latest/meta-data/']) assert.throws(() => checkUrl(u), /public internet|only http|name or password|port|not a URL/, u);
+  assert.equal(checkUrl('https://api.example.com/v1?q=1').hostname, 'api.example.com');
+  // redirects are checked again, and pages read
+  const pages = {
+    'https://example.com/go': { status: 302, headers: { location: 'http://127.0.0.1/admin' }, body: Buffer.from('') },
+    'https://example.com/api': { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' }, body: Buffer.from('{"price": 4.5}') },
+    'https://example.com/page': { status: 200, headers: { 'content-type': 'text/html' }, body: Buffer.from('<html><head><title>Fish &amp; Chips</title><style>x{}</style></head><body><h1>Menu</h1><script>evil()</script><p>Cod&nbsp;12</p></body></html>') },
+    'https://example.com/moved': { status: 301, headers: { location: '/api' }, body: Buffer.from('') },
+  };
+  const requestFn = async (u) => pages[u.href] || { status: 404, headers: {}, body: Buffer.from('') };
+  await assert.rejects(fetchPublic('https://example.com/go', {}, { requestFn }), /127\.0\.0\.1 is not on the public internet/);
+  assert.deepEqual((await fetchPublic('https://example.com/moved', {}, { requestFn })).json, { price: 4.5 });
+  const page = await fetchPublic('https://example.com/page', {}, { requestFn });
+  assert.equal(page.title, 'Fish & Chips');
+  assert.equal(page.text, 'Menu\nCod 12');
+  assert.match(pageText('<p>a</p><p>b</p>').text, /^a\nb$/);
+  // a real request to this machine is refused before it connects, and a name
+  // is refused at connect time when any address it resolves to is private
+  await assert.rejects(fetchPublic('http://127.0.0.1:8080/'), /public internet/);
+  await assert.rejects(fetchPublic('http://localhost.:8080/'), /public internet/);
+  const { publicLookup } = await import('../engine/reach.mjs');
+  const looked = await new Promise((ok) => publicLookup('localhost', { all: true }, (e, a) => ok(e || a)));
+  assert.match(String(looked.message), /localhost leads to (127\.0\.0\.1|::1), which is not on the public internet/);
+  // what an app's code uses
+  assert.deepEqual(usesOf({ views: [{ code: 'const t = await app.ask(`Sum up ${x}`, {web: true})' }], functions: [{ code: 'function run(i, app) { return app.fetch(i.url).json; }' }] }), { ask: true, web: true, fetch: true });
+  assert.deepEqual(usesOf({ views: [{ code: 'app.sql("SELECT 1")' }] }), { ask: false, web: false, fetch: false });
+
+  // switches, the cache and the limits, with a store and a model of our own
+  const settings = new Map();
+  const rows = new Map();
+  const store = {
+    setting: async (a, n) => settings.get(`${a}:${n}`) ?? null,
+    putSetting: async (a, n, v) => { settings.set(`${a}:${n}`, String(v)); },
+    db: { get: async (t, ids) => ids.map((id) => rows.get(id)).filter(Boolean), write: async (ops) => { for (const o of ops) rows.set(o.doc.id, o.doc); } },
+  };
+  const calls = [];
+  const llm = async (o) => { calls.push(o); return { text: /json/i.test(o.system) && /JSON value/.test(o.system) ? 'Here: {"tag": "billing"}' : `answer ${calls.length}`, cost: 0.001 }; };
+  const fetched = [];
+  const reach = new Reach({ store, ask: llm, fetchFn: async (url) => { fetched.push(url); return { ok: true, status: 200, url, json: { n: fetched.length } }; } });
+  await assert.rejects(reach.ask('a1', 'Sum up these notes'), (e) => e.refused && /switched off/.test(e.message));
+  await assert.rejects(reach.fetch('a1', 'https://example.com/api'), (e) => e.refused && /switched off/.test(e.message));
+  assert.equal(await reach.ask('a1', 'Sum up', {}, { test: true }), '', 'tests call nothing');
+  assert.equal(calls.length, 0);
+  await reach.setSwitches('a1', { ask: true, perDay: 2 });
+  assert.equal(await reach.ask('a1', 'Sum up these notes'), 'answer 1');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(await reach.ask('a1', 'Sum up these notes'), 'answer 1', 'the same question gets the kept answer');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'claude-haiku-5-5');
+  assert.deepEqual(calls[0].tools, []);
+  await assert.rejects(reach.ask('a1', 'Find today\'s price', { web: true }), /web search is switched off/);
+  assert.deepEqual(await reach.ask('a1', 'Tag this: my card was charged twice', { json: true }), { tag: 'billing' });
+  await assert.rejects(reach.ask('a1', 'A third question'), (e) => e.refused && /2 times today, its limit \(2\)/.test(e.message));
+  assert.deepEqual(await reach.usage('a1'), { day: new Date().toISOString().slice(0, 10), asks: 2, cached: 1, fetches: 0, usd: 0.002 });
+  await reach.setSwitches('a1', { web: true, fetch: true, perDay: 10 });
+  await reach.ask('a1', 'Find today\'s price', { web: true });
+  assert.deepEqual(calls.at(-1).tools, ['WebSearch', 'WebFetch']);
+  assert.ok(calls.at(-1).maxBudgetUsd > 0);
+  assert.deepEqual((await reach.fetch('a1', 'https://example.com/api')).json, { n: 1 });
+  assert.deepEqual((await reach.fetch('a1', 'https://example.com/api')).json, { n: 1 }, 'a GET is kept for a while');
+  await assert.rejects(reach.fetch('a1', 'http://10.0.0.5/'), /public internet/);
+  assert.equal(fetched.length, 1);
+  // another app has its own switches
+  await assert.rejects(reach.ask('b2', 'Sum up these notes'), /switched off/);
+});
+
+test('a function waits for app.ask outside its time limit, and a refusal stays a refusal', async () => {
+  const code = 'function run(input, app) { const a = app.ask("Sum up: " + input.notes); return a.toUpperCase(); }';
+  const host = async (m, args) => { if (m !== 'ask') throw new Error(`no ${m}`); await new Promise((r) => setTimeout(r, 300)); return `short: ${args[0].length}`; };
+  const out = await runFunction(code, { notes: 'abc' }, host, { timeoutMs: 150 });
+  assert.equal(out.result, 'SHORT: 11');
+  const off = async () => { throw Object.assign(new Error('app.ask is switched off for this app'), { refused: true }); };
+  await assert.rejects(runFunction(code, { notes: 'x' }, off), (e) => e.refused === true && /switched off/.test(e.message));
+  const caught = await runFunction('function run(i, app) { try { return app.ask("x"); } catch (e) { return "off"; } }', {}, off);
+  assert.equal(caught.result, 'off');
+});

@@ -21,6 +21,7 @@ import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
+import { Reach, ABILITIES, usesOf } from './reach.mjs';
 import { ensureDesigns } from './designs.mjs';
 import { Evolver, MODES } from './evolve.mjs';
 import { activity as activityOf } from './activity.mjs';
@@ -86,6 +87,9 @@ await engine.changes.init().catch((e) => { log(`changes: ${e.message}`); engine.
 await engine.store.usePatterns();
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
 engine.services = services;
+// A model and the web for apps, each switched on per app (reach.mjs).
+const reach = new Reach({ store: engine.store, log });
+engine.reach = reach;
 log(services.smtpUrl && services.smtpFrom ? `email goes out through ${new URL(services.smtpUrl).host}` : 'email is held in the outbox (set SMTP_URL and SMTP_FROM to send it)');
 
 // ---- who is asking: a session cookie, the same for every app here
@@ -452,7 +456,14 @@ async function appState(appId) {
     requests: await store.requests(appId, 30),
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
     drawn: drawnOf.get(appId) || null,
+    reach: await reachOf(appId, view),
   };
+}
+
+// What the app's code uses of the model and the web, what its owner has
+// switched on, and today's use.
+async function reachOf(appId, view) {
+  return { abilities: ABILITIES, uses: usesOf(view), on: await reach.switches(appId), today: await reach.usage(appId) };
 }
 
 const routes = [
@@ -528,6 +539,16 @@ const routes = [
       signals: (await evolver.state(id, view).catch(() => ({ signals: [] }))).signals };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
+  // A model and the web (reach.mjs): views ask through these, functions
+  // through the same calls in the engine.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/ask$/, async (b, [id]) => ({ answer: await reach.ask(id, b.prompt, b.opts || {}) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/fetch$/, async (b, [id]) => ({ page: await reach.fetch(id, b.url, b.opts || {}) })],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => reachOf(id, await engine.view(id))],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => {
+    const on = await reach.setSwitches(id, b || {});
+    log(`[${id}] reach: ${Object.keys(ABILITIES).filter((k) => on[k]).join(', ') || 'nothing'} switched on, ${on.perDay} model calls a day`);
+    return reachOf(id, await engine.view(id));
+  }],
   ['GET', /^\/api\/geocode$/, async (b, m, url) => ({ places: await services.geocode(url.searchParams.get('q')) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/track$/, async (b, [id], url, cx) => {
     // open and leave name a screen (leave with the time spent on it); abandon
