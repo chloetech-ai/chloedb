@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions } from './forge.mjs';
-import { repairRequest } from './look.mjs';
+import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions } from './sql.mjs';
@@ -311,7 +311,7 @@ engine.on('error', ({ app, cap, message, where }) => { repair(app, cap, message,
 const drawnOf = new Map();
 const lookedAt = new Map();
 engine.on('drawn', (d) => {
-  const high = d.found.filter((f) => f.severity === 'high');
+  const high = d.found.filter((f) => f.severity === 'high' && f.by !== 'look');
   drawnOf.set(d.app, { n: d.n, at: new Date().toISOString(), found: d.found, views: d.views, cost: d.cost, looked: d.looked, grade: d.grade ?? null });
   const said = d.found.length ? `${d.found.length} problem${d.found.length === 1 ? '' : 's'}, ${high.length} in the way` : 'nothing in the way';
   const look = d.looked ? ` (look $${(d.cost || 0).toFixed(3)})` : d.lookError ? ` (no look: ${d.lookError.slice(0, 120)})` : '';
@@ -319,7 +319,16 @@ engine.on('drawn', (d) => {
   const text = repairRequest(d.found);
   // A newer change already being built is drawn and checked in turn.
   const fixing = !!text && AUTOREPAIR && d.source !== 'look' && !running.has(d.app) && Date.now() - (lookedAt.get(d.app) || 0) > 600000;
-  broadcast('drawn', { app: d.app, n: d.n, found: d.found.length, high: high.length, fixing, grade: d.grade ?? null });
+  // The reviewer's opinions replace the ones it gave an earlier version.
+  const ideas = lookSuggestions(d.found);
+  broadcast('drawn', { app: d.app, n: d.n, found: d.found.length, high: high.length, fixing, grade: d.grade ?? null, suggested: ideas.length });
+  if (d.looked) {
+    (async () => {
+      for (const s of await engine.store.suggestions(d.app)) if (s.source === 'look') await engine.store.setSuggestion(s.id, 'replaced');
+      await engine.store.putSuggestions(d.app, ideas);
+      if (!engine.feed) broadcast('suggestions', { app: d.app });
+    })().catch((e) => log(`look suggestions ${d.app}: ${e.message}`));
+  }
   if (fixing) {
     lookedAt.set(d.app, Date.now());
     submit(d.app, text, 'look').catch((e) => log(`look ${d.app}: ${e.message}`));

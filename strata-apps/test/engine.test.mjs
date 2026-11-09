@@ -1868,7 +1868,7 @@ test('a new app is planned from a UX brief: a short name, who, the job, how ofte
 });
 
 test('every version is drawn on a phone and a computer, and the rules find what stands in the way', async (t) => {
-  const { rules, repairRequest, measure } = await import('../engine/look.mjs');
+  const { rules, repairRequest, lookSuggestions, measure } = await import('../engine/look.mjs');
   const ok = { width: 390, scroll: 390, height: 900, screen: 740, wide: null, small: [], smallCount: 0, repeats: [], faint: [], faintCount: 0, ids: [], fieldsOnFirstScreen: 1, text: 200, controls: 6 };
   assert.deepEqual(rules(ok, 'phone'), []);
   const bad = { ...ok, scroll: 520, wide: { right: 520, what: 'table' }, small: ['Edit (44×26 px)'], smallCount: 8, faint: [{ text: 'No streak yet', ratio: 3.1 }], faintCount: 3, ids: ['ai7nozxh2o'], repeats: ['"Mark done" ×28'] };
@@ -1882,6 +1882,16 @@ test('every version is drawn on a phone and a computer, and the rules find what 
   assert.ok(!rules(bad, 'computer').some((r) => /finger/.test(r.problem)));
   assert.equal(repairRequest([{ view: 'Today', device: 'phone', problem: 'x', severity: 'low' }]), null);
   assert.match(repairRequest([{ view: 'Books', device: 'phone', problem: 'The list is below the form.', fix: 'Put the list first', severity: 'high' }]), /- Books \(phone\): The list is below the form\. Fix: Put the list first$/);
+  // only what the rules measured is fixed on its own; the reviewer's opinions
+  // become suggestions the owner can take
+  const opinion = { view: 'Runs', device: 'phone', problem: 'The chart crowds out the runs.', fix: 'Put the runs above the chart.', severity: 'high', by: 'look' };
+  assert.equal(repairRequest([opinion]), null);
+  assert.match(repairRequest([opinion, { view: 'Runs', device: 'phone', problem: 'Fields under 16 px', severity: 'high', by: 'rule' }]), /Fields under 16 px/);
+  assert.doesNotMatch(repairRequest([opinion, { view: 'Runs', device: 'phone', problem: 'Fields under 16 px', severity: 'high', by: 'rule' }]), /chart/);
+  const ideas = lookSuggestions([{ ...opinion, severity: 'medium', fix: 'Name the tabs' }, opinion, opinion, { ...opinion, severity: 'low', fix: 'Tint it' }, { ...opinion, by: 'rule', fix: 'x' }]);
+  assert.deepEqual(ideas.map((i) => i.text), ['On Runs: Put the runs above the chart', 'On Runs: Name the tabs']);
+  assert.equal(ideas[0].why, 'The chart crowds out the runs.');
+  assert.equal(ideas[0].source, 'look');
   // measured in a browser, when one is installed
   const { loadPlaywright } = await import('../engine/checks.mjs');
   const pw = loadPlaywright();

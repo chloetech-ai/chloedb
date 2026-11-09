@@ -181,9 +181,10 @@ function connect() {
     const d = mine(e);
     if (!d) return;
     const graded = d.grade ? `, ${d.grade} of 5 for what it is for` : '';
-    toast(d.fixing ? `Checked the screens on a phone and a computer${graded}: ${d.high} thing${d.high === 1 ? '' : 's'} in the way; fixing ${d.high === 1 ? 'it' : 'them'} now`
-      : d.high ? `Checked the screens on a phone and a computer${graded}: ${d.high} thing${d.high === 1 ? '' : 's'} in the way`
-      : `Checked the screens on a phone and a computer${graded}: nothing in the way${d.found ? ` (${d.found} to polish)` : ''}`);
+    const ideas = d.suggested ? `; ${d.suggested} suggestion${d.suggested === 1 ? '' : 's'} under Suggested next` : '';
+    toast(d.fixing ? `Checked the screens on a phone and a computer${graded}: ${d.high} thing${d.high === 1 ? '' : 's'} in the way; fixing ${d.high === 1 ? 'it' : 'them'} now${ideas}`
+      : d.high ? `Checked the screens on a phone and a computer${graded}: ${d.high} thing${d.high === 1 ? '' : 's'} in the way${ideas}`
+      : `Checked the screens on a phone and a computer${graded}: nothing in the way${ideas}`);
   });
 }
 
@@ -1253,7 +1254,7 @@ function changeTab(draft) {
         h('div', { class: 'bar' },
           h('button', { class: 'btn small primary', onclick: async (e) => { e.target.disabled = true; await ask(s.text, { source: 'suggestion', suggestion: s.id }); refreshApp(); } }, 'Do it'),
           h('button', { class: 'btn small ghost', onclick: async () => { await api('POST', `/api/apps/${S.appId}/suggestions/${s.id}`, { status: 'dismissed' }); refreshApp(); } }, 'Not now'),
-          h('span', { class: 'src' }, s.source === 'use' ? (s.signal ? 'from a pattern in your use' : 'from your use') : s.source === 'component' ? 'newer shared piece' : 'from the last build'))))
+          h('span', { class: 'src' }, s.source === 'use' ? (s.signal ? 'from a pattern in your use' : 'from your use') : s.source === 'component' ? 'newer shared piece' : s.source === 'look' ? 'from the screen check' : 'from the last build'))))
         : h('div', { class: 'hint' }, 'No suggestions open.')));
   }
   return out;

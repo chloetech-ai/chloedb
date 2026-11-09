@@ -254,9 +254,30 @@ export async function checkDrawn(engine, appId, { v = null } = {}) {
 }
 
 // The request the repair gets for what stands in the way, or null.
+// Only what the code rules found is fixed on its own: those are measured
+// (a list below the fold, small fields, all zeros). What the reviewer model
+// thinks is an opinion, and becomes a suggestion the owner can take
+// (lookSuggestions); a repair built on an opinion made Run log worse.
 export function repairRequest(found) {
-  const high = found.filter((f) => f.severity === 'high');
+  const high = found.filter((f) => f.severity === 'high' && f.by !== 'look');
   if (!high.length) return null;
   const line = (f) => `- ${f.view || 'the app'} (${f.device}): ${f.problem.replace(/[.\s]+$/, '')}${f.fix ? `. Fix: ${f.fix}` : ''}`;
   return `The screens were drawn on a phone (390 px) and a computer (1280 px) and checked against the app's brief. Fix these, changing only what each fix needs and keeping everything else as it is:\n${high.slice(0, 8).map(line).join('\n')}`;
+}
+
+// The reviewer model's findings as suggestions for the owner: the most
+// pressing first, at most three, each a request the builder can take as it
+// is ("Do it" sends the text).
+const RANK = { high: 0, medium: 1 };
+export function lookSuggestions(found, max = 3) {
+  const seen = new Set();
+  return found
+    .filter((f) => f.by === 'look' && f.severity in RANK && (f.fix || f.problem))
+    .sort((a, b) => RANK[a.severity] - RANK[b.severity])
+    .map((f) => {
+      const what = String(f.fix || f.problem).replace(/[.\s]+$/, '');
+      return { text: `${f.view ? `On ${f.view}: ` : ''}${what}`.slice(0, 400), why: f.fix ? String(f.problem || '').slice(0, 400) || null : null, source: 'look' };
+    })
+    .filter((s) => (seen.has(s.text) ? false : seen.add(s.text)))
+    .slice(0, max);
 }
