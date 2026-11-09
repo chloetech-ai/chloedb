@@ -576,7 +576,10 @@ jobs:
         env:
           STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
           STRATA_APPS_NEED_SERVER: "1"
+        # The library is searched by meaning too: the model its meaning
+        # column names must be there before the tests write rows.
         run: |
+          for i in 1 2 3; do "$STRATA_SERVER_BIN" fetch-model potion-retrieval-32M && break; sleep 10; done
           npm ci
           npm test
 
