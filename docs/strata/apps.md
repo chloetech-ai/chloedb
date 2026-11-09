@@ -27,6 +27,37 @@ cd strata-apps && npm ci
 
 A first version of a small app takes about a minute and a bigger one 2 to 4 minutes; a change takes 20 seconds to 2 minutes. The time and the cost of each build are on its timeline (Versions → Timeline).
 
+## On a cluster
+
+A cluster the [operator](server.md#on-kubernetes) runs gets the engine from its `StrataCluster`, beside the crawler and the spreadsheets:
+
+```bash
+kubectl -n strata create secret generic anthropic --from-literal=key=sk-ant-...   # the model's key, once
+kubectl -n strata patch strata demo --type merge -p '{"spec": {
+  "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}],
+  "apps": {"serviceType": "NodePort", "nodePort": 30731, "publicUrl": "http://203.0.113.5:30731"}}}'
+```
+
+The operator runs the engine's own image (`ghcr.io/chloetech-ai/strata-apps`: Node, Playwright's Chromium for the drawn checks, and Claude Code) as a Deployment of one pod, `<cluster>-apps`, behind a Service of that name, and restarts the coordinators so that they list it: **Apps → App engine** appears in the command center, with the engine's apps, what the model has cost and **Open the studio**.
+
+- **Its apps are rows of the cluster.** It keeps them through the coordinators with the cluster's admin token (`tokenSecret`, which it needs). A coordinator over shards walks no graphs, so the engine walks its own (`engine/walk.mjs`), and it tells the model that an app reads its links a step at a time.
+- **The studio has an address of its own.** It runs code a model wrote, so the command center does not serve it: browsers reach it at `publicUrl`, through a node's port, a load balancer, or an Ingress of your own in front of the Service. **Open the studio** asks the engine, through strata-server and so only with an admin key, for a link that signs the browser in once, within two minutes, for 30 days. Anything else that reaches the studio's address gets a page that says where to sign in.
+- **The model's key is the cluster's** (`secretEnv`'s `ANTHROPIC_API_KEY`, as the agents use), and `spendCapUsd` stops every model call once the engine has spent that much (25 US dollars unless set; 0 for no limit).
+- **What it keeps outside the cluster** (files people gave its apps, map tiles, what the model has cost, Claude Code's home) is on a volume of its own, `<cluster>-apps`, kept when `spec.apps` goes and deleted with the cluster.
+
+| `spec.apps` | default | |
+|---|---|---|
+| `publicUrl` | | where browsers reach the studio; without it the command center lists the apps but cannot open the studio |
+| `serviceType`, `nodePort` | `ClusterIP` | the Service's type: `ClusterIP` (put an Ingress in front), `NodePort` (30000 to 32767) or `LoadBalancer` (most clouds bill for one) |
+| `spendCapUsd` | `25` | what the model may cost, in US dollars, counted across restarts |
+| `storage` | `1Gi` | its volume's `size` (it only grows) and `storageClassName` |
+| `image` | `ghcr.io/chloetech-ai/strata-apps:latest` | the engine's image |
+| `env` | | the engine's own settings (`STRATA_APPS_MODEL`, `STRATA_APPS_SMALL_MODEL`, ...); secrets go in `secretEnv` |
+| `paused` | `false` | no pod for now (the apps stay in their tables) |
+| `args`, `resources` | | more arguments of the engine, and its container's resources (250m CPU and 600 MiB asked, 1.5 GiB at most) |
+
+The image runs alone as well, with a strata-server of its own on its volume: `docker run -p 7730:7730 -v apps:/data -e ANTHROPIC_API_KEY ghcr.io/chloetech-ai/strata-apps` (without `STRATA_APP_TOKEN` there is no login, so keep that on your own machine).
+
 ## A model and the web, per app
 
 An app's code can ask a model and reach the web, each only once the app's owner has switched it on in the studio, under **Model and web**:
@@ -45,7 +76,8 @@ Until the owner switches it on, the call answers that it is off, and the app sho
 
 It is a prototype for one person or a small team:
 
-- **The studio has no sign-in.** Anyone who can reach it can change any app and spend on the model. Keep it on `127.0.0.1`, or put it behind the shared-key gate in `strata-apps/deploy/` (a link with a key, kept in a cookie).
+- **Run alone, the studio has no sign-in.** Anyone who can reach it can change any app and spend on the model. Keep it on `127.0.0.1`, put it behind the shared-key gate in `strata-apps/deploy/` (a link with a key, kept in a cookie), or run it beside a cluster ([above](#on-a-cluster)), where it signs in the cluster's admins.
+- **The apps it builds are for the people who run the studio.** Beside a cluster, an app's own pages need the studio's sign-in too, so only the cluster's admins open them; signing in an app's own users (Google sign-in and others) is planned.
 - **Set a spending limit.** `STRATA_APPS_SPEND_CAP_USD` stops every model call (builds, checks and the apps' own questions) once the engine has spent that much, counted from what Claude Code reports and kept across restarts.
 - **App data is checked in code, not on the server.** People sign in to apps, but row rules (`lib.access`) run in the app's views and functions; the server does not enforce them yet.
 - **A piece that passes the checks can still be wrong.** The engine opens every view after a build, draws each on a phone and a computer (with Playwright installed), fixes what its rules measure, and runs the app's tests; going back a version is the safety net for the rest.
@@ -56,4 +88,4 @@ It is a prototype for one person or a small team:
 cd strata-apps && npm test
 ```
 
-The tests that need a strata-server find `strata-server/target/release/strata-server` (or `STRATA_SERVER_BIN`) and are skipped without one; CI runs them all against the server it builds (`STRATA_APPS_NEED_SERVER=1`). No test calls a model.
+The tests that need a strata-server find `strata-server/target/release/strata-server` (or `STRATA_SERVER_BIN`) and are skipped without one; CI runs them all against the server it builds (`STRATA_APPS_NEED_SERVER=1`), and again against a cluster of two shards (`STRATA_APPS_TEST_SHARDS=2`, which starts the shards and a coordinator over them in place of a server). No test calls a model.
