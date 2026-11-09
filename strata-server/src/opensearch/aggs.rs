@@ -264,7 +264,7 @@ fn one<'a>(os: &'a Os, ix: &'a Index, pred: Option<String>, spec: &'a Json) -> B
                 return bucket(os, ix, with(&pred, format!("{x} IS NULL")), Map::new(), subs.as_ref()).await;
             }
             "global" => return bucket(os, ix, None, Map::new(), subs.as_ref()).await,
-            other => return Err(OsError::parsing(format!("Unknown aggregation type [{other}]: Strata's OpenSearch API answers terms, histogram, date_histogram, range, date_range, filters, filter, missing, global, avg, sum, min, max, value_count, cardinality, stats, extended_stats, percentiles and top_hits")).kind("unknown_named_object_exception")),
+            other => return Err(OsError::parsing(format!("Unknown aggregation type [{other}]: ChloeDB's OpenSearch API answers terms, histogram, date_histogram, range, date_range, filters, filter, missing, global, avg, sum, min, max, value_count, cardinality, stats, extended_stats, percentiles and top_hits")).kind("unknown_named_object_exception")),
         };
         if let Some(meta) = spec.get("meta") {
             answer["meta"] = meta.clone();
@@ -363,12 +363,12 @@ async fn terms(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body: &J
     }
     match body.get("include") {
         Some(Json::Array(a)) => conds.push(format!("{x} IN ({})", a.iter().map(|v| key_sql(v, false)).collect::<Vec<_>>().join(", "))),
-        Some(Json::String(_)) => return Err(OsError::parsing("Strata's terms aggregation includes a list of values, not a pattern")),
+        Some(Json::String(_)) => return Err(OsError::parsing("ChloeDB's terms aggregation includes a list of values, not a pattern")),
         _ => {}
     }
     match body.get("exclude") {
         Some(Json::Array(a)) if !a.is_empty() => conds.push(format!("{x} NOT IN ({})", a.iter().map(|v| key_sql(v, false)).collect::<Vec<_>>().join(", "))),
-        Some(Json::String(_)) => return Err(OsError::parsing("Strata's terms aggregation excludes a list of values, not a pattern")),
+        Some(Json::String(_)) => return Err(OsError::parsing("ChloeDB's terms aggregation excludes a list of values, not a pattern")),
         _ => {}
     }
     let p = if conds.is_empty() { pred.clone() } else { with(&pred, conds.join(" AND ")) };
@@ -460,10 +460,10 @@ async fn composite(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
             "terms" => (x, None),
             "date_histogram" if date => {
                 let i = b.get("calendar_interval").or_else(|| b.get("fixed_interval")).or_else(|| b.get("interval")).and_then(Json::as_str).unwrap_or_default();
-                let u = calendar_unit(i).ok_or_else(|| OsError::parsing(format!("Strata's composite date_histogram takes a calendar unit (day, week, month, ...), not [{i}]")))?;
+                let u = calendar_unit(i).ok_or_else(|| OsError::parsing(format!("ChloeDB's composite date_histogram takes a calendar unit (day, week, month, ...), not [{i}]")))?;
                 (format!("date_trunc('{}', {x})", u.name()), Some(u))
             }
-            k => return Err(OsError::parsing(format!("Strata's composite aggregation takes terms and date_histogram sources, not [{k}]"))),
+            k => return Err(OsError::parsing(format!("ChloeDB's composite aggregation takes terms and date_histogram sources, not [{k}]"))),
         };
         if b.get("missing_bucket").and_then(Json::as_bool) != Some(true) {
             conds.push(format!("{} IS NOT NULL", value_of(cx, field)?.0));
@@ -510,7 +510,7 @@ async fn composite(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
         }
     }
     if page.len() < size && r.rows.len() > COMPOSITE_GROUPS {
-        return Err(OsError::new(400, "illegal_argument_exception", format!("Strata's composite aggregation pages through at most {COMPOSITE_GROUPS} groups")));
+        return Err(OsError::new(400, "illegal_argument_exception", format!("ChloeDB's composite aggregation pages through at most {COMPOSITE_GROUPS} groups")));
     }
     let mut buckets = Vec::new();
     for (k, n) in &page {
@@ -572,10 +572,10 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     let field = body.get("field").and_then(Json::as_str).ok_or_else(|| OsError::parsing(format!("[{what}] requires a field")))?;
     let (x, is_date) = value_of(cx, field)?;
     if dates && !is_date {
-        return Err(OsError::parsing(format!("Strata's date_histogram reads a date field; [{field}] is not one (a histogram reads numbers)")));
+        return Err(OsError::parsing(format!("ChloeDB's date_histogram reads a date field; [{field}] is not one (a histogram reads numbers)")));
     }
     if !dates && cx.ix.single_numbers.as_ref().is_some_and(|s| !s.contains(field)) && matches!(cx.target(field), Target::Json(_, Some(Kind::Long | Kind::Double))) {
-        return Err(OsError::new(400, "illegal_argument_exception", format!("Strata's histogram reads a number field of one value a document; documents of [{field}] hold arrays of them")));
+        return Err(OsError::new(400, "illegal_argument_exception", format!("ChloeDB's histogram reads a number field of one value a document; documents of [{field}] hold arrays of them")));
     }
     let interval = if dates {
         let cal = body.get("calendar_interval").and_then(Json::as_str);

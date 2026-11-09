@@ -56,7 +56,7 @@ export function tokens(sql) {
 }
 
 const READS = new Set(["SELECT", "WITH", "VALUES", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "TABLE"]);
-// Verbs that change something (and those Strata refuses, checked all the same).
+// Verbs that change something (and those ChloeDB refuses, checked all the same).
 const WRITES = new Set(["INSERT", "UPDATE", "DELETE", "REPLACE", "UPSERT", "MERGE", "TRUNCATE", "CREATE", "DROP", "ALTER", "COPY", "GRANT", "REVOKE"]);
 
 /**

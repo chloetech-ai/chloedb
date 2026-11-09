@@ -1,4 +1,4 @@
-//! Strata command-line shell: run SQL against a database file.
+//! ChloeDB command-line shell: run SQL against a database file.
 //!
 //! strata <file> "SELECT ..."             run one statement
 //! strata <file> < queries.sql            run statements from stdin, one per line or ';'-terminated
@@ -25,7 +25,7 @@ use strata::storage::{CheckpointOptions, DbOptions, Layout};
 use strata::Value;
 
 #[derive(Parser)]
-#[command(name = "strata", version, about = "Run SQL against a Strata database file")]
+#[command(name = "strata", version, about = "Run SQL against a ChloeDB database file")]
 struct Args {
     /// Database file.
     file: PathBuf,
@@ -153,6 +153,8 @@ fn run(db: &Db, sql: &str, params: &Params, args: &Args, out: &mut impl Write) -
 }
 
 fn main() {
+    // CHLOEDB_* settings are read under their STRATA_* names (strata::env).
+    strata::env::adopt_new_names();
     let args = Args::parse();
     let read_only = DbOptions { read_only: true, ..DbOptions::default() };
     let opened = match args.read_only {

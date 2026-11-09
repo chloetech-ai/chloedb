@@ -1,6 +1,6 @@
 import { Input, Params, Plan, Result, Row, Schema, Searchable, Value } from "./common.js";
 
-export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, StrataError, Value } from "./common.js";
+export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, Value } from "./common.js";
 export { Client, ClientOptions, connect } from "./client.js";
 
 type Path = string | URL;
@@ -30,7 +30,7 @@ export interface CreateOptions extends OpenOptions {
   directory?: boolean;
 }
 
-/** A Strata database opened in this process, from its file: no server.
+/** A ChloeDB database opened in this process, from its file: no server.
  * Only one process may have a database open to write it at a time; others
  * may open it with `readOnly`. */
 export declare class Database extends Searchable {
@@ -118,7 +118,7 @@ export declare function trainCodebook(vectors: Iterable<number[] | Float32Array>
 export declare const version: string;
 
 export interface NearbyOptions {
-  /** The server's --token or an API key ($STRATA_TOKEN by default). */
+  /** The server's --token or an API key ($CHLOEDB_TOKEN, or $STRATA_TOKEN, by default). */
   token?: string;
   /** Tiles held each way around the user (default 2: a 5 x 5 square). */
   reach?: number;

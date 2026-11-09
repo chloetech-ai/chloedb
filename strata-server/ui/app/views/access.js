@@ -203,7 +203,7 @@ function ask({ title, body, ok = "Confirm", danger = false, reason = null, wide 
   });
 }
 const facts = (rows) => h("dl", { class: "ro-facts" }, rows.filter(Boolean).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
-/** An answer from a server without this route (axum's empty 404/405), not Strata's error. */
+/** An answer from a server without this route (axum's empty 404/405), not ChloeDB's error. */
 const missing = (e) => (e?.status === 404 || e?.status === 405) && !e?.body?.error;
 
 const SCOPES = [

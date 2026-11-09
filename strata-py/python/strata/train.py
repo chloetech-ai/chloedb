@@ -227,7 +227,7 @@ def sequence(
 
 
 def _models_dir(models: str | os.PathLike | None) -> str:
-    return os.fspath(models) if models is not None else os.environ.get("STRATA_MODELS") or os.path.expanduser("~/.local/share/strata/models")
+    return os.fspath(models) if models is not None else os.environ.get("CHLOEDB_MODELS") or os.environ.get("STRATA_MODELS") or os.path.expanduser("~/.local/share/strata/models")
 
 
 def write_vectors(source: Any, name: str, *, models: str | os.PathLike | None = None) -> int:

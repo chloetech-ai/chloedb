@@ -91,7 +91,7 @@ pub fn open_store(url: &str) -> Result<Arc<dyn ObjectStore>> {
     }
     #[cfg(not(feature = "s3"))]
     if url.to_ascii_lowercase().starts_with("s3") && url.contains("://") {
-        return Err(Error::Schema(format!("{url}: this build of Strata has no S3 support (feature s3)")));
+        return Err(Error::Schema(format!("{url}: this build of ChloeDB has no S3 support (feature s3)")));
     }
     Ok(Arc::new(DirStore::new(url)?))
 }

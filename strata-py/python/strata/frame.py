@@ -1,4 +1,4 @@
-"""Frames: a lazy dataframe over Strata tables, written as Polars writes
+"""Frames: a lazy dataframe over ChloeDB tables, written as Polars writes
 one, run where the data is.
 
 A `Frame` is a query: nothing is read until it is collected
@@ -61,7 +61,7 @@ from .build import (
 __all__ = ["Frame", "GroupBy", "FrameStore", "concat", "len_"]
 
 # Rows a search, near or rank_by keeps unless asked for another number: a
-# query ranked by a score always sends its limit, since Strata answers one
+# query ranked by a score always sends its limit, since ChloeDB answers one
 # without a LIMIT with 100 rows.
 DEFAULT_K = 100
 
@@ -206,7 +206,7 @@ class _Render:
             return str(v)
         if isinstance(v, float):
             if not math.isfinite(v):
-                raise StrataError(f"Strata's numbers are finite, not {v!r}")
+                raise StrataError(f"ChloeDB's numbers are finite, not {v!r}")
             return repr(v)
         return self.param(v)
 
@@ -878,7 +878,7 @@ class Frame:
         if other._store is not self._store:
             raise StrataError("join takes frames of one store: copy one with write_to first")
         if how not in ("inner", "left"):
-            raise StrataError(f"join's how is 'inner' or 'left', not {how!r} (Strata has no right, full or cross joins)")
+            raise StrataError(f"join's how is 'inner' or 'left', not {how!r} (ChloeDB has no right, full or cross joins)")
         if on is not None:
             left_on = right_on = on
         if left_on is None or right_on is None:

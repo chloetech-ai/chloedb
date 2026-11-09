@@ -101,7 +101,7 @@ final class Sql {
         return word.equals("SELECT") || word.equals("WITH") || word.equals("EXPLAIN") || word.equals("VALUES");
     }
 
-    /** A Strata error as JDBC's. */
+    /** A ChloeDB error as JDBC's. */
     static SQLException error(RuntimeException e) {
         String m = e.getMessage() == null ? e.toString() : e.getMessage();
         if (e instanceof StrataException) {
@@ -114,6 +114,6 @@ final class Sql {
     }
 
     static SQLFeatureNotSupportedException unsupported(String what) {
-        return new SQLFeatureNotSupportedException("Strata's JDBC driver does not support " + what, "0A000");
+        return new SQLFeatureNotSupportedException("ChloeDB's JDBC driver does not support " + what, "0A000");
     }
 }

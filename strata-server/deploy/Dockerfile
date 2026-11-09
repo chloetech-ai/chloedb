@@ -36,6 +36,9 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/ /usr/local/bin/
+# ChloeDB was called Strata: each program answers to its new name too
+# (chloedb-server, chloedb-crawl), and its old one keeps working.
+RUN ln -s strata-server /usr/local/bin/chloedb-server && ln -s strata-crawl /usr/local/bin/chloedb-crawl
 # engine-compare's traffic profiles (engine-compare plan/replay --profile).
 COPY strata-server/deploy/compare/profiles /usr/local/share/engine-compare/profiles
 EXPOSE 7700 7701 7800

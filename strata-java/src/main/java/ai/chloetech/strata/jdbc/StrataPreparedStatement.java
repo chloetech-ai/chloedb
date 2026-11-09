@@ -525,7 +525,7 @@ public final class StrataPreparedStatement extends StrataStatement implements Pr
         return new Parameters(values.length);
     }
 
-    /** The parameters' count; Strata takes any value for any parameter. */
+    /** The parameters' count; ChloeDB takes any value for any parameter. */
     static final class Parameters implements ParameterMetaData {
         private final int n;
 

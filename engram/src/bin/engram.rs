@@ -23,7 +23,7 @@ use serde_json::{json, Value as Json};
 use engram::{daemon, doctor, embed, hook, install, mcp, paths, transcript, ui};
 
 #[derive(Parser)]
-#[command(name = "engram", version, about = "Automatic long-term context for Claude Code, stored in Strata")]
+#[command(name = "engram", version, about = "Automatic long-term context for Claude Code, stored in ChloeDB")]
 struct Cli {
     /// Project directory (default: $CLAUDE_PROJECT_DIR or the current directory).
     #[arg(long, global = true)]

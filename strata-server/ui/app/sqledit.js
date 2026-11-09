@@ -7,7 +7,7 @@
 import { h, clear, highlightSql } from "./core.js";
 import { paths as listPaths, cachedPaths, pathType, lit } from "./catalog.js";
 
-/** Strata's functions: [name, arguments, what it is]. */
+/** ChloeDB's functions: [name, arguments, what it is]. */
 export const FUNCS = [
   ["MATCH", "field, 'words'", "a full-text condition: words, \"phrases\", prefix*, typo~, AND, OR, NOT"],
   ["bm25", "field, 'text'", "the BM25 score of a text field for the words"],

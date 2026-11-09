@@ -1,4 +1,4 @@
-"""Strata from Python.
+"""ChloeDB from Python.
 
 `Database` runs the database in this process (a file, or a directory of
 segment files); `Client` talks to a running `strata-server` over HTTP. Both
@@ -154,7 +154,7 @@ def __getattr__(name: str) -> Any:
 
 
 def upgrade(path: str | os.PathLike) -> tuple[str, int, int] | None:
-    """Copy the database at `path`, written by a version of Strata from
+    """Copy the database at `path`, written by a version of ChloeDB from
     before field ids (which no longer opens), into this version's format in
     its place. The old one is kept as ``<path>.before-field-ids``. Returns
     None when it needs no upgrade, else (the old database's path, tables
@@ -216,7 +216,7 @@ class _Pending:
 
 
 class Database(Search, FrameStore):
-    """A Strata database opened in this process.
+    """A ChloeDB database opened in this process.
 
     Create one with `Database.create` (or `strata.open` with a schema), open
     an existing one with `Database.open`, or `strata.connect(path)` for
@@ -427,7 +427,7 @@ class Database(Search, FrameStore):
         """Writes the tables (all, or `tables`) to a new SQLite file, from
         one snapshot: rows, keys, references, NOT NULL and DEFAULT, B-tree
         indexes (`indexes`), an FTS5 index over each table's text fields
-        kept in step by triggers (`fts`), and the Strata schemas in table
+        kept in step by triggers (`fts`), and the ChloeDB schemas in table
         `_strata_tables` (`schemas`), which an import restores. Vectors are
         float32 blobs (`F32_BLOB(n)`), lists, edges and sparse weights JSON,
         timestamps UTC text. Returns {tables: [{table, rows, indexes, fts,
@@ -455,7 +455,7 @@ class Database(Search, FrameStore):
         snapshot: to the file `path` when it ends in .parquet (one table),
         else to a new directory of `<table>.parquet` files; `path` may be an
         `s3://` URL. Each file is compressed with Zstandard and keeps the
-        table's Strata schema (unless not `schemas`), which `import_parquet`
+        table's ChloeDB schema (unless not `schemas`), which `import_parquet`
         restores; any Parquet
         reader (pyarrow, polars, DuckDB, Spark) reads the columns: vectors
         as fixed-size lists of float32, timestamps as UTC microseconds,
@@ -585,7 +585,7 @@ def from_sqlite(sqlite_path: str | os.PathLike, path: str | os.PathLike, *, tabl
 def plan_sqlite(sqlite_path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False) -> dict:
     """What `from_sqlite` would make of a SQLite file, without writing:
     {tables: [...], skipped: {name: why}}, each table the schema of the
-    Strata table it becomes (with its `source`, `columns` and `notes`). Edit
+    ChloeDB table it becomes (with its `source`, `columns` and `notes`). Edit
     the plan and pass it to `from_sqlite` as `schemas`."""
     return json.loads(_strata.Database.plan_sqlite(os.fspath(sqlite_path), _names(tables), _schemas_json(schemas), blobs_base64))
 

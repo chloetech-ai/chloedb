@@ -95,9 +95,10 @@ class JdbcTest {
     @Test
     void theDriverIsFoundByItsUrl() throws Exception {
         assertInstanceOf(StrataDriver.class, DriverManager.getDriver("jdbc:strata:any.strata"));
+        assertInstanceOf(StrataDriver.class, DriverManager.getDriver("jdbc:chloedb:any.strata"));
         assertFalse(new StrataDriver().acceptsURL("jdbc:sqlite:any.db"));
         assertNull(new StrataDriver().connect("jdbc:sqlite:any.db", new Properties()));
-        assertEquals("Strata", conn.getMetaData().getDatabaseProductName());
+        assertEquals("ChloeDB", conn.getMetaData().getDatabaseProductName());
         assertEquals(url + "?schema=" + schema, conn.getMetaData().getURL());
     }
 
@@ -117,6 +118,13 @@ class JdbcTest {
             assertTrue(rs.next());
             assertEquals(20, rs.getInt(1));
             assertFalse(rs.next());
+        }
+        // The database's new name (it was called Strata) opens it too.
+        try (Connection byNewName = DriverManager.getConnection("jdbc:chloedb:" + dir.resolve("books.strata"));
+                Statement s = byNewName.createStatement();
+                ResultSet rs = s.executeQuery("SELECT COUNT(*) FROM books")) {
+            assertTrue(rs.next());
+            assertEquals(20, rs.getInt(1));
         }
         assertThrows(SQLException.class, () -> DriverManager.getConnection(url + "?threads=many"));
     }

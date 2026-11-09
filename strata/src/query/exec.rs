@@ -346,12 +346,12 @@ pub enum Engine {
 }
 
 impl Engine {
-    /// `STRATA_ENGINE`: `operators`, `auto`, `datafusion` or
+    /// `CHLOEDB_ENGINE` (or `STRATA_ENGINE`): `operators`, `auto`, `datafusion` or
     /// `datafusion-only`; anything else, or nothing, the default
     /// ([`Engine::Auto`] with the feature `datafusion`, the operators
     /// without).
     pub fn from_env() -> Engine {
-        match std::env::var("STRATA_ENGINE").as_deref() {
+        match crate::env::var("STRATA_ENGINE").as_deref() {
             Ok("operators") => Engine::Operators,
             Ok("auto") => Engine::Auto,
             Ok("datafusion") => Engine::DataFusion,

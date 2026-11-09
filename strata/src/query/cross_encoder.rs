@@ -195,14 +195,14 @@ impl CrossEncoder {
             #[cfg(feature = "onnx")]
             return Ok(CrossEncoder { name: name.into(), hash, net: Net::Onnx(onnx::Onnx::open(dir, max_tokens).map_err(|e| model_err(name, e))?) });
             #[cfg(not(feature = "onnx"))]
-            return Err(model_err(name, "a model.onnx runs through ONNX Runtime: build Strata with the `onnx` feature"));
+            return Err(model_err(name, "a model.onnx runs through ONNX Runtime: build ChloeDB with the `onnx` feature"));
         }
         #[cfg(feature = "bert")]
         return Ok(CrossEncoder { name: name.into(), hash, net: Net::Bert(bert::Bert::open(name, dir, max_tokens)?) });
         #[cfg(not(feature = "bert"))]
         {
             let _ = (hash, max_tokens);
-            Err(model_err(name, "a model.safetensors runs through candle: build Strata with the `bert` feature"))
+            Err(model_err(name, "a model.safetensors runs through candle: build ChloeDB with the `bert` feature"))
         }
     }
 
@@ -225,7 +225,7 @@ impl CrossEncoder {
         #[cfg(not(feature = "hosted"))]
         {
             let _ = hash;
-            Err(model_err(name, "a model served elsewhere is called over HTTP: build Strata with the `hosted` feature"))
+            Err(model_err(name, "a model served elsewhere is called over HTTP: build ChloeDB with the `hosted` feature"))
         }
     }
 

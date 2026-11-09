@@ -163,7 +163,7 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         "quota": {"vcpus": quota, "needs": need, "kind": kind},
         "cost": cost,
         "warnings": warnings,
-        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on EKS, from strata-server's cloud view", &objects)},
+        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A ChloeDB cluster on EKS, from strata-server's cloud view", &objects)},
         "objects": objects,
         "commands": crate::cloud::with_token_secret(&f.cluster, &commands),
         "teardown": teardown,
@@ -271,7 +271,7 @@ pub fn template(p: &Plan, m: &Machine, principal_arn: &str) -> Json {
     }}));
     json!({
         "AWSTemplateFormatVersion": "2010-09-09",
-        "Description": format!("Strata cluster {name}: EKS with {} {} nodes ({}), made by strata-server's cloud view", p.nodes, m.name, if p.spot { "spot" } else { "on demand" }),
+        "Description": format!("ChloeDB cluster {name}: EKS with {} {} nodes ({}), made by strata-server's cloud view", p.nodes, m.name, if p.spot { "spot" } else { "on demand" }),
         "Resources": r,
         "Outputs": {
             "ClusterName": {"Value": {"Ref": "Cluster"}},

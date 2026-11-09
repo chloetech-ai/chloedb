@@ -1245,6 +1245,8 @@ pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: 
 
 /// Serves `router` on `listener`, over TLS with `access.tls`.
 async fn serve_router(router: axum::Router, listener: TcpListener, access: &Access) -> std::io::Result<()> {
+    // x-chloedb-* headers are read as their x-strata-* names (crate::names).
+    let router = crate::names::http_layer(router);
     let Some(tls) = &access.tls else {
         // Each request knows its peer's address (the audit log's `addr`).
         return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
@@ -1327,6 +1329,8 @@ pub struct Check {
 
 impl tonic::service::Interceptor for Check {
     fn call(&mut self, mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        // x-chloedb-* metadata is read as its x-strata-* names (crate::names).
+        crate::names::alias_metadata(req.metadata_mut());
         match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
             Some(who) => {
                 req.extensions_mut().insert(who);

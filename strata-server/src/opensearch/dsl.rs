@@ -475,7 +475,7 @@ pub fn compile(q: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
                 Target::Text(c, _) => {
                     let w = normalize_word(&v);
                     if w.is_empty() || !w.chars().all(char::is_alphanumeric) {
-                        return Err(OsError::parsing(format!("Strata's prefix query on text field [{f}] takes one word, not [{v}]")));
+                        return Err(OsError::parsing(format!("ChloeDB's prefix query on text field [{f}] takes one word, not [{v}]")));
                     }
                     format!("MATCH({}, {})", ident(&c), lit(&format!("{w}*")))
                 }
@@ -495,7 +495,7 @@ pub fn compile(q: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
                         let like = v.replace('%', "\\%").replace('_', "\\_").replace('*', "%").replace('?', "_");
                         Ok(Compiled { pred: Some(format!("{} LIKE {}", t.sql(), lit(&like))), score: Score::Const(boost(&opts)) })
                     }
-                    _ => Err(OsError::parsing(format!("Strata's wildcard query on [{f}] takes a trailing * alone, not [{v}]"))),
+                    _ => Err(OsError::parsing(format!("ChloeDB's wildcard query on [{f}] takes a trailing * alone, not [{v}]"))),
                 },
             }
         }
@@ -525,7 +525,7 @@ pub fn compile(q: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
         "multi_match" => compile_multi_match(body, cx),
         "query_string" | "simple_query_string" => compile_query_string(body, cx, kind == "simple_query_string"),
         "knn" => compile_knn(body, cx),
-        other => Err(OsError::parsing(format!("unknown query [{other}]: Strata's OpenSearch API answers bool, match, match_phrase, match_phrase_prefix, multi_match, query_string, simple_query_string, term, terms, ids, range, exists, prefix, wildcard, fuzzy, constant_score, dis_max, function_score, script_score, nested, knn, match_all and match_none")).kind("parsing_exception")),
+        other => Err(OsError::parsing(format!("unknown query [{other}]: ChloeDB's OpenSearch API answers bool, match, match_phrase, match_phrase_prefix, multi_match, query_string, simple_query_string, term, terms, ids, range, exists, prefix, wildcard, fuzzy, constant_score, dis_max, function_score, script_score, nested, knn, match_all and match_none")).kind("parsing_exception")),
     }
 }
 
@@ -1430,7 +1430,7 @@ fn compile_function_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError
     let mut factors = Vec::new();
     for f in &fns {
         if f.get("filter").is_some() {
-            return Err(OsError::parsing("Strata's function_score takes functions without a filter"));
+            return Err(OsError::parsing("ChloeDB's function_score takes functions without a filter"));
         }
         let weight = f.get("weight").and_then(Json::as_f64);
         let mut factor = None;
@@ -1489,7 +1489,7 @@ fn compile_function_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError
             });
         }
         if f.get("random_score").is_some() {
-            return Err(OsError::parsing("Strata's function_score takes field_value_factor, gauss, exp, linear, script_score and weight, not random_score"));
+            return Err(OsError::parsing("ChloeDB's function_score takes field_value_factor, gauss, exp, linear, script_score and weight, not random_score"));
         }
         let fx = match (factor, weight) {
             (Some(x), Some(w)) => format!("{} * {x}", num(w)),
@@ -1540,7 +1540,7 @@ fn compile_script_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> 
         None => return Err(OsError::parsing("[script_score] requires query")),
     };
     if body.get("min_score").is_some() {
-        return Err(OsError::parsing("Strata's script_score takes no min_score"));
+        return Err(OsError::parsing("ChloeDB's script_score takes no min_score"));
     }
     let script = body.get("script").ok_or_else(|| OsError::parsing("[script_score] requires script"))?;
     let score = match super::script::compile(script, cx, &query_score(&base.score))? {

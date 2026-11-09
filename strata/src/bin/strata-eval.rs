@@ -46,7 +46,7 @@ use strata::workload::run::{run_kind, BuildReport, QueryOutput, RunOptions, Syst
 use strata::workload::{generate, Kind, Workload, WorkloadConfig, WorkloadQuery};
 
 #[derive(Parser, Debug)]
-#[command(about = "Evaluate Strata on the shared workloads")]
+#[command(about = "Evaluate ChloeDB on the shared workloads")]
 struct Args {
     #[arg(long, value_delimiter = ',', default_value = "scifact")]
     collections: Vec<String>,

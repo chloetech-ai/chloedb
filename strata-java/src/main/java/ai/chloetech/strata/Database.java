@@ -9,8 +9,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * A Strata database opened in this process: a file (or a directory of
- * segment files) read and written by Strata's native library, as
+ * A ChloeDB database opened in this process: a file (or a directory of
+ * segment files) read and written by ChloeDB's native library, as
  * sqlite-jdbc opens a SQLite file. No server is involved.
  *
  * <pre>{@code
@@ -69,7 +69,7 @@ public final class Database implements AutoCloseable {
 
         /**
          * Where embedding models are, by name: a directory of model
-         * directories. Unless set, {@code STRATA_MODELS} or Strata's
+         * directories. Unless set, {@code STRATA_MODELS} or ChloeDB's
          * default.
          */
         public Options models(String dir) {
@@ -263,7 +263,7 @@ public final class Database implements AutoCloseable {
     }
 
     /**
-     * Copies the database at {@code path}, written by a version of Strata
+     * Copies the database at {@code path}, written by a version of ChloeDB
      * from before field ids (which no longer opens), into this version's
      * format in its place, keeping the old one as
      * {@code <path>.before-field-ids}. Returns {@code null} when it needs no
@@ -406,7 +406,7 @@ public final class Database implements AutoCloseable {
     /**
      * Writes the tables to a new SQLite file. {@code options}:
      * {@code tables}, {@code fts} (full-text tables, true),
-     * {@code indexes} (true), {@code schemas} (Strata's schemas, true).
+     * {@code indexes} (true), {@code schemas} (ChloeDB's schemas, true).
      * Returns what it wrote.
      */
     @SuppressWarnings("unchecked")

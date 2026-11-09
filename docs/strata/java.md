@@ -131,7 +131,7 @@ Their options are maps, with the names the [SQLite](sqlite.md) and [Parquet](par
 
 ## JDBC
 
-The jar is also a JDBC driver: `jdbc:strata:PATH` opens the database at `PATH` in the process, as `jdbc:sqlite:PATH` does a SQLite file. `DriverManager` finds it by itself (the jar lists it under `META-INF/services`).
+The jar is also a JDBC driver: `jdbc:strata:PATH` (or `jdbc:chloedb:PATH`, by the new name) opens the database at `PATH` in the process, as `jdbc:sqlite:PATH` does a SQLite file. `DriverManager` finds it by itself (the jar lists it under `META-INF/services`).
 
 ```java
 import java.sql.*;
@@ -165,6 +165,6 @@ The database's errors (a bad schema, query, value or file, a database open elsew
 
 The JNI boundary is two functions: `call(handle, method, args)` runs one of the library's methods with its arguments as one value and gives its answer as another, both in a small tagged binary form ([`codec.rs`](https://github.com/chloetech-ai/strata/blob/main/strata-java/src/codec.rs), and `Codec.java` on the Java side), and `free(handle)` drops a database once Java no longer holds it. So no JNI call is made per value, and what a method does lives in one place ([`calls.rs`](https://github.com/chloetech-ai/strata/blob/main/strata-java/src/calls.rs)), as the Python package does it: rows, schemas and options are read by the code that reads files and the HTTP API. JNI rather than the Foreign Function and Memory API (Panama) because Panama is final only from Java 22, and JNI runs on every Java from 11.
 
-The library is loaded from the path in the system property `strata.library` (or `STRATA_JNI_LIBRARY`) if set, else from the jar, unpacked to a temporary file that is removed once loaded, else from `java.library.path`. A jar and a library built from different checkouts refuse each other. Java 22 and later warn when a library is loaded without `--enable-native-access=ALL-UNNAMED` (the jar's manifest says so for an executable jar); pass it to the JVM.
+The library is loaded from the path in the system property `chloedb.library` (or `CHLOEDB_JNI_LIBRARY`; the old names `strata.library` and `STRATA_JNI_LIBRARY` work too) if set, else from the jar, unpacked to a temporary file that is removed once loaded, else from `java.library.path`. A jar and a library built from different checkouts refuse each other. Java 22 and later warn when a library is loaded without `--enable-native-access=ALL-UNNAMED` (the jar's manifest says so for an executable jar); pass it to the JVM.
 
 The Python package's query builder (`strata.Query`), Arrow answers, client of strata-server and training helpers have no Java counterpart yet: queries are SQL.

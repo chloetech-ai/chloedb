@@ -526,7 +526,7 @@ fn parquet_options(a: &mut Args) -> R<strata::parquet::ImportOptions> {
 
 #[cfg(not(feature = "parquet"))]
 fn no_parquet<T>() -> R<T> {
-    arg("this build of Strata's native library has no Parquet (cargo feature parquet)")
+    arg("this build of ChloeDB's native library has no Parquet (cargo feature parquet)")
 }
 
 fn train_options(a: &mut Args) -> R<TrainOptions> {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Engram live inspector: chat with Claude Code and watch Engram store,
 distill and recall, with every record, link and vector readable from the
-Strata file and an SQL console over it.
+ChloeDB file and an SQL console over it.
 
 Nothing here is simulated. Each chat turn is a real `claude -p` run in a
 demo project with Engram's hooks installed, so the records are the ones the
@@ -39,7 +39,7 @@ RPC_OPS = {"inspect_query", "inspect_layout", "inspect_embed", "search", "timeli
 SEED_README = """# Demo project
 
 A scratch project for the Engram live inspector. Claude Code works here;
-Engram records every turn into its Strata store.
+Engram records every turn into its ChloeDB store.
 """
 
 

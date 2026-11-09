@@ -1,6 +1,6 @@
-// Strata from JavaScript: the database in this process.
+// ChloeDB from JavaScript: the database in this process.
 //
-// `Database` opens a Strata file (or a directory of segment files) in this
+// `Database` opens a ChloeDB file (or a directory of segment files) in this
 // process, with no server, as a SQLite library opens a SQLite file: Node,
 // Bun and Deno load the native addon (strata.node) that runs it. `Client`
 // (client.js) talks to a running strata-server over HTTP instead, from any
@@ -36,18 +36,18 @@ import { fileURLToPath } from "node:url";
 import { Nearby } from "./nearby.js";
 import { StrataError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
-export { StrataError, Result } from "./common.js";
+export { ChloeDBError, StrataError, Result } from "./common.js";
 export { Client, connect } from "./client.js";
 export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The native addon: `$STRATA_NODE_ADDON`, else strata.node beside this
+/** The native addon: `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`), else strata.node beside this
  * file (`npm run build` makes it). */
 function load() {
-  const path = process.env.STRATA_NODE_ADDON || join(here, "strata.node");
+  const path = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON || join(here, "strata.node");
   if (!existsSync(path)) {
-    throw new StrataError(`the Strata addon is not built: ${path} is missing (run \`npm run build\` in strata-js, which needs Rust and a C compiler)`);
+    throw new StrataError(`the ChloeDB addon is not built: ${path} is missing (run \`npm run build\` in strata-js, which needs Rust and a C compiler)`);
   }
   return createRequire(import.meta.url)(path);
 }
@@ -130,7 +130,7 @@ function base64(bytes) {
 }
 
 /**
- * A Strata database opened in this process.
+ * A ChloeDB database opened in this process.
  *
  * Create one with `Database.create` (or `open` with a schema), open an
  * existing one with `Database.open`. Only one process may have a database
@@ -324,7 +324,7 @@ export class Database extends Searchable {
 
   /** Writes the tables (all, or `tables`) to a new SQLite file, from one
    * snapshot, with B-tree `indexes`, an FTS5 index over the text (`fts`)
-   * and the Strata `schemas`, which an import restores. Returns {tables}. */
+   * and the ChloeDB `schemas`, which an import restores. Returns {tables}. */
   async exportSqlite(path, { tables, fts = true, indexes = true, schemas = true } = {}) {
     return this.#call("export_sqlite", { path: paths(path), tables: names(tables), fts, indexes, schemas });
   }
@@ -435,7 +435,7 @@ export function fromSqlite(sqlitePath, path, { tables, schemas, blobsBase64 = fa
 }
 
 /** What `fromSqlite` would make of a SQLite file, without writing: {tables,
- * skipped}, each table the schema of the Strata table it becomes. Edit the
+ * skipped}, each table the schema of the ChloeDB table it becomes. Edit the
  * plan and pass it to `fromSqlite` as `schemas`. */
 export function planSqlite(sqlitePath, { tables, schemas, blobsBase64 = false } = {}) {
   return callStatic("plan_sqlite", { sqlite_path: paths(sqlitePath), tables: names(tables), schemas: schemas == null ? undefined : schemaJson(schemas), blobs_base64: blobsBase64 });
@@ -456,7 +456,7 @@ export function planParquet(parquetPath, { table, schema, key, blobsBase64 = fal
   return callStatic("plan_parquet", { parquet_path: paths(parquetPath), table, schema: schemaJson(schema), key, blobs_base64: blobsBase64 });
 }
 
-/** Copies the database at `path`, written by a version of Strata from
+/** Copies the database at `path`, written by a version of ChloeDB from
  * before field ids, into this version's format in its place, keeping the
  * old one as `<path>.before-field-ids`. Returns null when it needs no
  * upgrade, else {old, tables, rows}. */

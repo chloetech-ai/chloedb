@@ -9,7 +9,7 @@
 
 import { StrataError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
-export { StrataError, Result } from "./common.js";
+export { ChloeDBError, StrataError, Result } from "./common.js";
 
 /** Rows a write request carries. */
 export const WRITE_BATCH = 1000;
@@ -102,7 +102,7 @@ function retryAfter(v) {
 
 /**
  * A strata-server at `url` ("http://host:7700"). `token` is the server's
- * --token or an API key, if it needs one ($STRATA_TOKEN by default).
+ * --token or an API key, if it needs one ($CHLOEDB_TOKEN, or $STRATA_TOKEN, by default).
  * Errors the server reports reject with `StrataError` (its `status` and
  * `answer` set); one it cannot be reached rejects with fetch's error.
  *
@@ -118,7 +118,7 @@ export class Client extends Searchable {
   constructor(url = "http://127.0.0.1:7700", { token, timeout = 30_000, retryFor = 10_000, fetch: f } = {}) {
     super();
     this.url = String(url).replace(/\/+$/, "");
-    this.token = token ?? env("STRATA_TOKEN");
+    this.token = token ?? env("CHLOEDB_TOKEN") ?? env("STRATA_TOKEN");
     /** Milliseconds a request may take (0 for no limit). */
     this.timeout = timeout;
     /** Milliseconds a request refused with 429 is sent again for. */

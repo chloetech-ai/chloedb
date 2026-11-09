@@ -56,7 +56,7 @@ impl Analyzer {
     pub fn of(name: &str, version: u32) -> Result<Analyzer, String> {
         Analyzer::ALL.into_iter().find(|a| a.name() == name && a.version() == version).ok_or_else(|| {
             let known: Vec<String> = Analyzer::ALL.iter().map(|a| format!("{} {}", a.name(), a.version())).collect();
-            format!("analyzer {name} version {version} is not one this version of Strata has (it has {})", known.join(", "))
+            format!("analyzer {name} version {version} is not one this version of ChloeDB has (it has {})", known.join(", "))
         })
     }
 

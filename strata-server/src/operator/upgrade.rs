@@ -574,7 +574,7 @@ pub fn available(s: &State, image: &str) -> bool {
 pub fn schema() -> Json {
     json!({
         "type": "object",
-        "description": "Following an image tag for new versions of Strata: a new image is suggested (suggest) or rolled out (on), by its digest.",
+        "description": "Following an image tag for new versions of ChloeDB: a new image is suggested (suggest) or rolled out (on), by its digest.",
         "properties": {
             "mode": {"type": "string", "enum": ["off", "suggest", "on"], "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready."},
             "track": {"type": "string", "description": "The image tag to follow (default: the image's repository at its tag, or at latest)."},

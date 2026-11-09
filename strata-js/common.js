@@ -16,6 +16,10 @@ export class StrataError extends Error {
   }
 }
 
+/** `StrataError` by the database's new name (it was called Strata): the
+ * same class, so `instanceof` either one holds for every error. */
+export const ChloeDBError = StrataError;
+
 // ---------------------------------------------------------------- JSON
 
 // A BigInt has no JSON form: it is written as this marker in a string,
@@ -31,7 +35,7 @@ function replacer(_key, v) {
   return v;
 }
 
-/** A value as JSON text, as Strata reads it: typed arrays (`Float32Array`)
+/** A value as JSON text, as ChloeDB reads it: typed arrays (`Float32Array`)
  * become arrays of numbers, a `Map` an object, a `Date` ISO 8601 text, and
  * a BigInt a JSON integer, whole (a 64-bit key). */
 export function encode(value) {

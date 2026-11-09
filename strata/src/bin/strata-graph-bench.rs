@@ -369,13 +369,13 @@ fn traversal_study(db: &Db, table: &str, field: &str, ids: &[i64], edges: &[(i64
             let r = traverse::bfs(&mut csr, &[pos[&seeds[i]] as Node], hops, usize::MAX).unwrap();
             r.dist.values().filter(|&&d| d >= 1).count() as i64
         });
-        assert_eq!(counts, ccounts, "Strata and the CSR disagree on {dir} {hops}");
+        assert_eq!(counts, ccounts, "ChloeDB and the CSR disagree on {dir} {hops}");
         #[cfg_attr(not(feature = "baselines"), allow(unused_mut))]
         let mut row = json!({"strata_ms": stats_ms(&ms), "csr_ms": stats_ms(&cms), "rows": mean(&counts.iter().map(|&c| c as f64).collect::<Vec<_>>())});
         #[cfg(feature = "baselines")]
         if let Some(l) = &lite {
             let (lms, lcounts) = time_all(queries, |i| l.reach_count(seeds[i], hops, dir));
-            assert_eq!(counts, lcounts, "Strata and SQLite disagree on {dir} {hops}");
+            assert_eq!(counts, lcounts, "ChloeDB and SQLite disagree on {dir} {hops}");
             row["sqlite_ms"] = stats_ms(&lms);
         }
         eprintln!("reach {dir} {hops}: {row}");

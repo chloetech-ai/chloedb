@@ -210,7 +210,7 @@ fn notes(s: &Schema) -> Vec<String> {
             FieldType::Edges => out.push(format!("{}: edges as JSON text, without the graph index", f.name)),
             FieldType::Sparse => out.push(format!("{}: term weights as JSON text, without their index", f.name)),
             FieldType::Json => out.push(format!("{}: objects as JSON text", f.name)),
-            _ if f.media.is_some() => out.push(format!("{}: each file's description as JSON text (uri, sha256, mime and what else Strata read); the files stay where the URIs say", f.name)),
+            _ if f.media.is_some() => out.push(format!("{}: each file's description as JSON text (uri, sha256, mime and what else ChloeDB read); the files stay where the URIs say", f.name)),
             _ => {}
         }
         if !f.generated_from.is_empty() {

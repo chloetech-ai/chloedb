@@ -1,4 +1,4 @@
-//! strata-chaos: a chaos monkey for a Strata cluster.
+//! strata-chaos: a chaos monkey for a ChloeDB cluster.
 //!
 //! It starts a cluster of strata-server processes on this machine (shards
 //! of three copies with automatic failover, spare servers, two
@@ -52,7 +52,7 @@ use observe::{Events, Seen};
 use workload::Workload;
 
 #[derive(Parser)]
-#[command(name = "strata-chaos", about = "A chaos monkey for a Strata cluster of local processes")]
+#[command(name = "strata-chaos", about = "A chaos monkey for a ChloeDB cluster of local processes")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -513,8 +513,16 @@ fn print(j: &Json) {
     }
 }
 
+fn main() {
+    // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
+    // clap and the code read the old names, so the new ones are copied over
+    // before the runtime starts any thread.
+    strata::env::adopt_new_names();
+    run();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run() {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Faults => {

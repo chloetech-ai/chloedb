@@ -111,7 +111,7 @@ export function errorTitle(msg, status) {
   if (/^unknown (ranking )?function/i.test(msg)) return "Unknown function";
   if (/^unbound parameter|^:\w+ is not JSON/i.test(msg)) return "A parameter needs a value";
   if (/^duplicate primary key/i.test(msg)) return "A row with that key exists";
-  if (/^(SHOW|DESCRIBE|TRUNCATE|CREATE (INDEX|VIEW)|BEGIN|COMMIT|ROLLBACK|EXPLAIN)\b|is not a statement Strata runs|Strata runs one statement/i.test(msg)) return "Not a statement Strata runs";
+  if (/^(SHOW|DESCRIBE|TRUNCATE|CREATE (INDEX|VIEW)|BEGIN|COMMIT|ROLLBACK|EXPLAIN)\b|is not a statement (?:Strata|ChloeDB) runs|(?:Strata|ChloeDB) runs one statement/i.test(msg)) return "Not a statement ChloeDB runs";
   if (/so it has no words to search/i.test(msg)) return "Not a searchable field";
   if (/^\w+ is an? (?:KEYWORD|INT|FLOAT|TEXT|BOOL|TIMESTAMP|VECTOR|JSON)\b| takes a vector|^CAST\(/.test(msg)) return "A value of the wrong type";
   if (status === 401 || status === 403) return "Not allowed";

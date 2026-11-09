@@ -96,7 +96,7 @@ pub fn json_of(field: &Field, t: &PgType, text: &str) -> Result<Json, String> {
             // Strata's timestamps are microseconds within years 0 to 9999.
             return match text {
                 "infinity" | "-infinity" => Ok(Json::Null),
-                t if t.ends_with(" BC") => Err(bad("is before year 1, which a Strata TIMESTAMP does not hold")),
+                t if t.ends_with(" BC") => Err(bad("is before year 1, which a ChloeDB TIMESTAMP does not hold")),
                 t => Ok(json!(t)),
             };
         }

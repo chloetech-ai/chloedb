@@ -636,7 +636,7 @@ function render(page, r) {
     const sub = managed() && kube ? [
       h("b", {}, name),
       ` · ${plural(sp.shards, "shard")} × ${plural(sp.replicas, "copy", "copies")} · ${plural(sp.coordinators || 1, "coordinator")}`,
-      cur ? [" · ", h("span", { title: "The operator numbers each change of the StrataCluster's spec; this is not a Strata version" }, `spec v${cur.version}`), ` started ${clock(cur.atMs)} ${TZ}`, cur.by ? ` by ${cur.by === "upgrader" ? "the upgrader (automatic)" : cur.by === "operator" ? "the operator (automatic)" : cur.by === "autoscaler" ? "the autoscaler (automatic)" : cur.by}` : ""] : null,
+      cur ? [" · ", h("span", { title: "The operator numbers each change of the StrataCluster's spec; this is not a ChloeDB version" }, `spec v${cur.version}`), ` started ${clock(cur.atMs)} ${TZ}`, cur.by ? ` by ${cur.by === "upgrader" ? "the upgrader (automatic)" : cur.by === "operator" ? "the operator (automatic)" : cur.by === "autoscaler" ? "the autoscaler (automatic)" : cur.by}` : ""] : null,
     ] : kube ? [h("b", {}, name), " · machines of your own: no operator rolls changes out"] : "";
     const tabs = seg(TABS.filter(([k]) => managed() || k !== "history").map(([k, l]) => [k, l]), tab, (v) => setTab(v), { "aria-label": "Rollouts" });
     clear(head, h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Rollouts"), h("p", {}, sub)), h("div", { class: "tools" }, tabs)));
@@ -1064,7 +1064,7 @@ function render(page, r) {
           h("li", {}, "Hand each primary over to a restarted copy, then restart it the same way."),
           h("li", {}, "Restart the coordinators last; they talk to copies of both versions meanwhile.")),
         h("div", { class: "ro-cmds" }, cmds.map((c) => h("div", { class: "row nw" }, h("code", { class: "mono small grow" }, c), c.startsWith("#") ? null : h("button", { class: "btn xs ghost", title: "Copy", onclick: () => copy(c) }, icon("copy"))))),
-        h("div", { class: "small dim" }, "On Kubernetes, Strata's operator does this for you: tried on every node first, held by gates, verified, rolled back when a check fails.")),
+        h("div", { class: "small dim" }, "On Kubernetes, ChloeDB's operator does this for you: tried on every node first, held by gates, verified, rolled back when a check fails.")),
     });
   }
 
@@ -1208,7 +1208,7 @@ function render(page, r) {
       const cost = v !== cur ? rollbackCost(v) : null;
       return h("div", { class: "ro-ver" + (v === cur ? " cur" : "") + (isOpen ? " open" : "") },
         h("button", { class: "ro-ver-h", "aria-expanded": String(isOpen), onclick: () => { openVersion = isOpen ? null : v.version; drawHistory(); } },
-          h("b", { class: "ro-ver-n", title: "The operator's count of changes to the spec; not a Strata version" }, `spec v${v.version}`),
+          h("b", { class: "ro-ver-n", title: "The operator's count of changes to the spec; not a ChloeDB version" }, `spec v${v.version}`),
           h("div", { class: "ro-ver-t" }, h("div", {}, what), image ? h("div", { class: "small" }, vsaid(vOf(v.spec.image))) : null, h("div", { class: "small dim" }, meta), v.failed ? h("div", { class: "small ro-failed" }, `failed (${v.failed.step}): ${said(v.failed.text)}`) : null),
           tag ? h("span", { class: "ro-tag " + (tag === "running" ? "done" : tag === "failed" ? "bad" : "now") }, tag) : null),
         isOpen ? h("div", { class: "ro-ver-b stack" }, diffBlock(prev?.spec, v.spec),

@@ -1,4 +1,4 @@
-//! `strata-sheets serve`: the spreadsheets' API and view, for Strata's
+//! `strata-sheets serve`: the spreadsheets' API and view, for ChloeDB's
 //! command center; `strata-sheets import FILE` and `export ID` for scripts.
 
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use strata_sheets::books::Books;
 use strata_sheets::strata::Strata;
 
 #[derive(Parser)]
-#[command(name = "strata-sheets", version, about = "Spreadsheets kept in Strata: an app of its command center, with formulas, charts, pivots, xlsx, CSV and SQLite in and out, and the cluster's tables as sheets")]
+#[command(name = "strata-sheets", version, about = "Spreadsheets kept in ChloeDB: an app of its command center, with formulas, charts, pivots, xlsx, CSV and SQLite in and out, and the cluster's tables as sheets")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -208,8 +208,16 @@ async fn shutdown_signal() {
     let _ = ctrl_c.await;
 }
 
+fn main() {
+    // Settings may be named CHLOEDB_* (the name since the rename) or STRATA_*:
+    // clap and the code read the old names, so the new ones are copied over
+    // before the runtime starts any thread.
+    strata_sheets::adopt_new_env_names();
+    run();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run() {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "strata_sheets=info".into())).with_writer(std::io::stderr).with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr())).init();
     let cli = Cli::parse();
     match cli.cmd {

@@ -48,9 +48,9 @@ const MAX_BODY: usize = 64 << 20;
 pub const QUERY_LANGUAGE: &str = include_str!("../../docs/strata/query-language.md");
 pub const BUILD_AN_APP: &str = include_str!("../../docs/strata/build-an-app.md");
 
-const INSTRUCTIONS: &str = "Strata is a search database with SQL: full text (BM25), vectors, graphs and structured fields, in tables. \
+const INSTRUCTIONS: &str = "ChloeDB is a search database with SQL: full text (BM25), vectors, graphs and structured fields, in tables. \
 Start with list_tables: it gives each table's CREATE TABLE statement. \
-Strata SQL is its own dialect, not Postgres: MATCH(field, 'words') filters by text, ORDER BY bm25(field, 'words') DESC ranks by it, \
+ChloeDB SQL is its own dialect, not Postgres: MATCH(field, 'words') filters by text, ORDER BY bm25(field, 'words') DESC ranks by it, \
 similarity(vector_field, :p) ranks by meaning (bind :p in params as {\"embed\": \"some text\", \"field\": \"emb\"}), and search_docs finds the syntax of anything else. \
 query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON. \
 check_sql parses and binds a statement against the tables without running it, and explain shows how a SELECT runs. \
@@ -135,7 +135,7 @@ const PARAMS: &str = "Values of the statement's :name parameters, by name. A vec
 
 fn sql_schema(more: Json) -> Json {
     let mut props = json!({
-        "sql": {"type": "string", "description": "One Strata SQL statement."},
+        "sql": {"type": "string", "description": "One ChloeDB SQL statement."},
         "params": {"type": "object", "description": PARAMS},
     });
     if let (Some(p), Some(m)) = (props.as_object_mut(), more.as_object()) {
@@ -194,7 +194,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "check_sql",
         title: "Check a statement",
-        description: "Parse and bind one statement against the tables without running it: what it would do (a CREATE TABLE's schema, the table an INSERT, UPDATE or DELETE writes, the changes of an ALTER), or why Strata refuses it. Use it before execute. A SELECT is bound when it runs: check it with explain.",
+        description: "Parse and bind one statement against the tables without running it: what it would do (a CREATE TABLE's schema, the table an INSERT, UPDATE or DELETE writes, the changes of an ALTER), or why ChloeDB refuses it. Use it before execute. A SELECT is bound when it runs: check it with explain.",
         schema: || json!({"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}),
         read_only: true,
         destructive: false,
@@ -297,7 +297,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "search_docs",
         title: "Search the docs",
-        description: "Sections of Strata's query language reference and its Build an app guide that match the words given: the syntax of a function, an option, a type or a statement.",
+        description: "Sections of ChloeDB's query language reference and its Build an app guide that match the words given: the syntax of a function, an option, a type or a statement.",
         schema: || json!({"type": "object", "properties": {
             "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 3}
         }, "required": ["query"]}),
@@ -341,7 +341,7 @@ struct Resource {
 }
 
 const RESOURCES: &[Resource] = &[
-    Resource { uri: "strata://docs/query-language", name: "Strata query language", description: "The whole SQL reference: types, table options, search functions, ranking, joins, writes.", text: QUERY_LANGUAGE },
+    Resource { uri: "strata://docs/query-language", name: "ChloeDB query language", description: "The whole SQL reference: types, table options, search functions, ranking, joins, writes.", text: QUERY_LANGUAGE },
     Resource { uri: "strata://docs/build-an-app", name: "Build an app on strata-server", description: "A shop in one page: tables, writes, search, stock that never oversells, holds that expire, events counted once.", text: BUILD_AN_APP },
 ];
 
@@ -555,7 +555,7 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
             ok(&id, json!({
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false, "subscribe": false}},
-                "serverInfo": {"name": "strata", "title": "Strata", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": "strata", "title": "ChloeDB", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS,
             }))
         }

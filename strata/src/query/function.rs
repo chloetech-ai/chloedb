@@ -686,7 +686,7 @@ fn check_name(name: &str) -> Result<()> {
         return Err(err(format!("{name} is not a function name: letters, digits and underscores, not starting with a digit")));
     }
     if name.starts_with("__") {
-        return Err(err(format!("{name}: names starting with __ are Strata's own")));
+        return Err(err(format!("{name}: names starting with __ are ChloeDB's own")));
     }
     if RESERVED.contains(&name) {
         return Err(err(format!("{name} is a built-in function: a stored function takes another name")));

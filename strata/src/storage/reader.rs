@@ -285,7 +285,7 @@ impl Reader {
         };
         if manifest.is_legacy() && !self.opts.open_old {
             return Err(Error::Schema(format!(
-                "{} was written by a version of Strata from before field ids, which this one opens only to copy it into a new database: run strata::upgrade on it",
+                "{} was written by a version of ChloeDB from before field ids, which this one opens only to copy it into a new database: run strata::upgrade on it",
                 self.path.display()
             )));
         }

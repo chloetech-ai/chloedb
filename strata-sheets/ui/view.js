@@ -1,4 +1,4 @@
-// Sheets: spreadsheets kept in Strata, a page of its command center
+// Sheets: spreadsheets kept in ChloeDB, a page of its command center
 // (#/app/sheets). The command center loads this file through strata-server,
 // which forwards /v1/apps/sheets/... to strata-sheets, and runs it with its
 // own helpers: render(el, ctx) gets ctx.core (h, menu, modal, toast, ...),
@@ -1073,7 +1073,7 @@ function bookPage(root, ctx, id, rest) {
       { label: "This sheet as CSV", icon: "download", onclick: () => download("csv") },
     ]) }, icon("download"), "Export"),
     h("button", { class: "btn sm", title: "More", "aria-label": "More", onclick: (e) => core.menu(e.currentTarget, [
-      { label: "Save this sheet as a Strata table", icon: "db", onclick: () => toTableDialog() },
+      { label: "Save this sheet as a ChloeDB table", icon: "db", onclick: () => toTableDialog() },
       { label: "Run every query again", icon: "refresh", onclick: () => refreshQueries() },
       { label: "Named ranges", icon: "sliders", onclick: () => namesDialog() },
       { label: "Keyboard shortcuts", icon: "keyboard", onclick: () => shortcuts(core) },
@@ -1106,8 +1106,8 @@ function bookPage(root, ctx, id, rest) {
   function paintSaved() {
     const b = st.book;
     saved.classList.toggle("bad", !!b?.unsaved);
-    saved.textContent = inflight ? "Saving…" : b?.unsaved ? "Not saved yet: Strata did not answer (it will be saved again)" : b ? "Saved in Strata" : "Opening…";
-    saved.title = b?.unsaved || "Every change is written to Strata as you make it";
+    saved.textContent = inflight ? "Saving…" : b?.unsaved ? "Not saved yet: ChloeDB did not answer (it will be saved again)" : b ? "Saved in ChloeDB" : "Opening…";
+    saved.title = b?.unsaved || "Every change is written to ChloeDB as you make it";
   }
   /** Sends operations, in order after those sent before, and takes in the answer. */
   function send(ops, { quiet = false } = {}) {
@@ -1289,7 +1289,7 @@ function bookPage(root, ctx, id, rest) {
       { label: "Move right", icon: "right", onclick: () => s.index < n - 1 && send([{ op: "move_sheet", sheet: s.index, to: s.index + 1 }]).then(() => { if (st.sheet === s.index) st.sheet++; drawTabs(); }) },
       { label: "Hide", icon: "eye", onclick: () => { if (st.book.sheets.filter((x) => x.state === "visible").length < 2) { toast("A workbook shows at least one sheet", "bad"); return; } send([{ op: "hide_sheet", sheet: s.index, hidden: true }]).then(() => { if (st.sheet === s.index) openSheet(st.book.sheets.find((x) => x.state === "visible").index); }); } },
       { label: s.grid_lines ? "Hide the grid lines" : "Show the grid lines", icon: "table", onclick: () => send([{ op: "grid_lines", sheet: s.index, show: !s.grid_lines }]) },
-      { label: "Save as a Strata table", icon: "db", onclick: () => toTableDialog(s.index) },
+      { label: "Save as a ChloeDB table", icon: "db", onclick: () => toTableDialog(s.index) },
       "-",
       { label: "Delete", icon: "trash", danger: true, onclick: async () => {
         if (n < 2) { toast("A workbook keeps at least one sheet", "bad"); return; }
@@ -1867,7 +1867,7 @@ function bookPage(root, ctx, id, rest) {
     if (m && k === "5") { e.preventDefault(); toggleStyle("st", "font.strike")(); return true; }
     if (m && k === "f") { e.preventDefault(); findPanel(); return true; }
     if (m && k === "h") { e.preventDefault(); findPanel(true); return true; }
-    if (m && k === "s") { e.preventDefault(); toast("Every change is already saved in Strata", "ok", 2000); return true; }
+    if (m && k === "s") { e.preventDefault(); toast("Every change is already saved in ChloeDB", "ok", 2000); return true; }
     if (m && k === "\\") { e.preventDefault(); send([{ op: "clear", sheet: st.sheet, area: rect(usedArea()), what: "formatting" }]); return true; }
     if (m && e.shiftKey && k === "l") { e.preventDefault(); toggleFilter(); return true; }
     if (m && e.shiftKey && (k === "$" || e.code === "Digit4")) { e.preventDefault(); styleAll("num_fmt", "$#,##0.00"); return true; }
@@ -2362,7 +2362,7 @@ function bookPage(root, ctx, id, rest) {
     const keySel = h("select", { "aria-label": "Key" }, h("option", { value: "" }, "row (the row's number)"), heads.map((n) => h("option", { value: n }, n)));
     const out = h("div", { class: "small" });
     const go = h("button", { class: "btn primary" }, icon("db"), "Save as a table");
-    const m = core.modal({ title: `Save ${sh.name} as a Strata table`,
+    const m = core.modal({ title: `Save ${sh.name} as a ChloeDB table`,
       body: h("div", { class: "stack", style: { gap: "10px" } },
         h("p", { class: "small dim", style: { margin: 0 } }, "The first row names the columns; each row below it is a row of the table. Each column's type is what its cells hold (INT, FLOAT, BOOL or TEXT). Saving again writes the rows again (by their key)."),
         h("div", { class: "sx-form" }, h("label", {}, "Table"), nameIn, h("label", {}, "Key"), keySel), out),
@@ -2378,7 +2378,7 @@ function bookPage(root, ctx, id, rest) {
     };
   }
   async function deleteBook() {
-    if (!(await core.confirm({ title: `Delete ${st.book.name}?`, body: "Its sheets, charts and queries are deleted from Strata. This cannot be undone.", ok: "Delete", danger: true }))) return;
+    if (!(await core.confirm({ title: `Delete ${st.book.name}?`, body: "Its sheets, charts and queries are deleted from ChloeDB. This cannot be undone.", ok: "Delete", danger: true }))) return;
     try { await ctx.api(`/v1/books/${encodeURIComponent(id)}`, { method: "DELETE" }); toast(`Deleted ${st.book.name}`, "ok"); location.hash = ctx.href(); } catch (e) { toast(e.message, "bad"); }
   }
   nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); nameIn.blur(); } if (e.key === "Escape") { nameIn.value = st.book?.name || ""; nameIn.blur(); } });
@@ -2844,7 +2844,7 @@ function tablePage(root, ctx, table) {
     h("a", { class: "btn sm", title: "Query the table in the SQL workbench", href: "#/sql" }, icon("sql"), "SQL"));
   const bar = h("div", { class: "sx-tbar" }, svgIcon(core, G.filter), whereIn, searchIn, fieldSel,
     h("button", { class: "btn sm", onclick: () => { whereIn.value = ""; searchIn.value = ""; apply(); } }, "Clear"));
-  const foot = h("div", { class: "sx-foot" }, h("div", { class: "sx-stats", style: { flex: 1 } }, h("span", { class: "muted" }, "A table of the cluster: edits are written to Strata as you make them, and the rows are read again every 5 seconds")));
+  const foot = h("div", { class: "sx-foot" }, h("div", { class: "sx-stats", style: { flex: 1 } }, h("span", { class: "muted" }, "A table of the cluster: edits are written to ChloeDB as you make them, and the rows are read again every 5 seconds")));
   const stats = h("div", { class: "sx-stats" });
   foot.append(stats);
   root.append(h("div", { class: "sx-book" }, top, bar, grid.el, foot));
@@ -3121,7 +3121,7 @@ function homePage(root, ctx) {
   root.append(
     h("div", { class: "page-head" }, h("div", {},
       h("h1", {}, "Sheets"),
-      h("p", {}, "Spreadsheets kept in Strata: formulas (over 300 functions), formats, charts, pivots and SQL queries of the cluster's tables that fill cells. Every cell is a row of a Strata table, so every workbook can be searched; the cluster's own tables open here as sheets you can sort, filter and edit."),
+      h("p", {}, "Spreadsheets kept in ChloeDB: formulas (over 300 functions), formats, charts, pivots and SQL queries of the cluster's tables that fill cells. Every cell is a row of a ChloeDB table, so every workbook can be searched; the cluster's own tables open here as sheets you can sort, filter and edit."),
       info)),
     h("div", { class: "sx-home-grid" },
       h("div", { class: "stack", style: { gap: "16px" } },
@@ -3151,7 +3151,7 @@ function homePage(root, ctx) {
           { label: "Open", icon: "right", onclick: () => { location.hash = ctx.href("b", b.id); } },
           { label: "Download as Excel", icon: "download", onclick: () => downloadBook(b) },
           "-",
-          { label: "Delete", icon: "trash", danger: true, onclick: async () => { if (!(await core.confirm({ title: `Delete ${b.name}?`, body: "Its sheets, charts and queries are deleted from Strata. This cannot be undone.", ok: "Delete", danger: true }))) return; try { await ctx.api(`/v1/books/${encodeURIComponent(b.id)}`, { method: "DELETE" }); toast(`Deleted ${b.name}`, "ok"); loadBooks(); } catch (err) { toast(err.message, "bad"); } } },
+          { label: "Delete", icon: "trash", danger: true, onclick: async () => { if (!(await core.confirm({ title: `Delete ${b.name}?`, body: "Its sheets, charts and queries are deleted from ChloeDB. This cannot be undone.", ok: "Delete", danger: true }))) return; try { await ctx.api(`/v1/books/${encodeURIComponent(b.id)}`, { method: "DELETE" }); toast(`Deleted ${b.name}`, "ok"); loadBooks(); } catch (err) { toast(err.message, "bad"); } } },
         ]) }, icon("dots")) },
       ], { rows: list, sortKey: "updated_ms", desc: true, onRow: (b) => { location.hash = ctx.href("b", b.id); }, empty: core.empty("table", "No workbooks yet", "Make one, or import an Excel, CSV or SQLite file.", newBtn.cloneNode(true)) });
       t.querySelector(".empty button")?.addEventListener("click", newBook);
@@ -3225,7 +3225,7 @@ function homePage(root, ctx) {
     catch (e) { toast(`${file.name}: ${e.message}`, "bad", 8000); return; }
     const boxes = list.map((t) => { const cb = h("input", { type: "checkbox", checked: true, value: t.name }); return [t, cb]; });
     let where = "book";
-    const seg = core.seg([["book", "A workbook (a sheet a table)"], ["cluster", "Tables of the cluster"]], where, (v) => { where = v; go.textContent = v === "book" ? "Open as a workbook" : "Copy into the cluster"; note.textContent = v === "book" ? "Each table becomes a sheet: its first row the column names. Up to 2 million cells." : "Each table becomes a Strata table of the same name, with its columns' types, key and indexes, written with your key. Tables that exist already get the rows too."; });
+    const seg = core.seg([["book", "A workbook (a sheet a table)"], ["cluster", "Tables of the cluster"]], where, (v) => { where = v; go.textContent = v === "book" ? "Open as a workbook" : "Copy into the cluster"; note.textContent = v === "book" ? "Each table becomes a sheet: its first row the column names. Up to 2 million cells." : "Each table becomes a ChloeDB table of the same name, with its columns' types, key and indexes, written with your key. Tables that exist already get the rows too."; });
     const note = h("p", { class: "small dim", style: { margin: 0 } }, "Each table becomes a sheet: its first row the column names. Up to 2 million cells.");
     const go = h("button", { class: "btn primary" }, "Open as a workbook");
     const out = h("div", { class: "small" });
@@ -3261,7 +3261,7 @@ function homePage(root, ctx) {
 
   ctx.api("/v1/info", { timeout: 8000 }).then((j) => {
     if (gone) return;
-    info.textContent = `strata-sheets ${j.version} · ${j.engine || "IronCalc"} · ${j.open} open · workbooks in ${j.tables?.books} and ${j.tables?.cells}${j.strata?.error ? ` · Strata: ${j.strata.error}` : ""}`;
+    info.textContent = `strata-sheets ${j.version} · ${j.engine || "IronCalc"} · ${j.open} open · workbooks in ${j.tables?.books} and ${j.tables?.cells}${j.strata?.error ? ` · ChloeDB: ${j.strata.error}` : ""}`;
   }).catch(() => {});
   loadBooks(); loadTables();
   stops.push(core.every(15000, () => { loadBooks(); loadTables(); }, false));

@@ -675,7 +675,7 @@ function storesDrawer(j) {
   const rows = [j.store ? { url: null, shard: null, store: j.store, self: true } : null, ...(j.nodes || [])].filter(Boolean);
   const period = (sec) => sec % 86400 === 0 ? fmt.plural(sec / 86400, "day") : sec % 3600 === 0 ? fmt.plural(sec / 3600, "hour") : fmt.dur(sec);
   drawer({
-    title: "Log stores", sub: "a Strata database beside each server's, with the tables logs and queries", wide: true,
+    title: "Log stores", sub: "a ChloeDB database beside each server's, with the tables logs and queries", wide: true,
     body: [
       table([
         { key: "url", label: "server", render: (x) => h("span", { class: "mono small", title: x.url || "this server" }, x.self ? `${x.store?.node || "this server"} (this one)` : x.url && findCopy(x.url) ? copyName(x.url) : x.store?.node || x.url) },

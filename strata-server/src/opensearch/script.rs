@@ -65,7 +65,7 @@ fn tokens(src: &str) -> Result<Vec<Tok>, OsError> {
 }
 
 fn bad(src: &str, what: &str) -> OsError {
-    OsError::new(400, "script_exception", format!("compile error in [{src}]: Strata's script_score runs numbers, params, doc['field'].value, _score, + - * /, Math.log10/log/log1p/exp/sqrt/pow/abs/max/min, saturation, sigmoid and decayNumericGauss/Exp/Linear, not {what}"))
+    OsError::new(400, "script_exception", format!("compile error in [{src}]: ChloeDB's script_score runs numbers, params, doc['field'].value, _score, + - * /, Math.log10/log/log1p/exp/sqrt/pow/abs/max/min, saturation, sigmoid and decayNumericGauss/Exp/Linear, not {what}"))
 }
 
 struct P<'a, 'b> {
@@ -348,7 +348,7 @@ pub fn compile(script: &Json, cx: &Ctx, score: &str) -> Result<Result<String, f6
         _ => return Err(OsError::parsing("[script] is a source or an object with one")),
     };
     if lang != "painless" && lang != "expression" {
-        return Err(OsError::new(400, "illegal_argument_exception", format!("script_lang not supported [{lang}]: Strata's script_score runs a part of painless")));
+        return Err(OsError::new(400, "illegal_argument_exception", format!("script_lang not supported [{lang}]: ChloeDB's script_score runs a part of painless")));
     }
     let mut p = P { t: tokens(src)?, at: 0, src, params: &params, cx, score, read_score: false };
     if p.peek() == Some(&Tok::Name("return".into())) {

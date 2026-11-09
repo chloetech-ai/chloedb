@@ -74,7 +74,7 @@ export class Nearby {
     this.url = url.replace(/\/+$/, "");
     this.table = table;
     this.dir = dir;
-    this.token = token ?? process.env.STRATA_TOKEN;
+    this.token = token ?? process.env.CHLOEDB_TOKEN ?? process.env.STRATA_TOKEN;
     this.reach = reach;
     this.timeout = timeout;
     this.statusEvery = statusEvery;
