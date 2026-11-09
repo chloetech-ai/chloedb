@@ -545,10 +545,10 @@ function convRecord(r) {
     else {
       const el = document.createElement("details");
       const name = r.tag && r.tag !== "-" ? r.tag : r.kind;
-      el.className = "tool" + (r.kind === "error" ? " err" : "") + (name.startsWith("mcp__engram") ? " mem" : "");
+      el.className = "tool" + (r.kind === "error" ? " err" : "") + (/^mcp__(chloectx|engram)__/.test(name) ? " mem" : "");
       el.innerHTML = `<summary><span class="tname"></span><span class="targ"></span><span class="hint st">${r.kind === "error" ? "error" : ""}</span></summary>
         <div class="body"><pre class="in"></pre><pre class="out" style="margin-top:6px"></pre><div class="foot"><a data-open="${esc(r.id)}">${esc(r.id)} ›</a></div></div>`;
-      $(".tname", el).textContent = name.replace("mcp__engram__", "engram · ");
+      $(".tname", el).textContent = name.replace(/^mcp__(chloectx|engram)__/, "ChloeCtx · ");
       $(".targ", el).textContent = r.text.split("\n")[0].slice(0, 200);
       $(".in", el).textContent = r.text;
       if (r.kind === "tool_call") {
@@ -717,12 +717,12 @@ async function send() {
       let el = tools[ev.id];
       if (!el) {
         el = document.createElement("details");
-        el.className = "tool" + (ev.name.startsWith("mcp__engram") ? " mem" : "");
+        el.className = "tool" + (/^mcp__(chloectx|engram)__/.test(ev.name) ? " mem" : "");
         el.innerHTML = `<summary><span class="tname"></span><span class="targ"></span><span class="hint st">running…</span></summary><div class="body"><pre class="in"></pre><pre class="out" style="margin-top:6px"></pre></div>`;
         flow.appendChild(el);
         tools[ev.id] = el;
       }
-      $(".tname", el).textContent = ev.name.replace("mcp__engram__", "engram · ");
+      $(".tname", el).textContent = ev.name.replace(/^mcp__(chloectx|engram)__/, "ChloeCtx · ");
       if (ev.input) { $(".targ", el).textContent = toolArg(ev.name, ev.input); $(".in", el).textContent = JSON.stringify(ev.input, null, 1); }
     }
     else if (ev.t === "tool_result") {

@@ -106,12 +106,12 @@ LANES = {
     "transcripts": {"kind": "transcripts"},
     "claude-mem": {"kind": "claude-mem", "version": "13.39.0", "mcp": ["mcp__plugin_claude-mem_mcp-search"]},
     "mem0": {"kind": "mem0", "mcp": ["mcp__mem0"]},
-    "engram@main": {"kind": "engram", "binary": "/home/claude/engram-main/chloectx/target/release/chloectx", "mcp": ["mcp__engram"]},
-    "engram": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__engram"]},
+    "engram@main": {"kind": "engram", "binary": "/home/claude/engram-main/chloectx/target/release/chloectx", "mcp": ["mcp__chloectx", "mcp__engram"]},
+    "engram": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__chloectx", "mcp__engram"]},
     # The development build's query engine ("deep" recall): async is its default mode.
-    "engram+deep": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__engram"], "env": {"CHLOECTX_DEEP": "sync"}},
-    "engram+async": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__engram"], "env": {"CHLOECTX_DEEP": "async"}},
-    "engram+nodeep": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__engram"], "env": {"CHLOECTX_DEEP": "off"}},
+    "engram+deep": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__chloectx", "mcp__engram"], "env": {"CHLOECTX_DEEP": "sync"}},
+    "engram+async": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__chloectx", "mcp__engram"], "env": {"CHLOECTX_DEEP": "async"}},
+    "engram+nodeep": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__chloectx", "mcp__engram"], "env": {"CHLOECTX_DEEP": "off"}},
     "full": {"kind": "full"},
 }
 DEFAULT_LANES = ["none", "ccmem", "transcripts", "claude-mem", "mem0", "engram@main", "engram", "engram+deep", "full"]

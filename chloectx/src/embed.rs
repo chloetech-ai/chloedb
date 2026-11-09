@@ -1,6 +1,6 @@
-//! Text embedders: Strata's ([`chloedb::embed`]), opened from engram's model
-//! directory. Every vector is unit length, so Strata's dot product is cosine
-//! similarity.
+//! Text embedders: ChloeDB's ([`chloedb::embed`]), opened from ChloeCtx's
+//! model directory. Every vector is unit length, so ChloeDB's dot product is
+//! cosine similarity.
 //!
 //! * [`StaticEmbedder`]: a Model2Vec model (token lookup and mean). Fast
 //!   enough to embed every hook payload inline.
@@ -15,12 +15,12 @@ pub use chloedb::embed::{fnv, Embedder, HashEmbedder, StaticEmbedder};
 
 use crate::{err, Result};
 
-/// Where models live: `$CHLOECTX_MODELS`, else `$CHLOECTX_HOME/models`.
+/// Where models live: `$CHLOECTX_MODELS`, else `models` in [`crate::paths::home`].
 pub fn models_dir() -> PathBuf {
     if let Ok(d) = std::env::var("CHLOECTX_MODELS") {
         return PathBuf::from(d);
     }
-    crate::paths::engram_home().join("models")
+    crate::paths::home().join("models")
 }
 
 /// Opens an embedder from a spec: `static[:<dir>]`, `bert[:<dir>]` or `hash[:<dim>]`.

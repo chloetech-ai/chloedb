@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
 
-use crate::{daemon, embed, paths};
+use crate::{daemon, embed, install, paths};
 
 struct Report {
     failed: usize,
@@ -31,14 +31,14 @@ fn read_json(path: &Path) -> Json {
 }
 
 /// The commands of the ChloeCtx hooks in a settings file, by event.
-fn engram_hooks(settings: &Json) -> Vec<(String, String)> {
+fn own_hooks(settings: &Json) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Some(h) = settings.get("hooks").and_then(|h| h.as_object()) {
         for (event, list) in h {
             for entry in list.as_array().into_iter().flatten() {
                 for hk in entry.get("hooks").and_then(|v| v.as_array()).into_iter().flatten() {
                     let cmd = hk.get("command").and_then(|c| c.as_str()).unwrap_or("");
-                    if cmd.contains("engram") && cmd.contains(" hook ") {
+                    if install::hook_exe(cmd).is_some() {
                         out.push((event.clone(), cmd.to_string()));
                     }
                 }
@@ -50,14 +50,17 @@ fn engram_hooks(settings: &Json) -> Vec<(String, String)> {
 
 /// Checks the hooks in one settings file; returns whether there were any.
 fn check_hooks(r: &mut Report, what: &str, path: &Path) -> bool {
-    let hooks = engram_hooks(&read_json(path));
+    let hooks = own_hooks(&read_json(path));
     if hooks.is_empty() {
         return false;
     }
     let events: Vec<&str> = hooks.iter().map(|(e, _)| e.as_str()).collect();
-    let exe = hooks[0].1.split(" hook").next().unwrap_or("").trim().to_string();
+    let exe = install::hook_exe(&hooks[0].1).unwrap_or("").to_string();
+    let old_name = Path::new(&exe).file_name().map_or(false, |n| !n.to_string_lossy().contains(install::SERVER));
     if !Path::new(&exe).is_file() {
         r.fail(what, format!("{} calls {exe}, which does not exist; run `chloectx install` again from the binary you want the hooks to use", path.display()));
+    } else if old_name {
+        r.warn(what, format!("{} calls {exe}, ChloeCtx's name before the rename; run `chloectx install` again to move to the new names", path.display()));
     } else if events.len() < 9 {
         r.warn(what, format!("{} has ChloeCtx hooks for {} events only ({}); run `chloectx install` again", path.display(), events.len(), events.join(", ")));
     } else {
@@ -89,8 +92,12 @@ pub fn run(project: &Path) -> i32 {
 
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
     r.ok("binary", &exe);
+    let home = paths::home();
+    if home.file_name().map_or(false, |n| n == paths::OLD_HOME) {
+        r.ok("stores", format!("{} (the folder's name before the rename; it stays where it is)", home.display()));
+    }
     if std::env::var("CHLOECTX_DISABLE").is_ok_and(|v| v == "1") {
-        r.warn("CHLOECTX_DISABLE", "is 1 in this shell: hooks started from here record nothing");
+        r.warn("CHLOECTX_DISABLE", "is 1 in this shell (or ENGRAM_DISABLE, its name before the rename): hooks started from here record nothing");
     }
 
     match command_output("claude", &["--version"]) {
@@ -116,17 +123,22 @@ pub fn run(project: &Path) -> i32 {
 
     // The MCP server: user scope (claude mcp) or the project's .mcp.json.
     let mcp_json = read_json(&project.join(".mcp.json"));
-    if mcp_json.pointer("/mcpServers/engram").is_some() {
+    let server = format!("/mcpServers/{}", install::SERVER);
+    let old_server = format!("/mcpServers/{}", install::OLD_SERVER);
+    if mcp_json.pointer(&server).is_some() {
         r.ok("MCP server", format!("{}/.mcp.json", project.display()));
+    } else if proj && mcp_json.pointer(&old_server).is_some() {
+        r.warn("MCP server", format!("{}/.mcp.json names it `{}`, its name before the rename; run `chloectx install` again", project.display(), install::OLD_SERVER));
     } else {
         // User-scope servers live in ~/.claude.json (`claude mcp get` would
         // start the server, and with it a store for this directory).
-        let cfg_file = std::env::var("CLAUDE_CONFIG_DIR")
-            .ok()
-            .filter(|d| !d.is_empty())
-            .map(|d| Path::new(&d).join(".claude.json"))
-            .unwrap_or_else(|| Path::new(&std::env::var("HOME").unwrap_or_default()).join(".claude.json"));
-        match read_json(&cfg_file).pointer("/mcpServers/engram") {
+        let cfg_file = paths::claude_json();
+        let cfg = read_json(&cfg_file);
+        match cfg.pointer(&server) {
+            None if user && cfg.pointer(&old_server).is_some() => r.warn(
+                "MCP server",
+                format!("user scope in {} names it `{}`, its name before the rename; run `chloectx install --user` again", cfg_file.display(), install::OLD_SERVER),
+            ),
             Some(s) => {
                 let cmd = s.get("command").and_then(|c| c.as_str()).unwrap_or("");
                 if Path::new(cmd).is_file() {
@@ -135,7 +147,7 @@ pub fn run(project: &Path) -> i32 {
                     r.fail("MCP server", format!("user scope in {} calls {cmd}, which does not exist; run `chloectx install --user` again", cfg_file.display()))
                 }
             }
-            None if user || proj => r.fail("MCP server", "not registered; run `chloectx install --user` again, or `claude mcp add-json chloectx '{\"type\":\"stdio\",\"command\":\"<engram path>\",\"args\":[\"mcp\"]}' --scope user`"),
+            None if user || proj => r.fail("MCP server", "not registered; run `chloectx install --user` again, or `claude mcp add-json chloectx '{\"type\":\"stdio\",\"command\":\"<chloectx path>\",\"args\":[\"mcp\"]}' --scope user`"),
             None => r.warn("MCP server", "not registered (ChloeCtx is not installed)"),
         }
     }
@@ -154,7 +166,7 @@ pub fn run(project: &Path) -> i32 {
     }
 
     // Distillation: which model, from where.
-    let settings_env = |p: &Path| read_json(p).pointer("/env/CHLOECTX_DISTILL_MODEL").and_then(|v| v.as_str()).map(str::to_string);
+    let settings_env = |p: &Path| crate::env::in_settings(&read_json(p), "CHLOECTX_DISTILL_MODEL").map(str::to_string);
     let distill = std::env::var("CHLOECTX_DISTILL_MODEL").ok().filter(|m| !m.is_empty()).map(|m| (m, "environment".to_string()))
         .or_else(|| settings_env(&project.join(".claude/settings.local.json")).map(|m| (m, "project settings".into())))
         .or_else(|| settings_env(&user_settings).map(|m| (m, "user settings".into())))

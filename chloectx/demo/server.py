@@ -33,7 +33,8 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOOLS = "Bash,Edit,Write,Read,Glob,Grep,MultiEdit,TodoWrite,mcp__engram"
+# The MCP server is chloectx; mcp__engram is its name before the rename.
+TOOLS = "Bash,Edit,Write,Read,Glob,Grep,MultiEdit,TodoWrite,mcp__chloectx,mcp__engram"
 # Daemon ops the browser may call (all read-only).
 RPC_OPS = {"inspect_query", "inspect_layout", "inspect_embed", "search", "timeline", "stats", "briefing"}
 SEED_README = """# Demo project
@@ -57,6 +58,7 @@ class Demo:
         self.proc = None
         self.env = dict(os.environ, CHLOECTX_HOME=self.home)
         self.env.pop("CHLOECTX_DISABLE", None)
+        self.env.pop("ENGRAM_DISABLE", None)  # its name before the rename
         self.env.pop("CLAUDECODE", None)
         if args.embedder:
             self.env["CHLOECTX_EMBEDDER"] = args.embedder
@@ -71,7 +73,11 @@ class Demo:
             return os.path.abspath(os.path.expanduser(self.args.models))
         if os.environ.get("CHLOECTX_MODELS"):
             return os.environ["CHLOECTX_MODELS"]
-        shared = os.path.expanduser("~/.local/share/engram/models")
+        # The models chloectx fetched: in ~/.local/share/chloectx, or in the
+        # folder from before the rename on a machine that has only that one.
+        data = os.path.expanduser("~/.local/share")
+        home = os.path.join(data, "engram") if os.path.isdir(os.path.join(data, "engram")) and not os.path.exists(os.path.join(data, "chloectx")) else os.path.join(data, "chloectx")
+        shared = os.path.join(home, "models")
         return shared if os.path.isdir(os.path.join(shared, "potion-retrieval-32M")) else os.path.join(self.data, "models")
 
     def log(self, msg):
@@ -248,7 +254,7 @@ def simplify(ev):
     """The parts of a stream-json event the page shows."""
     t, st = ev.get("type"), ev.get("subtype")
     if t == "system" and st == "init":
-        yield {"t": "init", "session": ev.get("session_id"), "model": ev.get("model"), "tools": [x for x in ev.get("tools", []) if x.startswith("mcp__engram")]}
+        yield {"t": "init", "session": ev.get("session_id"), "model": ev.get("model"), "tools": [x for x in ev.get("tools", []) if x.startswith(("mcp__chloectx", "mcp__engram"))]}
     elif t == "system" and st == "hook_response":
         ctx = None
         try:
@@ -378,8 +384,8 @@ def main():
     ap.add_argument("--model", default=os.environ.get("CHLOECTX_DEMO_MODEL"), help="model for the chat (default: the claude CLI's)")
     ap.add_argument("--distill-model", default=os.environ.get("CHLOECTX_DISTILL_MODEL"), help="model ChloeCtx distills turns with (default: --model)")
     ap.add_argument("--embedder", default=None, help="ChloeCtx embedder spec (default static; hash:256 needs no model files)")
-    ap.add_argument("--models", default=None, help="embedding model directory (default $CHLOECTX_MODELS or ~/.local/share/engram/models)")
-    ap.add_argument("--engram", default=os.path.join(ROOT, "target", "release", "engram"))
+    ap.add_argument("--models", default=None, help="embedding model directory (default $CHLOECTX_MODELS or ~/.local/share/chloectx/models)")
+    ap.add_argument("--chloectx", "--engram", dest="engram", default=os.path.join(ROOT, "target", "release", "chloectx"), help="the chloectx binary")
     ap.add_argument("--budget", type=float, default=2.0, help="max USD per chat turn")
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
     ap.add_argument("--verbose", action="store_true")

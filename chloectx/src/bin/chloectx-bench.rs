@@ -167,7 +167,7 @@ enum Cmd {
         /// Queries timed per size.
         #[arg(long, default_value_t = 300)]
         queries: usize,
-        /// Hook invocations through the engram binary per size.
+        /// Hook invocations through the chloectx binary per size.
         #[arg(long, default_value_t = 200)]
         hooks: usize,
         /// Pause between hook invocations (prompts arrive seconds apart in
@@ -660,6 +660,7 @@ fn run_unit(u: &Unit, foreign: Option<&(Question, HashSet<u64>)>, emb: &Embeds, 
 }
 
 fn main() {
+    chloectx::env::adopt_old_names();
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Embed { input, fields, embedder, out } => {
@@ -1924,7 +1925,7 @@ fn latency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_queri
         //    less its TCP and HTTP framing).
         {
             let exe = std::env::current_exe().unwrap().with_file_name("chloectx");
-            // The first hook starts the daemon (through the engram binary, as
+            // The first hook starts the daemon (through the chloectx binary, as
             // in Claude Code).
             let first = json!({"session_id": "bench-hook", "hook_event_name": "Notification", "cwd": project});
             row.insert("daemon_start_ms".into(), json!(run_hook(&exe, &home, &project, "Notification", &first)));

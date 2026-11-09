@@ -53,7 +53,7 @@ target/release/chloectx doctor               # checks hooks, MCP server, model, 
 - its approval, through `enabledMcpjsonServers`;
 - a permission rule for the memory tools.
 
-The store lives in `~/.local/share/engram/projects/<project>/`, outside the repository.
+The store lives in `~/.local/share/chloectx/projects/<project>/` (in `~/.local/share/engram`, its folder before the rename, on a machine that has it), outside the repository.
 
 ### Every session
 

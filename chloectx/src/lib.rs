@@ -1,4 +1,4 @@
-//! ChloeCtx: automatic long-term context for coding agents, stored in Strata.
+//! ChloeCtx: automatic long-term context for coding agents, stored in ChloeDB.
 //!
 //! Claude Code hooks feed every prompt, tool call, answer and compaction
 //! summary to a per-project daemon ([`daemon`]), which stores them as
@@ -17,6 +17,7 @@ pub mod deep;
 pub mod distill;
 pub mod doctor;
 pub mod embed;
+pub mod env;
 pub mod fixes;
 pub mod hook;
 pub mod inspect;
@@ -45,7 +46,7 @@ impl std::error::Error for Error {}
 
 impl From<chloedb::Error> for Error {
     fn from(e: chloedb::Error) -> Self {
-        Error(format!("strata: {e}"))
+        Error(format!("chloedb: {e}"))
     }
 }
 

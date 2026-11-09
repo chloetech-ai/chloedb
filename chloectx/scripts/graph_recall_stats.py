@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Does graph recall get more of the evidence into the context?
 
-Reads an chloectx-structure rows file and compares packs at one presentation
+Reads a chloectx-structure rows file and compares packs at one presentation
 and budget. The graph variant is chosen on one half of the questions (md5
 of the question id, even) and reported on the other (odd), against the
 layouts without the graph, with a paired bootstrap and a sign-flip test.

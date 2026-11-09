@@ -102,8 +102,8 @@ jobs:
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
           grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
-          if grep -qvE '^(chloedb|chloedb-server|engram)/results/' "$RUNNER_TEMP/rest" \
-            || grep -qE '^(chloedb|chloedb-server|engram)/results/.*\.py$|^chloedb/results/workloads/' "$RUNNER_TEMP/rest"; then
+          if grep -qvE '^(chloedb|chloedb-server|chloectx)/results/' "$RUNNER_TEMP/rest" \
+            || grep -qE '^(chloedb|chloedb-server|chloectx)/results/.*\.py$|^chloedb/results/workloads/' "$RUNNER_TEMP/rest"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -120,7 +120,7 @@ jobs:
         # chloedb-crawl's crawl into a real cluster, and chloedb-sheets'
         # workbooks in one, run in server-smoke, which builds chloedb-server;
         # here their other tests and clippy.
-        crate: [chloedb, engram, chloedb-server, chloedb-crawl, chloedb-sheets]
+        crate: [chloedb, chloectx, chloedb-server, chloedb-crawl, chloedb-sheets]
     runs-on: ${{ matrix.os }}
     # rust-cache saves only from a job that passed, so a macOS job that ran
     # out of time starts the next one cold too: chloedb-server's tests took
@@ -218,7 +218,7 @@ jobs:
     env: *test-env
     steps: *test-steps
 
-  # chloedb-server, engram and the Python package build for a generic CPU,
+  # chloedb-server, chloectx and the Python package build for a generic CPU,
   # where ChloeDB chooses its SIMD kernels at run time: test the kernels in
   # such a build, then with every SIMD path turned off. A job of its own, so
   # that it runs beside the chloedb tests rather than after them.

@@ -125,7 +125,7 @@ pub fn serve<W: Write + Send>(input: impl BufRead, out: &Mutex<W>, call: impl Fn
                     Some(json!({
                         "protocolVersion": version,
                         "capabilities": {"tools": {"listChanged": false}},
-                        "serverInfo": {"name": "engram", "version": env!("CARGO_PKG_VERSION")},
+                        "serverInfo": {"name": "chloectx", "version": env!("CARGO_PKG_VERSION")},
                         "instructions": INSTRUCTIONS
                     }))
                 }

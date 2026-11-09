@@ -1,4 +1,5 @@
-//! engram: automatic long-term context for Claude Code, stored in Strata.
+//! chloectx: automatic long-term context for Claude Code, stored in ChloeDB.
+//! (`engram`, its name before the rename, is a link to it for a release.)
 //!
 //!   chloectx install [--project DIR] [--shared]   wire hooks + MCP into a project
 //!   chloectx install --user                        ... or into every Claude Code session
@@ -43,7 +44,7 @@ enum Cmd {
         /// the MCP server at user scope. Each project still gets its own store.
         #[arg(long, conflicts_with = "shared")]
         user: bool,
-        /// Path of the engram binary to call (default: this one).
+        /// Path of the chloectx binary to call (default: this one).
         #[arg(long)]
         exe: Option<String>,
         /// Model to distill turns with (sets CHLOECTX_DISTILL_MODEL in the settings' env).
@@ -122,7 +123,8 @@ enum Cmd {
         /// Port (the next free one up to 9 above it is used if it is taken).
         #[arg(long, default_value_t = 8765)]
         port: u16,
-        /// Directory holding projects/<store>/ (default: $CHLOECTX_HOME or ~/.local/share/engram).
+        /// Directory holding projects/<store>/ (default: $CHLOECTX_HOME, or ~/.local/share/chloectx;
+        /// ~/.local/share/engram on a machine that has only that one).
         #[arg(long)]
         home: Option<PathBuf>,
         /// Do not open a browser.
@@ -167,6 +169,7 @@ fn text(r: &Json) {
 }
 
 fn main() {
+    chloectx::env::adopt_old_names();
     let cli = Cli::parse();
     let project = cli.project.clone().unwrap_or_else(|| paths::project_dir(None));
     let project = project.canonicalize().unwrap_or(project);
@@ -181,7 +184,7 @@ fn main() {
             }
         }
         Cmd::Install { shared, user, exe, distill_model } => {
-            let exe = exe.unwrap_or_else(|| std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "engram".into()));
+            let exe = exe.unwrap_or_else(|| std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "chloectx".into()));
             let dm = distill_model.as_deref();
             match if user { install::install_user(&exe, dm) } else { install::install(&project, &exe, shared, dm) } {
                 Ok(s) => println!("{s}"),
@@ -234,7 +237,7 @@ fn main() {
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
         Cmd::Ui { host, port, home, no_open } => {
-            let home = home.map(|h| h.canonicalize().unwrap_or(h)).unwrap_or_else(paths::engram_home);
+            let home = home.map(|h| h.canonicalize().unwrap_or(h)).unwrap_or_else(paths::home);
             if let Err(e) = ui::run(ui::Options { host, port, home, open: !no_open, project: project.clone() }) {
                 eprintln!("chloectx ui: {e}");
                 std::process::exit(1);
@@ -245,7 +248,7 @@ fn main() {
         }
         Cmd::Stop { all: true } => {
             let mut n = 0;
-            for s in ui::list_stores(&paths::engram_home()) {
+            for s in ui::list_stores(&paths::home()) {
                 let sock = paths::StorePaths::new(&s.dir).socket;
                 if std::os::unix::net::UnixStream::connect(&sock).is_ok()
                     && daemon::request(&s.dir, s.project.as_deref().unwrap_or(""), &json!({"op": "shutdown"}), Duration::from_secs(10)).is_ok()

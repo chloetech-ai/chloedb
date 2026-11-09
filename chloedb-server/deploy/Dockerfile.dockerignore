@@ -1,6 +1,6 @@
 **/target
 .git
-engram
+chloectx
 # The query language reference and the Build an app guide are compiled
 # into the server (its MCP tools' search_docs and resources).
 docs/*

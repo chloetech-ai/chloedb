@@ -69,10 +69,10 @@ ChloeCtx 0.1.0 for /home/you/code/app
   ok    Claude Code CLI: 2.1.299 (Claude Code)
   ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)
   ok    MCP server: user scope in /home/you/.claude.json (/home/you/.local/bin/chloectx mcp)
-  ok    embedding model: /home/you/.local/share/engram/models/potion-retrieval-32M
+  ok    embedding model: /home/you/.local/share/chloectx/models/potion-retrieval-32M
   ok    distillation: model haiku (from the user settings)
   ok    Claude Code login: logged in
-  ok    daemon: a scratch store opened and answered in 368 ms; this project's store will be /home/you/.local/share/engram/projects/app-251a5186 once a session runs here
+  ok    daemon: a scratch store opened and answered in 368 ms; this project's store will be /home/you/.local/share/chloectx/projects/app-251a5186 once a session runs here
 ChloeCtx is ready. Start `claude` in a project; `chloectx ui` shows what it stores.
 ```
 
@@ -116,8 +116,8 @@ It is also the quickest way to debug an install. A `DISTILL` event with an error
 | binary | `~/.local/bin/chloectx` (from `install.sh` or `cargo install --root ~/.local`) |
 | hooks | `~/.claude/settings.json` (user install) or the project's `.claude/settings.local.json` |
 | MCP server | `~/.claude.json` at user scope, or the project's `.mcp.json` |
-| stores | `~/.local/share/engram/projects/<folder>-<hash>/`, one per project directory: `memory.strata` and its WAL, `state.json`, `events.log` (recall and distill decisions), `daemon.log`, `project.txt` |
-| embedding model | `~/.local/share/engram/models/potion-retrieval-32M/` |
+| stores | `~/.local/share/chloectx/projects/<folder>-<hash>/`, one per project directory: `memory.strata` and its WAL, `state.json`, `events.log` (recall and distill decisions), `daemon.log`, `project.txt`. A machine that has `~/.local/share/engram` from before the rename, and no `~/.local/share/chloectx`, keeps using the old folder |
+| embedding model | `~/.local/share/chloectx/models/potion-retrieval-32M/` (or in the old folder, as the stores) |
 | daemon socket | `engram.sock` in the store, or `$XDG_RUNTIME_DIR` / `/tmp/engram-<uid>/` when that path is too long |
 
 Store directories are created readable by their owner only. ChloeCtx redacts common credential formats (cloud and API keys, tokens, private keys, `password = …`) before storing anything, but a store is still a transcript of your sessions: treat it like your shell history.
@@ -127,11 +127,13 @@ To back a store up, run `chloectx backup DEST` in the project directory. It copi
 | variable | effect |
 |---|---|
 | `CHLOECTX_DISABLE=1` | the hooks do nothing in this session |
-| `CHLOECTX_HOME` | where stores (and, by default, models) live; default `$XDG_DATA_HOME/engram` or `~/.local/share/engram` |
+| `CHLOECTX_HOME` | where stores (and, by default, models) live; default `$XDG_DATA_HOME/chloectx` or `~/.local/share/chloectx` (`engram` in place of `chloectx` when only that folder exists) |
 | `CHLOECTX_MODELS` | where the embedding models live |
 | `CHLOECTX_DISTILL_MODEL` | the distiller's model (`install --distill-model` sets it in the settings' `env`) |
 | `CHLOECTX_DISTILL=0` | no distillation |
 | `CHLOECTX_EMBEDDER` | `static` (default), `bert`, or `hash:<dim>` for a model-free hash embedder |
+
+Each of them is still read under its name from before the rename, `ENGRAM_*` (`ENGRAM_DISABLE=1`), when the new one is not set.
 
 ## Other environments
 
@@ -174,10 +176,21 @@ Cloud sessions run in a fresh container each time, so a ChloeCtx store there sta
 cd strata && git pull && ./install.sh            # rebuilds, replaces the binary, restarts daemons
 chloectx stop --all                                # restart daemons by hand (they start again on demand)
 chloectx uninstall --user                          # or `chloectx uninstall` in a project; stores are kept
-rm -rf ~/.local/share/engram/projects/<store>    # delete one project's memory
+rm -rf ~/.local/share/chloectx/projects/<store>  # delete one project's memory (or ~/.local/share/engram/...)
 ```
 
 The repository was called `rkonow/engram` until October 2026. A checkout made before then keeps working, because GitHub redirects the old address: upgrade it with `git pull && ./install.sh` in its folder (still named `engram`), and `git remote set-url origin https://github.com/chloetech-ai/strata` points it at the new name.
+
+## ChloeCtx was called Engram
+
+ChloeCtx was called Engram until November 2026. `git pull && ./install.sh` moves an install to the new names, and leaves what it stored where it is:
+
+- The program is `~/.local/bin/chloectx`, and `~/.local/bin/engram` is a link to it for a release, so whatever still calls the old name keeps working.
+- `chloectx install` (which `install.sh` runs) replaces the entries the old install wrote into Claude Code's settings: the hooks that called `engram`, the MCP server `engram` and its permission `mcp__engram` (the server is `chloectx` now, and its tools `mcp__chloectx__*`), and `ENGRAM_DISTILL_MODEL`, which becomes `CHLOECTX_DISTILL_MODEL` with the same model. An `engram` server or permission is taken for ChloeCtx's only when the same settings hold the old hooks of the program it runs, since another tool may be called engram. `chloectx uninstall` removes both the old and the new entries. Until you run it again, `chloectx doctor` warns about the old ones.
+- The settings are `CHLOECTX_*`, and each `ENGRAM_*` one is still read when the new one is not set.
+- The stores and the embedding model stay in `~/.local/share/engram` on a machine that has that folder and no `~/.local/share/chloectx`: nothing is moved or copied, and `chloectx doctor` says which folder is in use. A new install uses `~/.local/share/chloectx`. A store's files keep their names (`memory.strata`, `engram.sock`), and a daemon started by the old program keeps serving until it stops, which `install.sh` asks it to do.
+
+Sessions that were already running keep the old tool names until they restart.
 
 ## Troubleshooting
 

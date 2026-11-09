@@ -82,7 +82,7 @@ socket.
   prompt or a tool call.
 
 The store lives outside the repository, in
-`${CHLOECTX_HOME:-~/.local/share/engram}/<project-slug>/`, because
+`${CHLOECTX_HOME:-~/.local/share/chloectx}/<project-slug>/`, because
 transcripts can contain secrets. A redaction pass removes common key and
 token formats before anything is stored.
 

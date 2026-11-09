@@ -449,12 +449,12 @@ async function send() {
       let el = tools[ev.id];
       if (!el) {
         el = document.createElement("details");
-        el.className = "tool" + (ev.name.startsWith("mcp__engram") ? " mem" : "");
+        el.className = "tool" + (/^mcp__(chloectx|engram)__/.test(ev.name) ? " mem" : "");
         el.innerHTML = `<summary><span class="tname"></span><span class="targ"></span><span class="hint st">running…</span></summary><div class="body"><pre class="in"></pre><pre class="out" style="margin-top:6px"></pre></div>`;
         flow.appendChild(el);
         tools[ev.id] = el;
       }
-      $(".tname", el).textContent = ev.name.replace("mcp__engram__", "engram · ");
+      $(".tname", el).textContent = ev.name.replace(/^mcp__(chloectx|engram)__/, "ChloeCtx · ");
       if (ev.input) { $(".targ", el).textContent = toolArg(ev.name, ev.input); $(".in", el).textContent = JSON.stringify(ev.input, null, 1); }
     }
     else if (ev.t === "tool_result") {

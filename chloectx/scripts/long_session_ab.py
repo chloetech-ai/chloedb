@@ -257,7 +257,7 @@ class Lane:
             "input_tokens": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0),
             "cache_read_tokens": u.get("cache_read_input_tokens", 0), "output_tokens": u.get("output_tokens", 0),
             "error": out.get("is_error"), "answer": (out.get("result") or "")[:3000], "tools": tools,
-            "memory_tool_calls": sum(1 for t in tools if t.startswith("mcp__engram")),
+            "memory_tool_calls": sum(1 for t in tools if t.startswith(("mcp__chloectx", "mcp__engram"))),
             "engram": ab.engram_events(self.home) if self.engram else None,
         }
         with lock:

@@ -14,7 +14,7 @@ chloectx ui                  # http://127.0.0.1:8765/?token=..., opened in your 
 
 ![chloectx ui: a session rebuilt from its records, with the briefing, recall decisions and distilled notes; the store's knowledge on the right](../assets/img/inspector-ui-conversation.png)
 
-Once ChloeCtx is [installed](setup.md), `chloectx ui` serves this page from the binary over every store under `~/.local/share/engram/projects` (or `--home DIR`). Pick a store (one per project directory) and a session. The left column then replays the session from its records, in place of the demo's chat:
+Once ChloeCtx is [installed](setup.md), `chloectx ui` serves this page from the binary over every store under `~/.local/share/chloectx/projects` (or the folder from before the rename, `~/.local/share/engram`, on a machine that has it; or `--home DIR`). Pick a store (one per project directory) and a session. The left column then replays the session from its records, in place of the demo's chat:
 
 - the prompts, the answers and the narration between tool calls;
 - each tool call, with its stored result loaded when you open it, and errors in red;

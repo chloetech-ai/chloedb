@@ -26,7 +26,7 @@ const MAX_BODY: usize = 1 << 20;
 pub struct Options {
     pub host: String,
     pub port: u16,
-    /// Directory holding `projects/<store>/` (default: [`paths::engram_home`]).
+    /// Directory holding `projects/<store>/` (default: [`paths::home`]).
     pub home: PathBuf,
     /// Open a browser on the printed URL.
     pub open: bool,
@@ -71,7 +71,7 @@ pub fn store_project(dir: &Path) -> Option<String> {
     }
     let log = std::fs::read_to_string(dir.join("daemon.log")).ok()?;
     log.lines().rev().find_map(|l| {
-        let rest = l.strip_prefix("chloectx: serving ")?;
+        let rest = l.strip_prefix("chloectx: serving ").or_else(|| l.strip_prefix("engram: serving "))?; // a daemon's, before the rename
         let before = &rest[..rest.rfind(".sock (")?];
         Some(before[..before.rfind(" on ")?].to_string())
     })
@@ -373,7 +373,7 @@ pub fn run(opts: Options) -> Result<()> {
     // so give it the distill model the user-level install set.
     if std::env::var_os("CHLOECTX_DISTILL_MODEL").is_none() {
         let settings: Json = std::fs::read_to_string(paths::user_settings()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Json::Null);
-        if let Some(m) = settings.pointer("/env/CHLOECTX_DISTILL_MODEL").and_then(|v| v.as_str()) {
+        if let Some(m) = crate::env::in_settings(&settings, "CHLOECTX_DISTILL_MODEL") {
             std::env::set_var("CHLOECTX_DISTILL_MODEL", m);
         }
     }

@@ -2547,7 +2547,7 @@ impl Service {
                     let (running, n) = Running::start(&self.running);
                     let cancel = Cancel::default();
                     // Each running query gets its share of the cores for its
-                    // segments (as engram's recall does).
+                    // segments (as ChloeCtx's recall does).
                     let opts = ExecOptions {
                         stats,
                         // A query round on the lease of a statistics round

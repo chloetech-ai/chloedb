@@ -79,6 +79,7 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
     let mut child = cmd
         .current_dir(&scratch)
         .env("CHLOECTX_DISABLE", "1")
+        .env("ENGRAM_DISABLE", "1") // read by the hooks of a binary from before the rename
         // Cloud sessions pass their memory stores on to child CLIs: in a
         // distill or query engine call they are ~7,000 tokens of the user's
         // notes the call does not need.

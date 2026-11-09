@@ -223,7 +223,8 @@ pub fn looks_like_error(resp: &Json, text: &str) -> bool {
 
 /// The drafts of one tool call and its result.
 pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<Draft> {
-    if tool.starts_with("mcp__engram__") {
+    // ChloeCtx's own tools (named mcp__engram__* before the rename).
+    if tool.starts_with("mcp__chloectx__") || tool.starts_with("mcp__engram__") {
         return Vec::new();
     }
     let s = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -493,6 +494,7 @@ mod tests {
         assert_eq!(d[0].files, vec!["src/lib.rs"]);
         let d = tool_drafts("Edit", &json!({"file_path": "/p/src/a.rs", "old_string": "x", "new_string": "y"}), &json!({}), "/p");
         assert!(d[0].text.starts_with("Edit src/a.rs"));
+        assert!(tool_drafts("mcp__chloectx__memory_search", &json!({}), &json!({}), "/p").is_empty());
         assert!(tool_drafts("mcp__engram__memory_search", &json!({}), &json!({}), "/p").is_empty());
     }
 

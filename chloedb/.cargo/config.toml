@@ -2,7 +2,7 @@
 # of the machine it runs on (AVX2/AVX-512/BMI2 on x86_64, NEON on aarch64), so
 # the kernels are chosen at compile time and the rest of the code may use them
 # too. Without it, Strata's own kernels are chosen at run time (chloedb::simd)
-# and the binary runs on any CPU of its architecture: chloedb-server, engram
+# and the binary runs on any CPU of its architecture: chloedb-server, chloectx
 # and the Python package build that way.
 [build]
 rustflags = ["-C", "target-cpu=native"]

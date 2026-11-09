@@ -29,7 +29,7 @@ ChloeDB holds an exclusive lock on its file, and hooks are short-lived processes
 - **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on ChloeDB's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/chloetech-ai/strata/tree/main/chloectx/results/writes)).
 - **Never in the way.** A client that cannot reach the daemon within its deadline prints nothing and exits 0. A memory failure never blocks a prompt or a tool call.
 
-The store lives outside the repository, in `${CHLOECTX_HOME:-~/.local/share/engram}/<project-slug>/`, because transcripts can contain secrets. A redaction pass removes common key and token formats before anything is stored.
+The store lives outside the repository, in `${CHLOECTX_HOME:-~/.local/share/chloectx}/<project-slug>/` (in `~/.local/share/engram` on a machine that has it from before the rename), because transcripts can contain secrets. A redaction pass removes common key and token formats before anything is stored.
 
 ## The data model
 

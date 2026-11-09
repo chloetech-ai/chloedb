@@ -44,10 +44,11 @@ from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEED = os.path.join(ROOT, "eval", "ab", "seed")
-ENGRAM = os.path.join(ROOT, "target", "release", "engram")
+ENGRAM = os.path.join(ROOT, "target", "release", "chloectx")
 RESULTS = os.path.join(ROOT, "results", "ab")
 MODELS = os.environ.get("CHLOECTX_MODELS", "/home/user/data/models")
-TOOLS = "Bash,Edit,Write,Read,Glob,Grep,MultiEdit,TodoWrite,mcp__engram"
+# The MCP server is chloectx; mcp__engram is its name before the rename.
+TOOLS = "Bash,Edit,Write,Read,Glob,Grep,MultiEdit,TodoWrite,mcp__chloectx,mcp__engram"
 
 # ---------------------------------------------------------------- history
 
@@ -452,7 +453,7 @@ def one_run(args, task, cond, rep, lock):
         "cost_usd": out.get("total_cost_usd"), "turns": out.get("num_turns"), "wall_s": out["wall_s"], "duration_ms": out.get("duration_ms"),
         "input_tokens": (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)), "output_tokens": u.get("output_tokens", 0),
         "error": out.get("is_error"), "answer": (out.get("result") or "")[:3000], "tools": tools,
-        "memory_tool_calls": sum(1 for t in tools if t.startswith("mcp__engram")), "diff": diff[-2000:],
+        "memory_tool_calls": sum(1 for t in tools if t.startswith(("mcp__chloectx", "mcp__engram"))), "diff": diff[-2000:],
         "engram": engram_events(home) if enabled else None,
     }
     with lock:

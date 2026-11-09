@@ -11,7 +11,8 @@
 #   --project DIR          install for one project instead of every session
 #   --distill-model NAME   model that writes down decisions after each turn
 #                          (default: haiku; "" uses the Claude Code CLI's default)
-#   --prefix DIR           where the binary goes (default: ~/.local, so ~/.local/bin/chloectx)
+#   --prefix DIR           where the binary goes (default: ~/.local, so ~/.local/bin/chloectx;
+#                          ~/.local/bin/engram, its name before the rename, is a link to it)
 #   --no-wire              build and install the binary only; leave Claude Code alone
 set -eu
 
@@ -52,7 +53,7 @@ if ! command -v claude >/dev/null 2>&1; then
   [ "$WIRE" = 1 ] && die "the Claude Code CLI (claude) is not on PATH; install it from https://claude.com/claude-code, or pass --no-wire"
 fi
 
-say "building engram ($(cargo --version))"
+say "building ChloeCtx ($(cargo --version))"
 (cd "$ROOT/chloectx" && cargo build --release --bin chloectx)
 
 BIN="$PREFIX/bin/chloectx"
@@ -61,16 +62,27 @@ mkdir -p "$PREFIX/bin"
 TARGET="${CARGO_TARGET_DIR:-target}"
 case "$TARGET" in /*) ;; *) TARGET="$ROOT/chloectx/$TARGET" ;; esac
 cp "$TARGET/release/chloectx" "$BIN.new" && mv -f "$BIN.new" "$BIN"
-say "installed $BIN"
+# ChloeCtx was called engram: for a release, that name runs it too (an old
+# binary there is replaced; daemons running it keep it until they stop).
+ln -sf chloectx "$PREFIX/bin/engram.new" && mv -f "$PREFIX/bin/engram.new" "$PREFIX/bin/engram" # the name before the rename
+say "installed $BIN (and $PREFIX/bin/engram, its name before the rename, as a link to it)"
 case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;
-  *) say "note: $PREFIX/bin is not on your PATH; add it to use engram from a shell (the hooks use the full path)" ;;
+  *) say "note: $PREFIX/bin is not on your PATH; add it to use chloectx from a shell (the hooks use the full path)" ;;
 esac
 
 # Daemons from an earlier build pick up the new one when they restart.
 "$BIN" stop --all >/dev/null 2>&1 || true
 
-if [ -f "${CHLOECTX_MODELS:-${CHLOECTX_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/engram}/models}/potion-retrieval-32M/model.safetensors" ]; then
+# Where the stores and the model live, as chloectx picks it: a machine that
+# has the folder from before the rename (engram) and not the new one keeps
+# using it, and nothing is moved.
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+if [ -d "$DATA/engram" ] && [ ! -e "$DATA/chloectx" ]; then HOMEDIR="$DATA/engram"; else HOMEDIR="$DATA/chloectx"; fi
+# ENGRAM_* are the settings' names before the rename, which chloectx reads too.
+HOMEDIR="${CHLOECTX_HOME:-${ENGRAM_HOME:-$HOMEDIR}}" # before the rename: ENGRAM_HOME
+MODELS="${CHLOECTX_MODELS:-${ENGRAM_MODELS:-$HOMEDIR/models}}" # before the rename: ENGRAM_MODELS
+if [ -f "$MODELS/potion-retrieval-32M/model.safetensors" ]; then
   say "embedding model already downloaded"
 else
   say "downloading the embedding model (potion-retrieval-32M, 129 MB)"

@@ -934,6 +934,7 @@ fn aggregate(rows: &[&QRow]) -> Json {
 }
 
 fn main() {
+    chloectx::env::adopt_old_names();
     let cli = Cli::parse();
     let t0 = Instant::now();
     let e: Arc<dyn Embedder> = Arc::from(embed::open(&cli.embedder).expect("embedder"));

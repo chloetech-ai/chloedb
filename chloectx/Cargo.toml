@@ -3,7 +3,7 @@ name = "chloectx"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Automatic long-term context for coding agents, stored in Strata"
+description = "Automatic long-term context for coding agents, stored in ChloeDB"
 publish = false
 
 [dependencies]
