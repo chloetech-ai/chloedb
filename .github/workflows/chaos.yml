@@ -71,7 +71,7 @@ jobs:
           if [ -f /tmp/chloedb-chaos/results.md ]; then cat /tmp/chloedb-chaos/results.md >> "$GITHUB_STEP_SUMMARY"; fi
           sudo cp /tmp/chloedb-chaos/results.md /tmp/chloedb-chaos/results.json /tmp/chloedb-chaos/events.jsonl "$RUNNER_TEMP/" 2>/dev/null || true
           sudo chown "$(id -u)" "$RUNNER_TEMP"/results.* "$RUNNER_TEMP"/events.jsonl 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: chaos-results
