@@ -188,7 +188,7 @@ class Client(Search, FrameStore):
             return _client_arrow(Result._of(j), types), j.get("cursor")
         import pyarrow.ipc
 
-        return pyarrow.ipc.open_stream(buf.getvalue()).read_all(), headers.get("x-strata-cursor")
+        return pyarrow.ipc.open_stream(buf.getvalue()).read_all(), headers.get("x-chloedb-cursor") or headers.get("x-strata-cursor")
 
     def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, keep_alive_ms: int | None = None, timeout_ms: int | None = None, **kw: Any) -> Iterator[Any]:
         """Runs a SELECT and yields its answer a page at a time: `Result`s,
@@ -487,7 +487,7 @@ class Client(Search, FrameStore):
         finally:
             if os.path.exists(part):
                 os.remove(part)
-        return [t for t in (headers.get("x-strata-tables") or "").split(",") if t]
+        return [t for t in (headers.get("x-chloedb-tables") or headers.get("x-strata-tables") or "").split(",") if t]
 
     def _parquet(self, path: str | os.PathLike, query: dict) -> dict:
         with open(os.fspath(path), "rb") as f:
@@ -540,7 +540,7 @@ class Client(Search, FrameStore):
         finally:
             if os.path.exists(part):
                 os.remove(part)
-        return headers.get("x-strata-tables") or ""
+        return headers.get("x-chloedb-tables") or headers.get("x-strata-tables") or ""
 
     # What frames need of a store (FrameStore). Until the server answers in
     # Arrow, a frame's answer comes as JSON and is typed here by the

@@ -2120,7 +2120,7 @@ function render(page, r) {
           ? h("div", { class: "small" }, [...P.removes.map((x) => `${cname(M.all.find((c) => c.url === x.url) || { id: short(x.url) })} from shard ${x.shard} (${x.why === "replaced" ? "replaced" : "you asked"})`), ...P.drops.map((i) => `shard ${i} (you asked)`)].join("; ") + ". Nothing else.")
           : h("div", { class: "small dim" }, "Nothing is removed.")),
       h("div", { class: "ft" },
-        h("button", { class: "btn sm", title: "The call that applies this plan on the coordinator, as a curl command", onclick: () => copy(`curl -sf -H "authorization: Bearer $CHLOEDB_TOKEN" -H "content-type: application/json" -H "x-strata-reason: ..." -X POST ${location.origin}/v1/admin/plan/apply -d '${JSON.stringify({ steps: P.steps.map(serverStep) }).replace(/'/g, "'\\''")}'`, "Copied the call") }, icon("copy"), "Copy as a call"),
+        h("button", { class: "btn sm", title: "The call that applies this plan on the coordinator, as a curl command", onclick: () => copy(`curl -sf -H "authorization: Bearer $CHLOEDB_TOKEN" -H "content-type: application/json" -H "x-chloedb-reason: ..." -X POST ${location.origin}/v1/admin/plan/apply -d '${JSON.stringify({ steps: P.steps.map(serverStep) }).replace(/'/g, "'\\''")}'`, "Copied the call") }, icon("copy"), "Copy as a call"),
         h("span", { class: "grow" }),
         h("button", { class: "btn primary", disabled: !!blocked, title: blocked ? cap(blocked.text) : "", onclick: () => applyOwn(P) }, `Apply ${plural(P.steps.length, "step")}…`)));
   }

@@ -2414,7 +2414,8 @@ async fn sqlite_files_over_http() {
     assert_eq!(r.status().as_u16(), 200);
     assert_eq!(r.headers()["content-type"], "application/vnd.sqlite3");
     assert_eq!(r.headers()["content-disposition"], "attachment; filename=\"items.sqlite\"");
-    assert_eq!(r.headers()["x-strata-tables"], "items,notes");
+    assert_eq!(r.headers()["x-chloedb-tables"], "items,notes");
+    assert_eq!(r.headers()["x-strata-tables"], "items,notes", "and under the old name");
     let out = dir.path().join("out.sqlite");
     std::fs::write(&out, r.bytes().await.unwrap()).unwrap();
     let (back, done) = chloedb::sqlite::import_new(&out, &dir.path().join("back.strata"), DbOptions::default(), &Default::default()).unwrap();

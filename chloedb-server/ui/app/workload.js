@@ -184,7 +184,7 @@ export const paramsObj = (p) => { if (p == null) return null; if (typeof p === "
 export function whoChips(q) {
   const out = [];
   if (q.key) out.push(h("span", { class: "badge mono", title: q.key_id ? `API key ${q.key} (${q.key_id})` : `API key ${q.key}` }, q.key));
-  if (q.app) out.push(h("span", { class: "badge", title: "the app (x-strata-app, or the user agent's product)" }, q.app));
+  if (q.app) out.push(h("span", { class: "badge", title: "the app (x-chloedb-app, or the user agent's product)" }, q.app));
   if (q.addr) out.push(h("span", { class: "badge mono", title: "the client's address" }, q.addr));
   if (q.client === "command-center") out.push(h("span", { class: "badge accent", title: "sent by the command center itself" }, "command center"));
   return out.length ? h("span", { class: "row", style: { gap: "4px", flexWrap: "wrap" } }, out) : h("span", { class: "muted", title: "This server does not record who sent a query" }, "–");

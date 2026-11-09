@@ -448,7 +448,7 @@ export class Client extends Searchable {
   async #download(path, q) {
     const r = await this._call("GET", "/v1/export" + query(q), undefined, { as: "response" });
     const data = new Uint8Array(await r.arrayBuffer());
-    const tables = (r.headers.get("x-strata-tables") ?? "").split(",").filter(Boolean);
+    const tables = (r.headers.get("x-chloedb-tables") ?? r.headers.get("x-strata-tables") ?? "").split(",").filter(Boolean);
     if (path == null) return { tables, data };
     await writeNew(path instanceof URL ? path : String(path), data);
     return { tables };

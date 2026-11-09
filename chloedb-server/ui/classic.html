@@ -1531,7 +1531,7 @@ $("xExport").onclick = async () => {
     const a = el("a", { href: URL.createObjectURL(blob), download: name });
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    out.replaceChildren(el("div", { class: "ok-msg", text: `${name}, ${(blob.size / 1048576).toFixed(1)} MB: ${(r.headers.get("x-strata-tables") || "").split(",").join(", ")}.` }));
+    out.replaceChildren(el("div", { class: "ok-msg", text: `${name}, ${(blob.size / 1048576).toFixed(1)} MB: ${(r.headers.get("x-chloedb-tables") || r.headers.get("x-strata-tables") || "").split(",").join(", ")}.` }));
   } catch (e) { out.replaceChildren(el("div", { class: "error", text: e.message })); }
   finally { btn.disabled = false; }
 };
