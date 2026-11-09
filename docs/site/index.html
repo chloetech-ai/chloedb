@@ -49,11 +49,21 @@
         <div class="say" data-f="vec"><p>rank by <b>words and meaning</b> in one ORDER BY</p><code>ORDER BY rrf(bm25(title, :q), similarity(emb, :v))</code></div>
         <div class="say" data-f="graph"><p>recommend what a shopper's <b>last purchases</b> lead to</p><code>ppr(bought_with, (SELECT item FROM reviews WHERE usr = :user …))</code></div>
         <div class="say" data-f="cols"><p>keep <b>two items per brand</b> in the top ten</p><code>… DESC MAX 2 PER brand LIMIT 10</code></div>
+        <div class="say" data-f="text"><p><b>suggest as you type</b>, typos and all</p><code>WHERE PREFIX(id, :typed, fuzzy =&gt; 'auto') ORDER BY n DESC LIMIT 10</code></div>
+        <div class="say" data-f="vec"><p>search <b>images and sound</b> by what's in them</p><code>photo_emb VECTOR OPTIONS(embed = 'image', model = 'siglip-base-patch16-224')</code></div>
+        <div class="say" data-f="graph"><p>find places <b>near me</b>, on the phone itself</p><code>POST /v1/admin/slices {"table": "places", "text": "name", "lat": "lat", "lon": "lon"}</code></div>
+        <div class="say" data-f="cols"><p>rank with your <b>LightGBM or XGBoost</b> model, inside the query</p><code>ORDER BY gbdt('docs_ltr', bm25(title, :t), coalesce(rating, 0)) DESC</code></div>
+        <div class="say" data-f="text"><p>replace <b>five systems</b> and their 3 a.m. pages</p><code>strata-server --db shop.strata  # the whole stack</code></div>
+        <div class="say" data-f="vec"><p>hand results to <b>pandas and Arrow</b> without a copy</p><code>db.query_arrow("SELECT id, year, rating FROM books").to_pandas()</code></div>
+        <div class="say" data-f="graph"><p>keep your <b>scoring logic</b> in the database</p><code>CREATE FUNCTION boosted(s FLOAT, w FLOAT) RETURNS FLOAT AS :s * (1 + :w)</code></div>
         <div class="say" data-f="cols"><p>follow your <b>Postgres</b> tables, a moment behind, with no Kafka</p><code>strata-server follow-postgres --source postgres://…</code></div>
         <div class="say" data-f="text"><p>answer apps written for <b>OpenSearch</b>, unchanged</p><code>strata-server --opensearch-listen 127.0.0.1:9200</code></div>
         <div class="say" data-f="vec"><p>run inside your app as <b>one file</b>, like SQLite</p><code>db = strata.open("shop.strata")</code></div>
         <div class="say" data-f="graph"><p>grow to <b>shards on Kubernetes</b> with the same queries</p><code>kubectl apply -f operator.yaml -f cluster.yaml</code></div>
-        <div class="say" data-f="text"><p>give <b>Claude Code</b> your tables over MCP</p><code>claude mcp add --transport http strata http://127.0.0.1:7700/v1/mcp</code></div>
+        <div class="say" data-f="cols"><p>lose a <b>primary</b> and lose no write</p><code>strata-server --seq-no --failover-after-ms 2000</code></div>
+        <div class="say" data-f="text"><p>take in <b>logs</b> over OpenTelemetry and keep the old ones <b>on S3</b></p><code>strata-server --directory --cold-store s3://my-bucket/logs/ --cold-keep-local-gb 50</code></div>
+        <div class="say" data-f="vec"><p>give <b>Claude Code</b> your tables over MCP</p><code>claude mcp add --transport http strata http://127.0.0.1:7700/v1/mcp</code></div>
+        <div class="say" data-f="graph"><p>explain your <b>slow query</b> before your boss asks</p><code>EXPLAIN SELECT …  -- or click Profile</code></div>
       </div>
       <div class="says-nav">
         <button type="button" class="says-prev" aria-label="Previous statement"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></button>
