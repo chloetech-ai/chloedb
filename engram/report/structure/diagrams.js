@@ -21,7 +21,7 @@
   function anatomy() {
     const g = $("#anatomy-diagram");
     if (!g) return;
-    box(g, 0, 10, 190, 74, "box", "PostToolUse: Bash", ["$ cargo test -p strata", "6,200 bytes of output", "turn 41: “fix the planner”"]);
+    box(g, 0, 10, 190, 74, "box", "PostToolUse: Bash", ["$ cargo test -p chloedb", "6,200 bytes of output", "turn 41: “fix the planner”"]);
     arrow(g, 95, 84, 95, 112);
     box(g, 0, 112, 190, 90, "box-warm", "capture", ["redact secrets", "keep head 4,500 B + tail 1,500 B", "cut at ≤ 400 B on line,", "sentence or word boundaries"]);
     arrow(g, 95, 202, 95, 228);

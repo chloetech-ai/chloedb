@@ -28,7 +28,7 @@ use engram::embed::{self, Embedder};
 use engram::recall::{self, GraphParams, RankParams};
 use engram::record::{entity_id, Kind, Link, Record};
 use engram::store::{Filter, Hit, Store, StoreOptions};
-use strata::VectorIndexKind;
+use chloedb::VectorIndexKind;
 
 #[derive(Parser)]
 struct Cli {
@@ -839,7 +839,7 @@ fn run_unit(u: &Unit, e: &Arc<dyn Embedder>, lays: &[Layout], press: &[Pres], tm
         let hybrid = RankParams::default();
         let n = 100;
         for q in &all_qs {
-            let terms = strata::text::analyze_query(&q.question);
+            let terms = chloedb::text::analyze_query(&q.question);
             let tset: HashSet<String> = terms.iter().cloned().collect();
             let bm = if terms.is_empty() { Vec::new() } else { store.bm25_top(&q.question, n, &Filter::default()).unwrap_or_default() };
             let qv = e.embed_query(&q.question).expect("embedding");
@@ -1134,7 +1134,7 @@ fn transcript_mode(cli: &Cli, e: &Arc<dyn Embedder>) {
                             continue;
                         }
                         eligible += 1;
-                        let terms = strata::text::analyze_query(&p.q);
+                        let terms = chloedb::text::analyze_query(&p.q);
                         let tset: HashSet<String> = terms.iter().cloned().collect();
                         let bm = if terms.is_empty() { Vec::new() } else { store.bm25_top(&p.q, 100, &Filter::default()).unwrap_or_default() };
                         let dv = store.vector_top(&e.embed_query(&p.q).expect("embedding"), 100, &Filter::default()).unwrap_or_default();

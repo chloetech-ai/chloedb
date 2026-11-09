@@ -1,6 +1,6 @@
 # Reproducing the results
 
-Every timing on these pages comes from a file committed under `engram/results/` or `strata/results/`, produced on a MacBook Air with an Apple M2. They replace an earlier set of runs on a 4-core cloud VM with an Emerald Rapids Xeon. The runs that call a model (Claude Code with and without Engram, the reader study, fact extraction and the probe sessions) were not repeated; their results are the original ones. This page describes the machine, what changed against the VM, and how to run everything.
+Every timing on these pages comes from a file committed under `engram/results/` or `chloedb/results/`, produced on a MacBook Air with an Apple M2. They replace an earlier set of runs on a 4-core cloud VM with an Emerald Rapids Xeon. The runs that call a model (Claude Code with and without Engram, the reader study, fact extraction and the probe sessions) were not repeated; their results are the original ones. This page describes the machine, what changed against the VM, and how to run everything.
 
 ## The machine
 
@@ -41,7 +41,7 @@ Every timing on these pages comes from a file committed under `engram/results/` 
 | append p50 | 0.296 | 4.82 | 16.27× slower |
 | static embedder (records/s) | 9,513 | 51,481 | 5.41× faster |
 
-*Medians unless marked. The posting-list rows are the best algorithm per codec; the ChloeDB rows come from `strata/results/strata/` and `strata/results/storage/wal.json`; the Engram rows from `engram/results/scale/` and `engram/results/latency/`. Every page quotes the M2 numbers; the VM's are in this repository's history.*
+*Medians unless marked. The posting-list rows are the best algorithm per codec; the ChloeDB rows come from `chloedb/results/strata/` and `chloedb/results/storage/wal.json`; the Engram rows from `engram/results/scale/` and `engram/results/latency/`. Every page quotes the M2 numbers; the VM's are in this repository's history.*
 
 Most of the work runs 1.5–2.5× faster on the M2. Four things behave differently, and each page says where they matter:
 
@@ -50,7 +50,7 @@ Most of the work runs 1.5–2.5× faster on the M2. Four things behave different
 - **Durable commits.** On macOS, Rust's `sync_data` is `F_FULLFSYNC`, which makes the drive flush its write cache; the VM's `fdatasync` on a virtual disk returned far sooner. A durable single-document commit takes about 4 ms instead of 0.27 ms, and an Engram append, which is one, about 4.5 ms. Batched commits are faster than on the VM.
 - **Process start.** Starting a hook process takes about 10 ms on macOS against about 3 ms on the VM, so an Engram hook costs more although the search inside it is twice as fast.
 
-Two benchmarks gained a warm-up pass. `strata-vector-bench` timed its recall/latency sweep right after building the index, and `strata-graph-bench quality` timed each method's first query cold; on Linux, fault-around hid the cost of first touching each page, on macOS it made the first settings look slower than the deeper ones. Both now run one untimed pass first, as the main ChloeDB workload always did.
+Two benchmarks gained a warm-up pass. `chloedb-vector-bench` timed its recall/latency sweep right after building the index, and `chloedb-graph-bench quality` timed each method's first query cold; on Linux, fault-around hid the cost of first touching each page, on macOS it made the first settings look slower than the deeper ones. Both now run one untimed pass first, as the main ChloeDB workload always did.
 
 ## Engram retrieval, earlier on the same laptop
 
@@ -78,7 +78,7 @@ The headline LongMemEval-S numbers on the [Engram results](engram/results.md#ret
 These need no model calls or downloads, only the per-run and per-query files in the repository.
 
 - **Claude Code with and without Engram.** `engram/scripts/ab_stats.py` over the held-out projects' `runs.jsonl` gives the same counts (100/100 against 60/100; 60/60 against 20/60 on conversation-only facts), the same Fisher p-values (1.34 × 10<sup>−14</sup> pooled) and the same permutation p-values (< 1/20,001). The bootstrap intervals differ in the second decimal, because the committed `stats.json` also covers the Tally runs, which shifts the resampling's random stream.
-- **Does the graph help search?** `strata/scripts/graph_quality_stats.py` over `quality_arxiv.rows.jsonl.gz` reproduces `strata/results/graph/quality_stats.json` exactly, including nDCG@20 0.253 against 0.123 and its interval and p-value.
+- **Does the graph help search?** `chloedb/scripts/graph_quality_stats.py` over `quality_arxiv.rows.jsonl.gz` reproduces `chloedb/results/graph/quality_stats.json` exactly, including nDCG@20 0.253 against 0.123 and its interval and p-value.
 
 ## Not re-run
 
@@ -90,14 +90,14 @@ The first long-session A/B (`engram/results/long/*_v1_leaky`) is kept for the re
 
 - Rust (stable; 1.92 on the laptop above) and Python 3.
 - For Engram's live tests, A/B runs and distillation: the [Claude Code](https://claude.com/claude-code) CLI. Those runs call a model and cost money; retrieval, scale and latency studies do not.
-- Several scripts default to data under `/home/user/data/…`; pass paths explicitly, or set `STRATA_DATA` to the BEIR directory. `strata/scripts/run_eval.sh` uses `bash` 4 features (`declare -A`); on macOS, whose `bash` is 3.2, run its steps directly or use a newer `bash`.
+- Several scripts default to data under `/home/user/data/…`; pass paths explicitly, or set `STRATA_DATA` to the BEIR directory. `chloedb/scripts/run_eval.sh` uses `bash` 4 features (`declare -A`); on macOS, whose `bash` is 3.2, run its steps directly or use a newer `bash`.
 - On macOS, ChloeDB's cold-cache measurements need no privileges: eviction invalidates a mapping of each file.
 - Benchmarks are single-threaded unless a flag says otherwise. Run them on an otherwise idle machine.
 
 ## Posting lists
 
 ```sh
-cd strata
+cd chloedb
 cargo test --release postings                               # conformance suite for every codec, and the algorithms
 scripts/postings/prepare_wikitext.sh data                   # WikiText-103 via Hugging Face (needs pyarrow)
 scripts/postings/run_experiments.sh data/wikitext103.txt    # first round: every codec and algorithm
@@ -105,37 +105,37 @@ scripts/postings/run_designs.sh data/wikitext103.txt        # Pyramid, Loom and 
 python3 scripts/postings/build_report.py                    # report/postings/report.html and designs.html
 ```
 
-`strata/.cargo/config.toml` builds with `-C target-cpu=native`. Every SIMD kernel has an AVX-512 version, a NEON version and a portable fallback; the committed timings are from the NEON build on the M2, so x86 timings are not directly comparable with them. strata-server, engram and the Python package build for a generic CPU and pick ChloeDB's vector, column and posting-list kernels at run time (`strata::simd`; the server logs which), so their binaries run on any CPU of their architecture.
+`chloedb/.cargo/config.toml` builds with `-C target-cpu=native`. Every SIMD kernel has an AVX-512 version, a NEON version and a portable fallback; the committed timings are from the NEON build on the M2, so x86 timings are not directly comparable with them. chloedb-server, engram and the Python package build for a generic CPU and pick ChloeDB's vector, column and posting-list kernels at run time (`chloedb::simd`; the server logs which), so their binaries run on any CPU of their architecture.
 
 ## ChloeDB
 
 The BEIR evaluation (about 4.8 GB of data with embeddings; about 2 hours on the M2):
 
 ```sh
-cd strata
+cd chloedb
 python3 scripts/prepare_beir.py /home/user/data/beir    # SciFact, FiQA, TREC-COVID, Quora + Cohere embeddings
 cargo test --release                                    # components, crash recovery, end-to-end SQL
 scripts/run_eval.sh                                     # every experiment in order; or name steps, e.g. strata_small text
 python3 scripts/build_report.py                         # report/strata.html
 ```
 
-`run_eval.sh` builds with `--features baselines` (SQLite with FTS5 and Tantivy) and writes JSON to `strata/results/` and logs to `strata/results/logs/`.
+`run_eval.sh` builds with `--features baselines` (SQLite with FTS5 and Tantivy) and writes JSON to `chloedb/results/` and logs to `chloedb/results/logs/`.
 
 ### ChloeDB graphs
 
 ```sh
-cd strata
+cd chloedb
 # ogbn-arxiv and the papers' titles and abstracts, into /home/user/data/graph/arxiv
 curl -O https://snap.stanford.edu/ogb/data/nodeproppred/arxiv.zip
 curl -O https://snap.stanford.edu/ogb/data/misc/ogbn_arxiv/titleabs.tsv.gz
 python3 -I scripts/prepare_arxiv.py /home/user/data/graph/arxiv
 ../engram/target/release/engram-bench embed --input /home/user/data/graph/arxiv/arxiv.jsonl --out /home/user/data/graph/arxiv/arxiv.f32
-cargo build --release --features baselines --bin strata-graph-bench
-target/release/strata-graph-bench load                  # holds out 1,000 papers of OGB's test split
-target/release/strata-graph-bench latency --sqlite /home/user/data/graph/arxiv/edges.sqlite
-target/release/strata-graph-bench quality --seeds 1,2,3,5,10,20,50
+cargo build --release --features baselines --bin chloedb-graph-bench
+target/release/chloedb-graph-bench load                  # holds out 1,000 papers of OGB's test split
+target/release/chloedb-graph-bench latency --sqlite /home/user/data/graph/arxiv/edges.sqlite
+target/release/chloedb-graph-bench quality --seeds 1,2,3,5,10,20,50
 python3 scripts/graph_quality_stats.py results/graph/quality_arxiv.rows.jsonl.gz --out results/graph/quality_stats.json
-target/release/strata-graph-bench synthetic --nodes 1000000 --db /tmp/synthetic.strata --sqlite /tmp/synthetic.sqlite --out /tmp/graph
+target/release/chloedb-graph-bench synthetic --nodes 1000000 --db /tmp/synthetic.strata --sqlite /tmp/synthetic.sqlite --out /tmp/graph
 python3 scripts/build_graph_report.py                   # report/graph.html
 ```
 

@@ -1,0 +1,37 @@
+[package]
+name = "chloedb-sheets"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Spreadsheets on Strata: workbooks whose cells are rows of Strata tables, the cluster's tables opened as live sheets, xlsx, SQLite and CSV in and out"
+
+# A client of chloedb-server over HTTP, as chloedb-crawl is: no Strata crate in
+# its build, so it runs on a machine of its own, against a server or a
+# cluster anywhere. The spreadsheet engine is IronCalc (formulas, formats,
+# xlsx), pinned: a workbook's frame is its encoding.
+[dependencies]
+ironcalc = "=0.9.1"
+bitcode = "0.6.9"
+base64 = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+csv = "1"
+# SQLite files read into sheets (into Strata tables, chloedb-server reads them).
+rusqlite = { version = "0.41", features = ["bundled"] }
+tempfile = "3"
+libc = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+
+[dev-dependencies]
+
+# CI's tests (cargo test --profile ci), as in the other crates.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16

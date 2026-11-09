@@ -88,7 +88,7 @@ The `memory` table itself, paged, filterable by kind, session and a `MATCH` expr
 
 ![Graph: records, their links and the entities they mention](../assets/img/inspector-graph.png)
 
-Records are linked to the turn they came from, the files they touch (`f:loans.json`) and the entities they are about (`e:receipt printer`). These are ChloeDB `EDGES` fields, so the panel can run `REACHABLE` traversals from any seed, as in the [graph queries](../strata/graphs.md).
+Records are linked to the turn they came from, the files they touch (`f:loans.json`) and the entities they are about (`e:receipt printer`). These are ChloeDB `EDGES` fields, so the panel can run `REACHABLE` traversals from any seed, as in the [graph queries](../chloedb/graphs.md).
 
 ### Vectors
 

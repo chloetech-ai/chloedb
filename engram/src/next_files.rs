@@ -10,8 +10,8 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use strata::query::Params;
-use strata::Value;
+use chloedb::query::Params;
+use chloedb::Value;
 
 use crate::store::Store;
 use crate::Result;

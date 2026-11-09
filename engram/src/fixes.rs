@@ -316,7 +316,7 @@ fn mask(line: &str, project: &str) -> String {
 pub fn known(store: &Store, sig: &str, limit: usize) -> Result<Vec<Record>> {
     let q = sig.replace('#', " ");
     let sql = format!("SELECT {COLUMNS} FROM memory WHERE kind = 'error' AND tag = '{TAG}' ORDER BY bm25(body, :q, syntax => 'plain') DESC LIMIT 30");
-    let rs = store.query_with(&sql, &strata::query::Params::new().set("q", strata::Value::Str(q)))?;
+    let rs = store.query_with(&sql, &chloedb::query::Params::new().set("q", chloedb::Value::Str(q)))?;
     let want = words(sig);
     let mut found: Vec<(bool, f64, Record)> = rs
         .rows

@@ -10,7 +10,7 @@
  {"q": "What serde error did Strata hit for vector values?", "a": ["Arc<\\[f32\\]>: serde::Serialize", "Arc<\\[f32\\]>"]},
  {"q": "Which worktree branch could not be deleted?", "a": ["worktree-agent-a6168778f20d5c3f4"]},
  {"q": "Which commit failed to apply while bringing in the Strata full-text index?", "a": ["5930c82"]},
- {"q": "What compile error did strata-eval have about the Latency struct?", "a": ["no field `p50`"]},
+ {"q": "What compile error did chloedb-eval have about the Latency struct?", "a": ["no field `p50`"]},
  {"q": "What were the E0609 errors about fields on usize in the workload code?", "a": ["no field `query` on type `&usize`", "E0610", "E0609"]},
  {"q": "What does Strata's begin() return while another write is running?", "a": ["Error::Busy"]},
  {"q": "Which local changes blocked a cherry-pick?", "a": ["would be overwritten by cherry-pick"]},

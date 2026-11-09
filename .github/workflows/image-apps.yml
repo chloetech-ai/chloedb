@@ -2,28 +2,28 @@ name: Image (app engine)
 
 # The app engine's image, which the operator runs beside a cluster
 # (spec.apps): ghcr.io/chloetech-ai/strata-apps, for x86-64 and arm64 in
-# one tag, as image.yml does for strata-server.
+# one tag, as image.yml does for chloedb-server.
 #
 # A push to main that changes the engine publishes it as `latest` and as
 # the commit's full sha. A pull request that changes it builds both images
 # and publishes nothing. A run started by hand publishes the branch it runs
 # on, as its sha only.
 #
-# The image copies strata-server out of strata-server's `latest` (for an
+# The image copies chloedb-server out of chloedb-server's `latest` (for an
 # engine run alone, without a cluster); nothing else in it is Rust, so each
 # architecture builds in minutes.
 on:
   push:
     branches: [main]
     paths:
-      - "strata-apps/**"
+      - "chloedb-apps/**"
       - ".github/workflows/image-apps.yml"
   pull_request:
     paths:
-      - "strata-apps/deploy/Dockerfile"
-      - "strata-apps/deploy/Dockerfile.dockerignore"
-      - "strata-apps/package.json"
-      - "strata-apps/package-lock.json"
+      - "chloedb-apps/deploy/Dockerfile"
+      - "chloedb-apps/deploy/Dockerfile.dockerignore"
+      - "chloedb-apps/package.json"
+      - "chloedb-apps/package-lock.json"
       - ".github/workflows/image-apps.yml"
   workflow_dispatch:
 
@@ -64,8 +64,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v7
         with:
-          context: strata-apps
-          file: strata-apps/deploy/Dockerfile
+          context: chloedb-apps
+          file: chloedb-apps/deploy/Dockerfile
           platforms: linux/${{ matrix.arch }}
           push: ${{ env.PUSH == 'true' }}
           load: ${{ env.PUSH != 'true' }}
@@ -74,15 +74,15 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.description=The app engine (strata-apps) that runs beside a ChloeDB cluster
+            org.opencontainers.image.description=The app engine (chloedb-apps) that runs beside a ChloeDB cluster
           cache-from: type=gha,scope=image-apps-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-apps-${{ matrix.arch }}
       # The image starts: its browser, its model client and its server.
       - if: env.PUSH != 'true'
         run: |
           docker run --rm --entrypoint sh "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" -c '
-            /opt/node_modules/.bin/claude --version && strata-server --version &&
-            cd /opt/strata-apps && node -e "require(\"/opt/node_modules/playwright\").chromium.launch().then((b) => b.close())"'
+            /opt/node_modules/.bin/claude --version && chloedb-server --version &&
+            cd /opt/chloedb-apps && node -e "require(\"/opt/node_modules/playwright\").chromium.launch().then((b) => b.close())"'
 
   publish:
     name: app engine image (publish)

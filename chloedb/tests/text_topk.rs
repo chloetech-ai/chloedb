@@ -1,0 +1,404 @@
+//! BM25 ranking: Exhaustive, MaxScore and Block-Max WAND against a naive
+//! BM25, with and without filters (driven and probed), exact re-scoring,
+//! and statistics summed over segments.
+
+mod text_common;
+
+use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
+use chloedb::segment::{DocFilter, DocId, DocSet};
+use chloedb::text::{analyze, Bm25Params, Boost, CollectionStats, FilterStrategy, TextFieldReader, TopKAlgo};
+use text_common::*;
+
+const ALGOS: [TopKAlgo; 3] = [TopKAlgo::Exhaustive, TopKAlgo::MaxScore, TopKAlgo::BlockMaxWand];
+
+/// A probe-only filter.
+struct Every(u32);
+
+impl DocFilter for Every {
+    fn contains(&self, d: DocId) -> bool {
+        d.is_multiple_of(self.0)
+    }
+    fn cardinality(&self) -> usize {
+        1 << 30
+    }
+}
+
+fn queries(texts: &[String], naive: &Naive, n: usize, seed: u64) -> Vec<Vec<String>> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let vocab: Vec<&String> = naive.index.keys().collect();
+    (0..n)
+        .map(|_| {
+            let mut q: Vec<String> = match rng.gen_range(0..4) {
+                // Many words (a typo-tolerant word brings up to 50 more):
+                // MaxScore sums them window by window.
+                3 if rng.gen_bool(0.5) => (0..rng.gen_range(16..=60)).map(|_| vocab.choose(&mut rng).unwrap().to_string()).collect(),
+                // Terms of a document (they co-occur).
+                0 => {
+                    let toks = analyze(&texts[rng.gen_range(0..texts.len())]);
+                    let m = rng.gen_range(1..=6);
+                    toks.choose_multiple(&mut rng, m).cloned().collect()
+                }
+                _ => (0..rng.gen_range(1..=6)).map(|_| vocab.choose(&mut rng).unwrap().to_string()).collect(),
+            };
+            if rng.gen_bool(0.2) && !q.is_empty() {
+                q.push(q[0].clone()); // a repeated term counts twice
+            }
+            if rng.gen_bool(0.1) {
+                q.push("absentterm".into());
+            }
+            q
+        })
+        .collect()
+}
+
+fn check(texts: &[String], nq: usize, seed: u64) {
+    let naive = Naive::new(texts);
+    let qs = queries(texts, &naive, nq, seed);
+    let n = texts.len() as u32;
+    let mut rng = StdRng::seed_from_u64(seed + 7);
+    let filters: Vec<DocSet> = [0.002, 0.05, 0.5]
+        .iter()
+        .map(|&p| DocSet::from_sorted((0..n).filter(|_| rng.gen_bool(p)).collect(), n))
+        .collect();
+    let total: u64 = naive.lens.iter().map(|&l| l as u64).sum();
+    // BM25's N: the documents with at least one term.
+    let with_terms = naive.lens.iter().filter(|&&l| l > 0).count() as u64;
+    for (format, min_df) in configs() {
+        let seg = build(texts, format, min_df, false);
+        let r = TextFieldReader::open(&seg, "body").unwrap();
+        for (qi, q) in qs.iter().enumerate() {
+            let params = if qi % 5 == 4 { Bm25Params { k1: 1.2, b: 0.75 } } else { Bm25Params::default() };
+            let stats = r.stats(q);
+            let all = naive.bm25(q, with_terms, total, params.k1, params.b);
+            let k = [1, 10, 100][qi % 3];
+            for algo in ALGOS {
+                let what = format!("{format:?}/{min_df} {algo:?} k={k} {q:?}");
+                check_topk(&r.top_k(q, &stats, params, k, None, algo), &all, k, &what);
+                for f in &filters {
+                    let want: Vec<(u32, f64)> = all.iter().copied().filter(|&(d, _)| f.contains(d)).collect();
+                    for strategy in [FilterStrategy::Auto, FilterStrategy::Drive, FilterStrategy::Probe] {
+                        let got = r.top_k_with(q, &stats, params, k, Some(f), algo, strategy);
+                        check_topk(&got, &want, k, &format!("{what} filter {} {strategy:?}", f.len()));
+                    }
+                }
+                let every = Every(4);
+                let want: Vec<(u32, f64)> = all.iter().copied().filter(|&(d, _)| every.contains(d)).collect();
+                check_topk(&r.top_k(q, &stats, params, k, Some(&every), algo), &want, k, &format!("{what} probe-only filter"));
+            }
+            // Exact re-scoring, unsorted with duplicates and non-matching docs.
+            let mut docs: Vec<u32> = all.iter().take(20).map(|x| x.0).collect();
+            docs.extend((0..10).map(|_| rng.gen_range(0..n.max(1))));
+            docs.shuffle(&mut rng);
+            if n > 0 {
+                let scores = r.score(q, &stats, params, &docs);
+                for (&d, &s) in docs.iter().zip(&scores) {
+                    let want = all.iter().find(|x| x.0 == d).map_or(0.0, |x| x.1);
+                    assert!((s as f64 - want).abs() <= 1e-4 * want.max(1.0), "score of {d}: {s} vs {want}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn algorithms_agree_synthetic() {
+    check(&synthetic(31, 5000), 120, 1);
+}
+
+#[test]
+fn algorithms_agree_scifact() {
+    let Some(texts) = scifact(2000) else { return };
+    check(&texts, 80, 2);
+}
+
+/// Short texts over few words tie heavily. Every algorithm gives a
+/// document the same score, bit for bit, and `top_k_ties` keeps exactly
+/// the documents scoring at least the `k`-th's.
+#[test]
+fn ties_kept_alike() {
+    let mut rng = StdRng::seed_from_u64(5);
+    let texts: Vec<String> = (0..4000).map(|_| (0..rng.gen_range(1..5)).map(|_| format!("t{}", rng.gen_range(0..12))).collect::<Vec<_>>().join(" ")).collect();
+    let n = texts.len() as u32;
+    let half = DocSet::from_sorted((0..n).filter(|d| d % 2 == 0).collect(), n);
+    for (format, min_df) in configs() {
+        let seg = build(&texts, format, min_df, false);
+        let r = TextFieldReader::open(&seg, "body").unwrap();
+        for qi in 0..60 {
+            let q: Vec<String> = (0..1 + qi % 3).map(|j| format!("t{}", (qi * 7 + j * 5) % 13)).collect();
+            let stats = r.stats(&q);
+            let p = Bm25Params::default();
+            for filter in [None, Some(&half as &dyn DocFilter)] {
+                let all = r.top_k(&q, &stats, p, n as usize, filter, TopKAlgo::Exhaustive);
+                for k in [1, 10, 100] {
+                    let mut want: Vec<(u32, u32)> = match all.get(k - 1) {
+                        Some(&(_, cut)) => all.iter().filter(|x| x.1 >= cut).map(|&(d, s)| (d, s.to_bits())).collect(),
+                        None => all.iter().map(|&(d, s)| (d, s.to_bits())).collect(),
+                    };
+                    want.sort();
+                    for algo in ALGOS {
+                        let got = r.top_k_ties(&q, &stats, p, k, filter, algo);
+                        assert!(got.windows(2).all(|w| w[0].1 >= w[1].1), "{algo:?} k={k} {q:?}: not by decreasing score");
+                        let mut got: Vec<(u32, u32)> = got.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+                        got.sort();
+                        assert_eq!(got, want, "{format:?}/{min_df} {algo:?} k={k} {q:?} filter {}", filter.is_some());
+                        let plain = r.top_k(&q, &stats, p, k, filter, algo);
+                        assert_eq!(plain.len(), k.min(all.len()));
+                        assert!(plain.iter().all(|&(d, s)| want.binary_search(&(d, s.to_bits())).is_ok()), "{algo:?} k={k} {q:?}: top_k scores");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A floor from other segments (`top_k_weighted_above`): each algorithm
+/// keeps exactly the documents scoring at least the floor that the search
+/// without it would rank among the best `k` (with ties, every one tied with
+/// the `k`-th), over texts that tie heavily and with a filter.
+#[test]
+fn a_floor_keeps_what_can_rank() {
+    let mut rng = StdRng::seed_from_u64(41);
+    let texts: Vec<String> = (0..3000).map(|_| (0..rng.gen_range(1..6)).map(|_| format!("t{}", rng.gen_range(0..16))).collect::<Vec<_>>().join(" ")).collect();
+    let n = texts.len() as u32;
+    let third = DocSet::from_sorted((0..n).filter(|d| d % 3 != 0).collect(), n);
+    for (format, min_df) in configs() {
+        let seg = build(&texts, format, min_df, false);
+        let r = TextFieldReader::open(&seg, "body").unwrap();
+        for qi in 0..40 {
+            let q: Vec<String> = (0..1 + qi % 4).map(|j| format!("t{}", (qi * 5 + j * 3) % 17)).collect();
+            let weighted: Vec<(String, f32)> = q.iter().map(|t| (t.clone(), 1.0)).collect();
+            let stats = r.stats(&q);
+            let p = Bm25Params::default();
+            for filter in [None, Some(&third as &dyn DocFilter)] {
+                let all = r.top_k(&q, &stats, p, n as usize, filter, TopKAlgo::Exhaustive);
+                if all.is_empty() {
+                    continue;
+                }
+                for k in [1, 10, 100] {
+                    // Floors at, between and beyond the scores found.
+                    let picks = [0, all.len() / 4, all.len() / 2, all.len() - 1];
+                    let mut floors: Vec<f32> = picks.iter().map(|&j| all[j].1).collect();
+                    floors.push(all[all.len() / 3].1.next_down());
+                    floors.push(all[0].1.next_up());
+                    floors.push(0.0);
+                    for floor in floors {
+                        let cut = all.get(k - 1).map_or(f32::NEG_INFINITY, |x| x.1);
+                        let mut want: Vec<(u32, u32)> = all.iter().filter(|x| x.1 >= floor && x.1 >= cut).map(|&(d, s)| (d, s.to_bits())).collect();
+                        want.sort();
+                        let reach = all.iter().filter(|x| x.1 >= floor).count().min(k);
+                        for algo in ALGOS {
+                            let what = format!("{format:?}/{min_df} {algo:?} k={k} floor={floor} {q:?} filter {}", filter.is_some());
+                            let got = r.top_k_weighted_above(&weighted, &stats, p, k, filter, algo, true, floor);
+                            assert!(got.windows(2).all(|w| w[0].1 >= w[1].1), "{what}: not by decreasing score");
+                            let mut got: Vec<(u32, u32)> = got.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+                            got.sort();
+                            assert_eq!(got, want, "{what}: with ties");
+                            let plain = r.top_k_weighted_above(&weighted, &stats, p, k, filter, algo, false, floor);
+                            assert_eq!(plain.len(), reach, "{what}");
+                            assert!(plain.iter().all(|&(d, s)| want.binary_search(&(d, s.to_bits())).is_ok()), "{what}: scores");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Queries of many lists, over few words that tie heavily: MaxScore's
+/// windows (at 16 essential lists or more) give each document the score
+/// scoring every match gives it, bit for bit, and keep the same ties, with
+/// and without filters.
+#[test]
+fn many_lists_rank_alike() {
+    let mut rng = StdRng::seed_from_u64(23);
+    // Longer than a window, with words of every frequency.
+    let texts: Vec<String> = (0..20_000)
+        .map(|_| (0..rng.gen_range(1..8)).map(|_| format!("w{}", (rng.gen::<f64>().powi(2) * 80.0) as u32)).collect::<Vec<_>>().join(" "))
+        .collect();
+    let n = texts.len() as u32;
+    let half = DocSet::from_sorted((0..n).filter(|d| d % 2 == 0).collect(), n);
+    let sparse = DocSet::from_sorted((0..n).filter(|_| rng.gen_bool(0.01)).collect(), n);
+    for (format, min_df) in configs() {
+        let seg = build(&texts, format, min_df, false);
+        let r = TextFieldReader::open(&seg, "body").unwrap();
+        for qi in 0..30 {
+            let q: Vec<String> = (0..rng.gen_range(16..=60)).map(|_| format!("w{}", rng.gen_range(0..90))).collect();
+            let stats = r.stats(&q);
+            let p = Bm25Params::default();
+            for filter in [None, Some(&half as &dyn DocFilter), Some(&sparse as &dyn DocFilter), Some(&Every(3) as &dyn DocFilter)] {
+                let all = r.top_k(&q, &stats, p, n as usize, filter, TopKAlgo::Exhaustive);
+                for k in [1, 10, 100] {
+                    let mut want: Vec<(u32, u32)> = match all.get(k - 1) {
+                        Some(&(_, cut)) => all.iter().filter(|x| x.1 >= cut).map(|&(d, s)| (d, s.to_bits())).collect(),
+                        None => all.iter().map(|&(d, s)| (d, s.to_bits())).collect(),
+                    };
+                    want.sort();
+                    for algo in ALGOS {
+                        let mut got: Vec<(u32, u32)> = r.top_k_ties(&q, &stats, p, k, filter, algo).iter().map(|&(d, s)| (d, s.to_bits())).collect();
+                        got.sort();
+                        assert_eq!(got, want, "{format:?}/{min_df} {algo:?} k={k} query {qi} filter {}", filter.map_or(0, |f| f.cardinality()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Two segments scored with summed statistics rank like one segment.
+#[test]
+fn statistics_summed_over_segments() {
+    let texts = synthetic(41, 3000);
+    let (a, b) = texts.split_at(1700);
+    let whole = build(&texts, chloedb::text::PostingsFormat::Loom, 32, false);
+    let parts = [build(a, chloedb::text::PostingsFormat::Loom, 32, false), build(b, chloedb::text::PostingsFormat::Bp128, 0, false)];
+    let rw = TextFieldReader::open(&whole, "body").unwrap();
+    let rp: Vec<TextFieldReader> = parts.iter().map(|s| TextFieldReader::open(s, "body").unwrap()).collect();
+    let naive = Naive::new(&texts);
+    for q in queries(&texts, &naive, 50, 9) {
+        let mut stats = CollectionStats::default();
+        for r in &rp {
+            stats.add(&r.stats(&q));
+        }
+        assert_eq!(stats, rw.stats(&q));
+        let p = Bm25Params::default();
+        let want = rw.top_k(&q, &stats, p, 10, None, TopKAlgo::Exhaustive);
+        let mut merged: Vec<(u32, f32)> = rp[0].top_k(&q, &stats, p, 10, None, TopKAlgo::BlockMaxWand);
+        merged.extend(rp[1].top_k(&q, &stats, p, 10, None, TopKAlgo::MaxScore).into_iter().map(|(d, s)| (d + a.len() as u32, s)));
+        merged.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
+        merged.truncate(10);
+        let all: Vec<(u32, f64)> = want.iter().map(|&(d, s)| (d, s as f64)).collect();
+        check_topk(&merged, &all, all.len(), &format!("{q:?}"));
+    }
+}
+
+#[test]
+fn edge_cases() {
+    let texts: Vec<String> = vec!["alpha beta".into(), "".into(), "beta beta gamma".into(), "the".into()];
+    let seg = build(&texts, chloedb::text::PostingsFormat::Loom, 1, true);
+    let r = TextFieldReader::open(&seg, "body").unwrap();
+    let q: Vec<String> = vec!["beta".into()];
+    let stats = r.stats(&q);
+    for algo in ALGOS {
+        assert!(r.top_k(&q, &stats, Bm25Params::default(), 0, None, algo).is_empty());
+        assert!(r.top_k(&[], &stats, Bm25Params::default(), 10, None, algo).is_empty());
+        assert!(r.top_k(&["nothing".into()], &stats, Bm25Params::default(), 10, None, algo).is_empty());
+        let top = r.top_k(&q, &stats, Bm25Params::default(), 10, None, algo);
+        assert_eq!(top.iter().map(|x| x.0).collect::<Vec<_>>(), [2, 0], "{algo:?}");
+        let empty = DocSet::empty(4);
+        assert!(r.top_k(&q, &stats, Bm25Params::default(), 10, Some(&empty), algo).is_empty());
+    }
+    assert_eq!(r.score(&q, &stats, Bm25Params::default(), &[1, 3, 0])[..2], [0.0, 0.0]);
+}
+
+/// A boost of a document's BM25 `t` by a value of its own `v[d]` (NaN for
+/// none): `f(t, v)`, bounded by `b(t, lo, hi)` over the values' range.
+struct Hand<'v> {
+    v: &'v [f64],
+    lo: f64,
+    hi: f64,
+    f: fn(f64, f64) -> f64,
+    b: fn(f64, f64, f64) -> f64,
+}
+
+impl Boost for Hand<'_> {
+    fn score(&mut self, d: DocId, t: f32) -> f64 {
+        (self.f)(t as f64, self.v[d as usize])
+    }
+    fn bound(&mut self, t: f32) -> f64 {
+        (self.b)(t as f64, self.lo, self.hi)
+    }
+}
+
+/// `(name, value, bound, narrows)`: whether the bound falls with BM25, so
+/// that the algorithm asked for runs (else every match is scored), where
+/// it is known.
+type HandBoost = (&'static str, fn(f64, f64) -> f64, fn(f64, f64, f64) -> f64, Option<bool>);
+
+const BOOSTS: [HandBoost; 8] = [
+    ("t * (1 + 0.2 v)", |t, v| t * (1.0 + 0.2 * v), |t, _, hi| t * (1.0 + 0.2 * hi), Some(true)),
+    ("t + 3 v", |t, v| t + 3.0 * v, |t, _, hi| t + 3.0 * hi, Some(true)),
+    ("ln(1 + t) * v", |t, v| (1.0 + t).ln() * v, |t, _, hi| (1.0 + t).ln() * hi, Some(true)),
+    ("t / v", |t, v| t / v, |t, lo, _| t / lo, Some(true)),
+    ("t * (1 + 0.2 coalesce(v, 0))", |t, v| t * (1.0 + 0.2 * if v.is_nan() { 0.0 } else { v }), |t, _, hi| t * (1.0 + 0.2 * hi), Some(true)),
+    // Flat above BM25 2, as a model's above its last split on BM25.
+    ("min(t, 2) * (1 + 0.2 v)", |t, v| t.min(2.0) * (1.0 + 0.2 * v), |t, _, hi| t.min(2.0) * (1.0 + 0.2 * hi), Some(true)),
+    // A bound that is not monotone: none below 1.
+    ("t * (1 + 0.2 v), bound from 1", |t, v| t * (1.0 + 0.2 * v), |t, _, hi| if t < 1.0 { f64::INFINITY } else { t * (1.0 + 0.2 * hi) }, None),
+    // Falls as BM25 rises: no threshold skips anything.
+    ("v - t", |t, v| v - t, |_, _, hi| hi, Some(false)),
+];
+
+/// A boosted top k holds exactly the documents that scoring every match
+/// ranks at or above the `k`-th (ties kept), with every algorithm and
+/// filter; a bound that is too low loses some.
+#[test]
+fn boosts_rank_like_scoring_every_match() {
+    let mut rng = StdRng::seed_from_u64(17);
+    for texts in [synthetic(53, 4000), (0..3000).map(|_| (0..rng.gen_range(1..5)).map(|_| format!("t{}", rng.gen_range(0..12))).collect::<Vec<_>>().join(" ")).collect()] {
+        let naive = Naive::new(&texts);
+        let n = texts.len() as u32;
+        // Values in [0.5, 5] in steps of 0.5 (ties), NULL in every tenth.
+        let v: Vec<f64> = (0..n).map(|_| if rng.gen_bool(0.1) { f64::NAN } else { rng.gen_range(1..=10) as f64 * 0.5 }).collect();
+        let filters: Vec<DocSet> = [0.002, 0.05, 0.5].iter().map(|&p| DocSet::from_sorted((0..n).filter(|_| rng.gen_bool(p)).collect(), n)).collect();
+        let every = Every(4);
+        let mut fs: Vec<Option<&dyn DocFilter>> = vec![None, Some(&every)];
+        fs.extend(filters.iter().map(|f| Some(f as &dyn DocFilter)));
+        let seg = build(&texts, chloedb::text::PostingsFormat::Loom, 32, false);
+        let r = TextFieldReader::open(&seg, "body").unwrap();
+        let (mut checked, mut lost) = (0, 0);
+        for (qi, q) in queries(&texts, &naive, 40, 3).iter().enumerate() {
+            let stats = r.stats(q);
+            let p = Bm25Params::default();
+            let terms: Vec<(String, f32)> = q.iter().map(|t| (t.clone(), 1.0)).collect();
+            let k = [1, 10, 100][qi % 3];
+            for filter in &fs {
+                let matches = r.top_k(q, &stats, p, n as usize, *filter, TopKAlgo::Exhaustive);
+                for &(name, f, b, narrows) in &BOOSTS {
+                    // Every match scored: those at or above the k-th.
+                    let mut all: Vec<(u32, f64)> = matches.iter().map(|&(d, t)| (d, f(t as f64, v[d as usize]))).map(|(d, x)| (d, if x.is_nan() { f64::NEG_INFINITY } else { x })).collect();
+                    all.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    let mut want: Vec<(u32, u64)> = match all.get(k - 1) {
+                        Some(&(_, cut)) => all.iter().filter(|x| x.1 >= cut).map(|&(d, x)| (d, x.to_bits())).collect(),
+                        None => all.iter().map(|&(d, x)| (d, x.to_bits())).collect(),
+                    };
+                    want.sort();
+                    for algo in ALGOS {
+                        let what = format!("{name} {algo:?} k={k} {q:?} filter {}", filter.map_or(0, |f| f.cardinality()));
+                        let mut boost = Hand { v: &v, lo: 0.5, hi: 5.0, f, b };
+                        let (got, ran) = r.top_k_boosted(&terms, &stats, p, k, *filter, algo, &mut boost);
+                        if let Some(narrows) = narrows {
+                            assert_eq!(ran, if narrows { algo } else { TopKAlgo::Exhaustive }, "{what}");
+                        }
+                        assert!(got.windows(2).all(|w| w[0].1 >= w[1].1), "{what}: not by decreasing score");
+                        let mut got: Vec<(u32, u64)> = got.iter().map(|&(d, x)| (d, x.to_bits())).collect();
+                        got.sort();
+                        assert_eq!(got, want, "{what}");
+                        checked += 1;
+                        // Above a floor, the k-th value of other segments:
+                        // the documents of `want` at or above it.
+                        if let Some(&(_, cut)) = all.get(k - 1) {
+                            for floor in [cut, cut.next_down(), cut.next_up(), all[0].1] {
+                                let mut boost = Hand { v: &v, lo: 0.5, hi: 5.0, f, b };
+                                let mut above: Vec<(u32, u64)> = r.top_k_boosted_above(&terms, &stats, p, k, *filter, algo, &mut boost, floor).0.iter().map(|&(d, x)| (d, x.to_bits())).collect();
+                                above.sort();
+                                let expect: Vec<(u32, u64)> = want.iter().copied().filter(|&(_, x)| f64::from_bits(x) >= floor).collect();
+                                assert_eq!(above, expect, "{what} above {floor}");
+                            }
+                        }
+                        // The same with a bound 30% too low.
+                        if algo != TopKAlgo::Exhaustive {
+                            let mut low = Hand { v: &v, lo: 0.5, hi: 5.0, f, b: |t, lo, hi| 0.7 * BOOSTS[0].2(t, lo, hi) };
+                            if name == BOOSTS[0].0 {
+                                let mut got: Vec<(u32, u64)> = r.top_k_boosted(&terms, &stats, p, k, *filter, algo, &mut low).0.iter().map(|&(d, x)| (d, x.to_bits())).collect();
+                                got.sort();
+                                lost += (got != want) as usize;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked}");
+        assert!(lost > 10, "a bound 30% too low lost rows in only {lost} queries");
+    }
+}

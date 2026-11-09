@@ -12,10 +12,10 @@ use std::sync::Arc;
 use engram::embed::HashEmbedder;
 use engram::record::{Draft, Kind};
 use engram::store::{Store, StoreOptions};
-use strata::db::Db;
-use strata::query::Params;
-use strata::storage::DbOptions;
-use strata::value::Value;
+use chloedb::db::Db;
+use chloedb::query::Params;
+use chloedb::storage::DbOptions;
+use chloedb::value::Value;
 
 /// Every row of the store and its vector, in order of `seq`.
 fn rows(db: &Db) -> Vec<Vec<Value>> {
@@ -35,7 +35,7 @@ fn a_store_from_before_field_ids_is_copied_on_first_open() {
         std::fs::copy(fixture.join(name), dir.path().join(name)).unwrap();
     }
     let path = dir.path().join("m.strata");
-    assert!(strata::upgrade::needs_upgrade(&path).unwrap());
+    assert!(chloedb::upgrade::needs_upgrade(&path).unwrap());
     let before = {
         let old = Db::open(&path, DbOptions { open_old: true, ..DbOptions::default() }).unwrap();
         rows(&old)
@@ -44,8 +44,8 @@ fn a_store_from_before_field_ids_is_copied_on_first_open() {
 
     let open = || Store::open(&path, Arc::new(HashEmbedder { dim: 32 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
     let s = open();
-    assert!(!strata::upgrade::needs_upgrade(&path).unwrap());
-    assert!(strata::upgrade::old_path(&path).exists());
+    assert!(!chloedb::upgrade::needs_upgrade(&path).unwrap());
+    assert!(chloedb::upgrade::old_path(&path).exists());
     assert_eq!(s.len(), before.len() as u64);
     assert_eq!(rows(&s.db), before);
     // Its words and its vectors are searched as before.

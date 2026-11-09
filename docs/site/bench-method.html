@@ -63,7 +63,7 @@
         <tr><th scope="row">Hybrid, weighted</th><td>0.2 × BM25 plus 0.8 × similarity, each min-max normalised</td><td><code>0.2 * minmax(…) + 0.8 * minmax(…)</code></td></tr>
       </tbody>
     </table></div>
-    <p class="small muted">Every engine's request for every kind is in <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/compare/README.md">the method</a>. Engines that shard are also measured on writes and streams.</p>
+    <p class="small muted">Every engine's request for every kind is in <a href="https://github.com/chloetech-ai/strata/blob/main/chloedb-server/deploy/compare/README.md">the method</a>. Engines that shard are also measured on writes and streams.</p>
   </div></section>
 
   <section class="gutter" id="rules"><div class="wrap block">
@@ -165,26 +165,26 @@
       <h2>Every run is a script in the repository</h2>
     </div>
     <div class="grid cols-2">
-      <div class="code"><div class="code-head"><span>A laptop cluster (kind), one engine at a time</span></div><pre data-lang="bash"><code>cd strata-server
+      <div class="code"><div class="code-head"><span>A laptop cluster (kind), one engine at a time</span></div><pre data-lang="bash"><code>cd chloedb-server
 deploy/kind-test.sh up
 deploy/compare/compare.sh image
 deploy/compare/compare.sh up es
 deploy/compare/compare.sh load es
 deploy/compare/compare.sh run es
 deploy/compare/compare.sh down es</code></pre></div>
-      <div class="code"><div class="code-head"><span>Every engine on DigitalOcean, at once</span></div><pre data-lang="bash"><code>cd strata-server
+      <div class="code"><div class="code-head"><span>Every engine on DigitalOcean, at once</span></div><pre data-lang="bash"><code>cd chloedb-server
 IMAGE=ghcr.io/chloetech-ai/strata-server:&lt;sha&gt; \
   BUDGET=30 deploy/compare/fanout.sh run
 deploy/compare/fanout.sh analyze results/
 deploy/compare/fanout.sh down</code></pre></div>
-      <div class="code"><div class="code-head"><span>No server, on one DigitalOcean node</span></div><pre data-lang="bash"><code>cd strata-py/bench/laptop
+      <div class="code"><div class="code-head"><span>No server, on one DigitalOcean node</span></div><pre data-lang="bash"><code>cd chloedb-py/bench/laptop
 ./do_part_a.sh up &amp;&amp; ./do_part_a.sh push
 ./do_part_a.sh setup &amp;&amp; ./do_part_a.sh prep
 ./do_part_a.sh run
 ./do_part_a.sh fetch results/ &amp;&amp; ./do_part_a.sh down</code></pre></div>
       <div class="code"><div class="code-head"><span>These pages' numbers</span></div><pre data-lang="bash"><code>python3 docs/site/scripts/bench_data.py</code></pre></div>
     </div>
-    <p class="small muted">Full steps and costs: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/compare/README.md">deploy/compare/README.md</a>. Think an engine is set up badly? Open an issue with the setting you would use and we will run it again.</p>
+    <p class="small muted">Full steps and costs: <a href="https://github.com/chloetech-ai/strata/blob/main/chloedb-server/deploy/compare/README.md">deploy/compare/README.md</a>. Think an engine is set up badly? Open an issue with the setting you would use and we will run it again.</p>
   </div></section>
 </main>
 
@@ -192,7 +192,7 @@ deploy/compare/fanout.sh down</code></pre></div>
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js?v=7f52b41b8a"></script>

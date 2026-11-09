@@ -6,7 +6,7 @@ Please report a vulnerability privately, through GitHub: open
 [a private security advisory](https://github.com/chloetech-ai/strata/security/advisories/new)
 on this repository. Don't open a public issue or pull request for it.
 
-Say what is affected (ChloeDB the library, `strata-server`, the Python
+Say what is affected (ChloeDB the library, `chloedb-server`, the Python
 package, or Engram), the commit you tested, and how to reproduce it. The
 report and the fix are discussed in the advisory, which is published once a
 fix has merged.
@@ -17,7 +17,7 @@ There are no releases yet: fixes go to `main` only.
 
 ## What counts as a vulnerability
 
-- Anything that lets a client of `strata-server` do more than its
+- Anything that lets a client of `chloedb-server` do more than its
   credential allows: an API key acting beyond its scope (`read`, `write`,
   `admin`), reaching the calls between the servers of a cluster without the
   cluster's token, or getting that token.

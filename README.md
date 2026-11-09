@@ -2,22 +2,22 @@
 
 **An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.**
 
-> ChloeDB was called Strata until November 2026. The rename is landing in steps: until it is done, folders, crates, commands, settings and the repository still carry the old name (`strata-server`, `import strata`, `STRATA_*`), and they keep working afterwards.
+> ChloeDB was called Strata until November 2026. The rename is landing in steps: until it is done, folders, crates, commands, settings and the repository still carry the old name (`chloedb-server`, `import strata`, `STRATA_*`), and they keep working afterwards.
 
 ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions with snapshot isolation, and is queried with SQL. Every table is indexed three ways at once (posting lists for full text, a columnar forward index for structured fields, and vector indexes), rows can hold typed, weighted edges to other rows, and a cost-based planner chooses, per segment and from exact statistics, how to run each part of a statement. A database holds several tables, and queries join them. ChloeDB's posting lists come from its own study of compressed posting-list formats (the `postings` module), which produced the Loom and Pyramid codecs it uses.
 
 Around the library:
 
-- **[strata-server](docs/strata/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
-- **[strata-py](docs/strata/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods. Its [frames](docs/strata/frames.md) are lazy dataframes written as Polars writes them (filters, groups, joins, windows, and search as verbs), run as one SQL query where the data is, with the answer as Arrow for pandas, Polars and NumPy.
-- **[strata-java](docs/strata/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:strata:books.strata`.
-- **[strata-js](docs/strata/javascript.md)** does the same from JavaScript: a ChloeDB file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
-- **[Parquet and S3](docs/strata/parquet.md)**: `strata-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
-- **[Following Postgres](docs/strata/postgres.md)**: `strata-server follow-postgres` copies a Postgres publication's tables into ChloeDB and then applies their inserts, updates, deletes, truncates and new columns by logical replication (pgoutput), a moment behind, each change once across restarts: search over Postgres's rows without a Debezium or PGSync pipeline.
-- **[SQLite in and out](docs/strata/sqlite.md)**: `strata-server import` turns a SQLite database's tables into ChloeDB tables, and `strata-server export` writes a ChloeDB database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
-- **[strata-crawl](docs/strata/crawler.md)** crawls a site into a table: given a URL it reads the pages, finds their fields (JSON-LD, meta tags, spec tables, the site's template), makes a table from them and fills it, and adds shards to the cluster as the table grows. A program of its own that talks to strata-server over HTTP, shown in the command center as an app.
-- **[strata-sheets](docs/strata/sheets.md)** is a spreadsheet app whose workbooks live in ChloeDB: formulas (IronCalc, over 300 functions), formats, charts, pivots, filters and SQL queries of the cluster that fill cells; every cell is a row, so every workbook can be searched; the cluster's tables open as live sheets to sort, filter and edit; Excel, CSV and SQLite files come in, Excel and CSV go out. Shown in the command center as an app.
-- **[strata-apps](docs/strata/apps.md)** (a prototype) builds apps from a description: a model plans and writes them, the engine checks every piece, stores it in ChloeDB as a SQL statement and runs it, and you change an app by asking, each change a version you can go back from. Apps share components and helpers found by words, meaning and a graph, get sign-in, files, email and maps, and, when their owner switches it on, a model and the web.
+- **[chloedb-server](docs/chloedb/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
+- **[chloedb-py](docs/chloedb/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods. Its [frames](docs/chloedb/frames.md) are lazy dataframes written as Polars writes them (filters, groups, joins, windows, and search as verbs), run as one SQL query where the data is, with the answer as Arrow for pandas, Polars and NumPy.
+- **[chloedb-java](docs/chloedb/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:strata:books.strata`.
+- **[chloedb-js](docs/chloedb/javascript.md)** does the same from JavaScript: a ChloeDB file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
+- **[Parquet and S3](docs/chloedb/parquet.md)**: `chloedb-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
+- **[Following Postgres](docs/chloedb/postgres.md)**: `chloedb-server follow-postgres` copies a Postgres publication's tables into ChloeDB and then applies their inserts, updates, deletes, truncates and new columns by logical replication (pgoutput), a moment behind, each change once across restarts: search over Postgres's rows without a Debezium or PGSync pipeline.
+- **[SQLite in and out](docs/chloedb/sqlite.md)**: `chloedb-server import` turns a SQLite database's tables into ChloeDB tables, and `chloedb-server export` writes a ChloeDB database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
+- **[chloedb-crawl](docs/chloedb/crawler.md)** crawls a site into a table: given a URL it reads the pages, finds their fields (JSON-LD, meta tags, spec tables, the site's template), makes a table from them and fills it, and adds shards to the cluster as the table grows. A program of its own that talks to chloedb-server over HTTP, shown in the command center as an app.
+- **[chloedb-sheets](docs/chloedb/sheets.md)** is a spreadsheet app whose workbooks live in ChloeDB: formulas (IronCalc, over 300 functions), formats, charts, pivots, filters and SQL queries of the cluster that fill cells; every cell is a row, so every workbook can be searched; the cluster's tables open as live sheets to sort, filter and edit; Excel, CSV and SQLite files come in, Excel and CSV go out. Shown in the command center as an app.
+- **[chloedb-apps](docs/chloedb/apps.md)** (a prototype) builds apps from a description: a model plans and writes them, the engine checks every piece, stores it in ChloeDB as a SQL statement and runs it, and you change an app by asking, each change a version you can go back from. Apps share components and helpers found by words, meaning and a graph, get sign-in, files, email and maps, and, when their owner switches it on, a model and the web.
 - **[Engram](#engram-memory-for-coding-agents-built-on-chloedb)** is an application built on ChloeDB: long-term memory for coding agents. It records every Claude Code session of a project into one ChloeDB file and brings the right pieces back when a prompt needs them.
 
 🌐 **Website:** [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/), with the benchmarks against other engines. 📖 **Documentation:** [`docs/`](docs/README.md).
@@ -41,19 +41,19 @@ WHERE REACHABLE(cites, (SELECT id FROM papers ORDER BY similarity(emb, :q) DESC 
 ORDER BY similarity(emb, :q) DESC LIMIT 20;
 ```
 
-See the [query language reference](docs/strata/query-language.md).
+See the [query language reference](docs/chloedb/query-language.md).
 
 ```mermaid
 flowchart LR
     subgraph LIB["ChloeDB: one file + WAL"]
         direction TB
         SQL["SQL: parser, binder,<br/>cost-based planner"] --> IDX["full text · columns · vectors · graph edges"]
-        IDX --- PB["posting lists<br/>Loom · Pyramid · BP128<br/>(strata::postings)"]
+        IDX --- PB["posting lists<br/>Loom · Pyramid · BP128<br/>(chloedb::postings)"]
     end
     APP["your program<br/>(Rust)"] --> LIB
-    PY["strata-py<br/>in-process or HTTP client"] --> LIB
+    PY["chloedb-py<br/>in-process or HTTP client"] --> LIB
     PY -.-> SRV
-    SRV["strata-server<br/>HTTP JSON · gRPC · UI · agent<br/>coordinator over shards · replicas"] --> LIB
+    SRV["chloedb-server<br/>HTTP JSON · gRPC · UI · agent<br/>coordinator over shards · replicas"] --> LIB
     EN["Engram<br/>memory for Claude Code"] --> LIB
 ```
 
@@ -64,10 +64,10 @@ flowchart LR
 | | Result | Where |
 |---|---|---|
 | Against 13 search engines and databases, 14 kinds of query (MS MARCO 1M on DigitalOcean, 7 November) | **First** on places summed over 45 tests: 146 points, Solr 286, Elasticsearch 291, Qdrant 300; at 10M, 87 against OpenSearch's 181 and Elasticsearch's 186. Behind on typo search, key lookups and BM25 × recency | [Benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
-| ChloeDB vs Tantivy, warm BM25 top-10 | **1.7–3.2× faster**; conjunctions 2.7–4.1× faster; 24 of 28 text and filter comparisons won | [ChloeDB results](docs/strata/results.md#query-latency) |
-| ChloeDB vector top-10 (HNSW, 1,024-d) | **0.05–0.10 ms**, recall@10 0.99 on Quora; SQLite's scan takes 7.7 ms to 0.7 s | [ChloeDB results](docs/strata/results.md#vector-indexes) |
-| Filtered vector search planner | **1.8–6.1× faster** than the best fixed strategy, recall@10 0.991–0.998 | [ChloeDB results](docs/strata/results.md#filtered-vector-search-and-the-planner) |
-| Graph expansion for citation search (arXiv) | nDCG@20 **0.123 → 0.253** over vector search alone (p < 0.0001) | [ChloeDB graphs](docs/strata/graphs.md#does-the-graph-help-search) |
+| ChloeDB vs Tantivy, warm BM25 top-10 | **1.7–3.2× faster**; conjunctions 2.7–4.1× faster; 24 of 28 text and filter comparisons won | [ChloeDB results](docs/chloedb/results.md#query-latency) |
+| ChloeDB vector top-10 (HNSW, 1,024-d) | **0.05–0.10 ms**, recall@10 0.99 on Quora; SQLite's scan takes 7.7 ms to 0.7 s | [ChloeDB results](docs/chloedb/results.md#vector-indexes) |
+| Filtered vector search planner | **1.8–6.1× faster** than the best fixed strategy, recall@10 0.991–0.998 | [ChloeDB results](docs/chloedb/results.md#filtered-vector-search-and-the-planner) |
+| Graph expansion for citation search (arXiv) | nDCG@20 **0.123 → 0.253** over vector search alone (p < 0.0001) | [ChloeDB graphs](docs/chloedb/graphs.md#does-the-graph-help-search) |
 | Loom posting lists vs partitioned Elias-Fano | same size, **2.4–3.0× faster AND**, 3.8–7.7× faster OR | [Posting lists](docs/posting-lists.md) |
 
 **Engram, on ChloeDB**
@@ -93,24 +93,24 @@ git clone https://github.com/chloetech-ai/strata && cd strata
 ChloeDB from its shell, which prints the plan it chose:
 
 ```sh
-cd strata && cargo build --release
-target/release/strata db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+cd chloedb && cargo build --release
+target/release/chloedb db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
 ```
 
-ChloeDB as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/strata/server.md#run-it)):
+ChloeDB as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/chloedb/server.md#run-it)):
 
 ```sh
 v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
 tar xzf strata-server-$p.tar.gz
-strata-server-$p/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+strata-server-$p/chloedb-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
 ```
 
 Or built from source:
 
 ```sh
-cd strata-server && cargo build --release
-target/release/strata-server --demo 20000 --db products.strata
+cd chloedb-server && cargo build --release
+target/release/chloedb-server --demo 20000 --db products.strata
 ```
 
 Or from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
@@ -120,16 +120,16 @@ docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data 
   ghcr.io/chloetech-ai/strata-server:latest --db /data/my.strata --listen 0.0.0.0:7700
 ```
 
-ChloeDB from Python ([more](docs/strata/python.md)):
+ChloeDB from Python ([more](docs/chloedb/python.md)):
 
 ```sh
-pip install ./strata-py
+pip install ./chloedb-py
 ```
 
-ChloeDB from Java ([more](docs/strata/java.md)):
+ChloeDB from Java ([more](docs/chloedb/java.md)):
 
 ```sh
-cd strata-java && mvn install    # ai.chloetech:strata:0.1.0, the native library inside the jar
+cd chloedb-java && mvn install    # ai.chloetech:strata:0.1.0, the native library inside the jar
 ```
 
 ```java
@@ -139,10 +139,10 @@ try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
 }
 ```
 
-ChloeDB from JavaScript ([more](docs/strata/javascript.md)):
+ChloeDB from JavaScript ([more](docs/chloedb/javascript.md)):
 
 ```sh
-cd strata-js && npm run build && cd ../my-app && npm install ../strata/strata-js
+cd chloedb-js && npm run build && cd ../my-app && npm install ../strata/chloedb-js
 ```
 
 ## Engram: memory for coding agents, built on ChloeDB
@@ -215,32 +215,32 @@ demo/run.sh --embedder hash:256 ...                           # without download
 
 | path | what |
 |---|---|
-| [`strata/`](strata/) | the database: storage engine, segments, text / structured / vector / graph indexes, SQL binder, planner and executor, baselines and benchmarks; [`src/postings/`](strata/src/postings/) holds the compressed posting lists and set algorithms, the Pyramid, Loom and Entropic designs, and their testbed (`strata-posting-bench`) |
-| [`strata-server/`](strata-server/) | ChloeDB over HTTP JSON and gRPC: a coordinator over shards, replicas, deadlines, Prometheus metrics, a query-builder UI and an agent that answers questions with SQL ([docs](docs/strata/server.md)) |
-| [`strata-py/`](strata-py/) | ChloeDB from Python: the database in-process (a Rust extension) or a client of strata-server, with the same methods ([docs](docs/strata/python.md)) |
-| [`strata-java/`](strata-java/) | ChloeDB from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.strata` package, built by Maven) ([docs](docs/strata/java.md)) |
-| [`strata-js/`](strata-js/) | ChloeDB from JavaScript: the database in-process (a Node-API addon for Node, Bun and Deno) or a `fetch` client of strata-server, with the same methods ([docs](docs/strata/javascript.md)) |
-| [`strata-crawl/`](strata-crawl/) | the crawler: polite fetching, field extraction, a table's schema inferred from the pages, batched writes and a cluster grown a shard at a time; its command center view (`ui/view.js`) ([docs](docs/strata/crawler.md)) |
-| [`strata-sheets/`](strata-sheets/) | the spreadsheet app: workbooks kept as ChloeDB rows (IronCalc's formulas), live sheets of the cluster's tables, SQL query blocks, xlsx, CSV and SQLite in and out; its command center view (`ui/view.js`) ([docs](docs/strata/sheets.md)) |
-| [`strata-apps/`](strata-apps/) | the app engine (a prototype, in Node.js): the forge that has a model plan and write apps, their pieces stored as SQL rows, the checks, the studio, sandboxed views and QuickJS functions, a library of 150 shared pieces, and the services apps get ([docs](docs/strata/apps.md)) |
+| [`chloedb/`](chloedb/) | the database: storage engine, segments, text / structured / vector / graph indexes, SQL binder, planner and executor, baselines and benchmarks; [`src/postings/`](chloedb/src/postings/) holds the compressed posting lists and set algorithms, the Pyramid, Loom and Entropic designs, and their testbed (`chloedb-posting-bench`) |
+| [`chloedb-server/`](chloedb-server/) | ChloeDB over HTTP JSON and gRPC: a coordinator over shards, replicas, deadlines, Prometheus metrics, a query-builder UI and an agent that answers questions with SQL ([docs](docs/chloedb/server.md)) |
+| [`chloedb-py/`](chloedb-py/) | ChloeDB from Python: the database in-process (a Rust extension) or a client of chloedb-server, with the same methods ([docs](docs/chloedb/python.md)) |
+| [`chloedb-java/`](chloedb-java/) | ChloeDB from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.strata` package, built by Maven) ([docs](docs/chloedb/java.md)) |
+| [`chloedb-js/`](chloedb-js/) | ChloeDB from JavaScript: the database in-process (a Node-API addon for Node, Bun and Deno) or a `fetch` client of chloedb-server, with the same methods ([docs](docs/chloedb/javascript.md)) |
+| [`chloedb-crawl/`](chloedb-crawl/) | the crawler: polite fetching, field extraction, a table's schema inferred from the pages, batched writes and a cluster grown a shard at a time; its command center view (`ui/view.js`) ([docs](docs/chloedb/crawler.md)) |
+| [`chloedb-sheets/`](chloedb-sheets/) | the spreadsheet app: workbooks kept as ChloeDB rows (IronCalc's formulas), live sheets of the cluster's tables, SQL query blocks, xlsx, CSV and SQLite in and out; its command center view (`ui/view.js`) ([docs](docs/chloedb/sheets.md)) |
+| [`chloedb-apps/`](chloedb-apps/) | the app engine (a prototype, in Node.js): the forge that has a model plan and write apps, their pieces stored as SQL rows, the checks, the studio, sandboxed views and QuickJS functions, a library of 150 shared pieces, and the services apps get ([docs](docs/chloedb/apps.md)) |
 | [`engram/`](engram/) | Engram, the memory system built on ChloeDB: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), evaluation harnesses and results |
 | [`docs/`](docs/) | this documentation, as Markdown and as a GitHub Pages site |
 | [`install.sh`](install.sh) | builds Engram, installs it to `~/.local/bin` and wires it into Claude Code |
 | [`AGENTS.md`](AGENTS.md) | instructions for a coding agent setting Engram up or working on this repository (`CLAUDE.md` imports it) |
 
-Each crate also carries its own design document ([ChloeDB](strata/DESIGN.md), [Engram](engram/DESIGN.md)) and full HTML reports with every chart and table ([ChloeDB](strata/report/strata.html), [ChloeDB graphs](strata/report/graph.html), [posting lists](strata/report/postings/report.html), [designs](strata/report/postings/designs.html), [Engram](engram/report/engram.html), [record structure](engram/report/structure.html)).
+Each crate also carries its own design document ([ChloeDB](chloedb/DESIGN.md), [Engram](engram/DESIGN.md)) and full HTML reports with every chart and table ([ChloeDB](chloedb/report/strata.html), [ChloeDB graphs](chloedb/report/graph.html), [posting lists](chloedb/report/postings/report.html), [designs](chloedb/report/postings/designs.html), [Engram](engram/report/engram.html), [record structure](engram/report/structure.html)).
 
 ## Documentation
 
 - [Overview](docs/README.md)
-- **ChloeDB:** [design](docs/strata/index.md) · [query language](docs/strata/query-language.md) · [graphs](docs/strata/graphs.md) · [server](docs/strata/server.md) · [Python](docs/strata/python.md) · [Java](docs/strata/java.md) · [JavaScript](docs/strata/javascript.md) · [SQLite](docs/strata/sqlite.md) · [Postgres](docs/strata/postgres.md) · [results](docs/strata/results.md)
+- **ChloeDB:** [design](docs/chloedb/index.md) · [query language](docs/chloedb/query-language.md) · [graphs](docs/chloedb/graphs.md) · [server](docs/chloedb/server.md) · [Python](docs/chloedb/python.md) · [Java](docs/chloedb/java.md) · [JavaScript](docs/chloedb/javascript.md) · [SQLite](docs/chloedb/sqlite.md) · [Postgres](docs/chloedb/postgres.md) · [results](docs/chloedb/results.md)
 - [Posting lists](docs/posting-lists.md)
 - **Engram, built on ChloeDB:** [install on your machine](docs/engram/setup.md) · [how it works](docs/engram/index.md) · [live inspector](docs/engram/inspector.md) · [results](docs/engram/results.md) · [why Engram](https://chloetech-ai.github.io/strata/why/)
 - [Reproducing the results](docs/reproduce.md)
 
 ## Status and limits
 
-This is a research prototype, measured carefully, most of it on one machine (an Apple M2 MacBook Air; the model-based runs on an earlier 4-core cloud VM, and the comparisons with other engines on DigitalOcean). A ChloeDB database has one writer process (the multi-process writer lock is designed but not built), and `strata-server` serves a database's first table for now; its sharding, replication and agent are new and have been tested, not yet measured at scale. Engram's coding evidence comes from one long session, a handful of live runs and three small A/B projects; the public benchmarks it uses (LongMemEval, LoCoMo) are chat histories, not coding sessions. Each results page lists its own limitations.
+This is a research prototype, measured carefully, most of it on one machine (an Apple M2 MacBook Air; the model-based runs on an earlier 4-core cloud VM, and the comparisons with other engines on DigitalOcean). A ChloeDB database has one writer process (the multi-process writer lock is designed but not built), and `chloedb-server` serves a database's first table for now; its sharding, replication and agent are new and have been tested, not yet measured at scale. Engram's coding evidence comes from one long session, a handful of live runs and three small A/B projects; the public benchmarks it uses (LongMemEval, LoCoMo) are chat histories, not coding sessions. Each results page lists its own limitations.
 
 The repository was called `rkonow/engram` until October 2026. GitHub redirects the old address, so existing clones keep working.
 

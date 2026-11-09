@@ -8,7 +8,7 @@ import pathlib
 root = pathlib.Path(__file__).resolve().parent.parent
 results = root / "results"
 report = root / "report"
-shared = root.parent / "strata" / "report" / "postings"
+shared = root.parent / "chloedb" / "report" / "postings"
 
 
 def load(path):

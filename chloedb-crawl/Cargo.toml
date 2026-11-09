@@ -1,0 +1,41 @@
+[package]
+name = "chloedb-crawl"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A crawler on Strata: pages fetched, their fields extracted, a table's schema inferred from them, and the table fed and grown into shards"
+
+# A client of chloedb-server over HTTP: no Strata crate in its build, so it
+# runs on a machine of its own, against a server or a cluster anywhere.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "deflate", "charset"] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive", "env"] }
+# HTML parsed as browsers parse it (html5ever), and CSS selectors.
+scraper = "0.23"
+ego-tree = "0.10"
+url = "2"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+encoding_rs = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+# Retry-After as an HTTP date.
+httpdate = "1"
+# URL and content hashes (the seen set, duplicate pages), stable across runs.
+twox-hash = { version = "2", default-features = false, features = ["xxhash3_64"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+# CI's tests (cargo test --profile ci), as in the other crates.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16

@@ -1,6 +1,6 @@
 # Engram
 
-Automatic long-term context for Claude Code, stored in [ChloeDB](../strata).
+Automatic long-term context for Claude Code, stored in [ChloeDB](../chloedb).
 
 Engram records everything a coding session does into one ChloeDB file per
 project: prompts, answers, tool calls and results, errors, and compaction

@@ -63,7 +63,7 @@ window.STRATA_COMPARE = {
           elastic: "$:Searchable snapshots, Enterprise licence", opensearch: "y:Searchable snapshots and remote-backed storage",
           weaviate: "p:Inactive tenants offloaded to S3", milvus: "y:Segments are kept on object storage" }],
         ["Another cluster kept a moment behind, to switch over to", {
-          strata: "y:strata-server follow; a planned switch-over loses no write", postgres: "y:A standby by streaming replication, promoted by hand",
+          strata: "y:chloedb-server follow; a planned switch-over loses no write", postgres: "y:A standby by streaming replication, promoted by hand",
           elastic: "$:Cross-cluster replication, Platinum licence", opensearch: "y:The cross-cluster replication plugin", solr: "n:CDCR was removed in Solr 9",
           milvus: "p?:Milvus CDC, a separate tool" }]
       ]
@@ -168,7 +168,7 @@ window.STRATA_COMPARE = {
           strata: "y:ALTER TABLE ADD, DROP and RENAME COLUMN, across a cluster", sqlite: "y", postgres: "y", lancedb: "y?",
           elastic: "p:Add fields; other changes reindex", opensearch: "p", solr: "p", vespa: "p:Some changes need a reindex", qdrant: "y:The payload has no schema", weaviate: "p?", milvus: "p?" }],
         ["Import from and export to SQLite", {
-          strata: "y:strata-server import and export, or one call from Python", sqlite: "y", postgres: "p:pgloader" }],
+          strata: "y:chloedb-server import and export, or one call from Python", sqlite: "y", postgres: "p:pgloader" }],
         ["User-defined functions (UDFs) kept in the database (CREATE FUNCTION)", {
           strata: "y:SQL bodies that return a value or rows, called from any query, on one server or a cluster", postgres: "y",
           sqlite: "p:Functions are registered by the program that opens the file, not kept in it",
@@ -180,7 +180,7 @@ window.STRATA_COMPARE = {
           elastic: "y:search_after with a point in time, and scroll", opensearch: "y:scroll, search_after and point in time", solr: "y:cursorMark", vespa: "y:Visiting",
           qdrant: "y:The scroll API", weaviate: "y:The cursor API", milvus: "y:Query and search iterators" }],
         ["Follows a PostgreSQL database by logical replication", {
-          strata: "y:strata-server follow-postgres: pgoutput, each change applied once across restarts", postgres: "y:Logical replication between servers",
+          strata: "y:chloedb-server follow-postgres: pgoutput, each change applied once across restarts", postgres: "y:Logical replication between servers",
           elastic: "p:A PostgreSQL connector that syncs on a schedule, or Debezium and Kafka", opensearch: "p?:Through Debezium or a pipeline" }],
         ["Answers OpenSearch's REST API, for existing apps and clients", {
           strata: "p:Indexes, documents, _bulk and _search: bool, match, phrases, multi_match, query_string, aggregations, scrolls and a part of Painless",
