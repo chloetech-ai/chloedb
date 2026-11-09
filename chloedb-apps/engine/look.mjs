@@ -6,7 +6,7 @@
 // first screen, in a tap or two? What fails goes to the repair as one
 // request, so the next version fixes it.
 
-import { loadPlaywright } from './checks.mjs';
+import { loadPlaywright, signInSelf } from './checks.mjs';
 import { ask, extractJson } from './llm.mjs';
 import { briefOf } from './store.mjs';
 
@@ -178,6 +178,7 @@ export async function drawApp(baseUrl, appId, { v = null, wait = 1500 } = {}) {
   try {
     for (const [device, opts] of Object.entries(DEVICES)) {
       const ctx = await browser.newContext({ ...opts, colorScheme: 'light' });
+      await signInSelf(ctx, baseUrl);
       // Drawing it is not using it: nothing goes to the app's use log.
       await ctx.route('**/track**', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));
       const page = await ctx.newPage();

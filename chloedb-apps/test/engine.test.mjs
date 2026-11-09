@@ -2168,3 +2168,69 @@ test('a function waits for app.ask outside its time limit, and a refusal stays a
   const caught = await runFunction('function run(i, app) { try { return app.ask("x"); } catch (e) { return "off"; } }', {}, off);
   assert.equal(caught.result, 'off');
 });
+
+test('beside a cluster the studio lets in chloedb-server, a session from a one-time link, and its own browser', async () => {
+  const { Login } = await import('../engine/login.mjs');
+  const rows = new Map();
+  const store = { setting: async (a, n) => rows.get(`${a}/${n}`) ?? null, putSetting: async (a, n, v) => { rows.set(`${a}/${n}`, v); } };
+  const off = new Login({ store });
+  assert.equal(off.on, false, 'on a laptop there is no login');
+  assert.equal(off.selfCookie, null);
+  assert.equal(await off.check({ headers: {} }, new URL('http://h/api/apps')), null);
+
+  const login = new Login({ store, appToken: 'the-app-token', publicUrl: 'https://studio.example/' });
+  const req = (headers = {}) => ({ headers: { host: 'studio.example', ...headers } });
+  const at = (p) => new URL(`https://studio.example${p}`);
+  const server = { authorization: 'Bearer the-app-token' };
+  const answer = () => ({ writeHead(status, headers) { Object.assign(this, { status, headers }); }, end() {} });
+  assert.equal((await login.check(req(), at('/api/apps'))).status, 401);
+  assert.ok((await login.check(req(), at('/'))).html, 'a page says where to sign in');
+  for (const open of ['/healthz', '/login', '/api/tiles/3/1/2.png', '/api/apps/a1/files/abc123def']) assert.equal(await login.check(req(), at(open)), null, open);
+  assert.equal(await login.check(req(server), at('/api/apps')), null, 'chloedb-server passes with its token');
+  assert.equal((await login.check(req({ authorization: 'Bearer another' }), at('/api/apps'))).status, 401);
+
+  assert.throws(() => login.handoff(req(), ''), (e) => e.status === 403, 'only chloedb-server asks for a link');
+  assert.throws(() => new Login({ store, appToken: 'the-app-token' }).handoff(req(server)), (e) => e.status === 409, 'a link needs an address');
+  const { url } = login.handoff(req(server), '#/app/a1');
+  assert.match(url, /^https:\/\/studio\.example\/login\?code=[A-Za-z0-9_-]+$/);
+  const res = answer();
+  await login.redeem(new URL(url), res);
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, '/#/app/a1');
+  assert.match(res.headers['set-cookie'], /^sa_studio=[A-Za-z0-9_-]+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+; Secure$/);
+  const session = res.headers['set-cookie'].split(';')[0];
+  assert.equal(await login.check(req({ cookie: session }), at('/api/apps')), null);
+  const restarted = new Login({ store, appToken: 'the-app-token', publicUrl: 'https://studio.example' });
+  assert.equal(await restarted.check(req({ cookie: `a=b; ${session}` }), at('/api/apps')), null, 'a session is a row: it outlasts a restart');
+  const twice = answer();
+  await login.redeem(new URL(url), twice);
+  assert.equal(twice.status, 401, 'a link signs in once');
+  const elsewhere = answer();
+  await login.redeem(new URL(login.handoff(req(server), 'https://elsewhere.example').url), elsewhere);
+  assert.equal(elsewhere.headers.location, '/', 'it opens a route of the studio only');
+
+  const own = login.selfCookie;
+  assert.equal(await login.check(req({ cookie: `${own.name}=${own.value}` }), at('/a/a1')), null, 'the engine\'s own browser');
+  assert.equal((await restarted.check(req({ cookie: `${own.name}=${own.value}` }), at('/a/a1'))).status, 401, 'one process\'s browser cookie is not another\'s');
+  assert.equal(login.sameOrigin(req({ origin: 'https://studio.example' })), true);
+  assert.equal(login.sameOrigin(req({ origin: 'https://elsewhere.example' })), false);
+});
+
+test('the engine\'s own browser opens the app with its cookie', async (t) => {
+  const { openViews, loadPlaywright, useSelfCookie } = await import('../engine/checks.mjs');
+  if (!loadPlaywright()) return t.skip('no Playwright');
+  const http = await import('node:http');
+  const seen = [];
+  const srv = http.createServer((req, res) => { seen.push([req.url, req.headers.cookie || '']); res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>x</title><p>ok</p>'); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    useSelfCookie({ name: 'sa_studio', value: 'own-cookie-of-this-engine-0123456789' });
+    const out = await openViews(base, 'a1', { wait: 10 });
+    assert.equal(out.ran, true);
+    assert.deepEqual(seen.find(([u]) => u === '/a/a1'), ['/a/a1', 'sa_studio=own-cookie-of-this-engine-0123456789']);
+  } finally {
+    useSelfCookie(null);
+    srv.close();
+  }
+});

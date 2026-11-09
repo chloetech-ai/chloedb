@@ -984,9 +984,16 @@ export async function buildContext(engine, appId, request) {
 let sqlFnsDoc = '';
 export const useSqlFunctions = (fns) => { sqlFnsDoc = sqlFunctionsDoc(fns); };
 
+// On a cluster, whose coordinator walks no graphs, apps read their links
+// a step at a time instead (engine/walk.mjs says why).
+let onCluster = false;
+export const useCluster = (on) => { onCluster = !!on; };
+const CLUSTER_LINKS = "- Links: this Strata is a cluster of shards, which does not walk links: never write REACHABLE, hops() or ppr. Read the rows a row links to with SELECT dst FROM note_links WHERE src = :id (and the other way, WHERE dst = :id), one query per step, then read those rows by id with WHERE id IN (...).";
+
 export function systemWith(shared) {
   const list = [...shared.values()].sort((a, b) => (a.kind === b.kind ? (a.slug < b.slug ? -1 : 1) : a.kind === 'component' ? -1 : 1));
-  const withFns = sqlFnsDoc ? `${SYSTEM}\n\n${sqlFnsDoc}` : SYSTEM;
+  const system = onCluster ? SYSTEM.replace(/^- Links: WHERE REACHABLE.*$/m, CLUSTER_LINKS) : SYSTEM;
+  const withFns = sqlFnsDoc ? `${system}\n\n${sqlFnsDoc}` : system;
   if (!list.length) return withFns;
   const line = (c) => `${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug} (${c.title})`;
   return `${withFns}\n\n# The library: every shared component and helper, by name\n\n${list.map(line).join(', ')}.`;
