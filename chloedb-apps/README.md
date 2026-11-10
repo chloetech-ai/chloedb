@@ -2,10 +2,10 @@
 
 A prototype of the idea in the doc
 [Strata as a self-extending app engine](https://claude.ai/artifact/K7nVdw9VKT4d9u9QGDb35e):
-an app is data in Strata, made of capabilities (tables, views, server
+an app is data in ChloeDB, made of capabilities (tables, views, server
 functions) that a model writes and the engine checks, stores and runs, and of
 shared components and helpers that every app uses from one library, linked to
-each other in a graph that Strata walks.
+each other in a graph that ChloeDB walks.
 
 - **Start from a description.** "A reading list: I paste a link with a title
   and a note, tag it, and mark it read." The forge asks the model to plan the
@@ -13,7 +13,7 @@ each other in a graph that Strata walks.
   shared pieces, each with a spec. Then it has the model write every piece at
   once, one call each, so a big app takes the time of its biggest piece. The
   engine checks the code (a piece that fails is written again alone), creates
-  the tables, stores every capability as a row in Strata and puts the app
+  the tables, stores every capability as a row in ChloeDB and puts the app
   live.
 - **Ask for changes.** "Let me star a link", "add a Stats tab with a weekly
   chart". Each change is a new version of the app: the changed capabilities
@@ -30,7 +30,7 @@ each other in a graph that Strata walks.
   then keeps or drops it (see "Evolving from use" below).
 - **It shares.** Pieces of interface that are not about one app's data (a
   month calendar, a chart, a day strip, a checklist) are written as shared
-  components: one copy in Strata that views call as `ui.calendar(props)`.
+  components: one copy in ChloeDB that views call as `ui.calendar(props)`.
   The forge is shown every component with its props and uses them before
   writing anything, so a second app asking for a calendar gets the first
   app's. A component takes its data through props and never touches tables,
@@ -41,7 +41,7 @@ each other in a graph that Strata walks.
   way is a **helper**, called as `lib.dates.addDays(day, 1)` in views,
   components and server functions alike.
 - **It starts with a library.** 150 pieces ship in `library/` and are stored
-  in Strata at start-up like any other. The first 50 were written by hand;
+  in ChloeDB at start-up like any other. The first 50 were written by hand;
   the next 100 were written by the model from a spec each and kept only after
   passing the checks a written piece must pass, their example calls (every
   helper's run as tests, in Node and in QuickJS, from `library/examples/`)
@@ -92,7 +92,7 @@ each other in a graph that Strata walks.
   pieces that call each other). A new version of a piece is offered to the
   apps found by walking the graph backwards from it (`REACHABLE ... dir =>
   'in'`), through the pieces that use it. The Library's Graph view and each
-  app's Map draw it and ask Strata about any node.
+  app's Map draw it and ask ChloeDB about any node.
 - **It answers questions about how pieces fit.** The Library's search box
   (and `GET /api/graph/ask?q=`) takes questions such as "which screens use
   the calendar", "which apps use lib.money", "which rules write votes",
@@ -111,7 +111,7 @@ each other in a graph that Strata walks.
   fork it. Search is two rankings fused (reciprocal rank fusion): BM25 over
   what each piece is and its code, and the cosine of the request's
   embedding and the piece's (`sa_capabilities.meaning`, its title and
-  description embedded by Strata as each version is written, with the
+  description embedded by ChloeDB as each version is written, with the
   model of the apps' meaning columns). So "let customers vote on which
   coffee we roast next" asked of a coffee shop finds the voting board's
   screen and its two rules, and "purchase the items in my basket" finds a
@@ -124,7 +124,7 @@ each other in a graph that Strata walks.
 - **It repairs itself.** A view or function that fails at run time is sent
   back to the forge with its error, once per version, and the fixed version
   replaces it while the app stays open.
-- **Everything is live.** The engine follows Strata's feed of committed
+- **Everything is live.** The engine follows ChloeDB's feed of committed
   writes, so every open window sees new rows and new versions as they land,
   whoever wrote them (another window, a trigger, another client of the
   database).
@@ -176,7 +176,7 @@ cd chloedb-apps
 | `STRATA_APPS_PHOTOS=builtin` | photos from the built-in set only (no Openverse) |
 | `STRATA_APPS_SPEND_CAP_USD` | stop every model call (builds, checks and apps' own questions) once the engine has spent this much, in US dollars, counted from what Claude Code reports and kept in `DATA/spend.json` across restarts |
 | `STRATA_APPS_ASK_MODEL`, `STRATA_APPS_ASKS_PER_DAY`, `STRATA_APPS_FETCHES_PER_DAY` | apps' own model (`app.ask`, default `claude-haiku-5-5`), the questions an app may ask it each day unless its owner sets another number (default 200), and the pages an app may fetch each day (default 1000); see [A model and the web](../docs/chloedb/apps.md#a-model-and-the-web-per-app) |
-| `STRATA_APPS_EMBED_MODEL` | the embedding model of meaning columns and of the library's search (default `potion-retrieval-32M`); a Strata that cannot load it searches the library by words alone |
+| `STRATA_APPS_EMBED_MODEL` | the embedding model of meaning columns and of the library's search (default `potion-retrieval-32M`); a ChloeDB that cannot load it searches the library by words alone |
 | `STRATA_APPS_MEANING_MIN` | the least cosine at which a piece found by meaning alone is offered (default 0.2) |
 
 A first version of a small app takes 50 seconds to a minute; a bigger one takes 2 to 4 minutes (a CRM with a pipeline board 110 s, a course on linked lists with lessons, a playground and a quiz 216 s; written in one answer, that course took 7.5 to 9 minutes). The studio shows how far the model has got while it writes. A change takes 20 seconds to 2 minutes.
@@ -187,7 +187,7 @@ A first version of a small app takes 50 seconds to a minute; a bigger one takes 
 
 **Photos.** A block names a photo by what it shows (`"photo": "barista pouring latte art"`), and when a version is stored `engine/photos.mjs` finds one and writes its `src` (and a credit when the license asks for one): from Unsplash with `STRATA_APPS_UNSPLASH_KEY`, else from the built-in set (`library/photos.json`: 304 Unsplash photos, each checked by eye and described in words, matched on those words with the subject first, so "dark roast coffee beans" is never a dark abstract), else from Openverse (openly licensed, credited), else the design's gradient. Example rows may hold `"photo:croissant"` in a column, which becomes a URL from the built-in set: the row's query, then its category, then its name, a photo already on the page before a photo of something else. Hand edits that name a photo get one the same way.
 
-**Screen patterns.** `library/patterns/` holds whole parts of a screen with parameters: `crud` (a table's rows with an add and edit form, search, filter chips, a done toggle, big numbers), `board` (a kanban over a status column), `detail` (one row with its details, editing and related rows), `summary` (a total and a bar per group), `checks` (a thing done each day: one big tap for today per item, the last days beside it, the streak by its name and how many are done today; a phone shows yesterday and today), `week` (a row per thing with its seven days to tick, such as habits or chores), `calendar` (a month with a day's rows and a form to add one), `flashcards` (spaced repetition: a card, its answer, Again/Hard/Good/Easy), `quiz` (multiple choice with a score, saved per try), `search` (words and meaning ranked together, the picked row and rows like it) and `dashboard` (a value over the last N days against the N before, per day, by a group, and the newest rows). A screen block `{"use": "crud", "table": "guests", ...}` is expanded by `engine/patterns.mjs` before the screen is checked, and again whenever its statement is read (see "Every piece is stored as SQL" below); a screen written as JSON holds ordinary blocks that later changes patch. Patterns are rows of `sa_capabilities` (kind `pattern`, versioned like components, found by the library's search): the files are seeded into Strata at start-up, and the forge expands from the rows. A build may add a pattern (`"patterns": [{name, title, about, params, example, screen}]` in its plan, at most one): its example is expanded and checked like a screen, the plan's own screens may use it at once, and once stored every app's builds see it (the chores app added `leaderboard`; the voting app's next change used it).
+**Screen patterns.** `library/patterns/` holds whole parts of a screen with parameters: `crud` (a table's rows with an add and edit form, search, filter chips, a done toggle, big numbers), `board` (a kanban over a status column), `detail` (one row with its details, editing and related rows), `summary` (a total and a bar per group), `checks` (a thing done each day: one big tap for today per item, the last days beside it, the streak by its name and how many are done today; a phone shows yesterday and today), `week` (a row per thing with its seven days to tick, such as habits or chores), `calendar` (a month with a day's rows and a form to add one), `flashcards` (spaced repetition: a card, its answer, Again/Hard/Good/Easy), `quiz` (multiple choice with a score, saved per try), `search` (words and meaning ranked together, the picked row and rows like it) and `dashboard` (a value over the last N days against the N before, per day, by a group, and the newest rows). A screen block `{"use": "crud", "table": "guests", ...}` is expanded by `engine/patterns.mjs` before the screen is checked, and again whenever its statement is read (see "Every piece is stored as SQL" below); a screen written as JSON holds ordinary blocks that later changes patch. Patterns are rows of `sa_capabilities` (kind `pattern`, versioned like components, found by the library's search): the files are seeded into ChloeDB at start-up, and the forge expands from the rows. A build may add a pattern (`"patterns": [{name, title, about, params, example, screen}]` in its plan, at most one): its example is expanded and checked like a screen, the plan's own screens may use it at once, and once stored every app's builds see it (the chores app added `leaderboard`; the voting app's next change used it).
 
 **Designs.** Every app has three designs, and its owner picks one in the studio's Design tab; a person using the app on its own can pick their own under Aa (kept in their browser). A design is a few tokens (colors for light and dark, fonts, corners, density, surfaces, navigation, width; `web/design.js`), and `web/kit.css` draws everything from them as CSS variables, so switching posts a block of variables to each view and redraws nothing. The three are made by one call to a small model (`STRATA_APPS_DESIGN_MODEL`, default `claude-haiku-5-5`, about 12 s) beside an app's first build, or on first open for older apps, checked for contrast, and kept in `sa_designs`; presets stand in when the model fails. `GET/POST /api/apps/:id/designs` read and choose; `POST .../designs/new` replaces the two not in use. Forms lay themselves out: one of more than three fields, or with a long one, is a grid of labelled fields with as many columns as make even rows (five fields: three and two), long fields across, checkboxes together and the buttons below; a short one stays on one line, every field labelled when any needs a label; every control in a form has the same height.
 
@@ -223,7 +223,7 @@ CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS
   UPDATE features SET votes = (SELECT COUNT(*) FROM votes WHERE feature = :row.feature) WHERE id = :row.feature;
 ```
 
-Statements: `REQUIRE cond ELSE 'message'` (stops the rule, writes nothing, shows the message), `LET`, `INSERT ... [ON CONFLICT (cols) DO UPDATE SET ... | DO NOTHING] [AS name]`, `UPDATE` and `DELETE` (`WHERE id = ...` for one row, any other condition for each row it selects), `CALL fn(name => value)`, `FOR row IN (SELECT ...) DO ... END`, `IF ... THEN ... [ELSE ...] END` and `RETURN`; a rule that is one SELECT is a query (`RETURNS ROW | VALUE`). `SEND EMAIL TO :to SUBJECT 'New this week' [TEXT '...'] [ROWS (SELECT ...)] [NONE '...']` emails a line per row; the engine holds it until the rule's writes are stored, so a rule that stops sends nothing (an email step in the JSON form). The statement is kept as the rule's source: the model sees it and changes it with edits, and the studio shows it. A test's `"do"` is written the same way. `STRATA_APPS_RULE_SQL=off` has the model write the JSON steps instead (`{"query": ...}` or `{"steps": [...]}`). A query rule has the shape of a SQL function with named parameters, so it can become one when Strata has them.
+Statements: `REQUIRE cond ELSE 'message'` (stops the rule, writes nothing, shows the message), `LET`, `INSERT ... [ON CONFLICT (cols) DO UPDATE SET ... | DO NOTHING] [AS name]`, `UPDATE` and `DELETE` (`WHERE id = ...` for one row, any other condition for each row it selects), `CALL fn(name => value)`, `FOR row IN (SELECT ...) DO ... END`, `IF ... THEN ... [ELSE ...] END` and `RETURN`; a rule that is one SELECT is a query (`RETURNS ROW | VALUE`). `SEND EMAIL TO :to SUBJECT 'New this week' [TEXT '...'] [ROWS (SELECT ...)] [NONE '...']` emails a line per row; the engine holds it until the rule's writes are stored, so a rule that stops sends nothing (an email step in the JSON form). The statement is kept as the rule's source: the model sees it and changes it with edits, and the studio shows it. A test's `"do"` is written the same way. `STRATA_APPS_RULE_SQL=off` has the model write the JSON steps instead (`{"query": ...}` or `{"steps": [...]}`). A query rule has the shape of a SQL function with named parameters, so it can become one when ChloeDB has them.
 
 **Tests as data.** A plan may carry `"tests"`: steps as in rules, then SELECTs and the value or row count each must give (`engine/checks.mjs`). They run once the version is live, on the tables it creates while they are still empty, and those tables are emptied again before the example rows go in. A failing test goes to repair like an error a person saw. After each build, every view is also opened in a headless browser (when Playwright is installed), and errors there are reported the same way.
 
@@ -231,24 +231,24 @@ Statements: `REQUIRE cond ELSE 'message'` (stops the rule, writes nothing, shows
 
 **Edits by hand.** The studio's Edit tab (on a screen view) renames, moves and hides parts of the screen, and reorders, renames or hides a table's columns and a form's fields. Each edit is a JSON Patch sent to `POST /api/apps/:id/screens/:slug`, which checks the screen, runs its queries and stores it as a new version without the model (about 0.2 s).
 
-**Evolving from use.** Every event names where it happened and what it was about, in columns of `sa_events`: the browser tab's session (one sitting), the screen, the table and row written, the fields an update changed, the words searched for or the filter set and how many rows they found, and how long (the time spent on a screen when leaving it, the time typing into a form given up). The studio sends the session and the screen with each request (headers `x-sa-session`, `x-sa-view`); a screen records a search with its results, a filter once its rows are in, and a form typed into and closed unsaved (Cancel, another screen, or a redraw without it) as `abandon`. After every 25 actions (at most every 3 minutes), or when the owner asks, Strata counts the patterns in them with the engine's table functions (`engine/signals.sql`, defined when the engine starts; an older chloedb-server without stored functions leaves the counting to `engine/evolve.mjs`): searches as the words someone stopped typing at (3 or more), searches and filters that find nothing (2), filters set (4), the same change, add or delete one row at a time in one sitting (5 to 6), rows deleted within ten minutes of being added (3), forms given up (3), two views opened within 30 s of each other (4), a function run by hand (5). A new pattern costs one model call: the suggestions it gets name the pattern they answer. In the "build" mode (the default, `STRATA_APPS_EVOLVE` or per app in the studio: build, suggest, off) the strongest answered one is built at once as a *candidate*: a version beside the live one (`sa_candidates`), checked like any build, that the studio's **Built from use** lists with **Try it**, **Keep** and **Drop**. Trying runs the app on that version (`?v=N` on every request, the app's own page included) on the real data while everyone else stays on the live one. Keeping makes it live: as built when nothing changed since, merged over the live version when the two changed different pieces, and built again on the live version when both changed the same piece. At most 2 candidates wait at a time and 2 are built a day per app (`STRATA_APPS_EVOLVE_PER_DAY`). Each candidate names what should change in people's use if it works (fewer searches for "vegetarian"); once kept, the studio shows that count before and since. Events carry the version they happened on, so the same measure can later compare two versions served side by side.
+**Evolving from use.** Every event names where it happened and what it was about, in columns of `sa_events`: the browser tab's session (one sitting), the screen, the table and row written, the fields an update changed, the words searched for or the filter set and how many rows they found, and how long (the time spent on a screen when leaving it, the time typing into a form given up). The studio sends the session and the screen with each request (headers `x-sa-session`, `x-sa-view`); a screen records a search with its results, a filter once its rows are in, and a form typed into and closed unsaved (Cancel, another screen, or a redraw without it) as `abandon`. After every 25 actions (at most every 3 minutes), or when the owner asks, ChloeDB counts the patterns in them with the engine's table functions (`engine/signals.sql`, defined when the engine starts; an older chloedb-server without stored functions leaves the counting to `engine/evolve.mjs`): searches as the words someone stopped typing at (3 or more), searches and filters that find nothing (2), filters set (4), the same change, add or delete one row at a time in one sitting (5 to 6), rows deleted within ten minutes of being added (3), forms given up (3), two views opened within 30 s of each other (4), a function run by hand (5). A new pattern costs one model call: the suggestions it gets name the pattern they answer. In the "build" mode (the default, `STRATA_APPS_EVOLVE` or per app in the studio: build, suggest, off) the strongest answered one is built at once as a *candidate*: a version beside the live one (`sa_candidates`), checked like any build, that the studio's **Built from use** lists with **Try it**, **Keep** and **Drop**. Trying runs the app on that version (`?v=N` on every request, the app's own page included) on the real data while everyone else stays on the live one. Keeping makes it live: as built when nothing changed since, merged over the live version when the two changed different pieces, and built again on the live version when both changed the same piece. At most 2 candidates wait at a time and 2 are built a day per app (`STRATA_APPS_EVOLVE_PER_DAY`). Each candidate names what should change in people's use if it works (fewer searches for "vegetarian"); once kept, the studio shows that count before and since. Events carry the version they happened on, so the same measure can later compare two versions served side by side.
 
 **Activity.** **Activity** in an app's header shows what people did in it (`#/app/<id>/~activity`, from `GET /api/apps/:id/activity?days=N`, `engine/activity.mjs`), drawn in the app's own design and told in its own words: each write keeps the name of its row with the event (`sa_events.label`: the row's name or title, else the name of the row it points to with its day, "Read 20 pages · Nov 8"), so a removed row is still named, and older events are named from the rows as they are now. It shows people, visits, things done, time and searches over the last day, week, month or all time; things done (or visits, or time) by hour, day or week; a weekday by hour grid; the app's screens with how often each is opened, for how long, and arcs for going from one straight to another; what changed per table (counts, the fields changed most, the rows touched); what needs a look (searches that found nothing, forms left unsaved, rows added and removed within ten minutes, errors, and the patterns the engine noticed); and every visit as a timeline ("Added a watering **Monstera · Nov 8**", "Searched “cactus” · found nothing"). It reads the newest 5,000 events of the period and refreshes every 15 s while open.
 
-**Learning across apps.** Every change someone asks for is sorted into kinds (a chart, a search, a reminder, an export... `engine/changes.mjs`), and the kinds go into a graph in Strata, `sa_changes`: each app points at the kinds of change it made (`did`), and each kind at the kinds that came next in an app (`then`). The kinds an app may want next are ranked by personalized PageRank from the app and its latest change, both ways along the edges (from what it did, to the apps that did the same, to what they did next), leaving out what it did already. Suggestions also learn which kinds people take: the share of each kind taken when it was offered, across every app. Both go into the suggestion prompts (after a build and from use), and a kind rarely taken (under one in ten of five or more) is listed last. Predictions wait for ten other apps with changes (`STRATA_APPS_NEXT_MIN_APPS`); `node test/next-change-eval.mjs STRATA_URL... --scratch URL` measures them by hiding each app's last change: over 19 apps the graph put it in its top 3 for 6 of 14, "what most apps added" for 8, so it needs more apps than this before it beats counting.
+**Learning across apps.** Every change someone asks for is sorted into kinds (a chart, a search, a reminder, an export... `engine/changes.mjs`), and the kinds go into a graph in ChloeDB, `sa_changes`: each app points at the kinds of change it made (`did`), and each kind at the kinds that came next in an app (`then`). The kinds an app may want next are ranked by personalized PageRank from the app and its latest change, both ways along the edges (from what it did, to the apps that did the same, to what they did next), leaving out what it did already. Suggestions also learn which kinds people take: the share of each kind taken when it was offered, across every app. Both go into the suggestion prompts (after a build and from use), and a kind rarely taken (under one in ten of five or more) is listed last. Predictions wait for ten other apps with changes (`STRATA_APPS_NEXT_MIN_APPS`); `node test/next-change-eval.mjs STRATA_URL... --scratch URL` measures them by hiding each app's last change: over 19 apps the graph put it in its top 3 for 6 of 14, "what most apps added" for 8, so it needs more apps than this before it beats counting.
 
-Each build keeps its timeline. Under Versions, **Timeline** on a version shows what took the time (reading Strata, the model planning, each piece's writer, the checks, a second try, storing), what each model call cost and read, and what was decided for every piece of the app and when: used from the library as it is, copied from a starter, forked, rewritten, written from scratch, a new version of a shared piece, or kept. The top of the tab sums up every build of the app.
+Each build keeps its timeline. Under Versions, **Timeline** on a version shows what took the time (reading ChloeDB, the model planning, each piece's writer, the checks, a second try, storing), what each model call cost and read, and what was decided for every piece of the app and when: used from the library as it is, copied from a starter, forked, rewritten, written from scratch, a new version of a shared piece, or kept. The top of the tab sums up every build of the app.
 
 ## What is where
 
 | | |
 |---|---|
 | `engine/server.mjs` | HTTP API, live updates (server-sent events), the request queue, repairs, suggestions from use |
-| `engine/forge.mjs` | the forge: the prompt, the context it reads from Strata (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
-| `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following Strata's feed |
-| `engine/store.mjs` | the system tables in Strata and the app's tables |
+| `engine/forge.mjs` | the forge: the prompt, the context it reads from ChloeDB (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
+| `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following ChloeDB's feed |
+| `engine/store.mjs` | the system tables in ChloeDB and the app's tables |
 | `engine/graph.mjs` | what each capability links to, read from its code, and the rows of `sa_graph` |
-| `engine/library.mjs`, `library/` | the built-in library, one file each (`components/`, `helpers/`, and the starters in `views/` and `functions/`), seeded into Strata at start-up; `library/examples/` holds each piece's example (props, calls with their results, rows) |
+| `engine/library.mjs`, `library/` | the built-in library, one file each (`components/`, `helpers/`, and the starters in `views/` and `functions/`), seeded into ChloeDB at start-up; `library/examples/` holds each piece's example (props, calls with their results, rows) |
 | `engine/sql.mjs` | rewrites `FROM tasks` to the app's physical table and refuses anything but one `SELECT` over the app's own tables |
 | `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
@@ -258,7 +258,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/evolve.mjs` | evolving from use: patterns in events, candidates built beside the live version, keep (merge) and drop, and each candidate's measure |
 | `engine/changes.mjs` | learning across apps: requests sorted into kinds of change, the graph of what apps changed next (`sa_changes`, ranked by ppr), and how often each kind of suggestion is taken |
 | `engine/activity.mjs`, `web/activity.js` | the Activity view: a period's events with the names of their rows, drawn in the app's design |
-| `engine/signals.sql` | the patterns of use as Strata table functions over `sa_events` (searches, empty results, filters, repeated writes, undone adds, forms given up, paths, calls, time on screens) |
+| `engine/signals.sql` | the patterns of use as ChloeDB table functions over `sa_events` (searches, empty results, filters, repeated writes, undone adds, forms given up, paths, calls, time on screens) |
 | `engine/designs.mjs`, `web/design.js` | each app's three designs: one small model call, design tokens, CSS variables |
 | `web/front.js`, `web/front.css` | front pages: their blocks, motion and photos |
 | `engine/photos.mjs`, `library/photos.json` | finding the photos a screen or an example row names |
@@ -266,7 +266,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
 | `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
 
-In Strata:
+In ChloeDB:
 
 | table | holds |
 |---|---|

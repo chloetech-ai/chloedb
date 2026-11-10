@@ -538,7 +538,7 @@ export class Store {
       try { return await this.db.query(sql, params); } catch (e) {
         if (!isWalkRefused(e)) throw e;
         this.walkHere = true;
-        this.log('graph: this Strata is a coordinator over shards, which walks no graphs; the engine walks them itself');
+        this.log('graph: this ChloeDB is a coordinator over shards, which walks no graphs; the engine walks them itself');
       }
     }
     return here(await this.walker(table, cols));

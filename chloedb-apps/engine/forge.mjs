@@ -1515,8 +1515,8 @@ export const smallChange = (text, view) => !!SMALL_MODEL && !!view?.comp?.n && S
 async function forgeTraced(engine, appId, request, progress, tr) {
   const { store } = engine;
   const started = Date.now();
-  progress('Reading the app and its history from Strata', { step: 'read' });
-  const context = await tr.span('strata', 'Read the app, its data and the library from Strata', () => buildContext(engine, appId, request));
+  progress('Reading the app and its history from ChloeDB', { step: 'read' });
+  const context = await tr.span('strata', 'Read the app, its data and the library from ChloeDB', () => buildContext(engine, appId, request));
   const { prompt, view, library, shared, system } = context;
   if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => `${c.title} (${c.found === 'meaning' ? 'by meaning' : c.found === 'both' ? 'by words and meaning' : 'by words'})`).join(', ')}`);
   let answer;
@@ -1561,7 +1561,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     err.cost = cost;
     throw err;
   }
-  progress('The code passed the checks; storing it in Strata', { step: 'store' });
+  progress('The code passed the checks; storing it in ChloeDB', { step: 'store' });
   // A new app's three designs are made from its art direction, beside the
   // storing (the server's hook; the drawn-page check waits for them).
   const art = !view.comp.n && !request.candidate ? cleanArt(plan.art) : null;
@@ -1569,7 +1569,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     ? Promise.resolve(engine.onDirection(appId, { art, views: (plan.views || []).map((v) => ({ title: v.title })), tables: (plan.tables || []).map((t) => t.name) })).catch(() => null)
     : null;
   if (art) progress(`Art direction: ${art.concept}${art.accent ? `; accent ${art.accent}` : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}`);
-  let storing = tr.start('strata', 'Store the code and the new version in Strata');
+  let storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
 
   // Tables first: data the new code reads must exist when it goes live.
   const caps = new Map(view.comp.caps.map((id) => {
@@ -1623,7 +1623,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       } catch (e) { if (!span.end) tr.end(span, { error: e.message }); }
       failed = await run("Run the screens' queries again");
       progress(failed.length ? `Still failing, stored as they are (the runtime reports them): ${failed.slice(0, 2).join('; ').slice(0, 300)}` : "The screens' queries run");
-      storing = tr.start('strata', 'Store the code and the new version in Strata');
+      storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
     }
   }
   // Photos the screens name by what they show become pictures (engine/photos.mjs).
@@ -1812,7 +1812,7 @@ export async function useSharedVersion(engine, appId, capId, progress = () => {}
   const view = await store.resolve(appId);
   const [cap] = await store.getCapabilities([capId]);
   if (!cap || !SHARED_KINDS.includes(cap.kind)) throw new Error(`no shared component or helper ${capId}`);
-  progress(`Moving ${cap.title} to version ${cap.version}: the code is in Strata already, so no model is needed`);
+  progress(`Moving ${cap.title} to version ${cap.version}: the code is in ChloeDB already, so no model is needed`);
   const caps = new Map(view.caps.map((c) => [`${c.kind}/${c.slug}`, c.id]));
   const had = new Map(view.shared.map((c) => [`${c.kind}/${c.slug}`, c.id]));
   const roots = [...view.views, ...view.functions].map((c) => c.id);

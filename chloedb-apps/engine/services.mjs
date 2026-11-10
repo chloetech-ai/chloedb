@@ -187,7 +187,7 @@ export class Services {
     await this.db.write([{ op: 'insert', table: 'sa_outbox', doc }]);
     this.store.track(appId, 'action', '', `email to ${to.length}`).catch(() => {});
     if (sending) {
-      const appName = (await this.store.getApp(appId))?.name || 'Strata Apps';
+      const appName = (await this.store.getApp(appId))?.name || 'ChloeDB Apps';
       smtpSend(this.smtpUrl, { from: this.smtpFrom, fromName: appName, to, subject, text: body })
         .then(() => this.db.write([{ op: 'set', table: 'sa_outbox', key: id, field: 'status', value: 'sent' }]))
         .catch((e) => {
@@ -217,7 +217,7 @@ export class Services {
     let rows;
     try {
       const url = `${this.geocoder}?format=jsonv2&limit=5&q=${encodeURIComponent(q)}`;
-      const res = await fetch(url, { headers: { 'user-agent': 'chloedb-apps/0.1 (prototype app engine on Strata)', accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+      const res = await fetch(url, { headers: { 'user-agent': 'chloedb-apps/0.1 (prototype app engine on ChloeDB)', accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       rows = await res.json();
     } catch (e) {
