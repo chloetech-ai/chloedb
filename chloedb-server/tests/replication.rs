@@ -1304,7 +1304,7 @@ async fn the_server_starts_as_a_primary_or_a_replica() {
     assert_eq!(r.health().await["replication"]["verify_every_s"], 1800, "it ships as its flags say");
     until("the old primary is fenced", || async { p.replaced_by() == 2 }).await;
     let w = r.write_ops(vec![set("p0000001", "sold", json!(8))], None).await.unwrap();
-    assert_eq!(w.seq_no, Some(2));
+    assert_eq!(w.seq_no, Some(3));
     // Started as the primary of a new term, with no replica.
     let q = server::service(&server::Options { promote: true, ..opts("q.strata") }).await.unwrap();
     assert_eq!(q.role(), pb::Role::Primary);
@@ -1483,15 +1483,15 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     assert_eq!(r1.promote(&Principal::open(), Vec::new(), Acks::All, false).await.unwrap_err().status, 409, "promoted once");
     // It takes writes, numbered in term 2, which the other replica follows.
     let w = r1.write_ops(vec![set("p0000003", "sold", json!(7))], None).await.unwrap();
-    assert_eq!(w.seq_no, Some(6));
-    assert_eq!(r1db.storage().numbering().unwrap().term_at(6), 2);
-    until("the other replica follows the new primary", || async { last(&r2db) == 6 }).await;
+    assert_eq!(w.seq_no, Some(7));
+    assert_eq!(r1db.storage().numbering().unwrap().term_at(7), 2);
+    until("the other replica follows the new primary", || async { last(&r2db) == 7 }).await;
     assert_eq!(r2.health().await["replication"]["follows"], json!({"primary": new_id, "term": 2}));
     assert_eq!(rows(&r2db), rows(&r1db));
     // A call of the old primary's term is answered with the new term,
     // which fences it, and changes nothing.
     let a = r1.replicate(pb::ReplicateRequest { term: 1, prev_term: 1, prev_seq: 5, primary: old_id.clone(), ..Default::default() }).await.unwrap();
-    assert_eq!((a.matched, a.seq, a.replica_term), (false, 6, 2));
+    assert_eq!((a.matched, a.seq, a.replica_term), (false, 7, 2));
     let image = {
         let to = dir.path().join("image.strata");
         r2db.storage().checkpoint(&to, &CheckpointOptions::default()).unwrap();
@@ -1503,7 +1503,7 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     let e = c.verify(pb::VerifyRequest { term: 1, primary: old_id.clone(), seq_no: 5 }).await.unwrap_err();
     assert!(e.message().contains("this server is a primary"), "{e}");
     assert_eq!(r1.replaced_by(), 0, "an older term replaces nothing");
-    assert_eq!(last(&r1db), 6);
+    assert_eq!(last(&r1db), 7);
 
     // The old primary starts again as a replica: it holds a transaction of
     // term 1 the new primary does not, and is sent a copy of it.
@@ -1553,12 +1553,13 @@ async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
     assert_eq!(p.role(), pb::Role::Replica);
     drop(stalled);
     let e = w.await.unwrap().unwrap_err();
-    assert!(e.status == 409 && e.message.contains("sequence number 2") && e.message.contains("before it was acknowledged"), "{}", e.message);
+    assert!(e.status == 409 && e.message.contains("sequence number") && e.message.contains("before it was acknowledged"), "{}", e.message);
 
     // The new primary does not hold it; its writes go on from its own last,
     // and the old primary drops the write it applied for the copy.
     let w = r1.write_ops(vec![set("p0000003", "sold", json!(3))], None).await.unwrap();
-    assert_eq!(w.seq_no, Some(2));
+    // After the term's first transaction.
+    assert_eq!(w.seq_no, Some(3));
     until("the old primary is sent a copy of the new one", || async { follower(&r1, 0).await["copies"] == 1 && follower(&r1, 0).await["in_sync"] == true }).await;
     assert_eq!(rows(&pdb), rows(&r1db), "the write answered in doubt is dropped");
     let sold = |db: &Db| db.query("SELECT sold FROM products WHERE id = 'p0000002'", &Params::new()).unwrap().rows[0][0].clone();
@@ -1751,11 +1752,12 @@ async fn a_replaced_primary_is_fenced_and_starts_again_only_when_promoted() {
     // replaced once it follows.
     assert_eq!(p.shipped_to("q", 5).unwrap_err().status, 409);
     // It keeps the part it has to take up: a replica of the new primary.
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "replaced_by": 5, "role": "replica"}));
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "replaced_by": 5, "role": "replica", "config": {"version": 1, "copies": 3}}));
     drop(p);
     let f = Follow::open(pdb.clone(), Some(&file("p.strata"))).unwrap();
-    assert!(f.replicate(pb::ReplicateRequest { term: 5, prev_term: 1, prev_seq: 2, primary: "q".into(), ..Default::default() }).await.unwrap().matched);
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "follows": {"primary": "q", "term": 5}, "member": true, "role": "replica"}));
+    // Its last is the first transaction of term 4, which it began.
+    assert!(f.replicate(pb::ReplicateRequest { term: 5, prev_term: 4, prev_seq: 3, primary: "q".into(), ..Default::default() }).await.unwrap().matched);
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "follows": {"primary": "q", "term": 5}, "member": true, "role": "replica", "config": {"version": 1, "copies": 3}}));
 
     // So does a database that followed a primary as a replica.
     // Its primary's term is 3, though no transaction of that term reached

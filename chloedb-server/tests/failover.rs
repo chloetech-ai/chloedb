@@ -410,20 +410,29 @@ async fn a_primary_cut_off_from_its_majority_is_given_no_new_copies() {
     assert!(err.message().contains("fewer than a majority"), "removing a copy it cannot reach: {}", err.message());
     assert!(a.logs().contains("refused other replicas"), "{}", a.logs());
     assert_eq!(a.replication().await["replicas"].as_array().map(Vec::len), Some(2), "A ships to B and C still");
-    assert!(svc.write_ops(set(1, 101), None).await.is_err(), "A has no majority, and acknowledges nothing");
+    // Written to A itself: a coordinator would call the paused copies.
+    let http = chloedb_server::http_client().timeout(Duration::from_secs(15)).build().unwrap();
+    let write_a = |i: usize, v: i64| http.post(format!("http://127.0.0.1:{}/v1/write", a.http)).json(&json!({"ops": set(i, v)})).send();
+    assert!(!write_a(1, 101).await.is_ok_and(|r| r.status().is_success()), "A has no majority, and acknowledges nothing");
 
     // The old behaviour, named: with accept_data_loss, A takes D and E,
     // counts 3 of 5 once they caught up, and acknowledges a write that
     // B and C, which may have elected another, do not hold.
+    for n in [&dd, &e] {
+        let mut c = chloedb_server::pb::strata_client::StrataClient::connect(n.url()).await.unwrap();
+        c.configure(chloedb_server::pb::ConfigureRequest { role: chloedb_server::pb::Role::Replica as i32, ..Default::default() }).await.unwrap();
+    }
     reship(&a, &[bu.clone(), cu.clone(), du.clone()], true).await.unwrap();
     reship(&a, &[bu.clone(), cu.clone(), du.clone(), eu.clone()], true).await.unwrap();
     assert!(a.logs().contains("accept_data_loss"), "the change is logged: {}", a.logs());
     until("D and E caught up", &[&a, &dd, &e], || async {
         let r = a.replication().await;
-        r["replicas"].as_array().is_some_and(|v| v.iter().filter(|f| f["in_sync"] == true && f["member"] == true).count() == 2)
+        let up = |u: &str| r["replicas"].as_array().is_some_and(|v| v.iter().any(|f| f["url"] == json!(u) && f["in_sync"] == true && f["member"] == true));
+        up(&du) && up(&eu)
     })
     .await;
-    svc.write_ops(set(2, 102), None).await.unwrap();
+    let r = write_a(2, 102).await.unwrap();
+    assert!(r.status().is_success(), "A counts 3 of 5: {}", r.text().await.unwrap_or_default());
 
     // B and C back: one copy at a time again (E leaves), once the
     // membership reached a majority.
