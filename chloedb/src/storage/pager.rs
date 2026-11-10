@@ -145,7 +145,8 @@ pub fn read_metas(file: &File) -> Result<Vec<(Meta, usize)>> {
 }
 
 /// The meta slots that hold something (not all zeros, as a slot no commit
-/// has written yet is) but fail their checksum, with the manifest their
+/// has written yet is) but fail their checksum, and slot 0 when it is all
+/// zeros (it is written at creation), with the manifest their
 /// fields name when it can be read and passes its own checksum: then the
 /// slot's version is known in spite of the damage (its manifest's txn and
 /// `wal_txn`). Bytes past the file's end count as zeros.
@@ -155,7 +156,13 @@ pub fn damaged_slots(file: &File) -> Result<Vec<(usize, Option<crate::storage::m
     for slot in 0..2 {
         let mut page = vec![0u8; PAGE as usize];
         let n = read_up_to(file, &mut page, slot as u64 * PAGE)?;
-        if page[..n].iter().all(|&b| b == 0) || matches!(Meta::decode(&page[..n]), Ok(Some(_)) | Err(_)) {
+        // An unwritten slot is all zeros, which only slot 1 can be: a
+        // database is created with slot 0 written, and each version
+        // after takes the other slot. A slot 0 of zeros (a zeroed page,
+        // a hole a crash left) is damage, and may have held the newest
+        // version.
+        let zeros = page[..n].iter().all(|&b| b == 0);
+        if (zeros && slot == 1) || (!zeros && matches!(Meta::decode(&page[..n]), Ok(Some(_)) | Err(_))) {
             continue;
         }
         let u32_at = |o: usize| u32::from_le_bytes(page[o..o + 4].try_into().unwrap());

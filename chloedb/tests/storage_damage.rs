@@ -101,8 +101,15 @@ fn refused(path: &Path, o: DbOptions, what: &str) -> String {
 // had flushed (PR-1, ST-7). Read-only too.
 #[test]
 fn damage_to_the_newest_version_fails_to_open() {
-    let cases: [(&str, fn(&Path)); 4] = [
+    let cases: [(&str, fn(&Path)); 5] = [
         ("newest meta slot", |p| flip(p, newest(p).0 as u64 * PAGE)),
+        // Slot 0, which the database was created with: zeros there are
+        // no unwritten slot (the audit's last case of silent loss).
+        ("newest meta slot zeroed", |p| {
+            assert_eq!(newest(p).0, 0, "two flushes after creation leave the newest version in slot 0");
+            let f = OpenOptions::new().read(true).write(true).open(p).unwrap();
+            f.write_all_at(&vec![0u8; PAGE as usize], 0).unwrap();
+        }),
         ("newest meta slot's txn", |p| flip(p, newest(p).0 as u64 * PAGE + 24)),
         ("newest manifest", |p| flip(p, newest(p).1 * PAGE + 3)),
         ("file one byte short of its page count", |p| {
