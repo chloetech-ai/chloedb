@@ -48,9 +48,9 @@ jobs:
       # macOS 11 and later load it.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       - name: The tag names pyproject.toml's version
@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: |
           pip install "maturin>=1.9,<2"
-          maturin build --release --out dist ${{ matrix.compat && format('--compatibility {0}', matrix.compat) || '' }}
+          maturin build --release --locked --out dist ${{ matrix.compat && format('--compatibility {0}', matrix.compat) || '' }}
           ls -la dist
       # The wheel installs into an empty virtualenv, with no Rust to build
       # anything with, and the embedded tests run against it there.
@@ -90,7 +90,7 @@ jobs:
           cp -r "$GITHUB_WORKSPACE/chloedb-py/tests" "$RUNNER_TEMP/chloedb-py/tests"
           cp -r "$GITHUB_WORKSPACE/chloedb/tests/models" "$RUNNER_TEMP/chloedb/tests/models"
           python -m pytest -q "$RUNNER_TEMP/chloedb-py/tests/test_database.py"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chloedb-py-${{ matrix.platform }}
           path: chloedb-py/dist/*.whl
@@ -105,7 +105,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: chloedb-py-*
           path: dist
@@ -120,4 +120,6 @@ jobs:
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
             gh release create "$TAG" --repo "$REPO" --title "chloedb for Python ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) wheels for CPython 3.10 and later; no Rust needed: \`pip install chloedb -f https://github.com/$REPO/releases/expanded_assets/$TAG\` picks the one for your machine. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later)."
           fi
-          gh release upload "$TAG" dist/*.whl --repo "$REPO" --clobber
+          # A checksum of each wheel, to check a download by (sha256sum -c).
+          (cd dist && sha256sum *.whl > SHA256SUMS && cat SHA256SUMS)
+          gh release upload "$TAG" dist/*.whl dist/SHA256SUMS --repo "$REPO" --clobber
