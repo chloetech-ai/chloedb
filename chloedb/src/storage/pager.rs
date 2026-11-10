@@ -144,6 +144,34 @@ pub fn read_metas(file: &File) -> Result<Vec<(Meta, usize)>> {
     Ok(metas)
 }
 
+/// The meta slots that hold something (not all zeros, as a slot no commit
+/// has written yet is) but fail their checksum, with the manifest their
+/// fields name when it can be read and passes its own checksum: then the
+/// slot's version is known in spite of the damage (its manifest's txn and
+/// `wal_txn`). Bytes past the file's end count as zeros.
+pub fn damaged_slots(file: &File) -> Result<Vec<(usize, Option<crate::storage::manifest::Manifest>)>> {
+    let len = file.metadata()?.len();
+    let mut out = Vec::new();
+    for slot in 0..2 {
+        let mut page = vec![0u8; PAGE as usize];
+        let n = read_up_to(file, &mut page, slot as u64 * PAGE)?;
+        if page[..n].iter().all(|&b| b == 0) || matches!(Meta::decode(&page[..n]), Ok(Some(_)) | Err(_)) {
+            continue;
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(page[o..o + 4].try_into().unwrap());
+        let u64_at = |o: usize| u64::from_le_bytes(page[o..o + 8].try_into().unwrap());
+        let e = Extent { page: u64_at(32), len: u64_at(40) };
+        // Fields read unchecked: bound the read by the file.
+        let fits = e.page.checked_mul(PAGE).and_then(|o| o.checked_add(e.len)).is_some_and(|end| end <= len && e.len > 0 && e.page >= 2);
+        let manifest = fits
+            .then(|| read_extent(file, e, u32_at(48)).ok())
+            .flatten()
+            .and_then(|b| crate::storage::manifest::Manifest::decode(&b).ok());
+        out.push((slot, manifest));
+    }
+    Ok(out)
+}
+
 /// Writes `meta` into `slot`.
 pub fn write_meta(file: &File, slot: usize, meta: &Meta) -> Result<()> {
     io::write_at(file, &meta.encode(), slot as u64 * PAGE)?;

@@ -680,6 +680,56 @@ pub fn ships_table_changes(buf: &[u8]) -> bool {
     false
 }
 
+/// The txns of the committed transactions in the logs of database `db_id`
+/// at `path` (the open log and the sealed ones), read without changing
+/// them, intact commit records past damage included: what opening could
+/// replay, as evidence of which transactions the logs still hold.
+pub fn logged_txns(path: &Path, db_id: u64) -> Result<Vec<u64>> {
+    let mut files: Vec<PathBuf> = sealed_files(path)?.into_iter().map(|(_, p)| p).collect();
+    files.push(path.to_path_buf());
+    let mut out = Vec::new();
+    for p in files {
+        let buf = match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let Ok(Some((numbered, _, h))) = header(&buf, db_id, &p) else { continue };
+        let (txns, end) = decode(&buf[h as usize..], numbered, false, &|_, _| true);
+        out.extend(txns.iter().map(|t| t.txn));
+        out.extend(commits_after(&buf[h as usize + end..], txns.last().map_or(0, |t| t.txn), numbered));
+    }
+    Ok(out)
+}
+
+/// When the file at `path` is no log of database `db_id` (its header is
+/// damaged, or names another database) but holds intact commit records,
+/// which a log's header damaged after the fact leaves: what is wrong with
+/// it, in words. `None` for a log of this database, a missing or empty
+/// file, and a file with no commit record (a header a crash cut short).
+/// The flag says whether the header is whole and names another database.
+pub fn unreadable_log(path: &Path, db_id: u64) -> Result<Option<(String, bool)>> {
+    let buf = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if header(&buf, db_id, path)?.is_some() || buf.len() <= 16 {
+        return Ok(None);
+    }
+    let rest = &buf[16.min(buf.len())..];
+    let n = commits_after(rest, 0, false).len().max(commits_after(rest, 0, true).len());
+    if n == 0 {
+        return Ok(None);
+    }
+    let foreign = &buf[..8] == MAGIC || &buf[..8] == MAGIC_2;
+    let whose = match foreign {
+        true => format!("names database {:016x}, not this one ({db_id:016x})", u64::from_le_bytes(buf[8..16].try_into().unwrap())),
+        false => "has a damaged header".to_string(),
+    };
+    Ok(Some((format!("the write-ahead log {} {whose}, and holds {n} committed transactions", path.display()), foreign)))
+}
+
 /// The txns of the intact commit records in `rest` (the log past the last
 /// transaction replay reached) that come after txn `last`. A commit record
 /// is 21 bytes (length 13, checksum, kind, txn, op count), or 37 in a

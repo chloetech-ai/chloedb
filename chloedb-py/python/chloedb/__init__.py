@@ -244,13 +244,26 @@ class Database(Search, FrameStore):
         return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads))
 
     @classmethod
-    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False) -> "Database":
+    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False) -> "Database":
         """Opens the database at `path`; `threads` as `create` takes it.
         `read_only` opens it to read while another process writes it (a
         web server's other workers, a script): it sees each commit of the
         writer, and every write fails. Without it only one process may have
-        the database open."""
-        return cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only))
+        the database open.
+
+        A database whose newest version or write-ahead log is damaged so
+        that opening it would lose acknowledged writes fails to open
+        (ChloeDBError, naming what is damaged), and nothing is changed.
+        `recover=True` opens it all the same, accepting the loss: copies of
+        the damaged files are kept first (`<path>.damaged-<time>`,
+        `<path>-wal.damaged`), `damaged` says what was lost, and a
+        `RuntimeWarning` is issued."""
+        db = cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only, recover))
+        if db.damaged is not None:
+            import warnings
+
+            warnings.warn(f"{os.fspath(path)}: opened past damage: {db.damaged}", RuntimeWarning, stacklevel=2)
+        return db
 
     @property
     def read_only(self) -> bool:
@@ -512,11 +525,35 @@ class Database(Search, FrameStore):
         otherwise); the number of bytes the file shrank by."""
         return self._db.vacuum()
 
+    def flush(self) -> None:
+        """Writes the rows still in memory into the file and empties its
+        write-ahead log (`<path>-wal`): the file alone then holds every
+        committed row, until the next write."""
+        self._db.flush()
+
+    def checkpoint(self, dest: str | os.PathLike, *, directory: bool = False) -> dict:
+        """Writes a consistent copy of the database to `dest` (which must
+        not exist) while it stays open and in use: the safe way to back it
+        up. Every segment is checked against its checksum (a damaged
+        database fails the checkpoint instead of being copied), the copy is
+        checked, and only then given its name. Returns what it copied."""
+        return json.loads(self._db.checkpoint(os.fspath(dest), directory))
+
+    @property
+    def damaged(self) -> str | None:
+        """What opening found damaged and skipped or dropped, in words (with
+        where it kept copies), or None. Only an open with `recover=True`
+        accepts a loss of acknowledged writes; it also warns."""
+        return self._db.damaged
+
     def close(self) -> None:
-        """Merges small segments, gives the file system back the space that
-        merges freed when it is an eighth of the file or more, and closes
-        the database. (Segments are merged in the background as writes add
-        them, so a table written to for a long time stays in few segments.)"""
+        """Writes the rows still in memory into the file (so that the file
+        alone, without its `-wal`, is then a complete copy of the
+        database), merges small segments, gives the file system back the
+        space that merges freed when it is an eighth of the file or more,
+        and closes the database. (Segments are merged in the background as
+        writes add them, so a table written to for a long time stays in few
+        segments.)"""
         self._db.close()
 
     @property
@@ -560,13 +597,15 @@ class Database(Search, FrameStore):
         return self.import_arrow(data, table=table)
 
 
-def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False) -> Database:
+def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False) -> Database:
     """Opens the database at `path`, creating it with `schema` if it does
     not exist. `threads`: how many cores vector indexes build on and each
     query searches segments on (default: every core). `read_only`: opens
-    it to read while another process writes it (see `Database.open`)."""
+    it to read while another process writes it; `recover`: opens a
+    damaged database accepting the loss of acknowledged writes (see
+    `Database.open`)."""
     if os.path.exists(path) or read_only:
-        return Database.open(path, models=models, threads=threads, read_only=read_only)
+        return Database.open(path, models=models, threads=threads, read_only=read_only, recover=recover)
     if schema is None:
         raise ChloeDBError(f"{os.fspath(path)} does not exist: pass a schema to create it")
     return Database.create(path, schema, directory=directory, models=models, threads=threads)

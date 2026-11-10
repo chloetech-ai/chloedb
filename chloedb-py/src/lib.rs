@@ -455,13 +455,41 @@ impl Database {
     /// Opens the database at `path`; `read_only` to read it while another
     /// process writes it.
     #[staticmethod]
-    #[pyo3(signature = (path, models = None, threads = None, read_only = false))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool) -> PyResult<Self> {
+    #[pyo3(signature = (path, models = None, threads = None, read_only = false, recover = false))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool, recover: bool) -> PyResult<Self> {
         let threads = threads_or_cores(threads)?;
         // The layout comes from the file; the option only matters to a create.
-        let opts = DbOptions { read_only, ..db_options(false, threads) };
+        let opts = DbOptions { read_only, recover, ..db_options(false, threads) };
         let db = py.detach(|| Db::open(&path, opts)).map_err(err)?;
         Ok(Database::new(with_threads(db, threads), models))
+    }
+
+    /// What opening found damaged and skipped or dropped (the newest
+    /// version on disk, a log's transactions after damage), in words, and
+    /// where it kept copies; `None` when it opened undamaged.
+    #[getter]
+    fn damaged(&self) -> PyResult<Option<String>> {
+        Ok(self.get()?.storage().damaged().map(str::to_string))
+    }
+
+    /// Writes the rows still in memory into the file and empties the
+    /// write-ahead log: the file alone then holds every committed row.
+    fn flush(&self, py: Python<'_>) -> PyResult<()> {
+        let db = self.get()?;
+        py.detach(|| db.storage().flush()).map_err(err)
+    }
+
+    /// Writes a consistent copy of the database to `dest` (which must not
+    /// exist) while it stays in use: every segment checked against its
+    /// checksum, the copy checked, then given its name. Returns what it
+    /// copied, as JSON text.
+    #[pyo3(signature = (dest, directory = false))]
+    fn checkpoint(&self, py: Python<'_>, dest: PathBuf, directory: bool) -> PyResult<String> {
+        let db = self.get()?;
+        let layout = if directory { chloedb::storage::Layout::Directory } else { chloedb::storage::Layout::SingleFile };
+        let opts = chloedb::storage::CheckpointOptions { layout, ..Default::default() };
+        let stats = py.detach(|| db.storage().checkpoint(&dest, &opts)).map_err(err)?;
+        serde_json::to_string(&stats).map_err(|e| err(chloedb::Error::Schema(e.to_string())))
     }
 
     /// Whether it was opened read-only.

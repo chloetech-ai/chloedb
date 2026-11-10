@@ -38,6 +38,10 @@ pub struct Options {
     /// Open a database whose WAL was damaged after it was durable
     /// ([`DbOptions::wal_drop_damaged`]).
     pub wal_drop_damaged: bool,
+    /// Open a database that opening would otherwise refuse because it
+    /// loses acknowledged writes, accepting the loss
+    /// ([`DbOptions::recover`]).
+    pub recover: bool,
     /// Check every segment's checksum on opening
     /// ([`DbOptions::verify_checksums`]).
     pub verify_checksums: bool,
@@ -350,10 +354,12 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         };
         let db_options = |directory: bool| DbOptions { cold: cold.clone(), ..db_options(directory) };
         let db = if path.exists() {
-            let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
+            let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, recover: o.recover, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
                 .map_err(|e| format!("open {}: {e}", path.display()))?;
             if let Some(what) = db.storage().damaged() {
-                tracing::warn!(db = %path.display(), damage = %what, "opened the database past damage");
+                // Also in /v1/health ("degraded") and /v1/admin/check (an
+                // error) until the database is opened clean again.
+                tracing::error!(db = %path.display(), damage = %what, "opened the database past damage");
             }
             db
         } else if let Some(n) = o.demo {
