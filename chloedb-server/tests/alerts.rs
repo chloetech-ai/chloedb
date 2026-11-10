@@ -421,7 +421,7 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     let schema = c.schema.clone();
     let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), schema, agent, 16, Duration::from_secs(10)));
     svc.alerts.set_coordinator(true);
-    c.add_replica(0, &b.url(), false).await.unwrap();
+    c.add_replica(0, &b.url(), false, false).await.unwrap();
 
     // The same rules on the copies and the coordinator: many documents,
     // and replicas out of sync, which only a primary reports.

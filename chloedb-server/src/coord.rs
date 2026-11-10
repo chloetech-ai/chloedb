@@ -98,7 +98,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, HOLD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, HOLD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL, VALIDATE_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -416,6 +416,10 @@ const READ_ASK_EVERY: Duration = Duration::from_millis(100);
 /// refuses every write from then on (the coordinator may not have heard
 /// of the new one yet). Sending it again cannot apply it twice.
 fn not_applied_yet(s: &tonic::Status) -> bool {
+    if let Some(o) = outcome(s) {
+        return o == crate::cores::shard::NOT_APPLIED;
+    }
+    // A shard of protocol 18 or older says so in words only.
     match s.code() {
         Code::Unavailable => s.message().contains("the write was not applied") || s.message().contains("it takes writes after that"),
         Code::FailedPrecondition => s.message().contains("another primary replaced this one, which takes no more writes"),
@@ -436,7 +440,18 @@ fn refused_for_load(s: &tonic::Status) -> bool {
 /// (`cores::shard::Primary::acked`): the new primary may hold it or not,
 /// so it is not sent again, which could apply it twice.
 fn in_doubt(s: &tonic::Status) -> bool {
+    if let Some(o) = outcome(s) {
+        return o == crate::cores::shard::IN_DOUBT;
+    }
     s.code() == Code::FailedPrecondition && s.message().contains("before it was acknowledged")
+}
+
+/// The code a shard of protocol 19 gives a refused write
+/// ([`crate::cores::shard::Primary::write_outcome`]), which says whether
+/// it was applied: read instead of the message, whose words may differ
+/// between versions (finding DS-6).
+fn outcome(s: &tonic::Status) -> Option<&str> {
+    s.metadata().get(crate::cores::shard::WRITE_OUTCOME).and_then(|v| v.to_str().ok())
 }
 
 /// What a client is told of a write [`in_doubt`].
@@ -2791,7 +2806,7 @@ impl Coordinator {
             Write::Update { select, .. } | Write::Delete { select } if select.limit.is_some() => {
                 Err(ApiError::bad("UPDATE ... LIMIT and DELETE ... LIMIT are not supported through a coordinator yet"))
             }
-            _ => self.statement(sql, params, key.or_else(|| (self.topo().replicas.len() > 1).then(auto_key))).await,
+            _ => self.statement(sql, params, Some(key.unwrap_or_else(auto_key))).await,
         }
     }
 
@@ -3030,13 +3045,18 @@ impl Coordinator {
         }
     }
 
-    /// The key a write of `ops` goes to the shards with: its own, or, for
-    /// one that may span shards (several operations, and several shards),
-    /// [`auto_key`], so that a write that fails on some shards after
-    /// others took it can be sent again without applying their parts twice
-    /// ([`Self::partial`] names the key).
-    pub fn keyed(&self, ops: &[Json], key: Option<String>) -> Option<String> {
-        key.or_else(|| (self.topo().replicas.len() > 1 && ops.iter().filter(|op| !is_mark(op)).nth(1).is_some()).then(auto_key))
+    /// The key a write of `ops` goes to the shards with: its own, or
+    /// [`auto_key`], made before the first send. A write that fails on some
+    /// shards after others took it can be sent again without applying
+    /// their parts twice ([`Self::partial`] names the key), and the
+    /// coordinator's own resends, to the primary that replaced one that
+    /// did not answer, are never applied twice: the new primary may hold
+    /// the write, shipped before the old one died, and answers it as
+    /// before (finding DS-6, a keyless `add` resent on `Unavailable`).
+    /// Each costs the shard a row of `_sources` for the keys' lifetime
+    /// (`--idempotency-ttl-s`).
+    pub fn keyed(&self, _ops: &[Json], key: Option<String>) -> Option<String> {
+        Some(key.unwrap_or_else(auto_key))
     }
 
     /// Write operations, grouped by the shard of their key. An idempotency
@@ -3079,9 +3099,11 @@ impl Coordinator {
             catalog = self.catalog();
         }
         let mut by_shard: BTreeMap<usize, Vec<Json>> = BTreeMap::new();
+        // Where each shard's operations are in the request.
+        let mut places: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         // Each source's highest offset, which every shard keeps.
         let mut marks: BTreeMap<String, i64> = BTreeMap::new();
-        for op in ops {
+        for (place, op) in ops.into_iter().enumerate() {
             if let Some(m) = op_source(&op)? {
                 let top = marks.entry(m.name).or_insert(m.offset);
                 *top = (*top).max(m.offset);
@@ -3094,6 +3116,7 @@ impl Coordinator {
                 return Err(ApiError::bad(ONE_REPLICA));
             }
             by_shard.entry(s).or_default().push(op);
+            places.entry(s).or_default().push(place);
         }
         // A shard the request gives no rows still keeps the offsets, so
         // that the least over the shards is where a stream resumes
@@ -3101,6 +3124,9 @@ impl Coordinator {
         let need = if marks.is_empty() { MIN_PROTOCOL } else { SOURCES_PROTOCOL };
         if round == 0 {
             self.writable(&by_shard.keys().copied().collect::<Vec<_>>()).await?;
+            if by_shard.len() > 1 {
+                self.validate(t, &by_shard, &places, key).await?;
+            }
         }
         if !marks.is_empty() {
             for i in 0..t.replicas.len() {
@@ -3129,6 +3155,42 @@ impl Coordinator {
             }
         }
         Ok((wrote, failed, errors))
+    }
+
+    /// Asks each shard of a write that spans several whether it would apply
+    /// its part (`by_shard`, from the request's operations at `places`),
+    /// writing nothing ([`VALIDATE_PROTOCOL`]): a part one refuses for what
+    /// it holds or is sent (a duplicate insert, an `if_seq_no` that does
+    /// not match, a type, schema or NOT NULL error) is refused before any
+    /// shard applies anything, naming the operation (finding DS-2: the
+    /// other shards' parts stayed committed, and no retry could finish the
+    /// write). A shard of an older protocol, or one that does not answer,
+    /// is not checked, and its part may still fail after others applied
+    /// theirs. Nothing is held between the check and the write, so a write
+    /// of another client in between can still fail this one partway
+    /// (docs/chloedb/server.md, "When a write fails").
+    async fn validate(&self, t: &Topology, by_shard: &BTreeMap<usize, Vec<Json>>, places: &BTreeMap<usize, Vec<usize>>, key: &Option<String>) -> Result<(), ApiError> {
+        let calls = by_shard.iter().map(|(&i, ops)| {
+            let idempotency_key = key.as_ref().map(|k| format!("{k}/{i}")).unwrap_or_default();
+            let r = pb::WriteRequest { ops_json: serde_json::to_vec(ops).unwrap_or_default(), idempotency_key, epoch: t.epoch(), validate: true, ..Default::default() };
+            async move { (i, self.write(t, i, r, VALIDATE_PROTOCOL).await) }
+        });
+        for (i, a) in join_all(calls).await {
+            let Err(e) = a else { continue };
+            // Refused for what it holds or was sent: the same write would be.
+            if !(400..500).contains(&e.status) || e.status == 429 {
+                continue;
+            }
+            let (what, why) = match refused_op(&e.message) {
+                Some((j, why)) => match (places.get(&i).and_then(|p| p.get(j)), by_shard[&i].get(j)) {
+                    (Some(n), Some(op)) => (format!("operation {n} of the request ({op})"), why.to_string()),
+                    _ => ("its part".to_string(), why.to_string()),
+                },
+                None => ("its part".to_string(), e.message.clone()),
+            };
+            return Err(ApiError { status: e.status, message: format!("nothing was written: shard {i} refused {what}: {why}") });
+        }
+        Ok(())
     }
 
     /// Shard `i`'s feed from transaction `from` on, read from its primary
@@ -3961,8 +4023,10 @@ impl Coordinator {
     /// Adds `url` to shard `i`'s servers, as a replica its primary ships
     /// to (a shard served by one standalone server makes it its primary
     /// first). The new server is sent a copy of the primary, and serves
-    /// reads once it has caught up.
-    pub async fn add_replica(&self, i: usize, url: &str, force: bool) -> Result<Json, ApiError> {
+    /// reads once it has caught up. The primary takes it only while a
+    /// majority of the shard's copies is with it, unless
+    /// `accept_data_loss` ([`crate::cores::shard::Primary::may_reconfigure`]).
+    pub async fn add_replica(&self, i: usize, url: &str, force: bool, accept_data_loss: bool) -> Result<Json, ApiError> {
         let t = self.topo();
         let rs = t.replicas.get(i).ok_or_else(|| ApiError::bad(format!("there is no shard {i} of {}", t.replicas.len())))?.clone();
         let (mut c, _) = self.admit(url, force).await?;
@@ -3979,7 +4043,18 @@ impl Coordinator {
         let mut pc = primary.client.clone();
         let mut replicas: Vec<String> = rs.iter().filter(|r| r.url != primary.url).map(|r| r.url.clone()).collect();
         replicas.push(url.to_string());
-        let said = configure(&mut pc, &primary.url, pb::Role::Primary, replicas, None).await?;
+        let said = match configure_with(&mut pc, &primary.url, reship(replicas, accept_data_loss)).await {
+            Ok(said) => said,
+            Err(e) => {
+                // Refused: the new server, which holds no rows yet, serves
+                // on its own again rather than wait for a primary.
+                let back = pb::ConfigureRequest { role: pb::Role::Standalone as i32, force: true, ..Default::default() };
+                if let Err(b) = configure_with(&mut c, url, back).await {
+                    tracing::warn!(url, error = %b.message, "the shard's primary refused the new replica, which stays a replica waiting for a primary");
+                }
+                return Err(e);
+            }
+        };
         primary.protocol.store(0, Ordering::Relaxed);
         let (map, missed) = self.change(|m| {
             let mut servers = m.replicas()[i].clone();
@@ -4013,11 +4088,13 @@ impl Coordinator {
         Ok(json!({"shard": i, "url": url, "term": said.term, "seq_no": said.seq_no, "replicas": said.replicas, "write_acks": said.write_acks, "primary": primary}))
     }
 
-    /// Removes `url` from shard `i`'s servers: the coordinators stop
-    /// reading from it, then its primary stops shipping to it. A shard's
+    /// Removes `url` from shard `i`'s servers: its primary stops shipping
+    /// to it, then the coordinators stop reading from it. A shard's
     /// primary is not removed while other servers serve the shard
-    /// (promote another first), nor a shard's last server.
-    pub async fn remove_replica(&self, i: usize, url: &str) -> Result<Json, ApiError> {
+    /// (promote another first), nor a shard's last server. The primary
+    /// lets it go only while a majority of the shard's copies is with it,
+    /// unless `accept_data_loss`; refused, the map is left as it was.
+    pub async fn remove_replica(&self, i: usize, url: &str, accept_data_loss: bool) -> Result<Json, ApiError> {
         let t = self.topo();
         let rs = t.replicas.get(i).ok_or_else(|| ApiError::bad(format!("there is no shard {i} of {}", t.replicas.len())))?.clone();
         let Some(gone) = rs.iter().position(|r| r.url == url) else {
@@ -4037,23 +4114,39 @@ impl Coordinator {
             }
             return Err(ApiError::bad(format!("{url} is shard {i}'s primary: promote another of its servers first")));
         }
-        let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;
+        // The primary first: one cut off from its majority refuses, and the
+        // map then still names the copies it ships to (finding DS-1).
         let mut shipping = Json::Null;
         if let Some(k) = k {
             let p = &rs[k];
             let mut pc = p.client.clone();
             let replicas = rs.iter().filter(|r| r.url != url && r.url != p.url).map(|r| r.url.clone()).collect();
-            let said = configure(&mut pc, &p.url, pb::Role::Primary, replicas, None).await?;
+            let said = configure_with(&mut pc, &p.url, reship(replicas, accept_data_loss)).await?;
             shipping = json!({"primary": p.url, "replicas": said.replicas});
         }
+        let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;
         Ok(json!({"epoch": map.epoch, "shard": i, "removed": url, "shipping": shipping, "missed": missed}))
     }
 }
 
+/// The operation a shard's check refused, by its place in the part it was
+/// sent, and why ([`crate::service::VALIDATE_OF`]).
+fn refused_op(m: &str) -> Option<(usize, &str)> {
+    use crate::service::{VALIDATE_OF, VALIDATE_OP};
+    let at = m.find(&format!("{VALIDATE_OP} "))?;
+    let (n, why) = m[at + VALIDATE_OP.len() + 1..].split_once(VALIDATE_OF)?;
+    Some((n.parse().ok()?, why))
+}
+
 /// Sets the part in replication of the server at `url` (`Configure`).
 async fn configure(c: &mut Client, url: &str, role: pb::Role, replicas: Vec<String>, acks: Option<Acks>) -> Result<pb::ConfigureResponse, ApiError> {
-    let r = pb::ConfigureRequest { role: role as i32, replicas, write_acks: acks.map(|a| a.name().to_string()).unwrap_or_default(), force: false, promote: false };
+    let r = pb::ConfigureRequest { role: role as i32, replicas, write_acks: acks.map(|a| a.name().to_string()).unwrap_or_default(), ..Default::default() };
     configure_with(c, url, r).await
+}
+
+/// A primary's `Configure` to ship to `replicas` from now on.
+fn reship(replicas: Vec<String>, accept_data_loss: bool) -> pb::ConfigureRequest {
+    pb::ConfigureRequest { role: pb::Role::Primary as i32, replicas, accept_data_loss, ..Default::default() }
 }
 
 async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> Result<pb::ConfigureResponse, ApiError> {

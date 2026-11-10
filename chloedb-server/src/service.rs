@@ -1049,6 +1049,15 @@ impl Service {
     /// A replica is made primary by promotion ([`Self::promote`]), not
     /// here.
     pub async fn configure(&self, role: pb::Role, replicas: Vec<String>, acks: Option<Acks>, force: bool) -> Result<pb::ConfigureResponse, ApiError> {
+        self.configure_as(role, replicas, acks, force, false).await
+    }
+
+    /// [`Self::configure`]. A serving primary takes other replicas only as
+    /// [`crate::cores::shard::Primary::may_reconfigure`] allows: one copy
+    /// at a time, while a majority of its copies is with it, waiting up to
+    /// [`RECONFIGURE_WAIT`] for the change before to reach them; or with
+    /// `accept_data_loss`, which it logs.
+    pub async fn configure_as(&self, role: pb::Role, replicas: Vec<String>, acks: Option<Acks>, force: bool, accept_data_loss: bool) -> Result<pb::ConfigureResponse, ApiError> {
         let _one = self.promoting.lock().await;
         let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator has no part in replication: configure its shards' servers"))?;
         let file = self.replication_file.clone();
@@ -1058,7 +1067,17 @@ impl Service {
                 let acks = acks.unwrap_or(p.acks());
                 match p.replicas() == replicas.as_slice() && p.acks() == acks {
                     true => None,
-                    false => Some(Replication::Primary(p.reconfigure(replicas, acks)?)),
+                    false => {
+                        let until = Instant::now() + RECONFIGURE_WAIT;
+                        while let Err(e) = p.may_reconfigure(&replicas, accept_data_loss) {
+                            if Instant::now() >= until || e.status != 503 {
+                                tracing::warn!(error = %e.message, replicas = %replicas.join(", "), "refused other replicas");
+                                return Err(e);
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        Some(Replication::Primary(p.reconfigure(replicas, acks)?))
+                    }
                 }
             }
             (pb::Role::Primary, Replication::None) => {
@@ -1843,7 +1862,14 @@ impl Service {
             Moved::Copy => Some((feed::MOVE_COPY, self.slot_epoch() as i64)),
             Moved::Cleanup => Some((feed::MOVE_CLEANUP, self.slot_epoch() as i64)),
         };
-        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass), mark, epoch: routed() }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
+        // The term a primary takes it in; a server that stepped down since
+        // it was admitted commits none of its clients' writes (term 0).
+        let term = match (&self.replication(), moved) {
+            (Replication::Primary(_), _) => Some(self.term()),
+            (Replication::Replica(_), Moved::No) => Some(0),
+            _ => None,
+        };
+        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass), mark, epoch: routed(), term }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
         rx.await.map_err(|_| ApiError::internal("the writer thread stopped"))?
     }
 
@@ -3319,6 +3345,29 @@ impl Service {
         self.write_ops(ops, key).await
     }
 
+    /// Checks write operations `ops` as they would apply now, in a
+    /// transaction it rolls back (`WriteRequest.validate`, protocol 19): a
+    /// duplicate insert, an `if_seq_no` that does not match, a type or
+    /// schema error, a NOT NULL column left empty. A refusal names the
+    /// operation, by its place in `ops` ("operation N of this shard's
+    /// part: ..."). A request whose `key` this database recorded passes,
+    /// as it will be answered as before. Nothing is held between this and
+    /// the write: another client's write in between can still make the
+    /// write fail (finding DS-2, the race docs/chloedb/server.md states).
+    pub async fn validate_ops(&self, ops: Vec<Json>, key: Option<String>, epoch: u64) -> Result<(), ApiError> {
+        let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator checks a write on its shards"))?;
+        tokio::task::spawn_blocking(move || {
+            if let Some(k) = &key {
+                if idem::recorded(&db, k, idem::hash_ops(&ops))?.is_some() {
+                    return Ok(());
+                }
+            }
+            wait_for_writer(Instant::now() + Duration::from_secs(5), || validate_into(&db, &ops, epoch))
+        })
+        .await
+        .map_err(ApiError::internal)?
+    }
+
     /// Looks idempotency key `key` up for a request whose operations hash
     /// to `hash`, claiming it if it is new ([`idem::Keys::begin`]): in
     /// memory, then, for a key memory does not hold, in the database
@@ -4503,6 +4552,11 @@ pub const STREAM_OPS: usize = 4096;
 /// How often a stream, or a write held back by a backlog, looks again.
 const STREAM_POLL: Duration = Duration::from_millis(5);
 
+/// How long a primary given other replicas waits for the change before to
+/// reach a majority of its copies ([`Service::configure_as`]): a heartbeat
+/// or two, as a replica takes the membership in the next call.
+pub const RECONFIGURE_WAIT: Duration = Duration::from_secs(3);
+
 /// How long a write waits for a backlog of flushes to clear before 429.
 const BACKLOG_WAIT: Duration = Duration::from_secs(1);
 
@@ -4721,6 +4775,10 @@ struct Queued {
     /// The epoch of the cluster map the request was routed by (0: none),
     /// which says which slots its stream events cover ([`arrivals`]).
     epoch: u64,
+    /// The term it was taken in by a primary (`None`: a server that does
+    /// not replicate, or a slot move's own write): it commits only while
+    /// the database is at that term ([`commits_in`]).
+    term: Option<u64>,
 }
 
 impl Queued {
@@ -4891,6 +4949,13 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
     for q in late {
         q.answer(Err(ApiError { status: 503, message: "the deadline passed while waiting for the writer".into() }));
     }
+    // Taken by a primary of a term the database left (it stepped down, and
+    // took its new primary's transactions): refused unapplied.
+    let (gone, group): (Vec<Queued>, Vec<Queued>) = group.into_iter().partition(|q| commits_in(db, q.term).is_err());
+    for q in gone {
+        let e = commits_in(db, q.term).unwrap_err();
+        q.answer(Err(e));
+    }
     let Some(deadline) = group.iter().map(|q| q.deadline).max() else { return };
     let sql: Vec<&PreparedWrite> = group.iter().filter_map(|q| q.sql()).collect();
     if !sql.is_empty() {
@@ -4922,9 +4987,11 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
     }
     let requests: Vec<(&[Json], u64)> = group.iter().map(|q| (q.ops(), q.epoch)).collect();
     let keys: Vec<Option<(&str, u64)>> = group.iter().map(Queued::key).collect();
-    // A group shares one mark ([`writer`]).
+    // A group shares one mark ([`writer`]), and a term, checked again under
+    // the writer: requests of another term fail it, and run alone.
     let mark = group[0].mark;
-    let answers = wait_for_writer(deadline, || apply_keyed(db, &requests, &keys, mark));
+    let term = group[0].term;
+    let answers = wait_for_writer(deadline, || apply_keyed_in(db, &requests, &keys, mark, term));
     drop((requests, keys));
     match answers {
         Ok((applied, seq_no)) => {
@@ -4939,7 +5006,7 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         // as Ok), so each request can run again alone.
         Err(_) => {
             for q in group {
-                let r = wait_for_writer(q.deadline, || apply_keyed(db, &[(q.ops(), q.epoch)], &[q.key()], q.mark).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
+                let r = wait_for_writer(q.deadline, || apply_keyed_in(db, &[(q.ops(), q.epoch)], &[q.key()], q.mark, q.term).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
                 q.answer(r);
             }
         }
@@ -5054,12 +5121,46 @@ fn apply_requests(db: &Db, requests: &[(&[Json], u64)], mark: Option<(&str, i64)
 /// request's place in `keys` ([`idem::record`]), if it wrote a row: one
 /// that wrote none leaves no transaction behind it, as before.
 fn apply_keyed(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
+    apply_keyed_in(db, requests, keys, mark, None)
+}
+
+/// Whether a write taken in `term` ([`Queued::term`]) may commit on `db`
+/// now: while the database is at that term. A primary that stepped down
+/// (it voted for another copy in a handover) and then applied its new
+/// primary's first transaction would otherwise commit a write it took
+/// before under the new term's numbering, at a number the new primary
+/// gives another transaction of the same term: two copies would hold
+/// different transactions under one (term, number), which shipping takes
+/// for the same history and never repairs (found by
+/// `replication::a_write_applied_as_its_primary_hands_over_is_answered_in_doubt`
+/// once each term began with a transaction, finding DS-5). Refused, it is
+/// answered in doubt (409), as a write a replaced primary applied is, and
+/// a coordinator does not send it again.
+fn commits_in(db: &Db, term: Option<u64>) -> Result<(), ApiError> {
+    let Some(t) = term else { return Ok(()) };
+    let now = db.storage().numbering().map_or(0, |n| n.term);
+    if now == t {
+        return Ok(());
+    }
+    Err(conflict(format!(
+        "the write was not applied: this server stopped being the primary of term {t} (its database is at term {now}) before it was acknowledged, and the new primary may not hold it: write to the new primary"
+    )))
+}
+
+/// [`apply_keyed`], committing only while the database is at `term`
+/// ([`commits_in`]), checked under the writer.
+fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>], mark: Option<(&str, i64)>, term: Option<u64>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
     let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
     if mark.is_some() || keys.iter().any(Option::is_some) || requests.iter().flat_map(|(ops, _)| ops.iter()).any(has_source) {
         db.storage().ensure_sources()?;
     }
     let mut t = db.storage().begin()?;
+    // Under the writer, which a primary's shipped transaction needs too.
+    if let Err(e) = commits_in(db, term) {
+        t.rollback();
+        return Err(e);
+    }
     let mut applied = Vec::with_capacity(requests.len());
     let mut arrived = arrivals::Group::new(db);
     let now = chloedb::timestamp::now();
@@ -5076,6 +5177,32 @@ fn apply_keyed(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>
     let seq_no = t.commit_seq()?;
     Ok((applied, seq_no))
 }
+
+/// [`Service::validate_ops`]: each of `ops` applied in turn in one
+/// transaction, which is rolled back.
+fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
+    let catalog = db.catalog();
+    let mut t = db.storage().begin()?;
+    let mut arrived = arrivals::Group::new(db);
+    for (j, op) in ops.iter().enumerate() {
+        if let Err(e) = apply_into(&catalog, &mut t, std::slice::from_ref(op), epoch, &mut arrived) {
+            t.rollback();
+            // The writer was busy: asked again (`wait_for_writer`).
+            if e.status == 503 {
+                return Err(e);
+            }
+            return Err(ApiError { status: e.status, message: format!("{VALIDATE_OP} {j}{VALIDATE_OF}{}", e.message) });
+        }
+    }
+    t.rollback();
+    Ok(())
+}
+
+/// How [`validate_into`] names the operation it refused: "operation N of
+/// this shard's part: ...", which a coordinator reads back
+/// ([`crate::coord`]).
+pub const VALIDATE_OP: &str = "operation";
+pub const VALIDATE_OF: &str = " of this shard's part: ";
 
 /// Refuses a request whose operations carry the mark of a cluster
 /// followed ([`feed::FOLLOWS`]) unless that cluster's follow process sends
@@ -5486,7 +5613,7 @@ mod tests {
         assert_eq!(keys.begin("k", 1), idem::Begin::New);
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let state = WriterState::default();
-        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some(("k".into(), 1)), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None, epoch: 0 };
+        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some(("k".into(), 1)), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None, epoch: 0, term: None };
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _held = q;
             panic!("a bug while applying a write");

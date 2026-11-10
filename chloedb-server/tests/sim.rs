@@ -51,12 +51,8 @@ fn a_seed_replays_exactly() {
 }
 
 /// The first seed below `within` that breaks a promise with `bug` put
-/// back, looking a hundred seeds at a time.
-fn finds(bug: Bug, within: u64) -> Option<sim::Report> {
-    finds_with(bug, within, Config::of)
-}
-
-/// [`finds`], with each seed's configuration from `of`.
+/// back, looking a hundred seeds at a time, each seed's configuration
+/// from `of`.
 fn finds_with(bug: Bug, within: u64, of: impl Fn(u64) -> Config + Sync) -> Option<sim::Report> {
     let config = |s| {
         let mut c = of(s);
@@ -85,8 +81,14 @@ fn a_stalled_election_is_found_again() {
 
 #[test]
 fn a_replica_refusing_an_older_term_is_found_again() {
-    let r = finds(Bug::RefusesOlderTerms, 3000).expect("a seed whose replicas never catch up");
-    assert!(r.violations.iter().any(|v| v.contains("did not settle")), "{:?}", r.violations);
+    // The bug bites a copy that began a term in which its primary wrote
+    // nothing: since each new primary commits a transaction of its term as
+    // it begins it (finding DS-5), only with that put back too
+    // (`Bug::AcksAnOlderTerm`), which loses writes of its own; the seed
+    // looked for is one that does not settle.
+    let of = |s| Config { bugs: vec![Bug::RefusesOlderTerms, Bug::AcksAnOlderTerm], ..Config::of(s) };
+    let unsettled = (0..3000).step_by(100).find_map(|a| sim::run_seeds(a..a + 100, &of, jobs()).into_iter().find(|r| r.violations.iter().any(|v| v.contains("did not settle"))));
+    assert!(unsettled.is_some(), "a seed whose replicas never catch up");
 }
 
 /// Calls dropped 15% of the time (`--drop-ppm 150000`), where a first
@@ -153,4 +155,27 @@ fn a_primary_cut_off_is_replaced_once() {
 fn replicas_replacing_each_other_are_found_again() {
     let (terms, seed) = most_elections(0..300, &[Bug::ReplacesTheCopyItElected]);
     assert!(terms > 5, "seed {seed} began only {terms} terms while its primary was cut off");
+}
+
+/// Crashes every 2 s on average, whose clients retry each write that
+/// failed (as a client with an idempotency key does).
+fn crashy(s: u64) -> Config {
+    Config { crash_every: std::time::Duration::from_secs(2), ..Config::of(s) }
+}
+
+/// Finding DS-5 (Raft's figure 8): a primary elected that commits
+/// nothing of its own term answers a client's retry of a write it holds
+/// from an older term once a majority holds it, dies, and a copy holding
+/// a newer term's transaction at the same number is elected and drops
+/// the acknowledged write.
+#[test]
+fn an_older_terms_write_acknowledged_by_count_is_found_again() {
+    let r = finds_with(Bug::AcksAnOlderTerm, 3000, crashy).expect("a seed that loses an acknowledged write");
+    assert!(r.violations.iter().any(|v| v.contains("is not held by")), "{:?}", r.violations);
+}
+
+#[test]
+fn crash_heavy_runs_with_retries_keep_the_protocols_promises() {
+    let failed = sim::run_seeds(0..300, &crashy, jobs());
+    assert!(failed.is_empty(), "{} of 300 crash-heavy seeds broke a promise:{}", failed.len(), explain(&failed));
 }

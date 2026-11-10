@@ -32,8 +32,22 @@ use chloedb::value::Value;
 use crate::service::Written;
 use crate::ApiError;
 
-/// How long a key is remembered.
+/// How long a key is remembered by default (`--idempotency-ttl-s`).
 pub const TTL: Duration = Duration::from_secs(3600);
+
+static TTL_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(3600);
+
+/// How long a key is remembered: [`TTL`], or as [`set_ttl`] set it. A
+/// retry later than that is a new write, and a write that failed partway
+/// across shards must be sent again within it (finding DS-2).
+pub fn ttl() -> Duration {
+    Duration::from_secs(TTL_SECS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Sets [`ttl`] for this process, at least a minute.
+pub fn set_ttl(d: Duration) {
+    TTL_SECS.store(d.as_secs().max(60), std::sync::atomic::Ordering::Relaxed);
+}
 /// How many keys are remembered at most in memory.
 pub const CAPACITY: usize = 100_000;
 
@@ -78,7 +92,8 @@ impl Keys {
     pub fn begin(&self, key: &str, hash: u64) -> Begin {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        while g.order.front().is_some_and(|(t, _)| now.duration_since(*t) > TTL) || g.order.len() > CAPACITY {
+        let ttl = ttl();
+        while g.order.front().is_some_and(|(t, _)| now.duration_since(*t) > ttl) || g.order.len() > CAPACITY {
             let (_, k) = g.order.pop_front().expect("not empty");
             g.keys.remove(&k);
         }
@@ -162,7 +177,7 @@ pub fn recorded(db: &Db, key: &str, hash: u64) -> Result<Option<Result<Written, 
         Some(Value::Timestamp(t)) => Some(*t),
         _ => None,
     };
-    if updated.is_some_and(|u| chloedb::timestamp::now().saturating_sub(u) > TTL.as_micros() as i64) {
+    if updated.is_some_and(|u| chloedb::timestamp::now().saturating_sub(u) > ttl().as_micros() as i64) {
         return Ok(None);
     }
     let (high, rows) = unpack(offset);
@@ -183,7 +198,7 @@ pub fn forget_expired(db: &Db, now: i64, deadline: std::time::Instant) -> Result
         return Ok(0);
     }
     let sql = format!("SELECT name FROM {SOURCES} WHERE PREFIX(name, '{ROW}') AND updated < $cutoff LIMIT {FORGET_BATCH}");
-    let params = Params::new().set("cutoff", Value::Timestamp(now.saturating_sub(TTL.as_micros() as i64)));
+    let params = Params::new().set("cutoff", Value::Timestamp(now.saturating_sub(ttl().as_micros() as i64)));
     let mut forgot = 0;
     loop {
         let old: Vec<Value> = db.query(&sql, &params)?.rows.into_iter().filter_map(|mut r| r.pop()).collect();

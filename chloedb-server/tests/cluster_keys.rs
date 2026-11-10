@@ -140,7 +140,7 @@ async fn keys_hold_across_a_cluster() {
     let (r0, ur0) = serve(create(d, "r0.strata", |_| false), d, "r0.strata", shard.clone(), |_| {}).await;
     let coord_access = Access { token: Some(Secret::new(ADMIN)), cluster: cluster(), ..Default::default() };
     let (a, svc_a, base_a) = coordinator(&[u0.clone(), u1.clone()], cluster(), coord_access.clone()).await;
-    a.add_replica(0, &ur0, false).await.unwrap();
+    a.add_replica(0, &ur0, false, false).await.unwrap();
     until("the replica follows its primary", || r0.role() == pb::Role::Replica).await;
 
     // A key made on the coordinator reaches every server, and works there.

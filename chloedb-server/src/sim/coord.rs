@@ -22,6 +22,9 @@ struct Seen {
 pub(crate) struct Coord {
     seen: Vec<Seen>,
     clients: Vec<Option<Op>>,
+    /// Each client's write that failed, which its next write sends again,
+    /// as a client with an idempotency key does.
+    retry: Vec<Option<u64>>,
     /// `Hello` to every copy under way: answers still to come, and the
     /// clients waiting for them.
     asking: Option<(usize, Vec<usize>)>,
@@ -45,7 +48,7 @@ enum Kind {
 
 impl Coord {
     pub fn new(cfg: &Config) -> Coord {
-        Coord { seen: vec![Seen::default(); cfg.copies], clients: vec![None; cfg.clients], asking: None }
+        Coord { seen: vec![Seen::default(); cfg.copies], clients: vec![None; cfg.clients], retry: vec![None; cfg.clients], asking: None }
     }
 
     /// The primary of the newest term no other replaced, but `not`.
@@ -66,7 +69,10 @@ impl Sim {
         let kind = match self.rng.below(1_000_000) {
             p if p < self.cfg.promote_ppm => Kind::Promote,
             p if p < 300_000 => Kind::Read,
-            _ => Kind::Write { id: self.write_id() },
+            _ => match self.coords[j].retry[c].take() {
+                Some(id) => Kind::Write { id },
+                None => Kind::Write { id: self.write_id() },
+            },
         };
         self.coords[j].clients[c] = Some(Op { kind, sent: self.now, to: None, again: false });
         self.dispatch(j, c);
@@ -133,7 +139,10 @@ impl Sim {
         let s = &mut self.history.stats;
         match (op.kind, ok) {
             (Kind::Write { .. }, true) => s.writes_ok += 1,
-            (Kind::Write { .. }, false) => s.writes_failed += 1,
+            (Kind::Write { id }, false) => {
+                s.writes_failed += 1;
+                self.coords[j].retry[c] = Some(id);
+            }
             (Kind::Read, true) => s.reads_ok += 1,
             (Kind::Read, false) => s.reads_failed += 1,
             (Kind::Promote, _) => {}

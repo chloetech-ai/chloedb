@@ -209,8 +209,12 @@ impl Sim {
 
     fn answer_write(&mut self, i: usize, seq: u64, write: u64, call: u64, caller: usize, a: Result<(), ApiError>) {
         if a.is_ok() {
-            let at = self.copies[i].db.txns[seq as usize - 1];
-            debug_assert_eq!(at.write, write);
+            // A retry is answered by the transaction that holds the write.
+            let txns = &self.copies[i].db.txns;
+            let at = match txns.get(seq as usize - 1) {
+                Some(t) if t.write == write => *t,
+                _ => *txns.iter().find(|t| t.write == write).expect("the primary holds the write it answers"),
+            };
             self.history.acknowledged(write, at.seq, i, self.now);
         }
         self.answer(i, caller, call, Resp::Write(a.map(|_| seq)));
@@ -273,7 +277,7 @@ impl Sim {
             }
             Req::Replicate(r) => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(r.term, &r.primary, r.member, &n) {
+                    Role::Replica(rep) => match rep.take(r.term, &r.primary, r.member, (r.config, r.copies), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {
@@ -302,7 +306,7 @@ impl Sim {
             }
             Req::Restore { term, primary, copy } => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(term, &primary, false, &n) {
+                    Role::Replica(rep) => match rep.take(term, &primary, false, (0, 0), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {
@@ -342,7 +346,14 @@ impl Sim {
                 if let Err(e) = admitted {
                     return self.answer(i, from, call, Resp::Write(Err(e)));
                 }
-                let seq = self.copies[i].db.commit(id).seq;
+                // A retry of a write the database holds (its idempotency
+                // key found, `idem::recorded`) is answered as done, by the
+                // database's last number, once enough copies hold that.
+                let held = self.copies[i].db.txns.iter().any(|t| t.write == id);
+                let seq = match held {
+                    true => self.copies[i].db.numbering.seq,
+                    false => self.copies[i].db.commit(id).seq,
+                };
                 let timeout = self.cfg.write_timeout;
                 let Role::Primary(run) = &mut self.copies[i].role else { unreachable!() };
                 run.pending.push((seq, id, call, from));
@@ -562,6 +573,11 @@ impl Sim {
                 if let Err(err) = self.copies[i].db.begin_term(term) {
                     return self.end_election(i, Err(err));
                 }
+                // The term's first transaction, which writes nothing.
+                let first = match self.cfg.bugs.contains(&Bug::AcksAnOlderTerm) {
+                    true => 0,
+                    false => self.copies[i].db.commit(0).seq,
+                };
                 self.keep(i, &kept);
                 let others = elected.others.clone();
                 let by_hand = self.copies[i].election.as_ref().is_some_and(|e| e.reply.is_some());
@@ -569,6 +585,7 @@ impl Sim {
                 self.history.began(i, term, &self.copies[i].db, self.now);
                 let opts = Opts::of(&self.opts());
                 let (mut core, save) = Primary::new(kept, &others, opts.clone(), false);
+                core.term_start = first;
                 if let Some(k) = save {
                     self.keep(i, &k);
                 }
