@@ -125,8 +125,11 @@ class Search:
         text_fields: Iterable[str] | None = None,
         vector_field: str | None = None,
         params: Mapping[str, Any] | None = None,
+        min_seq_no: int | None = None,
+        min_seq_nos: Sequence[int] | None = None,
     ) -> Result:
-        """The rows that best match `text`.
+        """The rows that best match `text`. `min_seq_no(s)` name writes the
+        answer must see, as `query` takes them.
 
         `mode` "text" ranks by BM25 over the text fields, "vector" by the
         similarity of an embedded vector field to the text's embedding, and
@@ -177,7 +180,7 @@ class Search:
                 p["_q"] = text
             if "similarity" in order:
                 p["_v"] = {"embed": text, "field": vector_field}
-            return self.query(sql, p)
+            return self.query(sql, p, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos)
         # A condition built in Python: the query is a plan.
         ranks = [bm25(f, text) for f in text_fields] if mode in ("text", "hybrid") else []
         if mode in ("vector", "hybrid"):
@@ -186,4 +189,6 @@ class Search:
         if columns != "*":
             names = [c.strip() for c in columns.split(",")] if isinstance(columns, str) else list(columns)
             q = q.select(*[{"score()": score(), "hops()": hops()}.get(c.lower(), c) for c in names])
+        if min_seq_no is not None or min_seq_nos is not None:
+            return self.run(q, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos)
         return q.run()

@@ -36,8 +36,28 @@ use chloedb::{FieldType, Value};
 
 create_exception!(_chloedb, ChloeDBError, PyException, "An error from the database: a bad schema, query, value or file.");
 
+/// An engine error as Python's: the subclass of `ChloeDBError` for its
+/// kind, with its `code` (`chloedb._native._error` makes it, so the codes
+/// and classes are the client's too), or `ChloeDBError` itself when that
+/// cannot be had.
 fn err(e: chloedb::Error) -> PyErr {
-    ChloeDBError::new_err(e.to_string())
+    let code = match &e {
+        chloedb::Error::Io(_) => "io",
+        chloedb::Error::Corrupt(_) => "corrupt",
+        chloedb::Error::Schema(_) | chloedb::Error::Query(_) => "bad_request",
+        chloedb::Error::Busy(_) => "busy",
+        chloedb::Error::Timeout(_) => "timeout",
+        chloedb::Error::Memory(_) => "memory",
+        chloedb::Error::Unavailable(_) => "unavailable",
+    };
+    let message = e.to_string();
+    Python::attach(|py| {
+        let made = py.import("chloedb._native").and_then(|m| m.getattr("_error")).and_then(|f| f.call1((code, message.as_str())));
+        match made {
+            Ok(v) => PyErr::from_value(v),
+            Err(_) => ChloeDBError::new_err(message.clone()),
+        }
+    })
 }
 
 /// Rows a write transaction carries (as `chloedb-server import` does).

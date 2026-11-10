@@ -34,10 +34,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { Nearby } from "./nearby.js";
-import { ChloeDBError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
-export { ChloeDBError, StrataError, Result } from "./common.js";
-export { Client, connect } from "./client.js";
+export { ChloeDBError, StrataError, Result, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError } from "./common.js";
+export { Client, Session, connect } from "./client.js";
 export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,7 +57,7 @@ const native = load();
 /** A native error (a failed call) as a ChloeDBError. */
 function failed(e) {
   if (e instanceof ChloeDBError) return e;
-  return new ChloeDBError(e?.message ?? String(e), { cause: e });
+  return makeError(e?.message ?? String(e), { cause: e });
 }
 
 async function callStatic(op, args) {
