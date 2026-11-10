@@ -25,6 +25,7 @@ on:
       - "chloedb-server/**"
       - "chloedb-crawl/**"
       - "chloedb-sheets/**"
+      - "chloectx/**"
       - ".github/workflows/image.yml"
   pull_request:
     paths:

@@ -1,6 +1,12 @@
 **/target
 .git
-chloectx
+# ChloeCtx's sources, not its evaluations and results.
+chloectx/eval
+chloectx/results
+chloectx/report
+chloectx/scripts
+chloectx/probes
+chloectx/tests
 # The query language reference and the Build an app guide are compiled
 # into the server (its MCP tools' search_docs and resources).
 docs/*

@@ -282,7 +282,7 @@ async fn the_operator_makes_a_clusters_objects_on_an_api_server() {
     assert_eq!((h.as_array().map(Vec::len), &h[1]["version"], &h[1]["by"], &h[1]["spec"]["shards"]), (Some(2), &json!(2), &json!("roberto"), &json!(3)), "{h}");
     assert_eq!(j["status"]["rollout"]["version"], next.version(), "{j}");
     // A resume names the hold it lifts; with none, there is nothing to resume.
-    assert!(link.resume().await.unwrap_err().contains("no gate holds the change"));
+    assert!(link.resume().await.unwrap_err().contains("holds the change: nothing to resume"));
     let held = json!({"gate": "p99Ms", "value": 312.0, "limit": 200.0, "atMs": 1234, "text": "search p99 was 312 ms, over its 200 ms limit, for 30 s"});
     k.merge(&format!("{CLUSTERS}/orders/status"), &json!({"status": {"rollout": {"held": held, "gates": [{"name": "p99Ms", "limit": 200.0, "overSinceMs": 1000}]}}})).await.unwrap();
     k.merge(&format!("{CLUSTERS}/orders"), &json!({"spec": {"rollout": {"gates": {"p99Ms": 200}}}})).await.unwrap();
@@ -404,6 +404,40 @@ async fn a_crawler_runs_beside_a_cluster_on_an_api_server() {
     assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://shop-crawler:7800,sheets=http://shop-sheets:7820"), "{env:?}");
     c.sheets(&operator::Spec { sheets: None, ..spec.clone() }).await.unwrap();
     for gone in [path, "/api/v1/namespaces/db/services/shop-sheets"] {
+        let o = k.get(gone).await.unwrap();
+        assert!(o.is_none() || !o.unwrap()["metadata"]["deletionTimestamp"].is_null(), "{gone} is deleted");
+    }
+
+    // ChloeCtx the same way, with the init container that downloads its
+    // model: the resource keeps spec.chloectx and refuses an embedder that
+    // is not a string; its Service and Deployment are applied; the
+    // coordinators list it; both go without it.
+    let mut ctx = shop.clone();
+    ctx["spec"]["chloectx"] = json!({"embedder": "static"});
+    let mut bad = ctx.clone();
+    bad["spec"]["chloectx"]["embedder"] = json!(7);
+    assert!(k.apply(&format!("{CLUSTERS}/shop"), &bad).await.is_err(), "the schema types spec.chloectx");
+    k.apply(&format!("{CLUSTERS}/shop"), &ctx).await.unwrap();
+    let stored = get(&k, &format!("{CLUSTERS}/shop")).await;
+    assert_eq!(stored["spec"]["chloectx"], ctx["spec"]["chloectx"]);
+    let spec: operator::Spec = serde_json::from_value(stored["spec"].clone()).unwrap();
+    let c = Cluster { spec: spec.clone(), ..c };
+    c.chloectx(&spec).await.unwrap();
+    let path = "/apis/apps/v1/namespaces/db/deployments/shop-chloectx";
+    let d = get(&k, path).await;
+    let pod = &d["spec"]["template"]["spec"];
+    assert_eq!(pod["containers"][0]["command"], json!(["chloectx"]));
+    assert_eq!(pod["containers"][0]["args"], json!(["app", "--server", "http://shop:7700", "--host", "0.0.0.0", "--port", "7760", "--embedder", "static"]));
+    assert_eq!(pod["initContainers"][0]["command"], json!(["chloectx", "fetch-model"]));
+    assert_eq!(pod["volumes"][0]["emptyDir"]["sizeLimit"], "512Mi");
+    let svc = get(&k, "/api/v1/namespaces/db/services/shop-chloectx").await;
+    assert_eq!((&svc["spec"]["ports"][0]["port"], &svc["spec"]["selector"]), (&json!(7760), &d["spec"]["selector"]["matchLabels"]));
+    c.set_coordinator(&[vec!["http://shop-s0-0.shop-servers.db.svc:7701".into()]], 1).await.unwrap();
+    let d = get(&k, "/apis/apps/v1/namespaces/db/deployments/shop-coordinator").await;
+    let env = d["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+    assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://shop-crawler:7800,chloectx=http://shop-chloectx:7760"), "{env:?}");
+    c.chloectx(&operator::Spec { chloectx: None, ..spec.clone() }).await.unwrap();
+    for gone in [path, "/api/v1/namespaces/db/services/shop-chloectx"] {
         let o = k.get(gone).await.unwrap();
         assert!(o.is_none() || !o.unwrap()["metadata"]["deletionTimestamp"].is_null(), "{gone} is deleted");
     }

@@ -31,6 +31,24 @@ Model calls (writing a conversation's notes down, drafting an incident from a po
 
 The app refuses requests that carry an `Origin` header: a browser reaches it only through chloedb-server, which checks the signed-in key (reads need a read key, writes an admin key) and forwards with the app's token.
 
+### On Kubernetes
+
+A cluster the [operator](../chloedb/server.md#on-kubernetes) runs gets ChloeCtx from its `StrataCluster`, with nothing to start by hand:
+
+```bash
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"chloectx": {}}}'
+```
+
+The operator runs `chloectx app` from the cluster's own image (it carries it, as it carries the crawler and the spreadsheets) as a Deployment of one pod, `<cluster>-chloectx`, behind a Service of that name on port 7760, and restarts the coordinators so that they list it: **Apps → ChloeCtx** appears in the command center. It reads and writes with the cluster's admin token (`tokenSecret`), which its API requires too, so the coordinators send it that token and nothing else reaches it, and it calls the model with the cluster's `secretEnv` (`ANTHROPIC_API_KEY`; without one, everything but writing a conversation's notes down and drafting incidents works). The embedding model is not in the image, which every server pulls: an init container downloads it from Hugging Face (125 MB) into the pod's scratch volume each time the pod starts. The spaces are tables of the cluster, so a pod started again (a new image, a node replaced) has them all; the upgrader moves it with the servers, since it runs their image (from the image of 2026-11-10 on: an older one has no `chloectx`).
+
+| `spec.chloectx` | default | |
+|---|---|---|
+| `paused` | `false` | no pod for now (the coordinators still list it, as an app that does not answer; the spaces stay) |
+| `embedder` | `static` | `hash:<dim>` for a cluster that cannot reach Hugging Face: no download, vectors from hashed words. Notes keep the vectors they were written with, so after a change earlier ones match by their words only |
+| `args`, `resources` | | more arguments of `chloectx app`, and its container's resources (50m CPU and 128 MiB asked, 1 GiB at most; it uses about 40 MiB) |
+
+Removing `spec.chloectx` deletes its Deployment and Service and restarts the coordinators without it; the spaces stay in `ctx_spaces` and `ctx_<space>`.
+
 ## Where the memory is
 
 Each space is a table of the cluster, `ctx_<space>`, with ChloeCtx's own records ([the data model](index.md#the-data-model)): notes (`decision`, `preference` for rules, `fact`, `todo`, `note`), messages (`prompt`, `answer`), entities, and links between them. The spaces themselves are rows of `ctx_spaces`. A table per space keeps BM25's statistics per space, so one team's words do not weigh on another's ranking, and SQL reads a space like any table:
