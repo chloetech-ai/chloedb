@@ -1,6 +1,7 @@
 # chloedb-server, its benchmark and engine-compare in a small Linux image,
-# with chloedb-crawl and chloedb-sheets, the crawler and the spreadsheets the
-# operator runs beside a cluster (spec.crawler, spec.sheets).
+# with chloedb-crawl, chloedb-sheets and chloectx, the crawler, the
+# spreadsheets and ChloeCtx the operator runs beside a cluster
+# (spec.crawler, spec.sheets, spec.chloectx).
 #
 #   docker build -f chloedb-server/deploy/Dockerfile -t chloedb-server:dev .   # from the repository root
 #
@@ -20,6 +21,7 @@ COPY chloedb chloedb
 COPY chloedb-server chloedb-server
 COPY chloedb-crawl chloedb-crawl
 COPY chloedb-sheets chloedb-sheets
+COPY chloectx chloectx
 # Compiled in (src/mcp.rs).
 COPY docs/chloedb/query-language.md docs/chloedb/build-an-app.md docs/chloedb/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -36,6 +38,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/chloedb-sheets/target \
     cargo build --release --manifest-path chloedb-sheets/Cargo.toml \
     && cp chloedb-sheets/target/release/chloedb-sheets /out/
+# And ChloeCtx (`chloectx app`), which embeds ChloeDB for its records and
+# keeps them in the cluster. Its embedding model is not in the image: the
+# operator's pod downloads it at start (chloectx fetch-model, with curl).
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/chloectx/target \
+    cargo build --release --manifest-path chloectx/Cargo.toml --bin chloectx \
+    && cp chloectx/target/release/chloectx /out/
 
 FROM debian:bookworm-slim
 # iproute2 for `tc`, to add network delay to a pod in tests.
@@ -50,5 +59,5 @@ RUN ln -s chloedb-server /usr/local/bin/strata-server \
     && ln -s chloedb-sheets /usr/local/bin/strata-sheets
 # engine-compare's traffic profiles (engine-compare plan/replay --profile).
 COPY chloedb-server/deploy/compare/profiles /usr/local/share/engine-compare/profiles
-EXPOSE 7700 7701 7800 7820
+EXPOSE 7700 7701 7760 7800 7820
 ENTRYPOINT ["chloedb-server"]

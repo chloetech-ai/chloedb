@@ -252,6 +252,32 @@
                     },
                     "type": "object"
                   },
+                  "chloectx": {
+                    "description": "ChloeCtx beside the cluster: a chloectx app Deployment of one, which the command center shows under Apps (Context: memory spaces agents write to and ask for context; Seen before: firing alerts beside the past incidents they look like). Its spaces are tables of the cluster.",
+                    "properties": {
+                      "args": {
+                        "description": "More arguments of chloectx app.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "embedder": {
+                        "description": "static (default: its 125 MB model is downloaded from Hugging Face at each start) or hash:<dim> (no model, vectors from hashed words).",
+                        "type": "string"
+                      },
+                      "paused": {
+                        "description": "No ChloeCtx pod for now (the spaces stay).",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of its container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      }
+                    },
+                    "type": "object"
+                  },
                   "clusterTokenSecret": {
                     "description": "A Secret whose key token is the cluster's token (--cluster-token), which the servers and coordinators send each other and clients never hold. Needs tokenSecret.",
                     "type": "string"

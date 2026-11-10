@@ -115,7 +115,7 @@ editing their settings by hand.
 | path | what |
 |---|---|
 | `chloectx/` | the memory system (Rust crate): hooks client, per-project daemon, MCP server, recall, distiller, `chloectx ui`, `chloectx doctor` |
-| `chloectx/src/app.rs`, `chloectx/ui/view.js` | `chloectx app`: ChloeCtx as an app of a cluster (`chloedb-server --app chloectx=URL`), its spaces in the cluster's tables (`ctx_<space>`, through `Store::open_remote` and `src/cluster.rs`), with Context and Seen before; the view is compiled in (`CHLOECTX_UI_DIR=chloectx/ui` reads it from disk); `tests/app_cluster.rs` runs it against a real cluster ([docs](docs/chloectx/app.md)) |
+| `chloectx/src/app.rs`, `chloectx/ui/view.js` | `chloectx app`: ChloeCtx as an app of a cluster (`chloedb-server --app chloectx=URL`), its spaces in the cluster's tables (`ctx_<space>`, through `Store::open_remote` and `src/cluster.rs`), with Context and Seen before; the view is compiled in (`CHLOECTX_UI_DIR=chloectx/ui` reads it from disk); `tests/app_cluster.rs` runs it against a real cluster; on Kubernetes the operator's `spec.chloectx` runs it beside a cluster, from chloedb-server's image, which builds it too ([docs](docs/chloectx/app.md)) |
 | `chloectx/demo/index.html` | the inspector page; it is compiled into the binary with `include_str!`, so rebuild after editing it |
 | `chloedb/` | the database (Rust crate), including the posting-list study in `src/postings/` |
 | `chloedb/fuzz/` | cargo-fuzz targets (nightly: `cargo +nightly fuzz run <target>` there) feeding ChloeDB damaged files and arbitrary SQL; `chloedb/tests/corrupt_input.rs` runs the same targets on stable |

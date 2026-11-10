@@ -33,6 +33,7 @@
 
 pub mod apps;
 pub mod autoscale;
+pub mod chloectx;
 pub mod crawler;
 pub mod follow;
 pub mod kube;
@@ -40,6 +41,7 @@ pub mod sheets;
 pub mod upgrade;
 
 pub use apps::AppsSpec;
+pub use chloectx::ChloectxSpec;
 pub use crawler::CrawlerSpec;
 pub use follow::FollowSpec;
 pub use sheets::SheetsSpec;
@@ -136,6 +138,10 @@ pub struct Spec {
     /// serve` in a Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sheets: Option<SheetsSpec>,
+    /// ChloeCtx beside the cluster ([`chloectx`]): `chloectx app` in a
+    /// Deployment of one, which the coordinators list as an app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chloectx: Option<ChloectxSpec>,
     /// The app engine beside the cluster ([`apps`]): chloedb-apps in a
     /// Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -380,6 +386,7 @@ impl Default for Spec {
             follow: None,
             crawler: None,
             sheets: None,
+            chloectx: None,
             apps: None,
         }
     }
@@ -413,7 +420,7 @@ impl Spec {
 
     /// The apps beside the cluster that the coordinators list, by name.
     pub fn apps(&self) -> Vec<&'static str> {
-        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP), (self.apps.is_some(), apps::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
+        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP), (self.chloectx.is_some(), chloectx::APP), (self.apps.is_some(), apps::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
     }
 
     /// `settings` with `secretEnv` when there is one: a cluster without it
@@ -475,6 +482,9 @@ impl Spec {
         }
         if let Some(s) = &self.sheets {
             s.check()?;
+        }
+        if let Some(c) = &self.chloectx {
+            c.check()?;
         }
         if let Some(a) = &self.apps {
             a.check()?;
@@ -644,6 +654,12 @@ pub trait Platform {
     /// a Deployment of one and its Service on Kubernetes. Applied once the
     /// coordinators are there.
     async fn sheets(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
+    /// Runs ChloeCtx as `spec.chloectx` asks, or not ([`chloectx`]): a
+    /// Deployment of one and its Service on Kubernetes. Applied once the
+    /// coordinators are there.
+    async fn chloectx(&self, _spec: &Spec) -> Result<(), String> {
         Ok(())
     }
     /// Runs the app engine `spec.apps` asks for, or none ([`apps`]): a
@@ -1064,6 +1080,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
     p.follow(spec).await?;
     p.crawler(spec).await?;
     p.sheets(spec).await?;
+    p.chloectx(spec).await?;
     p.apps(spec).await?;
     let view = match admin.view().await {
         Ok(v) => v,
@@ -1907,6 +1924,9 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         if new.sheets.is_some() {
             warnings.push("no token: anything that reaches the spreadsheets' pod may read and change the cluster's tables through it".into());
         }
+        if new.chloectx.is_some() {
+            warnings.push("no token: anything that reaches ChloeCtx's pod may read and change the cluster's tables through it, and call the model with the cluster's key".into());
+        }
     }
     if shards < shards_now || new.replicas < copies_now {
         warnings.push("what goes is deleted with its volumes once its data has moved".into());
@@ -2014,6 +2034,17 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
             (None, None) => unreachable!("the sheets specs differ"),
         });
     }
+    if new.chloectx != old.chloectx {
+        steps.push(match (&old.chloectx, &new.chloectx) {
+            (None, Some(c)) => format!("ChloeCtx starts beside the cluster (chloectx app, a Deployment of one{}) and the coordinators list it, so the command center shows Apps → ChloeCtx; its spaces are kept in the tables ctx_spaces and ctx_<space>", if c.needs_model() { ", which downloads its embedding model at each start" } else { "" }),
+            (Some(_), None) => "ChloeCtx stops (its Deployment and Service go; the spaces stay in their tables) and the coordinators no longer list it".into(),
+            (Some(a), Some(b)) if b.paused && !a.paused => "ChloeCtx pauses: its pod goes (the spaces stay in their tables)".into(),
+            (Some(a), Some(b)) if a.paused && !b.paused => "ChloeCtx starts again, with the spaces it had".into(),
+            (Some(a), Some(b)) if a.embedder() != b.embedder() => format!("ChloeCtx restarts with the embedder {}: notes written before match by their words only", b.embedder()),
+            (_, Some(_)) => "ChloeCtx restarts with the new settings, with the spaces it had".into(),
+            (None, None) => unreachable!("the chloectx specs differ"),
+        });
+    }
     if steps.is_empty() && changes.is_empty() {
         steps.push("nothing: the spec says what it says now".into());
     }
@@ -2092,6 +2123,7 @@ pub fn crd() -> Json {
             "follow": follow::schema(),
             "crawler": crawler::schema(),
             "sheets": sheets::schema(),
+            "chloectx": chloectx::schema(),
             "apps": apps::schema(),
         },
     });
@@ -2185,6 +2217,33 @@ mod tests {
         j["apps"] = json!(["apps"]);
         assert_eq!(new.coordinator_config(), short_hash(&j));
         assert!(!serde_json::to_value(&none).unwrap().as_object().unwrap().contains_key("apps"));
+    }
+
+    #[test]
+    fn a_plan_says_what_turning_chloectx_on_does() {
+        let none: Spec = serde_json::from_value(json!({"demo": 10, "tokenSecret": "t", "sheets": {}})).unwrap();
+        let (_, new) = patched(&serde_json::to_value(&none).unwrap(), &json!({"chloectx": {}})).unwrap();
+        assert_eq!(new.apps(), ["sheets", "chloectx"]);
+        let p = plan(&none, &new, 1, 3);
+        assert!(p["refused"].is_null(), "{p}");
+        let steps = p["steps"].to_string();
+        for want in ["the coordinators restart", "ChloeCtx starts beside the cluster", "downloads its embedding model", "Apps → ChloeCtx", "ctx_spaces"] {
+            assert!(steps.contains(want), "{want}: {steps}");
+        }
+        assert_eq!(p["restarts"], false, "no server restarts for it");
+        assert!(p["warnings"].as_array().unwrap().is_empty(), "{p}");
+        let open: Spec = serde_json::from_value(json!({"demo": 10, "chloectx": {"embedder": "hash:64"}})).unwrap();
+        let p = plan(&Spec { chloectx: None, ..open.clone() }, &open, 1, 3);
+        assert!(!p["steps"].to_string().contains("downloads"), "{p}");
+        assert!(p["warnings"].to_string().contains("ChloeCtx's pod may read and change"), "{p}");
+        let steps = |a: &Spec, b: &Spec| plan(a, b, 1, 3)["steps"].to_string();
+        let with = |patch: Json| patched(&serde_json::to_value(&new).unwrap(), &patch).unwrap().1;
+        assert!(steps(&new, &with(json!({"chloectx": {"paused": true}}))).contains("ChloeCtx pauses"));
+        assert!(steps(&new, &with(json!({"chloectx": {"embedder": "hash:256"}}))).contains("match by their words only"));
+        assert!(steps(&new, &none).contains("ChloeCtx stops"));
+        let bad: Spec = serde_json::from_value(json!({"demo": 10, "chloectx": {"embedder": "bert"}})).unwrap();
+        assert!(bad.check().unwrap_err().contains("chloectx.embedder"));
+        assert!(!serde_json::to_value(&none).unwrap().as_object().unwrap().contains_key("chloectx"), "a cluster without it keeps its version");
     }
 
     #[test]
