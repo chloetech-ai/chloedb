@@ -74,7 +74,42 @@ still 0.1.0, and the next release will name its version here.
 
 ### Replication
 
-<!-- Placeholder: entries for the replication work go here. -->
+- A shard's copies change one at a time, and only by a primary that a
+  majority of its current copies answered within its lease and that a
+  majority already follows (it waits up to 3 s for that before refusing
+  with 503). Before, an admin call could give a primary cut off from its
+  majority a new set of copies while the other side elected its own
+  primary, and both acknowledged writes. `accept_data_loss` (in
+  `Configure` and on both admin routes) overrides the check on purpose and
+  is logged as an error. Memberships are versioned and sent with every
+  `Replicate`; a voter refuses a candidate whose membership is older than
+  its own.
+- A new primary commits a no-op transaction of its own term before it
+  acknowledges anything, so it never acknowledges an older term's
+  transaction by counting copies (Raft's "figure 8"). The simulator has a
+  new bug to find, `acks-an-older-term`.
+- A write remembers the term its primary took it in, and is refused
+  unapplied, answered "in doubt" (409), once the database has left that
+  term; the check is repeated under the writer's lock, which shipped
+  transactions also take. Before, a write stalled during a handover could
+  commit after the new primary's first transaction with the same term and
+  sequence number as a different transaction, leaving copies apart.
+- Writes through a coordinator that span shards are checked on every
+  shard first (protocol 19, `WriteRequest.validate`): an insert of an
+  existing key, a failed `if_seq_no`, a type or NOT NULL error on one
+  shard now fails the whole write with nothing applied, naming the
+  operation. A race remains between the check and the apply; see "When a
+  write fails" in docs/chloedb/server.md.
+- Every write and statement through a coordinator carries an idempotency
+  key from its first send, so the coordinator's own resends never apply
+  it twice; refused writes carry an `x-chloedb-write` code (`not-applied`,
+  `in-doubt`) that the coordinator reads instead of the error's words;
+  `--idempotency-ttl-s` sets how long keys are kept.
+- Not yet: a copy that holds a different transaction under the same term
+  and sequence number is found by the periodic per-slot digest round
+  (`--verify-every-s`), not on the `Replicate` that delivers it; the
+  simulator cannot replay a stalled writer; writes across shards are not
+  atomic (no two-phase commit).
 
 ### Clients (Python, JavaScript)
 
