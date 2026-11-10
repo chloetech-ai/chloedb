@@ -3350,7 +3350,12 @@ impl Database {
             let mut out = ImageOut { file: f, at: base, buf: Vec::with_capacity(IMAGE_CHUNK), pacer, crc: crc32fast::Hasher::new() };
             sections.write_to(&mut out)?;
             out.drain()?;
-            io::sync(f)?;
+            match self.dir {
+                // The database's one file, shared with every other writer:
+                // a failed sync poisons the handle, as in a commit.
+                None => io::sync(f).map_err(|e| self.poison(e.into()))?,
+                Some(_) => io::sync(f)?,
+            }
             Ok(out.crc.finalize())
         })();
         match written {
@@ -5618,7 +5623,11 @@ impl<'a> VersionWriter<'a> {
         self.grow()?;
         io::write_at(&db.file, &fbytes, freelist.page * PAGE)?;
         self.bytes_written += fbytes.len() as u64;
-        io::sync(&db.file)?;
+        // A failed sync of the file is fatal for the handle: the kernel may
+        // have dropped dirty pages of any writer on it (a merge's image
+        // written meanwhile on another thread too) and reports that once,
+        // so no later sync proves them on disk ([`io`]).
+        io::sync(&db.file).map_err(|e| db.poison(e.into()))?;
         let meta = Meta {
             format: self.manifest.format(),
             db_id: self.meta.db_id,
