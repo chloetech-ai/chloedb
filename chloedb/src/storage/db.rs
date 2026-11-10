@@ -2277,8 +2277,16 @@ impl Database {
     /// [`DbOptions::write_wait`] while another one (or a flush, bulk load
     /// or merge commit) is in progress; `Error::Busy` after that.
     pub fn begin(&self) -> Result<WriteTxn<'_>> {
+        self.begin_within(self.opts.write_wait)
+    }
+
+    /// [`Database::begin`], waiting at most `wait` (not
+    /// [`DbOptions::write_wait`]) for another write to finish before it
+    /// fails with [`Error::Busy`]: for work that would rather not run than
+    /// queue behind the writer, such as a check of a write it rolls back.
+    pub fn begin_within(&self, wait: Duration) -> Result<WriteTxn<'_>> {
         self.wait_for_flusher();
-        let wal = self.try_writer()?;
+        let wal = self.try_writer_within(wait)?;
         self.check_poisoned()?;
         Ok(WriteTxn { db: self, wal, ops: Vec::new(), keys: Vec::new(), ties: Vec::new(), now: Some(crate::timestamp::now()) })
     }
@@ -4222,6 +4230,11 @@ impl Database {
     /// While one waits for the lock, so does this, for a few milliseconds,
     /// in case the lock is being handed to the flush.
     fn try_writer(&self) -> Result<MutexGuard<'_, Wal>> {
+        self.try_writer_within(self.opts.write_wait)
+    }
+
+    /// [`Database::try_writer`], waiting at most `wait` for the lock.
+    fn try_writer_within(&self, wait: Duration) -> Result<MutexGuard<'_, Wal>> {
         self.writable()?;
         let t0 = Instant::now();
         let mut nap = Duration::from_micros(50);
@@ -4233,7 +4246,7 @@ impl Database {
                     let holding = self.background_holding.load(Ordering::Acquire) > 0;
                     let waiting = self.background_waiting.load(Ordering::Acquire) > 0;
                     let waited = t0.elapsed();
-                    if !holding && !(waiting && waited < Duration::from_millis(5)) && waited >= self.opts.write_wait {
+                    if !holding && !(waiting && waited < Duration::from_millis(5)) && waited >= wait {
                         return Err(Error::Busy("another write is in progress".into()));
                     }
                 }

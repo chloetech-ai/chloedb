@@ -2354,6 +2354,8 @@ async fn sqlite_files_over_http() {
     // made by an export without the Strata schemas, so that the server
     // makes the new table's from SQLite's declarations.
     let src = Db::create(&dir.path().join("src.strata"), schema, DbOptions::default()).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    src.set_embed_later(true);
     src.sql("INSERT INTO items (id, title, tags, price) VALUES ('a', 'red umbrella', ['rain'], 12.5), ('b', 'blue kettle', [], 30), ('c', 'green lamp', ['home', 'light'], 18)", &Params::new()).unwrap();
     src.sql("CREATE TABLE notes (id INT PRIMARY KEY, item KEYWORD REFERENCES items, body TEXT, at TIMESTAMP)", &Params::new()).unwrap();
     src.sql("INSERT INTO notes (id, item, body, at) VALUES (1, 'a', 'keeps the rain off on the walk to the station', '2026-10-01T12:00:00Z'), (2, 'c', 'a warm light for reading in the evening', '2026-10-02T08:30:00Z')", &Params::new()).unwrap();
@@ -2536,6 +2538,8 @@ async fn parquet_files_over_http() {
     // Files exported from another database: its items (kept schema), and
     // its notes without the schema, so that the server makes one.
     let src = Db::create(&dir.path().join("src.strata"), schema, DbOptions::default()).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    src.set_embed_later(true);
     src.sql("INSERT INTO items (id, title, tags, price) VALUES ('a', 'red umbrella', ['rain'], 12.5), ('b', 'blue kettle', [], 30), ('c', 'green lamp', ['home', 'light'], 18)", &Params::new()).unwrap();
     src.sql("CREATE TABLE notes (id INT PRIMARY KEY, item KEYWORD, body TEXT, at TIMESTAMP)", &Params::new()).unwrap();
     src.sql("INSERT INTO notes (id, item, body, at) VALUES (1, 'a', 'keeps the rain off on the walk to the station', '2026-10-01T12:00:00Z'), (2, 'c', 'a warm light for reading in the evening', '2026-10-02T08:30:00Z')", &Params::new()).unwrap();
@@ -2744,6 +2748,8 @@ async fn a_scrub_finds_data_damaged_on_disk() {
     let path = dir.path().join("d.strata");
     let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
     let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    db.set_embed_later(true);
     db.load((0..10).map(|i| demo::product(i, 7))).unwrap();
     let svc = service(db, "http://unused");
     let url = http(svc.clone(), None).await;

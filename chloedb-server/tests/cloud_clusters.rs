@@ -722,6 +722,8 @@ async fn a_cluster_made_here_brings_tables_once_it_is_ready() {
         Backend::Local(db) => db.clone(),
         _ => unreachable!(),
     };
+    // Rows without their vectors, as a server writes them before its model opens.
+    here.set_embed_later(true);
     here.load((0..10).map(|i| demo::product(i, 7))).unwrap();
     assert_eq!(call(&base, "PUT", "/v1/admin/digitalocean/token", Some(json!({"token": DO_TOKEN}))).await.0, 200);
 

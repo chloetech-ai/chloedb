@@ -1158,13 +1158,15 @@ impl Db {
     /// text they leave out made (and the generated fields that read it
     /// filled in again), then the embedded vectors they leave out computed
     /// ([`Db::embed_missing_in`]). Generated fields must be filled in
-    /// first. [`Db::load`] and SQL writes do this themselves.
+    /// first. [`Db::load`] and SQL writes do this themselves. As a write,
+    /// a row that leaves out the vector of a field whose model is not open
+    /// is refused, unless [`Db::set_embed_later`] lets it go without.
     pub fn fill_in(&self, table: &str, docs: &mut [Document]) -> Result<()> {
         let schema = self.table(table)?;
         let media = self.media_resolver();
         let files = Files { resolver: &media, held: resolve_media(&media, &schema, docs)? };
         derive_known(&self.derivers_of(&schema), &schema, docs, &Derived::new(), &files)?;
-        embed_with(&self.models_of(&schema), &schema, docs, &files)
+        embed_with(&self.write_models_of(&schema), &schema, docs, &files)
     }
 
     /// Sets how writes through this `Db` resolve the MEDIA values they give

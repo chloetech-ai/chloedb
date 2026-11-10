@@ -94,6 +94,8 @@ async fn the_agent_looks_proposes_and_an_admin_decides() {
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::create(&dir.path().join("a.strata"), demo::schema(100), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    db.set_embed_later(true);
     db.load((0..100).map(|i| demo::product(i, 7))).unwrap();
     let schema = (*db.schema()).clone();
     let agent = AgentConfig { api_key: Some("ak-oncall".into()), model: "claude-haiku-5-5".into(), base_url: format!("http://{addr}") };

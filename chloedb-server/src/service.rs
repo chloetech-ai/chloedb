@@ -3350,8 +3350,8 @@ impl Service {
     /// duplicate insert, an `if_seq_no` that does not match, a type or
     /// schema error, a NOT NULL column left empty. A refusal names the
     /// operation, by its place in `ops` ("operation N of this shard's
-    /// part: ..."). A writer still busy after [`VALIDATE_WAIT`] is answered
-    /// 503: not checked. A request whose `key` this database recorded passes,
+    /// part: ..."). A writer still busy after [`VALIDATE_WAIT`] leaves the
+    /// part unchecked: it passes. A request whose `key` this database recorded passes,
     /// as it will be answered as before. Nothing is held between this and
     /// the write: another client's write in between can still make the
     /// write fail (finding DS-2, the race docs/chloedb/server.md states).
@@ -3364,10 +3364,15 @@ impl Service {
                 }
             }
             // A check is not a write: it waits briefly for a busy writer, and
-            // then the coordinator sends the part unchecked, into the write
+            // then passes unchecked, so that the part goes into the write
             // queue, whose limits (429) and retries apply as to any write.
-            // Waiting as a write does (5 s) held the part out of the queue.
-            wait_for_writer(Instant::now() + VALIDATE_WAIT, || validate_into(&db, &ops, epoch))
+            // Waiting as a write does (5 s) held the part out of the queue;
+            // answering 503 would send a coordinator looking for another
+            // primary.
+            match validate_into(&db, &ops, epoch) {
+                Err(e) if e.status == 503 => Ok(()),
+                r => r,
+            }
         })
         .await
         .map_err(ApiError::internal)?
@@ -5187,7 +5192,7 @@ fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u6
 /// transaction, which is rolled back.
 fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
     let catalog = db.catalog();
-    let mut t = db.storage().begin()?;
+    let mut t = db.storage().begin_within(VALIDATE_WAIT)?;
     let mut arrived = arrivals::Group::new(db);
     for (j, op) in ops.iter().enumerate() {
         if let Err(e) = apply_into(&catalog, &mut t, std::slice::from_ref(op), epoch, &mut arrived) {
@@ -5203,9 +5208,8 @@ fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// How long [`Service::validate_ops`] waits for a busy writer before the
-/// shard answers that it could not check (503), which the coordinator
-/// reads as "not checked".
+/// How long [`Service::validate_ops`] waits for a busy writer before it
+/// passes the part unchecked.
 const VALIDATE_WAIT: Duration = Duration::from_millis(100);
 
 /// How [`validate_into`] names the operation it refused: "operation N of
