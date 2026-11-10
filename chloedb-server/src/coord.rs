@@ -98,7 +98,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, HOLD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, HOLD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL, VALIDATE_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -416,6 +416,10 @@ const READ_ASK_EVERY: Duration = Duration::from_millis(100);
 /// refuses every write from then on (the coordinator may not have heard
 /// of the new one yet). Sending it again cannot apply it twice.
 fn not_applied_yet(s: &tonic::Status) -> bool {
+    if let Some(o) = outcome(s) {
+        return o == crate::cores::shard::NOT_APPLIED;
+    }
+    // A shard of protocol 18 or older says so in words only.
     match s.code() {
         Code::Unavailable => s.message().contains("the write was not applied") || s.message().contains("it takes writes after that"),
         Code::FailedPrecondition => s.message().contains("another primary replaced this one, which takes no more writes"),
@@ -436,7 +440,18 @@ fn refused_for_load(s: &tonic::Status) -> bool {
 /// (`cores::shard::Primary::acked`): the new primary may hold it or not,
 /// so it is not sent again, which could apply it twice.
 fn in_doubt(s: &tonic::Status) -> bool {
+    if let Some(o) = outcome(s) {
+        return o == crate::cores::shard::IN_DOUBT;
+    }
     s.code() == Code::FailedPrecondition && s.message().contains("before it was acknowledged")
+}
+
+/// The code a shard of protocol 19 gives a refused write
+/// ([`crate::cores::shard::Primary::write_outcome`]), which says whether
+/// it was applied: read instead of the message, whose words may differ
+/// between versions (finding DS-6).
+fn outcome(s: &tonic::Status) -> Option<&str> {
+    s.metadata().get(crate::cores::shard::WRITE_OUTCOME).and_then(|v| v.to_str().ok())
 }
 
 /// What a client is told of a write [`in_doubt`].
@@ -2791,7 +2806,7 @@ impl Coordinator {
             Write::Update { select, .. } | Write::Delete { select } if select.limit.is_some() => {
                 Err(ApiError::bad("UPDATE ... LIMIT and DELETE ... LIMIT are not supported through a coordinator yet"))
             }
-            _ => self.statement(sql, params, key.or_else(|| (self.topo().replicas.len() > 1).then(auto_key))).await,
+            _ => self.statement(sql, params, Some(key.unwrap_or_else(auto_key))).await,
         }
     }
 
@@ -3030,13 +3045,18 @@ impl Coordinator {
         }
     }
 
-    /// The key a write of `ops` goes to the shards with: its own, or, for
-    /// one that may span shards (several operations, and several shards),
-    /// [`auto_key`], so that a write that fails on some shards after
-    /// others took it can be sent again without applying their parts twice
-    /// ([`Self::partial`] names the key).
-    pub fn keyed(&self, ops: &[Json], key: Option<String>) -> Option<String> {
-        key.or_else(|| (self.topo().replicas.len() > 1 && ops.iter().filter(|op| !is_mark(op)).nth(1).is_some()).then(auto_key))
+    /// The key a write of `ops` goes to the shards with: its own, or
+    /// [`auto_key`], made before the first send. A write that fails on some
+    /// shards after others took it can be sent again without applying
+    /// their parts twice ([`Self::partial`] names the key), and the
+    /// coordinator's own resends, to the primary that replaced one that
+    /// did not answer, are never applied twice: the new primary may hold
+    /// the write, shipped before the old one died, and answers it as
+    /// before (finding DS-6, a keyless `add` resent on `Unavailable`).
+    /// Each costs the shard a row of `_sources` for the keys' lifetime
+    /// (`--idempotency-ttl-s`).
+    pub fn keyed(&self, _ops: &[Json], key: Option<String>) -> Option<String> {
+        Some(key.unwrap_or_else(auto_key))
     }
 
     /// Write operations, grouped by the shard of their key. An idempotency
@@ -3079,9 +3099,11 @@ impl Coordinator {
             catalog = self.catalog();
         }
         let mut by_shard: BTreeMap<usize, Vec<Json>> = BTreeMap::new();
+        // Where each shard's operations are in the request.
+        let mut places: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         // Each source's highest offset, which every shard keeps.
         let mut marks: BTreeMap<String, i64> = BTreeMap::new();
-        for op in ops {
+        for (place, op) in ops.into_iter().enumerate() {
             if let Some(m) = op_source(&op)? {
                 let top = marks.entry(m.name).or_insert(m.offset);
                 *top = (*top).max(m.offset);
@@ -3094,6 +3116,7 @@ impl Coordinator {
                 return Err(ApiError::bad(ONE_REPLICA));
             }
             by_shard.entry(s).or_default().push(op);
+            places.entry(s).or_default().push(place);
         }
         // A shard the request gives no rows still keeps the offsets, so
         // that the least over the shards is where a stream resumes
@@ -3101,6 +3124,9 @@ impl Coordinator {
         let need = if marks.is_empty() { MIN_PROTOCOL } else { SOURCES_PROTOCOL };
         if round == 0 {
             self.writable(&by_shard.keys().copied().collect::<Vec<_>>()).await?;
+            if by_shard.len() > 1 {
+                self.validate(t, &by_shard, &places, key).await?;
+            }
         }
         if !marks.is_empty() {
             for i in 0..t.replicas.len() {
@@ -3129,6 +3155,42 @@ impl Coordinator {
             }
         }
         Ok((wrote, failed, errors))
+    }
+
+    /// Asks each shard of a write that spans several whether it would apply
+    /// its part (`by_shard`, from the request's operations at `places`),
+    /// writing nothing ([`VALIDATE_PROTOCOL`]): a part one refuses for what
+    /// it holds or is sent (a duplicate insert, an `if_seq_no` that does
+    /// not match, a type, schema or NOT NULL error) is refused before any
+    /// shard applies anything, naming the operation (finding DS-2: the
+    /// other shards' parts stayed committed, and no retry could finish the
+    /// write). A shard of an older protocol, or one that does not answer,
+    /// is not checked, and its part may still fail after others applied
+    /// theirs. Nothing is held between the check and the write, so a write
+    /// of another client in between can still fail this one partway
+    /// (docs/chloedb/server.md, "When a write fails").
+    async fn validate(&self, t: &Topology, by_shard: &BTreeMap<usize, Vec<Json>>, places: &BTreeMap<usize, Vec<usize>>, key: &Option<String>) -> Result<(), ApiError> {
+        let calls = by_shard.iter().map(|(&i, ops)| {
+            let idempotency_key = key.as_ref().map(|k| format!("{k}/{i}")).unwrap_or_default();
+            let r = pb::WriteRequest { ops_json: serde_json::to_vec(ops).unwrap_or_default(), idempotency_key, epoch: t.epoch(), validate: true, ..Default::default() };
+            async move { (i, self.write(t, i, r, VALIDATE_PROTOCOL).await) }
+        });
+        for (i, a) in join_all(calls).await {
+            let Err(e) = a else { continue };
+            // Refused for what it holds or was sent: the same write would be.
+            if !(400..500).contains(&e.status) || e.status == 429 {
+                continue;
+            }
+            let (what, why) = match refused_op(&e.message) {
+                Some((j, why)) => match (places.get(&i).and_then(|p| p.get(j)), by_shard[&i].get(j)) {
+                    (Some(n), Some(op)) => (format!("operation {n} of the request ({op})"), why.to_string()),
+                    _ => ("its part".to_string(), why.to_string()),
+                },
+                None => ("its part".to_string(), e.message.clone()),
+            };
+            return Err(ApiError { status: e.status, message: format!("nothing was written: shard {i} refused {what}: {why}") });
+        }
+        Ok(())
     }
 
     /// Shard `i`'s feed from transaction `from` on, read from its primary
@@ -4065,6 +4127,15 @@ impl Coordinator {
         let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;
         Ok(json!({"epoch": map.epoch, "shard": i, "removed": url, "shipping": shipping, "missed": missed}))
     }
+}
+
+/// The operation a shard's check refused, by its place in the part it was
+/// sent, and why ([`crate::service::VALIDATE_OF`]).
+fn refused_op(m: &str) -> Option<(usize, &str)> {
+    use crate::service::{VALIDATE_OF, VALIDATE_OP};
+    let at = m.find(&format!("{VALIDATE_OP} "))?;
+    let (n, why) = m[at + VALIDATE_OP.len() + 1..].split_once(VALIDATE_OF)?;
+    Some((n.parse().ok()?, why))
 }
 
 /// Sets the part in replication of the server at `url` (`Configure`).

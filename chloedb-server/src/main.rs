@@ -127,6 +127,13 @@ struct Args {
     /// it serves no reads (0: no automatic failover; promote by hand).
     #[arg(long, default_value_t = 0)]
     failover_after_ms: u64,
+    /// How long a write's idempotency key is remembered, in seconds (at
+    /// least 60): a retry within it is answered as the first attempt was,
+    /// and a write through a coordinator that failed partway across shards
+    /// is finished by sending it again with its key within it. Each key a
+    /// write leaves is a row of `_sources` for that long.
+    #[arg(long, default_value_t = 3600)]
+    idempotency_ttl_s: u64,
     /// On a database server: read every segment against its checksum every
     /// this many seconds, while it serves, to find data damaged on disk
     /// before a query or a failover does (0: only when asked, POST
@@ -1044,6 +1051,7 @@ async fn run() {
     if cluster.is_some() && cluster == token {
         tracing::warn!("--cluster-token is --token: whoever holds the token can make the calls between servers. Give the cluster a token of its own");
     }
+    chloedb_server::idem::set_ttl(std::time::Duration::from_secs(a.idempotency_ttl_s));
     let write_acks = chloedb_server::replication::Acks::parse(&a.write_acks).unwrap_or_else(|| fail(&format!("--write-acks is all, majority or primary, not {:?}", a.write_acks)));
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");

@@ -3333,6 +3333,29 @@ impl Service {
         self.write_ops(ops, key).await
     }
 
+    /// Checks write operations `ops` as they would apply now, in a
+    /// transaction it rolls back (`WriteRequest.validate`, protocol 19): a
+    /// duplicate insert, an `if_seq_no` that does not match, a type or
+    /// schema error, a NOT NULL column left empty. A refusal names the
+    /// operation, by its place in `ops` ("operation N of this shard's
+    /// part: ..."). A request whose `key` this database recorded passes,
+    /// as it will be answered as before. Nothing is held between this and
+    /// the write: another client's write in between can still make the
+    /// write fail (finding DS-2, the race docs/chloedb/server.md states).
+    pub async fn validate_ops(&self, ops: Vec<Json>, key: Option<String>, epoch: u64) -> Result<(), ApiError> {
+        let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator checks a write on its shards"))?;
+        tokio::task::spawn_blocking(move || {
+            if let Some(k) = &key {
+                if idem::recorded(&db, k, idem::hash_ops(&ops))?.is_some() {
+                    return Ok(());
+                }
+            }
+            wait_for_writer(Instant::now() + Duration::from_secs(5), || validate_into(&db, &ops, epoch))
+        })
+        .await
+        .map_err(ApiError::internal)?
+    }
+
     /// Looks idempotency key `key` up for a request whose operations hash
     /// to `hash`, claiming it if it is new ([`idem::Keys::begin`]): in
     /// memory, then, for a key memory does not hold, in the database
@@ -5087,6 +5110,32 @@ fn apply_keyed(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>
     let seq_no = t.commit_seq()?;
     Ok((applied, seq_no))
 }
+
+/// [`Service::validate_ops`]: each of `ops` applied in turn in one
+/// transaction, which is rolled back.
+fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
+    let catalog = db.catalog();
+    let mut t = db.storage().begin()?;
+    let mut arrived = arrivals::Group::new(db);
+    for (j, op) in ops.iter().enumerate() {
+        if let Err(e) = apply_into(&catalog, &mut t, std::slice::from_ref(op), epoch, &mut arrived) {
+            t.rollback();
+            // The writer was busy: asked again (`wait_for_writer`).
+            if e.status == 503 {
+                return Err(e);
+            }
+            return Err(ApiError { status: e.status, message: format!("{VALIDATE_OP} {j}{VALIDATE_OF}{}", e.message) });
+        }
+    }
+    t.rollback();
+    Ok(())
+}
+
+/// How [`validate_into`] names the operation it refused: "operation N of
+/// this shard's part: ...", which a coordinator reads back
+/// ([`crate::coord`]).
+pub const VALIDATE_OP: &str = "operation";
+pub const VALIDATE_OF: &str = " of this shard's part: ";
 
 /// Refuses a request whose operations carry the mark of a cluster
 /// followed ([`feed::FOLLOWS`]) unless that cluster's follow process sends

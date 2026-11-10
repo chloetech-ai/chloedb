@@ -1429,6 +1429,15 @@ message WriteRequest {
   // JSON [start, end) ranges: the coordinator sends a statement so again to
   // the shard that slots moved to while it ran.
   bytes slots_json = 7;
+  // Protocol 19, with ops_json: check the operations as they would apply
+  // now (a duplicate insert, an if_seq_no that does not match, a type or
+  // schema error, a NOT NULL column left empty), writing nothing. A
+  // coordinator asks every shard of a write that spans several first, and
+  // sends the write only when each answers OK; a refusal names the
+  // operation, as "operation N of this shard's part: ...". A request whose
+  // idempotency key the shard recorded already passes: it will be
+  // answered as before.
+  bool validate = 8;
 }
 
 message WriteResponse {

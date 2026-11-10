@@ -683,6 +683,14 @@ impl Failover {
     }
 }
 
+/// The gRPC metadata key of a write's outcome ([`Primary::write_outcome`]),
+/// from protocol 19.
+pub const WRITE_OUTCOME: &str = "x-chloedb-write";
+/// The write was not applied, and the shard takes it shortly.
+pub const NOT_APPLIED: &str = "not-applied";
+/// The write was applied, and a new primary may or may not hold it.
+pub const IN_DOUBT: &str = "in-doubt";
+
 /// How a primary ships, as [`PrimaryOptions`] says.
 #[derive(Clone, Debug)]
 pub struct Opts {
@@ -1119,6 +1127,25 @@ impl Primary {
     /// does: counted at the term's first transaction when `seq` is older
     /// ([`Self::term_start`]), so that a retry answered by an older
     /// transaction waits for one of this term.
+    /// What a primary's refusal of a write `e` says of it, as the code its
+    /// gRPC answer carries under [`WRITE_OUTCOME`], which a coordinator
+    /// reads instead of the message (finding DS-6: retry safety hung on
+    /// substrings of English messages of another server, which a rolling
+    /// upgrade could reword): [`NOT_APPLIED`] when [`Self::admit`] refused
+    /// it before applying it (sending it again cannot apply it twice), and
+    /// [`IN_DOUBT`] when [`Self::acked`] found the primary replaced after
+    /// it applied it. The messages are this file's own, and its tests
+    /// check that each is classified.
+    pub fn write_outcome(e: &ApiError) -> Option<&'static str> {
+        let m = &e.message;
+        match e.status {
+            409 if m.contains("before it was acknowledged") => Some(IN_DOUBT),
+            409 if m.contains("another primary replaced this one, which takes no more writes") => Some(NOT_APPLIED),
+            503 if m.contains("the write was not applied") || m.contains("it takes writes after that") => Some(NOT_APPLIED),
+            _ => None,
+        }
+    }
+
     fn holding(&self, seq: u64) -> (usize, bool) {
         let seq = seq.max(self.term_start);
         let holding = 1 + self.peers.iter().filter(|p| p.member && p.acked >= seq).count();
@@ -1555,6 +1582,25 @@ mod tests {
         let (a, kept) = p.shipped_to("q", 3, &n(2, 9, &[(1, 1), (2, 5)]));
         assert!(a.is_err() && kept.as_ref().is_some_and(|k| k.replaced_by == Some(3) && k.role == Some(KeptRole::Replica)));
         assert!(p.admit(2, t0).is_err() && p.readable(t0, 2).is_err() && matches!(p.acked(5), Some(Err(_))));
+        // The refusals' codes, which a coordinator reads.
+        assert_eq!(Primary::write_outcome(&p.admit(2, t0).unwrap_err()), Some(NOT_APPLIED));
+        assert_eq!(Primary::write_outcome(&p.acked(5).unwrap().unwrap_err()), Some(IN_DOUBT));
+    }
+
+    #[test]
+    fn a_refusal_before_a_write_is_applied_says_so_in_its_code() {
+        let t0 = Instant::now();
+        let (mut p, _) = Primary::new(Kept::new("p".into()), &["a".into(), "b".into()], Opts { acks: Acks::Majority, ..opts() }, false);
+        p.peers[0].in_sync = false;
+        p.peers[1].in_sync = false;
+        assert_eq!(Primary::write_outcome(&p.admit(1, t0).unwrap_err()), Some(NOT_APPLIED), "too few copies in sync");
+        p.peers[0].in_sync = true;
+        p.writes_from = Some(t0 + Duration::from_secs(1));
+        assert_eq!(Primary::write_outcome(&p.admit(1, t0).unwrap_err()), Some(NOT_APPLIED), "a lease to wait out");
+        p.writes_from = None;
+        p.handing_over = Some(t0 + Duration::from_secs(1));
+        assert_eq!(Primary::write_outcome(&p.admit(1, t0).unwrap_err()), Some(NOT_APPLIED), "a handover");
+        assert_eq!(Primary::write_outcome(&ApiError::bad("a row with key k exists")), None);
     }
 
     #[test]

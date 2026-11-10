@@ -140,6 +140,18 @@ async fn a_write_that_failed_partway_is_sent_again_with_its_key() {
     let (status, w) = post(&url, "/v1/sql", json!({"sql": "UPDATE counters SET n = n + 2 WHERE n > 0", "idempotency_key": "bump-1"})).await;
     assert_eq!(status, 422, "{w}");
 
+    // A write across both shards with a duplicate insert on one: checked
+    // first, nothing is written, and the error names the operation
+    // (finding DS-2: the other shard kept its part, and no retry could
+    // finish it).
+    let mut dup = ops.clone();
+    dup.push(json!({"op": "insert", "doc": {"id": "k7", "n": 5}}));
+    let (status, w) = post(&url, "/v1/write", json!({"ops": dup})).await;
+    assert!((400..500).contains(&status) && w["partial"] != true, "{status} {w}");
+    let e = w["error"].as_str().unwrap_or_default();
+    assert!(e.contains("nothing was written") && e.contains("operation 40 of the request") && e.contains("k7"), "{w}");
+    assert_eq!(totals(&url).await, (40, 120), "no shard applied its part");
+
     // On one server, a statement's key answers a retry its first answer.
     let one = shard(dir.path(), "one.strata");
     let one = http(one).await;
@@ -147,4 +159,29 @@ async fn a_write_that_failed_partway_is_sent_again_with_its_key() {
     assert_eq!(post(&one, "/v1/sql", insert.clone()).await.0, 200);
     let (status, w) = post(&one, "/v1/sql", insert).await;
     assert_eq!((status, w["written"].as_u64()), (200, Some(1)), "{w}");
+}
+
+/// Finding DS-6: a coordinator resent a write without a key to the
+/// primary that replaced one that did not answer, which could apply it
+/// twice. Every write now goes to the shards under a key made before the
+/// first send, so the resend after a dropped answer applies once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_resent_after_its_answer_was_lost_applies_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = shard(dir.path(), "a.strata");
+    let (at_a, _) = grpc_at(a.clone(), "127.0.0.1:0".parse().unwrap()).await;
+    let c = Arc::new(Coordinator::connect(vec![format!("http://{at_a}")]).await.unwrap());
+    let add = vec![json!({"op": "add", "key": "k", "field": "n", "value": 1, "doc": {"id": "k"}})];
+    // One operation on a cluster of one shard has a key too.
+    let key = c.keyed(&add, None).expect("a key for every write");
+    assert!(key.starts_with("auto-"), "{key}");
+    // The shard applied it and the answer was lost: the same call again.
+    let mut client = chloedb_server::pb::strata_client::StrataClient::connect(format!("http://{at_a}")).await.unwrap();
+    let r = chloedb_server::pb::WriteRequest { ops_json: serde_json::to_vec(&add).unwrap(), idempotency_key: format!("{key}/0"), ..Default::default() };
+    for _ in 0..2 {
+        client.write(r.clone()).await.unwrap();
+    }
+    let rows = a.query(chloedb_server::service::QueryReq { sql: "SELECT n FROM counters".into(), ..Default::default() }).await.unwrap();
+    assert_eq!(rows.rs.rows.len(), 1);
+    assert_eq!(rows.rs.rows[0][0].as_i64(), Some(1), "applied once");
 }
