@@ -3535,7 +3535,17 @@ impl Database {
                 for m in &t.segments {
                     let h = handles.iter().find(|h| h.meta.id == m.id).ok_or_else(|| corrupt(format!("segment {} is in the manifest but not open", m.id)))?;
                     vw.manifest.next_segment_id = m.id;
-                    vw.add_segment(to, None, &h.whole_image()?, m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
+                    // The copy gets a checksum of its own, so a damaged
+                    // source must fail here rather than become a backup
+                    // that passes every check (as a merge's input does).
+                    let image = h.whole_image()?;
+                    if crc32fast::hash(&image) != h.meta.crc {
+                        return Err(corrupt(format!(
+                            "the image of segment {} fails its checksum: the database is damaged, and a checkpoint copies no damaged segment (nothing was written to the destination; Database::scrub lists the damage)",
+                            m.id
+                        )));
+                    }
+                    vw.add_segment(to, None, &image, m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
                     stats.segments += 1;
                     stats.live_docs += (m.n_docs - m.n_deleted) as u64;
                 }
