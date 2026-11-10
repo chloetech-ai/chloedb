@@ -285,9 +285,9 @@ elif [ -z "$CI_LOCAL_TREE" ]; then
     printf '%s\n' "$$" >"$CI_HOME/running"
     trap 'rm -f "$CI_HOME/running"' EXIT
     REPO=$(git rev-parse --show-toplevel 2>/dev/null) || die "run it from a clone of the repository"
-    URL=$(git -C "$REPO" remote get-url origin 2>/dev/null || echo https://github.com/chloetech-ai/strata)
+    URL=$(git -C "$REPO" remote get-url origin 2>/dev/null || echo https://github.com/chloetech-ai/chloedb)
     SLUG=$(printf '%s\n' "$URL" | sed -E 's#^(https://|git@|ssh://git@)github\.com[:/]##; s#\.git$##')
-    case "$SLUG" in */*) ;; *) SLUG=chloetech-ai/strata ;; esac
+    case "$SLUG" in */*) ;; *) SLUG=chloetech-ai/chloedb ;; esac
     if [ ! -d "$WORK/.git" ]; then
         echo "Cloning the repository into $WORK"
         git clone -q --no-checkout "$REPO" "$WORK" || die "could not clone $REPO into $WORK"

@@ -7,7 +7,7 @@
 Frames are part of the `strata` package ([Python](python.md#install)) and need pyarrow 14 or later; pandas and Polars are optional, for `to_pandas()` and `to_polars()`:
 
 ```sh
-pip install "strata-db[frame]" polars pandas -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+pip install "strata-db[frame]" polars pandas -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0
 ```
 
 ## A first frame

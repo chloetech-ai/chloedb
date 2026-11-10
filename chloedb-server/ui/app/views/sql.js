@@ -607,7 +607,7 @@ function render(page, r) {
       fix.childElementCount ? h("div", {}, h("div", { class: "small muted", style: { marginBottom: "6px" } }, "Did you mean"), fix) : null,
       fix.childElementCount ? fixNote : null,
       h("div", { class: "small muted" }, "The query language guide shows every clause and function with an example: ",
-        h("a", { href: "https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md", target: "_blank", rel: "noopener" }, "Query language"),
+        h("a", { href: "https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md", target: "_blank", rel: "noopener" }, "Query language"),
         ". ", h("code", {}, "SHOW TABLES"), " and ", h("code", {}, "DESCRIBE table"), " list the tables and their columns. ",
         "The old query console's agent writes SQL from a question in English: ", h("a", { class: "wl-link", href: "#/classic" }, "Query console ›"))));
   }

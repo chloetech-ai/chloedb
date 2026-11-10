@@ -12,7 +12,10 @@ The folders, crates, programs, settings (`CHLOEDB_*`), headers
 `ai.chloetech.chloedb`) carry the new name, and the old ones are still
 accepted for a release. The container image is
 `ghcr.io/chloetech-ai/chloedb-server`, published as `strata-server` too for
-a release. The repository, the Kubernetes operator's resources (the
+a release. The repository is `chloetech-ai/chloedb` (the old address,
+`chloetech-ai/strata`, redirects; the website is
+https://chloetech-ai.github.io/chloedb/, and its old address does not
+redirect). The Kubernetes operator's resources (the
 `StrataCluster` kind, the `strata-system` namespace; the operator's source
 is in `chloedb-server/src/operator/` and `deploy/k8s/`, and its pods start
 the programs by their old names, which every image has), the app engine

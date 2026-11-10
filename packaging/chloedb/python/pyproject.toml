@@ -5,15 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "chloedb"
 version = "0.0.1"
-description = "Placeholder: holds the name for Strata. Install releases from https://github.com/chloetech-ai/strata/releases"
+description = "Placeholder: holds the name for Strata. Install releases from https://github.com/chloetech-ai/chloedb/releases"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 classifiers = ["Development Status :: 1 - Planning", "Programming Language :: Python :: 3"]
 
 [project.urls]
-Homepage = "https://github.com/chloetech-ai/strata"
-Releases = "https://github.com/chloetech-ai/strata/releases"
+Homepage = "https://github.com/chloetech-ai/chloedb"
+Releases = "https://github.com/chloetech-ai/chloedb/releases"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chloedb"]

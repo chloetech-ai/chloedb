@@ -22,7 +22,7 @@
     <a href="benchmarks.html">Benchmarks</a>
     <a href="use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+  <div class="top-links"><a href="https://github.com/chloetech-ai/chloedb/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
 
 <main>
@@ -36,19 +36,19 @@
   </div></div>
 
   <section class="gutter" id="text"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico text"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21M7.5 9h6M7.5 12h4"/></svg></span><h2>Full text</h2><p>Posting lists scored with BM25, with typos, synonyms and autocomplete.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md#full-text-match">Full-text queries</a></div>
+    <div class="fam-intro"><span class="ico text"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21M7.5 9h6M7.5 12h4"/></svg></span><h2>Full text</h2><p>Posting lists scored with BM25, with typos, synonyms and autocomplete.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md#full-text-match">Full-text queries</a></div>
     <ul class="flist">
       <li><b>BM25 and boolean queries</b><span>AND, OR, NOT, phrases and groups, with top-k skipping.</span></li>
       <li><b>Weighted words</b><span>Word weights, required and excluded words, "x of y" groups.</span></li>
       <li><b>Typos and synonyms</b><span><code>vacine~</code> finds words within an edit or two.</span></li>
       <li><b>Autocomplete</b><span>Prefixes that tolerate typos, over a sorted dictionary.</span></li>
-      <li><b>Our own posting lists</b><span>The size of Elias-Fano, and 2.4–7.7× faster. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/posting-lists.md">The study</a></span></li>
+      <li><b>Our own posting lists</b><span>The size of Elias-Fano, and 2.4–7.7× faster. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/posting-lists.md">The study</a></span></li>
       <li><b>Versioned analyzers</b><span>A field records its analyzer, so text is never misread.</span></li>
     </ul>
   </div></section>
 
   <section class="gutter" id="columns"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico cols"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M9.5 9.5v10M15 9.5v10"/></svg></span><h2>Columns and JSON</h2><p>Typed columns for filters, ranges and facets, and JSON for keys nobody declared.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md#tables">Tables</a></div>
+    <div class="fam-intro"><span class="ico cols"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M9.5 9.5v10M15 9.5v10"/></svg></span><h2>Columns and JSON</h2><p>Typed columns for filters, ranges and facets, and JSON for keys nobody declared.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md#tables">Tables</a></div>
     <ul class="flist">
       <li><b>Typed columns</b><span>Keywords, numbers, booleans, times and lists, with constraints.</span></li>
       <li><b>Filters and facets</b><span>Range scans over zone maps, and <code>GROUP BY</code> for facet counts.</span></li>
@@ -62,7 +62,7 @@
   </div></section>
 
   <section class="gutter" id="vectors"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico vec"><svg viewBox="0 0 24 24"><path d="M4 20 18 6M4 20 9 5M4 20l16-4"/><circle cx="18.5" cy="5.5" r="1.6"/><circle cx="9.3" cy="4.6" r="1.6"/><circle cx="20" cy="16" r="1.6"/></svg></span><h2>Vectors</h2><p>Approximate and exact search, under any filter, fused with text.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/results.md#vector-indexes">Vector indexes</a></div>
+    <div class="fam-intro"><span class="ico vec"><svg viewBox="0 0 24 24"><path d="M4 20 18 6M4 20 9 5M4 20l16-4"/><circle cx="18.5" cy="5.5" r="1.6"/><circle cx="9.3" cy="4.6" r="1.6"/><circle cx="20" cy="16" r="1.6"/></svg></span><h2>Vectors</h2><p>Approximate and exact search, under any filter, fused with text.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/results.md#vector-indexes">Vector indexes</a></div>
     <ul class="flist">
       <li><b>HNSW, IVF or exact</b><span>With 8-bit, binary or RaBitQ codes.</span></li>
       <li><b>Filtered search, planned</b><span>The planner picks a strategy per segment from exact counts.</span></li>
@@ -76,7 +76,7 @@
   </div></section>
 
   <section class="gutter" id="graph"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico graph"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.4 6.4l7.1 1.2M6.7 8.4l1.6 7.2M16.4 10l-5.7 6"/></svg></span><h2>Graphs</h2><p>Edges stored with the rows, walked inside a query.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/graphs.md">Graphs</a></div>
+    <div class="fam-intro"><span class="ico graph"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.4 6.4l7.1 1.2M6.7 8.4l1.6 7.2M16.4 10l-5.7 6"/></svg></span><h2>Graphs</h2><p>Edges stored with the rows, walked inside a query.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/graphs.md">Graphs</a></div>
     <ul class="flist">
       <li><b>Edges in rows or tables</b><span>An edge field on a row, or an edge table with properties.</span></li>
       <li><b>Reachability and paths</b><span><code>REACHABLE</code> and shortest paths, in either direction.</span></li>
@@ -86,7 +86,7 @@
   </div></section>
 
   <section class="gutter" id="ranking"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M5 20V6M10 20V10M15 20v-6M20 20v-3"/></svg></span><h2>Ranking</h2><p>From a formula to a learned model, with the evidence to choose between them.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md#ranking-expressions">Ranking</a></div>
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M5 20V6M10 20V10M15 20v-6M20 20v-3"/></svg></span><h2>Ranking</h2><p>From a formula to a learned model, with the evidence to choose between them.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md#ranking-expressions">Ranking</a></div>
     <ul class="flist">
       <li><b>Ranking expressions</b><span>Any expression of scores and columns.</span></li>
       <li><b>Rerank phases</b><span>A cheap first phase, then a costly one on the top rows.</span></li>
@@ -98,7 +98,7 @@
   </div></section>
 
   <section class="gutter" id="recs"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.5 5.2 5.7.8-4.1 4 1 5.6L12 16.4l-5.1 2.7 1-5.6-4.1-4 5.7-.8z"/></svg></span><h2>Recommendations</h2><p>Models and rules in the same query as search.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md#sequence-models-encodemodel-history">Sequence models</a></div>
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.5 5.2 5.7.8-4.1 4 1 5.6L12 16.4l-5.1 2.7 1-5.6-4.1-4 5.7-.8z"/></svg></span><h2>Recommendations</h2><p>Models and rules in the same query as search.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md#sequence-models-encodemodel-history">Sequence models</a></div>
     <ul class="flist">
       <li><b>Sequence models</b><span>Encode a user's history and rank what comes next.</span></li>
       <li><b>Counted next items</b><span>What came after what, counted and decayed in place.</span></li>
@@ -109,7 +109,7 @@
   </div></section>
 
   <section class="gutter" id="sql"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico cols"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><h2>SQL and storage</h2><p>A real database: SQL, transactions and one file you can copy.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md">Query language</a></div>
+    <div class="fam-intro"><span class="ico cols"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><h2>SQL and storage</h2><p>A real database: SQL, transactions and one file you can copy.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></div>
     <ul class="flist">
       <li><b>SQL</b><span>Joins, subqueries, window functions and set operations.</span></li>
       <li><b>DataFusion for large plans</b><span>Big joins and groups run on DataFusion.</span></li>
@@ -125,10 +125,10 @@
   </div></section>
 
   <section class="gutter" id="server"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="1.5"/><rect x="3.5" y="13" width="17" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span><h2>APIs and clients</h2><p>The same methods in your process or over the network, and the APIs other systems speak.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Server</a></div>
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="1.5"/><rect x="3.5" y="13" width="17" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span><h2>APIs and clients</h2><p>The same methods in your process or over the network, and the APIs other systems speak.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server</a></div>
     <ul class="flist">
       <li><b>HTTP JSON and gRPC</b><span>API keys, TLS, an audit log and limits.</span></li>
-      <li><b>The OpenSearch API</b><span>Apps and clients written for OpenSearch or Elasticsearch index and search unchanged. <a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/opensearch.md">How</a></span></li>
+      <li><b>The OpenSearch API</b><span>Apps and clients written for OpenSearch or Elasticsearch index and search unchanged. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/opensearch.md">How</a></span></li>
       <li><b>Python</b><span>In-process or a client, with Arrow, pandas and polars.</span></li>
       <li><b>DataFrames</b><span>Frames written as Polars writes them, run as one SQL query, answered in Arrow.</span></li>
       <li><b>JavaScript</b><span>Node, Bun and Deno, prebuilt for four platforms.</span></li>
@@ -140,7 +140,7 @@
   </div></section>
 
   <section class="gutter" id="data-in"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></svg></span><h2>Data in</h2><p>Bring the rows from where they already live, and keep them in step.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/postgres.md">Following Postgres</a></div>
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></svg></span><h2>Data in</h2><p>Bring the rows from where they already live, and keep them in step.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/postgres.md">Following Postgres</a></div>
     <ul class="flist">
       <li><b>Follows Postgres</b><span>Tables kept in step by logical replication, each change applied once.</span></li>
       <li><b>SQLite and Parquet</b><span>In and out; Parquet from local files or S3, as Spark writes it.</span></li>
@@ -150,7 +150,7 @@
   </div></section>
 
   <section class="gutter" id="device"><div class="wrap block fam-sec">
-    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></span><h2>On the device</h2><p>A slice of a table near the user, searched on the phone, with the server as fallback.</p><a class="arrow-link" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/slices.md">Slices</a></div>
+    <div class="fam-intro"><span class="ico"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></span><h2>On the device</h2><p>A slice of a table near the user, searched on the phone, with the server as fallback.</p><a class="arrow-link" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md">Slices</a></div>
     <ul class="flist">
       <li><b>Geo slices</b><span>The places near a user, in tiles, scored as the server would score them.</span></li>
       <li><b>Vector slices</b><span>"More like this" and recommendations from the rows nearest in meaning.</span></li>
@@ -195,8 +195,8 @@
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/site.js?v=142c29c3e0"></script>
 </body>

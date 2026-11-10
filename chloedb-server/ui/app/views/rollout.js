@@ -57,7 +57,7 @@ const digestOf = (img) => (img || "").match(/@(sha256:[0-9a-f]{64})/)?.[1] || nu
 const tagOf = (img) => (img || "").replace(/@.*$/, "").match(/:([^/:]+)$/)?.[1] || null;
 const repoOf = (img) => (img || "").replace(/@.*$/, "").replace(/:[^/:]+$/, "");
 /** The source of an image, for its commits (the label the image workflow sets). */
-const sourceOf = (repo) => (/ghcr\.io\/chloetech-ai\/chloedb-server$/.test(repo || "") ? "https://github.com/chloetech-ai/strata" : null);
+const sourceOf = (repo) => (/ghcr\.io\/chloetech-ai\/chloedb-server$/.test(repo || "") ? "https://github.com/chloetech-ai/chloedb" : null);
 const sec = (iso) => (iso ? Date.parse(iso) || null : null);
 
 /**

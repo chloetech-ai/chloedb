@@ -22,7 +22,7 @@
     <a href="benchmarks.html" aria-current="page">Benchmarks</a>
     <a href="use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+  <div class="top-links"><a href="https://github.com/chloetech-ai/chloedb/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
 
 <main>
@@ -92,13 +92,13 @@
       <p>On 7 November an image with five pull requests, all now merged, ran on the same nodes as 6 November's main, serving the same data, three passes each. The rankings on these pages use it, labelled 7 Nov. Key lookups gain the most. At 1M most other kinds serve 5 to 13% more queries a second at 16 clients (hybrids and SQL aggregates 1 to 3%, typos 2% fewer), and no median at one client moves by more than 5%.</p>
     </div>
     <ul class="gaps">
-      <li><b><a href="https://github.com/chloetech-ai/strata/pull/299">#299</a> answers a pod's own shard inside its coordinator.</b> <span>Key lookups at 16 clients: 9,210 to 12,673 a second at 1M, 8,967 to 11,993 at 10M.</span></li>
-      <li><b><a href="https://github.com/chloetech-ai/strata/pull/293">#293</a> starts a merged partition's vector graph from its inputs' graphs.</b> <span>The 10M shards' merges take 40 and 58 minutes instead of 54 and 77; the whole 1M build 336 s instead of 470.</span></li>
-      <li><b><a href="https://github.com/chloetech-ai/strata/pull/294">#294</a> runs the merger below the queries</b> <span>(nice 10), and <a href="https://github.com/chloetech-ai/strata/pull/295">#295</a> stops stream reads from waiting on a publish of every write batch.</span></li>
-      <li><b><a href="https://github.com/chloetech-ai/strata/pull/296">#296</a> sweeps the vector candidates (ef)</b> <span>for ChloeDB and Qdrant: <a href="bench-1m.html#recall">recall against speed</a>.</span></li>
+      <li><b><a href="https://github.com/chloetech-ai/chloedb/pull/299">#299</a> answers a pod's own shard inside its coordinator.</b> <span>Key lookups at 16 clients: 9,210 to 12,673 a second at 1M, 8,967 to 11,993 at 10M.</span></li>
+      <li><b><a href="https://github.com/chloetech-ai/chloedb/pull/293">#293</a> starts a merged partition's vector graph from its inputs' graphs.</b> <span>The 10M shards' merges take 40 and 58 minutes instead of 54 and 77; the whole 1M build 336 s instead of 470.</span></li>
+      <li><b><a href="https://github.com/chloetech-ai/chloedb/pull/294">#294</a> runs the merger below the queries</b> <span>(nice 10), and <a href="https://github.com/chloetech-ai/chloedb/pull/295">#295</a> stops stream reads from waiting on a publish of every write batch.</span></li>
+      <li><b><a href="https://github.com/chloetech-ai/chloedb/pull/296">#296</a> sweeps the vector candidates (ef)</b> <span>for ChloeDB and Qdrant: <a href="bench-1m.html#recall">recall against speed</a>.</span></li>
     </ul>
     <div data-ab="fix-1107-1m" data-merge data-labels="6 Nov main,7 Nov image"></div>
-    <p class="small muted">1M on two m-4vcpu-32gb nodes (Xeon Platinum 8168), 7 November; 10M in <a href="bench-10m.html#fixes">its report</a>. Images <code>b022e39</code> (main of 6 November) and <code>861ab1d</code> (main at <code>8e66622</code> with #293, #294, #295, #296 and #299). Raw data: <a href="https://github.com/chloetech-ai/strata/blob/main/chloedb-server/results/rerun-1107-do/README.md">rerun-1107-do</a>. The 5 November fixes, measured the same way: <a href="https://github.com/chloetech-ai/strata/blob/main/chloedb-server/results/bigger-items-do/README.md">bigger-items-do</a>.</p>
+    <p class="small muted">1M on two m-4vcpu-32gb nodes (Xeon Platinum 8168), 7 November; 10M in <a href="bench-10m.html#fixes">its report</a>. Images <code>b022e39</code> (main of 6 November) and <code>861ab1d</code> (main at <code>8e66622</code> with #293, #294, #295, #296 and #299). Raw data: <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/rerun-1107-do/README.md">rerun-1107-do</a>. The 5 November fixes, measured the same way: <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/bigger-items-do/README.md">bigger-items-do</a>.</p>
   </div></section>
   <section class="gutter" id="reports"><div class="wrap block">
     <div class="block-head">
@@ -134,7 +134,7 @@
       <h2>Questions</h2>
     </div>
     <div class="faq">
-      <details><summary>Are we biased?</summary><p>Probably. We build ChloeDB and wrote every engine's queries. Each engine runs at its defaults plus the tuning its documentation recommends, every setting is in <a href="https://github.com/chloetech-ai/strata/blob/main/chloedb-server/deploy/compare/README.md">the method</a>, and we <a href="bench-method.html#audit">audited our own runs</a>. If you know a better configuration, open an issue and we will run it again.</p></details>
+      <details><summary>Are we biased?</summary><p>Probably. We build ChloeDB and wrote every engine's queries. Each engine runs at its defaults plus the tuning its documentation recommends, every setting is in <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/deploy/compare/README.md">the method</a>, and we <a href="bench-method.html#audit">audited our own runs</a>. If you know a better configuration, open an issue and we will run it again.</p></details>
       <details><summary>Why sum places instead of averaging speeds?</summary><p>Latencies differ a thousandfold between kinds of query, so an average is decided by the slowest kind. Places weigh every test the same.</p></details>
       <details><summary>Doesn't counting a missing kind as last favour ChloeDB?</summary><p>It favours breadth, which a mixed workload needs. At 1M ChloeDB also leads on the seven kinds every engine runs; at 10M Postgres leads on the four every engine answered (33 points against ChloeDB's 42). Each report shows its ranking under five rules.</p></details>
       <details><summary>Why only nine engines at 10M?</summary><p>Five did not run in 52 GiB. Milvus and Redis then ran with twice the memory: <a href="bench-10m.html#big">shown, not ranked</a>.</p></details>
@@ -147,8 +147,8 @@
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js?v=7f52b41b8a"></script>
 <script src="assets/site.js?v=142c29c3e0"></script>
