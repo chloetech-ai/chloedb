@@ -18,8 +18,10 @@ still 0.1.0, and the next release will name its version here.
   acknowledged writes: it fails with an error naming the file, the damage,
   what would be lost and how to recover, and changes no file. A log whose
   header is damaged but whose commits are intact, or a log from another
-  database, is refused the same way. Before, one flipped byte could
-  reopen an older version without a word.
+  database, is refused the same way, and so is a first page of zeros
+  (slot 0 is written when a database is created, so zeros there are
+  damage). Before, one flipped byte could reopen an older version without
+  a word.
 - `recover` (Rust `DbOptions`, Python `chloedb.open(..., recover=True)`,
   `chloedb-server --recover`) accepts the loss on purpose: it keeps a copy
   of the damaged file as `<path>.damaged-<time>` first, and `damaged()`
@@ -38,7 +40,8 @@ still 0.1.0, and the next release will name its version here.
 - `close()` flushes, so after a clean close the file alone is a complete
   copy of the database. Python adds `flush()` and `checkpoint(dest)`;
   docs/chloedb/python.md and index.md say how to back a database up.
-- Not yet: a log deleted outright cannot be detected, and there is no
+- Not yet: a log deleted outright cannot be detected, nor can a zeroed
+  slot 1 (it looks like a slot no commit has written); there is no
   point-in-time recovery.
 
 ### Query and indexes
@@ -68,7 +71,9 @@ still 0.1.0, and the next release will name its version here.
   fingerprint of its weights and refuses different weights under the same
   name; a write that needs a model which is not open fails (it used to store
   the row without a vector) unless `set_embed_later(true)` says to fill the
-  vectors in later, which chloedb-server does.
+  vectors in later, which chloedb-server does. This holds for every write
+  path: SQL, `load`, Python and JavaScript inserts, and the Arrow, SQLite
+  and file imports.
 - Not yet: a per-field metric option (cosine, dot, L2), and a fingerprint
   recorded on a model's first open for tables created before this change.
 
@@ -98,7 +103,9 @@ still 0.1.0, and the next release will name its version here.
   shard first (protocol 19, `WriteRequest.validate`): an insert of an
   existing key, a failed `if_seq_no`, a type or NOT NULL error on one
   shard now fails the whole write with nothing applied, naming the
-  operation. A race remains between the check and the apply; see "When a
+  operation. A shard whose writer stays busy for 100 ms, or that holds a
+  newer slot map, is not checked, and its part goes straight to its write
+  queue. A race remains between the check and the apply; see "When a
   write fails" in docs/chloedb/server.md.
 - Every write and statement through a coordinator carries an idempotency
   key from its first send, so the coordinator's own resends never apply
