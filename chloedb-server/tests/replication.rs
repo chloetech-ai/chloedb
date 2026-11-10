@@ -1512,9 +1512,9 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     assert_eq!(old.health().await["replication"]["restores"], 1);
     assert_eq!(rows(&pdb), rows(&r1db), "the transaction no copy got is dropped");
     let n = pdb.storage().numbering().unwrap();
-    assert_eq!((n.term, n.seq, n.term_at(6)), (2, 6, 2));
+    assert_eq!((n.term, n.seq, n.term_at(6)), (2, 7, 2));
     // (A copy that was a primary votes: it held every transaction.)
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": old_id, "follows": {"primary": new_id, "term": 2}, "member": true, "role": "replica"}));
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": old_id, "follows": {"primary": new_id, "term": 2}, "member": true, "role": "replica", "config": {"version": 1, "copies": 3}}));
     // And follows it from there.
     let w = r1.write_ops(vec![set("p0000004", "sold", json!(8))], None).await.unwrap();
     until("the old primary applies the new one's writes", || async { last(&pdb) == w.seq_no.unwrap() }).await;
@@ -1553,14 +1553,18 @@ async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
     assert_eq!(p.role(), pb::Role::Replica);
     drop(stalled);
     let e = w.await.unwrap().unwrap_err();
-    assert!(e.status == 409 && e.message.contains("sequence number") && e.message.contains("before it was acknowledged"), "{}", e.message);
+    // Applied before it took the new primary's first transaction, it is
+    // durable here and in doubt; after, it is refused unapplied, as it
+    // would be numbered in the new term beside the new primary's own.
+    assert!(e.status == 409 && e.message.contains("before it was acknowledged"), "{}", e.message);
 
     // The new primary does not hold it; its writes go on from its own last,
-    // and the old primary drops the write it applied for the copy.
+    // and the old primary drops the write it applied for the copy, or holds
+    // the new primary's history as it never applied it.
     let w = r1.write_ops(vec![set("p0000003", "sold", json!(3))], None).await.unwrap();
     // After the term's first transaction.
     assert_eq!(w.seq_no, Some(3));
-    until("the old primary is sent a copy of the new one", || async { follower(&r1, 0).await["copies"] == 1 && follower(&r1, 0).await["in_sync"] == true }).await;
+    until("the old primary holds the new one's history", || async { follower(&r1, 0).await["in_sync"] == true && last(&pdb) == last(&r1db) }).await;
     assert_eq!(rows(&pdb), rows(&r1db), "the write answered in doubt is dropped");
     let sold = |db: &Db| db.query("SELECT sold FROM products WHERE id = 'p0000002'", &Params::new()).unwrap().rows[0][0].clone();
     assert_ne!(sold(&r1db), Value::Int(2));
