@@ -68,8 +68,8 @@ const strataHealth = await (async () => {
   const until = Date.now() + 1000 * (Number(process.env.STRATA_APPS_WAIT_S) || (child ? 0 : 300));
   for (let said = false; ; said = true) {
     try { return await db.health(); } catch (e) {
-      if (Date.now() >= until) { console.error(`Strata at ${strataUrl} does not answer: ${e.message}`); process.exit(1); }
-      if (!said) log(`waiting for Strata at ${strataUrl}: ${e.message}`);
+      if (Date.now() >= until) { console.error(`ChloeDB at ${strataUrl} does not answer: ${e.message}`); process.exit(1); }
+      if (!said) log(`waiting for ChloeDB at ${strataUrl}: ${e.message}`);
       await new Promise((r) => setTimeout(r, 2000));
     }
   }
@@ -77,7 +77,7 @@ const strataHealth = await (async () => {
 // A cluster's coordinator walks no graphs: the engine walks its own, and
 // tells the model that apps read their links a step at a time (walk.mjs).
 const ON_CLUSTER = strataHealth.role === 'coordinator';
-if (ON_CLUSTER) { useCluster(true); log(`Strata at ${strataUrl} is a coordinator over ${strataHealth.shards?.length ?? '?'} shards`); }
+if (ON_CLUSTER) { useCluster(true); log(`ChloeDB at ${strataUrl} is a coordinator over ${strataHealth.shards?.length ?? '?'} shards`); }
 const engine = new Engine(db, { log });
 // Where the build opens the views it made (engine/checks.mjs).
 engine.baseUrl = `http://127.0.0.1:${PORT}`;
@@ -90,14 +90,14 @@ if (process.env.STRATA_APPS_SQL_FUNCTIONS !== 'off') {
   engine.sqlFunctions = await installSqlFunctions(engine.db, readSqlLibrary(path.join(LIBRARY_DIR, 'sql')), log);
   useSqlFunctions(engine.sqlFunctions);
   useTableFunctions(engine.sqlFunctions.filter((f) => f.returns === 'TABLE').map((f) => f.name));
-  if (engine.sqlFunctions.length) log(`${engine.sqlFunctions.length} SQL functions kept in Strata`);
+  if (engine.sqlFunctions.length) log(`${engine.sqlFunctions.length} SQL functions kept in ChloeDB`);
 }
 // The engine's own functions: the patterns in people's use, counted over
 // sa_events (engine/signals.sql); without them the evolver counts in here.
 {
   const sig = readSqlFile(path.join(ROOT, 'engine', 'signals.sql'));
   engine.signalSql = (await installSqlFunctions(engine.db, sig, log)).length === sig.length;
-  if (!engine.signalSql) log('the patterns of use are counted in the engine, not in Strata');
+  if (!engine.signalSql) log('the patterns of use are counted in the engine, not in ChloeDB');
 }
 // What apps change next, learned across them (a graph in Strata, ranked by ppr).
 engine.changes = new Changes(engine.store, log);
@@ -153,7 +153,7 @@ async function tile(z, x, y) {
   tileBusy++;
   try {
     const url = TILES.replace('{z}', z).replace('{x}', x).replace('{y}', y);
-    const res = await fetch(url, { headers: { 'user-agent': 'chloedb-apps/0.1 (prototype app engine on Strata)' }, signal: AbortSignal.timeout(10000) });
+    const res = await fetch(url, { headers: { 'user-agent': 'chloedb-apps/0.1 (prototype app engine on ChloeDB)' }, signal: AbortSignal.timeout(10000) });
     if (!res.ok) throw Object.assign(new Error(`tile server answered ${res.status}`), { status: 502 });
     const bytes = Buffer.from(await res.arrayBuffer());
     await mkdir(path.dirname(file), { recursive: true });
@@ -762,5 +762,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  log(`chloedb-apps on http://${HOST}:${PORT}/ (Strata at ${strataUrl}, model ${MODEL}${SCREEN_MODEL !== MODEL ? `, screens ${SCREEN_MODEL}` : ''})`);
+  log(`chloedb-apps on http://${HOST}:${PORT}/ (ChloeDB at ${strataUrl}, model ${MODEL}${SCREEN_MODEL !== MODEL ? `, screens ${SCREEN_MODEL}` : ''})`);
 });

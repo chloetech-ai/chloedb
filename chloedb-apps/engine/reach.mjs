@@ -182,7 +182,7 @@ export async function fetchPublic(raw, opts = {}, { requestFn = request } = {}) 
   let u = checkUrl(raw);
   let method = String(opts.method || 'GET').toUpperCase();
   if (!['GET', 'POST', 'HEAD'].includes(method)) throw err(`app.fetch: only GET, POST and HEAD, not ${method}`);
-  const headers = { 'user-agent': 'chloedb-apps/0.1 (an app on Strata)', accept: '*/*', 'accept-encoding': 'gzip, deflate, br' };
+  const headers = { 'user-agent': 'chloedb-apps/0.1 (an app on ChloeDB)', accept: '*/*', 'accept-encoding': 'gzip, deflate, br' };
   for (const [k, v] of Object.entries(opts.headers || {})) if (SENDABLE.has(k.toLowerCase())) headers[k.toLowerCase()] = String(v).slice(0, 200);
   let body = null;
   if (method === 'POST') {

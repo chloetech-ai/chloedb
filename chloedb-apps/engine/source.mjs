@@ -182,7 +182,7 @@ export function appScript(view) {
     `-- ${oneLine(app.name || app.id)}`,
     app.description ? `-- ${oneLine(app.description)}` : null,
     view.comp?.n ? `-- Version ${view.comp.n}${view.comp.summary ? `: ${oneLine(view.comp.summary)}` : ''}` : null,
-    `-- Each piece is a row of sa_capabilities in Strata, stored as this SQL; each table is app_${app.id}_<name>.`,
+    `-- Each piece is a row of sa_capabilities in ChloeDB, stored as this SQL; each table is app_${app.id}_<name>.`,
   ].filter(Boolean).join('\n');
   return `${[head, part('Tables', view.tables), part('Screens', views), part('Rules', fns.filter((f) => f.spec?.rule)), part('Functions', fns.filter((f) => !f.spec?.rule)),
     part('Shared components', view.components), part('Shared helpers', view.helpers)].filter(Boolean).join('\n\n')}\n`;

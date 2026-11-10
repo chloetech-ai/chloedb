@@ -25,9 +25,10 @@ pub fn operator_objects(image: &str) -> Vec<Json> {
             rule(&["strata.chloetech.ai"], &["strataclusters/status"], &["get", "patch", "update"]),
             rule(&["apps"], &["statefulsets", "deployments"], &["get", "list", "create", "patch", "delete"]),
             rule(&[""], &["services", "configmaps", "serviceaccounts"], &["get", "create", "patch"]),
+            rule(&[""], &["services"], &["delete"]),
             rule(&["rbac.authorization.k8s.io"], &["roles", "rolebindings"], &["get", "create", "patch"]),
             rule(&[""], &["pods"], &["get", "list", "delete"]),
-            rule(&[""], &["persistentvolumeclaims"], &["list", "delete", "patch"]),
+            rule(&[""], &["persistentvolumeclaims"], &["get", "list", "create", "delete", "patch"]),
             rule(&[""], &["secrets"], &["get"]),
         ]}),
         json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding", "metadata": {"name": "strata-operator"},
@@ -181,6 +182,39 @@ mod tests {
         let yaml = include_str!("../../deploy/k8s/operator/operator.yaml");
         let docs: Vec<Json> = serde_yaml::Deserializer::from_str(yaml).map(|d| serde::Deserialize::deserialize(d).expect("a YAML document")).collect();
         assert_eq!(docs, operator_objects("chloedb-server:dev"));
+    }
+
+    /// The operator's role allows each call it makes (operator/kube.rs):
+    /// a role short of one leaves a cluster stuck at that step with a 403,
+    /// as spec.apps was without a claim's get and create.
+    #[test]
+    fn the_operator_may_make_its_calls() {
+        let role = operator_objects("chloedb-server:dev").into_iter().find(|o| o["kind"] == "ClusterRole").unwrap();
+        let may = |group: &str, resource: &str, verb: &str| {
+            role["rules"].as_array().unwrap().iter().any(|r| {
+                let has = |k: &str, v: &str| r[k].as_array().unwrap().iter().any(|x| x == v);
+                has("apiGroups", group) && has("resources", resource) && has("verbs", verb)
+            })
+        };
+        for (group, resource, verbs) in [
+            ("apiextensions.k8s.io", "customresourcedefinitions", &["get", "create", "patch"][..]),
+            ("strata.chloetech.ai", "strataclusters", &["get", "list", "watch", "patch"]),
+            ("strata.chloetech.ai", "strataclusters/status", &["patch"]),
+            // apply is a PATCH that creates what is missing: patch and create
+            ("apps", "statefulsets", &["get", "list", "create", "patch", "delete"]),
+            ("apps", "deployments", &["get", "create", "patch", "delete"]),
+            // an app beside the cluster: made, changed, and gone when turned off
+            ("", "services", &["get", "create", "patch", "delete"]),
+            ("", "pods", &["get", "list", "delete"]),
+            // a shard's volumes (listed, grown, deleted) and the app engine's
+            // (read, made by apply, grown)
+            ("", "persistentvolumeclaims", &["get", "list", "create", "patch", "delete"]),
+            ("", "secrets", &["get"]),
+        ] {
+            for v in verbs {
+                assert!(may(group, resource, v), "the operator may not {v} {resource}");
+            }
+        }
     }
 
     #[test]

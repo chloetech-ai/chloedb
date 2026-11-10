@@ -71,7 +71,7 @@ export class Engine extends EventEmitter {
     // a change, whoever made it: this engine, another engine on the same
     // database, or a client writing to Strata directly.
     this.feed = await this.db.follow((txn) => this.onTxn(txn), this.log);
-    this.log(this.feed ? 'following Strata\'s feed of changes' : 'Strata serves no feed here: the engine announces its own writes');
+    this.log(this.feed ? 'following ChloeDB\'s feed of changes' : 'ChloeDB serves no feed here: the engine announces its own writes');
   }
 
   onTxn(txn) {
