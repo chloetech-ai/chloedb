@@ -1,6 +1,6 @@
 # A set of N shards, each served by R replicas: replica r of shard i is pod
 # strata-shards-<N>-s<i>-<r> and serves /data/<collection>.shard<i>of<N>.strata
-# (as strata-server-bench --build-only splits it; replica r > 0 its own copy,
+# (as chloedb-server-bench --build-only splits it; replica r > 0 its own copy,
 # ...shard<i>of<N>.r<r>.strata, since a database file is open in one process
 # at a time). Replicas of one shard run on different nodes.
 #
@@ -51,7 +51,7 @@ spec:
             matchLabels: {app: strata-shard, shards: "2"}
       containers:
         - name: strata
-          image: strata-server:dev
+          image: chloedb-server:dev
           imagePullPolicy: IfNotPresent
           env:
             - {name: COLLECTION, value: quora}
@@ -65,7 +65,7 @@ spec:
               f=/data/${COLLECTION}.shard${SHARD}of${SHARDS}.strata
               [ "$r" = 0 ] || f=/data/${COLLECTION}.shard${SHARD}of${SHARDS}.r$r.strata
               # A test cluster, served open (see README.md, Security).
-              exec strata-server --db "$f" --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-token
+              exec chloedb-server --db "$f" --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-token
           ports:
             - {name: http, containerPort: 7700}
             - {name: grpc, containerPort: 7701}

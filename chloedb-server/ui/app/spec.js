@@ -12,7 +12,7 @@ const short = (url) => (url || "").replace(/^https?:\/\//, "");
 
 /** The spec's fields as the operator reads them when the spec leaves them out. */
 export const DEFAULTS = {
-  image: "strata-server:dev", imagePullPolicy: null, shards: 1, replicas: 3, coordinators: 1,
+  image: "chloedb-server:dev", imagePullPolicy: null, shards: 1, replicas: 3, coordinators: 1,
   storage: { size: "10Gi", storageClassName: null }, schema: null, demo: null, failoverAfterMs: 3000, writeAcks: "all",
   tokenSecret: null, clusterTokenSecret: null, resources: null, coordinatorResources: null, args: [], coordinatorArgs: [],
 };

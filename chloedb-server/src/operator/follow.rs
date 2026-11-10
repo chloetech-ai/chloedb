@@ -1,5 +1,5 @@
 //! Following another cluster (`spec.follow`, [`crate::follow`]): the
-//! operator runs `strata-server follow` as a Deployment of one (strategy
+//! operator runs `chloedb-server follow` as a Deployment of one (strategy
 //! Recreate, `<cluster>-follow`), which reads the source's feed with a
 //! `feed` key of the source (`keySecret`) and writes through this
 //! cluster's coordinators with its token. Its place is kept in the
@@ -7,7 +7,7 @@
 //! again resumes.
 //!
 //! The process is told when following was asked for (`askedMs`,
-//! `strata-server follow --once`): a copy afresh (`start: copy`) is made
+//! `chloedb-server follow --once`): a copy afresh (`start: copy`) is made
 //! once, not again when its pod restarts, and once the cluster stopped
 //! following the source or was promoted from it after that time, a pod
 //! started again waits instead of following again, until the spec goes
@@ -78,7 +78,7 @@ impl FollowSpec {
         Ok(())
     }
 
-    /// The arguments of `strata-server follow` for a cluster whose
+    /// The arguments of `chloedb-server follow` for a cluster whose
     /// coordinators' Service answers at `target`.
     pub fn args(&self, target: &str) -> Vec<String> {
         let mut a: Vec<String> = ["follow", "--source", &self.source, "--target", target, "--name", &self.name].iter().map(|s| s.to_string()).collect();
@@ -102,7 +102,7 @@ pub const CA_DIR: &str = "/etc/strata-follow";
 pub fn schema() -> Json {
     json!({
         "type": "object",
-        "description": "Following another cluster: a strata-server follow Deployment of one copies the source, then applies its feed; the cluster refuses its clients' writes meanwhile.",
+        "description": "Following another cluster: a chloedb-server follow Deployment of one copies the source, then applies its feed; the cluster refuses its clients' writes meanwhile.",
         "required": ["source", "name"],
         "properties": {
             "source": {"type": "string", "description": "The source cluster's URL (its coordinators), as https://east.example:7700."},

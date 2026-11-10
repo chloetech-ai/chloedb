@@ -3,7 +3,7 @@
 # deploy/README.md) and prints the link to share once it answers.
 #
 #   deploy/kube.sh --ref <full commit sha> --node <node name> \
-#     [--image ghcr.io/chloetech-ai/strata-server@sha256:...] [--nodeport 30730] [--cap 25]
+#     [--image ghcr.io/chloetech-ai/chloedb-server@sha256:...] [--nodeport 30730] [--cap 25]
 #
 # --ref is a commit of github.com/chloetech-ai/strata that holds chloedb-apps
 # (pushed: the pod fetches it). --node is the node whose disk keeps the data.
@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-REF='' NODE='' IMAGE='ghcr.io/chloetech-ai/strata-server:latest' NODEPORT=30730 CAP=25 NS=strata
+REF='' NODE='' IMAGE='ghcr.io/chloetech-ai/chloedb-server:latest' NODEPORT=30730 CAP=25 NS=strata
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF="$2"; shift 2 ;;

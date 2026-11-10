@@ -372,7 +372,7 @@ async fn a_cluster_is_made_on_eks_installed_and_deleted_volumes_first() {
     assert_eq!(seen.lock().unwrap().create.as_deref(), Some(id.as_str()), "CreateStack's request token is the cluster's id");
     let steps: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["text"].as_str().unwrap()).collect();
     assert!(steps.iter().any(|s| s.contains("CloudFormation is making")) && steps.iter().any(|s| s.contains("the stack is made")), "{steps:?}");
-    assert!(steps.iter().any(|s| s.starts_with("installed the operator (ghcr.io/chloetech-ai/strata-server:latest)")), "{steps:?}");
+    assert!(steps.iter().any(|s| s.starts_with("installed the operator (ghcr.io/chloetech-ai/chloedb-server:latest)")), "{steps:?}");
     assert!(steps.last().unwrap().starts_with("ready: 4 of 4 copies answering"), "{steps:?}");
     assert_eq!(j["summary"], "Ready, 4 of 4 copies answering");
     assert_eq!(j["connect"], json!(["aws eks update-kubeconfig --region us-east-1 --name strata-search", "kubectl -n strata port-forward svc/search 7700:7700"]));

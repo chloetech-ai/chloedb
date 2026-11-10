@@ -1,4 +1,4 @@
-//! A Kubernetes operator for Strata clusters (`strata-server operator`).
+//! A Kubernetes operator for ChloeDB clusters (`chloedb-server operator`).
 //!
 //! A `StrataCluster` resource says how many shards a cluster has, how many
 //! copies each shard keeps, and what each server needs (image, volume,
@@ -60,7 +60,7 @@ pub const PLURAL: &str = "strataclusters";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Spec {
-    /// The strata-server image of every server.
+    /// The chloedb-server image of every server.
     pub image: String,
     /// What the cluster is to its people (`production`, `staging`): the
     /// command center shows it on every page (`STRATA_ENVIRONMENT`).
@@ -128,11 +128,11 @@ pub struct Spec {
     /// version: it changes no server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub follow: Option<FollowSpec>,
-    /// A crawler beside the cluster ([`crawler`]): `strata-crawl serve`
+    /// A crawler beside the cluster ([`crawler`]): `chloedb-crawl serve`
     /// in a Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crawler: Option<CrawlerSpec>,
-    /// Spreadsheets beside the cluster ([`sheets`]): `strata-sheets
+    /// Spreadsheets beside the cluster ([`sheets`]): `chloedb-sheets
     /// serve` in a Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sheets: Option<SheetsSpec>,
@@ -356,7 +356,7 @@ impl SecretEnv {
 impl Default for Spec {
     fn default() -> Spec {
         Spec {
-            image: "strata-server:dev".into(),
+            image: "chloedb-server:dev".into(),
             environment: None,
             image_pull_policy: None,
             shards: 1,
@@ -513,7 +513,7 @@ impl Spec {
         match (&self.schema, self.demo) {
             (Some(_), Some(_)) => Err("give a schema or demo, not both".into()),
             // No tables yet: the servers start with the placeholder
-            // (strata-server --db on a new path), and CREATE TABLE fills them.
+            // (chloedb-server --db on a new path), and CREATE TABLE fills them.
             (None, None) => Ok(()),
             (Some(s), None) => chloedb::schema::Schema::from_json_value(s).map(|_| ()).map_err(|e| format!("schema: {e}")),
             (None, Some(_)) => Ok(()),
@@ -1961,7 +1961,7 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         };
         steps.push(match (&old.crawler, &new.crawler) {
             (None, Some(c)) => format!(
-                "a crawler starts beside the cluster (strata-crawl serve, a Deployment of one) and the coordinators list it, so the command center shows Apps → Crawler; {}",
+                "a crawler starts beside the cluster (chloedb-crawl serve, a Deployment of one) and the coordinators list it, so the command center shows Apps → Crawler; {}",
                 grows(c)
             ),
             (Some(_), None) => "the crawler stops (its Deployment and Service go; the tables it filled stay) and the coordinators no longer list it".into(),
@@ -2006,7 +2006,7 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
     }
     if new.sheets != old.sheets {
         steps.push(match (&old.sheets, &new.sheets) {
-            (None, Some(_)) => "spreadsheets start beside the cluster (strata-sheets serve, a Deployment of one) and the coordinators list them, so the command center shows Apps → Sheets; the workbooks are kept in the tables sheets_books and sheets_cells".into(),
+            (None, Some(_)) => "spreadsheets start beside the cluster (chloedb-sheets serve, a Deployment of one) and the coordinators list them, so the command center shows Apps → Sheets; the workbooks are kept in the tables sheets_books and sheets_cells".into(),
             (Some(_), None) => "the spreadsheets stop (their Deployment and Service go; the workbooks stay in their tables) and the coordinators no longer list them".into(),
             (Some(a), Some(b)) if b.paused && !a.paused => "the spreadsheets pause: their pod goes (the workbooks stay in their tables)".into(),
             (Some(a), Some(b)) if a.paused && !b.paused => "the spreadsheets start again, with the workbooks they had".into(),
@@ -2045,7 +2045,7 @@ pub fn crd() -> Json {
     let spec = json!({
         "type": "object",
         "properties": {
-            "image": {"type": "string", "description": "The strata-server image of every server (default strata-server:dev)."},
+            "image": {"type": "string", "description": "The chloedb-server image of every server (default chloedb-server:dev)."},
             "imagePullPolicy": {"type": "string"},
             "environment": {"type": "string", "description": "What the cluster is to its people (production, staging): the command center shows it on every page."},
             "shards": int(1, "Shards, each holding a part of the 4,096 slots (default 1)."),
@@ -2055,7 +2055,7 @@ pub fn crd() -> Json {
                 "size": {"type": "string", "description": "Each copy's volume (default 10Gi)."},
                 "storageClassName": {"type": "string"},
             }},
-            "schema": free("The first table's schema, as strata-server --schema takes it. Without it and without demo, the cluster starts with no tables."),
+            "schema": free("The first table's schema, as chloedb-server --schema takes it. Without it and without demo, the cluster starts with no tables."),
             "demo": int(0, "Instead of a schema: this many demo products, split over the shards the cluster starts with."),
             "failoverAfterMs": int(0, "--failover-after-ms of every server (default 3000; 0: failover by hand)."),
             "writeAcks": {"type": "string", "enum": ["all", "majority", "primary"], "description": "--write-acks of every primary (default all)."},
@@ -2215,10 +2215,10 @@ mod tests {
         assert!(warnings.contains("no token") && warnings.contains("two copies a shard") && warnings.contains("deleted with its volumes"), "{warnings}");
         // A new image on two copies a shard: a third joins each first.
         let two: Spec = serde_json::from_value(json!({"shards": 2, "replicas": 2, "demo": 100})).unwrap();
-        let (_, new) = patched(&serde_json::to_value(&two).unwrap(), &json!({"image": "strata-server:v2"})).unwrap();
+        let (_, new) = patched(&serde_json::to_value(&two).unwrap(), &json!({"image": "chloedb-server:v2"})).unwrap();
         let steps = plan(&two, &new, 2, 2)["steps"].to_string();
         assert!(steps.contains("each shard first takes a third copy with the new settings") && steps.contains("(4 restarts)"), "{steps}");
-        let (_, off) = patched(&serde_json::to_value(&two).unwrap(), &json!({"image": "strata-server:v2", "rollout": {"extraCopies": false}})).unwrap();
+        let (_, off) = patched(&serde_json::to_value(&two).unwrap(), &json!({"image": "chloedb-server:v2", "rollout": {"extraCopies": false}})).unwrap();
         assert!(!plan(&two, &off, 2, 2)["steps"].to_string().contains("third copy"));
         // Pausing and gates restart nothing.
         let (_, gated) = patched(&serde_json::to_value(&old).unwrap(), &json!({"rollout": {"paused": true, "gates": {"p99Ms": 200}}})).unwrap();
@@ -2258,7 +2258,7 @@ mod tests {
         spec.rollout.gates.p99_ms = Some(400.0);
         assert!(gates(&spec, &hot, &held, 40_000).0.held.is_none(), "its gate changed");
         spec.rollout.gates.p99_ms = Some(200.0);
-        let other = Spec { image: "strata-server:0.2.0".into(), ..spec.clone() };
+        let other = Spec { image: "chloedb-server:0.2.0".into(), ..spec.clone() };
         assert!(gates(&other, &cool, &held, 40_000).0.held.is_none(), "another version");
         // A pause or a gate is no new version; a rollback is held by no gate.
         assert_eq!(Spec { rollout: RolloutSpec { paused: true, soak_seconds: 9, ..RolloutSpec::default() }, ..spec.clone() }.version(), spec.version());
@@ -2296,15 +2296,15 @@ mod tests {
         let paused = Spec { rollout: RolloutSpec { paused: true, ..RolloutSpec::default() }, ..a.clone() };
         let h = versions(&h, &paused, Some(2), None, 300, true);
         assert_eq!((h.as_array().unwrap().len(), &h[0]["readyMs"]), (1, &json!(200)));
-        let b = Spec { shards: 4, image: "strata-server:0.2.0".into(), resources: Some(json!({"limits": {"cpu": "2", "memory": "4Gi"}})), token_secret: Some("t".into()), ..a.clone() };
+        let b = Spec { shards: 4, image: "chloedb-server:0.2.0".into(), resources: Some(json!({"limits": {"cpu": "2", "memory": "4Gi"}})), token_secret: Some("t".into()), ..a.clone() };
         let h = versions(&h, &b, Some(3), Some("roberto"), 400, false);
         assert_eq!((&h[1]["version"], &h[1]["by"], &h[1]["restores"], &h[1]["readyMs"]), (&json!(2), &json!("roberto"), &Json::Null, &Json::Null));
         // Back to version 1: the merge patch that takes the spec there, its
         // rollout kept; the version it makes restores the first.
         let now = json!({"spec": serde_json::to_value(&paused).unwrap(), "status": {"history": h}});
-        let now = json!({"spec": {"rollout": now["spec"]["rollout"], "shards": 4, "demo": 1, "image": "strata-server:0.2.0", "tokenSecret": "t", "resources": {"limits": {"cpu": "2", "memory": "4Gi"}}}, "status": now["status"]});
+        let now = json!({"spec": {"rollout": now["spec"]["rollout"], "shards": 4, "demo": 1, "image": "chloedb-server:0.2.0", "tokenSecret": "t", "resources": {"limits": {"cpu": "2", "memory": "4Gi"}}}, "status": now["status"]});
         let patch = kube::Link::rollback(&now, 1).unwrap();
-        assert_eq!(patch, json!({"shards": 2, "image": "strata-server:dev", "tokenSecret": null, "resources": {"limits": {"memory": null}}, "replicas": 3, "coordinators": 1, "storage": {"size": "10Gi"}, "failoverAfterMs": 3000, "writeAcks": "all", "args": [], "coordinatorArgs": []}));
+        assert_eq!(patch, json!({"shards": 2, "image": "chloedb-server:dev", "tokenSecret": null, "resources": {"limits": {"memory": null}}, "replicas": 3, "coordinators": 1, "storage": {"size": "10Gi"}, "failoverAfterMs": 3000, "writeAcks": "all", "args": [], "coordinatorArgs": []}));
         let (_, back) = patched(&now["spec"], &patch).unwrap();
         assert_eq!(back, paused, "the spec of version 1, still paused");
         let h = versions(&h, &back, Some(4), None, 500, false);
@@ -2365,9 +2365,9 @@ mod tests {
     fn the_crd_file_is_the_one_the_operator_installs() {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/deploy/k8s/operator/crd.json");
         let want = serde_json::to_string_pretty(&crd()).unwrap() + "\n";
-        if std::env::var_os("STRATA_WRITE_CRD").is_some() {
+        if std::env::var_os("CHLOEDB_WRITE_CRD").or_else(|| std::env::var_os("STRATA_WRITE_CRD")).is_some() {
             std::fs::write(file, &want).unwrap();
         }
-        assert_eq!(std::fs::read_to_string(file).unwrap_or_default(), want, "run with STRATA_WRITE_CRD=1 to write {file}");
+        assert_eq!(std::fs::read_to_string(file).unwrap_or_default(), want, "run with CHLOEDB_WRITE_CRD=1 to write {file}");
     }
 }

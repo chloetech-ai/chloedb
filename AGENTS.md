@@ -10,10 +10,14 @@ ChloeDB was called Strata until November 2026, and the rename lands in steps.
 The folders, crates, programs, settings (`CHLOEDB_*`), headers
 (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`,
 `ai.chloetech.chloedb`) carry the new name, and the old ones are still
-accepted for a release; the repository, the Kubernetes operator (its source
-in `chloedb-server/src/operator/` and `deploy/k8s/`), the container image,
-the app engine (`chloedb-apps/`) and the internals (the on-disk format, the
-gRPC services, `memory.strata`) keep the old name for now: use the names as
+accepted for a release. The container image is
+`ghcr.io/chloetech-ai/chloedb-server`, published as `strata-server` too for
+a release. The repository, the Kubernetes operator's resources (the
+`StrataCluster` kind, the `strata-system` namespace; the operator's source
+is in `chloedb-server/src/operator/` and `deploy/k8s/`, and its pods start
+the programs by their old names, which every image has), the app engine
+(`chloedb-apps/`) and the internals (the on-disk format, the gRPC services,
+`memory.strata`) keep the old name for now: use the names as
 this file and the code spell them, and say ChloeDB in prose. A branch started
 before the folders moved comes across with `scripts/chloedb-port.sh`.
 

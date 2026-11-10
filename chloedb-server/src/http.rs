@@ -4277,7 +4277,7 @@ async fn kube_upgrade(State(app): State<App>, w: Option<axum::Extension<Principa
                 None => "no newer image is known: name the image, or set spec.upgrade.mode to suggest so that the operator asks the registry what its tag names".into(),
             })
         })?,
-        Some(_) => return Err(ApiError::bad("image is an image reference: ghcr.io/chloetech-ai/strata-server:TAG or …@sha256:DIGEST")),
+        Some(_) => return Err(ApiError::bad("image is an image reference: ghcr.io/chloetech-ai/chloedb-server:TAG or …@sha256:DIGEST")),
     };
     crate::operator::upgrade::Ref::parse(&image).map_err(|e| ApiError::bad(format!("image {image}: {e}")))?;
     if now["spec"]["image"].as_str() == Some(image.as_str()) {

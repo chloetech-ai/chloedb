@@ -11,7 +11,7 @@ pub mod clusters;
 pub mod install;
 
 /// The image the cluster runs when the plan names none.
-pub const IMAGE: &str = "ghcr.io/chloetech-ai/strata-server:latest";
+pub const IMAGE: &str = "ghcr.io/chloetech-ai/chloedb-server:latest";
 
 /// The operator's manifests (its namespace, account, role and
 /// Deployment), whose image the plan's replaces.
@@ -189,7 +189,7 @@ impl Fit {
 
 /// The operator's manifests, running `image`.
 pub fn operator_yaml(image: &str) -> Result<String, String> {
-    const DEV: &str = "image: strata-server:dev";
+    const DEV: &str = "image: chloedb-server:dev";
     if !OPERATOR_YAML.contains(DEV) {
         return Err("the operator's manifests name no image to replace".into());
     }
