@@ -79,6 +79,12 @@ JSON over HTTP; through chloedb-server, the same paths under `/v1/apps/chloectx`
 | `GET /v1/incidents/match?q=&alert=` | | the incidents closest to a description |
 | `POST /v1/incidents/draft` | `{text}` or `{run}` | incidents a model drafted from a postmortem or an on-call run's report; nothing is kept |
 | `POST /v1/incidents/handoff` | `{alert}` | the on-call agent's run, started with the closest incidents |
+| `POST /v1/spaces/:s/apps/suggest` | `{n?}` (2 or 3) | apps a model suggests from the space's notes: `{apps:[{title, pitch, why, kinds, description}]}`; nothing is built |
+| `GET /v1/spaces/:s/apps/estimate` | | what a build costs: the median of the app engine's past first builds, its model and what is left of its cap |
+| `POST /v1/spaces/:s/apps/items` | `{kinds?, exclude?}` | the notes a build would copy |
+| `POST /v1/spaces/:s/apps` | `{title, description, kinds?, exclude?, confirm: true}` | the build, started (409 without `confirm`, 402 when the engine's cap is spent) |
+| `GET /v1/spaces/:s/apps` | | the space's builds: `building`, `loading`, `ready` or `failed`, with their cost and rows loaded |
+| `POST /v1/spaces/:s/apps/:id/open` | | a one-time link into the app engine's studio, at the built app |
 
 An answer of `ask` has, for each record in the context, its `section` (`rule`, `note`, `timeline` for a question about the whole history, `reply` and `excerpt` for past conversations), its `tokens` (about four characters each), its scores (`bm25` for the question's words, `cos` for its meaning) and, for a note that replaced another, `replaced`: what it changed. `left_out` names what the searches found and the context leaves out, and why: `superseded`, `uncertain`, or `budget`. The context is built as ChloeCtx's own `memory_ask` builds it for Claude Code ([how](index.md)), with its sizes scaled to the budget.
 
@@ -92,9 +98,15 @@ An incident is a note in the space `incidents`: a title, the symptom, the cause,
 
 **Hand to the on-call agent** starts the cluster's on-call agent (`POST /v1/admin/oncall`) on the alert with the closest incidents and the incident space's rules in its question; the server needs a Claude key for it. When the run ends, **keep what it found** drafts an incident from its report for a person to check and record. A postmortem pasted into **Record an incident** is drafted the same way.
 
+## Create an app from a space
+
+A space's page has **Create an app from this context**. **Suggest apps** asks the model for apps the space's notes could become (one call, on at most 150 notes); each says why, and which kinds of notes it reads. **Build this...** opens the build: its name, the request the app engine gets (editable), the kinds of notes, and every note that goes in, each with a tick to leave it out. Before anything is spent it shows what a build costs, the median of the engine's past first builds (`sa_requests`), and what is left of the engine's cap; the build starts only on **Build it**, which sends `confirm: true`.
+
+The cluster's app engine (the app `apps`, [chloedb-apps](../../chloedb-apps)) builds the app from the request and leaves out its example rows. When it is done, ChloeCtx maps the picked notes, 30 at a time, onto the new app's tables with its model and inserts them through the engine; a row that names a note it was not given, or a table the app does not have, is dropped. The app gets copies of the picked notes and nothing else: no exchanges, no notes of other spaces, and later notes do not follow. Builds are rows of `ctx_builds`, and a restart follows those still building. **Open in the studio** asks the engine for a one-time link to the app.
+
 ## Tests
 
-`chloectx/tests/app_cluster.rs` runs the app against two shard servers and a coordinator of this build, with a stub of Anthropic's API: spaces, notes replaced and retired, contexts within a budget, an exchange distilled, incidents matched to an alert rule that fires, a handoff refused without a key, and a restart. CI runs it in its server smoke test:
+`chloectx/tests/app_cluster.rs` runs the app against two shard servers and a coordinator of this build, with a stub of Anthropic's API: spaces, notes replaced and retired, contexts within a budget, an exchange distilled, incidents matched to an alert rule that fires, a handoff refused without a key, an app suggested and built from a space against a stub of the app engine (refused without `confirm`), and a restart. CI runs it in its server smoke test:
 
 ```bash
 cd chloedb-server && cargo build --profile ci

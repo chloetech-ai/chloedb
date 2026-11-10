@@ -12,6 +12,10 @@
 //!   `incidents`; the cluster's firing alerts each with the closest past
 //!   incidents, which can be handed to the on-call agent.
 //!
+//! A space's page also makes apps from it ([`from_context`]): suggested from
+//! its notes, built by the cluster's app engine, loaded with the notes the
+//! person approved.
+//!
 //! Model calls (distilling exchanges into notes, drafting incidents from a
 //! postmortem or an on-call run) go to Anthropic's API when
 //! `ANTHROPIC_API_KEY` is set, else to the `claude` CLI if there is one;
@@ -35,6 +39,11 @@
 //! | `GET /v1/incidents/match?q=` | | the incidents closest to a description |
 //! | `POST /v1/incidents/draft` | `{text}` or `{run}` | incidents a model drafted from a postmortem or an on-call run (not stored) |
 //! | `POST /v1/incidents/handoff` | `{alert}` | the on-call agent's run, started with the closest incidents |
+//! | `POST /v1/spaces/:s/apps/suggest` | `{n?}` | two or three apps the space could become (one model call; [`from_context`]) |
+//! | `GET /v1/spaces/:s/apps/estimate` | | what a build costs here, measured, and what the app engine may still spend |
+//! | `POST /v1/spaces/:s/apps/items` | `{kinds}` | the notes a build of those kinds would be loaded with |
+//! | `POST /v1/spaces/:s/apps`, `GET` | `{title, description, kinds, exclude?, confirm}` | a build by the app engine, loaded with the approved notes; the builds |
+//! | `POST /v1/spaces/:s/apps/:build/open` | | a one-time link into the studio, at the built app |
 
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener;
@@ -52,6 +61,8 @@ use crate::record::{Draft, Kind, Link, Record};
 use crate::store::{Filter, Store};
 use crate::ui::{read_request, respond, respond_json, same, Request};
 use crate::{distill, err, Result};
+
+mod from_context;
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 
@@ -191,7 +202,11 @@ fn note_kind(name: &str) -> Option<(Kind, &'static str)> {
 
 /// A note kind's name for callers.
 fn kind_name(r: &Record) -> &'static str {
-    match r.kind {
+    name_of_kind(r.kind)
+}
+
+fn name_of_kind(k: Kind) -> &'static str {
+    match k {
         Kind::Preference => "rule",
         Kind::Todo => "todo",
         Kind::Prompt => "user",
@@ -879,6 +894,12 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("GET", ["v1", "incidents", "match"]) => Ok(json!({"matches": app.matches(req.param("q").unwrap_or(""), req.param("alert"), num("n", 3).clamp(1, 20))?})),
         ("POST", ["v1", "incidents", "draft"]) => app.draft(&body_json(req)?),
         ("POST", ["v1", "incidents", "handoff"]) => app.handoff(&body_json(req)?),
+        ("GET", ["v1", "spaces", s, "apps"]) => app.builds(s),
+        ("POST", ["v1", "spaces", s, "apps"]) => app.build(s, &body_json(req)?),
+        ("GET", ["v1", "spaces", _, "apps", "estimate"]) => app.estimate(),
+        ("POST", ["v1", "spaces", s, "apps", "suggest"]) => app.suggest(s, &body_json(req)?),
+        ("POST", ["v1", "spaces", s, "apps", "items"]) => app.build_items(s, &body_json(req)?),
+        ("POST", ["v1", "spaces", s, "apps", id, "open"]) => app.open_build(s, id),
         (_, ["v1", ..]) => Err(Fail(404, format!("no {m} {}", req.path))),
         _ => Err(Fail(404, format!("no {}", req.path))),
     }
@@ -890,7 +911,9 @@ fn status_line(code: u16) -> &'static str {
         400 => "400 Bad Request",
         401 => "401 Unauthorized",
         403 => "403 Forbidden",
+        402 => "402 Payment Required",
         404 => "404 Not Found",
+        409 => "409 Conflict",
         429 => "429 Too Many Requests",
         503 => "503 Service Unavailable",
         500 => "500 Internal Server Error",
@@ -942,6 +965,7 @@ pub fn run(opts: Options) -> Result<()> {
             Err(e) => return Err(err(format!("{}: {e}", opts.server))),
         }
     };
+    app.resume_builds();
     let listener = TcpListener::bind((opts.host.as_str(), opts.port)).map_err(|e| err(format!("cannot listen on {}:{}: {e}", opts.host, opts.port)))?;
     eprintln!(
         "chloectx app: on {}:{}, spaces in {} (embedder {}, model {})",
