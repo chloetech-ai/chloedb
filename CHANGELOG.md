@@ -13,7 +13,33 @@ still 0.1.0, and the next release will name its version here.
 
 ### Storage
 
-<!-- Placeholder: entries for the storage-durability work go here. -->
+- Opening no longer falls back silently past a damaged newest version (a
+  damaged meta slot or manifest, or a file cut short) when that would lose
+  acknowledged writes: it fails with an error naming the file, the damage,
+  what would be lost and how to recover, and changes no file. A log whose
+  header is damaged but whose commits are intact, or a log from another
+  database, is refused the same way. Before, one flipped byte could
+  reopen an older version without a word.
+- `recover` (Rust `DbOptions`, Python `chloedb.open(..., recover=True)`,
+  `chloedb-server --recover`) accepts the loss on purpose: it keeps a copy
+  of the damaged file as `<path>.damaged-<time>` first, and `damaged()`
+  (Python `Database.damaged`, with a `RuntimeWarning`) says what was lost.
+  A server opened that way answers `degraded` on `/v1/health`, and
+  `/v1/admin/check` fails.
+- A damaged column fails the query that reads it instead of reading as
+  NULL; a checkpoint refuses a segment whose checksum is wrong instead of
+  copying it with a fresh one.
+- A failed sync of the database file poisons the handle, as a failed log
+  append already did, so no later commit or merge can claim pages that
+  never reached the disk.
+- The writer's lock is held on the file itself, so a symbolic link, a
+  hard link or a deleted `-readers` directory no longer lets a second
+  writer open it.
+- `close()` flushes, so after a clean close the file alone is a complete
+  copy of the database. Python adds `flush()` and `checkpoint(dest)`;
+  docs/chloedb/python.md and index.md say how to back a database up.
+- Not yet: a log deleted outright cannot be detected, and there is no
+  point-in-time recovery.
 
 ### Query and indexes
 
