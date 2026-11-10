@@ -221,8 +221,8 @@ fn tied_scores_cut_and_rank_alike() {
     }
 }
 
-// Bug 9 and SCALE-14: a fused ranking's depth is raised to LIMIT + OFFSET
-// on the shards and in the merge, and a ranked query without LIMIT answers
+// Bug 9 and SCALE-14: a fused ranking's depth is raised to the page's
+// LIMIT (not its OFFSET, since QE-6) on the shards and in the merge, and a ranked query without LIMIT answers
 // 100 rows after its OFFSET on one database as through a coordinator.
 #[test]
 fn pages_past_the_depth_split_alike() {
@@ -234,8 +234,15 @@ fn pages_past_the_depth_split_alike() {
     let title = docs[42][data::col::TITLE].as_str().unwrap().to_string();
     let text = title.split(' ').take(3).collect::<Vec<_>>().join(" ");
     let params = Params::new().set("q", docs[42][data::col::EMB].clone()).set("t", Value::Str(text));
+    // A page's OFFSET no longer raises the depth (its LIMIT does): with
+    // depth 7 the page at OFFSET 20 is past the candidates, alike on one
+    // database and over shards.
+    let short = "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t), similarity(emb, :q), depth => 7) DESC LIMIT 10 OFFSET 20";
+    let want = whole.query(short, &params).unwrap();
+    assert!(want.rows.len() < 10 && want.stats.truncated, "{:?}", want.stats.plan);
+    same(short, &want, &sharded(&[&a, &b], short, &params));
     let queries = [
-        ("SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t), similarity(emb, :q), depth => 7) DESC LIMIT 10 OFFSET 20", 10),
+        ("SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t), similarity(emb, :q), depth => 30) DESC LIMIT 10 OFFSET 20", 10),
         ("SELECT id, score() FROM docs ORDER BY 0.5 * minmax(bm25(body, :t, depth => 5)) + 0.5 * minmax(similarity(emb, :q)) DESC LIMIT 30", 30),
         ("SELECT id, score() FROM docs ORDER BY bm25(body, :t, depth => 7) * decay(year, 2020, 5) DESC LIMIT 10 OFFSET 15", 10),
         ("SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t), similarity(emb, :q)) DESC OFFSET 10", 100),
