@@ -856,6 +856,7 @@ async fn a_replica_serves_reads_once_caught_up_and_waits_for_a_write() {
     assert!(e.status == 400 && e.message.contains("min_seq_nos is a coordinator's"), "{}", e.message);
     assert!(After::of(k, vec![k]).unwrap_err().message.contains("not both"));
     let plain = Db::create(&dir.path().join("plain.strata"), demo::schema(N), options(0)).unwrap();
+    plain.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: demo::DIM })).unwrap();
     plain.load((0..N).map(|i| demo::product(i, 7))).unwrap();
     let e = sold_3(&Arc::new(service(Arc::new(plain), Duration::from_secs(5))), After::Seq(1), 0).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("start the server with --seq-no"), "{}", e.message);

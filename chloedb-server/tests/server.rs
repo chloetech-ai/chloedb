@@ -2682,6 +2682,7 @@ async fn health_reports_a_database_that_cannot_write() {
     let path = dir.path().join("d.strata");
     let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
     let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    db.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: demo::DIM })).unwrap();
     db.load((0..10).map(|i| demo::product(i, 7))).unwrap();
     let svc = service(db, "http://unused");
     let db = svc.local_db().unwrap().clone();
