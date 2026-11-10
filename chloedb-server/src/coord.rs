@@ -3164,8 +3164,9 @@ impl Coordinator {
     /// not match, a type, schema or NOT NULL error) is refused before any
     /// shard applies anything, naming the operation (finding DS-2: the
     /// other shards' parts stayed committed, and no retry could finish the
-    /// write). A shard of an older protocol, or one that does not answer,
-    /// is not checked, and its part may still fail after others applied
+    /// write). A shard of an older protocol, one that does not answer or
+    /// whose writer is busy, or one that holds a newer slot map, is not
+    /// checked, and its part may still fail after others applied
     /// theirs. Nothing is held between the check and the write, so a write
     /// of another client in between can still fail this one partway
     /// (docs/chloedb/server.md, "When a write fails").
@@ -3178,7 +3179,10 @@ impl Coordinator {
         for (i, a) in join_all(calls).await {
             let Err(e) = a else { continue };
             // Refused for what it holds or was sent: the same write would be.
-            if !(400..500).contains(&e.status) || e.status == 429 {
+            // Not so a part routed by a map the shard left: the write goes
+            // by the newer map ([`Self::route_again`]), where the shard that
+            // now holds those keys applies it.
+            if !(400..500).contains(&e.status) || e.status == 429 || (e.status == 409 && e.message.contains(crate::service::OLDER_THAN_SHARD)) {
                 continue;
             }
             let (what, why) = match refused_op(&e.message) {

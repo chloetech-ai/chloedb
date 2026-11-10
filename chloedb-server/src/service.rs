@@ -3350,7 +3350,8 @@ impl Service {
     /// duplicate insert, an `if_seq_no` that does not match, a type or
     /// schema error, a NOT NULL column left empty. A refusal names the
     /// operation, by its place in `ops` ("operation N of this shard's
-    /// part: ..."). A request whose `key` this database recorded passes,
+    /// part: ..."). A writer still busy after [`VALIDATE_WAIT`] is answered
+    /// 503: not checked. A request whose `key` this database recorded passes,
     /// as it will be answered as before. Nothing is held between this and
     /// the write: another client's write in between can still make the
     /// write fail (finding DS-2, the race docs/chloedb/server.md states).
@@ -3362,7 +3363,11 @@ impl Service {
                     return Ok(());
                 }
             }
-            wait_for_writer(Instant::now() + Duration::from_secs(5), || validate_into(&db, &ops, epoch))
+            // A check is not a write: it waits briefly for a busy writer, and
+            // then the coordinator sends the part unchecked, into the write
+            // queue, whose limits (429) and retries apply as to any write.
+            // Waiting as a write does (5 s) held the part out of the queue.
+            wait_for_writer(Instant::now() + VALIDATE_WAIT, || validate_into(&db, &ops, epoch))
         })
         .await
         .map_err(ApiError::internal)?
@@ -5197,6 +5202,11 @@ fn validate_into(db: &Db, ops: &[Json], epoch: u64) -> Result<(), ApiError> {
     t.rollback();
     Ok(())
 }
+
+/// How long [`Service::validate_ops`] waits for a busy writer before the
+/// shard answers that it could not check (503), which the coordinator
+/// reads as "not checked".
+const VALIDATE_WAIT: Duration = Duration::from_millis(100);
 
 /// How [`validate_into`] names the operation it refused: "operation N of
 /// this shard's part: ...", which a coordinator reads back
