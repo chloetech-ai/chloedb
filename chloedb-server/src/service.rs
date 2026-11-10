@@ -1049,6 +1049,15 @@ impl Service {
     /// A replica is made primary by promotion ([`Self::promote`]), not
     /// here.
     pub async fn configure(&self, role: pb::Role, replicas: Vec<String>, acks: Option<Acks>, force: bool) -> Result<pb::ConfigureResponse, ApiError> {
+        self.configure_as(role, replicas, acks, force, false).await
+    }
+
+    /// [`Self::configure`]. A serving primary takes other replicas only as
+    /// [`crate::cores::shard::Primary::may_reconfigure`] allows: one copy
+    /// at a time, while a majority of its copies is with it, waiting up to
+    /// [`RECONFIGURE_WAIT`] for the change before to reach them; or with
+    /// `accept_data_loss`, which it logs.
+    pub async fn configure_as(&self, role: pb::Role, replicas: Vec<String>, acks: Option<Acks>, force: bool, accept_data_loss: bool) -> Result<pb::ConfigureResponse, ApiError> {
         let _one = self.promoting.lock().await;
         let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator has no part in replication: configure its shards' servers"))?;
         let file = self.replication_file.clone();
@@ -1058,7 +1067,17 @@ impl Service {
                 let acks = acks.unwrap_or(p.acks());
                 match p.replicas() == replicas.as_slice() && p.acks() == acks {
                     true => None,
-                    false => Some(Replication::Primary(p.reconfigure(replicas, acks)?)),
+                    false => {
+                        let until = Instant::now() + RECONFIGURE_WAIT;
+                        while let Err(e) = p.may_reconfigure(&replicas, accept_data_loss) {
+                            if Instant::now() >= until || e.status != 503 {
+                                tracing::warn!(error = %e.message, replicas = %replicas.join(", "), "refused other replicas");
+                                return Err(e);
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        Some(Replication::Primary(p.reconfigure(replicas, acks)?))
+                    }
                 }
             }
             (pb::Role::Primary, Replication::None) => {
@@ -4489,6 +4508,11 @@ pub const STREAM_OPS: usize = 4096;
 
 /// How often a stream, or a write held back by a backlog, looks again.
 const STREAM_POLL: Duration = Duration::from_millis(5);
+
+/// How long a primary given other replicas waits for the change before to
+/// reach a majority of its copies ([`Service::configure_as`]): a heartbeat
+/// or two, as a replica takes the membership in the next call.
+pub const RECONFIGURE_WAIT: Duration = Duration::from_secs(3);
 
 /// How long a write waits for a backlog of flushes to clear before 429.
 const BACKLOG_WAIT: Duration = Duration::from_secs(1);

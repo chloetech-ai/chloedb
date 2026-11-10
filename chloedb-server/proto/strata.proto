@@ -218,6 +218,15 @@ message VoteRequest {
   uint64 last_term = 4;
   bool pre = 5;
   bool handover = 6;
+  // The version of the shard's membership the candidate last heard of from
+  // a primary (ReplicateRequest.config; 0: a server that does not number
+  // it). A copy that heard of a newer one refuses the vote: the candidate
+  // may count a majority of copies that are no longer the shard's.
+  uint64 config = 7;
+  // The copies that membership counts, the primary among them: a
+  // candidate needs a majority of them besides a majority of the copies
+  // it asks.
+  uint32 copies = 8;
 }
 
 message VoteResponse {
@@ -290,6 +299,13 @@ message ReplicateRequest {
   // majority is counted of: it has caught up once since it joined. A
   // replica grants votes (Vote) once a call says so, and keeps that.
   bool member = 9;
+  // The version of the shard's membership: one more each time a primary
+  // is given other replicas (Configure), which it takes only once a
+  // majority of its copies hold the version before. A replica keeps the
+  // newest it was sent, and votes as VoteRequest.config says.
+  uint64 config = 10;
+  // The copies that membership counts, the primary among them.
+  uint32 copies = 11;
 }
 
 message VerifyRequest {
@@ -357,6 +373,12 @@ message ConfigureRequest {
   // shard's copies vote for it (with `force`, asking none), shipping to
   // `replicas` (none: the shard's other copies).
   bool promote = 5;
+  // PRIMARY on a primary: take other replicas even when this primary
+  // cannot show that a majority of its current copies is with it, or when
+  // more than one copy changes at once. Another primary may have been
+  // elected meanwhile, and the writes either acknowledges would then be
+  // lost: the name says so, and the server logs it.
+  bool accept_data_loss = 6;
 }
 
 message ConfigureResponse {

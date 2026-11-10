@@ -676,7 +676,7 @@ impl pb::strata_server::Strata for Grpc {
                 svc.promote(&who, r.replicas, acks, r.force).await?;
                 return Ok(svc.configured());
             }
-            svc.configure(r.role(), r.replicas, acks, r.force).await
+            svc.configure_as(r.role(), r.replicas, acks, r.force, r.accept_data_loss).await
         })
         .await
     }

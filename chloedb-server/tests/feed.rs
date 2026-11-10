@@ -298,7 +298,7 @@ async fn the_feed_goes_on_from_a_new_primary() {
     let (s0, u0) = serve(create(d, "s0.strata", |_| true), d, "s0.strata").await;
     let (a, svc_a) = coordinator(&[u0.clone()]).await;
     let (r0, u_r0) = serve(create(d, "r0.strata", |_| false), d, "r0.strata").await;
-    a.add_replica(0, &u_r0, false).await.unwrap();
+    a.add_replica(0, &u_r0, false, false).await.unwrap();
     for i in 0..20 {
         sql(&svc_a, &format!("INSERT OR REPLACE INTO products (id, title, price) VALUES ('f{i:02}', 'Before', {i})")).await;
     }

@@ -3961,8 +3961,10 @@ impl Coordinator {
     /// Adds `url` to shard `i`'s servers, as a replica its primary ships
     /// to (a shard served by one standalone server makes it its primary
     /// first). The new server is sent a copy of the primary, and serves
-    /// reads once it has caught up.
-    pub async fn add_replica(&self, i: usize, url: &str, force: bool) -> Result<Json, ApiError> {
+    /// reads once it has caught up. The primary takes it only while a
+    /// majority of the shard's copies is with it, unless
+    /// `accept_data_loss` ([`crate::cores::shard::Primary::may_reconfigure`]).
+    pub async fn add_replica(&self, i: usize, url: &str, force: bool, accept_data_loss: bool) -> Result<Json, ApiError> {
         let t = self.topo();
         let rs = t.replicas.get(i).ok_or_else(|| ApiError::bad(format!("there is no shard {i} of {}", t.replicas.len())))?.clone();
         let (mut c, _) = self.admit(url, force).await?;
@@ -3979,7 +3981,18 @@ impl Coordinator {
         let mut pc = primary.client.clone();
         let mut replicas: Vec<String> = rs.iter().filter(|r| r.url != primary.url).map(|r| r.url.clone()).collect();
         replicas.push(url.to_string());
-        let said = configure(&mut pc, &primary.url, pb::Role::Primary, replicas, None).await?;
+        let said = match configure_with(&mut pc, &primary.url, reship(replicas, accept_data_loss)).await {
+            Ok(said) => said,
+            Err(e) => {
+                // Refused: the new server, which holds no rows yet, serves
+                // on its own again rather than wait for a primary.
+                let back = pb::ConfigureRequest { role: pb::Role::Standalone as i32, force: true, ..Default::default() };
+                if let Err(b) = configure_with(&mut c, url, back).await {
+                    tracing::warn!(url, error = %b.message, "the shard's primary refused the new replica, which stays a replica waiting for a primary");
+                }
+                return Err(e);
+            }
+        };
         primary.protocol.store(0, Ordering::Relaxed);
         let (map, missed) = self.change(|m| {
             let mut servers = m.replicas()[i].clone();
@@ -4013,11 +4026,13 @@ impl Coordinator {
         Ok(json!({"shard": i, "url": url, "term": said.term, "seq_no": said.seq_no, "replicas": said.replicas, "write_acks": said.write_acks, "primary": primary}))
     }
 
-    /// Removes `url` from shard `i`'s servers: the coordinators stop
-    /// reading from it, then its primary stops shipping to it. A shard's
+    /// Removes `url` from shard `i`'s servers: its primary stops shipping
+    /// to it, then the coordinators stop reading from it. A shard's
     /// primary is not removed while other servers serve the shard
-    /// (promote another first), nor a shard's last server.
-    pub async fn remove_replica(&self, i: usize, url: &str) -> Result<Json, ApiError> {
+    /// (promote another first), nor a shard's last server. The primary
+    /// lets it go only while a majority of the shard's copies is with it,
+    /// unless `accept_data_loss`; refused, the map is left as it was.
+    pub async fn remove_replica(&self, i: usize, url: &str, accept_data_loss: bool) -> Result<Json, ApiError> {
         let t = self.topo();
         let rs = t.replicas.get(i).ok_or_else(|| ApiError::bad(format!("there is no shard {i} of {}", t.replicas.len())))?.clone();
         let Some(gone) = rs.iter().position(|r| r.url == url) else {
@@ -4037,23 +4052,30 @@ impl Coordinator {
             }
             return Err(ApiError::bad(format!("{url} is shard {i}'s primary: promote another of its servers first")));
         }
-        let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;
+        // The primary first: one cut off from its majority refuses, and the
+        // map then still names the copies it ships to (finding DS-1).
         let mut shipping = Json::Null;
         if let Some(k) = k {
             let p = &rs[k];
             let mut pc = p.client.clone();
             let replicas = rs.iter().filter(|r| r.url != url && r.url != p.url).map(|r| r.url.clone()).collect();
-            let said = configure(&mut pc, &p.url, pb::Role::Primary, replicas, None).await?;
+            let said = configure_with(&mut pc, &p.url, reship(replicas, accept_data_loss)).await?;
             shipping = json!({"primary": p.url, "replicas": said.replicas});
         }
+        let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;
         Ok(json!({"epoch": map.epoch, "shard": i, "removed": url, "shipping": shipping, "missed": missed}))
     }
 }
 
 /// Sets the part in replication of the server at `url` (`Configure`).
 async fn configure(c: &mut Client, url: &str, role: pb::Role, replicas: Vec<String>, acks: Option<Acks>) -> Result<pb::ConfigureResponse, ApiError> {
-    let r = pb::ConfigureRequest { role: role as i32, replicas, write_acks: acks.map(|a| a.name().to_string()).unwrap_or_default(), force: false, promote: false };
+    let r = pb::ConfigureRequest { role: role as i32, replicas, write_acks: acks.map(|a| a.name().to_string()).unwrap_or_default(), ..Default::default() };
     configure_with(c, url, r).await
+}
+
+/// A primary's `Configure` to ship to `replicas` from now on.
+fn reship(replicas: Vec<String>, accept_data_loss: bool) -> pb::ConfigureRequest {
+    pb::ConfigureRequest { role: pb::Role::Primary as i32, replicas, accept_data_loss, ..Default::default() }
 }
 
 async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> Result<pb::ConfigureResponse, ApiError> {

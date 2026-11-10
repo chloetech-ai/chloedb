@@ -1743,7 +1743,7 @@ async fn a_replaced_primary_is_fenced_and_starts_again_only_when_promoted() {
     assert!(e.contains("a primary of term 3 replaced this one: start it with --replica"), "{e}");
     let p = Primary::start(pdb.clone(), Some(&file("p.strata")), PrimaryOptions { promote: true, ..Default::default() }).unwrap();
     assert_eq!(pdb.storage().numbering().unwrap().term, 4);
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "role": "primary", "replicas": [], "write_acks": "all"}));
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "role": "primary", "replicas": [], "write_acks": "all", "config": {"version": 1, "copies": 3}}));
     // Replaced again, and started as a replica: it no longer counts as
     // replaced once it follows.
     assert_eq!(p.shipped_to("q", 5).unwrap_err().status, 409);
@@ -1780,7 +1780,7 @@ async fn a_replaced_primary_is_fenced_and_starts_again_only_when_promoted() {
 }
 
 fn ask(term: u64, candidate: &str, last: (u64, u64), pre: bool) -> pb::VoteRequest {
-    pb::VoteRequest { term, candidate: candidate.into(), last_term: last.0, last_seq: last.1, pre, handover: false }
+    pb::VoteRequest { term, candidate: candidate.into(), last_term: last.0, last_seq: last.1, pre, handover: false, ..Default::default() }
 }
 
 /// A copy grants one vote a term, kept beside its database, to a copy

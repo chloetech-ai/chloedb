@@ -2786,12 +2786,12 @@ async fn remove_shard(State(app): State<App>, axum::extract::Path(i): axum::extr
     Ok(audited(j, format!("removed shard {i}")))
 }
 
-/// `POST /v1/admin/shards/:i/replicas {"url", "force"?}`: one more
+/// `POST /v1/admin/shards/:i/replicas {"url", "force"?, "accept_data_loss"?}`: one more
 /// server for shard `i`, a replica of its primary.
 async fn add_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let url = body_str(&b, "url")?.to_string();
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
-    let j = match app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?).await {
+    let j = match app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?, body_bool(&b, "accept_data_loss")?).await {
         Ok(j) => j,
         Err(e) => return Ok(tried(format!("add {url} to shard {i}"))(e)),
     };
@@ -2817,12 +2817,13 @@ async fn promote_in_shard(State(app): State<App>, axum::extract::Path(i): axum::
     Ok(audited(j, format!("made {name} the primary of shard {i}{}", if force { " (forced, asking no votes)" } else { "" })))
 }
 
-/// `DELETE /v1/admin/shards/:i/replicas?url=`: one server fewer for shard
+/// `DELETE /v1/admin/shards/:i/replicas?url=&accept_data_loss=`: one server fewer for shard
 /// `i`.
 async fn remove_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, Query(q): Params) -> Result<Response, ApiError> {
     let url = q.get("url").filter(|u| !u.is_empty()).ok_or_else(|| ApiError::bad("url is the gRPC URL of the server to remove (?url=http://host:port)"))?;
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
-    let j = match app.svc.coordinator()?.remove_replica(i, url).await {
+    let accept = q.get("accept_data_loss").is_some_and(|v| v == "true");
+    let j = match app.svc.coordinator()?.remove_replica(i, url, accept).await {
         Ok(j) => j,
         Err(e) => return Ok(tried(format!("remove {url} from shard {i}"))(e)),
     };

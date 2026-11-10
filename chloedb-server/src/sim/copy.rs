@@ -273,7 +273,7 @@ impl Sim {
             }
             Req::Replicate(r) => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(r.term, &r.primary, r.member, &n) {
+                    Role::Replica(rep) => match rep.take(r.term, &r.primary, r.member, (r.config, r.copies), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {
@@ -302,7 +302,7 @@ impl Sim {
             }
             Req::Restore { term, primary, copy } => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(term, &primary, false, &n) {
+                    Role::Replica(rep) => match rep.take(term, &primary, false, (0, 0), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {

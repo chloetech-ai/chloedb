@@ -615,6 +615,12 @@ impl Primary {
         &self.opts.replicas
     }
 
+    /// Whether it may ship to `replicas` now
+    /// ([`shard::Primary::may_reconfigure`]).
+    pub fn may_reconfigure(&self, replicas: &[String], accept_data_loss: bool) -> Result<(), ApiError> {
+        self.core(|c| c.may_reconfigure(replicas, Instant::now(), accept_data_loss))
+    }
+
     /// A primary of the same database, id and term shipping to `replicas`
     /// under `acks` from now on, in place of this one, which stops
     /// shipping: replicas it ships to already keep what this one knows of
@@ -1456,8 +1462,8 @@ impl Follow {
     /// What it does with a call from `primary` of `term` before it applies
     /// anything ([`shard::Replica::take`]): `Some` answer to give at once,
     /// or `None` once it follows that primary (kept beside the database).
-    fn take(&self, term: u64, primary: &str, member: bool, n: &Numbering) -> Result<Option<pb::ReplicateResponse>, ApiError> {
-        let take = self.core().take(term, primary, member, n)?;
+    fn take(&self, term: u64, primary: &str, member: bool, config: (u64, u32), n: &Numbering) -> Result<Option<pb::ReplicateResponse>, ApiError> {
+        let take = self.core().take(term, primary, member, config, n)?;
         match take {
             Take::Answer(a) => Ok(Some(a)),
             Take::Apply { kept } => {
@@ -1474,7 +1480,7 @@ impl Follow {
     pub async fn replicate(&self, r: pb::ReplicateRequest) -> Result<pb::ReplicateResponse, ApiError> {
         let _one = self.one.lock().await;
         let n = self.numbering()?;
-        if let Some(a) = self.take(r.term, &r.primary, r.member, &n)? {
+        if let Some(a) = self.take(r.term, &r.primary, r.member, (r.config, r.copies), &n)? {
             return Ok(a);
         }
         let (db, prev, txns) = (self.db.clone(), SeqNo { term: r.prev_term, seq: r.prev_seq }, r.txns);
@@ -1545,7 +1551,7 @@ impl Follow {
         let first = chunks.message().await.map_err(cut)?.ok_or_else(|| ApiError::bad("the copy is empty"))?;
         let _one = self.one.lock().await;
         let n = self.numbering()?;
-        if let Some(a) = self.take(first.term, &first.primary, false, &n)? {
+        if let Some(a) = self.take(first.term, &first.primary, false, (0, 0), &n)? {
             return Ok(a);
         }
         // Its rows are behind its primary's log, or differ: no reads

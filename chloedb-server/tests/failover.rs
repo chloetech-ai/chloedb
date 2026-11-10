@@ -23,16 +23,16 @@ use chloedb_server::service::{AgentConfig, Backend, QueryReq, Service};
 const N: usize = 300;
 const AFTER_MS: u64 = 600;
 
-/// A port free now, of a block of 20 that this test process takes alone
+/// A port free now, of a block of 40 that this test process takes alone
 /// (by its process id) below the ranges the other tests and the system's
 /// own connections take ports from: a port taken with port 0 can be handed
 /// to a connection's own end before the server, started again, binds it.
 fn port() -> u16 {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let base = 10_000 + (std::process::id() % 500) * 20;
+    let base = 10_000 + (std::process::id() % 500) * 40;
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        assert!(n < 20, "this test process took its 20 ports");
+        assert!(n < 40, "this test process took its 40 ports");
         let p = (base + n) as u16;
         if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
             return p;
@@ -173,8 +173,8 @@ async fn a_killed_primary_is_replaced_by_the_replica_its_copies_elect() {
     }
     // One shard: a, its primary, and two replicas sent a copy of it.
     let (coord, svc) = coordinator(a.url()).await;
-    coord.add_replica(0, &b.url(), false).await.unwrap();
-    coord.add_replica(0, &c.url(), false).await.unwrap();
+    coord.add_replica(0, &b.url(), false, false).await.unwrap();
+    coord.add_replica(0, &c.url(), false, false).await.unwrap();
     until("both replicas are in sync and vote", &[&a, &b, &c], || async {
         let r = a.replication().await;
         r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
@@ -268,8 +268,8 @@ async fn a_shard_with_a_majority_up_elects_and_one_without_does_not() {
         n.start().await;
     }
     let (coord, svc) = coordinator(a.url()).await;
-    coord.add_replica(0, &b.url(), false).await.unwrap();
-    coord.add_replica(0, &c.url(), false).await.unwrap();
+    coord.add_replica(0, &b.url(), false, false).await.unwrap();
+    coord.add_replica(0, &c.url(), false, false).await.unwrap();
     until("both replicas are in sync and vote", &[&a, &b, &c], || async {
         let r = a.replication().await;
         r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
@@ -318,8 +318,8 @@ async fn a_primary_that_cannot_write_hands_over_to_a_replica_in_sync() {
         n.start().await;
     }
     let (coord, svc) = coordinator(a.url()).await;
-    coord.add_replica(0, &b.url(), false).await.unwrap();
-    coord.add_replica(0, &c.url(), false).await.unwrap();
+    coord.add_replica(0, &b.url(), false, false).await.unwrap();
+    coord.add_replica(0, &c.url(), false, false).await.unwrap();
     until("both replicas are in sync and vote", &[&a, &b, &c], || async {
         let r = a.replication().await;
         r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
@@ -346,4 +346,94 @@ async fn a_primary_that_cannot_write_hands_over_to_a_replica_in_sync() {
     until("the failing primary steps down", &[&a], || async { role(&a).await.0 == "replica" }).await;
     let got = sold(&svc).await;
     assert_eq!((got[&format!("p{:07}", 1)], got[&format!("p{:07}", 2)]), (1001, 1002));
+}
+
+impl Node {
+    /// Sends the process `sig`: STOP pauses it, as a server cut off looks
+    /// to the others (calls to it wait, its clock runs on), CONT resumes.
+    fn signal(&self, sig: &str) {
+        let pid = self.child.as_ref().expect("started").id().to_string();
+        assert!(Command::new("kill").args([format!("-{sig}"), pid]).status().unwrap().success());
+    }
+}
+
+
+/// Asks `n` to ship to `replicas` (`Configure`, as a coordinator's
+/// `add_replica` and `remove_replica` do), within 20 s.
+async fn reship(n: &Node, replicas: &[String], accept_data_loss: bool) -> Result<chloedb_server::pb::ConfigureResponse, tonic::Status> {
+    let mut c = chloedb_server::pb::strata_client::StrataClient::connect(n.url()).await.unwrap();
+    let r = chloedb_server::pb::ConfigureRequest { role: chloedb_server::pb::Role::Primary as i32, replicas: replicas.to_vec(), accept_data_loss, ..Default::default() };
+    tokio::time::timeout(Duration::from_secs(20), c.configure(r)).await.expect("an answer within 20 s").map(|a| a.into_inner())
+}
+
+/// Finding DS-1 on real processes: a primary cut off from its majority
+/// (its replicas B and C paused, as a cut looks to it: calls wait) was
+/// given two new copies, D and E, by two `Configure` calls without force,
+/// counted 3 of 5 and acknowledged writes, while B and C could elect
+/// another primary; the verifier lost those writes at the heal. Now it
+/// refuses each change, and a removal of the copies it cannot reach, and
+/// acknowledges nothing; only `accept_data_loss` lets it (the old
+/// behaviour, which then acknowledges with D and E). With its majority
+/// back it takes one copy at a time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_primary_cut_off_from_its_majority_is_given_no_new_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let mut a = Node::new(d, "a", N);
+    let mut b = Node::new(d, "b", 0);
+    let mut c = Node::new(d, "c", 0);
+    let mut dd = Node::new(d, "d", 0);
+    let mut e = Node::new(d, "e", 0);
+    for n in [&mut a, &mut b, &mut c, &mut dd, &mut e] {
+        n.start().await;
+    }
+    let (coord, svc) = coordinator(a.url()).await;
+    coord.add_replica(0, &b.url(), false, false).await.unwrap();
+    coord.add_replica(0, &c.url(), false, false).await.unwrap();
+    until("both replicas are in sync and vote", &[&a, &b, &c], || async {
+        let r = a.replication().await;
+        r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
+    })
+    .await;
+    svc.write_ops(set(0, 100), None).await.unwrap();
+
+    // A cut off from B and C.
+    b.signal("STOP");
+    c.signal("STOP");
+    tokio::time::sleep(Duration::from_millis(AFTER_MS * 2)).await;
+    let (bu, cu, du, eu) = (b.url(), c.url(), dd.url(), e.url());
+    let err = reship(&a, &[bu.clone(), cu.clone(), du.clone()], false).await.unwrap_err();
+    assert!(err.code() == tonic::Code::Unavailable && err.message().contains("fewer than a majority") && err.message().contains("accept_data_loss"), "{}", err.message());
+    let err = reship(&a, &[bu.clone(), cu.clone(), du.clone(), eu.clone()], false).await.unwrap_err();
+    assert!(err.message().contains("one at a time"), "{}", err.message());
+    let err = reship(&a, std::slice::from_ref(&bu), false).await.unwrap_err();
+    assert!(err.message().contains("fewer than a majority"), "removing a copy it cannot reach: {}", err.message());
+    assert!(a.logs().contains("refused other replicas"), "{}", a.logs());
+    assert_eq!(a.replication().await["replicas"].as_array().map(Vec::len), Some(2), "A ships to B and C still");
+    assert!(svc.write_ops(set(1, 101), None).await.is_err(), "A has no majority, and acknowledges nothing");
+
+    // The old behaviour, named: with accept_data_loss, A takes D and E,
+    // counts 3 of 5 once they caught up, and acknowledges a write that
+    // B and C, which may have elected another, do not hold.
+    reship(&a, &[bu.clone(), cu.clone(), du.clone()], true).await.unwrap();
+    reship(&a, &[bu.clone(), cu.clone(), du.clone(), eu.clone()], true).await.unwrap();
+    assert!(a.logs().contains("accept_data_loss"), "the change is logged: {}", a.logs());
+    until("D and E caught up", &[&a, &dd, &e], || async {
+        let r = a.replication().await;
+        r["replicas"].as_array().is_some_and(|v| v.iter().filter(|f| f["in_sync"] == true && f["member"] == true).count() == 2)
+    })
+    .await;
+    svc.write_ops(set(2, 102), None).await.unwrap();
+
+    // B and C back: one copy at a time again (E leaves), once the
+    // membership reached a majority.
+    b.signal("CONT");
+    c.signal("CONT");
+    until("B and C are in sync", &[&a, &b, &c], || async {
+        let r = a.replication().await;
+        r["replicas"].as_array().is_some_and(|v| v.iter().filter(|f| f["in_sync"] == true && f["member"] == true).count() == 4)
+    })
+    .await;
+    reship(&a, &[bu, cu, du], false).await.unwrap();
+    drop((dd, e));
 }

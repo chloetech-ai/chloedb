@@ -32,8 +32,9 @@ fn unavailable(message: String) -> ApiError {
 /// before it answers the call that changed it: its id; the primary it
 /// follows and that one's term; the newer term of a primary that replaced
 /// it, as a primary; its part; the term it last voted in and the copy it
-/// voted for; and whether a primary counted it among the copies a majority
-/// is counted of (it grants votes from then).
+/// voted for; whether a primary counted it among the copies a majority
+/// is counted of (it grants votes from then); and the newest membership of
+/// its shard it knows ([`Self::config`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Kept {
     pub id: String,
@@ -42,6 +43,17 @@ pub struct Kept {
     pub role: Option<KeptRole>,
     pub voted: Option<(u64, String)>,
     pub member: bool,
+    /// The shard's membership as a primary last numbered it: its version,
+    /// one more each time a primary is given other replicas
+    /// ([`Primary::reconfigure`]), and the copies it counts, the primary
+    /// among them. A primary ships it in every call; a replica keeps the
+    /// newest it was sent, refuses its vote to a candidate that knows an
+    /// older one ([`decide`]), and, as a candidate, needs a majority of
+    /// its copies ([`Campaign::tally`]). Finding DS-1: a primary cut off
+    /// from its majority was given other replicas, counted a majority of
+    /// those, and acknowledged writes while the copies it was cut off from
+    /// elected another.
+    pub config: Option<(u64, u64)>,
 }
 
 impl Kept {
@@ -64,6 +76,22 @@ impl Kept {
         term.max(self.follows.as_ref().map_or(0, |f| f.1)).max(self.replaced_by.unwrap_or(0)).max(self.voted.as_ref().map_or(0, |v| v.0))
     }
 
+    /// The version of the membership it knows ([`Self::config`]; 0: none).
+    pub fn config_version(&self) -> u64 {
+        self.config.map_or(0, |c| c.0)
+    }
+
+    /// The copies that membership counts (0: none known).
+    pub fn config_copies(&self) -> usize {
+        self.config.map_or(0, |c| c.1 as usize)
+    }
+
+    /// It was sent membership `version` of `copies` copies: kept when newer
+    /// than the one it knows.
+    fn heard_config(&self, version: u64, copies: u32) -> Option<Kept> {
+        (version > self.config_version()).then(|| Kept { config: Some((version, copies as u64)), ..self.clone() })
+    }
+
     /// As `<db>.replication` holds it.
     pub fn to_json(&self) -> Json {
         let mut j = json!({"id": self.id});
@@ -78,6 +106,9 @@ impl Kept {
         }
         if self.member {
             j["member"] = json!(true);
+        }
+        if let Some((version, copies)) = self.config {
+            j["config"] = json!({"version": version, "copies": copies});
         }
         match &self.role {
             None => {}
@@ -117,7 +148,11 @@ impl Kept {
             v => Some((v["term"].as_u64().ok_or("no term voted in")?, v["for"].as_str().unwrap_or_default().to_string())),
         };
         let member = j["member"].as_bool().unwrap_or(false);
-        Ok(Kept { id, follows, replaced_by, role, voted, member })
+        let config = match &j["config"] {
+            Json::Null => None,
+            c => Some((c["version"].as_u64().ok_or("no membership version")?, c["copies"].as_u64().ok_or("no copies in the membership")?)),
+        };
+        Ok(Kept { id, follows, replaced_by, role, voted, member, config })
     }
 }
 
@@ -129,7 +164,9 @@ pub fn refused(term: u64, last: SeqNo, reason: String) -> pb::VoteResponse {
 /// Whether a copy keeping `kept`, at `term` and holding `last`, grants
 /// vote `r`: one vote a term, for a newer term than any it knows, and for
 /// a copy holding every transaction it holds (by last term, then last
-/// number), once a primary counted it a member. The candidate asking
+/// number), once a primary counted it a member, and that knows the newest
+/// membership of the shard it knows ([`Kept::config`]; a candidate that
+/// numbers none, of an older server, is not asked). The candidate asking
 /// itself is told so.
 pub fn decide(kept: &Kept, term: u64, last: SeqNo, r: &pb::VoteRequest) -> pb::VoteResponse {
     let newest = kept.newest(term);
@@ -148,6 +185,16 @@ pub fn decide(kept: &Kept, term: u64, last: SeqNo, r: &pb::VoteRequest) -> pb::V
     }
     if !kept.member {
         return no("it has not caught up with a primary since it joined its shard, so it grants no votes".into());
+    }
+    // The candidate may count a majority of copies that are no longer the
+    // shard's, while a primary given the newer membership counts another.
+    if r.config > 0 && kept.config_version() > r.config {
+        return no(format!(
+            "it knows version {} of the shard's membership ({} copies), newer than the candidate's ({})",
+            kept.config_version(),
+            kept.config_copies(),
+            r.config
+        ));
     }
     let term = if r.pre { newest } else { newest.max(r.term) };
     pb::VoteResponse { granted: true, term, last_seq: last.seq, last_term: last.term, reason: String::new(), candidate: false }
@@ -258,8 +305,10 @@ impl Replica {
     /// `Replicate` or the first chunk of a `Restore`), at `n`: an older
     /// term than it knows is answered with its own, and a second primary of
     /// the term it follows is refused (409); otherwise it follows that
-    /// primary, counting itself a member once a call says so (`member`).
-    pub fn take(&self, term: u64, primary: &str, member: bool, n: &Numbering) -> Result<Take, ApiError> {
+    /// primary, counting itself a member once a call says so (`member`),
+    /// and keeping the membership the call names (`config`: its version
+    /// and copies) when newer than the one it knows.
+    pub fn take(&self, term: u64, primary: &str, member: bool, config: (u64, u32), n: &Numbering) -> Result<Take, ApiError> {
         let kept = &self.kept;
         // A term it voted in counts: the primary of an older one lost.
         let newest = kept.newest(n.term);
@@ -276,6 +325,9 @@ impl Replica {
         };
         if member && !kept.member {
             next.get_or_insert_with(|| kept.clone()).member = true;
+        }
+        if let Some(k) = next.as_ref().unwrap_or(kept).heard_config(config.0, config.1) {
+            next = Some(k);
         }
         Ok(Take::Apply { kept: next })
     }
@@ -338,7 +390,7 @@ impl Replica {
     /// An election of this replica at `n`, for the term after the newest
     /// it knows or heard of; a `handover` is a promotion asked by hand.
     pub fn campaign(&self, n: &Numbering, handover: bool) -> Campaign {
-        Campaign { id: self.kept.id.clone(), term: self.kept.newest(n.term).max(self.heard) + 1, handover }
+        Campaign { id: self.kept.id.clone(), term: self.kept.newest(n.term).max(self.heard) + 1, handover, config: self.kept.config_version(), copies: self.kept.config_copies() }
     }
 
     /// The copies answered a round of its campaign `t`: the newest term
@@ -366,7 +418,7 @@ impl Replica {
             Some(t) => t,
             None => newest + 1,
         };
-        let next = Kept { id: kept.id.clone(), role: Some(KeptRole::Primary { replicas: replicas.to_vec(), acks }), voted: kept.voted.clone(), member: true, ..Kept::default() };
+        let next = Kept { id: kept.id.clone(), role: Some(KeptRole::Primary { replicas: replicas.to_vec(), acks }), voted: kept.voted.clone(), member: true, config: kept.config, ..Kept::default() };
         Ok((term, next))
     }
 }
@@ -453,12 +505,16 @@ pub fn handover_hold(asked: Option<&Asked>, elected: Option<&Elected>, lease: Du
 /// A replica asking its shard's copies to make it the primary of `term`:
 /// first whether they would (`pre`), which changes nothing, then for their
 /// votes, keeping its own. It wins with a majority of the copies, itself
-/// counted once.
+/// counted once, and with a majority of the copies of the newest
+/// membership it knows ([`Kept::config`]), when that counts more.
 #[derive(Clone, Debug)]
 pub struct Campaign {
     pub id: String,
     pub term: u64,
     pub handover: bool,
+    /// The membership it knows: version and copies (0: none).
+    pub config: u64,
+    pub copies: usize,
 }
 
 /// What the copies answered a round of a [`Campaign`].
@@ -480,7 +536,7 @@ pub struct Tally {
 impl Campaign {
     /// The vote asked, by a candidate holding `last`.
     pub fn ask(&self, last: SeqNo, pre: bool) -> pb::VoteRequest {
-        pb::VoteRequest { term: self.term, candidate: self.id.clone(), last_seq: last.seq, last_term: last.term, pre, handover: self.handover }
+        pb::VoteRequest { term: self.term, candidate: self.id.clone(), last_seq: last.seq, last_term: last.term, pre, handover: self.handover, config: self.config, copies: self.copies as u32 }
     }
 
     /// The votes of `copies`, which answered `answers` in order (an error:
@@ -509,7 +565,7 @@ impl Campaign {
                 }
             }
         }
-        let need = (others.len() + 1) / 2 + 1;
+        let need = self.need(others.len() + 1);
         Tally { others, granted, need, newer, last, said: Json::Array(said) }
     }
 
@@ -527,10 +583,18 @@ impl Campaign {
             return answers.iter().all(Option::is_some);
         }
         // As `tally` counts: the copies besides the candidate, and itself.
-        let need = answers.len() / 2 + 1;
+        let need = self.need(answers.len());
         let granted = 1 + answers.iter().filter(|a| matches!(a, Some(Ok(a)) if a.granted && !a.candidate)).count();
         let left = answers.iter().filter(|a| a.is_none()).count();
         granted >= need || granted + left < need
+    }
+
+    /// The votes that win among `asked` copies, itself counted: a majority
+    /// of them, and of the membership it knows. A copy the map lacks but
+    /// the membership counts (a replica added while the map was not given
+    /// to this one) cannot be asked, so its vote is missing, never assumed.
+    fn need(&self, asked: usize) -> usize {
+        (asked / 2 + 1).max(self.copies / 2 + 1)
     }
 
     fn lost(&self, round: &str, t: &Tally) -> ApiError {
@@ -661,6 +725,8 @@ pub struct Peer {
     pub copies: u64,
     /// The shipper that ships to it ([`Shipper::gen`]).
     pub owner: u64,
+    /// The version of the membership it took a call of ([`Kept::config`]).
+    pub config: u64,
 }
 
 impl Peer {
@@ -678,6 +744,7 @@ impl Peer {
             failures: 0,
             copies: 0,
             owner: 0,
+            config: 0,
         };
         // A replica that joins a serving primary: out of sync, so that
         // writes do not wait for it, until it has installed a copy of the
@@ -752,6 +819,8 @@ struct Sent {
     started: Instant,
     /// Whether the call pins the version of the round under way.
     pin: bool,
+    /// The membership version it names (0: a copy, which names none).
+    config: u64,
 }
 
 /// One task's shipping to a replica: the next number to send (`None`
@@ -851,7 +920,10 @@ impl Primary {
     pub fn new(kept: Kept, replicas: &[String], opts: Opts, joining: bool) -> (Primary, Option<Kept>) {
         // A primary counts among its shard's copies, as a replica once it
         // steps down or starts again.
-        let next = Kept { role: Some(KeptRole::Primary { replicas: replicas.to_vec(), acks: opts.acks }), member: true, ..kept.clone() };
+        // A primary started before memberships were numbered numbers its
+        // own the first.
+        let config = kept.config.or(Some((1, 1 + replicas.len() as u64)));
+        let next = Kept { role: Some(KeptRole::Primary { replicas: replicas.to_vec(), acks: opts.acks }), member: true, config, ..kept.clone() };
         let save = (next != kept).then_some(next);
         let kept = save.clone().unwrap_or(kept);
         let mut p = Primary { id: kept.id.clone(), opts, peers: replicas.iter().map(|u| Peer::new(u, joining)).collect(), fenced: 0, kept, progress: 0, writes_from: None, handing_over: None, gen: 0 };
@@ -904,7 +976,7 @@ impl Primary {
         }
         self.fenced = term;
         tracing::error!(term = mine, replaced_by = term, "a primary of a newer term replaced this one, which takes no more writes and serves no reads");
-        self.kept = Kept { id: self.id.clone(), follows: None, replaced_by: Some(term), role: Some(KeptRole::Replica), voted: self.kept.voted.clone(), member: true };
+        self.kept = Kept { id: self.id.clone(), follows: None, replaced_by: Some(term), role: Some(KeptRole::Replica), voted: self.kept.voted.clone(), member: true, config: self.kept.config };
         self.changed();
         Some(self.kept.clone())
     }
@@ -1108,11 +1180,69 @@ impl Primary {
             p.owner = self.gen;
             peers.push(p);
         }
+        // Another membership, when the copies change: a version more.
+        let config = match self.peers.iter().map(|p| &p.url).eq(peers.iter().map(|p| &p.url)) {
+            true => self.kept.config,
+            false => Some((self.kept.config_version() + 1, 1 + replicas.len() as u64)),
+        };
         self.peers = peers;
         self.opts.acks = acks;
         let role = Some(KeptRole::Primary { replicas, acks });
-        self.kept = Kept { id: self.id.clone(), voted: self.kept.voted.clone(), role, member: true, ..Kept::default() };
+        self.kept = Kept { id: self.id.clone(), voted: self.kept.voted.clone(), role, member: true, config, ..Kept::default() };
         Ok(Some(self.kept.clone()))
+    }
+
+    /// Whether it may ship to `replicas` from `now` ([`Self::reconfigure`]),
+    /// as Raft changes a membership: one copy added or removed at a time,
+    /// by a primary that a majority of its current copies answered within
+    /// its lease (none of them can have voted for another since), once a
+    /// majority of them holds its current membership (the change before
+    /// is complete). Refused (503) otherwise, unless the caller accepts
+    /// that writes may be lost (`accept_data_loss`, logged): finding DS-1,
+    /// a primary cut off from its majority was given two new replicas, and
+    /// it and the primary its old replicas elected both acknowledged
+    /// writes, the old one's lost at the heal. Without a lease (no
+    /// automatic failover), a call answered within four heartbeats counts.
+    pub fn may_reconfigure(&self, replicas: &[String], now: Instant, accept_data_loss: bool) -> Result<(), ApiError> {
+        if let t @ 1.. = self.fenced {
+            return Err(conflict(format!("a primary of term {t} replaced this one, which ships to no replica: make it a replica of the new primary")));
+        }
+        let old: std::collections::BTreeSet<&str> = self.peers.iter().map(|p| p.url.as_str()).collect();
+        let new: std::collections::BTreeSet<&str> = replicas.iter().map(String::as_str).collect();
+        if old == new {
+            return Ok(());
+        }
+        let changed = old.symmetric_difference(&new).count();
+        let window = match self.opts.lease.is_zero() {
+            true => self.opts.heartbeat * 4,
+            false => self.opts.lease,
+        };
+        let fresh = |p: &Peer| p.answered.is_some_and(|at| now.saturating_duration_since(at) < window);
+        let up = 1 + self.peers.iter().filter(|p| p.member && fresh(p)).count();
+        let version = self.kept.config_version();
+        let hold = 1 + self.peers.iter().filter(|p| p.member && p.config >= version).count();
+        let need = self.majority();
+        let why = if changed > 1 {
+            Some(format!("{changed} copies would change at once, and a shard's copies change one at a time: add or remove one, then the next"))
+        } else if up < need {
+            Some(format!(
+                "{up} of this primary's {} copies answered it within {} ms, fewer than a majority ({need}): the others may have elected another primary, which would go on acknowledging writes beside this one",
+                self.copies(),
+                window.as_millis()
+            ))
+        } else if hold < need {
+            Some(format!("{hold} of this primary's {} copies hold version {version} of the shard's membership, fewer than a majority ({need}): the change before is not complete yet", self.copies()))
+        } else {
+            None
+        };
+        match (why, accept_data_loss) {
+            (None, _) => Ok(()),
+            (Some(why), true) => {
+                tracing::error!(reason = %why, replicas = %replicas.join(", "), "the shard's copies change with accept_data_loss: writes another primary or this one acknowledges may be lost");
+                Ok(())
+            }
+            (Some(why), false) => Err(unavailable(format!("this primary takes no other replicas: {why}; pass accept_data_loss to change them anyway, accepting that acknowledged writes may be lost"))),
+        }
     }
 
     /// Replica `k`, when shipper `s` still ships to it: a primary given
@@ -1193,7 +1323,7 @@ impl Primary {
         self.peers[k].copying = true;
         // The copy holds at least what was committed by now.
         s.holding = true;
-        s.sent = Some(Sent { numbering: n.clone(), end: None, n: 0, started: now, pin: false });
+        s.sent = Some(Sent { numbering: n.clone(), end: None, n: 0, started: now, pin: false, config: 0 });
         Ship::Copy { hold_from: n.seq + 1, term: n.term }
     }
 
@@ -1216,8 +1346,10 @@ impl Primary {
             behind: end < n.seq,
             pin,
             member: self.peers[k].member,
+            config: self.kept.config_version(),
+            copies: self.kept.config_copies() as u32,
         };
-        s.sent = Some(Sent { numbering: n.clone(), end: Some(end), n: txns.len() as u64, started: now, pin });
+        s.sent = Some(Sent { numbering: n.clone(), end: Some(end), n: txns.len() as u64, started: now, pin, config: self.kept.config_version() });
         Ship::Call(req)
     }
 
@@ -1226,8 +1358,14 @@ impl Primary {
     /// when the answer fenced this primary.
     pub fn answered(&mut self, k: usize, s: &mut Shipper, answer: Result<pb::ReplicateResponse, String>, n: &Numbering) -> (Ship, Option<Kept>) {
         let Some(k) = self.ships_to(k, s) else { return (Ship::Stop, None) };
-        if answer.is_ok() {
+        if let Ok(a) = &answer {
             self.peers[k].answered = s.sent.as_ref().map(|c| c.started);
+            // It took the call, and kept the membership it named, unless it
+            // knows a newer term (it applied nothing).
+            if a.replica_term <= n.term {
+                let v = s.sent.as_ref().map_or(0, |c| c.config);
+                self.peers[k].config = self.peers[k].config.max(v);
+            }
         }
         self.outcome(k, s, answer, n)
     }
@@ -1347,7 +1485,7 @@ mod tests {
     }
 
     fn ask(term: u64, candidate: &str, last: (u64, u64), pre: bool) -> pb::VoteRequest {
-        pb::VoteRequest { term, candidate: candidate.into(), last_term: last.0, last_seq: last.1, pre, handover: false }
+        pb::VoteRequest { term, candidate: candidate.into(), last_term: last.0, last_seq: last.1, pre, handover: false, ..Default::default() }
     }
 
     #[test]
@@ -1359,6 +1497,7 @@ mod tests {
             role: Some(KeptRole::Primary { replicas: vec!["http://c".into()], acks: Acks::Majority }),
             voted: Some((5, "c".into())),
             member: true,
+            config: Some((3, 2)),
         };
         assert_eq!(Kept::from_json(&k.to_json()).unwrap(), k);
         assert_eq!(k.newest(2), 5);
@@ -1412,12 +1551,12 @@ mod tests {
         let (mut r, save) = Replica::open(Kept::new("r".into()), t0, false);
         assert_eq!(save.unwrap().role, Some(KeptRole::Replica));
         let at = n(2, 4, &[(1, 1), (2, 3)]);
-        let Ok(Take::Apply { kept }) = r.take(2, "p", true, &at) else { panic!() };
+        let Ok(Take::Apply { kept }) = r.take(2, "p", true, (0, 0), &at) else { panic!() };
         let kept = kept.unwrap();
         assert_eq!((kept.follows.clone(), kept.member), (Some(("p".into(), 2)), true));
         r.took(Some(kept), t0);
-        assert!(r.take(2, "q", true, &at).is_err(), "a second primary of term 2");
-        let Ok(Take::Answer(a)) = r.take(1, "old", false, &at) else { panic!() };
+        assert!(r.take(2, "q", true, (0, 0), &at).is_err(), "a second primary of term 2");
+        let Ok(Take::Answer(a)) = r.take(1, "old", false, (0, 0), &at) else { panic!() };
         assert_eq!((a.matched, a.replica_term, a.seq, a.term), (false, 2, 4, 2));
         // Its primary called a moment ago: no vote but a handover.
         let (v, _) = r.vote(&ask(3, "x", (2, 4), false), &at, t0 + Duration::from_millis(10), Duration::from_secs(1));
@@ -1451,7 +1590,7 @@ mod tests {
 
     #[test]
     fn a_round_is_decided_without_the_copies_it_does_not_need() {
-        let c = Campaign { id: "me".into(), term: 5, handover: false };
+        let c = Campaign { id: "me".into(), term: 5, handover: false, config: 0, copies: 0 };
         let me = Some(Ok(pb::VoteResponse { granted: true, candidate: true, ..Default::default() }));
         let yes = Some(Ok(pb::VoteResponse { granted: true, ..Default::default() }));
         let no = Some(Ok(pb::VoteResponse { granted: false, reason: "no".into(), ..Default::default() }));
@@ -1552,6 +1691,79 @@ mod tests {
         assert!(!matches!(p.poll(0, &mut new[0], &at, t0), Ship::Sleep(_) | Ship::Stop));
         assert!(matches!(p.poll(1, &mut new[1], &at, t0), Ship::Copy { .. }), "c joins: it is sent a copy first");
         assert_eq!((p.copies(), p.majority()), (2, 2), "c counts once it caught up");
+    }
+
+    /// Finding DS-1, as the verifier ran it: {A} cut off from {B, C},
+    /// which elect C; A given D, then E, counted 3 of 5 and acknowledged
+    /// writes beside C.
+    #[test]
+    fn a_primary_cut_off_from_its_majority_takes_no_other_replicas() {
+        let t0 = Instant::now();
+        let lease = Duration::from_millis(750);
+        let at = n(1, 2, &[(1, 1)]);
+        let opts = Opts { lease, ..opts() };
+        let (mut p, _) = Primary::new(Kept::new("a".into()), &["b".into(), "c".into()], opts, false);
+        assert_eq!(p.kept.config, Some((1, 3)), "a primary numbers its first membership");
+        let mut s = p.shippers();
+        // B and C answer at t0, and hold membership 1.
+        for k in 0..2 {
+            let Ship::Call(req) = p.poll(k, &mut s[k], &at, t0) else { panic!() };
+            assert_eq!((req.config, req.copies), (1, 3));
+            p.answered(k, &mut s[k], matched(2), &at);
+        }
+        let d = |more: &[&str]| ["b", "c"].iter().chain(more).map(|u| u.to_string()).collect::<Vec<_>>();
+        assert!(p.may_reconfigure(&d(&["d"]), t0 + Duration::from_millis(100), false).is_ok(), "with its majority");
+        assert!(p.may_reconfigure(&d(&["d", "e"]), t0, false).unwrap_err().message.contains("one at a time"));
+        // Cut off: neither answered within the lease.
+        let later = t0 + Duration::from_secs(2);
+        let e = p.may_reconfigure(&d(&["d"]), later, false).unwrap_err();
+        assert!(e.status == 503 && e.message.contains("fewer than a majority") && e.message.contains("accept_data_loss"), "{}", e.message);
+        let e = p.may_reconfigure(&["c".to_string()], later, false).unwrap_err();
+        assert!(e.message.contains("fewer than a majority"), "removing the copies it cannot reach is refused too: {}", e.message);
+        assert!(p.may_reconfigure(&d(&["d"]), later, true).is_ok(), "the caller accepts the loss");
+        // With its majority again: D joins (membership 2, of 4 copies); E
+        // waits until a majority holds membership 2.
+        let back = later + Duration::from_secs(1);
+        let kept = p.reconfigure(d(&["d"]), Acks::Majority).unwrap().unwrap();
+        assert_eq!(kept.config, Some((2, 4)));
+        let mut s = p.shippers();
+        p.peers[0].answered = Some(back);
+        p.peers[1].answered = Some(back);
+        let e = p.may_reconfigure(&d(&["d", "e"]), back, false).unwrap_err();
+        assert!(e.message.contains("not complete"), "{}", e.message);
+        let Ship::Call(req) = p.poll(0, &mut s[0], &at, back) else { panic!() };
+        assert_eq!((req.config, req.copies), (2, 4));
+        p.answered(0, &mut s[0], matched(2), &at);
+        p.peers[1].answered = Some(back);
+        assert!(p.may_reconfigure(&d(&["d", "e"]), back, false).is_ok(), "A and B hold membership 2");
+    }
+
+    /// The other half of DS-1: a copy that heard of a newer membership
+    /// votes for no candidate that knows an older one, and a candidate
+    /// needs a majority of the membership it knows besides one of the
+    /// copies it asks (its map may lack the copies added since).
+    #[test]
+    fn a_candidate_of_an_older_membership_is_refused_and_counts_the_newest() {
+        let t0 = Instant::now();
+        let at = n(1, 2, &[(1, 1)]);
+        let (r, _) = Replica::open(Kept { member: true, ..Kept::new("b".into()) }, t0, false);
+        let Ok(Take::Apply { kept }) = r.take(1, "a", true, (2, 4), &at) else { panic!() };
+        let kept = kept.unwrap();
+        assert_eq!(kept.config, Some((2, 4)));
+        let old = pb::VoteRequest { config: 1, copies: 3, ..ask(2, "c", (1, 2), false) };
+        let v = decide(&kept, 1, at.last(), &old);
+        assert!(!v.granted && v.reason.contains("membership"), "{}", v.reason);
+        assert!(decide(&kept, 1, at.last(), &pb::VoteRequest { config: 2, ..old.clone() }).granted);
+        assert!(decide(&kept, 1, at.last(), &pb::VoteRequest { config: 0, ..old }).granted, "an older server numbers none");
+        // B, knowing 4 copies, asks the 3 of its map: 2 votes do not win.
+        let (mut r, _) = Replica::open(kept, t0, false);
+        r.took(None, t0);
+        let c = r.campaign(&at, false);
+        assert_eq!((c.config, c.copies), (2, 4));
+        let me = Ok(pb::VoteResponse { granted: true, candidate: true, ..Default::default() });
+        let t = c.tally(&["a".into(), "b".into(), "c".into()], vec![Err("cut off".into()), me, said(1, true)]);
+        assert_eq!((t.granted, t.need), (2, 3));
+        assert!(c.voted(t).is_err());
     }
 
     fn said(term: u64, granted: bool) -> Result<pb::VoteResponse, String> {
