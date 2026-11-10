@@ -22,7 +22,7 @@
     <a href="benchmarks.html">Benchmarks</a>
     <a href="use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+  <div class="top-links"><a href="https://github.com/chloetech-ai/chloedb/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
 
 <main>
@@ -110,27 +110,27 @@
         </div>
         <div class="hl-shot"><span class="hl-pop"><i></i>Looked at 12 things in 23 s</span><img src="../assets/img/site-cc-oncall.png" alt="The on-call agent's report on a p99 alert: a summary, the evidence, the likely cause and a proposed fix waiting for an admin" loading="lazy"></div>
       </a>
-      <a class="hl text" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/opensearch.md">
+      <a class="hl text" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/opensearch.md">
         <span class="ico"><svg viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></svg></span>
         <span class="kick">Drop-in</span>
         <h3>The OpenSearch API</h3>
         <p>Gitea and Mastodon index and search through it unchanged: 42 of 42 and 112 of 114 of their searches return what OpenSearch 2.11 returns.</p>
         <code>chloedb-server --opensearch-listen 127.0.0.1:9200</code>
       </a>
-      <a class="hl cols" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/postgres.md">
+      <a class="hl cols" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/postgres.md">
         <span class="ico"><svg viewBox="0 0 24 24"><ellipse cx="11" cy="5.5" rx="7" ry="2.5"/><path d="M4 5.5v6c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-6M4 11.5v6c0 1.4 3.1 2.5 7 2.5"/><path d="M15 19h6M18 16l3 3-3 3"/></svg></span>
         <span class="kick">Data in</span>
         <h3>Follows Postgres</h3>
         <p>Search over your Postgres tables, a moment behind, by logical replication. Every insert, update and delete arrives, with no Kafka in between.</p>
         <code>chloedb-server follow-postgres --source postgres://…</code>
       </a>
-      <a class="hl vec" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/slices.md">
+      <a class="hl vec" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md">
         <span class="ico"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M11 18.5h2"/><circle cx="11.5" cy="9.5" r="2.6"/><path d="m13.4 11.4 1.8 1.8"/></svg></span>
         <span class="kick">On the device</span>
         <h3>Search on the phone</h3>
         <p>A slice of a table near the user, by place or by meaning, is searched on the device. It answers when it can prove its top results, and asks the server when it can't.</p>
       </a>
-      <a class="hl graph" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md#agents-over-mcp">
+      <a class="hl graph" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md#agents-over-mcp">
         <span class="ico"><svg viewBox="0 0 24 24"><path d="M11 3l1.8 4.7 4.7 1.8-4.7 1.8L11 16l-1.8-4.7-4.7-1.8 4.7-1.8z"/><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z"/></svg></span>
         <span class="kick">Agents</span>
         <h3>Agents over MCP</h3>
@@ -199,14 +199,14 @@
       <p>Each one opens a local file or talks to a server, with the same methods. Apps written for OpenSearch keep their client.</p>
     </div>
     <div class="langs">
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/python.md"><b>Python</b><span>pandas, polars, Arrow</span></a>
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/javascript.md"><b>JavaScript</b><span>Node, Bun and Deno</span></a>
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/java.md"><b>Java</b><span>and a JDBC driver</span></a>
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/index.md"><b>Rust</b><span>the engine itself</span></a>
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md"><b>HTTP and gRPC</b><span>any other language</span></a>
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/sqlite.md"><b>SQLite and Parquet</b><span>in and out</span></a>
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/opensearch.md"><b>OpenSearch API</b><span>Elasticsearch clients too</span></a>
-      <a class="lang" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md#agents-over-mcp"><b>MCP</b><span>Claude Code and other agents</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/python.md"><b>Python</b><span>pandas, polars, Arrow</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/javascript.md"><b>JavaScript</b><span>Node, Bun and Deno</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/java.md"><b>Java</b><span>and a JDBC driver</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md"><b>Rust</b><span>the engine itself</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md"><b>HTTP and gRPC</b><span>any other language</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/sqlite.md"><b>SQLite and Parquet</b><span>in and out</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/opensearch.md"><b>OpenSearch API</b><span>Elasticsearch clients too</span></a>
+      <a class="lang" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md#agents-over-mcp"><b>MCP</b><span>Claude Code and other agents</span></a>
     </div>
   </div></section>
 
@@ -301,10 +301,10 @@ GROUP BY p.brand ORDER BY reviews DESC LIMIT 10;</pre></div>
   <section class="gutter band-night" id="start"><div class="wrap cta">
     <h2>Start with a file in your app</h2>
     <p class="lede" style="color:var(--night-dim)">Build the Python package from the repository, open a file and query it. Rust and a C compiler are all it needs.</p>
-<pre>git clone https://github.com/chloetech-ai/strata
-pip install ./strata/chloedb-py
+<pre>git clone https://github.com/chloetech-ai/chloedb
+pip install ./chloedb/chloedb-py
 python -c 'import strata; db = strata.open("shop.strata")'</pre>
-    <div class="center-row"><a class="btn primary lg" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/python.md">Python guide</a><a class="btn on-night lg" href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Run a server</a></div>
+    <div class="center-row"><a class="btn primary lg" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/python.md">Python guide</a><a class="btn on-night lg" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Run a server</a></div>
   </div></section>
 </main>
 
@@ -312,8 +312,8 @@ python -c 'import strata; db = strata.open("shop.strata")'</pre>
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js?v=7f52b41b8a"></script>
 <script src="assets/site.js?v=142c29c3e0"></script>

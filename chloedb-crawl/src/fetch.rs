@@ -19,7 +19,7 @@ pub const AGENT_TOKEN: &str = "chloedb-crawl";
 pub const AGENT_TOKENS: [&str; 2] = [AGENT_TOKEN, "strata-crawl"];
 /// The page for site owners the user agent links to: what the crawler is,
 /// how it behaves, and how to slow it down or keep it out.
-pub const ABOUT: &str = "https://chloetech-ai.github.io/strata/chloedb/crawler-bot.html";
+pub const ABOUT: &str = "https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html";
 
 /// How long a robots.txt read is kept before it is read again (RFC 9309
 /// asks for at most a day).

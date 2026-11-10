@@ -3,7 +3,7 @@
 You may have found this page through a user agent in your logs:
 
 ```text
-chloedb-crawl/0.1.0 (+https://chloetech-ai.github.io/strata/chloedb/crawler-bot.html)
+chloedb-crawl/0.1.0 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html)
 ```
 
 Before ChloeDB was renamed, the crawler was called strata-crawl, and its user agent began `strata-crawl/0.1.0`. It is the same crawler, and the robots.txt rules you wrote for `strata-crawl` still apply to it.
@@ -12,12 +12,12 @@ This page says what the crawler is, how it behaves on your site, and how to slow
 
 ## What it is
 
-chloedb-crawl is open-source software (Apache-2.0, part of [ChloeDB](https://github.com/chloetech-ai/strata)). It reads a site's pages into a table of a database: their titles, text and the fields their markup carries (JSON-LD, meta tags, tables of specifications). It is not a search engine and not a service of ours. Whoever runs a copy starts its crawls from their own machines, so the requests you see come from them.
+chloedb-crawl is open-source software (Apache-2.0, part of [ChloeDB](https://github.com/chloetech-ai/chloedb)). It reads a site's pages into a table of a database: their titles, text and the fields their markup carries (JSON-LD, meta tags, tables of specifications). It is not a search engine and not a service of ours. Whoever runs a copy starts its crawls from their own machines, so the requests you see come from them.
 
 A crawl can say whom to reach about it. That goes in the user agent after this page's address:
 
 ```text
-chloedb-crawl/0.1.0 (+https://chloetech-ai.github.io/strata/chloedb/crawler-bot.html; ops@example.com)
+chloedb-crawl/0.1.0 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html; ops@example.com)
 ```
 
 A crawl that sets a user agent of its own keeps the crawler's name after it (`AcmeBot/2.0 chloedb-crawl/0.1.0 (+...)`), so this page and your robots.txt rules for `chloedb-crawl` still apply.
@@ -55,4 +55,4 @@ A change to robots.txt reaches a running crawl within a day. To slow it down soo
 
 ## Reach someone
 
-Write to the contact in the user agent, if the crawl gave one. We wrote the software but don't run other people's crawls, so we can't see or stop them. If the crawler itself misbehaves (it ignores your robots.txt, or doesn't back off as described here), please [open an issue](https://github.com/chloetech-ai/strata/issues).
+Write to the contact in the user agent, if the crawl gave one. We wrote the software but don't run other people's crawls, so we can't see or stop them. If the crawler itself misbehaves (it ignores your robots.txt, or doesn't back off as described here), please [open an issue](https://github.com/chloetech-ai/chloedb/issues).

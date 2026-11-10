@@ -10,7 +10,7 @@ read without copying them.
 
 ```sh
 # a release's prebuilt wheel (Linux glibc 2.35+, macOS 11+); no Rust needed
-pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+pip install strata-db -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0
 pip install ./chloedb-py          # or from source, from the repository's root; needs Rust
 ```
 
@@ -34,7 +34,7 @@ for row in db.table().where(col("year") >= 1990).order_by(bm25("title", "dragon"
 ```
 
 Frames are lazy dataframes over tables, run where the data is (pyarrow
-needed: `pip install "strata-db[frame]" -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0`):
+needed: `pip install "strata-db[frame]" -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0`):
 
 ```python
 import chloedb

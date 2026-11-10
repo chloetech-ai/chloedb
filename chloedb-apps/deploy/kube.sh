@@ -5,7 +5,7 @@
 #   deploy/kube.sh --ref <full commit sha> --node <node name> \
 #     [--image ghcr.io/chloetech-ai/chloedb-server@sha256:...] [--nodeport 30730] [--cap 25]
 #
-# --ref is a commit of github.com/chloetech-ai/strata that holds chloedb-apps
+# --ref is a commit of github.com/chloetech-ai/chloedb that holds chloedb-apps
 # (pushed: the pod fetches it). --node is the node whose disk keeps the data.
 # The namespace "strata" must hold the Secret "anthropic" (key "key"); the
 # gate's key is made once, in the Secret "apps-studio-gate", and kept.

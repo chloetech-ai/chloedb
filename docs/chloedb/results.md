@@ -36,7 +36,7 @@ The ChloeDB and SQLite files are close in size because both are dominated by flo
 
 ![Median warm latency by query kind on TREC-COVID: ChloeDB against SQLite with FTS5 and Tantivy, log scale](../assets/img/chart-strata-latency.png)
 
-*TREC-COVID, warm cache. The [full report](https://chloetech-ai.github.io/strata/reports/strata.html) has the chart for every collection, warm and cold.*
+*TREC-COVID, warm cache. The [full report](https://chloetech-ai.github.io/chloedb/reports/strata.html) has the chart for every collection, warm and cold.*
 
 Warm, ChloeDB is faster than Tantivy in 24 of the 28 text and filter comparisons:
 
@@ -226,7 +226,7 @@ A `VECTOR` field can keep 1-bit codes instead of 8-bit ones (`"codes": "binary"`
 
 Binary codes hold an eighth of the memory of 8-bit codes (a 32nd of the float32 vectors, 1,536 MB here, which are read only for the rescored candidates). The flat scan gets 3.5× faster and IVF 2.0× faster for 0.006 of recall; HNSW is level. HNSW searches as wide as the candidates it rescores, so the 1-bit rows walk the graph 320 wide and are compared with 8-bit codes at ef 320; at the default ef of 64, 8-bit HNSW reaches 0.868 on this data. The two 1-bit HNSW figures come from two builds.
 
-The data is synthetic because the container could not download embeddings. How much recall binary codes cost depends on the embedding model, so measure it on the collection before choosing them. [`chloedb/notes/vector.md`](https://github.com/chloetech-ai/strata/blob/main/chloedb/notes/vector.md#binary-codes) has every depth and the kernels; the numbers are in `chloedb/results/vector/`.
+The data is synthetic because the container could not download embeddings. How much recall binary codes cost depends on the embedding model, so measure it on the collection before choosing them. [`chloedb/notes/vector.md`](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/notes/vector.md#binary-codes) has every depth and the kernels; the numbers are in `chloedb/results/vector/`.
 
 RaBitQ codes (`"rabitq1"`, `"rabitq2"`, `"rabitq4"`: 1, 2 or 4 bits per dimension after a fixed random rotation, with an error bound per row) keep 8, 4 or 2 times as many candidates and skip the float32 rows of those whose bound shows they cannot make the top 10. Measured in a later run on the same container, idle, one search thread, on FiQA's 57,638 Cohere embed-english-v3 vectors (1,024 dimensions, 648 queries) at the default rerank of 40:
 
@@ -243,7 +243,7 @@ RaBitQ codes (`"rabitq1"`, `"rabitq2"`, `"rabitq4"`: 1, 2 or 4 bits per dimensio
 | RaBitQ 2-bit | HNSW | 160 | 28 | 15.2 MB | 0.996 | 0.49 ms |
 | RaBitQ 4-bit | HNSW | 80 | 13 | 30.0 MB | 0.987 | 0.40 ms |
 
-On these embeddings the bounds cut the float32 rows read 3.5 times (1 bit), 11 times (2 bits) and 24 times (4 bits) from binary codes' 320, at the same recall. Each RaBitQ row costs more to scan: 1-bit codes 1.3 to 1.6 times binary's flat time, 4-bit codes 1.4 to 1.5 times SQ8's at half its memory. On the synthetic data above, where every row's error is alike, 1-bit RaBitQ prunes nothing at the default rerank and matches binary codes (0.995 against 0.994 with 320 rows), while 2-bit codes reach 1.000 reading 159 rows and 4-bit codes 1.000 reading 33. So RaBitQ codes pay off where reading float32 rows is the cost, as with a table larger than memory; [`chloedb/notes/vector.md`](https://github.com/chloetech-ai/strata/blob/main/chloedb/notes/vector.md#rabitq-codes) has both runs, IVF and builds, in `chloedb/results/vector/codes-*-rabitq.json`.
+On these embeddings the bounds cut the float32 rows read 3.5 times (1 bit), 11 times (2 bits) and 24 times (4 bits) from binary codes' 320, at the same recall. Each RaBitQ row costs more to scan: 1-bit codes 1.3 to 1.6 times binary's flat time, 4-bit codes 1.4 to 1.5 times SQ8's at half its memory. On the synthetic data above, where every row's error is alike, 1-bit RaBitQ prunes nothing at the default rerank and matches binary codes (0.995 against 0.994 with 320 rows), while 2-bit codes reach 1.000 reading 159 rows and 4-bit codes 1.000 reading 33. So RaBitQ codes pay off where reading float32 rows is the cost, as with a table larger than memory; [`chloedb/notes/vector.md`](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/notes/vector.md#rabitq-codes) has both runs, IVF and builds, in `chloedb/results/vector/codes-*-rabitq.json`.
 
 ## MaxSim
 
@@ -333,4 +333,4 @@ Ten statements combine the workload's shapes: phrases with negation, prefixes, `
 - **Fusion without tuning:** fit the weighted-fusion weight per collection from score distributions, or learn it from clicks.
 - **Incremental HNSW merges**, so that merges stop rebuilding the graph.
 
-The long-form report, with every table and an interactive chart for each collection, is [ChloeDB: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html). [Reproducing the results](../reproduce.md#chloedb) has the commands.
+The long-form report, with every table and an interactive chart for each collection, is [ChloeDB: the database and its evaluation](https://chloetech-ai.github.io/chloedb/reports/strata.html). [Reproducing the results](../reproduce.md#chloedb) has the commands.

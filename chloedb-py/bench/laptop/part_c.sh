@@ -30,7 +30,7 @@ CLUSTER=${CLUSTER:-strata}
 NS=stages
 K="kubectl --context kind-$CLUSTER -n $NS"
 IMAGE=strata-server:compare
-REPO_URL=${REPO_URL:-https://github.com/chloetech-ai/strata}
+REPO_URL=${REPO_URL:-https://github.com/chloetech-ai/chloedb}
 mkdir -p "$OUT"
 
 now() { $PY -c 'import time; print(time.time())'; }

@@ -46,7 +46,7 @@ Algorithms: for two sorted arrays, merge, branch-free merge, galloping, binary s
 | Interpolative | 4.90 | 0.135 | 3.47 | 4.77 | 0.060 | 1.31 |
 | Roaring | 9.32 | 0.018 | 0.382 | 8.47 | 0.0043 | 0.069 |
 
-*Source: `chloedb/results/postings/`; the full table, with every codec and the uniform collection, is in [ChloeDB's posting-list notes](https://github.com/chloetech-ai/strata/blob/main/chloedb/notes/posting-lists.md).*
+*Source: `chloedb/results/postings/`; the full table, with every codec and the uniform collection, is in [ChloeDB's posting-list notes](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/notes/posting-lists.md).*
 
 - **The skip structure matters more than the gap coder.** Conjunctions spend their time in `NextGEQ`. Elias-Fano's select-based jumps made PEF the fastest compressed list codec for AND on every collection, though it decodes 1.3–1.5× slower than BP128. Uncompressed arrays, galloping through plain memory, are still 1.3–2.1× faster than PEF on the M2 (on the Xeon VM that first ran this study, PEF matched them).
 - **PEF is the balanced default:** the smallest or within 1% of it everywhere, at 2.0–3.8× Roaring's AND time.
@@ -175,6 +175,6 @@ ChloeDB's [text index](chloedb/index.md#full-text) keeps Loom for long lists, ad
 
 ## Reports
 
-- [Posting lists: formats and algorithms](https://chloetech-ai.github.io/strata/reports/posting-lists.html), the first round with every codec and algorithm.
-- [The three new designs](https://chloetech-ai.github.io/strata/reports/posting-list-designs.html), with layouts, diagrams and every frontier.
+- [Posting lists: formats and algorithms](https://chloetech-ai.github.io/chloedb/reports/posting-lists.html), the first round with every codec and algorithm.
+- [The three new designs](https://chloetech-ai.github.io/chloedb/reports/posting-list-designs.html), with layouts, diagrams and every frontier.
 - [Reproducing the results](reproduce.md#posting-lists) has the commands.

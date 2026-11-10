@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-WHEELS = "https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0"
+WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0"
 
 
 class _Missing:
