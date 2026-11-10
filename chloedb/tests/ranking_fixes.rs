@@ -57,17 +57,23 @@ fn score_of(r: &ResultSet, id: i64) -> f64 {
 
 // Bug 9: with the default depth of 100 per input, RRF's candidates were
 // at most 200 rows, so OFFSET 200 answered nothing; a weighted sum asked
-// for 250 rows answered 200.
+// for 250 rows answered 200. A LIMIT still raises the depth; an OFFSET no
+// longer does (QE-6: pages of one query rank the same candidates), so a
+// page past the candidates is short and says so, and a depth given to
+// every page reaches it.
 #[test]
 fn fused_pages_reach_past_the_depth() {
     // 300 rows match, each body a different length.
     let (_d, db) = db_with((0..300).map(|i| row(i, Some(&format!("apple {}", "pear ".repeat(i as usize % 17))))).collect());
     let rrf = "SELECT id FROM t ORDER BY rrf(bm25(body, 'apple'), similarity(emb, :q)) DESC";
-    assert_eq!(query(&db, &format!("{rrf} LIMIT 10 OFFSET 200")).rows.len(), 10);
-    assert_eq!(query(&db, &format!("{rrf} LIMIT 10 OFFSET 295")).rows.len(), 5);
+    let past = query(&db, &format!("{rrf} LIMIT 10 OFFSET 200"));
+    assert!(past.rows.len() < 10 && past.stats.truncated, "{:?}", past.stats.plan);
+    let rrf_deep = "SELECT id FROM t ORDER BY rrf(bm25(body, 'apple'), similarity(emb, :q), depth => 300) DESC";
+    assert_eq!(query(&db, &format!("{rrf_deep} LIMIT 10 OFFSET 200")).rows.len(), 10);
+    assert_eq!(query(&db, &format!("{rrf_deep} LIMIT 10 OFFSET 295")).rows.len(), 5);
     let weighted = "SELECT id FROM t ORDER BY 0.5 * minmax(bm25(body, 'apple')) + 0.5 * minmax(similarity(emb, :q)) DESC";
     assert_eq!(query(&db, &format!("{weighted} LIMIT 250")).rows.len(), 250);
-    let product = "SELECT id FROM t ORDER BY bm25(body, 'apple') * similarity(emb, :q) DESC";
+    let product = "SELECT id FROM t ORDER BY bm25(body, 'apple', depth => 300) * similarity(emb, :q, depth => 300) DESC";
     assert_eq!(query(&db, &format!("{product} LIMIT 20 OFFSET 250")).rows.len(), 20);
     // A depth asked for still bounds the candidates when the page fits.
     let r = query(&db, "SELECT id FROM t ORDER BY rrf(bm25(body, 'apple'), similarity(emb, :q), depth => 5) DESC LIMIT 3");

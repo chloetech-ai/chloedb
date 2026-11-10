@@ -462,6 +462,24 @@ pub struct ExecStats {
     /// Steps not kept, past [`steps::MAX_STEPS`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub steps_dropped: u64,
+    /// The row count a ranked query without `LIMIT` was cut to
+    /// ([`DEFAULT_K`]); `None` when the query gave its own LIMIT.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_limit: Option<u64>,
+    /// More rows matched than the answer holds, and the query did not ask
+    /// for the cut: a ranked query without `LIMIT` cut at
+    /// [`Self::implicit_limit`], or a page of a fused ranking that reached
+    /// past its candidates.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    /// A `ppr` walk stopped at its `max_pushes` before it converged: its
+    /// scores are those of a shorter walk.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub max_pushes_reached: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -757,6 +775,9 @@ pub struct Executor<'a> {
     /// This query among the database's, for the filter cache to count a
     /// query that looks at a filter twice as one sight of it.
     query: u64,
+    /// The rows of the page being ranked (its LIMIT, or [`DEFAULT_K`]),
+    /// OFFSET aside: what raises a fused ranking's depth.
+    page_rows: Option<usize>,
 }
 
 /// The last [`Executor::query`] handed out.
@@ -923,6 +944,7 @@ impl<'a> Executor<'a> {
             charge: Charge::new(opts.memory.clone()),
             clock: Clock::new(opts.profile),
             query: QUERIES.fetch_add(1, Ordering::Relaxed) + 1,
+            page_rows: None,
         }
     }
 
@@ -1562,10 +1584,28 @@ impl<'a> Executor<'a> {
                 self.by_column(*field, *desc, Some(*nulls_first), &q.filter, want, q.tiebreak.as_ref())?
             }
             // Without a LIMIT, DEFAULT_K rows after the OFFSET, as a
-            // coordinator cuts them.
+            // coordinator cuts them, and the cut said in the stats: one row
+            // more is ranked to show whether it dropped any.
             Some(OrderBy::Score { score, desc: true, .. }) => {
-                let k = if q.limit.is_some() { want.unwrap_or(0) } else { DEFAULT_K.saturating_add(q.offset).min(self.n_live()) };
-                self.ranked(score, &q.filter, k, q.tiebreak.as_ref())?
+                let implicit = q.limit.is_none();
+                let k = if !implicit { want.unwrap_or(0) } else { DEFAULT_K.saturating_add(q.offset).min(self.n_live()) };
+                // A fused ranking's candidates depend on the page's size, not
+                // on where it starts, so that pages of one query agree.
+                let floor = std::mem::replace(&mut self.page_rows, Some(q.limit.unwrap_or(DEFAULT_K)));
+                let hits = self.ranked(score, &q.filter, if implicit { k + 1 } else { k }, q.tiebreak.as_ref());
+                self.page_rows = floor;
+                let mut hits = hits?;
+                if implicit && !self.opts.shard {
+                    self.stats.implicit_limit = Some(DEFAULT_K as u64);
+                    if hits.len() > k {
+                        hits.truncate(k);
+                        self.stats.truncated = true;
+                        self.stats.plan.push(format!("no LIMIT: a ranked query returns its top {DEFAULT_K} rows, and more rows match (add a LIMIT to choose how many)"));
+                    } else {
+                        self.stats.plan.push(format!("no LIMIT: a ranked query returns at most {DEFAULT_K} rows; every match fits"));
+                    }
+                }
+                hits
             }
             Some(OrderBy::Score { score, .. }) if Rank::of(score, 0).is_some() => return Err(err("a ranking expression is ordered DESC (negate it to rank the smallest first)")),
             Some(OrderBy::Score { .. }) => return Err(err("relevance scores can only be ordered DESC")),
@@ -3267,6 +3307,9 @@ impl<'a> Executor<'a> {
         if self.schema.fields[field].multi {
             return Err(err(crate::query::sql::multi_similarity(&self.schema.fields[field].name)));
         }
+        if opts.get(crate::query::sql::DISTANCE_OPT).and_then(|v| v.as_str()) == Some("l2") {
+            return self.distance_top(field, q, opts, p, k);
+        }
         let base = self.search_params(opts);
         let strategy_opt = opts.get("strategy").and_then(|v| v.as_str());
         // Partitions are weighed when nothing is forced, and used wherever
@@ -3331,6 +3374,38 @@ impl<'a> Executor<'a> {
             l.scored += out.stats.candidates as u64;
             l.plan.push(format!("seg {}: vector {:?} ({:?} ran), filter {mode:?}", s.ord, strategy, out.stats.strategy));
             Ok(out.hits.into_iter().map(|h| Hit { seg: s.ord, doc: h.doc, score: h.score as f64 }).collect::<Vec<_>>())
+        })?;
+        Ok(merge_top(per.concat(), k))
+    }
+
+    /// `ORDER BY distance(field, q)`: the `k` rows nearest `q` by Euclidean
+    /// distance, each scored minus its distance (ranking is best first). A
+    /// field a model embeds holds unit vectors, whose distance orders rows
+    /// as the dot product does: its index searches them. Any other field's
+    /// vectors are as written, so every row WHERE keeps is measured.
+    fn distance_top(&mut self, field: usize, q: &[f32], opts: &Opts, p: &Pred, k: usize) -> Result<Vec<Hit>> {
+        let qq: f64 = q.iter().map(|x| (*x as f64) * (*x as f64)).sum();
+        if self.schema.fields[field].embed.is_some() && opts.get("strategy").and_then(|v| v.as_str()) != Some("flat") {
+            let mut dot = opts.clone();
+            dot.remove(crate::query::sql::DISTANCE_OPT);
+            let hits = self.vector_top(field, q, &dot, p, k)?;
+            self.stats.plan.push(format!("distance({}): unit vectors of a model, ranked by the index's dot product", self.field_name(field)));
+            return Ok(hits.into_iter().map(|h| Hit { score: -(qq + 1.0 - 2.0 * h.score).max(0.0).sqrt(), ..h }).collect());
+        }
+        let per = self.per_segment(|ex, s, l| {
+            let vr = ex.vector(s, field)?;
+            let set = ex.filter_set_l(s, p, l)?;
+            let mut hits = Vec::new();
+            for d in set.iter() {
+                if !vr.has_vector(d) {
+                    continue;
+                }
+                let d2: f64 = vr.vector(d).iter().zip(q).map(|(a, b)| ((a - b) as f64).powi(2)).sum();
+                hits.push(Hit { seg: s.ord, doc: d, score: -d2.sqrt() });
+            }
+            l.scored += hits.len() as u64;
+            l.plan.push(format!("seg {}: distance, an exact scan of {} vectors", s.ord, hits.len()));
+            Ok(merge_top(hits, k))
         })?;
         Ok(merge_top(per.concat(), k))
     }
@@ -3457,7 +3532,7 @@ impl<'a> Executor<'a> {
                 .iter()
                 .map(|&i| {
                     let rows = info.parts[i].n;
-                    let shape = vector::IndexShape { n: rows, kind: "hnsw".into(), nlist: 1, hnsw_m: m };
+                    let shape = vector::IndexShape { n: rows, kind: "hnsw".into(), nlist: 1, hnsw_m: m, dim: vr.shape().dim };
                     let card = share.map(|x| ((x * rows as f64).ceil() as usize).max(1));
                     vr.cost_model().estimate(&shape, vector::Strategy::Hnsw, k, card, base)
                 })
@@ -3629,7 +3704,9 @@ impl<'a> Executor<'a> {
     /// mode these are every candidate, with what the coordinator fuses
     /// ([`RankParts`]).
     fn fused(&mut self, rank: &Rank<'_>, p: &Pred, k: usize) -> Result<Vec<Hit>> {
-        let depth = self.rows_at_most(rank.depth.max(k));
+        // Raised to the page's rows, not to its end: pages of one query
+        // (LIMIT n OFFSET 0, n, 2n...) rank the same candidates alike.
+        let depth = self.rows_at_most(rank.depth.max(self.page_rows.unwrap_or(k)));
         let shard = self.opts.shard;
         let driver = rank.driver().filter(|_| self.opts.rank_safe);
         // Each generating leaf's top rows: the candidates, and the rankings
@@ -3715,6 +3792,11 @@ impl<'a> Executor<'a> {
         self.stats.plan.push(format!("fused {}: {} candidates from {from}{raw}", rank.explain(&self.schema), cands.len()));
         if cut && hits.len() < found {
             self.stats.plan.push(format!("shard sends its top {} of the {found} its segments found (ties at the cut kept)", hits.len()));
+        }
+        // A page past the candidates, while rows outside them may match.
+        if !shard && driver.is_none() && !rank.exact && hits.len() < k && depth < self.n_live() && lists.iter().zip(&rank.generates).any(|(l, &g)| g && l.len() >= depth) {
+            self.stats.truncated = true;
+            self.stats.plan.push(format!("the page reaches past the {} candidates (each input's top {depth}): give the ranking a larger depth => to page deeper, the same on every page", cands.len()));
         }
         if shard {
             let ranked = ranks
@@ -4795,6 +4877,11 @@ impl Estimator for SegEst<'_, '_> {
         let Some(vr) = self.s.r.vector(field).ok().flatten() else { return f64::INFINITY };
         let params = self.params.as_ref().map(|(_, p)| p.clone()).unwrap_or_else(|| self.ex.opts.vector_params.clone());
         let st = to_vector_strategy(s, vr.index_kind(), card.is_some());
+        // A small segment is scanned exactly: the index costs about as much
+        // and finds less.
+        if s == VectorStrategy::InIndex && card.is_none() && vr.shape().scans_exactly() {
+            return f64::INFINITY;
+        }
         // In-index search pays for the selectivity near the query, in both
         // directions. Post-filtering sizes its candidate pool from the global
         // selectivity, so correlation cannot make it cheaper, only

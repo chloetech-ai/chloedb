@@ -284,8 +284,14 @@ def test_models_that_do_not_open(tmp_path):
     schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "body", "type": "text"}, {"name": "v", "type": "vector", "embed": {"from": "body", "model": "potion-base-8M"}}]}
     with chloedb.Database.create(tmp_path / "m.strata", schema, models=tmp_path) as db:
         assert "v" in db.embed_errors
-        db.insert({"id": "a", "body": "no vector"})
+        # A row that needs the vector the model would make is refused...
+        with pytest.raises(chloedb.ChloeDBError, match="not open"):
+            db.insert({"id": "a", "body": "no vector"})
         db.insert({"id": "b", "body": "a vector", "v": [0.1] * 256})
+        assert len(db) == 1
+        # ...unless the caller writes it without on purpose.
+        db.set_embed_later()
+        db.insert({"id": "a", "body": "no vector"})
         assert len(db) == 2
         assert db.search("vector").keys  # text only: the model is not open
         with pytest.raises(chloedb.ChloeDBError, match="model"):

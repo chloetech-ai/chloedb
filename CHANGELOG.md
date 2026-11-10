@@ -43,7 +43,34 @@ still 0.1.0, and the next release will name its version here.
 
 ### Query and indexes
 
-<!-- Placeholder: entries for the query and vector work go here. -->
+- A ranked query that stops at the default 100 rows says so: its stats
+  carry `implicit_limit: 100` and an exact `truncated` (the engine ranks one
+  more row to know), a plan line says it, and the Python and JavaScript
+  results expose both. `DELETE ... ORDER BY <score>` without `LIMIT` is
+  refused: before, it deleted the top 100 and left the rest.
+- Fused rankings (`rrf`, weighted sums): the candidates follow the page's
+  `LIMIT`, not its `OFFSET`, so pages of one size are pages of one ranking
+  and no row repeats or goes missing between them. A page beyond the
+  candidates comes back short, flagged `truncated`; raise `depth` (or use
+  `exact => 1`) to page further. This replaces the deeper re-ranking of
+  later pages, which made pages disagree.
+- `ppr` gives the same scores when every edge weight is scaled alike, so
+  counts work as weights (weights of 1,000 used to return nothing at the
+  default `eps`); `max_pushes_reached` is reported when a walk stops early.
+- Vectors: an unfiltered segment small enough to scan is searched exactly,
+  the cost model scales with dimension, and the default `ef` is 200
+  (was 64): on 20,000 random 64-dimension vectors the default now finds
+  the true top 10 (was 73%), on 200,000 it finds 71% (was 40%). `distance()`
+  is now the Euclidean distance (it was the dot product, reversed); a plan
+  that uses it names the plan feature `distance`, which older shards refuse.
+- Models: the known models are fetched at a pinned Hugging Face revision and
+  each file's SHA-256 is checked; a table created with a model records a
+  fingerprint of its weights and refuses different weights under the same
+  name; a write that needs a model which is not open fails (it used to store
+  the row without a vector) unless `set_embed_later(true)` says to fill the
+  vectors in later, which chloedb-server does.
+- Not yet: a per-field metric option (cosine, dot, L2), and a fingerprint
+  recorded on a model's first open for tables created before this change.
 
 ### Replication
 

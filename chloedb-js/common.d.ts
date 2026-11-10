@@ -82,6 +82,11 @@ export declare class Result<T extends Record<string, Value> = Record<string, Val
   /** An interleaved query's: per row, the ranking that placed it. */
   teams?: (string | null)[];
   readonly length: number;
+  /** More rows matched than this answer holds, by a cut the query did not
+   * write: a ranked query without LIMIT, or a fused page past its candidates. */
+  readonly truncated: boolean;
+  /** The row count a ranked query without LIMIT was cut to (100). */
+  readonly implicitLimit: number | undefined;
   /** Row `i` (negative counts from the end) as an object. */
   at(i: number): T | undefined;
   /** Every row as an object. */

@@ -205,7 +205,7 @@ The text index stores long lists (at least 512 documents) as [Loom](../posting-l
 
 ![Recall@10 against median latency on Quora: HNSW ef sweep, IVF nprobe sweep and the exact SQ8 scan with re-ranking](../assets/img/chart-strata-recall-latency.png)
 
-On Quora (522,931 vectors, 1,024 dimensions), HNSW reaches recall@10 0.960 at 0.036 ms and 0.990 at 0.086 ms (ef 64, the default). IVF needs 0.22 ms for 0.936 (nprobe 32) and 0.67 ms for 0.977. The exact scan of 8-bit codes with float32 re-ranking reaches 1.000 in 9.7 ms. HNSW took 146 s to build with four threads, IVF 53 s.
+On Quora (522,931 vectors, 1,024 dimensions), HNSW reaches recall@10 0.960 at 0.036 ms and 0.990 at 0.086 ms (ef 64, the default when measured; it is 200 now). IVF needs 0.22 ms for 0.936 (nprobe 32) and 0.67 ms for 0.977. The exact scan of 8-bit codes with float32 re-ranking reaches 1.000 in 9.7 ms. HNSW took 146 s to build with four threads, IVF 53 s.
 
 The quantised dot product costs 14 ns per vector with NEON `usdot` (9.8 ns when four rows are scored at once), against 70 ns in float32; on x86-64 the same kernel uses AVX-512 VNNI. Scoring on the codes alone already finds 99.8% of the exact top 10 over 100 sampled queries; float32 re-ranking settles the rest.
 

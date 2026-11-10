@@ -512,6 +512,13 @@ impl Database {
         serde_json::to_string(&stats).map_err(|e| err(chloedb::Error::Schema(e.to_string())))
     }
 
+    /// Lets writes store rows without the vectors of embedded fields whose
+    /// model is not open (they fail by default).
+    fn set_embed_later(&self, on: bool) -> PyResult<()> {
+        self.get()?.set_embed_later(on);
+        Ok(())
+    }
+
     /// Whether it was opened read-only.
     fn read_only(&self) -> PyResult<bool> {
         Ok(self.get()?.storage().is_read_only())

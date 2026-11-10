@@ -358,8 +358,17 @@ class Database(Search, FrameStore):
     @property
     def embed_errors(self) -> dict[str, str]:
         """Embedded fields whose model did not open, with the reason: rows
-        written here must bring those fields' vectors."""
+        written here must bring those fields' vectors (a write that leaves
+        one to the model fails), unless `set_embed_later()`."""
         return dict(self._db.embed_errors)
+
+    def set_embed_later(self, on: bool = True) -> None:
+        """Lets writes store rows without the vectors of embedded fields
+        whose model is not open (see `embed_errors`); by default such a
+        write fails, since `similarity()` would never find the row. The
+        vectors can be filled in once the model opens (a server does it
+        itself; from Rust, `Db::embed_backfill`)."""
+        self._db.set_embed_later(on)
 
     def _embedded(self) -> list[str]:
         broken = self.embed_errors

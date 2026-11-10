@@ -87,6 +87,59 @@ pub trait Embedder: Send + Sync {
     }
 }
 
+/// The model of an embedded field that is not open here, as a write sees
+/// it: every call fails with what to do ([`crate::db::Db::set_embed_later`]).
+/// A row written without its vector would be one `similarity()` never
+/// finds.
+pub struct NotOpen {
+    pub table: String,
+    pub field: String,
+    pub model: String,
+    pub dim: usize,
+}
+
+impl NotOpen {
+    fn refuse(&self) -> Error {
+        Error::Schema(format!(
+            "{}.{} is embedded by model {}, which is not open: the row would be written without its vector, which similarity() never finds. Open the model (Db::open_embedders with its models directory; chloedb.open(..., models=DIR) in Python; chloedb-server fetches it), give the vector in the write, or, to write rows without vectors on purpose and fill them in later with embed_backfill, call Db::set_embed_later(true) (db.set_embed_later(True) in Python)",
+            self.table, self.field, self.model
+        ))
+    }
+}
+
+impl Embedder for NotOpen {
+    fn name(&self) -> String {
+        self.model.clone()
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(self.refuse())
+    }
+    fn embed_inputs(&self, inputs: &[Input<'_>]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(self.refuse())
+    }
+    fn embed_tokens(&self, texts: &[&str]) -> Result<Vec<Vec<Vec<f32>>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(self.refuse())
+    }
+    fn parallel(&self) -> bool {
+        false
+    }
+    fn tokens(&self) -> bool {
+        true
+    }
+}
+
 /// The requests a model behind an API sent ([`Embedder::usage`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
@@ -374,6 +427,70 @@ pub fn model_files(name: &str) -> &'static [&'static str] {
 /// dimensions.
 pub fn open(model: &str, models: &Path) -> Result<Arc<dyn Embedder>> {
     open_for(model, None, models)
+}
+
+/// The fingerprint of model `model` under `models`: `sha256:` and the
+/// SHA-256 of its weights file (`model.safetensors`, `pytorch_model.bin` or
+/// `model.onnx`), or `None` for a model without one (`hash:N`, a hosted
+/// model) or that is not there. The hash is kept beside the file
+/// (`<file>.sha256`, with the file's length and time of change) so that
+/// a model is read whole once, not at every open.
+pub fn fingerprint(model: &str, models: &Path) -> Option<String> {
+    if model.starts_with("hash:") {
+        return None;
+    }
+    let dir = if Path::new(model).is_absolute() { PathBuf::from(model) } else { models.join(model) };
+    let file = ["model.safetensors", "pytorch_model.bin", "model.onnx"].iter().map(|f| dir.join(f)).find(|p| p.is_file())?;
+    let meta = std::fs::metadata(&file).ok()?;
+    let stamp = format!("{} {}", meta.len(), meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos());
+    let side = file.with_extension(format!("{}.sha256", file.extension().and_then(|e| e.to_str()).unwrap_or("")));
+    if let Ok(kept) = std::fs::read_to_string(&side) {
+        if let Some((s, h)) = kept.trim().rsplit_once(' ') {
+            if s == stamp && h.len() == 64 {
+                return Some(format!("sha256:{h}"));
+            }
+        }
+    }
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(&file).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let h: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    // A models directory may be read-only: the hash is then worked out again.
+    let _ = std::fs::write(&side, format!("{stamp} {h}\n"));
+    Some(format!("sha256:{h}"))
+}
+
+/// Gives each embedded field of `schema` whose model is under `models` the
+/// model's [`fingerprint`], where it has none yet (a table being created).
+pub fn stamp_fingerprints(schema: &mut crate::schema::Schema, models: &Path) {
+    for f in schema.fields.iter_mut() {
+        if let Some(e) = f.embed.as_mut().filter(|e| e.fingerprint.is_none()) {
+            e.fingerprint = fingerprint(&e.model, models);
+        }
+    }
+}
+
+/// Refuses model `model` for a field whose vectors were made by a model
+/// of fingerprint `want`, when the one under `models` differs.
+pub fn check_fingerprint(field: &str, model: &str, want: Option<&str>, models: &Path) -> Result<()> {
+    let Some(want) = want else { return Ok(()) };
+    match fingerprint(model, models) {
+        Some(got) if got == want => Ok(()),
+        got => Err(model_err(format!(
+            "model {model} under {} is not the one field {field}'s vectors came from: its weights are {}, the table recorded {want}. Vectors of the two would not compare. Put back the model the table was made with (chloedb-server fetch-model downloads the pinned revision of a model ChloeDB knows), or make a new table with the new model and copy the rows into it, whose vectors it computes again",
+            models.display(),
+            got.as_deref().unwrap_or("missing"),
+        ))),
+    }
 }
 
 /// [`open`], for a field of `dim` dimensions: a hosted model that makes

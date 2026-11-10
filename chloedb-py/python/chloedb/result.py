@@ -40,6 +40,19 @@ class Result:
             self._stats = json.loads(self._stats) if self._stats else {}
         return self._stats or {}
 
+    @property
+    def truncated(self) -> bool:
+        """More rows matched than this answer holds, by a cut the query did
+        not write: a ranked query without LIMIT (see `implicit_limit`), or
+        a page of a fused ranking past its candidates."""
+        return bool(self.stats.get("truncated"))
+
+    @property
+    def implicit_limit(self) -> int | None:
+        """The row count a ranked query without LIMIT was cut to (100), or
+        None when the query gave its own LIMIT."""
+        return self.stats.get("implicit_limit")
+
     def __len__(self) -> int:
         return len(self.rows)
 

@@ -249,6 +249,9 @@ impl Strategy {
     }
 }
 
+/// The default HNSW search breadth ([`SearchParams::ef`]).
+pub const DEFAULT_EF: usize = 200;
+
 /// Search knobs. `rerank` is the number of candidates re-ranked with
 /// float32 (at least `k`; times [`codes::oversample`] over binary and
 /// RaBitQ codes); HNSW
@@ -263,7 +266,10 @@ pub struct SearchParams {
 
 impl Default for SearchParams {
     fn default() -> Self {
-        SearchParams { strategy: Strategy::Auto, nprobe: 32, ef: 64, rerank: 40 }
+        // ef 200 (64 before): on 20,000 random unit vectors of 64
+        // dimensions, recall@10 0.96 against 0.73, at 0.24 ms against 0.13;
+        // on 200,000, 0.71 against 0.40 (tests/vector_defaults.rs).
+        SearchParams { strategy: Strategy::Auto, nprobe: 32, ef: DEFAULT_EF, rerank: 40 }
     }
 }
 
@@ -539,7 +545,7 @@ impl VectorReader {
                 parts.push(Part { docs, graph });
             }
         }
-        let shape = IndexShape { n: n - info.missing, kind: info.index.clone(), nlist: info.nlist.unwrap_or(1), hnsw_m: info.m.unwrap_or(16) };
+        let shape = IndexShape { n: n - info.missing, kind: info.index.clone(), nlist: info.nlist.unwrap_or(1), hnsw_m: info.m.unwrap_or(16), dim: info.dim };
         Ok(VectorReader { info, vectors, codes, quant, rescore, multi, present, ivf, hnsw, parts, shape, cost: CostModel::default(), io_hints: false, hnsw_filter: HnswFilterMode::Traverse, absent: false })
     }
 
@@ -551,7 +557,7 @@ impl VectorReader {
             VectorCodes::Binary => Quantiser::Bits(Bits { mean: zeros(), spread: zeros() }),
             c => Quantiser::Rabitq(Rabitq::new(c.rabitq_bits().expect("rabitq"), zeros())),
         };
-        let shape = IndexShape { n: 0, kind: info.index.clone(), nlist: 1, hnsw_m: 16 };
+        let shape = IndexShape { n: 0, kind: info.index.clone(), nlist: 1, hnsw_m: 16, dim: info.dim };
         VectorReader {
             vectors: Slice::Owned(vec![0f32; info.stride_f32]),
             codes: Slice::Owned(vec![0u8; info.stride_u8]),

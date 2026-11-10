@@ -295,7 +295,10 @@ impl<E: Estimator> Planner<'_, E> {
             if !has_index {
                 return (VectorStrategy::Flat, FilterMode::None, self.est.vector_cost(field, VectorStrategy::Flat, k, None));
             }
-            return (VectorStrategy::InIndex, FilterMode::None, self.est.vector_cost(field, VectorStrategy::InIndex, k, None));
+            // An exact scan where it costs no more than the index (a small
+            // segment, short vectors): exact at no price.
+            let (flat, index) = (self.est.vector_cost(field, VectorStrategy::Flat, k, None), self.est.vector_cost(field, VectorStrategy::InIndex, k, None));
+            return if flat <= index { (VectorStrategy::Flat, FilterMode::None, flat) } else { (VectorStrategy::InIndex, FilterMode::None, index) };
         }
         let e = self.estimate(p);
         let mat_us = e.mat_cost / 1000.0;

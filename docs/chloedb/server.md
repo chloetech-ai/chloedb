@@ -264,6 +264,8 @@ The model can be computed here (the table below) or sit behind an API, such as `
 
 On a Mac, build with `--features accelerate` instead of `bert`: the BERT models' matrix products then run in Apple's Accelerate framework.
 
+A model of this list (and the captioners and cross-encoders ChloeDB knows) is fetched from the Hugging Face commit it was pinned at, not from `main`, and each file is checked against the SHA-256 pinned for it (`chloedb/src/model_pins.rs`): a file that differs is refused and not kept, so a model changed upstream under the same name cannot slip in. A table created with its model in the models directory records the SHA-256 of the model's weights file in its schema (`embed.fingerprint`), and refuses to embed with a model of the same name whose weights differ; tables from before, and those whose model was not there when they were created, open their model by name, as before. **Changed:** files came from `resolve/main`, unchecked, and a field recorded the model's name only.
+
 `chloedb-server fetch-model NAME` downloads one of these (or any Hugging Face repository `owner/name` with `config.json`, `tokenizer.json` and `model.safetensors`; CLAP's `pytorch_model.bin`; and `artifact.metadata` too for a name with `colbert` in it, such as `colbert-ir/colbertv2.0`) into the models directory; it also downloads the captioner and the speech model of [text from media](#text-from-media).
 
 ### Hosted models

@@ -379,6 +379,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");
         }
+        // A server stores rows whose field's model is not open yet without
+        // their vectors, and fills them in once it opens (the backfill).
+        db.set_embed_later(true);
         if o.seq_no {
             db.storage().start_seq_no().map_err(|e| format!("--seq-no on {}: {e}", path.display()))?;
         }
@@ -699,10 +702,22 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
         (false, Some(f)) => f,
         (false, None) => chloedb::embed::model_files(&local).iter().map(|&f| (f, f)).collect(),
     };
+    // A model ChloeDB knows comes from the commit it was pinned at, each
+    // file checked against its SHA-256 ([`chloedb::model_pins`]); another
+    // repository from its main branch, as it is.
+    let pin = chloedb::model_pins::pin(&repo);
+    let revision = pin.map_or("main", |p| p.revision);
     for (from, file) in files {
-        let url = format!("https://huggingface.co/{repo}/resolve/main/{from}");
+        let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{from}");
         let r = client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("{url}: {e}"))?;
         let bytes = r.bytes().await.map_err(|e| format!("{url}: {e}"))?;
+        if let Some(p) = pin {
+            let want = p.sha256(from).ok_or_else(|| format!("{url}: no checksum is pinned for this file of {repo}"))?;
+            let got = chloedb::model_pins::sha256_hex(&bytes);
+            if got != want {
+                return Err(format!("{url}: SHA-256 {got}, where {want} is pinned for {repo} at {revision}: the file is not the one ChloeDB was built for, and is not kept"));
+            }
+        }
         // Written aside and renamed, so that an open model is never
         // overwritten in place.
         let tmp = out.join(format!("{file}.part"));
@@ -870,6 +885,9 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         for (field, why) in db.open_embedders(models) {
             tracing::warn!(field = %field, error = %why, "cannot embed this field: its vectors must be in the files");
         }
+        // As before: rows without the vectors are imported without them,
+        // which a server fills in once the model opens.
+        db.set_embed_later(true);
         db
     };
     let mut db = if path.exists() {
