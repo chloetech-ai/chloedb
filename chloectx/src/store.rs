@@ -1,5 +1,10 @@
 //! The memory table in a Strata file: appends, hybrid search, SQL.
 //!
+//! A store may also be a table of a ChloeDB server or cluster
+//! ([`Store::open_remote`], for `chloectx app`): the same records, the same
+//! SQL sent over HTTP ([`crate::cluster`]), and writes made by this process
+//! alone, one at a time. Reads there see the server's latest version.
+//!
 //! Reads run on the caller's thread against a snapshot, any number at once.
 //! Writes go to one writer thread ([`Writer`]), which commits whatever is
 //! queued as one transaction and numbers new records in commit order.
@@ -15,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use serde::Serialize;
 use chloedb::db::Db;
@@ -24,6 +29,7 @@ use chloedb::query::Params;
 use chloedb::storage::{DbOptions, MergerOptions, Snapshot};
 use chloedb::{Document, Value, VectorIndexKind};
 
+use crate::cluster::{self, Cluster};
 use crate::embed::Embedder;
 use crate::record::{entity_id, file_entity_id, links_of, record_id, schema, Draft, Kind, Link, Record, COLUMNS};
 use crate::{err, Error, Result};
@@ -139,11 +145,47 @@ impl Default for StoreOptions {
 }
 
 pub struct Store {
-    pub db: Arc<Db>,
+    back: Back,
     pub embedder: Arc<dyn Embedder>,
-    writer: Arc<Writer>,
     /// The snapshot this handle reads, if pinned (see [`Store::pinned`]).
     snap: Option<Snapshot>,
+}
+
+/// Where a store's records are.
+#[derive(Clone)]
+enum Back {
+    /// A Strata file this process opened.
+    Local { db: Arc<Db>, writer: Arc<Writer> },
+    /// A table of a ChloeDB server.
+    Remote(Arc<Remote>),
+}
+
+/// A store kept in a table of a ChloeDB server or cluster.
+pub struct Remote {
+    pub cluster: Arc<Cluster>,
+    pub table: String,
+    /// The next sequence number (this process numbers the records it writes).
+    next_seq: AtomicI64,
+    /// Writes are made one at a time.
+    writes: Mutex<()>,
+}
+
+/// SQL written for the table `memory`, for the table `table`, with limits
+/// past the server's result window cut to it ([`cluster::WINDOW`]). The
+/// store's SQL passes text as parameters, so no string literal holds the
+/// words it replaces.
+fn for_table(sql: &str, table: &str) -> String {
+    static FROM: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static LIMIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let from = FROM.get_or_init(|| regex::Regex::new(r"(?i)\b(FROM|JOIN)\s+memory\b").unwrap());
+    let limit = LIMIT.get_or_init(|| regex::Regex::new(r"(?i)\bLIMIT\s+(\d+)").unwrap());
+    let sql = from.replace_all(sql, |c: &regex::Captures| format!("{} {table}", &c[1]));
+    limit
+        .replace_all(&sql, |c: &regex::Captures| match c[1].parse::<u64>() {
+            Ok(n) if n > cluster::WINDOW as u64 => format!("LIMIT {}", cluster::WINDOW),
+            _ => c[0].to_string(),
+        })
+        .into_owned()
 }
 
 impl Store {
@@ -192,27 +234,81 @@ impl Store {
         // several daemons.
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         let writer = Arc::new(Writer::start(db.clone(), next)?);
-        Ok(Store { db, embedder, writer, snap: None })
+        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None })
+    }
+
+    /// Opens the store kept in `table` of the ChloeDB server `cluster`,
+    /// creating the table if needed. This process must be the table's only
+    /// writer: it numbers the records it writes.
+    pub fn open_remote(cluster: Arc<Cluster>, table: &str, embedder: Arc<dyn Embedder>) -> Result<Store> {
+        let mut want = schema(embedder.dim(), VectorIndexKind::Hnsw { m: 16, ef_construction: 100 })?;
+        want.table = table.to_string();
+        if !cluster.tables()?.iter().any(|t| t == table) {
+            cluster.sql(&chloedb::query::ddl::create_sql(&want).replacen("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))?;
+        }
+        let last = cluster.query(&format!("SELECT seq FROM {table} ORDER BY seq DESC LIMIT 1"), &Params::new())?;
+        let next = last.rows.first().and_then(|r| r[0].as_i64()).map_or(1, |s| s + 1);
+        let remote = Remote { cluster, table: table.to_string(), next_seq: AtomicI64::new(next), writes: Mutex::new(()) };
+        Ok(Store { back: Back::Remote(Arc::new(remote)), embedder, snap: None })
+    }
+
+    /// The Strata file of a local store.
+    pub fn db(&self) -> Option<&Arc<Db>> {
+        match &self.back {
+            Back::Local { db, .. } => Some(db),
+            Back::Remote(_) => None,
+        }
+    }
+
+    /// The table of a store kept in a ChloeDB server.
+    pub fn remote(&self) -> Option<&Arc<Remote>> {
+        match &self.back {
+            Back::Remote(r) => Some(r),
+            Back::Local { .. } => None,
+        }
     }
 
     /// A handle whose reads all see the current version, however much is
     /// written meanwhile: the searches of one request agree with each other.
     /// (Its writes go to the writer as usual; its reads do not see them.)
+    /// (A store in a ChloeDB server reads its latest version each time.)
     pub fn pinned(&self) -> Store {
-        Store { db: self.db.clone(), embedder: self.embedder.clone(), writer: self.writer.clone(), snap: Some(self.snapshot()) }
+        let snap = match &self.back {
+            Back::Local { db, .. } => Some(self.snap.clone().unwrap_or_else(|| db.snapshot())),
+            Back::Remote(_) => None,
+        };
+        Store { back: self.back.clone(), embedder: self.embedder.clone(), snap }
     }
 
-    /// The version reads see: the pinned one, else the latest.
+    /// The version reads see: the pinned one, else the latest (a local
+    /// store's only).
     pub fn snapshot(&self) -> Snapshot {
-        self.snap.clone().unwrap_or_else(|| self.db.snapshot())
+        match &self.back {
+            Back::Local { db, .. } => self.snap.clone().unwrap_or_else(|| db.snapshot()),
+            Back::Remote(r) => panic!("{} is a table of a ChloeDB server, which has no snapshot here", r.table),
+        }
     }
 
     pub fn last_seq(&self) -> i64 {
-        self.writer.next_seq.load(Ordering::SeqCst) - 1
+        match &self.back {
+            Back::Local { writer, .. } => writer.next_seq.load(Ordering::SeqCst) - 1,
+            Back::Remote(r) => r.next_seq.load(Ordering::SeqCst) - 1,
+        }
     }
 
     pub fn len(&self) -> u64 {
-        self.snapshot().n_live_docs()
+        match &self.back {
+            Back::Local { .. } => self.snapshot().n_live_docs(),
+            Back::Remote(r) => r.cluster.query(&format!("SELECT COUNT(*) FROM {}", r.table), &Params::new()).ok().and_then(|rs| rs.rows.first().and_then(|row| row.first().and_then(|v| v.as_i64()))).map_or(0, |n| n.max(0) as u64),
+        }
+    }
+
+    /// Runs a write: the local writer's, or this process's to the server.
+    fn run(&self, op: Op) -> Result<Done> {
+        match &self.back {
+            Back::Local { writer, .. } => writer.run(op),
+            Back::Remote(r) => r.run(op, self),
+        }
     }
 
     /// Embeds and stores records with the ids and sequence numbers they
@@ -230,12 +326,22 @@ impl Store {
     /// Stores records with precomputed embeddings.
     pub fn insert_embedded(&self, records: &[Record], embs: Vec<Vec<f32>>) -> Result<()> {
         let recs = records.iter().cloned().zip(embs).map(|(rec, emb)| Pending { rec, emb, how: How::Replace }).collect();
-        self.writer.run(Op::Put(recs)).map(|_| ())
+        self.run(Op::Put(recs)).map(|_| ())
     }
 
     /// Bulk-loads records (for benchmarks and transcript back-fill).
     pub fn bulk_insert(&self, records: &[Record], embs: Vec<Vec<f32>>) -> Result<()> {
-        let schema = self.db.schema().clone();
+        let Back::Local { db, writer } = &self.back else {
+            // A server's table takes them as records to replace.
+            let recs = records.iter().cloned().zip(embs).map(|(rec, emb)| Pending { rec, emb, how: How::Replace }).collect();
+            let max = records.iter().map(|r| r.seq).max();
+            self.run(Op::Put(recs))?;
+            if let (Some(max), Some(r)) = (max, self.remote()) {
+                r.next_seq.fetch_max(max + 1, Ordering::SeqCst);
+            }
+            return Ok(());
+        };
+        let schema = db.schema().clone();
         let docs: Vec<Document> = records
             .iter()
             .zip(embs)
@@ -245,9 +351,9 @@ impl Store {
                 d
             })
             .collect();
-        self.writer.run(Op::Load(docs))?;
+        writer.run(Op::Load(docs))?;
         if let Some(max) = records.iter().map(|r| r.seq).max() {
-            self.writer.next_seq.fetch_max(max + 1, Ordering::SeqCst);
+            writer.next_seq.fetch_max(max + 1, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -288,7 +394,7 @@ impl Store {
         let mut embs = self.embedder.embed(&refs)?.into_iter();
         let mut recs: Vec<Pending> = records.into_iter().map(|rec| Pending { rec, emb: embs.next().unwrap_or_default(), how: How::New }).collect();
         recs.extend(entities.into_iter().map(|rec| Pending { rec, emb: embs.next().unwrap_or_default(), how: How::Entity }));
-        Ok(self.writer.run(Op::Put(recs))?.stored)
+        Ok(self.run(Op::Put(recs))?.stored)
     }
 
     /// Entity records for the names not stored yet (the writer checks again,
@@ -315,12 +421,14 @@ impl Store {
     /// Opens the current snapshot's segment readers now, so the next query
     /// does not pay for it.
     pub fn warm(&self) {
-        let _ = self.db.readers(&self.snapshot());
+        if let Back::Local { db, .. } = &self.back {
+            let _ = db.readers(&self.snapshot());
+        }
     }
 
     /// Writes everything to segments (on shutdown).
     pub fn flush(&self) -> Result<()> {
-        self.writer.run(Op::Flush).map(|_| ())
+        self.run(Op::Flush).map(|_| ())
     }
 
     /// Changes a record's tag (e.g. planned work that is now done).
@@ -333,7 +441,7 @@ impl Store {
 
     /// Deletes a record.
     pub fn delete(&self, id: &str) -> Result<bool> {
-        Ok(self.writer.run(Op::Delete(id.to_string()))?.found)
+        Ok(self.run(Op::Delete(id.to_string()))?.found)
     }
 
     /// Runs SQL against the memory table.
@@ -342,7 +450,10 @@ impl Store {
     }
 
     pub fn query_with(&self, sql: &str, params: &Params) -> Result<ResultSet> {
-        Ok(self.db.query_at(&self.snapshot(), sql, params, &self.db.exec)?)
+        match &self.back {
+            Back::Local { db, .. } => Ok(db.query_at(&self.snapshot(), sql, params, &db.exec)?),
+            Back::Remote(r) => r.cluster.query(&for_table(sql, &r.table), params),
+        }
     }
 
     /// Records by id (any order).
@@ -384,7 +495,8 @@ impl Store {
     /// would meet more than `r.max_nodes` records takes a hop fewer (Strata
     /// refuses to cut it), and none at all if one hop meets too many.
     pub fn reach(&self, seeds: &[String], v: &[f32], n: usize, filter: &Filter, r: &Reach) -> Result<Vec<(Record, f64)>> {
-        if seeds.is_empty() || r.hops == 0 {
+        // A coordinator refuses graph queries: a server's table is not walked.
+        if seeds.is_empty() || r.hops == 0 || self.remote().is_some() {
             return Ok(Vec::new());
         }
         let through = if r.through.is_empty() {
@@ -446,9 +558,11 @@ impl Store {
 
     /// Inverse document frequency of each analysed query term over `body`,
     /// from the segments' term dictionaries (deleted records still count).
+    /// (A server's table does not answer it: callers weigh terms alike.)
     pub fn idf(&self, terms: &[String]) -> Result<Vec<f64>> {
-        let readers = self.db.readers(&self.snapshot())?;
-        let field = self.db.schema().field_index("body").ok_or_else(|| err("no body field"))?;
+        let Back::Local { db, .. } = &self.back else { return Err(err("no term statistics from a server's table")) };
+        let readers = db.readers(&self.snapshot())?;
+        let field = db.schema().field_index("body").ok_or_else(|| err("no body field"))?;
         let mut n = 0u64;
         let mut df = vec![0u64; terms.len()];
         for r in &readers {
@@ -650,6 +764,72 @@ fn apply(db: &Db, next_seq: &AtomicI64, group: &mut [Job]) -> std::result::Resul
     Ok(out)
 }
 
+impl Remote {
+    /// Makes a write in the server's table, as the local writer makes it
+    /// in a file, one at a time. Entities do not count their links here.
+    fn run(&self, op: Op, store: &Store) -> Result<Done> {
+        let _one = self.writes.lock().unwrap_or_else(|e| e.into_inner());
+        match op {
+            Op::Put(mut recs) => {
+                let ents: Vec<String> = recs.iter().filter(|p| p.how == How::Entity).map(|p| p.rec.id.clone()).collect();
+                let have: HashSet<String> = store.get(&ents)?.into_iter().map(|r| r.id).collect();
+                let mut seen = HashSet::new();
+                let mut next = self.next_seq.load(Ordering::SeqCst);
+                let mut ops = Vec::with_capacity(recs.len());
+                let mut done = Done::default();
+                for p in recs.iter_mut() {
+                    if p.how == How::Entity && (have.contains(&p.rec.id) || !seen.insert(p.rec.id.clone())) {
+                        continue;
+                    }
+                    if p.how != How::Replace {
+                        p.rec.seq = next;
+                        next += 1;
+                    }
+                    if p.how == How::New {
+                        p.rec.id = record_id(&p.rec.session, p.rec.seq);
+                        done.stored.push(p.rec.clone());
+                    }
+                    ops.push(serde_json::json!({"op": "upsert", "table": self.table, "doc": doc_json(&p.rec, &p.emb)}));
+                }
+                let r = store_ops(self, ops);
+                // Numbers a failed write may have used are not given again.
+                self.next_seq.store(next, Ordering::SeqCst);
+                r?;
+                Ok(done)
+            }
+            Op::Delete(id) => {
+                let found = !store.get(std::slice::from_ref(&id))?.is_empty();
+                store_ops(self, vec![serde_json::json!({"op": "delete", "table": self.table, "key": id})])?;
+                Ok(Done { found, ..Done::default() })
+            }
+            Op::Flush => Ok(Done::default()),
+            Op::Load(_) => Err(err("bulk loads go to a local store")),
+        }
+    }
+}
+
+fn store_ops(r: &Remote, ops: Vec<serde_json::Value>) -> Result<()> {
+    // A write of many records goes in parts the server takes.
+    for part in ops.chunks(500) {
+        r.cluster.write(part.to_vec())?;
+    }
+    Ok(())
+}
+
+/// A record as a row of a server's table: its fields by name, the text
+/// the server generates (`body`) left out.
+fn doc_json(r: &Record, emb: &[f32]) -> serde_json::Value {
+    let links: serde_json::Value = match r.links_value() {
+        Value::Str(s) if !s.trim().is_empty() => serde_json::from_str(&s).unwrap_or(serde_json::Value::Array(Vec::new())),
+        _ => serde_json::Value::Array(Vec::new()),
+    };
+    serde_json::json!({
+        "id": r.id, "session": r.session, "kind": r.kind.as_str(), "tag": r.tag, "turn": r.turn, "seq": r.seq, "ts": r.ts,
+        "importance": (r.importance * 100.0).round() / 100.0, "files": r.files, "text": r.text, "ctx": r.ctx,
+        "emb": emb.iter().map(|&x| x as f64).collect::<Vec<_>>(), "links": links,
+    })
+}
+
 /// Adds `by` to the count of each entity `links` points to.
 fn count_links(counts: &mut HashMap<String, f64>, links: &[Link], by: f64) {
     for l in links.iter().filter(|l| is_entity(&l.to)) {
@@ -755,6 +935,14 @@ fn migrate(path: &Path, embedder: &Arc<dyn Embedder>, opts: &StoreOptions) -> Re
 mod tests {
     use super::*;
     use crate::embed::HashEmbedder;
+
+    #[test]
+    fn sql_for_a_table_of_a_cluster() {
+        assert_eq!(for_table("SELECT id FROM memory WHERE kind = 'note' LIMIT 50", "ctx_billing"), "SELECT id FROM ctx_billing WHERE kind = 'note' LIMIT 50");
+        assert_eq!(for_table("select x from MEMORY join memory m on 1 = 1 limit 1000000", "t"), "select x from t join t m on 1 = 1 LIMIT 10000");
+        // Only the table's name: a column that starts with it stays.
+        assert_eq!(for_table("SELECT memory_id FROM memory", "t"), "SELECT memory_id FROM t");
+    }
 
     fn store(dir: &Path) -> Store {
         Store::open(&dir.join("m.strata"), Arc::new(HashEmbedder { dim: 64 }), StoreOptions { sync: false, ..Default::default() }).unwrap()
@@ -934,7 +1122,7 @@ mod tests {
         let rs = s.query("SELECT id FROM memory WHERE kind = 'entity' AND (PREFIX(id, 'e:cuont', fuzzy => 1) OR PREFIX(id, 'f:cuont', fuzzy => 1)) ORDER BY importance DESC, id LIMIT 10").unwrap();
         assert_eq!(rs.rows, vec![vec![Value::Str("e:count sheet".into())]]);
         // A store from before the counts: they are made when it opens.
-        let mut txn = s.db.storage().begin().unwrap();
+        let mut txn = s.db().unwrap().storage().begin().unwrap();
         for (id, _) in &want {
             txn.set(&Value::Str(id.clone()), "importance", Value::Float(0.0)).unwrap();
         }
@@ -1010,7 +1198,7 @@ mod tests {
             db.storage().flush().unwrap();
         }
         let s = store(dir.path());
-        assert!(s.db.schema().field("links").is_some());
+        assert!(s.db().unwrap().schema().field("links").is_some());
         assert_eq!(s.len(), 1);
         assert_eq!(s.latest(&[Kind::Decision], 5, &Filter::default()).unwrap()[0].text, "We use HNSW for the vector index");
         assert!(dir.path().join("m.v1").exists());

@@ -136,24 +136,24 @@ struct Server {
     default_store: Option<String>,
 }
 
-struct Request {
-    method: String,
-    path: String,
-    query: Vec<(String, String)>,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
+pub(crate) struct Request {
+    pub method: String,
+    pub path: String,
+    pub query: Vec<(String, String)>,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
 }
 
 impl Request {
-    fn header(&self, name: &str) -> Option<&str> {
+    pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
-    fn param(&self, name: &str) -> Option<&str> {
+    pub fn param(&self, name: &str) -> Option<&str> {
         self.query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
     }
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -175,7 +175,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn read_request(stream: &TcpStream) -> Option<Request> {
+pub(crate) fn read_request(stream: &TcpStream) -> Option<Request> {
     let mut r = BufReader::new(stream);
     let mut line = String::new();
     r.read_line(&mut line).ok()?;
@@ -210,7 +210,7 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
     Some(Request { method, path: path.to_string(), query, headers, body })
 }
 
-fn respond(stream: &mut TcpStream, status: &str, ctype: &str, extra: &[(&str, String)], body: &[u8]) {
+pub(crate) fn respond(stream: &mut TcpStream, status: &str, ctype: &str, extra: &[(&str, String)], body: &[u8]) {
     let mut head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n",
         body.len()
@@ -224,12 +224,12 @@ fn respond(stream: &mut TcpStream, status: &str, ctype: &str, extra: &[(&str, St
     let _ = stream.flush();
 }
 
-fn respond_json(stream: &mut TcpStream, status: &str, v: &Json) {
+pub(crate) fn respond_json(stream: &mut TcpStream, status: &str, v: &Json) {
     respond(stream, status, "application/json", &[], v.to_string().as_bytes());
 }
 
 /// Compares two strings in time independent of where they differ.
-fn same(a: &str, b: &str) -> bool {
+pub(crate) fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 

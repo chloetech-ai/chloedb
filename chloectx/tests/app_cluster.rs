@@ -1,0 +1,333 @@
+//! `chloectx app` against a real ChloeDB cluster: two shard servers and a
+//! coordinator that shows the app (`--app chloectx=URL`). Spaces are made,
+//! notes written, replaced and retired, contexts asked for within a budget,
+//! an exchange distilled, incidents recorded and matched to an alert that
+//! fires, and everything read back after the app restarts. The model is a
+//! stub of Anthropic's API.
+//!
+//! It needs the chloedb-server binary (`CHLOEDB_SERVER_BIN`, else
+//! `../chloedb-server/target/{ci,release}/chloedb-server`), and is skipped
+//! without it unless `CHLOECTX_NEED_SERVER` is set (as CI does).
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+
+const TOKEN: &str = "chloectx-test-token";
+
+fn server_bin() -> Option<PathBuf> {
+    if let Some(b) = std::env::var_os("CHLOEDB_SERVER_BIN") {
+        return Some(PathBuf::from(b));
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../chloedb-server/target");
+    ["ci", "release"].iter().map(|p| root.join(p).join("chloedb-server")).find(|p| p.exists())
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// A child process, killed when dropped.
+struct Proc(Child);
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Starts a process; the servers' logs show with CHLOECTX_TEST_LOGS set.
+fn spawn(cmd: &mut Command) -> Proc {
+    let logs = if std::env::var_os("CHLOECTX_TEST_LOGS").is_some() { Stdio::inherit() } else { Stdio::null() };
+    Proc(cmd.stdout(Stdio::null()).stderr(logs).spawn().expect("start a process"))
+}
+
+struct Http {
+    agent: ureq::Agent,
+}
+
+impl Http {
+    fn new() -> Http {
+        Http { agent: ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(60))).build().into() }
+    }
+
+    fn call(&self, method: &str, url: &str, body: Option<&Value>, headers: &[(&str, &str)]) -> (u16, Value) {
+        let mut req = ureq::http::Request::builder().method(method).uri(url);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let r = match body {
+            Some(b) => self.agent.run(req.header("content-type", "application/json").body(b.to_string()).unwrap()),
+            None => self.agent.run(req.body(()).unwrap()),
+        };
+        let mut r = match r {
+            Ok(r) => r,
+            Err(e) => return (0, json!({"error": e.to_string()})),
+        };
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().unwrap_or_default();
+        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+}
+
+/// The app's API, called with its token.
+struct App<'a> {
+    http: &'a Http,
+    url: String,
+}
+
+impl App<'_> {
+    fn get(&self, path: &str) -> Value {
+        let (s, j) = self.http.call("GET", &format!("{}{path}", self.url), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+        assert_eq!(s, 200, "GET {path}: {j}");
+        j
+    }
+
+    fn post(&self, path: &str, body: Value) -> Value {
+        let (s, j) = self.try_post(path, body);
+        assert_eq!(s, 200, "POST {path}: {j}");
+        j
+    }
+
+    fn try_post(&self, path: &str, body: Value) -> (u16, Value) {
+        self.http.call("POST", &format!("{}{path}", self.url), Some(&body), &[("authorization", &format!("Bearer {TOKEN}"))])
+    }
+}
+
+/// Anthropic's Messages API, answering as the app's two prompts expect:
+/// a decision for a distillation, an incident for a draft.
+fn stub_model() -> String {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut s) = conn else { continue };
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut len = 0usize;
+            let mut key_ok = false;
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                key_ok |= lower.starts_with("x-api-key: test-key");
+            }
+            let mut body = vec![0; len];
+            let _ = r.read_exact(&mut body);
+            let body = String::from_utf8_lossy(&body);
+            let text = if !key_ok {
+                String::new()
+            } else if body.contains("long-term notes") {
+                r#"{"kind": "decision", "text": "The billing agents send dunning emails on day 1, 4 and 10 after a failed payment, because customers complained about daily emails.", "entities": ["dunning emails"], "when": ["changing dunning"]}"#.to_string()
+            } else {
+                r#"{"title": "Shard 2 ran out of disk during a backfill", "symptom": "disk-filling fired on shard 2", "cause": "old segments kept until the next snapshot", "fix": "took a snapshot, then backfilled in batches", "alert": "disk-filling"}"#.to_string()
+            };
+            let answer = json!({"content": [{"type": "text", "text": text}], "usage": {"input_tokens": 100, "output_tokens": 20}});
+            let a = answer.to_string();
+            let status = if key_ok { "200 OK" } else { "401 Unauthorized" };
+            let _ = write!(s, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{a}", a.len());
+        }
+    });
+    url
+}
+
+fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(secs) {
+        if f() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    panic!("{what}: not within {secs} s");
+}
+
+fn start_app(dir: &Path, coord: &str, port: u16, model: &str) -> Proc {
+    spawn(
+        Command::new(env!("CARGO_BIN_EXE_chloectx"))
+            .args(["app", "--server", coord, "--port", &port.to_string(), "--embedder", "hash:256", "--token", TOKEN])
+            .current_dir(dir)
+            .env("ANTHROPIC_API_KEY", "test-key")
+            .env("ANTHROPIC_BASE_URL", model)
+            .env_remove("CHLOECTX_APP_MODEL"),
+    )
+}
+
+fn texts(notes: &Value) -> Vec<String> {
+    notes["notes"].as_array().unwrap().iter().map(|n| n["text"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn app_in_a_cluster() {
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("CHLOECTX_NEED_SERVER").is_none(), "CHLOECTX_NEED_SERVER is set but there is no chloedb-server binary");
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let http = Http::new();
+    let model = stub_model();
+
+    // Two shards and a coordinator that shows the app.
+    let mut grpc = Vec::new();
+    let mut procs = Vec::new();
+    for i in 0..2 {
+        let (h, g) = (free_port(), free_port());
+        grpc.push(format!("http://127.0.0.1:{g}"));
+        procs.push(spawn(Command::new(&bin).args(["--db", &dir.path().join(format!("s{i}.strata")).to_string_lossy(), "--listen", &format!("127.0.0.1:{h}"), "--grpc", &format!("127.0.0.1:{g}"), "--no-fetch-models"])));
+    }
+    let (cport, aport) = (free_port(), free_port());
+    let coord = format!("http://127.0.0.1:{cport}");
+    let app_url = format!("http://127.0.0.1:{aport}");
+    wait_for("the shards", 30, || grpc.iter().all(|g| std::net::TcpStream::connect(g.trim_start_matches("http://")).is_ok()));
+    let _coordinator = spawn(
+        Command::new(&bin)
+            .args(["--shards", &grpc.join(","), "--listen", &format!("127.0.0.1:{cport}"), "--grpc", "off", "--app", &format!("chloectx={app_url}")])
+            .env("CHLOEDB_APP_TOKEN", TOKEN),
+    );
+    wait_for("the coordinator", 30, || http.call("GET", &format!("{coord}/v1/health"), None, &[]).0 == 200);
+    let mut app_proc = start_app(dir.path(), &coord, aport, &model);
+    let app = App { http: &http, url: app_url.clone() };
+    wait_for("the app", 60, || http.call("GET", &format!("{app_url}/v1/info"), None, &[("authorization", &format!("Bearer {TOKEN}"))]).0 == 200);
+    let info = app.get("/v1/info");
+    assert_eq!(info["model"]["how"], "api", "{info}");
+    assert_eq!(info["server"]["ok"], true, "{info}");
+
+    // Only callers with the token, and never a page in a browser.
+    assert_eq!(http.call("GET", &format!("{app_url}/v1/spaces"), None, &[]).0, 401);
+    assert_eq!(http.call("GET", &format!("{app_url}/v1/spaces"), None, &[("authorization", &format!("Bearer {TOKEN}")), ("origin", "http://evil.example")]).0, 403);
+    // The command center reaches it through the coordinator.
+    let (s, apps) = http.call("GET", &format!("{coord}/v1/apps"), None, &[]);
+    assert_eq!(s, 200);
+    assert_eq!(apps["apps"][0]["name"], "chloectx", "{apps}");
+    assert_eq!(apps["apps"][0]["up"], true, "{apps}");
+    let (s, view) = http.call("GET", &format!("{coord}/v1/apps/chloectx/app.json"), None, &[]);
+    assert_eq!((s, view["view"].as_str()), (200, Some("ui/view.js")));
+
+    // Spaces.
+    for bad in ["Bad-Name", "spaces", "1abc", ""] {
+        assert_eq!(app.try_post("/v1/spaces", json!({"name": bad})).0, 400, "{bad:?}");
+    }
+    let s = app.post("/v1/spaces", json!({"name": "billing", "title": "Billing agents", "description": "invoices and refunds"}));
+    assert_eq!(s["table"], "ctx_billing");
+    assert_eq!(app.post("/v1/spaces", json!({"name": "billing", "title": "Other"}))["title"], "Billing agents", "a space that exists is left as it is");
+    let (s, _) = http.call("GET", &format!("{app_url}/v1/spaces/nothere/notes"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 404);
+
+    // Notes: written, replaced (the old one kept as history), retired.
+    let rule = app.post("/v1/spaces/billing/notes", json!({"kind": "rule", "text": "Invoices are issued in the customer's currency, never converted to USD.", "entities": ["invoices"]}));
+    let old = app.post("/v1/spaces/billing/notes", json!({"kind": "decision", "text": "Refunds over 500 EUR need a second approver from finance.", "entities": ["refunds"]}));
+    let new = app.post("/v1/spaces/billing/notes", json!({"kind": "decision", "text": "Refunds over 1000 EUR need a second approver from finance (raised from 500 EUR).", "entities": ["refunds"], "replaces": old["id"]}));
+    assert_eq!(new["supersedes"], json!([old["id"]]));
+    let gone = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "The old mailer sends the dunning emails every day."}));
+    assert_eq!(app.try_post("/v1/spaces/billing/notes", json!({"kind": "mood", "text": "happy"})).0, 400);
+    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{}", gone["id"].as_str().unwrap()), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 200);
+    let live = texts(&app.get("/v1/spaces/billing/notes"));
+    assert_eq!(live.len(), 2, "{live:?}");
+    assert!(live.iter().any(|t| t.contains("1000 EUR")) && !live.iter().any(|t| t.contains("500 EUR need") || t.contains("old mailer")), "{live:?}");
+    assert_eq!(texts(&app.get("/v1/spaces/billing/notes?all=1")).len(), 4);
+    let h = app.get(&format!("/v1/spaces/billing/notes/{}", old["id"].as_str().unwrap()));
+    assert_eq!(h["note"]["tag"], "superseded");
+    assert_eq!(h["later"][0]["id"], new["id"], "{h}");
+    let h = app.get(&format!("/v1/spaces/billing/notes/{}", new["id"].as_str().unwrap()));
+    assert_eq!(h["earlier"][0]["id"], old["id"], "{h}");
+
+    // A context within a budget: the current version, with what it changed;
+    // the old one left out, and why.
+    let a = app.post("/v1/spaces/billing/ask", json!({"question": "Who approves a refund of 700 EUR?", "budget": 1000}));
+    assert_eq!(a["model_calls"], 0);
+    assert!(a["tokens"].as_u64().unwrap() <= 1000, "{a}");
+    let items = a["items"].as_array().unwrap();
+    let refund = items.iter().find(|i| i["id"] == new["id"]).unwrap_or_else(|| panic!("the new decision is in the context: {a}"));
+    assert!(refund["replaced"].as_str().unwrap_or("").contains("500 EUR"), "{refund}");
+    assert!(refund["bm25"].is_number() && refund["tokens"].as_u64().unwrap() > 0, "{refund}");
+    assert!(items.iter().any(|i| i["id"] == rule["id"]), "the rule is in it: {a}");
+    assert!(!items.iter().any(|i| i["id"] == old["id"] || i["id"] == gone["id"]), "{a}");
+    assert!(a["left_out"].as_array().unwrap().iter().any(|l| l["id"] == old["id"] && l["why"] == "superseded"), "{a}");
+    assert!(a["context"].as_str().unwrap().contains("1000 EUR"));
+    // GET asks the same.
+    let g = app.get("/v1/spaces/billing/ask?q=refund+approver&budget=500");
+    assert!(g["items"].as_array().unwrap().iter().any(|i| i["id"] == new["id"]), "{g}");
+
+    // An exchange, distilled by the model into a note.
+    let x = app.post("/v1/spaces/billing/exchanges", json!({"user": "Stop sending dunning emails every day; day 1, 4 and 10 is enough.", "assistant": "Changed the schedule to day 1, 4 and 10."}));
+    assert_eq!(x["distilling"], true);
+    assert_eq!(x["stored"].as_array().unwrap().len(), 2);
+    wait_for("the distillation", 60, || app.get("/v1/info")["distill"]["done"] == 1);
+    assert_eq!(app.get("/v1/info")["distill"]["notes"], 1);
+    assert!(texts(&app.get("/v1/spaces/billing/notes")).iter().any(|t| t.contains("day 1, 4 and 10")));
+
+    // Incidents: recorded, a better fix replacing one, matched to a text.
+    let first = app.post("/v1/incidents", json!({"title": "Search p99 jumped during a large merge", "symptom": "search p99 over 300 ms on one shard", "cause": "a merge of the largest segments took the page cache", "fix": "restarted the shard", "alert": "p99"}));
+    let better = app.post("/v1/incidents", json!({"title": "Search p99 jumped during a large merge", "symptom": "search p99 over 300 ms on one shard", "cause": "a merge of the largest segments took the page cache", "fix": "merges throttled while p99 is over its target", "alert": "p99", "replaces": first["id"]}));
+    assert_eq!(better["replaced"][0]["fix"], "restarted the shard", "{better}");
+    app.post("/v1/incidents", json!({"title": "Writes refused after a replica fell behind", "symptom": "write rejects and a full write queue on shard 2", "cause": "write acks all waited for a slow replica", "fix": "write acks set to majority", "alert": "rejected"}));
+    let disk = app.post("/v1/incidents", json!({"title": "Disk filled during a backfill", "symptom": "disk usage over 90% on a shard", "cause": "old segments kept until a snapshot", "fix": "snapshot, then backfill in batches", "alert": "test-disk"}));
+    assert_eq!(app.try_post("/v1/incidents", json!({"title": "no details"})).0, 400);
+    let list = app.get("/v1/incidents");
+    assert_eq!(list["incidents"].as_array().unwrap().len(), 3, "{list}");
+    let m = app.get("/v1/incidents/match?q=write+rejects+on+shard+2+queue+full");
+    assert_eq!(m["matches"][0]["title"], "Writes refused after a replica fell behind", "{m}");
+
+    // A model drafts an incident from a postmortem; nothing is kept.
+    let d = app.post("/v1/incidents/draft", json!({"text": "Postmortem: on Tuesday shard 2 ran out of disk while we re-embedded..."}));
+    assert_eq!(d["drafts"][0]["title"], "Shard 2 ran out of disk during a backfill", "{d}");
+    assert_eq!(app.get("/v1/incidents")["incidents"].as_array().unwrap().len(), 3);
+
+    // An alert that fires at once (every copy's disk is used at all), and
+    // the incident recorded for it first among those like it.
+    let (s, rules) = http.call("GET", &format!("{coord}/v1/alerts"), None, &[]);
+    assert_eq!(s, 200);
+    let mut rules: Vec<Value> = rules["rules"].as_array().unwrap().iter().map(|r| {
+        let mut r = r.clone();
+        r.as_object_mut().unwrap().remove("status");
+        r
+    }).collect();
+    rules.push(json!({"id": "test-disk", "name": "Disk in use", "metric": "disk_used_ratio", "op": ">=", "threshold": 0.0, "eval": "mean", "window_s": 60, "for_s": 0, "scope": "each_copy", "severity": "warning", "enabled": true, "description": "Fires as soon as a copy reports its disk."}));
+    let (s, j) = http.call("PUT", &format!("{coord}/v1/alerts/rules"), Some(&json!({"rules": rules})), &[]);
+    assert_eq!(s, 200, "{j}");
+    let mut firing = Value::Null;
+    wait_for("the test alert to fire", 120, || {
+        firing = app.get("/v1/incidents/firing");
+        firing["alerts"].as_array().unwrap().iter().any(|a| a["rule"] == "test-disk")
+    });
+    let a = firing["alerts"].as_array().unwrap().iter().find(|a| a["rule"] == "test-disk").unwrap();
+    assert_eq!(a["matches"][0]["id"], disk["id"], "{a}");
+    assert_eq!(a["matches"][0]["same_alert"], true, "{a}");
+    assert!(a["context"].as_str().unwrap().contains("snapshot, then backfill in batches"), "{a}");
+    // Handing it over needs the server's on-call agent, which has no key
+    // here: the app says so rather than failing silently.
+    let (s, j) = app.try_post("/v1/incidents/handoff", json!({"alert": "test-disk"}));
+    assert_ne!(s, 200, "{j}");
+    assert!(j["error"].as_str().unwrap_or("").contains("on-call"), "{j}");
+    assert_eq!(app.try_post("/v1/incidents/handoff", json!({"alert": "no-such-rule"})).0, 404);
+
+    // Through the coordinator, as the command center calls it.
+    let (s, j) = http.call("GET", &format!("{coord}/v1/apps/chloectx/v1/spaces/billing/ask?q=refund+approver"), None, &[]);
+    assert_eq!(s, 200, "{j}");
+    assert!(j["items"].as_array().unwrap().iter().any(|i| i["id"] == new["id"]));
+
+    // The app keeps nothing itself: after a restart, the same spaces, and
+    // new records numbered after the old ones.
+    drop(std::mem::replace(&mut app_proc, Proc(Command::new("true").spawn().unwrap())));
+    let _app_proc = start_app(dir.path(), &coord, aport, &model);
+    wait_for("the app again", 60, || http.call("GET", &format!("{app_url}/v1/info"), None, &[("authorization", &format!("Bearer {TOKEN}"))]).0 == 200);
+    let spaces = app.get("/v1/spaces");
+    let names: Vec<&str> = spaces["spaces"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["billing", "incidents"], "{spaces}");
+    let again = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "Chargebacks arrive as webhooks and are matched by the invoice number."}));
+    let all = app.get("/v1/spaces/billing/notes?all=1");
+    assert_eq!(all["notes"].as_array().unwrap().iter().filter(|n| n["id"] == again["id"]).count(), 1, "a new id: {again}");
+    assert_eq!(texts(&all).len(), 6, "{all}");
+    drop(procs);
+}
