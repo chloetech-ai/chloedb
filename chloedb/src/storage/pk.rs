@@ -458,6 +458,11 @@ impl PkIndex {
         if dir.len() != (1 << bits) + 1 || n_entries != 2 * n || dir[dir.len() - 1] as usize != n {
             return Err(corrupt("pk section sizes disagree"));
         }
+        // Every bucket's entries lie in order inside the entries: a lookup
+        // and the Bloom filter's build slice them by it.
+        if dir.windows(2).any(|w| w[0] > w[1]) {
+            return Err(corrupt("pk section directory out of order"));
+        }
         let keys = match kind {
             KIND_COLUMN => {
                 let field: Slice<u8> = r.array().map_err(corrupt)?;
@@ -529,7 +534,7 @@ impl PkIndex {
             Some(_) if self.bloom().is_some_and(|b| !b.may_contain(self.bloom_hash(h))) => 0..0,
             Some(_) => {
                 let b = bucket(h, self.bits);
-                self.dir[b] as usize..self.dir[b + 1] as usize
+                (self.dir[b] as usize).min(self.n)..(self.dir[b + 1] as usize).min(self.n)
             }
             None => 0..0,
         };
@@ -579,7 +584,12 @@ impl PkIndex {
                     let mut bloom = Bloom::sized(self.n);
                     for (b, w) in dir.windows(2).enumerate() {
                         let prefix = (b as u64).checked_shl(64 - self.bits).unwrap_or(0);
-                        for pair in e[2 * w[0] as usize..2 * w[1] as usize].chunks_exact(2) {
+                        // Checked at open; bounded all the same, so that
+                        // bytes changed under the mapping (another writer
+                        // of the file, which its lock keeps out) cannot
+                        // panic the process.
+                        let (lo, hi) = ((w[0] as usize).min(self.n), (w[1] as usize).min(self.n));
+                        for pair in e.get(2 * lo..2 * hi.max(lo)).unwrap_or_default().chunks_exact(2) {
                             bloom.add(prefix | pair[0] as u64);
                         }
                     }
@@ -594,8 +604,8 @@ impl PkIndex {
         let d = doc as usize;
         match &self.keys {
             Keys::Column(c) => KeyRef::Str(if d < self.n { c.value_bytes_of_doc(doc).unwrap_or_default() } else { &[] }),
-            Keys::Bytes { offsets, bytes } => KeyRef::Str(&bytes[offsets[d] as usize..offsets[d + 1] as usize]),
-            Keys::Ints(ints) => KeyRef::Int(ints[d]),
+            Keys::Bytes { offsets, bytes } => KeyRef::Str(offsets.get(d..d + 2).and_then(|o| bytes.get(o[0] as usize..o[1] as usize)).unwrap_or_default()),
+            Keys::Ints(ints) => KeyRef::Int(ints.get(d).copied().unwrap_or_default()),
         }
     }
 

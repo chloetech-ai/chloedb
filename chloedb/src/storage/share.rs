@@ -158,6 +158,55 @@ fn flock_wait(f: &File, op: libc::c_int) -> std::io::Result<bool> {
     }
 }
 
+/// The byte of the database file (or `LOCK`) the writer holds a write
+/// lock on, far past any page: a record lock of the file itself, so that
+/// a writer that reaches it by another name (a symlink, a hard link, a
+/// second mount, or after its `-readers` directory was deleted) finds it
+/// held. Readers take none, and it does not meet `flock`.
+const WRITER_BYTE: libc::off_t = 0x3fff_ffff_ffff_fff0;
+
+/// One non-blocking write lock on [`WRITER_BYTE`] of `f`: whether it was
+/// taken. On Linux an open file description's lock (`F_OFD_SETLK`), which
+/// a second open of the file in the same process also meets; elsewhere a
+/// process's lock (`F_SETLK`), which only other processes meet, and which
+/// closing any descriptor of the file in this process lets go of (the
+/// `WRITER` lock still keeps a second writer of this process out).
+fn try_writer_byte(f: &File) -> std::io::Result<bool> {
+    // SAFETY: a zeroed flock is a valid argument, filled in below.
+    let mut l: libc::flock = unsafe { std::mem::zeroed() };
+    l.l_type = libc::F_WRLCK as _;
+    l.l_whence = libc::SEEK_SET as _;
+    l.l_start = WRITER_BYTE;
+    l.l_len = 1;
+    #[cfg(target_os = "linux")]
+    let cmd = libc::F_OFD_SETLK;
+    #[cfg(not(target_os = "linux"))]
+    let cmd = libc::F_SETLK;
+    // SAFETY: fcntl on a valid descriptor with a valid flock.
+    if unsafe { libc::fcntl(f.as_raw_fd(), cmd, &l) } == 0 {
+        return Ok(true);
+    }
+    let e = std::io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::EAGAIN) | Some(libc::EACCES) => Ok(false),
+        _ => Err(e),
+    }
+}
+
+/// [`try_writer_byte`], retried for [`LOCK_WAIT`] as [`flock_wait`] is.
+fn writer_byte_wait(f: &File) -> std::io::Result<bool> {
+    let deadline = Instant::now() + LOCK_WAIT;
+    loop {
+        if try_writer_byte(f)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 fn elsewhere() -> Error {
     Error::Busy("the database is open elsewhere".into())
 }
@@ -183,7 +232,8 @@ pub fn lock_shared(main: &File) -> Result<()> {
     }
 }
 
-/// The writer's hold on a database: `main` shared and `WRITER` exclusive.
+/// The writer's hold on a database: `main` shared, a write lock on a byte
+/// of `main` ([`WRITER_BYTE`]), and `WRITER` exclusive.
 pub struct WriterLock {
     _file: File,
     session: u64,
@@ -195,6 +245,12 @@ impl WriterLock {
     /// new session into it. `Busy` while another writer has it.
     pub fn take(main: &File, share: &Path) -> Result<WriterLock> {
         if !flock_wait(main, libc::LOCK_SH)? {
+            return Err(elsewhere());
+        }
+        // The file's own lock first: `share` is found by the path, which
+        // another name of the file does not share. Held as long as `main`'s
+        // description is open (the database keeps it).
+        if !writer_byte_wait(main)? {
             return Err(elsewhere());
         }
         match std::fs::create_dir(share) {
