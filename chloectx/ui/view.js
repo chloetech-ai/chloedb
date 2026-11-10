@@ -6,7 +6,8 @@
 // serves it as one file.
 //
 //   #/app/chloectx              Context: the spaces, and how an agent uses them
-//   #/app/chloectx/space/<name> one space: ask it (what went in and why), its notes
+//   #/app/chloectx/space/<name> one space: ask it (what went in and why), its notes,
+//                               and apps made from it by the cluster's app engine
 //   #/app/chloectx/seen         Seen before: firing alerts beside past incidents
 
 export default { render };
@@ -94,6 +95,25 @@ const CSS = `
 .cx-inc dd { margin: 0; overflow-wrap: anywhere; }
 .cx-inc dd s { color: var(--muted); }
 .cx-drafts { display: flex; gap: 6px; flex-wrap: wrap; }
+.cx-make { margin-top: 16px; }
+.cx-ideas { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }
+.cx-idea { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px 14px; background: var(--surface-2); display: grid; gap: 6px; align-content: start; }
+.cx-idea h4 { margin: 0; font-size: 14.5px; text-transform: none; letter-spacing: 0; }
+.cx-idea p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-2); }
+.cx-idea .cx-why { margin: 0; }
+.cx-idea .btn { justify-self: start; margin-top: 4px; }
+.cx-builds { list-style: none; margin: 0 0 4px; padding: 0; }
+.cx-builds > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
+.cx-builds > li:first-child { border-top: 0; padding-top: 2px; }
+.cx-builds b { font-size: 13.5px; }
+.cx-pick { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.cx-pick > li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; padding: 7px 10px; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 1.4; }
+.cx-pick > li:first-child { border-top: 0; }
+.cx-pick input { margin-top: 2px; accent-color: var(--accent); }
+.cx-kinds { display: flex; gap: 6px 14px; flex-wrap: wrap; font-size: 12.5px; }
+.cx-kinds label { display: inline-flex; gap: 6px; align-items: center; color: var(--text); }
+.cx-kinds input { accent-color: var(--accent); }
+.cx-cost { padding: 10px 12px; border-radius: var(--r-sm); background: var(--accent-soft); font-size: 13px; line-height: 1.45; }
 @media (max-width: 900px) {
   .cx-split, .cx-alert { grid-template-columns: minmax(0, 1fr); }
   .cx-form .cx-two { grid-template-columns: minmax(0, 1fr); }
@@ -337,10 +357,136 @@ function spacePage(root, ctx, name) {
   };
   const conv = card({ title: "Hand over a conversation", sub: "a model writes down its decisions, rules and facts", body: h("div", { class: "cx-form" }, user, asst, h("div", { class: "row", style: { justifyContent: "space-between", gap: "10px" } }, said, send)) });
 
-  root.append(h("div", { class: "cx-split" }, play, h("div", { class: "cx-stack" }, notes, conv)));
+  const make = makeApps(ctx, name);
+  root.append(h("div", { class: "cx-split" }, play, h("div", { class: "cx-stack" }, notes, conv)), make.el);
   loadNotes();
   setTimeout(() => q.focus(), 0);
-  return null;
+  return make.stop;
+}
+
+// ---------------------------------------------------------------- apps from a space
+
+const usd = (v) => (v == null ? "?" : v < 0.01 ? "under $0.01" : `$${v.toFixed(2)}`);
+
+function costLine(e) {
+  if (!e) return "";
+  const built = e.usd != null ? `About ${usd(e.usd)} a build, the median of the ${e.builds} first ${e.builds === 1 ? "build" : "builds"} the app engine made here` : "No build here to measure a cost from yet";
+  const left = e.left != null ? `; it may spend ${usd(e.left)} more of its ${usd(e.cap)} cap` : "";
+  return `${built}${left}. Loading the notes takes a call to ${e.loading_model?.model || "the model"} for every 30 of them.`;
+}
+
+/** Apps made from a space: suggested from its notes, built by the cluster's app engine, loaded with the notes the person picks. */
+function makeApps(ctx, space) {
+  const { h, card, toast, pill, failure, every } = ctx.core;
+  const sp = `/v1/spaces/${encodeURIComponent(space)}`;
+  const builds = h("div");
+  const ideas = h("div");
+  const suggestBtn = h("button", { class: "btn primary" }, "Suggest apps");
+  const lead = h("p", { class: "cx-hint", style: { margin: "0 0 10px" } }, "ChloeCtx reads this space's notes and suggests apps they could become (one model call). You pick one, choose which notes go into it, and see what it costs before the cluster's app engine builds it. The app gets copies of the notes you pick and nothing else.");
+  let estimate = null;
+  ctx.api(`${sp}/apps/estimate`).then((e) => { estimate = e; }).catch((e) => {
+    if (e.status === 503) { suggestBtn.disabled = true; lead.textContent = e.message; }
+  });
+  const open = async (b) => {
+    try { const j = await ctx.api(`${sp}/apps/${encodeURIComponent(b.id)}/open`, { method: "POST", body: {} }); window.open(j.url, "_blank", "noopener"); }
+    catch (e) { toast(e.status === 403 ? "Opening the studio needs an admin key" : e.message, "bad"); }
+  };
+  let running = false;
+  const loadBuilds = async () => {
+    let j;
+    try { j = await ctx.api(`${sp}/apps`); } catch (e) { builds.replaceChildren(failure(e, "The builds")); return; }
+    const bs = j.builds || [];
+    running = bs.some((b) => b.status === "building" || b.status === "loading");
+    if (!bs.length) { builds.replaceChildren(); return; }
+    builds.replaceChildren(h("div", { class: "cx-sub", style: { marginTop: "4px" } }, "Built from this space"), h("ul", { class: "cx-builds" }, bs.map((b) => {
+      const state = b.status === "ready" ? pill("ok", "ready")
+        : b.status === "failed" ? pill("bad", "failed")
+        : b.status === "loading" ? pill("pending", `loading notes, ${b.loaded} rows so far`)
+        : pill("pending", "the app engine is building it");
+      const facts = [`${b.items} notes picked`, b.status === "ready" || b.status === "loading" ? `${b.loaded} rows loaded` : null, b.skipped ? `${b.skipped} fit no table` : null, b.cost ? `build ${usd(b.cost)}` : null, day(b.created)].filter(Boolean);
+      return h("li", {},
+        h("div", {}, h("b", {}, b.title), " ", state,
+          h("div", { class: "cx-why" }, facts.map((f) => h("span", {}, f))),
+          b.error ? h("div", { class: "cx-hint", style: { color: b.status === "failed" ? "var(--crit-ink)" : undefined } }, b.error) : null),
+        b.status === "ready" ? h("button", { class: "btn sm", onclick: () => open(b) }, "Open in the studio") : h("span"));
+    })));
+  };
+  suggestBtn.onclick = async () => {
+    suggestBtn.disabled = true;
+    ideas.replaceChildren(h("div", { class: "muted small", style: { marginTop: "10px" } }, "Reading the notes…"));
+    try {
+      const j = await ctx.api(`${sp}/apps/suggest`, { body: {} });
+      ideas.replaceChildren(h("div", { class: "cx-ideas" }, j.apps.map((a) => h("div", { class: "cx-idea" },
+        h("h4", {}, a.title), h("p", {}, a.pitch),
+        a.why ? h("p", { class: "cx-hint" }, a.why) : null,
+        h("div", { class: "cx-why" }, a.kinds.map((k) => kindBadge(ctx, k)), h("span", {}, `${a.items} notes`)),
+        h("button", { class: "btn sm", onclick: () => buildForm(ctx, space, a, estimate, () => { loadBuilds(); }) }, "Build this…")))));
+    } catch (e) { ideas.replaceChildren(failure(e, "The suggestions")); }
+    suggestBtn.disabled = false;
+  };
+  const el = card({ cls: "cx-make", title: "Create an app from this context", sub: "built by the cluster's app engine", tools: [suggestBtn], body: h("div", {}, lead, builds, ideas) });
+  loadBuilds();
+  const stop = every(5000, () => { if (running) loadBuilds(); }, false);
+  return { el, stop };
+}
+
+/** The build, asked for: what the app is, which notes go in, what it costs. */
+async function buildForm(ctx, space, idea, estimate, done) {
+  const { h, drawer, toast } = ctx.core;
+  const sp = `/v1/spaces/${encodeURIComponent(space)}`;
+  const title = h("input", { class: "input", value: idea.title });
+  const desc = h("textarea", { class: "input", rows: 7 }, idea.description);
+  const picked = new Set(idea.kinds);
+  const out = new Set();
+  const list = h("ul", { class: "cx-pick" });
+  const count = h("span", { class: "cx-hint" });
+  const go = h("button", { class: "btn primary" }, "Build it");
+  const cost = h("div", { class: "cx-cost" }, costLine(estimate));
+  let notes = [];
+  const draw = () => {
+    const n = notes.filter((x) => !out.has(x.id)).length;
+    count.textContent = `${n} of ${notes.length} notes go into the app`;
+    go.textContent = estimate?.usd != null ? `Build it, about ${usd(estimate.usd)}` : "Build it";
+    go.disabled = n === 0;
+  };
+  const load = async () => {
+    list.replaceChildren(h("li", { class: "muted" }, h("span"), "Loading…"));
+    try { notes = (await ctx.api(`${sp}/apps/items`, { body: { kinds: [...picked] } })).notes || []; }
+    catch (e) { list.replaceChildren(h("li", {}, h("span"), e.message)); return; }
+    list.replaceChildren(...(notes.length ? notes.map((n) => {
+      const box = h("input", { type: "checkbox", checked: !out.has(n.id), "aria-label": "Put this note in the app" });
+      box.onchange = () => { if (box.checked) out.delete(n.id); else out.add(n.id); draw(); };
+      return h("li", {}, box, h("div", {}, n.text, h("div", { class: "cx-why" }, kindBadge(ctx, n.kind), h("span", {}, day(n.ts)))));
+    }) : [h("li", {}, h("span"), "No notes of these kinds.")]));
+    draw();
+  };
+  const kinds = h("div", { class: "cx-kinds" }, KINDS.map(([k, l]) => {
+    const box = h("input", { type: "checkbox", checked: picked.has(k) });
+    box.onchange = () => { if (box.checked) picked.add(k); else picked.delete(k); load(); };
+    return h("label", {}, box, l);
+  }));
+  const d = drawer({
+    title: "Build an app from this space",
+    sub: "The app engine builds it from the request, then the notes you keep ticked become its first rows",
+    wide: true,
+    body: h("div", { class: "cx-form" },
+      h("label", {}, "Name", title),
+      h("label", {}, "What to build (the request the app engine gets; change it as you like)", desc),
+      h("div", { class: "cx-sub", style: { margin: "6px 0 0" } }, "The notes that go in"),
+      kinds, list, count,
+      h("div", { class: "cx-sub", style: { margin: "6px 0 0" } }, "What it costs"), cost),
+    foot: [h("button", { class: "btn", onclick: () => d.close() }, "Cancel"), go],
+  });
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      await ctx.api(`${sp}/apps`, { body: { title: title.value, description: desc.value, kinds: [...picked], exclude: [...out], confirm: true } });
+      d.close();
+      toast("The app engine is building it; the notes go in once it is built", "ok", 6000);
+      done();
+    } catch (e) { toast(e.message, "bad", 8000); go.disabled = false; }
+  };
+  load();
 }
 
 /** Waits for background distillations to end (up to a minute), then reloads. */

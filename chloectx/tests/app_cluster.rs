@@ -2,8 +2,9 @@
 //! coordinator that shows the app (`--app chloectx=URL`). Spaces are made,
 //! notes written, replaced and retired, contexts asked for within a budget,
 //! an exchange distilled, incidents recorded and matched to an alert that
-//! fires, and everything read back after the app restarts. The model is a
-//! stub of Anthropic's API.
+//! fires, an app made from a space by a stub of the app engine and loaded
+//! with the notes picked, and everything read back after the app restarts.
+//! The model is a stub of Anthropic's API.
 //!
 //! It needs the chloedb-server binary (`CHLOEDB_SERVER_BIN`, else
 //! `../chloedb-server/target/{ci,release}/chloedb-server`), and is skipped
@@ -13,6 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -124,8 +126,21 @@ fn stub_model() -> String {
             let mut body = vec![0; len];
             let _ = r.read_exact(&mut body);
             let body = String::from_utf8_lossy(&body);
+            let prompt: String = serde_json::from_str::<Value>(&body).ok().and_then(|j| j["messages"][0]["content"].as_str().map(str::to_string)).unwrap_or_default();
             let text = if !key_ok {
                 String::new()
+            } else if prompt.contains("Suggest ") && prompt.contains("apps") {
+                assert!(!prompt.contains("old mailer"), "a retired note is not shown to the model");
+                json!({"apps": [
+                    {"title": "Refund approvals", "pitch": "See who approves which refund.", "why": "The space decides refund limits.", "kinds": ["decision", "rule"], "description": "A tracker of the billing team's decisions and rules, one row each, with its text, kind and date, and a screen to search them."},
+                    {"title": "Dunning calendar", "pitch": "When each email goes.", "why": "A decision sets the schedule.", "kinds": ["decision", "mood"], "description": "A calendar of the dunning emails the billing agents send after a failed payment."},
+                    {"title": "", "description": "no title: left out"}]}).to_string()
+            } else if prompt.contains("Records to load") {
+                let rows: Vec<Value> = prompt.split("Records to load").nth(1).unwrap_or("").lines()
+                    .filter_map(|l| l.strip_prefix("- ")).filter_map(|l| l.split(", ").next())
+                    .map(|id| json!({"from": id, "table": "decisions", "fields": {"text": format!("row of {id}"), "id": "mine"}}))
+                    .chain([json!({"from": "invented", "table": "decisions", "fields": {"text": "never"}})]).collect();
+                json!({"rows": rows}).to_string()
             } else if body.contains("long-term notes") {
                 r#"{"kind": "decision", "text": "The billing agents send dunning emails on day 1, 4 and 10 after a failed payment, because customers complained about daily emails.", "entities": ["dunning emails"], "when": ["changing dunning"]}"#.to_string()
             } else {
@@ -134,6 +149,73 @@ fn stub_model() -> String {
             let answer = json!({"content": [{"type": "text", "text": text}], "usage": {"input_tokens": 100, "output_tokens": 20}});
             let a = answer.to_string();
             let status = if key_ok { "200 OK" } else { "401 Unauthorized" };
+            let _ = write!(s, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{a}", a.len());
+        }
+    });
+    url
+}
+
+/// What the stub of the app engine was asked.
+#[derive(Default)]
+struct Engine {
+    descriptions: Vec<String>,
+    rows: Vec<Value>,
+    polls: usize,
+    tokens_ok: bool,
+}
+
+/// The app engine (chloedb-apps) as the coordinator reaches it: it builds
+/// app `a1` (done at the second look), with one table, and takes rows.
+fn stub_engine(seen: Arc<Mutex<Engine>>) -> String {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut s) = conn else { continue };
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut first = String::new();
+            let _ = r.read_line(&mut first);
+            let (mut len, mut token) = (0usize, false);
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                token |= lower.starts_with(&format!("authorization: bearer {TOKEN}"));
+            }
+            let mut body = vec![0; len];
+            let _ = r.read_exact(&mut body);
+            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let mut parts = first.split_whitespace();
+            let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or("").split('?').next().unwrap_or("").to_string());
+            let mut e = seen.lock().unwrap();
+            e.tokens_ok |= token;
+            let answer = match (method, path.as_str()) {
+                ("GET", "/app.json") => json!({"title": "App engine", "description": "stub", "view": "web/cc-view.js", "version": "0"}),
+                ("GET", "/api/status") => json!({"model": "stub", "spend": {"usd": 1.0, "cap": 25.0}}),
+                ("POST", "/api/apps") => {
+                    e.descriptions.push(body["description"].as_str().unwrap_or("").to_string());
+                    json!({"app": {"id": "a1", "name": "Refund approvals"}, "request": "q1"})
+                }
+                ("GET", "/api/apps/a1") => {
+                    e.polls += 1;
+                    let status = if e.polls >= 2 { "done" } else { "running" };
+                    json!({"requests": [{"id": "q1", "status": status, "cost": 0.12}], "tables": [{"name": "decisions", "description": "the team's decisions", "columns": [{"name": "text", "type": "text"}]}]})
+                }
+                ("POST", "/api/apps/a1/insert") => {
+                    e.rows.push(body.clone());
+                    json!({"row": body["row"]})
+                }
+                ("POST", "/api/handoff") => json!({"url": format!("http://studio.example/login?code=x&next={}", body["next"].as_str().unwrap_or(""))}),
+                _ => json!({"error": format!("no {method} {path}")}),
+            };
+            drop(e);
+            let a = answer.to_string();
+            let status = if answer.get("error").is_some() { "404 Not Found" } else { "200 OK" };
             let _ = write!(s, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{a}", a.len());
         }
     });
@@ -176,6 +258,8 @@ fn app_in_a_cluster() {
     let dir = tempfile::tempdir().unwrap();
     let http = Http::new();
     let model = stub_model();
+    let engine = Arc::new(Mutex::new(Engine::default()));
+    let engine_url = stub_engine(engine.clone());
 
     // Two shards and a coordinator that shows the app.
     let mut grpc = Vec::new();
@@ -191,7 +275,7 @@ fn app_in_a_cluster() {
     wait_for("the shards", 30, || grpc.iter().all(|g| std::net::TcpStream::connect(g.trim_start_matches("http://")).is_ok()));
     let _coordinator = spawn(
         Command::new(&bin)
-            .args(["--shards", &grpc.join(","), "--listen", &format!("127.0.0.1:{cport}"), "--grpc", "off", "--app", &format!("chloectx={app_url}")])
+            .args(["--shards", &grpc.join(","), "--listen", &format!("127.0.0.1:{cport}"), "--grpc", "off", "--app", &format!("chloectx={app_url}"), "--app", &format!("apps={engine_url}")])
             .env("CHLOEDB_APP_TOKEN", TOKEN),
     );
     wait_for("the coordinator", 30, || http.call("GET", &format!("{coord}/v1/health"), None, &[]).0 == 200);
@@ -208,8 +292,8 @@ fn app_in_a_cluster() {
     // The command center reaches it through the coordinator.
     let (s, apps) = http.call("GET", &format!("{coord}/v1/apps"), None, &[]);
     assert_eq!(s, 200);
-    assert_eq!(apps["apps"][0]["name"], "chloectx", "{apps}");
-    assert_eq!(apps["apps"][0]["up"], true, "{apps}");
+    let listed = apps["apps"].as_array().unwrap().iter().find(|a| a["name"] == "chloectx").cloned().unwrap_or_default();
+    assert_eq!(listed["up"], true, "{apps}");
     let (s, view) = http.call("GET", &format!("{coord}/v1/apps/chloectx/app.json"), None, &[]);
     assert_eq!((s, view["view"].as_str()), (200, Some("ui/view.js")));
 
@@ -311,6 +395,46 @@ fn app_in_a_cluster() {
     assert_ne!(s, 200, "{j}");
     assert!(j["error"].as_str().unwrap_or("").contains("on-call"), "{j}");
     assert_eq!(app.try_post("/v1/incidents/handoff", json!({"alert": "no-such-rule"})).0, 404);
+
+    // An app made from the space: suggested from its live notes, built by
+    // the app engine only once confirmed, loaded with the notes picked.
+    let ideas = app.post("/v1/spaces/billing/apps/suggest", json!({}));
+    let list = ideas["apps"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "the one with no title is left out: {ideas}");
+    assert_eq!(list[0]["kinds"], json!(["decision", "rule"]), "{ideas}");
+    assert_eq!(list[1]["kinds"], json!(["decision"]), "a kind it does not know is dropped: {ideas}");
+    let e = app.get("/v1/spaces/billing/apps/estimate");
+    assert_eq!((e["usd"].clone(), e["left"].as_f64()), (Value::Null, Some(24.0)), "no build measured yet: {e}");
+    let items = app.post("/v1/spaces/billing/apps/items", json!({"kinds": ["decision", "rule"]}));
+    let picked: Vec<String> = items["notes"].as_array().unwrap().iter().map(|n| n["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(picked.len(), 3, "the two live decisions and the rule: {items}");
+    let ask = json!({"title": "Refund approvals", "description": list[0]["description"], "kinds": ["decision", "rule"], "exclude": [rule["id"]]});
+    let (s, j) = app.try_post("/v1/spaces/billing/apps", ask.clone());
+    assert_eq!(s, 409, "not without confirm: {j}");
+    assert!(engine.lock().unwrap().descriptions.is_empty(), "nothing built before it is confirmed");
+    let mut yes = ask.clone();
+    yes["confirm"] = json!(true);
+    let built = app.post("/v1/spaces/billing/apps", yes);
+    assert_eq!((built["build"]["status"].as_str(), built["build"]["items"].as_u64()), (Some("building"), Some(2)), "{built}");
+    let mut b = Value::Null;
+    wait_for("the build", 60, || {
+        b = app.get("/v1/spaces/billing/apps")["builds"][0].clone();
+        b["status"] == "ready" || b["status"] == "failed"
+    });
+    assert_eq!(b["status"], "ready", "{b}");
+    assert_eq!((b["loaded"].as_u64(), b["skipped"].as_u64(), b["cost"].as_f64()), (Some(2), Some(0), Some(0.12)), "{b}");
+    {
+        let e = engine.lock().unwrap();
+        assert!(e.tokens_ok, "the coordinator sends the engine its app token");
+        assert!(e.descriptions[0].contains("2 records from the team's memory") && e.descriptions[0].contains("leave out example rows"), "{:?}", e.descriptions);
+        let from: Vec<String> = e.rows.iter().map(|r| r["row"]["text"].as_str().unwrap().trim_start_matches("row of ").to_string()).collect();
+        assert_eq!(from.len(), 2, "{:?}", e.rows);
+        assert!(!from.contains(&rule["id"].as_str().unwrap().to_string()), "the rule left out never reaches the app: {from:?}");
+        assert!(e.rows.iter().all(|r| r["table"] == "decisions" && r["row"].get("id").is_none()), "{:?}", e.rows);
+    }
+    let link = app.post(&format!("/v1/spaces/billing/apps/{}/open", b["id"].as_str().unwrap()), json!({}));
+    assert!(link["url"].as_str().unwrap().ends_with("next=#/app/a1"), "{link}");
+    assert_eq!(app.try_post("/v1/spaces/billing/apps/nobuild/open", json!({})).0, 404);
 
     // Through the coordinator, as the command center calls it.
     let (s, j) = http.call("GET", &format!("{coord}/v1/apps/chloectx/v1/spaces/billing/ask?q=refund+approver"), None, &[]);
