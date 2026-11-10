@@ -57,6 +57,10 @@ impl Params {
     }
 }
 
+/// The option `ORDER BY distance(..)` gives its similarity: rank by the
+/// Euclidean distance (`l2`), nearest first, `score()` minus the distance.
+pub const DISTANCE_OPT: &str = "metric";
+
 /// The functions a ranking expression computes, besides the scores.
 const RANK_FUNCS: [&str; 16] = ["abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "tmm", "minmax", "zscore", "count_true"];
 
@@ -1764,7 +1768,13 @@ impl<'a> Binder<'a> {
         if let Expr::Function(f) = e {
             if fname(f) == "distance" {
                 let (args, opts) = self.args(f)?;
-                return Ok(OrderBy::Score { score: self.similarity(&args, opts, true)?, desc: !desc, nulls_first: false });
+                let mut score = self.similarity(&args, opts, true)?;
+                // The Euclidean distance, not the dot product in reverse:
+                // the two order rows alike only for unit vectors.
+                if let Score::Similarity { opts, .. } = &mut score {
+                    opts.insert(DISTANCE_OPT.into(), Value::Str("l2".into()));
+                }
+                return Ok(OrderBy::Score { score, desc: !desc, nulls_first: false });
             }
         }
         Ok(OrderBy::Score { score: self.score(e)?, desc, nulls_first: false })

@@ -364,12 +364,14 @@ The text may weigh a word, require it or exclude it, as a search box does:
 
 ### `similarity(field, vector)` and `distance(field, vector)`
 
-The dot product (cosine for unit vectors) and the distance between a row's vector and the query vector, which is a bound parameter or a JSON array of the field's dimension.
+The dot product (cosine for unit vectors) and the Euclidean (L2) distance between a row's vector and the query vector, which is a bound parameter or a JSON array of the field's dimension.
+
+`similarity` is the raw dot product of the vectors as written: ChloeDB does not normalise the vectors a write supplies (the models it runs itself write unit vectors), so on vectors of other lengths long vectors rank first. For cosine similarity, write unit vectors. `ORDER BY distance(emb, :v) ASC` ranks by $\lVert v - q \rVert$, nearest first, and `score()` is minus the distance (ranking is always best first). On a field a model embeds the vectors are unit length, where distance orders rows as the dot product does, so the index searches them (`strategy => 'flat'` measures every row); on any other field every row `WHERE` keeps is measured exactly, a scan of the field's float32 vectors, since its index ranks by the dot product. **Changed:** `distance()` ranked like `similarity(...) DESC` before, which is the nearest row only for unit vectors, and its `score()` was the similarity; a shard from before this change still ranks it so. In an expression, `distance()` stays refused: use `similarity()`.
 
 | option | effect |
 |---|---|
-| `strategy` | `'auto'` (default: the planner decides), `'prefilter'` (evaluate the filter, scan its members exactly), `'index'` (search HNSW or IVF with the filter inside), `'postfilter'` (search with a larger *k* and drop non-matching rows), `'flat'` (exact scan), `'partition'` (walk the graphs of the [partitions](#vector-partitions) the filter can match) |
-| `ef` | HNSW search breadth (default 64) |
+| `strategy` | `'auto'` (default: the planner decides, by its cost model, which sizes the work by the vectors' dimensions: an unfiltered search scans every vector exactly where that costs no more than the index, as in a segment of 20,000 vectors of 64 dimensions), `'prefilter'` (evaluate the filter, scan its members exactly), `'index'` (search HNSW or IVF with the filter inside), `'postfilter'` (search with a larger *k* and drop non-matching rows), `'flat'` (exact scan), `'partition'` (walk the graphs of the [partitions](#vector-partitions) the filter can match) |
+| `ef` | HNSW search breadth (default 200; 64 before). On random unit vectors of 64 dimensions, the hard case for a graph (real embeddings cluster, and need less), the index found 0.73 of the true top 10 at ef 64 and 0.96 at 200 over 20,000 rows (0.13 and 0.24 ms at the median), and 0.40 and 0.71 over 200,000 (0.24 and 0.35 ms); the default search of the 20,000, now an exact scan, finds all of them in 0.15 ms (200 queries, `cargo test --test vector_defaults -- --ignored`, one run on a 4-core Intel Xeon @ 2.10GHz shared with other builds) |
 | `nprobe` | IVF clusters probed |
 | `rerank` | how many candidates are re-scored in float32 |
 

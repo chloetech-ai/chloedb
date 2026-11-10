@@ -223,9 +223,12 @@ fn auto_follows_the_cost_model() {
     let seg = segment(&vecs, dim, &opts("hnsw"));
     let r = VectorReader::open(&seg, EMB).unwrap();
     let p = SearchParams::default();
-    // A tiny filter is scanned; no filter uses the graph.
+    // A tiny filter is scanned. Without a filter, 4,000 vectors of 32
+    // dimensions cost less to scan exactly than to search (the model sizes
+    // the work by the dimensions; it used the graph here when it costed
+    // every vector as one of 1,024 dimensions).
     assert_eq!(r.plan(10, Some(4), &p), Strategy::PreFilter);
-    assert_eq!(r.plan(10, None, &p), Strategy::Hnsw);
+    assert_eq!(r.plan(10, None, &p), Strategy::Flat);
     for card in [None, Some(4), Some(400), Some(4000)] {
         let auto = r.estimate_cost(Strategy::Auto, 10, card, &p);
         for s in [Strategy::Flat, Strategy::Hnsw, Strategy::PreFilter, Strategy::PostFilter] {

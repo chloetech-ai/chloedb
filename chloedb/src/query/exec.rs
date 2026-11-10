@@ -3307,6 +3307,9 @@ impl<'a> Executor<'a> {
         if self.schema.fields[field].multi {
             return Err(err(crate::query::sql::multi_similarity(&self.schema.fields[field].name)));
         }
+        if opts.get(crate::query::sql::DISTANCE_OPT).and_then(|v| v.as_str()) == Some("l2") {
+            return self.distance_top(field, q, opts, p, k);
+        }
         let base = self.search_params(opts);
         let strategy_opt = opts.get("strategy").and_then(|v| v.as_str());
         // Partitions are weighed when nothing is forced, and used wherever
@@ -3371,6 +3374,38 @@ impl<'a> Executor<'a> {
             l.scored += out.stats.candidates as u64;
             l.plan.push(format!("seg {}: vector {:?} ({:?} ran), filter {mode:?}", s.ord, strategy, out.stats.strategy));
             Ok(out.hits.into_iter().map(|h| Hit { seg: s.ord, doc: h.doc, score: h.score as f64 }).collect::<Vec<_>>())
+        })?;
+        Ok(merge_top(per.concat(), k))
+    }
+
+    /// `ORDER BY distance(field, q)`: the `k` rows nearest `q` by Euclidean
+    /// distance, each scored minus its distance (ranking is best first). A
+    /// field a model embeds holds unit vectors, whose distance orders rows
+    /// as the dot product does: its index searches them. Any other field's
+    /// vectors are as written, so every row WHERE keeps is measured.
+    fn distance_top(&mut self, field: usize, q: &[f32], opts: &Opts, p: &Pred, k: usize) -> Result<Vec<Hit>> {
+        let qq: f64 = q.iter().map(|x| (*x as f64) * (*x as f64)).sum();
+        if self.schema.fields[field].embed.is_some() && opts.get("strategy").and_then(|v| v.as_str()) != Some("flat") {
+            let mut dot = opts.clone();
+            dot.remove(crate::query::sql::DISTANCE_OPT);
+            let hits = self.vector_top(field, q, &dot, p, k)?;
+            self.stats.plan.push(format!("distance({}): unit vectors of a model, ranked by the index's dot product", self.field_name(field)));
+            return Ok(hits.into_iter().map(|h| Hit { score: -(qq + 1.0 - 2.0 * h.score).max(0.0).sqrt(), ..h }).collect());
+        }
+        let per = self.per_segment(|ex, s, l| {
+            let vr = ex.vector(s, field)?;
+            let set = ex.filter_set_l(s, p, l)?;
+            let mut hits = Vec::new();
+            for d in set.iter() {
+                if !vr.has_vector(d) {
+                    continue;
+                }
+                let d2: f64 = vr.vector(d).iter().zip(q).map(|(a, b)| ((a - b) as f64).powi(2)).sum();
+                hits.push(Hit { seg: s.ord, doc: d, score: -d2.sqrt() });
+            }
+            l.scored += hits.len() as u64;
+            l.plan.push(format!("seg {}: distance, an exact scan of {} vectors", s.ord, hits.len()));
+            Ok(merge_top(hits, k))
         })?;
         Ok(merge_top(per.concat(), k))
     }
@@ -3497,7 +3532,7 @@ impl<'a> Executor<'a> {
                 .iter()
                 .map(|&i| {
                     let rows = info.parts[i].n;
-                    let shape = vector::IndexShape { n: rows, kind: "hnsw".into(), nlist: 1, hnsw_m: m };
+                    let shape = vector::IndexShape { n: rows, kind: "hnsw".into(), nlist: 1, hnsw_m: m, dim: vr.shape().dim };
                     let card = share.map(|x| ((x * rows as f64).ceil() as usize).max(1));
                     vr.cost_model().estimate(&shape, vector::Strategy::Hnsw, k, card, base)
                 })
@@ -4841,6 +4876,11 @@ impl Estimator for SegEst<'_, '_> {
         let Some(vr) = self.s.r.vector(field).ok().flatten() else { return f64::INFINITY };
         let params = self.params.as_ref().map(|(_, p)| p.clone()).unwrap_or_else(|| self.ex.opts.vector_params.clone());
         let st = to_vector_strategy(s, vr.index_kind(), card.is_some());
+        // A small segment is scanned exactly: the index costs about as much
+        // and finds less.
+        if s == VectorStrategy::InIndex && card.is_none() && vr.shape().scans_exactly() {
+            return f64::INFINITY;
+        }
         // In-index search pays for the selectivity near the query, in both
         // directions. Post-filtering sizes its candidate pool from the global
         // selectivity, so correlation cannot make it cheaper, only

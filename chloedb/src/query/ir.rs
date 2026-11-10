@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 30] = [
+pub const FEATURES: [&str; 31] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -201,6 +201,11 @@ pub const PERCENTILES: &str = "percentiles";
 /// The feature of a plan that hashes values ([`Func::Hash`]): a seeded
 /// sample, split or shuffle of rows.
 pub const HASH: &str = "hash";
+
+/// The feature of a plan that ranks by `distance(..)`, the Euclidean
+/// distance (a similarity with option `metric => 'l2'`), which a Strata
+/// from before it ranked by the dot product.
+pub const DISTANCE: &str = "distance";
 
 /// A statement as a tree of operators ([module docs](self)).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2175,6 +2180,11 @@ impl Plan {
         root.visit_exprs(&mut |e| ranked |= matches!(e, Expr::Ranked { .. }));
         if ranked {
             features.push(RANKED.to_string());
+        }
+        let mut distance = false;
+        root.visit_exprs(&mut |e| distance |= matches!(e, Expr::Similarity { opts, .. } if opts.contains_key(crate::query::sql::DISTANCE_OPT)));
+        if distance {
+            features.push(DISTANCE.to_string());
         }
         let mut norms = false;
         root.visit_exprs(&mut |e| norms |= matches!(e, Expr::Norm { kind: NormKind::Tmm | NormKind::ZScore, .. }));
