@@ -213,6 +213,9 @@ fn a_list_of_keys_is_not_kept() {
 
 /// A vector search looks at its filter twice, once to sample how many rows
 /// near the query pass it: still one sight, so one query keeps nothing.
+/// On 100,000 rows: on 20,000 of 8 dimensions, scanning the rows WHERE
+/// keeps costs less than the index (the cost model weighs vectors by their
+/// dimensions), and nothing is sampled.
 #[test]
 fn one_query_is_one_sight() {
     let dir = tempfile::tempdir().unwrap();
@@ -224,7 +227,7 @@ fn one_query_is_one_sight() {
     .unwrap();
     let mut db = Db::create(&dir.path().join("v.strata"), schema, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
     let vec_of = |i: usize| -> Arc<[f32]> { (0..8).map(|j| (((i * 31 + j * 17) % 97) as f32 / 97.0) - 0.5).collect::<Vec<f32>>().into() };
-    db.load((0..20_000).map(|i| vec![Value::Str(format!("v{i:05}")), Value::Int((i % 100) as i64), Value::Vector(vec_of(i * 7 + 3))])).unwrap();
+    db.load((0..100_000).map(|i| vec![Value::Str(format!("v{i:05}")), Value::Int((i % 100) as i64), Value::Vector(vec_of(i * 7 + 3))])).unwrap();
     let cache = Arc::new(FilterCache::new(FILTER_CACHE_BYTES));
     db.exec.filter_cache = Some(cache.clone());
     let sql = "SELECT id FROM v WHERE n < 40 ORDER BY similarity(emb, :q) DESC LIMIT 10";
