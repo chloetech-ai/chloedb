@@ -309,20 +309,24 @@ impl Db {
     /// What a program that embeds the database runs before it lets go of it
     /// (`close` in Python, JavaScript and Java): stops the background
     /// merger ([`Database::stop_merger`], waiting for a merge it runs),
-    /// merges small segments as the merger would ([`MergePolicy::default`]),
-    /// then, when an eighth of the file or more is free, returns that space
-    /// to the file system ([`Database::vacuum`]). The free space is what
-    /// merges freed: later writes would reuse it, but a program that writes
-    /// for a while and stops would leave it in the file. Rows still in
-    /// memory stay in the write-ahead log, which the next open reads. The
-    /// database still answers and takes writes after it, without merging
-    /// in the background. Returns the bytes the file shrank by. A database
-    /// opened read-only ([`DbOptions::read_only`]) is left as it is.
+    /// flushes the rows still in memory into the file
+    /// ([`Database::flush`]), which leaves the write-ahead log empty, so
+    /// that the file alone holds the database once this returns (a copy of
+    /// it is a backup), merges small segments as the merger would
+    /// ([`MergePolicy::default`]), then, when an eighth of the file or more
+    /// is free, returns that space to the file system
+    /// ([`Database::vacuum`]). The free space is what merges freed: later
+    /// writes would reuse it, but a program that writes for a while and
+    /// stops would leave it in the file. The database still answers and
+    /// takes writes after it, without merging in the background. Returns
+    /// the bytes the file shrank by. A database opened read-only
+    /// ([`DbOptions::read_only`]) is left as it is.
     pub fn close(&self) -> Result<u64> {
         if self.storage.is_read_only() {
             return Ok(0);
         }
         self.storage.stop_merger();
+        self.storage.flush()?;
         self.storage.merge(&MergePolicy::default())?;
         let st = self.storage.file_stats();
         // A database of the directory layout has no pages: its vacuum
