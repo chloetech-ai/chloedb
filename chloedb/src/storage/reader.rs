@@ -46,6 +46,10 @@ pub const REFRESH_IDLE: Duration = Duration::from_secs(1);
 /// How many times a read that changes cut through is read again before
 /// the reader gives up for now.
 const READ_TRIES: u32 = 200;
+/// How many reads a refusal to fall back past a damaged meta slot or
+/// version must survive before it is believed (a slot the writer is
+/// writing can read as damaged for a moment).
+const FALLBACK_TRIES: u32 = 20;
 /// How long a reader that failed to follow a change waits before it tries
 /// again by itself.
 const RETRY_AFTER: Duration = Duration::from_millis(100);
@@ -238,6 +242,8 @@ impl Reader {
                 Ok(Some(l)) => return Ok(l),
                 Ok(None) => {}
                 Err(e) if missing(&e) => last = Some(e),
+                // Refused to fall back: true only if it stays so a while.
+                Err(Error::Corrupt(m)) if m.contains("would lose acknowledged writes") && attempt + 1 < FALLBACK_TRIES => {}
                 Err(e) => return Err(e),
             }
         }
@@ -280,6 +286,14 @@ impl Reader {
                     }
                 }
                 let (manifest, meta, slot, freelist, map, handles) = found.ok_or_else(|| corrupt("no valid meta slot"))?;
+                let skipped = damaged.as_ref().map(|m| (metas[0].0, m.clone()));
+                let damaged = match crate::storage::db::fallback_decision(&self.file, &self.wal_path, meta, &manifest, skipped.as_ref())? {
+                    // A meta slot being written as it is read looks damaged:
+                    // `load` reads again before it believes it.
+                    Some(d) if !d.safe && !self.opts.recover => return Err(Error::Corrupt(crate::storage::db::refused_fallback(&self.path, &d, meta.txn))),
+                    Some(d) => Some(format!("{}; reading the version before it (txn {}){}", d.what, meta.txn, d.lost)),
+                    None => damaged,
+                };
                 (manifest, meta, slot, freelist, map, handles, damaged)
             }
         };

@@ -4309,13 +4309,14 @@ impl<'a> Executor<'a> {
     /// A field read from its index rather than the doc store.
     fn unstored_cell<'s>(&self, s: &'s Seg<'a>, field: usize, d: DocId) -> Result<Cell<'s>> {
         Ok(Cell::Value(match self.schema.fields[field].ty {
-            FieldType::Vector { .. } => s.r.vector(field).ok().flatten().map_or(Value::Null, |v| v.row_value(d)),
-            FieldType::Int | FieldType::Float if self.numeric_column(field) => s.r.numeric(field)?.map_or(Value::Null, |n| n.col().get(d)),
-            FieldType::Int | FieldType::Float => s.r.numeric(field).ok().flatten().map_or(Value::Null, |n| n.col().get(d)),
-            FieldType::Keyword => return Ok(s.r.keyword(field).ok().flatten().and_then(|k| k.value_of_doc(d)).map_or(Cell::Value(Value::Null), Cell::Str)),
+            FieldType::Vector { .. } => s.r.vector(field)?.map_or(Value::Null, |v| v.row_value(d)),
+            // A column that does not open is damage, never a row of NULLs
+            // (as the filters on it say).
+            FieldType::Int | FieldType::Float => s.r.numeric(field)?.map_or(Value::Null, |n| n.col().get(d)),
+            FieldType::Keyword => return Ok(s.r.keyword(field)?.and_then(|k| k.value_of_doc(d)).map_or(Cell::Value(Value::Null), Cell::Str)),
             // A JSON field is always stored.
             FieldType::Text { .. } | FieldType::Sparse | FieldType::Json => Value::Null,
-            FieldType::Edges => s.r.graph(field).ok().flatten().map_or(Value::Null, |g| g.edges_value(d)),
+            FieldType::Edges => s.r.graph(field)?.map_or(Value::Null, |g| g.edges_value(d)),
         }))
     }
 }

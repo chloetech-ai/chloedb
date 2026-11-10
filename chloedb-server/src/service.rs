@@ -1771,6 +1771,11 @@ impl Service {
     /// ([`chloedb::storage::Database::check`]). Writes wait meanwhile.
     pub async fn check(&self) -> Result<(), ApiError> {
         let db = self.admin_db()?;
+        // Its bytes may be whole, but it is not the database that was
+        // written: say so until it is opened clean (or restored).
+        if let Some(what) = db.storage().damaged() {
+            return Err(ApiError::internal(format!("the database was opened past damage, and lacks what was dropped: {what}")));
+        }
         let deadline = Instant::now() + self.max_timeout;
         tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.storage().check()?))).await.map_err(ApiError::internal)?
     }
@@ -3928,6 +3933,14 @@ impl Service {
                 } else if let Some(e) = db.storage().flush_error() {
                     h["status"] = json!("degraded");
                     h["error"] = json!(format!("flushes fail: {e}"));
+                } else if let Some(what) = db.storage().damaged() {
+                    // Opened past damage (--recover, --wal-drop-damaged):
+                    // it serves what was left, which is not all it held.
+                    h["status"] = json!("degraded");
+                    h["error"] = json!(format!("opened past damage: {what}"));
+                }
+                if let Some(what) = db.storage().damaged() {
+                    h["opened_past_damage"] = json!(what);
                 }
                 // What the last scrub found: the copy still serves (a query
                 // that reads a damaged section fails, and a coordinator

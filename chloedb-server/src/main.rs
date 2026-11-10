@@ -72,6 +72,15 @@ struct Args {
     /// start on such a database.
     #[arg(long)]
     wal_drop_damaged: bool,
+    /// Open a damaged database that the server otherwise refuses to start
+    /// on because opening it loses acknowledged writes (its newest version
+    /// fails a check and the write-ahead log no longer holds what it held,
+    /// or the log's header is damaged): keeps a copy of the damaged file
+    /// (`<db>.damaged-<time>`, `<db>-wal.damaged`), opens what is left,
+    /// and reports the loss in `/v1/health` and `/v1/admin/check`.
+    /// Implies --wal-drop-damaged. Restoring a backup loses less.
+    #[arg(long)]
+    recover: bool,
     /// Check every segment of the database against its checksum before
     /// serving (reads the whole database once). A damaged newest version
     /// is then skipped for the one before it, as when its manifest is
@@ -1057,6 +1066,7 @@ async fn run() {
         demo_shard,
         directory: a.directory,
         wal_drop_damaged: a.wal_drop_damaged,
+        recover: a.recover,
         verify_checksums: a.verify_checksums,
         seq_no: a.seq_no,
         replicas: a.replicas,

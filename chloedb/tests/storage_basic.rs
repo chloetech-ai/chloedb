@@ -504,8 +504,16 @@ fn damaged_meta_slot_falls_back_to_previous_version() {
     let f = OpenOptions::new().write(true).open(&path).unwrap();
     f.write_all_at(&[0xAB; 40], slot * PAGE + 20).unwrap();
     drop(f);
+    // The older version lacks the last insert, which the log no longer
+    // holds: opening refuses, changing nothing, unless told to recover.
+    let before = std::fs::read(&path).unwrap();
+    match Database::open(&path, opts(&src)) {
+        Err(chloedb::Error::Corrupt(m)) => assert!(m.contains("would lose acknowledged writes"), "{m}"),
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+    assert!(std::fs::read(&path).unwrap() == before);
     {
-        let db = Database::open(&path, opts(&src)).unwrap();
+        let db = Database::open(&path, DbOptions { recover: true, ..opts(&src) }).unwrap();
         // The merge's version: deleted documents dropped, the last insert lost.
         let s = db.snapshot();
         assert_keys(&s, &keys(100..300));

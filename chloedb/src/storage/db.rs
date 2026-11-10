@@ -132,6 +132,17 @@ pub struct DbOptions {
     /// `<wal>.damaged` first. Without it, opening such a database with
     /// `sync` fails. ([`Database::damaged`] says what was dropped.)
     pub wal_drop_damaged: bool,
+    /// Open a database that would otherwise be refused because opening it
+    /// loses acknowledged writes, accepting the loss: the newest version on
+    /// disk is damaged and the version before it lacks transactions the
+    /// write-ahead log no longer holds, or the log's header is damaged (or
+    /// names another database) while it holds committed transactions.
+    /// The main file is copied to `<path>.damaged-<unix time>` (a log that
+    /// is dropped to `<wal>.damaged`) before anything is changed, and
+    /// [`Database::damaged`] says what was lost. It implies
+    /// `wal_drop_damaged`. Without it such an open fails and changes
+    /// nothing.
+    pub recover: bool,
     /// Check every segment against its checksum when the database opens,
     /// which reads every byte of it; a version whose segment fails is
     /// damaged and opening falls back to the one before it. Without it a
@@ -239,6 +250,7 @@ impl Default for DbOptions {
             publish_snapshots: false,
             layout: Layout::SingleFile,
             wal_drop_damaged: false,
+            recover: false,
             verify_checksums: false,
             check_sections: true,
             ship_log_bytes: 0,
@@ -1122,54 +1134,93 @@ impl Database {
     }
 
     /// Opens the newest version named by a valid meta slot, or, when that
-    /// version is damaged (its manifest or free list fails its checksum,
-    /// or a segment it names does not open), the version in the other
-    /// slot: the one before it, which the newer commit left intact
-    /// ([`crate::storage::freelist`]). With `sync` off, a power loss can
-    /// leave the newest slot naming pages that never reached the disk;
-    /// that loses the newest commits, not the database.
+    /// version is damaged (its meta slot, manifest or free list fails its
+    /// checksum, a segment it names does not open, or the file is shorter
+    /// than it says), the version in the other slot: the one before it,
+    /// which the newer commit left intact ([`crate::storage::freelist`]).
+    ///
+    /// Falling back is right only when it loses no acknowledged write:
+    /// when the newer version flushed nothing, or the write-ahead log still
+    /// holds what it flushed ([`fallback_keeps_commits`]). Otherwise
+    /// opening fails, naming what is damaged, and leaves the files as they
+    /// are, unless [`DbOptions::recover`] accepts the loss (the file is
+    /// copied aside first). Nothing is truncated or extended before that
+    /// is decided.
     fn load(path: &Path, file: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
         if opts.cold.is_some() {
             return Err(Error::Schema(format!("{}: cold segments need the directory layout (Layout::Directory)", path.display())));
         }
         let metas = pager::read_metas(&file)?;
-        let mut damaged = None;
+        let mut skipped = None;
+        let mut chosen = None;
         for (i, &(meta, slot)) in metas.iter().enumerate() {
-            match Database::load_version(&file, &opts, meta, i > 0) {
-                Ok((manifest, freelist, map, handles)) => {
-                    let mut db = Database::assemble(path, wal_path(path), None, file, lock, opts, manifest, meta, slot, freelist, map, handles, None)?;
-                    db.damaged = match (damaged, db.damaged.take()) {
-                        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-                        (a, b) => a.or(b),
-                    };
-                    return Ok(db);
+            match Database::load_version(&file, &opts, meta, i > 0, false) {
+                Ok(v) => {
+                    chosen = Some((meta, slot, v));
+                    break;
                 }
-                Err(Error::Corrupt(m)) if i + 1 < metas.len() => damaged = Some(format!("version {} skipped: {m}", meta.txn)),
+                Err(Error::Corrupt(m)) if i + 1 < metas.len() => skipped = Some((meta, m)),
                 Err(e) => return Err(e),
             }
         }
-        Err(corrupt("no valid meta slot"))
+        let Some((meta, slot, v)) = chosen else { return Err(corrupt("no valid meta slot")) };
+        let decision = fallback_decision(&file, &wal_path(path), meta, &v.0, skipped.as_ref())?;
+        let mut note = None;
+        if let Some(d) = decision {
+            if !d.safe && !opts.recover {
+                return Err(corrupt(refused_fallback(path, &d, meta.txn)));
+            }
+            note = Some(if d.safe {
+                format!("{}; opened the version before it (txn {}), which the write-ahead log completes", d.what, meta.txn)
+            } else {
+                let copy = damaged_copy(path)?;
+                let msg = format!(
+                    "{}; opened the version before it (txn {}) as DbOptions::recover asked, losing acknowledged writes{}; the file as it was is copied to {}",
+                    d.what,
+                    meta.txn,
+                    d.lost,
+                    copy.display()
+                );
+                tracing::error!(path = %path.display(), "{msg}");
+                msg
+            });
+        }
+        // Decided: now the file may be fitted to the version's page count.
+        let (manifest, freelist, map, handles) = match file.metadata()?.len() == meta.page_count * PAGE {
+            true => v,
+            false => {
+                drop(v);
+                Database::load_version(&file, &opts, meta, true, true)?
+            }
+        };
+        let mut db = Database::assemble(path, wal_path(path), None, file, lock, opts, manifest, meta, slot, freelist, map, handles, None)?;
+        db.damaged = match (note, db.damaged.take()) {
+            (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+            (a, b) => a.or(b),
+        };
+        if let Some(d) = &db.damaged {
+            tracing::warn!(path = %path.display(), "opened past damage: {d}");
+        }
+        Ok(db)
     }
 
     /// Reads and checks the version `meta` names. A commit cuts free pages
     /// off the end of the file, which can leave it shorter than the
     /// version before it says (`older`); those pages are none that version
     /// references (every page it does is either still in use or a pending
-    /// free of the newer commit), so the file is extended back.
+    /// free of the newer commit), so the file is extended back, and pages
+    /// past its count (a commit that did not finish, or a damaged version
+    /// skipped) are cut off: both only when `fit`, once opening has
+    /// decided to open this version.
     #[allow(clippy::type_complexity)]
-    fn load_version(file: &File, opts: &DbOptions, meta: Meta, older: bool) -> Result<(Manifest, FreeList, OwnedBytes, Vec<Vec<Arc<SegHandle>>>)> {
+    fn load_version(file: &File, opts: &DbOptions, meta: Meta, older: bool, fit: bool) -> Result<(Manifest, FreeList, OwnedBytes, Vec<Vec<Arc<SegHandle>>>)> {
         let manifest = Manifest::decode(&pager::read_extent(file, meta.manifest, meta.manifest_crc)?)?;
         let freelist = FreeList::decode(&pager::read_extent(file, meta.freelist, meta.freelist_crc)?, meta.page_count)?;
         let len = file.metadata()?.len();
-        if len < meta.page_count * PAGE {
-            if !older {
-                return Err(corrupt("file is shorter than its page count"));
-            }
-            io::set_len(file, meta.page_count * PAGE)?;
+        if len < meta.page_count * PAGE && !older {
+            return Err(corrupt(format!("the file is {len} bytes, shorter than its page count ({} pages) says", meta.page_count)));
         }
-        if len > meta.page_count * PAGE {
-            // Left by a commit that did not finish, or by the damaged
-            // version skipped; nothing this version uses lives there.
+        if fit && len != meta.page_count * PAGE {
             io::set_len(file, meta.page_count * PAGE)?;
         }
         let map = pager::map_file(file, opts.read_ahead)?;
@@ -1209,12 +1260,16 @@ impl Database {
         wal::remove_leftovers(&wal_path);
         let fits = |table: u32, op: &Op| manifest.table(table).is_none_or(|t| op_fits(&t.schema, op));
         let numbered = manifest.seq_no.is_some();
-        let (sealed, mut txns, cut) = read_sealed_wals(&wal_path, &manifest, meta.db_id, opts.wal_drop_damaged, &fits)?;
+        let header_note = check_log_header(&wal_path, meta.db_id, meta.txn <= 1, opts.wal_drop_damaged || opts.recover)?;
+        let (sealed, mut txns, cut) = read_sealed_wals(&wal_path, &manifest, meta.db_id, opts.wal_drop_damaged || opts.recover, &fits)?;
         let (mut wal, wal_dropped) = match cut {
             None => {
-                let (wal, active) = Wal::open(&wal_path, meta.db_id, numbered, opts.sync, opts.wal_drop_damaged, &fits)?;
+                let (wal, active) = Wal::open(&wal_path, meta.db_id, numbered, opts.sync, opts.wal_drop_damaged || opts.recover, &fits)?;
                 txns.extend(active);
-                let dropped = wal.dropped().map(str::to_string);
+                let dropped = match (header_note, wal.dropped()) {
+                    (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                    (a, b) => a.or(b.map(str::to_string)),
+                };
                 (wal, dropped)
             }
             Some(what) => {
@@ -3350,7 +3405,12 @@ impl Database {
             let mut out = ImageOut { file: f, at: base, buf: Vec::with_capacity(IMAGE_CHUNK), pacer, crc: crc32fast::Hasher::new() };
             sections.write_to(&mut out)?;
             out.drain()?;
-            io::sync(f)?;
+            match self.dir {
+                // The database's one file, shared with every other writer:
+                // a failed sync poisons the handle, as in a commit.
+                None => io::sync(f).map_err(|e| self.poison(e.into()))?,
+                Some(_) => io::sync(f)?,
+            }
             Ok(out.crc.finalize())
         })();
         match written {
@@ -3530,7 +3590,17 @@ impl Database {
                 for m in &t.segments {
                     let h = handles.iter().find(|h| h.meta.id == m.id).ok_or_else(|| corrupt(format!("segment {} is in the manifest but not open", m.id)))?;
                     vw.manifest.next_segment_id = m.id;
-                    vw.add_segment(to, None, &h.whole_image()?, m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
+                    // The copy gets a checksum of its own, so a damaged
+                    // source must fail here rather than become a backup
+                    // that passes every check (as a merge's input does).
+                    let image = h.whole_image()?;
+                    if crc32fast::hash(&image) != h.meta.crc {
+                        return Err(corrupt(format!(
+                            "the image of segment {} fails its checksum: the database is damaged, and a checkpoint copies no damaged segment (nothing was written to the destination; Database::scrub lists the damage)",
+                            m.id
+                        )));
+                    }
+                    vw.add_segment(to, None, &image, m.n_docs, h.base.as_deref(), h.updates.as_deref())?;
                     stats.segments += 1;
                     stats.live_docs += (m.n_docs - m.n_deleted) as u64;
                 }
@@ -5618,7 +5688,11 @@ impl<'a> VersionWriter<'a> {
         self.grow()?;
         io::write_at(&db.file, &fbytes, freelist.page * PAGE)?;
         self.bytes_written += fbytes.len() as u64;
-        io::sync(&db.file)?;
+        // A failed sync of the file is fatal for the handle: the kernel may
+        // have dropped dirty pages of any writer on it (a merge's image
+        // written meanwhile on another thread too) and reports that once,
+        // so no later sync proves them on disk ([`io`]).
+        io::sync(&db.file).map_err(|e| db.poison(e.into()))?;
         let meta = Meta {
             format: self.manifest.format(),
             db_id: self.meta.db_id,
@@ -5874,6 +5948,12 @@ fn read_sealed_wals(
             continue;
         }
         let Some((got, damage)) = wal::read_sealed(&p, db_id, fits)? else {
+            // Damage after the fact too, when its commits are intact.
+            if check_log_header(&p, db_id, false, drop_damaged)?.is_some() {
+                io::remove_file(&p)?;
+                cut = Some(format!("{} has a damaged header (or names another database): dropped it and the logs after it, each copied to <log>.damaged", p.display()));
+                continue;
+            }
             let _ = io::remove_file(&p);
             continue;
         };
@@ -5895,6 +5975,131 @@ fn read_sealed_wals(
         }
     }
     Ok((kept, txns, cut))
+}
+
+/// Why opening at a version other than the newest on disk was considered,
+/// and whether that loses acknowledged writes.
+pub(crate) struct Fallback {
+    /// Whether the write-ahead log holds every transaction the version
+    /// opened lacks ([`fallback_keeps_commits`]).
+    pub safe: bool,
+    /// What is damaged, in words.
+    pub what: String,
+    /// When not `safe`: which writes are lost, in words (starting with a
+    /// separator).
+    pub lost: String,
+}
+
+/// Whether opening the file at version `meta` (with `manifest`), the newest
+/// that opens, means falling back past a newer one: one skipped as
+/// damaged, or a meta slot that fails its checksum and names a version
+/// newer than `meta` or one that cannot be read. `None` when `meta` is the
+/// newest. Reads the file and the logs, changes nothing.
+pub(crate) fn fallback_decision(file: &File, wal_path: &Path, meta: Meta, manifest: &Manifest, skipped: Option<&(Meta, String)>) -> Result<Option<Fallback>> {
+    // The newer version's `wal_txn`, where its manifest can be read.
+    let mut newer: Option<Option<u64>> = None;
+    let mut what = Vec::new();
+    if let Some((n, m)) = skipped {
+        let wal_txn = pager::read_extent(file, n.manifest, n.manifest_crc).ok().and_then(|b| Manifest::decode(&b).ok()).map(|m| m.wal_txn);
+        newer = Some(wal_txn);
+        what.push(format!("version {} skipped: {m}", n.txn));
+    }
+    for (slot, m) in pager::damaged_slots(file)? {
+        match m {
+            // The older slot: nothing of its version is read.
+            Some(m) if m.txn < meta.txn => {}
+            Some(m) => {
+                newer = Some(Some(m.wal_txn));
+                what.push(format!("meta slot {slot} fails its checksum, and names a newer version (txn {})", m.txn));
+            }
+            None => {
+                newer = Some(newer.flatten());
+                what.push(format!("meta slot {slot} fails its checksum, and the version it names (newer than txn {} or not) cannot be read", meta.txn));
+            }
+        }
+    }
+    let Some(newer_wal) = newer else { return Ok(None) };
+    let logged = wal::logged_txns(wal_path, meta.db_id)?;
+    let w = manifest.wal_txn;
+    let safe = fallback_keeps_commits(meta.txn, w, newer_wal, &logged);
+    let first = logged.iter().copied().filter(|&t| t > w).min();
+    let lost = match (safe, first) {
+        (true, _) => String::new(),
+        (false, Some(c)) => format!(": the transactions committed after txn {w} and before txn {c}, which the newer version held and the write-ahead log no longer does"),
+        (false, None) => format!(": every transaction committed after txn {w}, which the newer version held and the write-ahead log no longer does"),
+    };
+    Ok(Some(Fallback { safe, what: what.join("; "), lost }))
+}
+
+/// Whether the version before a damaged one (txn `older_txn`, holding the
+/// log's transactions up to `wal_txn`) and the logs (`logged`: the txns of
+/// the transactions they hold) together hold every acknowledged write.
+///
+/// A version commit flushes the transactions up to its `wal_txn`, and
+/// only then empties the log (or deletes the sealed one it installed),
+/// whose transactions come after it in txn order. So the logs hold
+/// everything after `wal_txn` when the newer version flushed nothing
+/// (`newer_wal`, its `wal_txn`, where it is known, equals `wal_txn`), or
+/// when they still hold a transaction it flushed, or when they hold the
+/// first transaction after `wal_txn`: txn `wal_txn + 1`, or
+/// `wal_txn + 2` where the older version itself took `wal_txn + 1` (a
+/// flush is numbered right after the last transaction it holds). Txns
+/// with gaps between them (versions of their own, merges) leave this
+/// unproven, and an empty log too: then falling back is refused.
+pub(crate) fn fallback_keeps_commits(older_txn: u64, wal_txn: u64, newer_wal: Option<u64>, logged: &[u64]) -> bool {
+    if let Some(wn) = newer_wal {
+        if wn <= wal_txn || logged.iter().any(|&t| t > wal_txn && t <= wn) {
+            return true;
+        }
+    }
+    match logged.iter().copied().filter(|&t| t > wal_txn).min() {
+        Some(c) => c == wal_txn + 1 || (older_txn == wal_txn + 1 && c == wal_txn + 2),
+        None => false,
+    }
+}
+
+/// The error of an open that refuses to fall back to version `txn`.
+pub(crate) fn refused_fallback(path: &Path, d: &Fallback, txn: u64) -> String {
+    format!(
+        "{}: {}; opening at the version before it (txn {txn}) would lose acknowledged writes{}. Nothing was changed. Restore the database from a backup, or open it with DbOptions::recover (Python: chloedb.open(..., recover=True); chloedb-server --recover) to keep a copy of the file as {}.damaged-<time> and open the version before, losing those writes",
+        path.display(),
+        d.what,
+        d.lost,
+        path.display()
+    )
+}
+
+/// Copies the file at `path` to `<path>.damaged-<unix seconds>` (synced),
+/// before an open that accepts a loss changes it.
+fn damaged_copy(path: &Path) -> Result<PathBuf> {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let mut s = path.as_os_str().to_owned();
+    s.push(format!(".damaged-{secs}"));
+    let to = PathBuf::from(s);
+    std::fs::copy(path, &to)?;
+    io::sync(&File::open(&to)?)?;
+    Ok(to)
+}
+
+/// When the log at `wal_path` is no log of database `db_id` but holds
+/// committed transactions ([`wal::unreadable_log`]): fails unless `drop`,
+/// else copies it to `<wal>.damaged` and says so. A log that names another
+/// database beside one that never made a version (`fresh`) is what a crash
+/// while creating it leaves, and is left to be replaced.
+fn check_log_header(wal_path: &Path, db_id: u64, fresh: bool, drop: bool) -> Result<Option<String>> {
+    let Some((what, foreign)) = wal::unreadable_log(wal_path, db_id)? else { return Ok(None) };
+    if foreign && fresh {
+        return Ok(None);
+    }
+    let saved = wal::damaged_path(wal_path);
+    if !drop {
+        return Err(corrupt(format!(
+            "{what}: opening would drop them. Nothing was changed. Put back this database's log, or open with DbOptions::recover (Python: chloedb.open(..., recover=True); chloedb-server --recover) to copy it to {} and start an empty log, losing them",
+            saved.display()
+        )));
+    }
+    std::fs::copy(wal_path, &saved)?;
+    Ok(Some(format!("{what}: dropped them, the log is copied to {}", saved.display())))
 }
 
 /// A hidden temporary name beside `path` to write it under:
