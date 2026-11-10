@@ -310,7 +310,7 @@ for page in client.scroll("SELECT id, title FROM books WHERE year >= :y", y=1950
     handle(page.dicts())
 ```
 
-The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `chloedb.ChloeDBError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
+The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `chloedb.ChloeDBError` (or a subclass of it, [below](#errors)), with the HTTP status as `.status`, the JSON answer as `.answer` and a stable `.code`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
 
@@ -322,6 +322,61 @@ except chloedb.ChloeDBError as e:
         raise
     client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
 ```
+
+### Reading your own writes
+
+A read from a [replica](server.md#replication-a-primary-and-its-replicas), or through a coordinator whose shards have replicas, can be answered by a copy that has not applied a write yet. The servers fix that with sequence numbers ([reads that see a write](server.md#reads-that-see-a-write)), when they number their writes (`--seq-no`):
+
+- A write's count is a `chloedb.Written`: an `int` (it compares, adds, prints and serialises as one, so code that used the number goes on working) with the write's `seq_no` from a server, or `seq_nos`, one per shard, from a coordinator; both are None from a server without `--seq-no`. `write`, `insert`, `upsert`, `delete`, `put`, a write by `sql` and a write plan by `run` answer one; `insert` and the others that send several requests answer the latest numbers of all of them.
+- `query`, `query_arrow`, `search`, `get`, `get_many`, `scroll`, a read by `sql`, a read plan by `run` and `sid_next` take `min_seq_no=` and `min_seq_nos=`: the copy that answers holds those writes. A replica that has not applied them waits up to a second, then answers 503, and a coordinator passes the read to the shard's primary; a server refuses a number past its last write (409).
+- `client.session()` (or `chloedb.Session(url, ...)`) is a client that does this itself: it keeps the latest numbers its own writes answered and sends them with each of its reads, so reading your own writes through a coordinator or from a replica is one line. A session is safe to share between threads; `session.observe(written)` adds a write made by another client. Numbers given to a read explicitly are sent with the session's, the later of each.
+
+```python
+s = chloedb.connect("http://coordinator:7700").session()
+s.upsert({"id": "u1", "name": "Ada"})
+s.get("u1")                                  # sees the upsert, whichever copy answers
+
+w = client.upsert({"id": "u2", "name": "Grace"})     # or explicitly, by its numbers
+client.get("u2", min_seq_no=w.seq_no, min_seq_nos=w.seq_nos)
+```
+
+The numbers go with reads only: a server refuses them on a write (a write sees every write before it), so a session leaves them off an `INSERT`, `UPDATE` or `DELETE` by `sql`, judging a statement by its first word. A `Database` takes `min_seq_no` and `min_seq_nos` and ignores them: a database in your process reads every write it committed.
+
+### Errors
+
+Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBError` catches them all) with a stable `.code`, the same in your process and from a server: the server's JSON `code` when it gives one, else the kind the engine's message starts with (`busy: ...`), else the HTTP status. The common codes are raised as subclasses:
+
+| code | class | when |
+|---|---|---|
+| `bad_request` | `BadRequestError` | a bad schema, query, value or request (HTTP 400, 413, 422); sending it again fails again |
+| `unauthorized` | `UnauthorizedError` | no token, or one without the rights the request needs (401, 403) |
+| `not_found` | `NotFoundError` | no such route, table or cursor (404); `get` of a missing key answers None instead |
+| `conflict` | `ConflictError` | refused by the state it met (409): an `if_seq_no` that no longer holds, an idempotency key still running, a `min_seq_no` past the server's last write |
+| `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others (`answer["partial"]`): send it again with the same `idempotency_key` |
+| `busy` | `BusyError` | the database is open in another process, or another writer holds it |
+| `overloaded` | `OverloadedError` | refused for the server's load before any work (429), after the client's retries |
+| `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
+| `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
+
+Other codes have no subclass: `memory` (a query past its memory budget), `corrupt`, `io`, `internal` (another 5xx) and `error`. `chloedb.error_code(message, status, answer)` gives the code of any message. A server that cannot be reached still raises `urllib.error.URLError`, and a client's own timeout `TimeoutError`, as before.
+
+### Database and Client: what differs
+
+A script moves between `chloedb.open` and `chloedb.connect` unchanged as long as it keeps to what both have. Options that only a server can honour raise `TypeError` on a `Database` rather than being taken as query parameters: `timeout_ms` (to `query`, `query_arrow`, `scroll`, `sql`), `idempotency_key` (to `sql`, `write`) and `keep_alive_ms` (to `scroll`); a query parameter of one of those names goes in the `params` dict. The rest of the differences:
+
+| | `Database` (in your process) | `Client` (a server) |
+|---|---|---|
+| a write's count | `int` | `Written`, an `int` with `seq_no` / `seq_nos` |
+| `min_seq_no`, `min_seq_nos` | taken and ignored | sent: the answering copy holds those writes |
+| `timeout_ms`, `idempotency_key`, `keep_alive_ms` | `TypeError` | sent |
+| `scroll` | slices of one answer | pages of a server-side scroll, past `--max-result-window` |
+| `export_sqlite` | returns a dict | returns the tables' names |
+| `export_parquet` | `tables=`, returns a dict | `table=`, returns the table's name |
+| `import_sqlite`, `import_parquet` | take `schemas=` / `schema=` | the server's schemas |
+| a plan | `plan(sql)` | `explain(sql)["ir"]` |
+| only here | `optimize`, `vacuum`, `expire`, `refresh`, `add_column`, `drop_column`, `rename_column`, `import_arrow`, `embed_errors` | `put`, `stream`, `source`, `sources`, `plan_sqlite`, `plan_parquet`, `health`, `stats`, `ask`, `session` |
+| errors | `ChloeDBError` subclasses, `status` None | the same classes and codes, with `status` and `answer` |
+| unreachable | | `urllib.error.URLError` |
 
 ### Streams and Kafka
 

@@ -1,7 +1,7 @@
 import { Input, Params, Plan, Result, Row, Schema, Searchable, Value } from "./common.js";
 
-export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, Value } from "./common.js";
-export { Client, ClientOptions, connect } from "./client.js";
+export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, ErrorCode, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError, ReadAfter, Value } from "./common.js";
+export { Client, ClientOptions, Session, Written, connect } from "./client.js";
 
 type Path = string | URL;
 /** A schema: an object, JSON text, or the path of a JSON file. */

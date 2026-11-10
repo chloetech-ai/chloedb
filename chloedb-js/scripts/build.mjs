@@ -33,7 +33,8 @@ const profile = option("--profile", "release");
 const features = option("--features", "");
 const triple = option("--target", "");
 const cargo = process.env.CARGO ?? "cargo";
-const build = ["build", "--profile", profile, ...(features ? ["--features", features] : []), ...(triple ? ["--target", triple] : [])];
+// --locked: build with the versions Cargo.lock names, as CI and releases do.
+const build = ["build", "--profile", profile, ...(features ? ["--features", features] : []), ...(triple ? ["--target", triple] : []), ...(args.includes("--locked") ? ["--locked"] : [])];
 console.error(`chloedb-js: cargo ${build.join(" ")}`);
 const r = spawnSync(cargo, build, { cwd: root, stdio: "inherit" });
 if (r.error) {

@@ -110,7 +110,21 @@ An INT past 2^53 (a 64-bit key, a hash) comes back as a `BigInt`, and a `BigInt`
 | `fromParquet(parquetPath, path)`, `planParquet`, `db.importParquet`, `db.exportParquet` | [Parquet](parquet.md) files and directories in and out, and `s3://` URLs |
 | `upgrade(path)` | a database from before field ids, copied into this version's format |
 
-Errors reject with a `ChloeDBError`, whose message is the database's (`StrataError`, its name before the rename, is the same class).
+Errors reject with a `ChloeDBError`, whose message is the database's (`StrataError`, its name before the rename, is the same class), and whose `code` is stable, the same here, from a server and in Python: the server's JSON `code` when it gives one, else the kind the message starts with (`busy: ...`), else the HTTP status. The common codes reject as subclasses of `ChloeDBError`, so `instanceof ChloeDBError` still holds for every one:
+
+| code | class | when |
+|---|---|---|
+| `bad_request` | `BadRequestError` | a bad schema, query, value or request (400, 413, 422) |
+| `unauthorized` | `UnauthorizedError` | no token, or one without the rights needed (401, 403) |
+| `not_found` | `NotFoundError` | no such route, table or cursor (404) |
+| `conflict` | `ConflictError` | refused by the state it met (409): an `ifSeqNo` that no longer holds, an idempotency key still running, a `minSeqNo` past the server's last write |
+| `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others: send it again with the same idempotency key |
+| `busy` | `BusyError` | the database is open in another process, or another writer holds it |
+| `overloaded` | `OverloadedError` | refused for the server's load (429), after the client's retries |
+| `timeout` | `DeadlineError` | a deadline passed: `timeoutMs`, a coordinator's wait for a shard (504) |
+| `unavailable` | `UnavailableError` | no copy can serve it now (503) |
+
+Other codes are `memory`, `corrupt`, `io`, `internal` and `error`; `errorCode(message, status, answer)` gives the code of any message.
 
 ## A server from JavaScript
 
@@ -125,6 +139,25 @@ const r = await client.search("book", { limit: 5 });
 `Client` has the methods of `Database` that a server offers, over its [HTTP API](server.md#http-api), and more of the server's own: `health()`, `stats()`, `explain(sql)`, `put(key, row, {ifSeqNo})`, `stream(events)` (an iterable or async iterable of [stream events](server.md#streams), applied once), `source(name)` and `sources()`, `ask(question)` (the server's agent), and the file calls, which upload a path's bytes (Node, Bun, Deno) or bytes given (a `Uint8Array`, a `Blob`). `exportSqlite(null)` and `exportParquet(null)` give the file's bytes instead of writing it. Rows are written 1,000 a request, keys read 10,000 a request. An error the server answers rejects with a `ChloeDBError` whose `status` is the HTTP status and `answer` its JSON; one where the server cannot be reached rejects with `fetch`'s error. `timeout` (milliseconds, 30 seconds by default) bounds each request, and `fetch` takes another fetch. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retryFor` milliseconds (10 seconds; 0 sends each request once), and rejects with the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, {idempotencyKey})` and `sql(sql, params, {idempotencyKey})` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator rejects with a `ChloeDBError` whose `answer` says so (`partial: true`) and names its key: `await client.write(ops, { idempotencyKey: e.answer.idempotency_key })` writes the rest.
+
+### Reading your own writes
+
+A read from a [replica](server.md#replication-a-primary-and-its-replicas), or through a coordinator whose shards have replicas, can be answered by a copy that has not applied a write yet. Servers that number their writes (`--seq-no`) fix that with sequence numbers ([reads that see a write](server.md#reads-that-see-a-write)):
+
+- `writeResult(ops, {idempotencyKey})` is `write` answering `{written, seqNo, seqNos, skipped}`: `seqNo` from a server, `seqNos` (one per shard) from a coordinator, neither from a server without `--seq-no`. `write`, `insert`, `upsert`, `delete`, `put` and `sql` still answer the number of rows.
+- `query(sql, params, {minSeqNo, minSeqNos})`, `search(text, {minSeqNo, minSeqNos})`, `get(key, {minSeqNo, minSeqNos})`, `getMany`, `sql` (a SELECT), `run` (a read plan) and `sidNext` take them: the copy that answers holds those writes (a replica waits up to a second; a server refuses a number past its last write, 409).
+- `client.session()` (or `new Session(url, options)`) is a client that does this itself: it keeps the latest numbers its own writes answered (`session.seqNo`, `session.seqNos`) and sends them with each of its reads, so reading your own writes is one line. `session.observe(answer)` adds another client's write.
+
+```js
+const s = connect("http://coordinator:7700").session();
+await s.upsert({ id: "u1", name: "Ada" });
+await s.get("u1"); // sees the upsert, whichever copy answers
+
+const w = await client.writeResult([{ op: "upsert", doc: { id: "u2", name: "Grace" } }]);
+await client.get("u2", { minSeqNo: w.seqNo, minSeqNos: w.seqNos });
+```
+
+The numbers go with reads only: a server refuses them on a write, so a session leaves them off an `INSERT`, `UPDATE` or `DELETE` by `sql`, judging a statement by its first word. A `Database` in the process ignores them: it reads every write it committed.
 
 In a browser, the client works from pages of the server's own origin (a page it serves, or behind the same reverse proxy): chloedb-server sends no CORS headers, and refuses writes from pages of other sites ([security](server.md#security)).
 

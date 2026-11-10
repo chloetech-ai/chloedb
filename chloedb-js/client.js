@@ -7,9 +7,45 @@
 // origin (a page it serves, or one behind the same reverse proxy): it
 // sends no CORS headers, and refuses writes from other origins.
 
-import { ChloeDBError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema, pickTable } from "./common.js";
 
-export { ChloeDBError, StrataError, Result } from "./common.js";
+export { ChloeDBError, StrataError, Result, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError } from "./common.js";
+
+/** A write's answer as `writeResult` gives it: {written, seqNo?, seqNos?,
+ * skipped?}. */
+function written(a) {
+  const out = { written: Number(a?.written ?? 0) };
+  if (a?.seq_no != null) out.seqNo = Number(a.seq_no);
+  if (Array.isArray(a?.seq_nos)) out.seqNos = a.seq_nos.map(Number);
+  if (a?.skipped != null) out.skipped = Number(a.skipped);
+  return out;
+}
+
+function later(a, b) {
+  return a == null ? b : b == null ? a : Math.max(a, b);
+}
+
+/** Per shard, the later of two lists of sequence numbers. */
+function laterEach(a, b) {
+  if (a == null || b == null) return a ?? b ?? undefined;
+  return Array.from({ length: Math.max(a.length, b.length) }, (_, i) => Math.max(a[i] ?? 0, b[i] ?? 0));
+}
+
+/** A read's `min_seq_no` and `min_seq_nos` as the server takes them; 0s
+ * ask for nothing and are left out. */
+function afterBody(minSeqNo, minSeqNos) {
+  const out = {};
+  if (minSeqNo) out.min_seq_no = Number(minSeqNo);
+  if (minSeqNos && [...minSeqNos].some(Boolean)) out.min_seq_nos = [...minSeqNos].map(Number);
+  return out;
+}
+
+/** Whether a statement is a read (SELECT, WITH, EXPLAIN, ...), by its
+ * first word: a server refuses `min_seq_no` on a write. */
+function reads(sql) {
+  const m = /^(?:\s|\(|--[^\n]*|\/\*[\s\S]*?\*\/)*([A-Za-z]+)/.exec(String(sql));
+  return Boolean(m) && ["select", "with", "explain", "values", "show", "describe"].includes(m[1].toLowerCase());
+}
 
 /** Rows a write request carries. */
 export const WRITE_BATCH = 1000;
@@ -161,7 +197,7 @@ export class Client extends Searchable {
         await new Promise((ok) => setTimeout(ok, wait));
         continue;
       }
-      throw new ChloeDBError(`${msg} (HTTP ${r.status})`, { status: r.status, answer });
+      throw makeError(`${msg} (HTTP ${r.status})`, { status: r.status, answer });
     }
     if (as === "response") return r;
     const text = await r.text();
@@ -213,15 +249,40 @@ export class Client extends Searchable {
     return Number((await this.health()).docs);
   }
 
-  /** Runs a SELECT; `timeoutMs` bounds it on the server. */
-  async query(sql, params, { timeoutMs } = {}) {
-    return new Result(await this._call("POST", "/v1/query", given({ sql, params, timeout_ms: timeoutMs })));
+  // Reads that see a write. A read takes `minSeqNo` (a server's write
+  // answered it) and `minSeqNos` (a coordinator's, one per shard): the copy
+  // that answers holds those writes. A `Session` adds its own writes'
+  // numbers to every read (`_after`) and keeps them from every write's
+  // answer (`_note`); a plain Client sends only what it is given.
+
+  /** @internal */
+  _after(minSeqNo, minSeqNos) {
+    return afterBody(minSeqNo, minSeqNos);
+  }
+
+  /** @internal */
+  _note(answer) {
+    return answer;
+  }
+
+  /** A `Session` on this client's server, with its options: its reads see
+   * its own writes, through a coordinator or from a replica too. */
+  session() {
+    return new Session(this.url, { token: this.token, timeout: this.timeout, retryFor: this.retryFor, fetch: this.fetch });
+  }
+
+  /** Runs a SELECT; `timeoutMs` bounds it on the server; with `minSeqNo`
+   * or `minSeqNos` the copy that answers holds those writes. */
+  async query(sql, params, { timeoutMs, minSeqNo, minSeqNos } = {}) {
+    return new Result(await this._call("POST", "/v1/query", given({ sql, params, timeout_ms: timeoutMs, ...this._after(minSeqNo, minSeqNos) })));
   }
 
   /** Runs any statement: a SELECT's `Result`, or the number of rows an
    * INSERT, UPDATE or DELETE wrote. */
-  async sql(sql, params, { idempotencyKey } = {}) {
-    return resultOrWritten(await this._call("POST", "/v1/sql", given({ sql, params, idempotency_key: idempotencyKey })));
+  async sql(sql, params, { idempotencyKey, minSeqNo, minSeqNos } = {}) {
+    const after = reads(sql) ? this._after(minSeqNo, minSeqNos) : afterBody(minSeqNo, minSeqNos);
+    const a = await this._call("POST", "/v1/sql", given({ sql, params, idempotency_key: idempotencyKey, ...after }));
+    return a && "rows" in a ? new Result(a) : this._note(written(a)).written;
   }
 
   /** @internal */
@@ -235,7 +296,7 @@ export class Client extends Searchable {
     const out = text.split("\n").filter((l) => l.trim()).map(decode);
     const last = out.at(-1);
     if (last && "error" in last && !("request" in last)) {
-      throw new ChloeDBError(`${last.error} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
+      throw makeError(`${last.error} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
     }
     return out;
   }
@@ -249,8 +310,10 @@ export class Client extends Searchable {
 
   /** Runs a plan (the "ir" of `explain`, or `Database.plan`'s): a read's
    * `Result`, or the number of rows a write wrote. */
-  async run(plan) {
-    return resultOrWritten(await this._call("POST", "/v1/plan", { plan }));
+  async run(plan, { minSeqNo, minSeqNos } = {}) {
+    const write = ["insert", "update", "delete"].includes(plan?.root?.node);
+    const a = await this._call("POST", "/v1/plan", { plan, ...(write ? afterBody(minSeqNo, minSeqNos) : this._after(minSeqNo, minSeqNos)) });
+    return a && "rows" in a ? new Result(a) : this._note(written(a)).written;
   }
 
   /** The query vector of `text` by an embedded field's model, or of `image`
@@ -268,15 +331,23 @@ export class Client extends Searchable {
   /** The codes that can follow each prefix of semantic-ID field `field`
    * among the rows `where` matches, summed over the shards on a
    * coordinator: {prefix: {code: rows}}. */
-  async sidNext(prefixes, { field, where, params, table } = {}) {
-    const got = await this._call("POST", "/v1/sid/next", given({ field, prefixes: [...prefixes], where, params, table }));
+  async sidNext(prefixes, { field, where, params, table, minSeqNo, minSeqNos } = {}) {
+    const got = await this._call("POST", "/v1/sid/next", given({ field, prefixes: [...prefixes], where, params, table, ...this._after(minSeqNo, minSeqNos) }));
     return Object.fromEntries(got.next.map((n) => [n.prefix, Object.fromEntries(n.next.map((c) => [c.code, c.count]))]));
   }
 
   /** Write operations as /v1/write takes them ({op: "insert", doc}, {op:
    * "delete", key}, ...), in one request. Returns the rows written. */
-  async write(ops, { idempotencyKey } = {}) {
-    return Number((await this._call("POST", "/v1/write", given({ ops: [...ops], idempotency_key: idempotencyKey }))).written);
+  async write(ops, options = {}) {
+    return (await this.writeResult(ops, options)).written;
+  }
+
+  /** `write`, answering {written, seqNo?, seqNos?, skipped?}: `seqNo` is a
+   * server's number for the write (with --seq-no), `seqNos` a
+   * coordinator's, one per shard; pass them to a read as `minSeqNo` /
+   * `minSeqNos` to read the write from any copy. */
+  async writeResult(ops, { idempotencyKey } = {}) {
+    return this._note(written(await this._call("POST", "/v1/write", given({ ops: [...ops], idempotency_key: idempotencyKey }))));
   }
 
   async #ops(op, rows, table) {
@@ -321,9 +392,10 @@ export class Client extends Searchable {
   /** The row with this primary key in the first table or `table`, read
    * without SQL: an object of the columns `SELECT *` answers, or null. A
    * coordinator asks the key's shard. */
-  async get(key, { table } = {}) {
+  async get(key, { table, minSeqNo, minSeqNos } = {}) {
+    const after = this._after(minSeqNo, minSeqNos);
     try {
-      return (await this._call("GET", await this.#kvPath(key, table))).row;
+      return (await this._call("GET", (await this.#kvPath(key, table)) + query(after))).row;
     } catch (e) {
       if (e instanceof ChloeDBError && e.status === 404 && e.answer?.found === false) return null;
       throw e;
@@ -335,9 +407,9 @@ export class Client extends Searchable {
    * `columns`, each row of those columns alone (a ranker's features, say),
    * which reads no other.
    */
-  async getMany(keys, { table, columns } = {}) {
+  async getMany(keys, { table, columns, minSeqNo, minSeqNos } = {}) {
     const list = [...keys];
-    const body = { table: await this.#table(table) };
+    const body = { table: await this.#table(table), ...this._after(minSeqNo, minSeqNos) };
     if (columns !== undefined) body.columns = [...columns];
     const out = [];
     for (let i = 0; i < list.length; i += GET_BATCH) {
@@ -351,7 +423,7 @@ export class Client extends Searchable {
    * the rows written. */
   async put(key, row, { table, ifSeqNo } = {}) {
     const path = (await this.#kvPath(key, table)) + query({ if_seq_no: ifSeqNo });
-    return Number((await this._call("PUT", path, { ...row })).written);
+    return this._note(written(await this._call("PUT", path, { ...row }))).written;
   }
 
   /**
@@ -389,7 +461,7 @@ export class Client extends Searchable {
       }
     }
     if ("error" in last || !last.done) {
-      throw new ChloeDBError(`${last.error ?? "the stream ended early"} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
+      throw makeError(`${last.error ?? "the stream ended early"} (HTTP ${last.status ?? 500})`, { status: last.status ?? 500, answer: last });
     }
     return last;
   }
@@ -490,6 +562,54 @@ async function base64(bytes) {
   let s = "";
   for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
   return btoa(s);
+}
+
+/**
+ * A `Client` whose reads see its own writes, from any copy: it keeps the
+ * latest sequence numbers its writes answered (`seqNo` from a server,
+ * `seqNos` from a coordinator, per shard) and sends them with every read
+ * (`query`, `search`, `get`, `getMany`, a SELECT by `sql`, a read plan by
+ * `run`, `sidNext`), so a replica or a coordinator answers with a version
+ * that holds them:
+ *
+ *     const s = connect("http://coordinator:7700").session();
+ *     await s.upsert({ id: "u1", name: "Ada" });
+ *     await s.get("u1"); // sees the upsert, whichever copy answers
+ *
+ * The servers must number their writes (--seq-no); without it a write
+ * answers no number and a session reads as a plain client does. Numbers a
+ * read is given are sent with the session's, the later of each.
+ * `observe(answer)` adds another client's write to what its reads see.
+ */
+export class Session extends Client {
+  /** The latest number a server's write answered this session, if any. */
+  seqNo = undefined;
+  /** The latest numbers a coordinator's writes answered, per shard. */
+  seqNos = undefined;
+
+  /** Makes later reads see this write: `writeResult`'s answer ({seqNo} or
+   * {seqNos}), or a server's ({seq_no} or {seq_nos}). */
+  observe(answer) {
+    const n = answer?.seqNo ?? answer?.seq_no;
+    const ns = answer?.seqNos ?? answer?.seq_nos;
+    this.seqNo = later(this.seqNo, n == null ? undefined : Number(n));
+    this.seqNos = laterEach(this.seqNos, ns == null ? undefined : [...ns].map(Number));
+  }
+
+  /** @internal */
+  _note(answer) {
+    this.observe(answer);
+    return answer;
+  }
+
+  /** @internal */
+  _after(minSeqNo, minSeqNos) {
+    return afterBody(later(this.seqNo, minSeqNo ?? undefined), laterEach(this.seqNos, minSeqNos == null ? undefined : [...minSeqNos]));
+  }
+
+  session() {
+    return this;
+  }
 }
 
 /** A `Client` of the chloedb-server at `url`. */

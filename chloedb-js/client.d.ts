@@ -1,6 +1,17 @@
-import { Input, Params, Plan, Result, Row, Schema, Searchable, Value } from "./common.js";
+import { Input, Params, Plan, ReadAfter, Result, Row, Schema, Searchable, Value } from "./common.js";
 
-export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, Value } from "./common.js";
+export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, ErrorCode, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError, ReadAfter, Value } from "./common.js";
+
+/** A write's answer: the rows written, and its sequence numbers when the
+ * server numbers its writes (--seq-no): `seqNo` from a server, `seqNos`
+ * from a coordinator (one per shard, 0 where it wrote nothing). */
+export interface Written {
+  written: number;
+  seqNo?: number;
+  seqNos?: number[];
+  /** Stream events written already, skipped. */
+  skipped?: number;
+}
 
 /** A file to upload: a path (read with node:fs) or its bytes. */
 type File = string | URL | Uint8Array | ArrayBuffer | ArrayBufferView | Blob;
@@ -36,23 +47,27 @@ export declare class Client extends Searchable {
   stats(): Promise<Record<string, unknown>>;
   count(): Promise<number>;
 
-  query(sql: string, params?: Params | null, options?: { timeoutMs?: number }): Promise<Result>;
+  query(sql: string, params?: Params | null, options?: { timeoutMs?: number } & ReadAfter): Promise<Result>;
   /** With `idempotencyKey`, a write sent again (after a lost answer, or
    * the `idempotency_key` of an error that says it failed partway through
    * a coordinator) is not applied twice. */
-  sql(sql: string, params?: Params | null, options?: { idempotencyKey?: string }): Promise<Result | number>;
+  sql(sql: string, params?: Params | null, options?: { idempotencyKey?: string } & ReadAfter): Promise<Result | number>;
   explain(sql: string, params?: Params | null): Promise<Record<string, unknown>>;
-  run(plan: Plan): Promise<Result | number>;
+  run(plan: Plan, options?: ReadAfter): Promise<Result | number>;
   embed(text?: string | null, options?: { field?: string; table?: string; image?: Uint8Array | ArrayBuffer | Blob; audio?: Uint8Array | ArrayBuffer | Blob }): Promise<number[]>;
   embedTokens(text: string, field: string, options?: { table?: string }): Promise<number[][]>;
-  sidNext(prefixes: Iterable<string>, options: { field: string; where?: string; params?: Params; table?: string }): Promise<Record<string, Record<string, number>>>;
+  sidNext(prefixes: Iterable<string>, options: { field: string; where?: string; params?: Params; table?: string } & ReadAfter): Promise<Record<string, Record<string, number>>>;
 
   write(ops: Iterable<Record<string, Input>>, options?: { idempotencyKey?: string }): Promise<number>;
+  /** `write`, answering its sequence numbers too, for a read's `minSeqNo(s)`. */
+  writeResult(ops: Iterable<Record<string, Input>>, options?: { idempotencyKey?: string }): Promise<Written>;
+  /** A `Session` on this client's server, with its options. */
+  session(): Session;
   insert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   upsert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   delete(keys: Input | Iterable<Input>, options?: { table?: string; routing?: Input }): Promise<number>;
-  get(key: Input, options?: { table?: string }): Promise<Record<string, Value> | null>;
-  getMany(keys: Iterable<Input>, options?: { table?: string; columns?: Iterable<string> }): Promise<(Record<string, Value> | null)[]>;
+  get(key: Input, options?: { table?: string } & ReadAfter): Promise<Record<string, Value> | null>;
+  getMany(keys: Iterable<Input>, options?: { table?: string; columns?: Iterable<string> } & ReadAfter): Promise<(Record<string, Value> | null)[]>;
   put(key: Input, row: Row, options?: { table?: string; ifSeqNo?: number }): Promise<number>;
   stream(events: Iterable<Record<string, Input>> | AsyncIterable<Record<string, Input>>): Promise<Record<string, unknown>>;
   source(name: string): Promise<number | null>;
@@ -70,6 +85,18 @@ export declare class Client extends Searchable {
 
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
+}
+
+/** A Client whose reads see its own writes, from any copy: it keeps the
+ * latest sequence numbers its writes answered and sends them with every
+ * read. The servers must number their writes (--seq-no). */
+export declare class Session extends Client {
+  /** The latest number a server's write answered this session. */
+  seqNo?: number;
+  /** The latest numbers a coordinator's writes answered, per shard. */
+  seqNos?: number[];
+  /** Makes later reads see this write (a `Written`, or a server's answer). */
+  observe(answer: Partial<Written> | { seq_no?: number; seq_nos?: number[] }): void;
 }
 
 /** A Client of the chloedb-server at `url`. */

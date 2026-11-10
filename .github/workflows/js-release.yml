@@ -47,9 +47,9 @@ jobs:
       # macOS 11 and later load it.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
       - name: The tag names package.json's version
@@ -59,7 +59,7 @@ jobs:
           test "$GITHUB_REF_NAME" = "chloedb-js-v$v" || test "$GITHUB_REF_NAME" = "strata-js-v$v"
       - name: Build
         working-directory: chloedb-js
-        run: node scripts/build.mjs
+        run: node scripts/build.mjs --locked
       - name: Test
         working-directory: chloedb-js
         run: node --test test/database.test.mjs
@@ -82,7 +82,7 @@ jobs:
             await db.close();
             console.log(`chloedb ${version}: installed and searched on ${process.platform}-${process.arch}`);
           '
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chloedb-js-${{ matrix.platform }}
           path: chloedb-js/dist/*.tgz
@@ -97,7 +97,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: chloedb-js-*
           path: dist
@@ -112,4 +112,6 @@ jobs:
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
             gh release create "$TAG" --repo "$REPO" --title "chloedb for JavaScript ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) for Node, Bun and Deno: \`npm install\` the tarball of your platform (its URL works too); no Rust needed. Platforms: linux-x64-gnu, linux-arm64-gnu (glibc 2.35 or later), darwin-arm64, darwin-x64 (macOS 11 or later)."
           fi
-          gh release upload "$TAG" dist/*.tgz --repo "$REPO" --clobber
+          # A checksum of each tarball, to check a download by (sha256sum -c).
+          (cd dist && sha256sum *.tgz > SHA256SUMS && cat SHA256SUMS)
+          gh release upload "$TAG" dist/*.tgz dist/SHA256SUMS --repo "$REPO" --clobber

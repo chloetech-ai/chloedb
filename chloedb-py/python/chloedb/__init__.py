@@ -76,8 +76,21 @@ from .build import (
     sqrt,
     when,
 )
-from ._native import ChloeDBError, StrataError
-from .client import Client
+from ._native import (
+    BadRequestError,
+    BusyError,
+    ChloeDBError,
+    ConflictError,
+    DeadlineError,
+    NotFoundError,
+    OverloadedError,
+    PartialWriteError,
+    StrataError,
+    UnauthorizedError,
+    UnavailableError,
+    error_code,
+)
+from .client import Client, Session, Written
 from .frame import Frame, FrameStore, GroupBy, concat, len_, _arrow_table
 from .nearby import Nearby, NearbyResult, nearby
 from .ngrams import next_items
@@ -91,8 +104,20 @@ __all__ = [
     "nearby",
     "Result",
     "ArrowResult",
+    "Session",
+    "Written",
     "ChloeDBError",
     "StrataError",
+    "BadRequestError",
+    "UnauthorizedError",
+    "NotFoundError",
+    "ConflictError",
+    "PartialWriteError",
+    "BusyError",
+    "OverloadedError",
+    "DeadlineError",
+    "UnavailableError",
+    "error_code",
     "open",
     "connect",
     "from_sqlite",
@@ -162,6 +187,26 @@ def upgrade(path: str | os.PathLike) -> tuple[str, int, int] | None:
     copied, rows copied)."""
     r = _strata.upgrade(os.fspath(path))
     return None if r is None else (os.fspath(r[0]), r[1], r[2])
+
+
+# Options a `Client` takes by keyword that a database in this process has
+# no use for. Passed to `Database` they would otherwise bind as query
+# parameters and be ignored, so code moved from a server loses its
+# deadline or its idempotency without a word: they raise instead.
+_CLIENT_ONLY = {
+    "timeout_ms": "Database.{method}() takes no timeout_ms: a query in this process has no deadline (a Client's does). Pass params={{'timeout_ms': ...}} for a query parameter of that name.",
+    "idempotency_key": "Database.{method}() takes no idempotency_key: a write in this process commits or raises, with no answer to lose (a Client's can be sent again). Pass params={{'idempotency_key': ...}} for a query parameter of that name.",
+    "keep_alive_ms": "Database.{method}() takes no keep_alive_ms: a scroll in this process holds its answer itself. Pass params={{'keep_alive_ms': ...}} for a query parameter of that name.",
+}
+
+
+def _local_params(method: str, given: Mapping[str, Any] | None, kw: Mapping[str, Any]) -> dict | None:
+    """Query parameters from a dict and keyword arguments, refusing a
+    keyword that is a client's option (`_CLIENT_ONLY`)."""
+    for name in kw:
+        if name in _CLIENT_ONLY:
+            raise TypeError(_CLIENT_ONLY[name].format(method=method))
+    return _params(given, kw)
 
 
 def _schema_json(schema: Any) -> str:
@@ -310,22 +355,27 @@ class Database(Search, FrameStore):
     def __len__(self) -> int:
         return self._db.count()
 
-    def query(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> Result:
-        """Runs a SELECT."""
-        return Result._of(self._db.query(sql, _params(params, kw)))
+    def query(self, sql: str, params: Mapping[str, Any] | None = None, *, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Result:
+        """Runs a SELECT. `min_seq_no` and `min_seq_nos` are taken for code
+        written against a `Client`, and change nothing: a database in this
+        process reads every write it committed. A client's other options
+        (`timeout_ms`, ...) raise TypeError rather than bind as parameters;
+        a parameter of that name goes in `params`."""
+        return Result._of(self._db.query(sql, _local_params("query", params, kw)))
 
-    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> ArrowResult:
+    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, *, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> ArrowResult:
         """Runs a SELECT: its answer as Arrow columns, which pyarrow,
         polars and pandas read without copying (`ArrowResult`)."""
         if not hasattr(self._db, "query_arrow"):
             raise ChloeDBError("this build of chloedb has no Arrow: build it with the feature datafusion (the default)")
-        return ArrowResult(self._db.query_arrow(sql, _params(params, kw)))
+        return ArrowResult(self._db.query_arrow(sql, _local_params("query_arrow", params, kw)))
 
-    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, **kw: Any) -> Iterator[Any]:
+    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Iterator[Any]:
         """Runs a SELECT and yields its answer a page at a time, as
         `Client.scroll` does: `Result`s, or with `arrow=True` pyarrow
         Tables, of at most `page_size` rows. A database in this process
         answers every row at once, so its pages are slices of one answer."""
+        _local_params("scroll", params, kw)
         n = max(int(page_size), 1)
         if arrow:
             import pyarrow
@@ -338,10 +388,11 @@ class Database(Search, FrameStore):
         for i in range(0, max(len(r.rows), 1), n):
             yield Result(r.columns, r.rows[i : i + n], r.keys[i : i + n], r.scores[i : i + n], r._stats if i == 0 else None, r.took_ms if i == 0 else None)
 
-    def sql(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> Result | int:
+    def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
-        INSERT, UPDATE or DELETE wrote."""
-        r = self._db.sql(sql, _params(params, kw))
+        INSERT, UPDATE or DELETE wrote. A client's `idempotency_key` and
+        `timeout_ms` raise TypeError (see `query`)."""
+        r = self._db.sql(sql, _local_params("sql", params, kw))
         return r if isinstance(r, int) else Result._of(r)
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:
@@ -353,9 +404,9 @@ class Database(Search, FrameStore):
     def plan(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict:
         """The plan of a SELECT, INSERT, UPDATE or DELETE, without running
         it: the plan IR as JSON, which `run` takes."""
-        return json.loads(self._db.plan(sql, _params(params, kw)))
+        return json.loads(self._db.plan(sql, _local_params("plan", params, kw)))
 
-    def run(self, plan: Mapping[str, Any] | Query) -> Result | int:
+    def run(self, plan: Mapping[str, Any] | Query, *, min_seq_no: int | None = None, min_seq_nos: Any = None) -> Result | int:
         """Runs a plan (as `plan`, a `Query` or a server's /v1/explain gives
         it): a read's `Result`, or the number of rows a write wrote."""
         if isinstance(plan, Query):
@@ -375,13 +426,14 @@ class Database(Search, FrameStore):
         in transactions of 10,000 rows. Returns how many."""
         return self._db.upsert(rows, table)
 
-    def get(self, key: Any, *, table: str | None = None) -> dict | None:
+    def get(self, key: Any, *, table: str | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None) -> dict | None:
         """The row with this primary key in the first table or `table`, read
         without SQL: a dict of the columns `SELECT *` answers, or None when
-        no live row has the key (or its `expire_by` time has passed)."""
+        no live row has the key (or its `expire_by` time has passed).
+        `min_seq_no(s)` change nothing here (see `query`)."""
         return self._db.get_many([key], table)[0]
 
-    def get_many(self, keys: Iterable[Any], *, table: str | None = None) -> list[dict | None]:
+    def get_many(self, keys: Iterable[Any], *, table: str | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None) -> list[dict | None]:
         """`get` of several keys at once, in their order."""
         return self._db.get_many(list(keys), table)
 
@@ -395,11 +447,14 @@ class Database(Search, FrameStore):
         there were."""
         return self._db.delete(keys, table)
 
-    def write(self, ops: list[dict]) -> int:
+    def write(self, ops: list[dict], *, idempotency_key: str | None = None) -> int:
         """Write operations as `Client.write` and /v1/write take them
         ({"op": "insert", "doc": {...}}, {"op": "add", "key": k, "field":
         "n", "value": 1}, ...), in one transaction. Returns the rows
-        written."""
+        written. A client's `idempotency_key` raises TypeError: a
+        transaction here either commits or raises, with no answer to lose."""
+        if idempotency_key is not None:
+            raise TypeError(_CLIENT_ONLY["idempotency_key"].format(method="write"))
         return self._db.write(ops)
 
     def import_file(self, path: str | os.PathLike, format: str | None = None, *, table: str | None = None) -> dict:
