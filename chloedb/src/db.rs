@@ -175,6 +175,9 @@ pub struct Db {
     pub exec: ExecOptions,
     /// Models of embedded VECTOR fields ([`Db::set_embedder_in`]).
     embedders: RwLock<Vec<Model>>,
+    /// Writes may store rows without the vector of an embedded field whose
+    /// model is not open here ([`Db::set_embed_later`]).
+    embed_later: std::sync::atomic::AtomicBool,
     /// Models of derived TEXT fields ([`Db::set_deriver_in`]).
     derivers: RwLock<Vec<Deriving>>,
     /// Where [`Db::open_embedders`] found models, for the tables created
@@ -227,6 +230,7 @@ impl Db {
     /// and writes get codes from it.
     pub fn create_in(path: &Path, mut schema: Schema, opts: DbOptions, models: &Path) -> Result<Db> {
         crate::sid::resolve(&mut schema, models)?;
+        crate::embed::stamp_fingerprints(&mut schema, models);
         let db = Db::wrap(Database::create(path, schema, with_source(opts))?);
         db.open_codebooks(models);
         Ok(db)
@@ -262,6 +266,7 @@ impl Db {
             readers_gen: std::sync::atomic::AtomicU64::new(0),
             exec: ExecOptions { filter_cache: Some(Arc::new(crate::query::exec::FilterCache::new(crate::query::exec::FILTER_CACHE_BYTES))), ..ExecOptions::default() },
             embedders: RwLock::new(Vec::new()),
+            embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
             media: RwLock::new(Arc::new(Resolver::default())),
@@ -467,6 +472,7 @@ impl Db {
         let dir = self.models.read().unwrap_or_else(|e| e.into_inner()).clone();
         let models = dir.clone().unwrap_or_else(crate::embed::models_dir);
         crate::sid::resolve(&mut schema, &models)?;
+        crate::embed::stamp_fingerprints(&mut schema, &models);
         self.storage.create_table(schema)?;
         if let Some(dir) = dir {
             self.open_embedders_of(&name, &dir);
@@ -618,7 +624,7 @@ impl Db {
     /// [`Db::try_load`] into the table named `table`.
     pub fn try_load_into(&self, table: &str, docs: impl IntoIterator<Item = Result<Document>>) -> Result<()> {
         let schema = self.table(table)?;
-        let models = self.models_of(&schema);
+        let models = self.write_models_of(&schema);
         let derivers = self.derivers_of(&schema);
         let media = self.media_resolver();
         let mut docs = docs.into_iter();
@@ -849,6 +855,33 @@ impl Db {
         self.models_of(&schema).swap_remove(i)
     }
 
+    /// Lets writes store rows without the vector of an embedded field whose
+    /// model is not open here (off by default: such a write fails, since
+    /// `similarity()` would never find the row). [`Db::embed_backfill`]
+    /// fills the vectors in once the model is open.
+    pub fn set_embed_later(&self, on: bool) {
+        self.embed_later.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The models a write embeds the fields of `schema` with: those open
+    /// ([`Db::models_of`]), and for a field of a model this database can
+    /// run but has not open, one that fails the write with what to do,
+    /// unless [`Db::set_embed_later`] lets the rows go without vectors.
+    fn write_models_of(&self, schema: &Schema) -> Vec<Option<Arc<dyn Embedder>>> {
+        let mut models = self.models_of(schema);
+        if self.embed_later.load(std::sync::atomic::Ordering::Relaxed) {
+            return models;
+        }
+        for (m, f) in models.iter_mut().zip(&schema.fields) {
+            if let (None, Some(e), FieldType::Vector { dim, .. }) = (&m, &f.embed, &f.ty) {
+                if crate::embed::known_dim(&e.model).is_some() {
+                    *m = Some(Arc::new(crate::embed::NotOpen { table: schema.table.clone(), field: f.name.clone(), model: e.model.clone(), dim: *dim }));
+                }
+            }
+        }
+        models
+    }
+
     /// The models of the embedded fields of the table `schema` describes,
     /// by field.
     fn models_of(&self, schema: &Schema) -> Vec<Option<Arc<dyn Embedder>>> {
@@ -981,7 +1014,9 @@ impl Db {
         let mut failed = Vec::new();
         for f in schema.fields.iter().filter(|f| which(f)) {
             let opened = match (&f.embed, &f.derive) {
-                (Some(spec), _) => crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models).and_then(|m| self.set_embedder_in(table, &f.name, m)),
+                (Some(spec), _) => crate::embed::check_fingerprint(&f.name, &spec.model, spec.fingerprint.as_deref(), models)
+                    .and_then(|_| crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models))
+                    .and_then(|m| self.set_embedder_in(table, &f.name, m)),
                 (_, Some(spec)) => crate::derive::open_for(spec, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
                 _ => continue,
             };
@@ -1518,7 +1553,7 @@ impl Db {
     /// for the write to report; an image that cannot be read fails the
     /// statement.
     fn embed_ahead(&self, schema: &Schema, write: &Write, files: &Files, backfill: Option<usize>) -> Result<(Known, Derived)> {
-        let models = self.models_of(schema);
+        let models = self.write_models_of(schema);
         let derivers = self.derivers_of(schema);
         if models.iter().all(Option::is_none) && derivers.iter().all(Option::is_none) {
             return Ok((Known::new(), Derived::new()));
@@ -1609,7 +1644,7 @@ impl Db {
         if tt.schema() != schema {
             return Err(Error::Query(format!("table {} was altered, or dropped and created again, while the statement ran; run it again", schema.table)));
         }
-        let models = self.models_of(schema);
+        let models = self.write_models_of(schema);
         let derivers = self.derivers_of(schema);
         // Text and vectors computed ahead cover the rows unless they changed
         // since: files of those are read here.

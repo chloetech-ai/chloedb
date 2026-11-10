@@ -440,6 +440,16 @@ pub struct Embed {
     /// elsewhere, such as `cohere/embed-english-v3.0`), which only
     /// documents the field.
     pub model: String,
+    /// What the model's weights were when the table was created
+    /// ([`crate::embed::fingerprint`]: `sha256:` and the hash of its
+    /// weights file), for a model read from a models directory that was
+    /// there then. A database refuses to embed with a model of the same
+    /// name whose weights differ, whose vectors would not be comparable
+    /// with the rows'. `None` for tables from before fingerprints, hash
+    /// and hosted models, and models that were not there: those open by
+    /// name alone, as before. Readers from before it ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// The id of a field that has none yet ([`Field::new`]: [`Schema::new`]
@@ -676,7 +686,7 @@ impl Field {
     }
     /// Makes a VECTOR field `model`'s embedding of `sources` ([`Embed`]).
     pub fn embedded(mut self, model: &str, sources: &[&str]) -> Self {
-        self.embed = Some(Embed { from: sources.iter().map(|s| s.to_string()).collect(), model: model.to_string() });
+        self.embed = Some(Embed { from: sources.iter().map(|s| s.to_string()).collect(), model: model.to_string(), fingerprint: None });
         self
     }
 
@@ -2037,7 +2047,11 @@ impl Schema {
                             m.insert("pool_factor".into(), json!(p));
                         }
                         if let Some(e) = &f.embed {
-                            m.insert("embed".into(), json!({"from": e.from, "model": e.model}));
+                            let mut j = json!({"from": e.from, "model": e.model});
+                            if let Some(fp) = &e.fingerprint {
+                                j["fingerprint"] = json!(fp);
+                            }
+                            m.insert("embed".into(), j);
                         }
                         ("vector", false)
                     }
@@ -2272,7 +2286,8 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
                 _ => return Err(bad("embed needs \"from\", the fields it embeds")),
             };
             let model = e.get("model").and_then(J::as_str).ok_or_else(|| bad("embed needs a \"model\""))?;
-            f.embed = Some(Embed { from, model: model.to_string() });
+            let fingerprint = e.get("fingerprint").and_then(J::as_str).map(String::from);
+            f.embed = Some(Embed { from, model: model.to_string(), fingerprint });
         }
     }
     Ok(f)

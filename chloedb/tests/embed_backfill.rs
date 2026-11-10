@@ -72,13 +72,22 @@ fn sorted(mut keys: Vec<Value>) -> Vec<String> {
 fn rows_stored_without_vectors_get_them_when_the_model_opens() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::create(&dir.path().join("b.strata"), schema(), DbOptions::default()).unwrap();
-    // No model: the rows are stored without vectors, except the one
-    // whose writer supplied it.
+    // No model: a write that needs a vector fails, saying what to do...
     let mut docs: Vec<_> = (0..300).map(|i| doc(&format!("d{i:03}"), &format!("red mug {i}"), i)).collect();
     docs[1][3] = Value::Vector(vec![1.0; DIM].into());
     docs[2] = doc("d002", "", 2);
     docs[250] = doc("d250", "green teapot", 250);
-    db.load(docs[..200].to_vec()).unwrap();
+    let e = db.load(docs[..200].to_vec()).unwrap_err().to_string();
+    assert!(e.contains("not open") && e.contains("set_embed_later"), "{e}");
+    let e = db.sql("INSERT INTO docs (id, title, stock) VALUES ('x', 'a mug', 1)", &Params::new()).unwrap_err().to_string();
+    assert!(e.contains("not open"), "{e}");
+    assert_eq!(db.query("SELECT COUNT(*) FROM docs", &Params::new()).unwrap().rows[0][0], Value::Int(0));
+    // ...but a row that gives its vector, or has no text to embed, needs none.
+    db.load([docs[1].clone(), docs[2].clone()]).unwrap();
+    // On purpose, the rows are stored without vectors, except the one
+    // whose writer supplied it.
+    db.set_embed_later(true);
+    db.load([docs[0].clone()].into_iter().chain(docs[3..200].iter().cloned())).unwrap();
     db.storage().flush().unwrap();
     // Some in an on-disk segment, some in the memtable.
     db.load(docs[200..].to_vec()).unwrap();
@@ -118,6 +127,7 @@ fn rows_stored_without_vectors_get_them_when_the_model_opens() {
 fn rows_written_after_a_backfill_was_prepared_are_left_as_written() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::create(&dir.path().join("b.strata"), schema(), DbOptions::default()).unwrap();
+    db.set_embed_later(true);
     db.load((0..4).map(|i| doc(&format!("d{i}"), &format!("blue kettle {i}"), i))).unwrap();
     db.set_embedder("emb", Arc::new(HashEmbedder { dim: DIM })).unwrap();
     let keys = db.missing_vectors("docs", "emb").unwrap();
@@ -145,6 +155,7 @@ fn rows_written_after_a_backfill_was_prepared_are_left_as_written() {
 fn a_row_whose_text_changed_meanwhile_gets_the_vector_of_its_new_text() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::create(&dir.path().join("b.strata"), schema(), DbOptions::default()).unwrap();
+    db.set_embed_later(true);
     db.load([doc("d0", "old words", 0)]).unwrap();
     db.set_embedder("emb", Arc::new(HashEmbedder { dim: DIM })).unwrap();
     let p = db.prepare_backfill("docs", "emb", db.missing_vectors("docs", "emb").unwrap()).unwrap();
