@@ -99,6 +99,19 @@ export class Result {
     return this.rows.length;
   }
 
+  /** More rows matched than this answer holds, by a cut the query did not
+   * write: a ranked query without LIMIT (`implicitLimit`), or a page of a
+   * fused ranking past its candidates. */
+  get truncated() {
+    return this.stats?.truncated === true;
+  }
+
+  /** The row count a ranked query without LIMIT was cut to (100), or
+   * undefined when the query gave its own LIMIT. */
+  get implicitLimit() {
+    return this.stats?.implicit_limit ?? undefined;
+  }
+
   #object(r) {
     const o = {};
     for (let i = 0; i < this.columns.length; i++) o[this.columns[i]] = r[i];

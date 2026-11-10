@@ -306,7 +306,15 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
                 return Err(err("DELETE from exactly one table"));
             }
             let schema = table(plain_table(&t.relation, "DELETE")?)?;
-            write(schema, Write::Delete { select: selecting(schema, params, &t.relation, selection, order_by, limit)? })
+            let select = selecting(schema, params, &t.relation, selection, order_by, limit)?;
+            // A ranked read without LIMIT is cut at its default top rows; a
+            // DELETE is never cut by a limit it did not write. Without LIMIT
+            // the order chooses nothing, and the score's matches are not the
+            // WHERE's, so the statement says which it means.
+            if select.limit.is_none() && matches!(&select.order, Some(OrderBy::Score { score, .. }) if !matches!(score, Score::Column { .. })) {
+                return Err(err("DELETE ... ORDER BY a score needs a LIMIT: the order only chooses which rows a LIMIT keeps. To delete every row that matches, write the match in WHERE (WHERE MATCH(field, '...')) without ORDER BY"));
+            }
+            write(schema, Write::Delete { select })
         }
         sql::Statement::CreateTable(ct) => {
             let (schema, if_not_exists) = ddl::create_table(ct, tables)?;

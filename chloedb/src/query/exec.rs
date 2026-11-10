@@ -462,6 +462,24 @@ pub struct ExecStats {
     /// Steps not kept, past [`steps::MAX_STEPS`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub steps_dropped: u64,
+    /// The row count a ranked query without `LIMIT` was cut to
+    /// ([`DEFAULT_K`]); `None` when the query gave its own LIMIT.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_limit: Option<u64>,
+    /// More rows matched than the answer holds, and the query did not ask
+    /// for the cut: a ranked query without `LIMIT` cut at
+    /// [`Self::implicit_limit`], or a page of a fused ranking that reached
+    /// past its candidates.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    /// A `ppr` walk stopped at its `max_pushes` before it converged: its
+    /// scores are those of a shorter walk.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub max_pushes_reached: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -757,6 +775,9 @@ pub struct Executor<'a> {
     /// This query among the database's, for the filter cache to count a
     /// query that looks at a filter twice as one sight of it.
     query: u64,
+    /// The rows of the page being ranked (its LIMIT, or [`DEFAULT_K`]),
+    /// OFFSET aside: what raises a fused ranking's depth.
+    page_rows: Option<usize>,
 }
 
 /// The last [`Executor::query`] handed out.
@@ -923,6 +944,7 @@ impl<'a> Executor<'a> {
             charge: Charge::new(opts.memory.clone()),
             clock: Clock::new(opts.profile),
             query: QUERIES.fetch_add(1, Ordering::Relaxed) + 1,
+            page_rows: None,
         }
     }
 
@@ -1562,10 +1584,28 @@ impl<'a> Executor<'a> {
                 self.by_column(*field, *desc, Some(*nulls_first), &q.filter, want, q.tiebreak.as_ref())?
             }
             // Without a LIMIT, DEFAULT_K rows after the OFFSET, as a
-            // coordinator cuts them.
+            // coordinator cuts them, and the cut said in the stats: one row
+            // more is ranked to show whether it dropped any.
             Some(OrderBy::Score { score, desc: true, .. }) => {
-                let k = if q.limit.is_some() { want.unwrap_or(0) } else { DEFAULT_K.saturating_add(q.offset).min(self.n_live()) };
-                self.ranked(score, &q.filter, k, q.tiebreak.as_ref())?
+                let implicit = q.limit.is_none();
+                let k = if !implicit { want.unwrap_or(0) } else { DEFAULT_K.saturating_add(q.offset).min(self.n_live()) };
+                // A fused ranking's candidates depend on the page's size, not
+                // on where it starts, so that pages of one query agree.
+                let floor = std::mem::replace(&mut self.page_rows, Some(q.limit.unwrap_or(DEFAULT_K)));
+                let hits = self.ranked(score, &q.filter, if implicit { k + 1 } else { k }, q.tiebreak.as_ref());
+                self.page_rows = floor;
+                let mut hits = hits?;
+                if implicit && !self.opts.shard {
+                    self.stats.implicit_limit = Some(DEFAULT_K as u64);
+                    if hits.len() > k {
+                        hits.truncate(k);
+                        self.stats.truncated = true;
+                        self.stats.plan.push(format!("no LIMIT: a ranked query returns its top {DEFAULT_K} rows, and more rows match (add a LIMIT to choose how many)"));
+                    } else {
+                        self.stats.plan.push(format!("no LIMIT: a ranked query returns at most {DEFAULT_K} rows; every match fits"));
+                    }
+                }
+                hits
             }
             Some(OrderBy::Score { score, .. }) if Rank::of(score, 0).is_some() => return Err(err("a ranking expression is ordered DESC (negate it to rank the smallest first)")),
             Some(OrderBy::Score { .. }) => return Err(err("relevance scores can only be ordered DESC")),
@@ -3629,7 +3669,9 @@ impl<'a> Executor<'a> {
     /// mode these are every candidate, with what the coordinator fuses
     /// ([`RankParts`]).
     fn fused(&mut self, rank: &Rank<'_>, p: &Pred, k: usize) -> Result<Vec<Hit>> {
-        let depth = self.rows_at_most(rank.depth.max(k));
+        // Raised to the page's rows, not to its end: pages of one query
+        // (LIMIT n OFFSET 0, n, 2n...) rank the same candidates alike.
+        let depth = self.rows_at_most(rank.depth.max(self.page_rows.unwrap_or(k)));
         let shard = self.opts.shard;
         let driver = rank.driver().filter(|_| self.opts.rank_safe);
         // Each generating leaf's top rows: the candidates, and the rankings
@@ -3715,6 +3757,11 @@ impl<'a> Executor<'a> {
         self.stats.plan.push(format!("fused {}: {} candidates from {from}{raw}", rank.explain(&self.schema), cands.len()));
         if cut && hits.len() < found {
             self.stats.plan.push(format!("shard sends its top {} of the {found} its segments found (ties at the cut kept)", hits.len()));
+        }
+        // A page past the candidates, while rows outside them may match.
+        if !shard && driver.is_none() && !rank.exact && hits.len() < k && depth < self.n_live() && lists.iter().zip(&rank.generates).any(|(l, &g)| g && l.len() >= depth) {
+            self.stats.truncated = true;
+            self.stats.plan.push(format!("the page reaches past the {} candidates (each input's top {depth}): give the ranking a larger depth => to page deeper, the same on every page", cands.len()));
         }
         if shard {
             let ranked = ranks
