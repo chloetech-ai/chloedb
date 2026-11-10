@@ -473,17 +473,23 @@ mod tests {
         let path = dir.path().join("x.strata");
         std::fs::write(&path, b"").unwrap();
         let share = share_dir(&path, false);
-        let main = File::open(&path).unwrap();
+        // The writer's descriptor is open for writing, as the database's
+        // is: the lock on WRITER_BYTE is a write lock.
+        let rw = || OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let main = rw();
         let mut seen = Session::new(&share);
         assert_eq!(seen.read().unwrap(), 0);
         let w = WriterLock::take(&main, &share).unwrap();
         assert_eq!(seen.read().unwrap(), w.session());
-        let other = File::open(&path).unwrap();
+        let other = rw();
         assert!(matches!(WriterLock::take(&other, &share), Err(Error::Busy(_))));
         // A reader shares the file with the writer.
         lock_shared(&File::open(&path).unwrap()).unwrap();
         let s = w.session();
+        // The byte lock lives as long as the writer's descriptor of the
+        // file, which the database closes with its lock.
         drop(w);
+        drop(main);
         let w = WriterLock::take(&other, &share).unwrap();
         assert_ne!(w.session(), s);
         assert_eq!(seen.read().unwrap(), w.session());
@@ -491,6 +497,6 @@ mod tests {
         // keeps it out, and is kept out by it.
         drop(w);
         let old = File::open(&path).unwrap();
-        assert!(!try_flock(&old, libc::LOCK_EX).unwrap(), "a reader and the main descriptor hold it shared");
+        assert!(!try_flock(&old, libc::LOCK_EX).unwrap(), "the last writer's descriptor still holds it shared");
     }
 }
