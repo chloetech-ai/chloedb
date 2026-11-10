@@ -199,7 +199,7 @@ fn stub_engine(seen: Arc<Mutex<Engine>>) -> String {
                 ("GET", "/api/status") => json!({"model": "stub", "spend": {"usd": 1.0, "cap": 25.0}}),
                 ("POST", "/api/apps") => {
                     e.descriptions.push(body["description"].as_str().unwrap_or("").to_string());
-                    json!({"app": {"id": "a1", "name": "Refund approvals"}, "request": "q1"})
+                    json!({"app": "a1", "request": "q1"})
                 }
                 ("GET", "/api/apps/a1") => {
                     e.polls += 1;
