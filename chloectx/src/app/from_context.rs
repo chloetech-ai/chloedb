@@ -339,7 +339,8 @@ impl App {
             kinds.join(", ")
         );
         let made = self.cluster.post(&format!("{ENGINE}/api/apps"), &json!({"description": request})).map_err(|f| Fail(502, format!("the app engine: {f}")))?;
-        let app_id = made["app"]["id"].as_str().unwrap_or("").to_string();
+        // The engine answers `{app: "<id>", request}`; an object with an id is taken too.
+        let app_id = made["app"].as_str().or_else(|| made["app"]["id"].as_str()).unwrap_or("").to_string();
         if app_id.is_empty() {
             return Err(Fail(502, format!("the app engine made no app: {made}")));
         }
