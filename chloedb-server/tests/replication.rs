@@ -1297,7 +1297,8 @@ async fn the_server_starts_as_a_primary_or_a_replica() {
     let e = server::promote(&format!("{ru}/"), &[], "majority", false, None).await.unwrap_err();
     assert!(e.contains("409 Conflict") && e.contains("knows no other copy of its shard"), "{e}");
     let a = server::promote(&format!("{ru}/"), &[], "majority", true, None).await.unwrap();
-    assert_eq!((&a["term"], &a["seq_no"], &a["replicas"]), (&json!(2), &json!(1), &json!([])), "{a}");
+    // The term's first transaction, which writes no row, is number 2.
+    assert_eq!((&a["term"], &a["seq_no"], &a["replicas"]), (&json!(2), &json!(2), &json!([])), "{a}");
     assert_eq!(r.role(), pb::Role::Primary);
     assert_eq!(r.health().await["replication"]["write_acks"], "majority");
     assert_eq!(r.health().await["replication"]["verify_every_s"], 1800, "it ships as its flags say");
@@ -1472,7 +1473,8 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
         (a, b) => panic!("one promotion: {a:?} {b:?}"),
     };
     assert!(e.status == 409 && e.message.contains("only a replica is promoted"), "{}", e.message);
-    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(5)), "{a}");
+    // Its five, and the new term's first transaction.
+    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(6)), "{a}");
     assert_eq!(a["replicas"][0], json!({"url": u2, "role": "replica", "term": 1, "seq_no": 5}));
     assert!(a["replicas"][1]["error"].is_string(), "{a}");
     assert_eq!(r1.role(), pb::Role::Primary);
@@ -1547,7 +1549,7 @@ async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
     // ...while it hands over to r1, which holds every transaction it
     // applied: it votes for r1 and steps down.
     let a = r1.promote(&Principal::open(), vec![up.clone()], Acks::All, false).await.unwrap();
-    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(1)), "{a}");
+    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(2)), "{a}");
     assert_eq!(p.role(), pb::Role::Replica);
     drop(stalled);
     let e = w.await.unwrap().unwrap_err();
@@ -1685,7 +1687,8 @@ async fn a_handover_is_granted_while_its_primary_calls_the_candidate() {
         assert_eq!(a["term"], json!(round + 2), "{a}");
         assert_eq!(from.role(), pb::Role::Replica, "handover {round}: the old primary voted, and stepped down: {a}");
         let w = to.write_ops(vec![set("p0000001", "sold", json!(round))], None).await.unwrap();
-        assert_eq!(w.seq_no, Some(round + 2));
+        // Each term begins with a transaction of its own.
+        assert_eq!(w.seq_no, Some(2 * round + 3));
     }
 }
 

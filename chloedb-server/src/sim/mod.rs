@@ -138,10 +138,19 @@ pub enum Bug {
     /// replicas replace each other: 28 terms in a minute in one seed. Either
     /// fix alone stops it in the simulator; the server has both.
     ReplacesTheCopyItElected,
+    /// A primary elected commits nothing of its own term when it begins it
+    /// ([`crate::replication::term_opened`]), and counts a transaction of
+    /// an older term as acknowledged once a majority holds it
+    /// ([`crate::cores::shard::Primary::term_start`]): it answers a
+    /// client's retry of a write it holds from an older term (an
+    /// idempotency key it finds) as acknowledged, dies, and a copy holding
+    /// a transaction of a newer term at the same number is elected and
+    /// drops it from every copy (finding DS-5, Raft's figure 8).
+    AcksAnOlderTerm,
 }
 
 impl Bug {
-    pub const ALL: [Bug; 5] = [Bug::AsksAKnownTerm, Bug::TakesWritesInALease, Bug::RefusesOlderTerms, Bug::WaitsForAFirstCall, Bug::ReplacesTheCopyItElected];
+    pub const ALL: [Bug; 6] = [Bug::AsksAKnownTerm, Bug::TakesWritesInALease, Bug::RefusesOlderTerms, Bug::WaitsForAFirstCall, Bug::ReplacesTheCopyItElected, Bug::AcksAnOlderTerm];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -150,6 +159,7 @@ impl Bug {
             Bug::RefusesOlderTerms => "refuses-older-terms",
             Bug::WaitsForAFirstCall => "waits-for-a-first-call",
             Bug::ReplacesTheCopyItElected => "replaces-the-copy-it-elected",
+            Bug::AcksAnOlderTerm => "acks-an-older-term",
         }
     }
 

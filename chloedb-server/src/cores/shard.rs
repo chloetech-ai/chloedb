@@ -908,6 +908,13 @@ pub struct Primary {
     /// It takes no writes until then, as a copy asks it to hand the shard
     /// over ([`Self::hand_over`]), unless it answered that copy's vote first.
     pub handing_over: Option<Instant>,
+    /// The number of the first transaction of its term, which it commits
+    /// as it begins the term ([`crate::replication::term_opened`]; 0: none,
+    /// the shard's first primary, or one started again in its term). No
+    /// transaction is answered as acknowledged until a majority holds
+    /// this one, as Raft's leader counts no entry of an older term as
+    /// committed until one of its own is (finding DS-5).
+    pub term_start: u64,
     gen: u64,
 }
 
@@ -926,7 +933,7 @@ impl Primary {
         let next = Kept { role: Some(KeptRole::Primary { replicas: replicas.to_vec(), acks: opts.acks }), member: true, config, ..kept.clone() };
         let save = (next != kept).then_some(next);
         let kept = save.clone().unwrap_or(kept);
-        let mut p = Primary { id: kept.id.clone(), opts, peers: replicas.iter().map(|u| Peer::new(u, joining)).collect(), fenced: 0, kept, progress: 0, writes_from: None, handing_over: None, gen: 0 };
+        let mut p = Primary { id: kept.id.clone(), opts, peers: replicas.iter().map(|u| Peer::new(u, joining)).collect(), fenced: 0, kept, progress: 0, writes_from: None, handing_over: None, term_start: 0, gen: 0 };
         p.gen = 1;
         for peer in &mut p.peers {
             peer.owner = p.gen;
@@ -1108,7 +1115,12 @@ impl Primary {
         Ok(())
     }
 
+    /// How many copies hold transaction `seq`, and whether a majority
+    /// does: counted at the term's first transaction when `seq` is older
+    /// ([`Self::term_start`]), so that a retry answered by an older
+    /// transaction waits for one of this term.
     fn holding(&self, seq: u64) -> (usize, bool) {
+        let seq = seq.max(self.term_start);
         let holding = 1 + self.peers.iter().filter(|p| p.member && p.acked >= seq).count();
         (holding, holding >= self.majority())
     }
@@ -1736,6 +1748,22 @@ mod tests {
         p.answered(0, &mut s[0], matched(2), &at);
         p.peers[1].answered = Some(back);
         assert!(p.may_reconfigure(&d(&["d", "e"]), back, false).is_ok(), "A and B hold membership 2");
+    }
+
+    /// Finding DS-5 as the verifier ran it: A, elected in term 3, holds a
+    /// term-1 transaction at 2 that B took from it; C holds a term-2 one at
+    /// 2. A retry of the term-1 write is answered by the database's last
+    /// number: it waits for a majority to hold A's own first transaction
+    /// of term 3, which C, holding less, can then never be elected past.
+    #[test]
+    fn a_new_primary_acknowledges_nothing_before_a_transaction_of_its_term() {
+        let (mut p, _) = Primary::new(Kept::new("a".into()), &["b".into(), "c".into()], Opts { acks: Acks::Majority, ..opts() }, false);
+        p.term_start = 3;
+        p.peers[0].acked = 2;
+        assert!(p.acked(2).is_none(), "a majority holds 2, of term 1, and none the term's first");
+        assert!(p.deadline(2).is_err());
+        p.peers[0].acked = 3;
+        assert!(matches!(p.acked(2), Some(Ok(()))) && matches!(p.acked(3), Some(Ok(()))));
     }
 
     /// The other half of DS-1: a copy that heard of a newer membership

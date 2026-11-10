@@ -530,17 +530,21 @@ impl Primary {
     pub fn start(db: Arc<Db>, file: Option<&Path>, opts: PrimaryOptions) -> Result<Arc<Primary>, String> {
         let numbering = db.storage().numbering().ok_or("a primary numbers its writes: start it with --seq-no")?;
         let mut kept = open_kept(file)?;
+        let mut first = 0;
         if opts.promote {
             let term = kept.newest(numbering.term) + 1;
             db.storage().begin_term(term).map_err(|e| format!("begin term {term}: {e}"))?;
-            kept = Kept::new(kept.id);
+            first = term_opened(&db, term).map_err(|e| e.message)?;
+            kept = Kept { config: kept.config, ..Kept::new(kept.id) };
             tracing::info!(term, "promoted: the primary of a new term");
         } else if let Some((primary, term)) = &kept.follows {
             return Err(format!("this database is a replica of primary {primary} in term {term}: start it with --replica, or make it the primary of a new term with --promote"));
         } else if let Some(term) = kept.replaced_by {
             return Err(format!("a primary of term {term} replaced this one: start it with --replica, as a replica of that primary, or make it the primary of a newer term with --promote"));
         }
-        Primary::run(db, file, kept, opts)
+        let p = Primary::run(db, file, kept, opts)?;
+        p.core(|c| c.term_start = first);
+        Ok(p)
     }
 
     /// Starts shipping as [`Primary::start`] does, under id `kept.id`.
@@ -868,6 +872,30 @@ impl Primary {
 
 /// The database's numbering, as a primary ships it: refused when it does
 /// not number its writes, or keeps no log of them.
+/// The mark a new primary's first transaction sets and clears
+/// ([`term_opened`]).
+pub const TERM_MARK: &str = "_chloedb/term";
+
+/// Commits the first transaction of `term`, which `db` began: one that
+/// changes no row (it sets and clears [`TERM_MARK`] among the stream
+/// sources), and returns its number. As Raft's leader does at the start
+/// of its term, a new primary counts no transaction of an older term as
+/// held by a majority until a majority holds this one
+/// ([`shard::Primary::term_start`]). Finding DS-5 (Raft's figure 8): a
+/// primary elected in term 3 answered the retry of a term-1 transaction
+/// as acknowledged once a majority held it, then died; the copy holding a
+/// term-2 transaction at the same number was elected, as its last term
+/// was newer, and the acknowledged transaction was dropped from every
+/// copy. Once a majority holds a transaction of term 3, no copy without
+/// it can be elected.
+pub fn term_opened(db: &Db, term: u64) -> Result<u64, ApiError> {
+    let s = db.storage();
+    s.ensure_sources()?;
+    let mut t = s.begin()?;
+    t.mark_source(TERM_MARK, term as i64, chloedb::timestamp::now())?;
+    t.commit_seq()?.ok_or_else(|| ApiError::internal(format!("the first transaction of term {term} has no number")))
+}
+
 fn ships(db: &Db) -> Result<Numbering, String> {
     let numbering = db.storage().numbering().ok_or("a primary numbers its writes: start it with --seq-no")?;
     if !db.storage().keeps_ship_log() {
@@ -1449,13 +1477,18 @@ impl Follow {
         let _one = self.one.lock().await;
         let (term, next) = self.core().take_over(won, &self.numbering()?, &opts.replicas, opts.acks)?;
         let db = self.db.clone();
-        tokio::task::spawn_blocking(move || crate::service::wait_for_writer(Instant::now() + WRITER_WAIT, || db.storage().begin_term(term).map_err(ApiError::from)))
-            .await
-            .map_err(ApiError::internal)??;
+        let first = tokio::task::spawn_blocking(move || {
+            let until = Instant::now() + WRITER_WAIT;
+            crate::service::wait_for_writer(until, || db.storage().begin_term(term).map_err(ApiError::from))?;
+            crate::service::wait_for_writer(until, || term_opened(&db, term))
+        })
+        .await
+        .map_err(ApiError::internal)??;
         self.keep(next.clone(), "the replication id")?;
         let at = self.db.storage().numbering().unwrap_or_default();
         tracing::info!(term, seq_no = at.seq, replicas = %opts.replicas.join(", "), write_acks = opts.acks.name(), elected = won.is_some(), "promoted: the primary of a new term");
         let p = Primary::run(self.db.clone(), self.file.as_deref(), next, opts).map_err(ApiError::internal)?;
+        p.core(|c| c.term_start = first);
         Ok((p, json!({"term": at.term, "seq_no": at.seq})))
     }
 

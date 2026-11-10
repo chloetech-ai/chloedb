@@ -312,7 +312,7 @@ async fn replicas_join_and_leave_a_shard() {
     })
     .await;
     let j = a.promote(1, &u_r2, false).await.unwrap();
-    assert_eq!((&j["primary"], &j["seq_no"]), (&serde_json::json!(u_r2.clone()), &serde_json::json!(0)), "{j}");
+    assert_eq!((&j["primary"], &j["seq_no"]), (&serde_json::json!(u_r2.clone()), &serde_json::json!(1)), "{j}"); // the term's first transaction
     assert_eq!((r2.role(), shards[1].role()), (pb::Role::Primary, pb::Role::Replica));
     sql(&svc_a, &format!("DELETE FROM products WHERE id = '{}'", all.iter().find(|id| !mine.contains(id)).unwrap())).await.unwrap();
     assert_eq!(ids(&svc_a).await.len(), N - 2);
