@@ -6,7 +6,9 @@
 //! every [`PUSH_EVERY`] and as it exits, and when it starts it pulls the
 //! records of its project the store lacks, which a store made on another
 //! machine (or a cloud container started afresh) wrote, and embeds them
-//! here. Records are keyed `<project>:<id>`, so projects share the table.
+//! here. Records are keyed `<project>:<id>`, so projects share the table;
+//! a project is its git repository (`owner/name`, see [`project_key`]), so
+//! every checkout of it, under any folder or an old name, shares one memory.
 //!
 //! What is sent is what the store holds: text from the sessions it
 //! recorded, which can include whatever passed through them. The server
@@ -61,6 +63,38 @@ pub struct SyncConfig {
     /// no file.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token_env: String,
+    /// Repositories renamed (`owner/old` to `owner/new`): a checkout of
+    /// either name syncs as the new one.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub renames: std::collections::BTreeMap<String, String>,
+}
+
+fn load_config(home: &Path) -> SyncConfig {
+    std::fs::read_to_string(config_path(home)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// The repository `owner/name` a git remote URL names (https, ssh or a
+/// proxy's `.../git/owner/name`), lowercased, without `.git`.
+fn repo_of(url: &str) -> Option<String> {
+    let path = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let path = path.rsplit_once(':').filter(|(h, _)| !h.contains("//")).map_or(path, |(_, p)| p);
+    let mut parts = path.rsplit('/').filter(|p| !p.is_empty());
+    let name = parts.next()?;
+    let owner = parts.next()?;
+    (!owner.contains('@') && !owner.contains(':')).then(|| format!("{owner}/{name}").to_lowercase())
+}
+
+/// What the project at `project` syncs as: its git repository
+/// (`owner/name` of `origin`, renames applied), so that checkouts in
+/// different folders, or of the repository under an old name, share their
+/// memory; else its path.
+pub fn project_key(home: &Path, project: &str) -> String {
+    let cfg = load_config(home);
+    let repo = Command::new("git").args(["-C", project, "remote", "get-url", "origin"]).stderr(Stdio::null()).output().ok().filter(|o| o.status.success()).and_then(|o| repo_of(&String::from_utf8_lossy(&o.stdout)));
+    match repo {
+        Some(r) => cfg.renames.get(&r).cloned().unwrap_or(r),
+        None => project.to_string(),
+    }
 }
 
 /// The server to sync with: `$CHLOECTX_SYNC_URL`, else `sync.json`; the
@@ -68,7 +102,7 @@ pub struct SyncConfig {
 /// `sync.token` (none: the server is open, or a proxy adds it). `None` when
 /// no URL is set.
 pub fn remote(home: &Path) -> Option<Remote> {
-    let cfg: SyncConfig = std::fs::read_to_string(config_path(home)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let cfg = load_config(home);
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     let url = env("CHLOECTX_SYNC_URL").or_else(|| Some(cfg.url.clone()).filter(|u| !u.trim().is_empty()))?;
     let token = env("CHLOECTX_SYNC_TOKEN")
@@ -80,9 +114,14 @@ pub fn remote(home: &Path) -> Option<Remote> {
 }
 
 /// Writes the sync's settings (and the key, owner-only, when given).
-pub fn setup(home: &Path, url: &str, token: Option<&str>, token_env: &str) -> Result<()> {
+pub fn setup(home: &Path, url: &str, token: Option<&str>, token_env: &str, renames: &[String]) -> Result<()> {
     crate::paths::create_private_dir(home)?;
-    let cfg = SyncConfig { url: url.trim().to_string(), token_env: token_env.trim().to_string() };
+    let mut map = std::collections::BTreeMap::new();
+    for r in renames {
+        let (old, new) = r.split_once('=').ok_or_else(|| err(format!("--rename {r}: give OLD=NEW, as owner/old=owner/new")))?;
+        map.insert(old.trim().to_lowercase(), new.trim().to_lowercase());
+    }
+    let cfg = SyncConfig { url: url.trim().to_string(), token_env: token_env.trim().to_string(), renames: map };
     std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
     if let Some(t) = token {
         let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(token_path(home))?;
@@ -330,6 +369,14 @@ fn fnv(s: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_names_its_repository() {
+        for u in ["https://github.com/chloetech-ai/Strata", "https://github.com/chloetech-ai/strata.git", "git@github.com:chloetech-ai/strata.git", "http://local_proxy@127.0.0.1:1234/git/chloetech-ai/strata"] {
+            assert_eq!(repo_of(u).as_deref(), Some("chloetech-ai/strata"), "{u}");
+        }
+        assert_eq!(repo_of("strata"), None);
+    }
 
     #[test]
     fn an_anthropic_key_is_never_sent() {

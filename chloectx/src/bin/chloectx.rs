@@ -167,6 +167,10 @@ enum SyncCmd {
         /// syncs (one a cloud environment sets, say); no file holds it.
         #[arg(long, default_value = "")]
         token_env: String,
+        /// A repository renamed, as owner/old=owner/new (repeatable): a
+        /// checkout under either name syncs as the new one.
+        #[arg(long = "rename")]
+        renames: Vec<String>,
         /// Do not create the table (it exists, or the key cannot: it needs the admin scope).
         #[arg(long)]
         no_create: bool,
@@ -267,14 +271,14 @@ fn main() {
                 }
             }
         }
-        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, token_env, no_create } } => {
+        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, token_env, renames, no_create } } => {
             let token = token_stdin.then(|| {
                 let mut t = String::new();
                 let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut t);
                 t
             });
             let home = paths::home();
-            if let Err(e) = chloectx::sync::setup(&home, &url, token.as_deref(), &token_env) {
+            if let Err(e) = chloectx::sync::setup(&home, &url, token.as_deref(), &token_env, &renames) {
                 eprintln!("chloectx sync: {e}");
                 std::process::exit(1);
             }
@@ -287,9 +291,10 @@ fn main() {
             }
             // Not fatal: the key may only be in the environment of the
             // sessions to come (a cloud setup script runs before it is).
-            match remote.count(&project.to_string_lossy()) {
-                Ok(n) => println!("sync set up with {} ({n} records of this project there)", remote.url),
-                Err(e) => println!("sync set up with {}; it does not answer yet ({e}): the daemon tries again when it starts", remote.url),
+            let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
+            match remote.count(&key) {
+                Ok(n) => println!("sync set up with {}; this project syncs as {key} ({n} records there)", remote.url),
+                Err(e) => println!("sync set up with {}; this project syncs as {key}; the server does not answer yet ({e}): the daemon tries again when it starts", remote.url),
             }
             // A running daemon syncs once it starts again (on the next hook or tool).
             let dir = paths::store_dir(&project);

@@ -274,8 +274,9 @@ impl Daemon {
         let remote = crate::sync::remote(&crate::paths::home())?;
         let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
-        let pushed = crate::sync::push(&remote, &self.store, &self.project, &mut st);
-        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &self.project, &mut st)) } else { None };
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
+        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st)) } else { None };
         // What was pulled was the server's already.
         if matches!(pulled, Some(Ok(_))) {
             st.pushed_seq = st.pushed_seq.max(self.store.last_seq());
@@ -305,9 +306,10 @@ impl Daemon {
             w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
         }
         .unwrap_or_default();
-        let on_server = if what == "status" { remote.count(&self.project).map_err(|e| e.to_string()) } else { Err(String::new()) };
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
         Ok(json!({
-            "server": remote.url, "token": remote.has_token(), "project": self.project,
+            "server": remote.url, "token": remote.has_token(), "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
             "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
