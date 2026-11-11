@@ -1558,11 +1558,17 @@ impl Primary {
 
     /// Replica `k` answered the copy `s` sent it. The shipper of a
     /// replica the primary no longer ships to stops, and the replica's next
-    /// shipper, which waited for the copy, goes on.
+    /// shipper, which waited for the copy, goes on: it sends another when
+    /// this one failed, as the replica still needs one (a replica that
+    /// joined holds none of the primary's rows, and would refuse every
+    /// batch).
     pub fn copied(&mut self, k: usize, s: &mut Shipper, answer: Result<pb::ReplicateResponse, String>, n: &Numbering) -> (Ship, Option<Kept>) {
         let Some(k) = self.ships_to(k, s) else {
             if let Some(p) = self.peers.iter_mut().find(|p| p.url == s.url) {
                 p.copying = false;
+                if !answer.as_ref().is_ok_and(|a| a.matched) {
+                    p.diverged = true;
+                }
             }
             return (Ship::Stop, None);
         };
@@ -1923,6 +1929,16 @@ mod tests {
         assert!(!matches!(p.poll(0, &mut new[0], &at, t0), Ship::Sleep(_) | Ship::Stop));
         assert!(matches!(p.poll(1, &mut new[1], &at, t0), Ship::Copy { .. }), "c joins: it is sent a copy first");
         assert_eq!((p.copies(), p.majority()), (2, 2), "c counts once it caught up");
+
+        // C is given to a third set of replicas while its copy is sent,
+        // and the copy fails: C's next shipper sends another, as C holds
+        // none of the primary's rows.
+        p.reconfigure(vec!["b".into(), "c".into(), "d".into()], Acks::Majority).unwrap();
+        let mut third = p.shippers();
+        assert!(matches!(p.poll(1, &mut third[1], &at, t0), Ship::Sleep(_)), "it waits for the copy under way");
+        let (next, _) = p.copied(1, &mut new[1], Err("no answer within 10 s".into()), &at);
+        assert!(matches!(next, Ship::Stop) && !p.peers[1].copying);
+        assert!(matches!(p.poll(1, &mut third[1], &at, t0), Ship::Copy { .. }), "the copy that failed is sent again");
     }
 
     /// Finding DS-1, as the verifier ran it: {A} cut off from {B, C},

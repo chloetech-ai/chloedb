@@ -1658,7 +1658,10 @@ async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
 
     // The new primary does not hold it; its writes go on from its own last,
     // and the old primary drops the write it applied for the copy, or holds
-    // the new primary's history as it never applied it.
+    // the new primary's history as it never applied it. (Applied, it is
+    // sent a copy first, out of sync meanwhile: a write under `all` would
+    // be refused, 503, with one copy of two in sync.)
+    until("the old primary is in sync with the new one", || async { follower(&r1, 0).await["in_sync"] == true }).await;
     let w = r1.write_ops(vec![set("p0000003", "sold", json!(3))], None).await.unwrap();
     // After the term's first transaction.
     assert_eq!(w.seq_no, Some(3));

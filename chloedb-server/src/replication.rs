@@ -930,8 +930,22 @@ async fn ship(p: Weak<Primary>, k: usize, mut s: Shipper) {
     let mut round: Option<Round> = None;
     let mut due = Instant::now() + p.upgrade().map_or(Duration::ZERO, |p| p.opts.verify_every);
     let mut step = Ship::Again;
+    // The primary that decided a copy, kept until the copy is sent and
+    // its answer given to the core: the core marks the replica as being
+    // sent one (`Peer::copying`), and the shipper of a primary given other
+    // replicas meanwhile waits for that copy's answer before it ships to
+    // the replica. A task that let go of its primary between the decision
+    // and the copy (it was replaced, and dropped) would leave it waiting
+    // for ever.
+    let mut copying: Option<Arc<Primary>> = None;
     loop {
-        let Some(pr) = p.upgrade() else { return };
+        let pr = match copying.take() {
+            Some(pr) => pr,
+            None => match p.upgrade() {
+                Some(pr) => pr,
+                None => return,
+            },
+        };
         let f = pr.followers[k].clone();
         let Some(n) = pr.db.storage().numbering() else { return };
         step = match step {
@@ -949,11 +963,19 @@ async fn ship(p: Weak<Primary>, k: usize, mut s: Shipper) {
                         due = Instant::now() + every;
                     }
                 }
-                pr.core(|c| c.poll(k, &mut s, &n, Instant::now()))
+                let next = pr.core(|c| c.poll(k, &mut s, &n, Instant::now()));
+                if matches!(next, Ship::Copy { .. }) {
+                    copying = Some(pr.clone());
+                }
+                next
             }
             Ship::Read { from } => {
                 let log = pr.db.storage().log_from(from, pr.opts.batch_bytes);
-                pr.core(|c| c.read(k, &mut s, &n, log, Instant::now()))
+                let next = pr.core(|c| c.read(k, &mut s, &n, log, Instant::now()));
+                if matches!(next, Ship::Copy { .. }) {
+                    copying = Some(pr.clone());
+                }
+                next
             }
             Ship::Call(mut req) => {
                 // The digest of the transaction the call follows, for the

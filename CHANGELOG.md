@@ -133,6 +133,12 @@ still 0.1.0, and the next release will name its version here.
   and campaigns until it installs a copy. The simulator has two bugs to
   put in, `commits-after-stepping-down` (a stalled writer) and
   `trusts-the-same-term`.
+- A copy decided for a replica is always sent: a shipper whose primary was
+  given other replicas between deciding a copy and sending it left the
+  replica marked as being sent one, and the replica's next shipper waited
+  for that copy for ever; and a copy that fails after the primary was
+  given other replicas is sent again by the next shipper, rather than
+  shipping batches to a replica that holds none of the primary's rows.
 - Not yet: the digest covers the one transaction a call follows, not the
   history before it, and only while the replica's ship log holds it (a
   replica restarted after a flush, or copied since, before it was found,
