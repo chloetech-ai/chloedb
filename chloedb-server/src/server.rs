@@ -456,7 +456,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(b) = query_memory {
         tracing::info!(memory_mib = b >> 20, "queries share a memory budget");
     }
-    svc.query_memory = query_memory.map(|b| chloedb::query::memory::MemoryBudget::named(b, "the server lets queries hold at once (--query-memory-mb)"));
+    svc.query_memory = query_memory.map(crate::service::query_budget);
     svc.max_queued_writes = if o.max_queued_writes > 0 { o.max_queued_writes } else { usize::MAX };
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);

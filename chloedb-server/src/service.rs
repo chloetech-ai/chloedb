@@ -31,6 +31,12 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// refused (429) until some expire.
 pub const MAX_LEASES: usize = 10_000;
 
+/// A memory budget of `bytes` for the queries of a server
+/// ([`Service::query_memory`]), whose refusals name `--query-memory-mb`.
+pub fn query_budget(bytes: u64) -> Arc<MemoryBudget> {
+    MemoryBudget::named(bytes, "the server lets queries hold at once (--query-memory-mb)")
+}
+
 use crate::coord::Coordinator;
 use crate::idem;
 use crate::replication::{Acks, Follow, Primary, PrimaryOptions, READ_WAIT};
