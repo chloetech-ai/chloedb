@@ -116,11 +116,31 @@ still 0.1.0, and the next release will name its version here.
   it twice; refused writes carry an `x-chloedb-write` code (`not-applied`,
   `in-doubt`) that the coordinator reads instead of the error's words;
   `--idempotency-ttl-s` sets how long keys are kept.
-- Not yet: a copy that holds a different transaction under the same term
-  and sequence number is found by the periodic per-slot digest round
-  (`--verify-every-s`), not on the `Replicate` that delivers it; the
-  simulator cannot replay a stalled writer; writes across shards are not
-  atomic (no two-phase commit).
+- A copy holding a different transaction than its primary's under the
+  same term and sequence number is found on the `Replicate` that follows
+  it (protocol 20, `ReplicateRequest.prev_digest`): each call carries a
+  digest of the transaction it follows, the replica compares its own,
+  and on a mismatch applies nothing, serves no reads, logs an error and
+  says `differs` (health `degraded`, `txn_mismatches`,
+  `chloedb_replica_txn_mismatches_total`); the primary sends it a copy of
+  itself, which drops its own. A replica's word that it holds a run of
+  the primary's history no longer counts toward a write's acknowledgment
+  until a call that follows it applies, and that call always carries the
+  primary's digest (a log that no longer holds the transaction sends a
+  copy instead). Peers of an older protocol apply
+  by term and number as before. A replica found to differ keeps that
+  beside its database (`differs` in `<db>.replication`), refuses calls
+  and campaigns until it installs a copy. The simulator has two bugs to
+  put in, `commits-after-stepping-down` (a stalled writer) and
+  `trusts-the-same-term`.
+- Not yet: the digest covers the one transaction a call follows, not the
+  history before it, and only while the replica's ship log holds it (a
+  replica restarted after a flush, or copied since, before it was found,
+  and a replica whose last is a primary's last that its log does not
+  hold, are left to the per-slot digest round, `--verify-every-s`); a
+  replica ahead of its primary under the primary's own term is still left
+  to an operator; writes across shards are not atomic (no two-phase
+  commit).
 
 ### Clients (Python, JavaScript)
 

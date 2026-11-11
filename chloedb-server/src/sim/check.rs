@@ -32,6 +32,11 @@ pub struct Stats {
     pub promoted: u64,
     /// Copies of a primary installed.
     pub copies: u64,
+    /// Calls a replica refused for holding another transaction under the
+    /// term and number they follow, and writes committed by a copy that
+    /// stepped down ([`super::Bug::CommitsAfterSteppingDown`]).
+    pub mismatches: u64,
+    pub stale_commits: u64,
     pub acknowledged: u64,
 }
 

@@ -110,10 +110,11 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// ([`FEED_KEYS_PROTOCOL`]), 16 keeps the stream offsets of slots that
 /// move ([`MOVE_OFFSETS_PROTOCOL`]), 17 holds clients' writes on a mark
 /// and keeps promotions ([`HOLD_PROTOCOL`]), 18 scrolls a shard's rows
-/// for a coordinator ([`SCROLL_PROTOCOL`]), and 19 checks a write without
-/// applying it ([`VALIDATE_PROTOCOL`]).
+/// for a coordinator ([`SCROLL_PROTOCOL`]), 19 checks a write without
+/// applying it ([`VALIDATE_PROTOCOL`]), and 20 compares the transaction a
+/// `Replicate` follows by its digest ([`SAME_TERM_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 19;
+pub const PROTOCOL: u32 = 20;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -183,6 +184,19 @@ pub const SCROLL_PROTOCOL: u32 = 18;
 /// shard of an older protocol is not asked: its part may still be
 /// refused after others applied theirs, as before.
 pub const VALIDATE_PROTOCOL: u32 = 19;
+
+/// The protocol whose `Replicate` carries a digest of the transaction it
+/// follows (`ReplicateRequest.prev_digest`, [`crate::cores::shard::digest`]),
+/// which a replica holding a transaction of that term and number compares
+/// with its own, refusing the call when they differ
+/// (`ReplicateResponse.differs`, [`crate::cores::shard::Replica::follows`]):
+/// a copy that holds another transaction than its primary's under one term
+/// and number is found on the call that would build on it, and sent a copy
+/// of the primary. Replication takes no protocol version, as before: a
+/// replica of an older protocol ignores the digest, and a primary of an
+/// older one sends none (0), so that either applies by term and number
+/// alone, as before. Nothing gates on the number; it names the change.
+pub const SAME_TERM_PROTOCOL: u32 = 20;
 
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;

@@ -174,6 +174,62 @@ fn an_older_terms_write_acknowledged_by_count_is_found_again() {
     assert!(r.violations.iter().any(|v| v.contains("is not held by")), "{:?}", r.violations);
 }
 
+/// Whether violation `v` is a copy left ahead of its primary under the
+/// primary's own term, by transactions the primary does not hold: the
+/// shard does not settle, as the server leaves such a copy to an operator
+/// ("start it again from a checkpoint of the primary"), which a copy of
+/// the primary would drop transactions of the primary's term from.
+fn ahead_in_the_primarys_term(v: &str) -> bool {
+    let num = |s: &str, after: &str| s.split_once(after).and_then(|(_, r)| r.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok());
+    let Some((copy, primary)) = v.strip_prefix("the shard did not settle: ").and_then(|r| r.split_once(", its primary, ")) else { return false };
+    match (num(copy, "up to "), num(copy, " of term "), num(primary, "up to "), num(primary, " of term ")) {
+        (Some(a), Some(t), Some(b), Some(u)) => t == u && a > b,
+        _ => false,
+    }
+}
+
+/// A primary's writer that commits a client's write after the primary
+/// stepped down and applied its new primary's first batch
+/// (`Bug::CommitsAfterSteppingDown`; the server refuses the write since,
+/// as its term is over) leaves a copy holding another transaction than
+/// the new primary's under one term and number. The copy refuses the
+/// call that follows the primary's, by its digest (protocol 20), keeps
+/// that it differs, and is sent a copy of the primary: no acknowledged
+/// write is lost and no two copies hold different histories under one
+/// term and number, and in many seeds the copy was found so. A copy whose
+/// write was the last before the clients stopped stays ahead of its
+/// primary, under the primary's term: left to an operator, as the server
+/// leaves it, and not counted here.
+#[test]
+fn a_write_committed_after_stepping_down_is_found_on_the_call_that_follows() {
+    let found = std::sync::Mutex::new((0, 0, 0, Vec::new()));
+    sim::on_seeds(0..300, jobs(), &|seed| {
+        let mut r = sim::run(Config { bugs: vec![Bug::CommitsAfterSteppingDown], ..Config::of(seed) }, false);
+        let mut f = found.lock().unwrap();
+        f.0 += r.stats.stale_commits;
+        f.1 += r.stats.mismatches;
+        let all = r.violations.len();
+        r.violations.retain(|v| !ahead_in_the_primarys_term(v));
+        f.2 += all - r.violations.len();
+        if !r.ok() {
+            f.3.push(r);
+        }
+    });
+    let (stale, mismatches, ahead, failed) = found.into_inner().unwrap();
+    assert!(failed.is_empty(), "{} of 300 seeds broke a promise:{}", failed.len(), explain(&failed));
+    assert!(stale > 100 && mismatches > 100, "{stale} writes committed after stepping down, {mismatches} calls refused for them");
+    assert!(ahead <= 5, "{ahead} seeds left a copy ahead of its primary");
+}
+
+/// The same with replicas that apply by term and number alone, as before
+/// protocol 20: the copies' histories stay apart.
+#[test]
+fn a_replica_trusting_the_same_term_and_number_is_found_again() {
+    let of = |s| Config { bugs: vec![Bug::CommitsAfterSteppingDown], ..Config::of(s) };
+    let r = finds_with(Bug::TrustsTheSameTerm, 1000, of).expect("a seed whose copies hold different histories");
+    assert!(r.violations.iter().any(|v| v.contains("their histories differ")), "{:?}", r.violations);
+}
+
 #[test]
 fn crash_heavy_runs_with_retries_keep_the_protocols_promises() {
     let failed = sim::run_seeds(0..300, &crashy, jobs());
