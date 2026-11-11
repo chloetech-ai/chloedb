@@ -16,6 +16,22 @@ export interface OpenOptions {
   /** Cores vector indexes build on and each query searches segments on
    * (default: every core). */
   threads?: number;
+  /** The deadline of each of its queries, in ms (see `setLimits`). */
+  timeoutMs?: number;
+  /** The memory budget its queries share, in bytes (see `setLimits`). */
+  memory?: number;
+}
+
+/** A query's limits. */
+export interface QueryLimits {
+  /** Its deadline in ms: past it the query stops and rejects with
+   * DeadlineError (none or 0: the database's). */
+  timeoutMs?: number;
+  /** A memory budget of its own, in bytes, past which it rejects with a
+   * ChloeDBError of code "memory" (0: none; none: the database's). */
+  memory?: number;
+  /** Stops it when it aborts: it rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 export interface ReadOnlyOption {
@@ -54,14 +70,28 @@ export declare class Database extends Searchable {
   dropColumn(name: string, options?: { table?: string }): Promise<void>;
   renameColumn(from: string, to: string, options?: { table?: string }): Promise<void>;
 
+  /** Limits every query from now on: a deadline of `timeoutMs` (none or
+   * 0: none, the default) and a memory budget of `memory` bytes its
+   * queries share (0: none; none, the default: the process's, a quarter of
+   * the machine's memory or $CHLOEDB_QUERY_MEMORY_MB MiB). */
+  setLimits(limits?: { timeoutMs?: number; memory?: number }): void;
+  /** The deadline every query gets unless it gives its own, in ms. */
+  readonly timeoutMs: number | null;
+  /** The memory budget its queries share, in bytes. */
+  readonly memory: number | null;
+  /** Stops the queries running now (they reject with DeadlineError);
+   * returns how many. */
+  interrupt(): number;
+
   /** Runs a SELECT. */
-  query(sql: string, params?: Params | null): Promise<Result>;
-  /** Runs any statement: a SELECT's Result, or the rows a write wrote. */
-  sql(sql: string, params?: Params | null): Promise<Result | number>;
+  query(sql: string, params?: Params | null, options?: QueryLimits): Promise<Result>;
+  /** Runs any statement: a SELECT's Result, or the rows a write wrote; a
+   * SELECT limited by `options`. */
+  sql(sql: string, params?: Params | null, options?: QueryLimits): Promise<Result | number>;
   /** The plan of a statement, without running it. */
   plan(sql: string, params?: Params | null): Promise<Plan>;
-  /** Runs a plan. */
-  run(plan: Plan): Promise<Result | number>;
+  /** Runs a plan; a read limited by `options`. */
+  run(plan: Plan, options?: QueryLimits): Promise<Result | number>;
 
   /** Inserts rows whose keys are new; all or none. Returns how many. */
   insert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
