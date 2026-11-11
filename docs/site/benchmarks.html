@@ -39,8 +39,8 @@
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
       <a href="bench-1m.html" data-overall="cloud-1m" data-mode="tile"></a>
       <a href="bench-laptop.html" data-overall="laptop" data-mode="tile"></a>
-      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">4.8× to 33×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested.</p></a>
-      <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB: ChloeDB 31 points, Memgraph 60.</p></a>
+      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">1.9× to 17×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB with every system on one thread (an older ChloeDB build, four BEIR collections); 4.8× to 33× with ChloeDB on up to eight threads, on all five.</p></a>
+      <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB, on one laptop: ChloeDB 31 points, Memgraph 60, and 21 against 24 without PageRank, which only ChloeDB and Neo4j run. Memgraph and FalkorDB answer one to three hops in about half ChloeDB's time.</p></a>
       <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · 10M</span><span class="v">7.6 ms</span><p>From a write to a search that finds it, at the median. Vespa 10.0 ms, OpenSearch 674.</p></a>
     </div>
   </div></section>
@@ -110,7 +110,7 @@
       <a class="report" href="bench-1m.html"><span class="eyebrow">1M passages · cloud</span><h3>Fourteen engines at 1M</h3><p class="res" data-overall="cloud-1m" data-mode="chip"></p><p class="small muted">Each engine's newest run, three passes, with recall against speed, writes and streams.</p><span class="more">Read the report →</span></a>
       <a class="report" href="bench-laptop.html"><span class="eyebrow">1M passages · laptop</span><h3>Fourteen engines on one laptop</h3><p class="res" data-overall="laptop" data-mode="chip"></p><p class="small muted">BEIR NQ with judged answers, on a cluster inside a MacBook Air.</p><span class="more">Read the report →</span></a>
       <a class="report" href="bench-embedded.html"><span class="eyebrow">No server</span><h3>Against SQLite, DuckDB, LanceDB and Tantivy</h3><p class="res"><b>First on search, hybrids and recommendations</b></p><p class="small muted">One file in an app: reads, writes, search and feeds.</p><span class="more">Read the report →</span></a>
-      <a class="report" href="bench-graph.html"><span class="eyebrow">Graph</span><h3>Against four graph databases</h3><p class="res"><b>1st of 5</b> over 16 tests</p><p class="small muted">Hops, shortest paths and PageRank on 169,343 papers.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-graph.html"><span class="eyebrow">Graph</span><h3>Against four graph databases</h3><p class="res"><b>1st of 5</b> over 16 tests; 21 against Memgraph's 24 without PageRank</p><p class="small muted">Hops, shortest paths and PageRank on 169,343 papers.</p><span class="more">Read the report →</span></a>
       <a class="report" href="bench-method.html"><span class="eyebrow">Method</span><h3>How we test</h3><p class="res">Equal budgets, checked answers, medians, and an audit of our own runs.</p><p class="small muted">And how to run every benchmark yourself.</p><span class="more">Read the method →</span></a>
     </div>
   </div></section>
@@ -120,7 +120,7 @@
       <h2>How we keep it fair</h2>
     </div>
     <div class="principles">
-      <div><b>The same resources</b><p>Same CPUs, memory, data and vectors for every engine. In the latest runs, engines take turns on the same machines.</p></div>
+      <div><b>The same resources</b><p>Same CPUs, memory, data and vectors for every engine. At 1M every engine ran on 4 November, each lane's engines taking turns on the same machines; an engine whose code or settings changed since, ChloeDB among them, ran again on machines of the same size, and the rankings use its newest run. At 10M each engine had machines of its own.</p></div>
       <div><b>Answers checked</b><p>Recall@10 against exact search, and nDCG@10 where there are judgments.</p></div>
       <div><b>Medians, not the best run</b><p>The median of three passes where there were three.</p></div>
       <div><b>Every gap shown</b><p>A kind an engine cannot run counts as last place, and failed runs are reported.</p></div>
