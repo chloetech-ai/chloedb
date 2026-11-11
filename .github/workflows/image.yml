@@ -7,8 +7,9 @@ name: Image
 # image (the same digest), so that a cluster that follows the old name
 # keeps getting new versions.
 #
-# A push to main that changes ChloeDB or the server publishes it as `latest`
-# and as the commit's full sha. A pull request that changes the Dockerfile
+# A run of CI on main that passed publishes the commit it tested as `latest`
+# and as its full sha: a commit whose CI failed or was cancelled is never
+# published, so a cluster that follows `latest` runs only tested code. A pull request that changes the Dockerfile
 # or this workflow builds both images and publishes nothing, so a broken
 # image shows before it merges. A run started by hand publishes the branch
 # it runs on, as its sha only.
@@ -18,14 +19,10 @@ name: Image
 # hours) and is pushed as `<sha>-amd64` and `<sha>-arm64`; the last job
 # joins them under the tags the nodes pull.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - "chloedb/**"
-      - "chloedb-server/**"
-      - "chloedb-crawl/**"
-      - "chloedb-sheets/**"
-      - ".github/workflows/image.yml"
   pull_request:
     paths:
       - "chloedb-server/deploy/Dockerfile"
@@ -36,7 +33,7 @@ on:
 # A newer push to main replaces an older one still building; each pull
 # request keeps one run.
 concurrency:
-  group: image-${{ github.ref }}
+  group: image-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -47,10 +44,14 @@ env:
   # The old name, published for a release beside the new one.
   OLD_IMAGE: ghcr.io/chloetech-ai/strata-server
   PUSH: ${{ github.event_name != 'pull_request' }}
+  # The commit built: the one CI tested, for a run CI started.
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   build:
     name: image (${{ matrix.arch }})
+    # Only after CI passed (a run CI started), or for a pull request or by hand.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       matrix:
         include:
@@ -65,6 +66,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.SHA }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - if: env.PUSH == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -79,10 +82,10 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           push: ${{ env.PUSH == 'true' }}
           provenance: false
-          tags: ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.arch }}
+          tags: ${{ env.IMAGE }}:${{ env.SHA }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ env.SHA }}
             org.opencontainers.image.description=chloedb-server, its benchmark and engine-compare
           cache-from: type=gha,scope=image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
@@ -105,8 +108,8 @@ jobs:
       - name: One tag for both architectures, under both names
         run: |
           for repo in "$IMAGE" "$OLD_IMAGE"; do
-            tags=(-t "$repo:${{ github.sha }}")
-            if [ "${{ github.event_name }}" = push ]; then tags+=(-t "$repo:latest"); fi
-            docker buildx imagetools create "${tags[@]}" "$IMAGE:${{ github.sha }}-amd64" "$IMAGE:${{ github.sha }}-arm64"
-            docker buildx imagetools inspect "$repo:${{ github.sha }}"
+            tags=(-t "$repo:$SHA")
+            if [ "${{ github.event_name }}" = workflow_run ]; then tags+=(-t "$repo:latest"); fi
+            docker buildx imagetools create "${tags[@]}" "$IMAGE:$SHA-amd64" "$IMAGE:$SHA-arm64"
+            docker buildx imagetools inspect "$repo:$SHA"
           done
