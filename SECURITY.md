@@ -46,7 +46,14 @@ to check a download against.
 - Reading or changing data without a credential on a server that has one.
 - A crafted database file, write-ahead log, model file, import (SQLite,
   CSV, JSON, Parquet) or request that corrupts memory, reads outside its
-  buffers, or makes a server fetch a URL its media allowlist refuses.
+  buffers, or makes a server fetch a URL its media allowlist refuses
+  (the allowlist is checked against the host the server connects to).
+- A query that makes a server read a file outside its models directory,
+  or send one of its environment variables other than a model's key
+  (a provider's, or a `CHLOEDB_MODEL_KEY_*` one) to an endpoint.
+- Stored data that a browser runs as a page of the server's origin (a
+  file served by `GET /v1/media/<sha256>` is a download or an image, a
+  sound or a video, never sniffed, and sandboxed).
 - An app (the crawler, sheets, the app engine) reached through a server
   acting beyond what that server's credential allows.
 - ChloeCtx exposing one project's memory to another, or its inspector
