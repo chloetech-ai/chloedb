@@ -702,6 +702,20 @@ pub fn logged_txns(path: &Path, db_id: u64) -> Result<Vec<u64>> {
     Ok(out)
 }
 
+/// Whether the log at `path` holds zeros where a header's magic and
+/// database id go (its first 16 bytes): what a power loss leaves of a
+/// header that was written but not made durable. `false` for a missing
+/// file or one shorter than that.
+pub fn header_zeroed(path: &Path) -> Result<bool> {
+    let mut b = [0u8; 16];
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(read_up_to(&f, &mut b, 0)? == b.len() && b.iter().all(|&x| x == 0))
+}
+
 /// When the file at `path` is no log of database `db_id` (its header is
 /// damaged, or names another database) but holds intact commit records,
 /// which a log's header damaged after the fact leaves: what is wrong with

@@ -215,9 +215,12 @@ fn a_log_with_a_damaged_header_fails_to_open() {
     let other_db = other.path().join("o.strata");
     let osrc = Arc::new(MapSource::default());
     rows_in_the_log(&other_db, &osrc);
-    let cases: [(&str, Box<dyn Fn(&Path)>); 3] = [
+    let cases: [(&str, Box<dyn Fn(&Path)>); 4] = [
         ("magic", Box::new(|w: &Path| flip(w, 0))),
         ("database id", Box::new(|w: &Path| flip(w, 9))),
+        // With `sync` the header is durable before any record: zeros
+        // there are damage, not a power loss.
+        ("header zeroed", Box::new(|w: &Path| zero_header(w))),
         ("another database's log", Box::new(|w: &Path| {
             std::fs::copy(wal_of(&other_db), w).unwrap();
         })),
@@ -317,6 +320,124 @@ fn a_log_cut_inside_its_header_opens() {
         let db = Database::open(&path, sync_opts(&src)).unwrap();
         assert_eq!(db.snapshot().n_live_docs(), 0);
     }
+}
+
+fn zero_header(wal: &Path) {
+    let f = OpenOptions::new().read(true).write(true).open(wal).unwrap();
+    f.write_all_at(&[0u8; 16], 0).unwrap();
+}
+
+// Without `sync` a log's header is not made durable before the records
+// appended after it, so a power loss can keep a later sector and lose the
+// header's, which reads as zeros (storage_faults found it: such a log was
+// refused as damaged). Those commits were never durable, and a power loss
+// without sync may lose them: opening drops them, keeps a copy and says
+// so. Opened with `sync`, the same log is refused.
+#[test]
+fn a_log_header_lost_to_a_power_loss_without_sync_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    let unsynced = DbOptions { sync: false, ..opts(&src) };
+    {
+        let db = Database::create(&path, schema(), unsynced.clone()).unwrap();
+        insert(&db, &src, 1000..1001);
+        db.flush().unwrap();
+        for k in 0..5u64 {
+            insert(&db, &src, k * 100..k * 100 + 100);
+        }
+    }
+    zero_header(&wal_of(&path));
+    let before = files_of(dir.path());
+    let m = refused(&path, sync_opts(&src), "with sync");
+    assert!(m.contains("damaged header") && m.contains("recover"), "{m}");
+    assert!(files_of(dir.path()) == before);
+    let db = Database::open(&path, unsynced).unwrap();
+    let why = db.damaged().expect("says what it dropped").to_string();
+    assert!(why.contains("header is zeros") && why.contains(".damaged"), "{why}");
+    assert_keys(&db.snapshot(), &keys(1000..1001));
+    assert!(before.iter().any(|(n, b)| n == "db.strata-wal" && *b == std::fs::read(dir.path().join("db.strata-wal.damaged")).unwrap()));
+    db.check().unwrap();
+}
+
+fn other() -> chloedb::Schema {
+    chloedb::Schema::from_json(r#"{"table": "other", "key": "id", "fields": [{"name": "id", "type": "int"}, {"name": "n", "type": "int"}]}"#).unwrap()
+}
+
+// A newer version that made a table and flushed nothing was taken for
+// one whose loss the log covers: falling back to the version before lost
+// the table, and replay skipped the rows logged into it without a word. A
+// change of tables is not logged, so falling back past one is refused.
+#[test]
+fn a_fallback_past_a_change_of_tables_fails_to_open() {
+    let cases: [(&str, fn(&Path)); 2] = [
+        ("newest meta slot", |p| flip(p, newest(p).0 as u64 * PAGE)),
+        ("file one byte short of its page count", |p| {
+            let f = OpenOptions::new().read(true).write(true).open(p).unwrap();
+            let pages = read_metas(&f).unwrap()[0].0.page_count;
+            f.set_len(pages * PAGE - 1).unwrap();
+        }),
+    ];
+    for (what, damage) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        {
+            let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+            insert(&db, &src, 0..300);
+            db.flush().unwrap();
+            db.create_table(other()).unwrap();
+            for i in 0..5i64 {
+                let mut tx = db.begin().unwrap();
+                tx.table("other").unwrap().insert(vec![chloedb::Value::Int(i), chloedb::Value::Int(i)]).unwrap();
+                tx.commit().unwrap();
+            }
+            insert(&db, &src, 600..610);
+        }
+        damage(&path);
+        let before = files_of(dir.path());
+        let m = refused(&path, sync_opts(&src), what);
+        assert!(m.contains("table other created") && m.contains("would lose acknowledged writes") && m.contains("recover"), "{what}: {m}");
+        if !what.starts_with("file") {
+            let m = refused(&path, DbOptions { read_only: true, ..sync_opts(&src) }, what);
+            assert!(m.contains("table other created"), "{what}: {m}");
+        }
+        assert!(files_of(dir.path()) == before, "{what}: opening changed the files");
+        let db = Database::open(&path, DbOptions { recover: true, ..sync_opts(&src) }).unwrap();
+        let why = db.damaged().expect("says what was lost").to_string();
+        assert!(why.contains("table other created") && why.contains(".damaged-"), "{what}: {why}");
+        assert!(db.table("other").is_none(), "{what}");
+        assert_keys(&db.snapshot(), &keys((0..300).chain(600..610)));
+        db.check().unwrap();
+    }
+}
+
+// Falling back past a merge loses nothing (the version before holds the
+// same rows in the segments it merged, and the log the rows since): that
+// still opens.
+#[test]
+fn a_fallback_past_a_merge_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    {
+        let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..300);
+        db.flush().unwrap();
+        insert(&db, &src, 300..600);
+        db.flush().unwrap();
+        for i in 600..610 {
+            insert(&db, &src, i..i + 1);
+        }
+        let stats = db.merge(&chloedb::storage::MergePolicy::compact()).unwrap();
+        assert_eq!((stats.merges, stats.segments_in), (1, 2), "the two segments merged");
+    }
+    flip(&path, newest(&path).0 as u64 * PAGE);
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    let why = db.damaged().expect("says it fell back").to_string();
+    assert!(why.contains("which the write-ahead log completes"), "{why}");
+    assert_keys(&db.snapshot(), &keys(0..610));
+    db.check().unwrap();
 }
 
 fn zero_page(path: &Path, page: u64) {

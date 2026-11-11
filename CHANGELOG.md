@@ -24,7 +24,16 @@ still 0.1.0, and the next release will name its version here.
   it: slot 0 holds a version past the one the database was created with,
   or the log starts past the transactions after that version, or the file
   has pages past it and no log, as a checkpoint has until it is opened.
-  Before, one flipped byte could reopen an older version without a word.
+  A newer version that changed tables (created, altered or dropped one)
+  or began numbering writes is never taken for one the log covers, since
+  none of that is logged: falling back past it lost the table and the rows
+  logged into it. Before, one flipped byte could reopen an older version
+  without a word.
+- Without `sync`, a log whose header is zeros before intact commits is
+  what a power loss leaves when the header never reached the disk: it is
+  dropped (copied to `<wal>.damaged`, and `damaged()` says so), as a power
+  loss without sync may, instead of being refused as damaged. With `sync`
+  the header is durable before any record, so zeros there are refused.
 - `recover` (Rust `DbOptions`, Python `chloedb.open(..., recover=True)`,
   `chloedb-server --recover`) accepts the loss on purpose: it keeps a copy
   of the damaged file as `<path>.damaged-<time>` first, and `damaged()`
