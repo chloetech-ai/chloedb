@@ -956,7 +956,7 @@ impl Database {
             let meta = Meta {
                 format: manifest.format(),
                 db_id,
-                txn: 1,
+                txn: pager::FIRST_TXN,
                 manifest: mext,
                 manifest_crc: crc32fast::hash(&mbytes),
                 freelist: fext,
@@ -6017,8 +6017,9 @@ pub(crate) fn fallback_decision(file: &File, wal_path: &Path, meta: Meta, manife
         newer = Some(wal_txn);
         what.push(format!("version {} skipped: {m}", n.txn));
     }
-    for (slot, m) in pager::damaged_slots(file)? {
-        match m {
+    for d in pager::damaged_slots(file)? {
+        let slot = d.slot;
+        match d.manifest {
             // The older slot: nothing of its version is read.
             Some(m) if m.txn < meta.txn => {}
             Some(m) => {
@@ -6027,13 +6028,48 @@ pub(crate) fn fallback_decision(file: &File, wal_path: &Path, meta: Meta, manife
             }
             None => {
                 newer = Some(newer.flatten());
-                what.push(format!("meta slot {slot} fails its checksum, and the version it names (newer than txn {} or not) cannot be read", meta.txn));
+                let why = match (d.zeroed, slot) {
+                    (true, 0) => "is all zeros, though a database is created with it written",
+                    (true, _) => "is all zeros, though the version in slot 0 shows that a commit wrote it",
+                    (false, _) => "fails its checksum",
+                };
+                what.push(format!("meta slot {slot} {why}, and the version it names (newer than txn {} or not) cannot be read", meta.txn));
             }
         }
     }
-    let Some(newer_wal) = newer else { return Ok(None) };
-    let logged = wal::logged_txns(wal_path, meta.db_id)?;
     let w = manifest.wal_txn;
+    // Read only when a fallback is considered: it reads the logs whole.
+    let mut logged = None;
+    // Slot 1 all zeros beside the version the database was created with
+    // is a database before its first commit, or one a crash cut that
+    // commit short in before it wrote the slot; or a first commit whose
+    // slot was zeroed since. That commit wrote pages past slot 0's
+    // version, which has no free page to reuse, so a file no longer than
+    // slot 0 says has had none. Past that, the logs tell where they can:
+    // the commit emptied the log (a flush) or took a txn after the
+    // transactions logged before it, so a log that holds a transaction
+    // but not the first after slot 0's version follows a version that is
+    // gone. And a commit is made by a writer, which opened the log first,
+    // so those pages beside no log at all (a checkpoint's copy, never
+    // opened) are a version gone too. An empty log leaves it unproven:
+    // opening goes on, as after a crash.
+    if newer.is_none() && meta.txn == pager::FIRST_TXN && file.metadata()?.len() > meta.page_count * PAGE && pager::slot_zeroed(file, 1)? {
+        let l = logged.insert(wal::logged_txns(wal_path, meta.db_id)?);
+        let gap = !l.is_empty() && !fallback_keeps_commits(meta.txn, w, None, l);
+        let no_log = !gap && !wal_path.exists() && wal::sealed_files(wal_path)?.is_empty();
+        if gap || no_log {
+            newer = Some(None);
+            what.push(match gap {
+                true => format!("meta slot 1 is all zeros, though the write-ahead log starts past the transactions that followed the version in slot 0 (txn {}): a commit wrote slot 1 and emptied the log, and the version it named cannot be read", meta.txn),
+                false => format!("meta slot 1 is all zeros, though the file holds pages past the version in slot 0 (txn {}) and there is no write-ahead log, which the writer that wrote them opened first: the version they belong to cannot be read", meta.txn),
+            });
+        }
+    }
+    let Some(newer_wal) = newer else { return Ok(None) };
+    let logged = match logged {
+        Some(l) => l,
+        None => wal::logged_txns(wal_path, meta.db_id)?,
+    };
     let safe = fallback_keeps_commits(meta.txn, w, newer_wal, &logged);
     let first = logged.iter().copied().filter(|&t| t > w).min();
     let lost = match (safe, first) {

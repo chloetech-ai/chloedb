@@ -318,3 +318,146 @@ fn a_log_cut_inside_its_header_opens() {
         assert_eq!(db.snapshot().n_live_docs(), 0);
     }
 }
+
+fn zero_page(path: &Path, page: u64) {
+    let f = OpenOptions::new().read(true).write(true).open(path).unwrap();
+    f.write_all_at(&vec![0u8; PAGE as usize], page * PAGE).unwrap();
+}
+
+/// Each meta slot's txn, `None` where it holds no valid version.
+fn slots(path: &Path) -> [Option<u64>; 2] {
+    let f = std::fs::File::open(path).unwrap();
+    let mut out = [None; 2];
+    for (m, s) in read_metas(&f).unwrap() {
+        out[s] = Some(m.txn);
+    }
+    out
+}
+
+/// Refused read-write and read-only, the files left as they were; then
+/// opened with `recover`, which says what was lost and keeps `want`.
+fn refused_then_recovered(dir: &Path, path: &Path, src: &Arc<MapSource>, what: &str, want: &BTreeSet<String>) {
+    let before = files_of(dir);
+    let m = refused(path, sync_opts(src), what);
+    assert!(m.contains("would lose acknowledged writes") && m.contains("recover") && m.contains(&path.display().to_string()) && m.contains("all zeros"), "{what}: {m}");
+    let m = refused(path, DbOptions { read_only: true, ..sync_opts(src) }, what);
+    assert!(m.contains("would lose acknowledged writes"), "{what}: {m}");
+    assert!(files_of(dir) == before, "{what}: opening changed the files");
+    let db = Database::open(path, DbOptions { recover: true, ..sync_opts(src) }).unwrap();
+    let why = db.damaged().expect("says what was lost").to_string();
+    assert!(why.contains("losing acknowledged writes") && why.contains("all zeros") && why.contains(".damaged-"), "{what}: {why}");
+    assert_keys(&db.snapshot(), want);
+    db.check().unwrap();
+}
+
+// Slot 1 zeroed under the newest version, beside an older one in slot 0:
+// it was taken for a slot no commit had written, and opening fell back to
+// slot 0 and lost the 300 rows the newest version had flushed. Slot 0 past
+// the version the database was created with shows that slot 1 was
+// written. With ten transactions in the log after it, and with none (a
+// clean close).
+#[test]
+fn a_zeroed_slot_1_fails_to_open() {
+    for log in [true, false] {
+        let what = if log { "with a log" } else { "after a clean close" };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        {
+            let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+            for k in 0..3 {
+                insert(&db, &src, k * 300..k * 300 + 300);
+                db.flush().unwrap();
+            }
+            if log {
+                for i in 900..910 {
+                    insert(&db, &src, i..i + 1);
+                }
+            }
+        }
+        let [Some(t0), Some(t1)] = slots(&path) else { panic!("{what}: both slots hold a version") };
+        assert!(t1 > t0 && t0 > 1, "{what}: three flushes leave the newest version in slot 1, slot 0 past creation ({t0}, {t1})");
+        zero_page(&path, 1);
+        let want = keys((0..600).chain(if log { 900..910 } else { 0..0 }));
+        refused_then_recovered(dir.path(), &path, &src, what, &want);
+    }
+}
+
+// The database's first version in slot 1, zeroed, with rows logged after
+// it: slot 0 still holds the version it was created with, which a
+// database before its first commit has too; but the log starts past the
+// transactions that came after that version, because the commit emptied
+// it. Opening took slot 1 for unwritten, replayed the ten rows and lost
+// the 300 the version had flushed.
+#[test]
+fn a_zeroed_first_version_fails_to_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    {
+        let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..300);
+        db.flush().unwrap();
+        for i in 300..310 {
+            insert(&db, &src, i..i + 1);
+        }
+    }
+    assert!(matches!(slots(&path), [Some(1), Some(_)]));
+    zero_page(&path, 1);
+    refused_then_recovered(dir.path(), &path, &src, "first version zeroed", &keys(300..310));
+}
+
+// A checkpoint of one table is the version it was created with and one
+// commit, in slot 1, and has no log until it is opened. Slot 1 zeroed
+// opened it empty; the pages past slot 0's version, beside no log, show
+// that a commit made them.
+#[test]
+fn a_checkpoint_with_its_version_zeroed_fails_to_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    let backup = dir.path().join("backup.strata");
+    {
+        let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..300);
+        db.checkpoint(&backup, &Default::default()).unwrap();
+    }
+    assert!(matches!(slots(&backup), [Some(1), Some(_)]) && !wal_of(&backup).exists());
+    zero_page(&backup, 1);
+    refused_then_recovered(dir.path(), &backup, &src, "checkpoint", &keys(0..0));
+}
+
+// A crash in a database's first commit, after its pages and before its
+// meta slot, leaves slot 1 unwritten and the file longer than slot 0
+// says: that opens as before, with the log's rows (a flush) or none (a
+// change of tables, which is not logged), and nothing is damaged. A first
+// version zeroed after a clean close looks the same, and opens the same
+// way: an empty log cannot tell the two apart.
+#[test]
+fn a_crash_in_the_first_commit_opens() {
+    for logged in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        {
+            let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+            if logged {
+                insert(&db, &src, 0..300);
+            }
+        }
+        // The pages the commit wrote before it crashed.
+        let f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let end = f.metadata().unwrap().len();
+        f.write_all_at(&vec![0x5Au8; 3 * PAGE as usize], end).unwrap();
+        drop(f);
+        let want = keys(0..if logged { 300 } else { 0 });
+        let ro = Database::open(&path, DbOptions { read_only: true, ..sync_opts(&src) }).unwrap();
+        assert_keys(&ro.snapshot(), &want);
+        assert_eq!(ro.damaged(), None, "logged {logged}");
+        drop(ro);
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        assert_keys(&db.snapshot(), &want);
+        assert_eq!(db.damaged(), None, "logged {logged}");
+        db.check().unwrap();
+    }
+}

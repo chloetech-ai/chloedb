@@ -144,27 +144,56 @@ pub fn read_metas(file: &File) -> Result<Vec<(Meta, usize)>> {
     Ok(metas)
 }
 
-/// The meta slots that hold something (not all zeros, as a slot no commit
-/// has written yet is) but fail their checksum, and slot 0 when it is all
-/// zeros (it is written at creation), with the manifest their
-/// fields name when it can be read and passes its own checksum: then the
-/// slot's version is known in spite of the damage (its manifest's txn and
-/// `wal_txn`). Bytes past the file's end count as zeros.
-pub fn damaged_slots(file: &File) -> Result<Vec<(usize, Option<crate::storage::manifest::Manifest>)>> {
+/// The txn of the version a database is created with, in slot 0. Every
+/// later version takes a larger txn and the other slot than the one
+/// before it, so the first commit after creation writes slot 1, the next
+/// one slot 0 again: a valid slot 0 past this txn means that slot 1 has
+/// been written.
+pub const FIRST_TXN: u64 = 1;
+
+/// A meta slot that holds no valid version though one was written there
+/// ([`damaged_slots`]).
+#[derive(Debug)]
+pub struct DamagedSlot {
+    pub slot: usize,
+    /// Whether it is all zeros (bytes past the file's end count as zeros).
+    pub zeroed: bool,
+    /// The manifest its fields name, when it can be read and passes its
+    /// own checksum: then the slot's version is known in spite of the
+    /// damage (its manifest's txn and `wal_txn`).
+    pub manifest: Option<crate::storage::manifest::Manifest>,
+}
+
+/// The meta slots that fail their checksum though a version was written
+/// there. A slot that holds something (not all zeros) and fails its
+/// checksum is one; so is an all-zero slot 0, which is written when a
+/// database is created, and an all-zero slot 1 beside a slot 0 that
+/// holds a version past [`FIRST_TXN`], since slot 0 is written again only
+/// after slot 1 was. Bytes past the file's end count as zeros.
+///
+/// An all-zero slot 1 beside the version a database was created with is
+/// left out: it is what the database has until its first commit, and what
+/// a crash during that commit leaves before it writes the slot. Only the
+/// logs can tell that from a first version whose slot was zeroed
+/// ([`crate::storage::db`]'s `fallback_decision`).
+pub fn damaged_slots(file: &File) -> Result<Vec<DamagedSlot>> {
     let len = file.metadata()?.len();
-    let mut out = Vec::new();
+    let mut pages = Vec::with_capacity(2);
     for slot in 0..2 {
         let mut page = vec![0u8; PAGE as usize];
         let n = read_up_to(file, &mut page, slot as u64 * PAGE)?;
-        // An unwritten slot is all zeros, which only slot 1 can be: a
-        // database is created with slot 0 written, and each version
-        // after takes the other slot. A slot 0 of zeros (a zeroed page,
-        // a hole a crash left) is damage, and may have held the newest
-        // version.
-        let zeros = page[..n].iter().all(|&b| b == 0);
-        if (zeros && slot == 1) || (!zeros && matches!(Meta::decode(&page[..n]), Ok(Some(_)) | Err(_))) {
+        page.truncate(n);
+        pages.push(page);
+    }
+    let slot1_written = matches!(Meta::decode(&pages[0]), Ok(Some(m)) if m.txn > FIRST_TXN);
+    let mut out = Vec::new();
+    for (slot, page) in pages.iter().enumerate() {
+        let zeros = page.iter().all(|&b| b == 0);
+        if (zeros && slot == 1 && !slot1_written) || (!zeros && matches!(Meta::decode(page), Ok(Some(_)) | Err(_))) {
             continue;
         }
+        let mut page = page.clone();
+        page.resize(PAGE as usize, 0);
         let u32_at = |o: usize| u32::from_le_bytes(page[o..o + 4].try_into().unwrap());
         let u64_at = |o: usize| u64::from_le_bytes(page[o..o + 8].try_into().unwrap());
         let e = Extent { page: u64_at(32), len: u64_at(40) };
@@ -174,9 +203,17 @@ pub fn damaged_slots(file: &File) -> Result<Vec<(usize, Option<crate::storage::m
             .then(|| read_extent(file, e, u32_at(48)).ok())
             .flatten()
             .and_then(|b| crate::storage::manifest::Manifest::decode(&b).ok());
-        out.push((slot, manifest));
+        out.push(DamagedSlot { slot, zeroed: zeros, manifest });
     }
     Ok(out)
+}
+
+/// Whether meta slot `slot` is all zeros (bytes past the file's end count
+/// as zeros).
+pub fn slot_zeroed(file: &File, slot: usize) -> Result<bool> {
+    let mut page = vec![0u8; PAGE as usize];
+    let n = read_up_to(file, &mut page, slot as u64 * PAGE)?;
+    Ok(page[..n].iter().all(|&b| b == 0))
 }
 
 /// Writes `meta` into `slot`.
