@@ -8,17 +8,17 @@ New to it? [Build an app](build-an-app.md) is one page from an empty server to s
 
 ## Run it
 
-A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each [release](https://github.com/chloetech-ai/strata/releases?q=chloedb-server) has one archive a platform: `linux-x86_64` and `linux-aarch64` (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), `macos-arm64` and `macos-x86_64` (macOS 11 or later), each with its `.sha256` beside it.
+A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server [release](https://github.com/chloetech-ai/strata/releases) (so far one, [0.1.0](https://github.com/chloetech-ai/strata/releases/tag/strata-server-v0.1.0)) has one archive a platform: `linux-x86_64` and `linux-aarch64` (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), `macos-arm64` and `macos-x86_64` (macOS 11 or later), each with its `.sha256` beside it.
 
 ```sh
 v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
 tar xzf strata-server-$p.tar.gz
-strata-server-$p/chloedb-server --demo 20000 --db products.strata   # a demo catalogue
+strata-server-$p/strata-server --demo 20000 --db products.strata   # a demo catalogue
 # open http://127.0.0.1:7700
 ```
 
-macOS keeps an archive a browser downloaded from running until `xattr -d com.apple.quarantine strata-server-$p/chloedb-server`; `curl` sets no such mark. From source (Rust stable and a C compiler; the first build takes several minutes):
+Release 0.1.0 predates the rename: its archive holds the program as `strata-server` only. Later releases are tagged `chloedb-server-v<version>`, with archives `chloedb-server-$p.tar.gz` that hold `chloedb-server` and `strata-server` beside it. macOS keeps an archive a browser downloaded from running until `xattr -d com.apple.quarantine strata-server-$p/strata-server`; `curl` sets no such mark. From source (Rust stable and a C compiler; the first build takes several minutes):
 
 ```sh
 cd chloedb-server && cargo build --release
@@ -375,7 +375,7 @@ A write's images are decoded (JPEG, PNG, WebP, GIF, BMP) and embedded with the v
 A query embeds an image file with the model's image tower, `{"embed": {"image": "<base64>"}, "field": "emb"}`, and a text with its text tower, `{"embed": "a dog on a beach", "field": "emb"}`; the image's vector and the caption's are in one space, so either finds images:
 
 ```sh
-curl -s localhost:7700/v1/query -d '{"sql": "SELECT id FROM photos ORDER BY similarity(emb, :q) DESC LIMIT 10",
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"sql": "SELECT id FROM photos ORDER BY similarity(emb, :q) DESC LIMIT 10",
   "params": {"q": {"embed": "a dog on a beach", "field": "emb"}}}'
 ```
 
@@ -591,13 +591,13 @@ A server has one writer per database, a thread that applies write requests in th
 A table with a primary key is also a key-value store. `GET /v1/kv/TABLE/KEY` reads one row by its key without SQL, `POST /v1/kv/get` reads up to 10,000 at once (an MGET), and `PUT` and `DELETE` on `/v1/kv/TABLE/KEY` write and delete one; gRPC has `Get` for the reads. A row comes back as `SELECT *` gives it (the stored columns but vectors, typed as a query types them), with the sequence number of the write that last changed it on a server started with `--seq-no`, which a `PUT` or `DELETE` can pass back as `if_seq_no` ([conditional writes](#conditional-writes)). An `INT` key in a path is its digits.
 
 ```bash
-curl -s -X PUT localhost:7700/v1/kv/sessions/s1 -d '{"usr": "u7", "until": "2026-11-02T12:00:00Z"}'
+curl -s -X PUT localhost:7700/v1/kv/sessions/s1 -H 'content-type: application/json' -d '{"usr": "u7", "until": "2026-11-02T12:00:00Z"}'
 # {"written": 1, "seq_no": 41, "took_ms": 0.9}
 curl -s localhost:7700/v1/kv/sessions/s1
 # {"table": "sessions", "key": "s1", "found": true, "row": {"id": "s1", "usr": "u7", "until": "2026-11-02T12:00:00Z"}, "seq_no": 41, "took_ms": 0.1}
-curl -s localhost:7700/v1/kv/get -d '{"table": "sessions", "keys": ["s1", "s2"]}'
+curl -s localhost:7700/v1/kv/get -H 'content-type: application/json' -d '{"table": "sessions", "keys": ["s1", "s2"]}'
 # {"table": "sessions", "columns": ["id", "usr", "until"], "rows": [{"id": "s1", ...}, null], "seq_nos": [41, null], "took_ms": 0.1}
-curl -s localhost:7700/v1/kv/get -d '{"table": "sessions", "keys": ["s1", "s2"], "columns": ["usr"]}'
+curl -s localhost:7700/v1/kv/get -H 'content-type: application/json' -d '{"table": "sessions", "keys": ["s1", "s2"], "columns": ["usr"]}'
 # {"table": "sessions", "columns": ["usr"], "rows": [{"usr": "u7"}, null], ...}
 ```
 
@@ -914,7 +914,7 @@ chloedb-server --db s0.strata --seq-no --grpc 10.0.0.1:7701 --failover-after-ms 
 **By hand.** Make a replica its shard's primary through a coordinator, which asks the shard's copies again so that writes go to it at once:
 
 ```sh
-curl -X POST -H "authorization: Bearer $CHLOEDB_TOKEN" http://coordinator:7700/v1/admin/shards/0/promote -d '{"url": "http://10.0.0.2:7701"}'
+curl -X POST -H "authorization: Bearer $CHLOEDB_TOKEN" http://coordinator:7700/v1/admin/shards/0/promote -H 'content-type: application/json' -d '{"url": "http://10.0.0.2:7701"}'
 ```
 
 or on the replica itself, `chloedb-server promote http://127.0.0.1:7720` (`POST /v1/admin/promote {replicas?, write_acks?, force?}`). Either way the replica asks for the votes of a majority of its shard's copies (the servers its cluster map names, or the `replicas` named), as a handover: a primary that serves grants it, steps down and follows the new primary, and replicas grant it although their primary calls. A copy refuses its vote to a replica missing a transaction it holds, and under writes the primary holds one or two the replica has not applied yet, so the replica catches up first: a primary asked whether it would vote in a handover takes no writes from then until it answers the vote, for 1 s at most (503, not applied, which a coordinator sends again, to the new primary once elected). It asks that primary for its vote before the other copies, and answers none of its calls until it voted: a copy that voted would tell the primary the new term in its answer, and a primary that knows a term grants no vote in it (it would be fenced and not step down). A write the old primary took before it voted but applied only after (it waited for the writer) is answered 409, in doubt: the new primary does not hold it. With `--failover-after-ms`, a primary that did not hear of the handover may serve reads under its lease for a moment more, so unless every copy that said it was the primary voted, the new primary takes writes only once that lease has run out (`writes_in_ms` in the answer, the failover delay at most; 503 until then). The answer says what each copy said (`votes`), and is 409 when the replica loses, which names the copies that refused and why. With no cluster map and no `replicas` named, the copies are the replica's own `--replicas`. The new primary calls each copy with the cluster's token, so a promotion asked for with an API key may name only the copies the replica knows (those its cluster map names for its shard, and its `--replicas`), and is refused (403) before any call otherwise; the token's holder may name any.
@@ -1318,9 +1318,9 @@ A query may reach at most `--max-result-window` rows (10,000), as Elasticsearch'
 A scroll reads a query's answer a page at a time, every page from the version of the database the first read, as Elasticsearch's scroll does; the window then caps each page, not the whole answer. `POST /v1/query` with `page_size` answers the first page, at most `page_size` rows and at most `--max-result-window`, and, while rows are left, a `cursor`. The cursor alone asks for the next page, `{"cursor": "..."}` (with `format`, `objects`, `keep_alive_ms` or `timeout_ms`, and nothing of the query's), until the last page, which answers no cursor. With `"format": "arrow"` each page is an Arrow stream and the cursor comes in the `x-chloedb-cursor` header.
 
 ```bash
-curl -s localhost:7700/v1/query -d '{"sql": "SELECT id, price FROM products WHERE stock > 0", "page_size": 10000}'
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"sql": "SELECT id, price FROM products WHERE stock > 0", "page_size": 10000}'
 # {"columns": ["id", "price"], "rows": [...10,000 rows...], "cursor": "6f1c...", ...}
-curl -s localhost:7700/v1/query -d '{"cursor": "6f1c..."}'
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"cursor": "6f1c..."}'
 # the next 10,000; the last page has no "cursor"
 ```
 
@@ -1656,7 +1656,7 @@ The model is a setting: `--model` sets the server's default (`claude-haiku-5-5`)
 `POST /v1/judge` grades rows of a table against a query, 0 to 3, the scale of TREC's judgments and of the relevance lab's grades, with UMBRELA's prompt (Upadhyay et al., 2024: the open reproduction of the prompt with which Thomas et al., SIGIR 2024, found an LLM agreeing with Bing's searchers as well as its human labellers did, and the one TREC 2024's RAG track judged with). Each row is its own request, so a grade does not depend on the other rows or their order; the passage is the row's stored `TEXT` fields (or the `fields` named), each on a line after its name and cut at 4,000 characters. Up to 200 rows a request, eight at a time; an answer without a grade is asked once more for one, and a row still without one, or not in the table, gets `grade: null` and an `error`. The model and key are the agent's.
 
 ```sh
-curl -s localhost:7700/v1/judge -d '{"query": "mrna vaccine side effects", "keys": ["d17", "d3", "d240"]}'
+curl -s localhost:7700/v1/judge -H 'content-type: application/json' -d '{"query": "mrna vaccine side effects", "keys": ["d17", "d3", "d240"]}'
 # {"grades": [{"key": "d17", "grade": 3}, {"key": "d3", "grade": 1}, {"key": "d240", "grade": 0}],
 #  "model": "claude-haiku-5-5", "prompt": "umbrela", "fields": ["title", "body"], "usage": {"input_tokens": 2310, "output_tokens": 21}, "took_ms": 1840.2}
 ```
@@ -1670,13 +1670,13 @@ On 25 TREC-COVID queries, pooling the top 10 of BM25 and of dense retrieval (464
 It changes nothing. What it would do is a proposal: a contain rule (limit or refuse a statement or a key for a while), removing one, cancelling a running query, or silencing an alert. Each is kept for an admin to approve or reject, and can be approved for an hour; after that it is `expired`, so an action seen fit then is not applied to a cluster that has moved on. Approving one makes its request with the approver's key and the proposal's reason (`x-chloedb-reason: on-call proposal p3: <why>`), so the audit log and the contain rule name the admin who approved it.
 
 ```sh
-curl -s localhost:7700/v1/admin/oncall -H "authorization: Bearer $ADMIN_KEY" -d '{"alert": "p99_high", "note": true}'
+curl -s localhost:7700/v1/admin/oncall -H "authorization: Bearer $ADMIN_KEY" -H 'content-type: application/json' -d '{"alert": "p99_high", "note": true}'
 # {"run": "oc1762557300112", "answer": "Summary: one statement holds every core ...\nProposed actions: p1 ...",
 #  "proposals": [{"id": "p1", "action": "contain", "what": "limit statement 9f3c... to 2 at once for 15 min", "why": "...", "state": "pending", ...}],
 #  "steps": [{"tool": "alerts", "input": {"rule": "p99_high"}, "ok": true, "took_ms": 1.9}, ...], "usage": {...}}
 curl -s localhost:7700/v1/admin/oncall/proposals?state=pending -H "authorization: Bearer $ADMIN_KEY"
 curl -s -X POST localhost:7700/v1/admin/oncall/proposals/p1/approve -H "authorization: Bearer $ADMIN_KEY"
-curl -s -X POST localhost:7700/v1/admin/oncall/proposals/p1/reject -H "authorization: Bearer $ADMIN_KEY" -d '{"reason": "a deploy is rolling back"}'
+curl -s -X POST localhost:7700/v1/admin/oncall/proposals/p1/reject -H "authorization: Bearer $ADMIN_KEY" -H 'content-type: application/json' -d '{"reason": "a deploy is rolling back"}'
 ```
 
 The report comes as a summary, the evidence (what each tool showed), the likely cause and how sure the model is, the proposals, and what to watch. `note: true` also writes it as a note on the events timeline. A run takes at most `max_steps` model calls (12 by default, 30 at most); the model, effort and key are the agent's. Approval is an admin's, as each action's route is: there is no narrower key for it yet.

@@ -206,8 +206,8 @@ the cluster answers queries and takes writes:
 # By hand: name it, as any change of the spec
 kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>"}}'
 # or through a coordinator: the plan first, then the upgrade (admin scope, audited)
-curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>", "plan": true}' http://127.0.0.1:7700/v1/admin/kube/upgrade
-curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>"}' http://127.0.0.1:7700/v1/admin/kube/upgrade
+curl -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>", "plan": true}' http://127.0.0.1:7700/v1/admin/kube/upgrade
+curl -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"image": "ghcr.io/chloetech-ai/chloedb-server:<sha>"}' http://127.0.0.1:7700/v1/admin/kube/upgrade
 # Or let the upgrader follow the tag: suggest shows a new image, on rolls it out
 kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/chloedb-server:latest", "upgrade": {"mode": "on"}}}'
 ```

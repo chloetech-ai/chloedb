@@ -55,7 +55,7 @@ The pieces, one at a time:
 python3 chloedb-server/demo/nearby/places.py --city nyc --out ~/nearby/nyc.jsonl
 chloedb-server import --db ~/nearby/nyc.strata --schema chloedb-server/demo/nearby/schema.json ~/nearby/nyc.jsonl
 chloedb-server --db ~/nearby/nyc.strata --slices ~/nearby/slices &
-curl -X POST localhost:7700/v1/admin/slices -d '{"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -73.98}'
+curl -X POST localhost:7700/v1/admin/slices -H 'content-type: application/json' -d '{"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -73.98}'
 chloedb-nearby --cloud http://127.0.0.1:7700 --lat 40.7 --lon -73.98
 ```
 

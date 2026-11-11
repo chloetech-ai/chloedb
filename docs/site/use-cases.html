@@ -66,10 +66,10 @@ ORDER BY rrf(
     <div class="uc2">
       <div><span class="ico cols"><svg viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M8 9V7a4 4 0 0 1 8 0v2"/></svg></span><h2>Sessions, carts and caches</h2><p>Rows read by key on every request, in the same database, each with its own time to live.</p>
         <dl class="kv"><dt>Replaces</dt><dd>A key-value store or cache beside the database</dd><dt>Measured</dt><dd>21 µs a read inside an app; 0.99 ms through a coordinator at 10M (<a href="bench-10m.html#behind">behind Postgres</a>)</dd></dl></div>
-      <pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/sessions/s1 \
+      <pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/sessions/s1 -H 'content-type: application/json' \
   -d '{"usr": "u7", "until": "2026-11-02T12:00:00Z"}'
 curl -s localhost:7700/v1/kv/sessions/s1
-curl -s localhost:7700/v1/kv/get \
+curl -s localhost:7700/v1/kv/get -H 'content-type: application/json' \
   -d '{"table": "sessions", "keys": ["s1", "s2"]}'</pre>
     </div>
   </div></section>
@@ -111,7 +111,7 @@ ORDER BY rrf(bm25(caption, :q), similarity(emb, :v)) DESC LIMIT 12;</pre>
   --source 'postgres://strata:...@db.example:5432/shop' \
   --target http://localhost:7700 --name shop
 
-curl -s localhost:7700/v1/sql -d '{"params": {"q": "trail shoes"},
+curl -s localhost:7700/v1/sql -H 'content-type: application/json' -d '{"params": {"q": "trail shoes"},
   "sql": "SELECT id, title FROM products WHERE MATCH(title, :q) LIMIT 10"}'</pre>
     </div>
   </div></section>

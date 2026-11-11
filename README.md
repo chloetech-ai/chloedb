@@ -90,21 +90,16 @@ Everything is built from source and needs Rust (stable) and a C compiler.
 git clone https://github.com/chloetech-ai/strata && cd strata
 ```
 
-ChloeDB from its shell, which prints the plan it chose:
-
-```sh
-cd chloedb && cargo build --release
-target/release/chloedb db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-```
-
 ChloeDB as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/chloedb/server.md#run-it)):
 
 ```sh
 v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
 tar xzf strata-server-$p.tar.gz
-strata-server-$p/chloedb-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+strata-server-$p/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
 ```
+
+Release 0.1.0 predates the rename, so its archive holds the program as `strata-server`. Later releases are tagged `chloedb-server-v<version>`, with archives `chloedb-server-$p.tar.gz` that hold `chloedb-server` and `strata-server` beside it.
 
 Or built from source:
 
@@ -118,6 +113,13 @@ Or from the published image (a new `--db` starts with no tables; add `--demo 200
 ```sh
 docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v strata:/data \
   ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.strata --listen 0.0.0.0:7700
+```
+
+ChloeDB from its shell, which prints the plan it chose. The shell opens a database that exists and does not create one; here it reads the `products.strata` a server above made with `--demo` (`../products.strata` after the prebuilt server, `../chloedb-server/products.strata` after the source build; beside a running server it opens the file read-only):
+
+```sh
+cd chloedb && cargo build --release
+target/release/chloedb ../products.strata "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
 ```
 
 ChloeDB from Python ([more](docs/chloedb/python.md)):
