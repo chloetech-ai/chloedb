@@ -108,6 +108,9 @@ impl Remote {
     /// POSTs `body` to `route`; the answer's JSON, or an error with the
     /// server's message.
     fn post(&self, route: &str, body: &Json) -> Result<Json> {
+        if self.token.as_deref().is_some_and(is_anthropic_key) {
+            return Err(err(format!("the sync's key is an Anthropic API key (sk-ant-...), not a ChloeDB token or API key (sk_<id>_<secret>): it was not sent to {}. Set the variable or sync.token to the server's key", self.url)));
+        }
         let mut cmd = Command::new("curl");
         cmd.args(["-sS", "-m", &TIMEOUT_SECS.to_string(), "-X", "POST", "-H", "content-type: application/json", "-H", "x-chloedb-client: chloectx-sync", "--data-binary", "@-", "-w", "\n%{http_code}"]);
         let header = match &self.token {
@@ -314,6 +317,12 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
     Ok(got)
 }
 
+/// Whether `t` is an Anthropic API key, which a ChloeDB server never takes:
+/// a variable set to the wrong key would send it to the sync's server.
+fn is_anthropic_key(t: &str) -> bool {
+    t.trim_start().starts_with("sk-ant-")
+}
+
 fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
@@ -321,6 +330,14 @@ fn fnv(s: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_anthropic_key_is_never_sent() {
+        let r = Remote { url: "http://127.0.0.1:9".into(), token: Some("sk-ant-api03-xxxx".into()), header_dir: std::env::temp_dir() };
+        let e = r.post("/v1/query", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("Anthropic API key") && !e.contains("xxxx"), "{e}");
+        assert!(!is_anthropic_key("sk_abc_def") && !is_anthropic_key("a-cluster-token"));
+    }
 
     #[test]
     fn records_round_trip_through_the_servers_row() {
