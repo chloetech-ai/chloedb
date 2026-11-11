@@ -11,12 +11,15 @@
 //! every checkout of it, under any folder or an old name, shares one memory.
 //!
 //! What is sent is what the store holds: text from the sessions it
-//! recorded, which can include whatever passed through them. The server
+//! recorded, which can include whatever passed through them. It is
+//! redacted again as it is sent and as it is pulled ([`crate::redact`]),
+//! for stores written before redaction knew a secret's shape. The server
 //! should take it over HTTPS and need a key (an API key with the `write`
 //! scope is enough once the table exists; creating it needs `admin`).
 //!
 //! Records retagged or forgotten after they were pushed are not sent
-//! again: the server keeps the version it was sent first.
+//! again: the server keeps the version it was sent first. Records that
+//! `chloectx redact` rewrites are ([`push_records`]).
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -237,8 +240,10 @@ pub fn save_state(store_dir: &Path, s: &SyncState) {
     }
 }
 
-/// A record as the server's row.
+/// A record as the server's row, redacted.
 fn remote_doc(project: &str, r: &Record) -> Json {
+    let mut r = r.clone();
+    crate::redact::redact_record(&mut r);
     json!({
         "id": format!("{project}:{}", r.id),
         "project": project,
@@ -318,6 +323,17 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
     Ok(sent)
 }
 
+/// Sends `recs` again, replacing the server's rows with the same ids (the
+/// records `chloectx redact` rewrote); how many.
+pub fn push_records(remote: &Remote, project: &str, recs: &[Record]) -> Result<usize> {
+    for batch in recs.chunks(BATCH) {
+        let ops: Vec<Json> = batch.iter().map(|r| json!({"op": "upsert", "table": TABLE, "doc": remote_doc(project, r)})).collect();
+        let ids = batch.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(",");
+        remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-redact-{:016x}-{:016x}-{}", fnv(project), fnv(&ids), crate::now()) }))?;
+    }
+    Ok(recs.len())
+}
+
 /// [`pull_once`]; a server without the table holds nothing to pull.
 pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
     match pull_once(remote, store, project, st) {
@@ -334,7 +350,10 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
     loop {
         let rows = remote.rows(&format!("SELECT {REMOTE_COLUMNS} FROM {TABLE} WHERE project = :p AND seq > :s ORDER BY seq ASC LIMIT {BATCH}"), json!({ "p": project, "s": after }))?;
         let n = rows.len();
-        let recs: Vec<Record> = rows.iter().filter_map(|r| remote_record(r)).collect();
+        let mut recs: Vec<Record> = rows.iter().filter_map(|r| remote_record(r)).collect();
+        for r in &mut recs {
+            crate::redact::redact_record(r);
+        }
         let Some(top) = rows.iter().filter_map(|r| r.get(5).and_then(|v| v.as_i64())).max() else { break };
         let ids: Vec<String> = recs.iter().map(|r| r.id.clone()).collect();
         let have: std::collections::HashSet<String> = store.get(&ids)?.into_iter().map(|r| r.id).collect();
@@ -410,5 +429,29 @@ mod tests {
         assert_eq!(back.kind, r.kind);
         assert_eq!(back.links, r.links);
         assert_eq!((back.seq, back.text.as_str(), back.ctx.as_str()), (7, "use ChloeDB", "Turn 3"));
+    }
+
+    #[test]
+    fn what_is_sent_is_redacted_again() {
+        // As a store written before redaction knew these shapes holds them.
+        let pw = ["correct", "horse", "battery", "42"].join("-");
+        let key = format!("sk_{}_{}", "9f8e7d6c5b4a3f2e", "0123456789abcdef".repeat(3));
+        let r = Record {
+            id: "abcd1234:8".into(),
+            session: "abcd1234-s".into(),
+            kind: Kind::ToolResult,
+            tag: "Bash".into(),
+            turn: 3,
+            seq: 8,
+            ts: 1_700_000_000,
+            importance: 0.3,
+            files: String::new(),
+            text: format!("$ env\nDB_PASSWORD={pw}"),
+            ctx: format!("Turn 3 request: use the key {key}"),
+            links: Vec::new(),
+        };
+        let d = remote_doc("p", &r).to_string();
+        assert!(!d.contains(&pw) && !d.contains(&key), "{d}");
+        assert!(d.contains("DB_PASSWORD=[REDACTED:password]") && d.contains("use the key [REDACTED:chloedb-key]"), "{d}");
     }
 }

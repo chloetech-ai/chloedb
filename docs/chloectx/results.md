@@ -401,7 +401,7 @@ On the changed build, the retrieval benchmarks return the same ranking as `main`
 - **The session probes were written after seeing the answers.** They favour distinctive terms, which is why the vague set exists.
 - **The gate was fitted on chat data,** and its weights depend on the embedder.
 - **The static embedder trades quality for speed.** BGE is better on paraphrases but costs about 50 ms per record.
-- **Redaction is pattern-based.** It catches common key and token formats, not every secret.
+- **Redaction is pattern-based.** It catches the common key and token formats and values assigned to names that say they are secret, not every secret.
 - **One small model everywhere.** In the memory-system comparison the agent, every memory system's own calls, and the query engine are all Haiku; the readers and judges on every benchmark are too. A stronger agent may need memory less, or use it better.
 - **Lanes of the same code differ by a few runs.** Each lane records its own history and writes its own notes, so three lanes of the new code solved 196 to 201 of 208 runs. Differences of that size between lanes are noise, which is why the comparison pools tasks and reports tests within them.
 - **One of the four comparison projects was written alongside the changes.** Bakehouse was written to exercise what they target (revised decisions, code that changed under a note, requirements a task implies); stockroom, slotwise and kestrel are older. Results are reported per project for that reason.

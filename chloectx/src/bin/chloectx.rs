@@ -9,6 +9,7 @@
 //!   chloectx search "query" | sql "SELECT ..." | stats | briefing | stop [--all]
 //!   chloectx remember <kind> "text"
 //!   chloectx ingest-transcript <file.jsonl>        back-fill from a Claude Code transcript
+//!   chloectx redact [--all] [--dry-run]            redact secrets a store recorded before
 //!   chloectx fetch-model [static|bert]             download the embedding model
 //!   chloectx sync setup --url URL [--token-stdin]  copy the memory to a ChloeDB server (status|push|pull)
 //!   chloectx doctor                                check the install and the project's store
@@ -110,6 +111,17 @@ enum Cmd {
     Distill,
     /// Merge related notes now (it also runs on its own every few turns).
     Consolidate,
+    /// Redact the secrets a store recorded before redaction knew their shape:
+    /// rewrites the project's records (with --all, every store's), session
+    /// state and event log, compacts the store, and replaces the records on
+    /// the sync's server. Prints how many changed, never the secrets.
+    Redact {
+        #[arg(long)]
+        all: bool,
+        /// Count what would change, and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Stop the daemon (with --all, every running daemon, e.g. after an upgrade).
     Stop {
         #[arg(long)]
@@ -198,6 +210,24 @@ fn send(project: &std::path::Path, req: Json, secs: u64) -> Json {
             std::process::exit(1);
         }
     }
+}
+
+/// `chloectx redact` for one store: the daemon rewrites the records, then
+/// (when it changed any) the file is replaced by a copy without the pages
+/// their old versions were on. What it did, without the secrets.
+fn redact_store(dir: &std::path::Path, project: &str, dry_run: bool) -> Result<String, String> {
+    let r = daemon::request(dir, project, &json!({"op": "redact", "dry_run": dry_run}), Duration::from_secs(6 * 3600)).map_err(|e| e.to_string())?;
+    if let Some(e) = r.get("error") {
+        return Err(e.as_str().unwrap_or("error").to_string());
+    }
+    let mut out = r["text"].as_str().unwrap_or("").to_string();
+    if !dry_run && r["changed"].as_u64().unwrap_or(0) > 0 {
+        match daemon::rewrite_file(dir, Duration::from_secs(600)) {
+            Ok(f) => out += &format!(" The store's file was rewritten without the old versions ({} to {} bytes).", f["bytes_before"], f["bytes_after"]),
+            Err(e) => return Err(format!("{out} Rewriting the store's file failed, so the old versions may stay in its free pages until they are reused: {e}")),
+        }
+    }
+    Ok(out)
 }
 
 fn text(r: &Json) {
@@ -316,6 +346,28 @@ fn main() {
             let home = home.map(|h| h.canonicalize().unwrap_or(h)).unwrap_or_else(paths::home);
             if let Err(e) = ui::run(ui::Options { host, port, home, open: !no_open, project: project.clone() }) {
                 eprintln!("chloectx ui: {e}");
+                std::process::exit(1);
+            }
+        }
+        Cmd::Redact { all, dry_run } => {
+            let stores: Vec<(PathBuf, String, String)> = if all {
+                ui::list_stores(&paths::home()).into_iter().map(|s| (s.dir, s.project.clone().unwrap_or_default(), s.project.unwrap_or(s.id))).collect()
+            } else {
+                let p = project.to_string_lossy().into_owned();
+                vec![(paths::store_dir(&project), p.clone(), p)]
+            };
+            let mut failed = 0;
+            for (dir, proj, name) in stores {
+                let prefix = if all { format!("{name}: ") } else { String::new() };
+                match redact_store(&dir, &proj, dry_run) {
+                    Ok(t) => println!("{prefix}{t}"),
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("chloectx redact: {prefix}{e}");
+                    }
+                }
+            }
+            if failed > 0 {
                 std::process::exit(1);
             }
         }

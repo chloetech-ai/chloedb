@@ -266,8 +266,10 @@ pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<
                     .collect(),
                 None => vec![(s("old_string"), s("new_string"))],
             };
+            // Redacted before they are cut, so that no part of a secret the
+            // cut leaves too short to recognise is kept.
             for (old, new) in edits {
-                let text = redact(&format!("Edit {path}: replaced\n{}\nwith\n{}", clip(&old, 300), clip(&new, 1100)));
+                let text = format!("Edit {path}: replaced\n{}\nwith\n{}", clip(&redact(&old), 300), clip(&redact(&new), 1100));
                 d.push(Draft::new(Kind::ToolCall, text).tag(tool).files(files.clone()));
             }
             if failed {
@@ -278,7 +280,7 @@ pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<
         }
         "Write" => {
             let content = s("content");
-            let text = redact(&format!("Write {path} ({} characters):\n{}", content.len(), clip(&content, 1200)));
+            let text = format!("Write {path} ({} characters):\n{}", content.len(), clip(&redact(&content), 1200));
             d.push(Draft::new(Kind::ToolCall, text).tag(tool).files(files));
         }
         "Grep" | "Glob" | "LS" => {
@@ -314,7 +316,11 @@ pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<
             }
         }
         _ => {
-            let args = redact(&clip(&serde_json::to_string(input).unwrap_or_default(), 600));
+            // The input's strings, and values under keys that name a
+            // secret, redacted before it is cut.
+            let mut input = input.clone();
+            crate::redact::redact_json(&mut input);
+            let args = clip(&serde_json::to_string(&input).unwrap_or_default(), 600);
             d.push(Draft::new(Kind::ToolCall, format!("{tool} {args}")).tag(tool).files(files.clone()));
             result_chunks(if failed { Kind::Error } else { Kind::ToolResult }, files, &mut d);
         }
