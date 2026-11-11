@@ -111,6 +111,18 @@ struct Provider {
     embeds: bool,
 }
 
+/// The prefix of the variables an `endpoint.json`'s `key_env` may name,
+/// besides a provider's own key variables: an endpoint's file names the
+/// variable its secret is sent from, and the server's other variables
+/// (its tokens, a cloud's credentials) are never one.
+pub const KEY_ENV_PREFIX: &str = "CHLOEDB_MODEL_KEY_";
+
+/// Whether `key_env` may name `var`: a provider's key variable, or one
+/// whose name starts with [`KEY_ENV_PREFIX`].
+fn key_env_allowed(var: &str) -> bool {
+    PROVIDERS.iter().any(|p| p.keys.contains(&var)) || var.strip_prefix(KEY_ENV_PREFIX).is_some_and(|rest| !rest.is_empty())
+}
+
 const PROVIDERS: &[Provider] = &[
     Provider { prefix: "openai", api: Api::OpenAi, base: "https://api.openai.com/v1", base_env: "OPENAI_BASE_URL", keys: &["OPENAI_API_KEY"], key_header: "authorization", batch: 256, batch_chars: 400_000, max_chars: 24_000, concurrency: 4, dim_param: "dimensions", rerank: Some(("/chat/completions", RerankApi::Chat, 1)), embeds: true },
     Provider { prefix: "cohere", api: Api::Cohere, base: "https://api.cohere.com", base_env: "COHERE_BASE_URL", keys: &["COHERE_API_KEY", "CO_API_KEY"], key_header: "authorization", batch: 96, batch_chars: usize::MAX, max_chars: usize::MAX, concurrency: 4, dim_param: "output_dimension", rerank: Some(("/v2/rerank", RerankApi::Cohere, 1000)), embeds: true },
@@ -583,6 +595,7 @@ impl Conf<'_> {
     fn key(&self, p: Option<&Provider>, own_server: bool, env: &dyn Fn(&str) -> Option<String>) -> Result<(Option<String>, String)> {
         let keys = p.map_or(&[][..], |p| p.keys);
         let (key, key_from) = match self.text("key_env")? {
+            Some(var) if !key_env_allowed(&var) => return Err(self.bad(format!("endpoint.json: key_env {var:?} is not a model's key variable: it names a provider's ({}) or one whose name starts with {KEY_ENV_PREFIX}, so that no endpoint sends another of the server's variables", PROVIDERS.iter().flat_map(|p| p.keys).copied().collect::<Vec<_>>().join(", ")))),
             Some(var) => (env(&var).filter(|k| !k.is_empty()), format!("${var}")),
             None => (keys.iter().find_map(|v| env(v).filter(|k| !k.is_empty())), keys.iter().map(|k| format!("${k}")).collect::<Vec<_>>().join(" or ")),
         };

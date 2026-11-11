@@ -223,3 +223,36 @@ fn a_model_answers_about_the_rows_a_query_returns() {
     refused(&db, &format!("CREATE FUNCTION f(q TEXT) RETURNS TABLE AS SELECT id, llm('{MODEL}', 'x', body) FROM reviews LIMIT 3"), "RETURNS TABLE");
     refused(&db, "CREATE FUNCTION llm(t TEXT) RETURNS TEXT AS :t", "llm");
 }
+
+/// A query names its model; it never reads an `endpoint.json` from outside
+/// the models directory, and an endpoint's `key_env` names a model's key
+/// variable, never another of the process's.
+#[test]
+fn a_query_names_a_model_never_a_path() {
+    let mock = Mock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let db = reviews(dir.path());
+    let endpoint = |var: &str| json!({"api": "anthropic", "url": format!("{}/v1/messages", mock.url), "model": "m", "key_env": var}).to_string();
+    std::env::set_var("CHLOEDB_LLM_TEST_NOT_A_KEY", "not-for-a-model");
+    std::env::set_var("CHLOEDB_MODEL_KEY_LLM_TEST", "for-a-model");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("endpoint.json"), endpoint("CHLOEDB_MODEL_KEY_LLM_TEST")).unwrap();
+    for model in [outside.display().to_string(), "../outside".into(), "a/../../outside".into(), "./outside".into(), "a/b/c".into(), "a\\b".into()] {
+        let e = db.query(&format!("SELECT llm('{model}', 'say ok', body) FROM reviews LIMIT 1"), &Params::new()).unwrap_err().to_string();
+        assert!(e.contains("not a path") || e.contains("is a provider's model"), "{model}: {e}");
+    }
+    assert_eq!(mock.requests(), 0, "no endpoint outside the models directory was asked");
+
+    // Inside it, an endpoint's key variable is a model's.
+    for (name, var) in [("other-var", "CHLOEDB_LLM_TEST_NOT_A_KEY"), ("own-key", "CHLOEDB_MODEL_KEY_LLM_TEST")] {
+        std::fs::create_dir_all(dir.path().join("models").join(name)).unwrap();
+        std::fs::write(dir.path().join("models").join(name).join("endpoint.json"), endpoint(var)).unwrap();
+    }
+    let e = db.query("SELECT llm('other-var', 'say ok', body) FROM reviews LIMIT 1", &Params::new()).unwrap_err().to_string();
+    assert!(e.contains("key_env") && e.contains("CHLOEDB_MODEL_KEY_"), "{e}");
+    assert_eq!(mock.requests(), 0);
+    let rs = query(&db, "SELECT llm('own-key', 'say ok', body) FROM reviews WHERE id = 'a' LIMIT 1");
+    assert_eq!(rs.rows.len(), 1);
+    assert_eq!(mock.requests(), 1);
+}
