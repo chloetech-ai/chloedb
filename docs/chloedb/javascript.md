@@ -14,7 +14,7 @@ Each `chloedb-js-v<version>` release (`strata-js-v<version>` before the rename) 
 npm install https://github.com/chloetech-ai/strata/releases/download/strata-js-v0.1.0/strata-db-0.1.0-darwin-arm64.tgz
 ```
 
-Release 0.1.0 was made before the rename: its tarballs are `strata-db-0.1.0-<platform>.tgz`, and code imports it as `"strata-db"`. Releases after it are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do.
+**With release 0.1.0, import from `"strata-db"` in the examples on this page** (`import { open } from "strata-db"`): 0.1.0 was made before the rename, its tarballs are `strata-db-0.1.0-<platform>.tgz`, and `from "chloedb"` fails on it as a missing package. Releases after it are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do.
 
 | platform | tarball |
 |---|---|

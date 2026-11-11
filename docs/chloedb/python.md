@@ -16,7 +16,7 @@ Each `chloedb-py-v<version>` release (`strata-py-v<version>` before the rename) 
 pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
 ```
 
-Release 0.1.0 was made before the rename, as `strata-db`; releases after it are `chloedb` (`pip install chloedb -f <its assets page>`). Its package is `chloedb` (`import chloedb`, with `import strata` in 0.1.0); `import strata` goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`.
+**With release 0.1.0, write `import strata as chloedb` in the examples on this page.** 0.1.0 was made before the rename, as `strata-db`, and its module is `strata` only: `import chloedb` fails on it with `ModuleNotFoundError`, and its error class is `StrataError`. It also predates [frames](frames.md), which need a build from source until the next release. Releases after it are `chloedb` (`pip install chloedb -f <its assets page>`) and import as `chloedb`, as the examples here do; there `import strata` goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`. A build from source ([below](#from-source)) is today's package.
 
 | platform | wheel |
 |---|---|

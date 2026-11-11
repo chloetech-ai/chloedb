@@ -63,7 +63,7 @@ flowchart LR
 
 | | Result | Where |
 |---|---|---|
-| Against 13 search engines and databases, 14 kinds of query (MS MARCO 1M on DigitalOcean, 7 November) | **First** on places summed over 45 tests: 146 points, Solr 286, Elasticsearch 291, Qdrant 300; at 10M, 87 against OpenSearch's 181 and Elasticsearch's 186. Behind on typo search, key lookups and BM25 × recency | [Benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
+| Against 13 search engines and databases, 14 kinds of query (MS MARCO 1M on DigitalOcean; ChloeDB's build of 7 November, after its own fixes, against each other engine's newest run, of 4 to 6 November, on other nodes) | **First** on places summed over 45 tests: 146 points, Solr 286, Elasticsearch 291, Qdrant 300; at 10M (the others' runs of 3 to 5 November), 87 against OpenSearch's 181 and Elasticsearch's 186. In the one run with every engine on the same day (4 November, each lane's engines taking turns on one set of nodes), also first: 156 against Elasticsearch's 284 at 1M, and 67 against OpenSearch's 83 at 10M among the three engines run there. Behind on typo search, key lookups and BM25 × recency | [Benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
 | ChloeDB vs Tantivy, warm BM25 top-10 | **1.7–3.2× faster**; conjunctions 2.7–4.1× faster; 24 of 28 text and filter comparisons won | [ChloeDB results](docs/chloedb/results.md#query-latency) |
 | ChloeDB vector top-10 (HNSW, 1,024-d) | **0.05–0.10 ms**, recall@10 0.99 on Quora; SQLite's scan takes 7.7 ms to 0.7 s | [ChloeDB results](docs/chloedb/results.md#vector-indexes) |
 | Filtered vector search planner | **1.8–6.1× faster** than the best fixed strategy, recall@10 0.991–0.998 | [ChloeDB results](docs/chloedb/results.md#filtered-vector-search-and-the-planner) |
@@ -74,7 +74,8 @@ flowchart LR
 
 | | Result | Where |
 |---|---|---|
-| **Claude Code with and without ChloeCtx** (2 held-out projects, 200 runs) | **100 of 100** follow-up tasks solved with ChloeCtx, **60 of 100** without. The whole gap is on facts said only in conversation: 60/60 against 20/60. Permutation test p < 0.0001 | [ChloeCtx results](docs/chloectx/results.md#claude-code-with-and-without-chloectx) |
+| **Claude Code with ChloeCtx and with the memory a user could pick instead** (4 projects, 208 follow-up runs a system, one small model) | **94%** solved with ChloeCtx as shipped (196 of 208), against 86% with mem0 (p = 0.009 against ChloeCtx `main`), 78% with grep over past transcripts, 74% with Claude Code's own memory and 44% with none; the whole history in context solves 93%, and ChloeCtx costs about a quarter as much a run | [ChloeCtx results](docs/chloectx/results.md#memory-systems-compared) |
+| Claude Code with ChloeCtx and with no memory at all (2 held-out projects; 20 tasks written to depend on earlier sessions, each run five times a condition) | **100 of 100** follow-up runs solved with ChloeCtx, **60 of 100** without. The whole gap is on facts said only in conversation: 60/60 against 20/60, mostly carried by the session briefing (memory tools called in 9 of 100 runs). A longer multi-day A/B showed no gain over compaction alone (27/30 against 26/30) | [ChloeCtx results](docs/chloectx/results.md#claude-code-with-and-without-chloectx) |
 | After a compaction, details the summary dropped | **13 of 15** came back automatically, 14 with one search | [ChloeCtx results](docs/chloectx/results.md#this-repositorys-own-26-hour-session) |
 | Live sessions asked about a 26-hour project history | **8 of 8** answered with ChloeCtx, **0 of 4** without | [ChloeCtx results](docs/chloectx/results.md#live-claude-code-runs) |
 | LongMemEval-S retrieval (115k-token histories) | **R@10 0.90**; the 4,000-character injection holds the evidence for 87% of questions | [ChloeCtx results](docs/chloectx/results.md#retrieval-on-long-conversation-benchmarks) |
@@ -90,21 +91,16 @@ Everything is built from source and needs Rust (stable) and a C compiler.
 git clone https://github.com/chloetech-ai/strata && cd strata
 ```
 
-ChloeDB from its shell, which prints the plan it chose:
-
-```sh
-cd chloedb && cargo build --release
-target/release/chloedb db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-```
-
 ChloeDB as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/chloedb/server.md#run-it)):
 
 ```sh
 v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
 tar xzf strata-server-$p.tar.gz
-strata-server-$p/chloedb-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+strata-server-$p/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
 ```
+
+Release 0.1.0 predates the rename, so its archive holds the program as `strata-server`. Later releases are tagged `chloedb-server-v<version>`, with archives `chloedb-server-$p.tar.gz` that hold `chloedb-server` and `strata-server` beside it.
 
 Or built from source:
 
@@ -118,6 +114,13 @@ Or from the published image (a new `--db` starts with no tables; add `--demo 200
 ```sh
 docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v strata:/data \
   ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.strata --listen 0.0.0.0:7700
+```
+
+ChloeDB from its shell, which prints the plan it chose. The shell opens a database that exists and does not create one; here it reads the `products.strata` a server above made with `--demo` (`../products.strata` after the prebuilt server, `../chloedb-server/products.strata` after the source build; beside a running server it opens the file read-only):
+
+```sh
+cd chloedb && cargo build --release
+target/release/chloedb ../products.strata "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
 ```
 
 ChloeDB from Python ([more](docs/chloedb/python.md)):

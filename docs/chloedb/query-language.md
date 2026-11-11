@@ -698,7 +698,7 @@ UPDATE rank_log SET label = 3 WHERE request = :r AND row_key = :k;
 ```
 
 ```sh
-curl -s localhost:7700/v1/query -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10",
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10",
   "params": {"t": "mrna vaccine"}, "log": {"context": "u42", "variant": "b", "candidates": 50}}'
 # {"columns": ["id", "title"], "rows": [...], ..., "request": "9f0c...", "logged": {"rows": 50, "seq_no": 812}}
 ```
@@ -714,7 +714,7 @@ curl -s localhost:7700/v1/query -d '{"sql": "SELECT id, title FROM docs ORDER BY
 The export reads a log table back from one snapshot, one record per logged row, with what happened around it as of its time, from a table of events (a user's views, clicks, purchases): the context's last events before the row (its history, for a sequence model), and a label from the events on the row's key after it, within a window.
 
 ```sh
-curl -s localhost:7700/v1/rank_log/export -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"},
+curl -s localhost:7700/v1/rank_log/export -H 'content-type: application/json' -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"},
   "history": 20, "window": "30 minutes", "grades": {"click": 1, "buy": 3}, "since": "2026-10-01"}'
 # {"id": "9f0c...#0", "request": "9f0c...", "ts": 1793338200000000, "context": "u42", "row_key": "d17", "position": 0, "shown": true,
 #  "score": 7.31, "variant": "b", "label": 3.0,
@@ -733,11 +733,11 @@ curl -s localhost:7700/v1/rank_log/export -d '{"events": {"table": "events", "us
 An A/B test shows each user one ranking and compares the users; interleaving shows each user both, in one list, and asks which ranking's rows the user acted on. Each request sets the two side by side for the same user and the same query, so it tells two rankings apart with ten to a hundred times fewer requests than an A/B test of the same two (Chapelle et al., "Large-scale validation and analysis of interleaved search evaluation", TOIS 2012).
 
 ```sh
-curl -s localhost:7700/v1/query -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) DESC LIMIT 10", "params": {"t": "mrna vaccine"},
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) DESC LIMIT 10", "params": {"t": "mrna vaccine"},
   "log": {"context": "u42", "interleave": {"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10", "variants": ["bm25", "rated"]}}}'
 # {"columns": ["id", "title"], "rows": [...], "request": "9f0c...", "teams": ["rated", "bm25", "bm25", "rated", ...], "logged": {"rows": 10, ...}}
 
-curl -s localhost:7700/v1/rank_log/interleaving -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"}, "window": "30 minutes"}'
+curl -s localhost:7700/v1/rank_log/interleaving -H 'content-type: application/json' -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"}, "window": "30 minutes"}'
 # {"pairs": [{"variants": ["bm25", "rated"], "requests": 4120, "acted": 1630, "wins": [690, 820], "ties": 120, "delta": -0.040, "p": 0.00089}], "took_ms": 61.3}
 ```
 
@@ -1184,12 +1184,12 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 
 ## Running SQL
 
-The `strata` shell runs one statement, or reads statements from standard input:
+The `chloedb` shell runs one statement, or reads statements from standard input. It opens a database that exists and does not create one; these lines read the demo catalogue that `chloedb-server --demo 20000 --db products.strata` makes:
 
 ```sh
 cd chloedb && cargo build --release
-target/release/chloedb db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-target/release/chloedb db.strata --param t='rapid covid tests' < queries.sql
+target/release/chloedb products.strata "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+target/release/chloedb products.strata --param t='waterproof tent' < queries.sql
 ```
 
 | flag | effect |

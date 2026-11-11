@@ -14,6 +14,11 @@ pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expande
 pip install ./chloedb-py          # or from source, from the repository's root; needs Rust
 ```
 
+Release 0.1.0, the only prebuilt wheel so far, predates the rename: its module
+is `strata` only, so write `import strata as chloedb` in the examples below
+(`import chloedb` fails on it), and it has no frames. A build from source is
+today's package, and imports as both.
+
 ```python
 import chloedb
 
@@ -33,8 +38,9 @@ for row in db.table().where(col("year") >= 1990).order_by(bm25("title", "dragon"
     print(row["title"])
 ```
 
-Frames are lazy dataframes over tables, run where the data is (pyarrow
-needed: `pip install "strata-db[frame]" -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0`):
+Frames are lazy dataframes over tables, run where the data is (a build
+from source, with pyarrow: `pip install "./chloedb-py[frame]"`; release 0.1.0
+has no frames):
 
 ```python
 import chloedb

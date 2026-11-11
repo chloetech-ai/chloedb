@@ -9,9 +9,11 @@ Download the server for your machine (no Rust or build needed), and start it on 
 ```sh
 v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
-tar xzf strata-server-$p.tar.gz && cp strata-server-$p/chloedb-server .
+tar xzf strata-server-$p.tar.gz && cp strata-server-$p/strata-server ./chloedb-server
 ./chloedb-server --db shop.strata --seq-no
 ```
+
+Release 0.1.0 predates the rename, so its archive names the program `strata-server`; the copy above gives it the name this page uses.
 
 The server listens on `http://127.0.0.1:7700` (HTTP JSON, and the command center in a browser) and on 7701 (gRPC). A new `--db` starts with no tables. `--seq-no` numbers every write, which the stock below needs. [Run it](server.md#run-it) has the options, the source build (`cd chloedb-server && cargo build --release`) and the image.
 

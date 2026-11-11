@@ -21,7 +21,8 @@ class _Missing:
     def __getattr__(self, name: str) -> Any:
         raise ImportError(
             f"chloedb's compiled extension is not installed ({self._error}), and {name} needs it: "
-            f"install a wheel (pip install strata-db -f {WHEELS}) or build it (maturin develop, in chloedb-py). "
+            "build it (pip install ./chloedb-py from the repository's root, or maturin develop in chloedb-py), "
+            f"or install release 0.1.0's wheel (pip install strata-db -f {WHEELS}), which predates the rename and imports as strata. "
             "chloedb.Client and chloedb.connect, which talk to a chloedb-server, work without it."
         )
 

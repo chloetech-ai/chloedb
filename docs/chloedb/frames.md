@@ -4,11 +4,13 @@
 
 ## Install
 
-Frames are part of the `strata` package ([Python](python.md#install)) and need pyarrow 14 or later; pandas and Polars are optional, for `to_pandas()` and `to_polars()`:
+Frames are part of the `chloedb` package ([Python](python.md#install)) and need pyarrow 14 or later; pandas and Polars are optional, for `to_pandas()` and `to_polars()`:
 
 ```sh
-pip install "strata-db[frame]" polars pandas -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+pip install "./chloedb-py[frame]" polars pandas    # from the repository's root; needs Rust
 ```
+
+Frames came after release 0.1.0: its wheel (`strata-db`, imported as `strata`) has no frames and no `frame` extra, so they need a build from source ([Python](python.md#from-source)) until the next release.
 
 ## A first frame
 

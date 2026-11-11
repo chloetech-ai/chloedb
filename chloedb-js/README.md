@@ -22,7 +22,9 @@ await db.close();
 
 Prebuilt for macOS and Linux (no Rust needed): `npm install` the tarball of
 your platform from a `strata-js-v<version>` GitHub release
-([docs](../docs/chloedb/javascript.md#prebuilt)). Build (Rust and a C
+([docs](../docs/chloedb/javascript.md#prebuilt)). Release 0.1.0, the only one
+so far, predates the rename: it installs as `strata-db`, so import from
+`"strata-db"` where the examples say `"chloedb"`. Build (Rust and a C
 compiler), test, and use from an app:
 
 ```sh

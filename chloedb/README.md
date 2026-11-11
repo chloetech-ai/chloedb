@@ -36,10 +36,12 @@ diagrams and results, is built into `report/strata.html` by
 
 ## Using it
 
+The shell opens a database that exists and does not create one. `chloedb-server --demo 20000 --db products.strata` makes the one these lines read (any database of yours works the same way):
+
 ```sh
 cargo build --release
-target/release/chloedb db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-target/release/chloedb db.strata --param t='rapid covid tests' < queries.sql
+target/release/chloedb products.strata "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+target/release/chloedb products.strata --param t='waterproof tent' < queries.sql
 ```
 
 SQL covers single-table `SELECT`: `MATCH` with phrases, prefixes, `AND`,

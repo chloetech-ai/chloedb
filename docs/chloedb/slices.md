@@ -22,7 +22,7 @@ Slices exist only on a server started with `--slices DIR`. Build one from the co
 
 ```bash
 chloedb-server --db places.strata --slices ./slices --slices-rebuild-s 300 &
-curl -X POST localhost:7700/v1/admin/slices \
+curl -X POST localhost:7700/v1/admin/slices -H 'content-type: application/json' \
   -d '{"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -73.98, "tile_m": 1000}'
 ```
 
@@ -68,7 +68,7 @@ It runs where the native addon does (Node, Bun, Deno), with the same options as 
 A slice can also cut a table by meaning: its VECTOR field into k-means clusters, each a file of rows. A device holds the clusters nearest its user's taste (a vector, such as the user's history summed) and answers `similarity` searches itself (recommendations for the user, tracks like the one playing) when it can prove that no row it lacks could beat its k-th.
 
 ```bash
-curl -X POST localhost:7700/v1/admin/slices -d '{"table": "tracks", "vector": "emb"}'
+curl -X POST localhost:7700/v1/admin/slices -H 'content-type: application/json' -d '{"table": "tracks", "vector": "emb"}'
 ```
 
 `clusters` sets their number (about the square root of the rows by default, at most 4,096 then). The server's search is exact (`similarity(emb, :v, strategy => 'flat', rerank => <rows>)` re-scores every row), so a device's proved answer is the server's to the last bit.
