@@ -398,6 +398,27 @@ impl Default for ExecOptions {
 }
 
 impl ExecOptions {
+    /// These options for one query whose caller limits it, as the Python,
+    /// JavaScript and Java packages take a query's limits: a deadline
+    /// `timeout` from now, a memory budget of `memory` bytes of its own
+    /// (`Some(0)`: none; `None`: these options' budget, the database's),
+    /// and `cancel` to stop it from another thread.
+    pub fn limited(&self, timeout: Option<std::time::Duration>, memory: Option<u64>, cancel: Option<Arc<AtomicBool>>) -> ExecOptions {
+        let deadline = timeout.map(|t| Instant::now() + t);
+        ExecOptions {
+            deadline: match (self.deadline, deadline) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
+            cancel: cancel.or_else(|| self.cancel.clone()),
+            memory: match memory {
+                Some(bytes) => crate::query::memory::budget_of(bytes, "this query may hold (its memory option)"),
+                None => self.memory.clone(),
+            },
+            ..self.clone()
+        }
+    }
+
     /// `Error::Timeout` once [`Self::deadline`] has passed or [`Self::cancel`]
     /// is set.
     pub fn check(&self) -> Result<()> {
@@ -438,6 +459,52 @@ impl<'o> Ticker<'o> {
         }
         self.n = 0;
         self.opts.check()
+    }
+}
+
+/// The queries running for one caller (a database opened from Python,
+/// JavaScript or Java), each with a cancel flag of its own
+/// ([`ExecOptions::cancel`]), so that another thread can stop those
+/// running now without stopping the ones that start later, as SQLite's
+/// `sqlite3_interrupt` does. A query is in the set while its flag lives:
+/// while its options do.
+#[derive(Debug, Default)]
+pub struct Interrupts {
+    running: Mutex<Vec<(u64, std::sync::Weak<AtomicBool>)>>,
+}
+
+impl Interrupts {
+    /// The cancel flag of a query starting now, tagged `tag` for
+    /// [`Interrupts::interrupt`] of it alone.
+    pub fn start(&self, tag: u64) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        running.retain(|(_, w)| w.strong_count() > 0);
+        running.push((tag, Arc::downgrade(&flag)));
+        flag
+    }
+
+    /// Cancels the queries running now (those tagged `tag`, or every one);
+    /// returns how many. Each stops at its next check, within a few
+    /// thousand rows, with `Error::Timeout`.
+    pub fn interrupt(&self, tag: Option<u64>) -> usize {
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let mut n = 0;
+        running.retain(|(t, w)| {
+            let Some(flag) = w.upgrade() else { return false };
+            if tag.is_some_and(|tag| tag != *t) {
+                return true;
+            }
+            flag.store(true, Ordering::Relaxed);
+            n += 1;
+            false
+        });
+        n
+    }
+
+    /// Queries running now.
+    pub fn running(&self) -> usize {
+        self.running.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, w)| w.strong_count() > 0).count()
     }
 }
 
