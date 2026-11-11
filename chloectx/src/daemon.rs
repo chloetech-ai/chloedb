@@ -239,6 +239,7 @@ impl Daemon {
                 let mut ck = self.checker();
                 recall::briefing_checked(&self.store, sid, self.cfg.briefing_chars, now(), Some(&mut ck)).map(|(t, _)| (json!({"text": t}), None))
             }
+            "sync" => self.op_sync(req).map(|r| (r, None)),
             "shutdown" => {
                 let me = self.clone();
                 Ok((json!({"ok": true}), Some(Box::new(move || me.shutdown()) as Deferred)))
@@ -256,10 +257,62 @@ impl Daemon {
         while self.pending.load(Ordering::Acquire) > 0 && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(200));
         }
+        // What was recorded since the last push goes before the daemon does.
+        let _ = self.sync_now(false);
         let _ = self.store.flush();
         self.save_state();
         let _ = std::fs::remove_file(&self.paths.socket);
         std::process::exit(0);
+    }
+
+    /// Pushes what the store recorded since the last push to the server
+    /// `chloectx sync setup` named (and, with `pull`, first stores the
+    /// project's records the server holds and the store lacks): the
+    /// sync's state after, or `None` with no server set up. One at a time.
+    pub fn sync_now(&self, pull: bool) -> Option<crate::sync::SyncState> {
+        static ONE: Mutex<()> = Mutex::new(());
+        let remote = crate::sync::remote(&crate::paths::home())?;
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        let pushed = crate::sync::push(&remote, &self.store, &self.project, &mut st);
+        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &self.project, &mut st)) } else { None };
+        // What was pulled was the server's already.
+        if matches!(pulled, Some(Ok(_))) {
+            st.pushed_seq = st.pushed_seq.max(self.store.last_seq());
+        }
+        st.last_error = match (&pushed, &pulled) {
+            (Err(e), _) | (_, Some(Err(e))) => e.to_string(),
+            _ => String::new(),
+        };
+        let (p, g) = (pushed.as_ref().map_or(0, |n| *n), pulled.as_ref().and_then(|r| r.as_ref().ok()).copied().unwrap_or(0));
+        if p > 0 || g > 0 || !st.last_error.is_empty() {
+            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "pushed": p, "pulled": g, "error": st.last_error}));
+        }
+        crate::sync::save_state(&self.paths.dir, &st);
+        Some(st)
+    }
+
+    /// `{"op": "sync", "what": "status" | "push" | "pull"}`.
+    fn op_sync(&self, req: &Json) -> Result<Json> {
+        let what = req.get("what").and_then(|v| v.as_str()).unwrap_or("status");
+        let Some(remote) = crate::sync::remote(&crate::paths::home()) else {
+            return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
+        };
+        let st = match what {
+            "push" => self.sync_now(false),
+            "pull" => self.sync_now(true),
+            "status" => Some(crate::sync::load_state(&self.paths.dir, &remote.url)),
+            w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
+        }
+        .unwrap_or_default();
+        let on_server = if what == "status" { remote.count(&self.project).map_err(|e| e.to_string()) } else { Err(String::new()) };
+        Ok(json!({
+            "server": remote.url, "token": remote.has_token(), "project": self.project,
+            "local_records": self.store.len(), "last_seq": self.store.last_seq(),
+            "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
+            "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
+            "server_records": on_server.as_ref().ok(), "server_error": on_server.err().filter(|e| !e.is_empty()),
+        }))
     }
 
     fn with_session<T>(&self, sid: &str, f: impl FnOnce(&mut Session) -> T) -> T {
@@ -1225,6 +1278,18 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
     }
     let listener = UnixListener::bind(&paths.socket)?;
     eprintln!("chloectx: serving {} on {} ({} records, embedder {})", project, paths.socket.display(), daemon.store.len(), daemon.store.embedder.name());
+    // The sync to a server, when one is set up: what this store lacks on
+    // start, then what it records, every PUSH_EVERY.
+    if crate::sync::remote(&crate::paths::home()).is_some() {
+        let d = daemon.clone();
+        std::thread::spawn(move || {
+            d.sync_now(true);
+            loop {
+                std::thread::sleep(crate::sync::PUSH_EVERY);
+                d.sync_now(false);
+            }
+        });
+    }
     {
         let d = daemon.clone();
         std::thread::spawn(move || loop {

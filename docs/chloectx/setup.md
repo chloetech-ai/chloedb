@@ -168,7 +168,26 @@ Use WSL 2 and run everything, including Claude Code, inside the Linux distributi
 
 ### Claude Code on the web
 
-Cloud sessions run in a fresh container each time, so a ChloeCtx store there starts empty and is lost when the container is reclaimed. A setup script can install ChloeCtx there to try it within one session, but memory across sessions needs a machine that keeps `~/.local/share/engram`.
+Cloud sessions run in a fresh container each time, so a ChloeCtx store there starts empty and is lost when the container is reclaimed. To keep memory across them, sync it with a ChloeDB server ([below](#keep-the-memory-on-a-chloedb-server)): the environment's setup script installs ChloeCtx and names the server, the environment holds the server's key in a variable, and each session pulls the project's memory when its daemon starts.
+
+### Keep the memory on a ChloeDB server
+
+`chloectx sync` copies each project's memory to a table, `chloectx_memory`, on a ChloeDB server or a cluster's coordinator, and back. The store stays a local file, so hooks and recall never wait on the network:
+
+- the daemon pushes what it recorded every 30 seconds and as it exits, and when it starts it pulls the project's records the store lacks (written on another machine, or by a container that is gone) and embeds them here;
+- records are keyed by project directory and record id, so several projects share the table, and the server can search them too (`SELECT content FROM chloectx_memory WHERE project = '/path' ORDER BY bm25(content, '...') DESC LIMIT 10`).
+
+```bash
+# the key from stdin, kept owner-only in ChloeCtx's home (sync.token)
+printf %s "$KEY" | chloectx sync setup --url https://chloedb.example.com --token-stdin
+# or: read it, whenever the daemon syncs, from a variable (a cloud environment's, say)
+chloectx sync setup --url https://chloedb.example.com --token-env CHLOEDB_KEY
+chloectx sync status        # what was sent and received, what the server holds
+chloectx sync push          # now, rather than within 30 s
+chloectx sync pull
+```
+
+`setup` creates the table, which needs a key with the `admin` scope (`--no-create` skips it; the first push creates it when the key can); after that an API key with the `write` scope is enough. `CHLOECTX_SYNC_URL` and `CHLOECTX_SYNC_TOKEN` override the settings. What is sent is what the store holds, transcripts of your sessions included: use a server you control, over HTTPS, with a key. Records retagged or forgotten after they were pushed are not sent again, and two machines writing the same project at once can, rarely, give two records one id (`manual:<seq>` from `chloectx remember`); the server keeps the last one sent.
 
 ## Upgrade and remove
 

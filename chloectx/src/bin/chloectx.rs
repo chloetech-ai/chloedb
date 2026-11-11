@@ -10,6 +10,7 @@
 //!   chloectx remember <kind> "text"
 //!   chloectx ingest-transcript <file.jsonl>        back-fill from a Claude Code transcript
 //!   chloectx fetch-model [static|bert]             download the embedding model
+//!   chloectx sync setup --url URL [--token-stdin]  copy the memory to a ChloeDB server (status|push|pull)
 //!   chloectx doctor                                check the install and the project's store
 //!   chloectx ui [--port N] [--home DIR]            browse every local store in the inspector
 //!   chloectx rpc '{"op": ...}'                     send one raw request to the daemon
@@ -140,11 +141,42 @@ enum Cmd {
     },
     /// Back-fill records from a Claude Code transcript.
     IngestTranscript { path: PathBuf },
+    /// Copy the project's memory to a ChloeDB server or cluster, and back.
+    Sync {
+        #[command(subcommand)]
+        what: SyncCmd,
+    },
     /// Download an embedding model (static: potion-retrieval-32M; bert: bge-small-en-v1.5).
     FetchModel {
         #[arg(default_value = "static")]
         which: String,
     },
+}
+
+#[derive(Subcommand)]
+enum SyncCmd {
+    /// Name the server (e.g. https://chloedb.example.com) and create its table.
+    Setup {
+        #[arg(long)]
+        url: String,
+        /// Read the server's key (an API key or token) from stdin, kept
+        /// owner-only in ChloeCtx's home, never on the command line.
+        #[arg(long, conflicts_with = "token_env")]
+        token_stdin: bool,
+        /// Read the key from this environment variable whenever the daemon
+        /// syncs (one a cloud environment sets, say); no file holds it.
+        #[arg(long, default_value = "")]
+        token_env: String,
+        /// Do not create the table (it exists, or the key cannot: it needs the admin scope).
+        #[arg(long)]
+        no_create: bool,
+    },
+    /// What was sent and received, and what the server holds for this project.
+    Status,
+    /// Send what the store recorded since the last push.
+    Push,
+    /// Push, then store the project's records the server holds and the store lacks.
+    Pull,
 }
 
 fn send(project: &std::path::Path, req: Json, secs: u64) -> Json {
@@ -234,6 +266,45 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, token_env, no_create } } => {
+            let token = token_stdin.then(|| {
+                let mut t = String::new();
+                let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut t);
+                t
+            });
+            let home = paths::home();
+            if let Err(e) = chloectx::sync::setup(&home, &url, token.as_deref(), &token_env) {
+                eprintln!("chloectx sync: {e}");
+                std::process::exit(1);
+            }
+            let remote = chloectx::sync::remote(&home).expect("just set up");
+            if !no_create {
+                if let Err(e) = remote.create_table() {
+                    eprintln!("chloectx sync: could not create the table {} on {}: {e}", chloectx::sync::TABLE, remote.url);
+                    std::process::exit(1);
+                }
+            }
+            // Not fatal: the key may only be in the environment of the
+            // sessions to come (a cloud setup script runs before it is).
+            match remote.count(&project.to_string_lossy()) {
+                Ok(n) => println!("sync set up with {} ({n} records of this project there)", remote.url),
+                Err(e) => println!("sync set up with {}; it does not answer yet ({e}): the daemon tries again when it starts", remote.url),
+            }
+            // A running daemon syncs once it starts again (on the next hook or tool).
+            let dir = paths::store_dir(&project);
+            if std::os::unix::net::UnixStream::connect(paths::StorePaths::new(&dir).socket).is_ok() {
+                send(&project, json!({"op": "shutdown"}), 10);
+            }
+        }
+        Cmd::Sync { what } => {
+            let w = match what {
+                SyncCmd::Status => "status",
+                SyncCmd::Push => "push",
+                SyncCmd::Pull => "pull",
+                SyncCmd::Setup { .. } => unreachable!(),
+            };
+            println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
         Cmd::Ui { host, port, home, no_open } => {

@@ -144,6 +144,17 @@ still 0.1.0, and the next release will name its version here.
   losing its deadline or idempotency. A query parameter of such a name is
   passed in `params`.
 
+### ChloeCtx
+
+- `chloectx sync` keeps a project's memory on a ChloeDB server or cluster
+  as well as in its local store: the daemon pushes what it records every
+  30 s and as it exits, and when it starts it pulls the records the store
+  lacks, so a fresh cloud container or another machine recalls what
+  earlier sessions stored. `sync setup --url URL` with the key from stdin
+  (`--token-stdin`) or a variable (`--token-env`); `status`, `push`,
+  `pull`. See "Keep the memory on a ChloeDB server" in
+  docs/chloectx/setup.md.
+
 ### Build and release
 
 - GitHub Actions pinned to commits (Dependabot keeps them current); every
