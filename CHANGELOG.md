@@ -56,7 +56,8 @@ still 0.1.0, and the next release will name its version here.
   and no row repeats or goes missing between them. A page beyond the
   candidates comes back short, flagged `truncated`; raise `depth` (or use
   `exact => 1`) to page further. This replaces the deeper re-ranking of
-  later pages, which made pages disagree.
+  later pages, which made pages disagree (up to 85 of 220 rows repeated
+  in the audit's test; none now).
 - `ppr` gives the same scores when every edge weight is scaled alike, so
   counts work as weights (weights of 1,000 used to return nothing at the
   default `eps`); `max_pushes_reached` is reported when a walk stops early.
@@ -73,7 +74,10 @@ still 0.1.0, and the next release will name its version here.
   the row without a vector) unless `set_embed_later(true)` says to fill the
   vectors in later, which chloedb-server does. This holds for every write
   path: SQL, `load`, Python and JavaScript inserts, and the Arrow, SQLite
-  and file imports.
+  and file imports. **Breaking for embedded use:** code that wrote rows
+  without opening its model (or before the model was downloaded) now gets
+  an error; open the model (`models=DIR`), give the vectors, or call
+  `set_embed_later(True)` and run `embed_backfill` once the model is there.
 - Not yet: a per-field metric option (cosine, dot, L2), and a fingerprint
   recorded on a model's first open for tables created before this change.
 
