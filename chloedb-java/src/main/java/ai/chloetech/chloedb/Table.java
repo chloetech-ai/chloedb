@@ -239,7 +239,7 @@ public final class Table {
             e.put("field", vector);
             params.put("_v", e);
         }
-        return db.query(sql.toString(), params);
+        return db.query(sql.toString(), params, options.limits);
     }
 
     /** A name as an SQL identifier, whatever it is. */
