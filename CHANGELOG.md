@@ -158,6 +158,18 @@ still 0.1.0, and the next release will name its version here.
   (`--token-stdin`) or a variable (`--token-env`); `status`, `push`,
   `pull`. See "Keep the memory on a ChloeDB server" in
   docs/chloectx/setup.md.
+- Redaction catches the secrets it used to miss: `DB_PASSWORD=…` and
+  other names that end in a word for a secret (in env dumps, `.env`
+  files, YAML and JSON), passwords in URLs and `curl -u`, `Authorization`
+  headers, JWTs, and the keys of Stripe, AWS, Slack, Hugging Face,
+  DigitalOcean, npm, GitLab, Google and ChloeDB itself. Each is replaced
+  by a marker naming its kind (`[REDACTED:password]`, where it was
+  `[REDACTED]`), on every path into the store (prompts kept in
+  `state.json` and `events.log` too) and again as `chloectx sync` sends
+  and pulls. `chloectx redact [--all] [--dry-run]` rewrites a store
+  recorded before: its records, session state and log, the sync server's
+  copies, and the file itself, so the old versions leave its free pages.
+  See "Secrets and `chloectx redact`" in docs/chloectx/setup.md.
 
 ### Build and release
 
