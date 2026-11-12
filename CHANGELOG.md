@@ -22,9 +22,14 @@ changes collect under "Unreleased".
   ([docs/design/0.7.0-file-per-agent.md](docs/design/0.7.0-file-per-agent.md)),
   off unless asked for, and its layout (`layout: 0`) may change without a
   migration ([docs/chloedb/tenants.md](docs/chloedb/tenants.md)).
+  Writes of one handle that wait for a commit share the next one; a
+  handle takes its working copy up again after a restart; the server
+  closes idle tenants (`--tenant-idle-s`, `--tenant-open-max`), lists
+  them (`GET /v1/admin/tenants`), and has `chloedb-server tenants
+  check-store URL` and `tenants list URL`.
 - `chloedb::storage::ObjectStore` has conditional writes, whole-object
   reads and listing (`put_if_absent`, `put_if_version`, `get`, `list`,
-  `get_file`), on the directory store and on S3. A store written outside
+  `list_dirs`, `get_file`), on the directory store and on S3. A store written outside
   this repository keeps compiling: the new methods default to an error.
 
 ## 0.2.0

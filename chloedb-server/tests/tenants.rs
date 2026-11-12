@@ -12,7 +12,7 @@ use chloedb::storage::DbOptions;
 use chloedb_server::auth::{Access, Secret};
 use chloedb_server::keys::Keys;
 use chloedb_server::service::{AgentConfig, Backend, Service};
-use chloedb_server::tenants::Tenants;
+use chloedb_server::tenants::{Limits, Tenants};
 use chloedb_server::{demo, server};
 use serde_json::{json, Value as Json};
 use tokio::net::TcpListener;
@@ -40,7 +40,7 @@ async fn serve(dir: &std::path::Path, name: &str, store: Option<&std::path::Path
     let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
     let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent, 16, Duration::from_secs(10));
     svc.keys = Arc::new(Keys::open(dir.join(format!("{name}.strata.keys.json"))).unwrap());
-    svc.tenants = store.map(|s| Arc::new(Tenants::open(s.to_str().unwrap(), dir.join(format!("{name}-cache"))).unwrap()));
+    svc.tenants = store.map(|s| Arc::new(Tenants::open(s.to_str().unwrap(), dir.join(format!("{name}-cache")), Limits::default()).unwrap()));
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
     tokio::spawn(server::serve_http(Arc::new(svc), l, Access { token: Some(Secret::new("root-token")), ..Default::default() }));
@@ -102,6 +102,11 @@ async fn two_servers_on_one_store_serve_the_same_tenants() {
     assert_eq!(s, 200, "{j}");
     assert_eq!((&j["last_seq"], j["logs"].as_array().map(Vec::len)), (&j["base"]["seq"], Some(0)));
 
+    // Either server lists the store's tenants, and which it has open.
+    assert_eq!(call(&a, "POST", "/v1/admin/tenants", root, Some(json!({"id": "agent-9"}))).await.0, 200);
+    let (s, j) = call(&b, "GET", "/v1/admin/tenants", root, None).await;
+    assert_eq!((s, &j["tenants"], &j["open"]), (200, &json!(["agent-7", "agent-9"]), &json!(["agent-7"])), "{j}");
+
     // Deleted on one server, it is gone on both.
     assert_eq!(call(&a, "DELETE", "/v1/admin/tenants/agent-7", root, None).await.0, 200);
     assert_eq!(call(&a, "DELETE", "/v1/admin/tenants/agent-7", root, None).await.0, 404);
@@ -113,4 +118,41 @@ async fn two_servers_on_one_store_serve_the_same_tenants() {
     let (s, j) = call(&plain, "GET", "/v1/admin/tenants/agent-7", root, None).await;
     assert_eq!(s, 404, "{j}");
     assert!(j["error"].as_str().unwrap_or_default().contains("--tenants"), "{j}");
+}
+
+/// Tenants are closed when idle, and beyond the most a server keeps
+/// open; a closed one answers as before, from the copy the cache kept,
+/// and one that was written gets a base before it is closed.
+#[test]
+fn idle_tenants_are_closed_and_open_again_when_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store");
+    let limits = Limits { idle: Duration::from_secs(3600), open_max: 2 };
+    let t = Tenants::open(store.to_str().unwrap(), dir.path().join("cache"), limits).unwrap();
+    let sql = |id: &str, s: &str| t.sql(id, s, &chloedb::query::Params::new(), false).unwrap();
+    for id in ["a", "b", "c"] {
+        t.create(id, &["CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)".to_string()]).unwrap();
+        sql(id, "INSERT INTO notes VALUES (1, 'one')");
+    }
+    assert_eq!(t.open_ids(), ["a", "b", "c"]);
+    // None is idle, but three are one too many: the one unused longest goes,
+    assert_eq!(t.close_idle(), 1);
+    assert_eq!(t.open_ids(), ["b", "c"]);
+    // with a base that holds its row, so that opening it reads no log.
+    let a = t.describe("a").unwrap();
+    assert_eq!((&a["base"]["seq"], &a["last_seq"], a["logs"].as_array().map(Vec::len), &a["tail"]["transactions"]), (&a["last_seq"], &json!(2), Some(0), &json!(0)), "{a}");
+    assert_eq!(sql("a", "SELECT body FROM notes WHERE id = 1")["rows"], json!([["one"]]));
+    assert_eq!(t.open_ids(), ["a", "b", "c"]);
+    assert_eq!(t.close_idle(), 1);
+    assert_eq!(t.open_ids(), ["a", "c"], "b was used before c, and a just now");
+
+    // With no time allowed, every tenant is idle.
+    drop(t);
+    let t = Tenants::open(store.to_str().unwrap(), dir.path().join("cache"), Limits { idle: Duration::ZERO, open_max: 100 }).unwrap();
+    let sql = |id: &str, s: &str| t.sql(id, s, &chloedb::query::Params::new(), false).unwrap();
+    sql("b", "INSERT INTO notes VALUES (2, 'two')");
+    sql("c", "SELECT 1");
+    assert_eq!((t.open_ids(), t.close_idle(), t.open_ids()), (vec!["b".to_string(), "c".to_string()], 2, Vec::new()));
+    assert_eq!(sql("b", "SELECT count(*) FROM notes")["rows"], json!([[2]]));
+    assert_eq!(t.list().unwrap()["tenants"], json!(["a", "b", "c"]));
 }

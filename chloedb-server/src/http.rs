@@ -313,7 +313,7 @@ fn api(app: &App) -> Router<App> {
         // An app may take files (a spreadsheet's import): rows' size, as /v1/import.
         .route("/v1/apps/:name/*rest", axum::routing::any(app_forward).layer(rows.clone()))
         // Tenants (experimental): databases kept in an object store (crate::tenants).
-        .route("/v1/admin/tenants", post(tenant_create))
+        .route("/v1/admin/tenants", get(tenant_list).post(tenant_create))
         .route("/v1/admin/tenants/:id", get(tenant_get).delete(tenant_delete))
         .route("/v1/admin/tenants/:id/sql", post(tenant_sql).layer(rows.clone()))
         .route("/v1/admin/tenants/:id/base", post(tenant_base))
@@ -4062,6 +4062,11 @@ async fn tenant_create(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(_) => return Err(not_sql()),
     };
     Ok(AxJson(tenant_call(move || t.create(&id, &statements)).await?))
+}
+
+async fn tenant_list(State(app): State<App>) -> Res {
+    let t = tenants(&app)?;
+    Ok(AxJson(tenant_call(move || t.list()).await?))
 }
 
 async fn tenant_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {

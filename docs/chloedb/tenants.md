@@ -55,26 +55,51 @@ match other.write(|db| db.sql("INSERT INTO notes VALUES (2, 'two')", &Params::ne
 |---|---|---|
 | `read` | nothing from the store | what this handle committed, and what others had at its last `refresh` |
 | `read_latest` | one read of `HEAD`, and the new transactions if any | every write committed before the call |
-| `write` | one conditional put (two the first time, when the handle becomes the writer; one more upload when the log is sealed) | |
+| `write` | one conditional put (two the first time, when the handle becomes the writer; one more upload when the log is sealed), shared with the writes that waited for the one before | |
 | `make_base` | one upload of the database, one put | (the next open is two reads) |
+| `tenant::list(store)` | one listing, and eight bytes of each `HEAD` | the ids of the store's tenants |
+
+Writes of one handle that arrive while a commit is on its way to the store
+wait, and the next commit takes all of them: their statements run one
+after another, each on its caller's thread, and one put of `HEAD` commits
+them together or not at all.
+
+A handle holds its cache directory: a second handle on the same directory,
+in this process or another, is refused. The directory keeps the tenant's
+working copy, and the next handle to open the tenant there takes it up
+again when it is a copy of the tenant as the store has it (the last
+transaction it holds is in `HEAD`'s history), and fetches only the
+transactions after it. Otherwise it starts from the base.
 
 A write fails in one of three ways. `NotWriter`: another node committed
 first, nothing was written, and the handle has loaded the tenant again.
 `InDoubt`: the store did not answer and could not be asked again, so the
-write may or may not be there. Anything else: not committed.
+write may or may not be there. Anything else: not committed. The writes
+that shared its commit fail with it, the same way.
 
 ## From the server
 
 ```bash
 chloedb-server --db main.chloedb --tenants /mnt/tenants --tenant-cache /var/cache/tenants
 # or --tenants s3://bucket/prefix/   (configured by the environment, as `import` reads S3)
+
+chloedb-server tenants check-store /mnt/tenants   # does this store refuse a put whose condition fails?
+chloedb-server tenants list /mnt/tenants          # the ids of its tenants
 ```
+
+The server probes the store when it starts, and does not start on one that
+takes a put whatever the condition. It opens a tenant when a request names
+it and closes the ones no request has named for `--tenant-idle-s` seconds
+(300), or the least recently used beyond `--tenant-open-max` (1,000). A
+tenant it wrote is given a new base before it is closed, so that the next
+open, here or on another server, is two reads.
 
 The routes need an admin key until tenants have keys of their own.
 
 | route | does |
 |---|---|
 | `POST /v1/admin/tenants` | creates one: `{"id": "agent-7", "sql": ["CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)"]}` |
+| `GET /v1/admin/tenants` | the ids of the store's tenants, and those this server has open |
 | `GET /v1/admin/tenants/:id` | its epoch, base, logs and last transaction |
 | `POST /v1/admin/tenants/:id/sql` | one statement: `{"sql": "…", "params": {}, "latest": false, "objects": false}` |
 | `POST /v1/admin/tenants/:id/base` | makes a new base now |
@@ -86,17 +111,19 @@ again. Two servers started on one store answer for the same tenants.
 
 ## What it does not do yet
 
-- It has run only on a directory store. The S3 code compiles and has not
-  been run against a bucket; a store must refuse a put whose condition
-  fails (AWS S3, R2, MinIO, GCS and Azure say they do; DigitalOcean Spaces
-  is not known).
+- It has run on a directory store, and its S3 code against a mock of S3
+  (moto) only, not against a real bucket. A store must refuse a put whose
+  condition fails (AWS S3, R2, MinIO, GCS and Azure say they do;
+  DigitalOcean Spaces is not known): `chloedb-server tenants check-store
+  URL` tries it.
 - A base is always the whole database as one file, fetched whole when a
   node opens the tenant. Reading a large index by range, without a local
   copy, is the design's next step.
-- A write is one round trip to the store, and one handle's writes wait for
-  each other. There is no group commit.
+- A write waits for a round trip to the store, its own or the one it
+  shares. Nothing is acknowledged before the store has it.
 - Bulk loads and attached segments skip the log, so they are not committed
   through `write`: use SQL or transactions.
-- The server keeps every tenant it has opened open until it stops, and has
-  no per-tenant keys, quotas, routing or directory.
+- The server has no per-tenant keys, quotas, routing or directory: every
+  server on a store answers for every tenant, and two that write the same
+  one take it from each other (each write that loses answers 409).
 - The format is not frozen.

@@ -11,6 +11,7 @@
 //!
 //! | route | does |
 //! |---|---|
+//! | `GET /v1/admin/tenants` | the store's tenants, and which are open here |
 //! | `POST /v1/admin/tenants` | creates one: `{"id": "agent-7", "sql": ["CREATE TABLE ..."]}` |
 //! | `GET /v1/admin/tenants/:id` | where it is: its epoch, base, logs and last transaction |
 //! | `POST /v1/admin/tenants/:id/sql` | one statement: `{"sql": "...", "params": {}, "latest": false}` |
@@ -22,13 +23,20 @@
 //! that reads runs on the server's copy, which holds what this server
 //! committed and what others had when it last looked; `"latest": true`
 //! reads `HEAD` first (one round trip more) and sees every write
-//! committed before the request. A tenant opened here stays open until
-//! the server stops.
+//! committed before the request.
+//!
+//! A tenant is opened by the first request that names it and closed
+//! once no request has named it for `--tenant-idle-s` (or sooner, the
+//! least recently used first, when more than `--tenant-open-max` are
+//! open). Before it closes one it was writing, the server makes a new
+//! base of it, so that whichever server opens it next reads two objects.
+//! The copy in the cache is kept, and taken up again if the tenant comes
+//! back to this server.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use chloedb::db::SqlResult;
 use chloedb::query::Params;
@@ -38,14 +46,38 @@ use serde_json::{json, Value as Json};
 
 use crate::ApiError;
 
+/// When tenants are closed ([`Tenants::close_idle`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// A tenant no request has named for this long is closed.
+    pub idle: Duration,
+    /// More open than this, and the least recently used are closed.
+    pub open_max: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits { idle: Duration::from_secs(300), open_max: 1000 }
+    }
+}
+
+/// A tenant asked for here.
+#[derive(Default)]
+struct Slot {
+    /// `None` until it is open, and once it is closed. The lock is held
+    /// while it opens, so that one tenant is opened once (two handles
+    /// must not share a cache directory).
+    tenant: Mutex<Option<Arc<Tenant>>>,
+    /// When a request last named it.
+    used: Mutex<Option<Instant>>,
+}
+
 /// The tenants of one store, and those open here.
 pub struct Tenants {
     store: Arc<dyn ObjectStore>,
     cache: PathBuf,
-    /// A slot per tenant asked for; `None` until it is open. The slot's
-    /// lock is held while it opens, so that one tenant is opened once
-    /// (two handles must not share a cache directory).
-    open: Mutex<HashMap<String, Arc<Mutex<Option<Arc<Tenant>>>>>>,
+    limits: Limits,
+    open: Mutex<HashMap<String, Arc<Slot>>>,
 }
 
 impl std::fmt::Debug for Tenants {
@@ -76,21 +108,87 @@ fn reads(sql: &str) -> bool {
 impl Tenants {
     /// The tenants of the store `url` names (an `s3://bucket/prefix/` URL
     /// or a directory), cached under `cache`.
-    pub fn open(url: &str, cache: PathBuf) -> Result<Tenants, String> {
+    pub fn open(url: &str, cache: PathBuf, limits: Limits) -> Result<Tenants, String> {
         let store = chloedb::storage::open_store(url).map_err(|e| format!("--tenants {url}: {e}"))?;
         // A store that does not refuse a put whose condition fails would
         // lose writes: it is probed, not believed.
         chloedb::tenant::check_store(&*store).map_err(|e| format!("--tenants: {e}"))?;
         std::fs::create_dir_all(&cache).map_err(|e| format!("--tenant-cache {}: {e}", cache.display()))?;
-        Ok(Tenants { store, cache, open: Mutex::default() })
+        Ok(Tenants { store, cache, limits, open: Mutex::default() })
     }
 
     fn options(&self, id: &str) -> TenantOptions {
         TenantOptions::new(self.cache.join(id))
     }
 
-    fn slot(&self, id: &str) -> Arc<Mutex<Option<Arc<Tenant>>>> {
-        self.open.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_string()).or_default().clone()
+    fn slot(&self, id: &str) -> Arc<Slot> {
+        let slot = self.open.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_string()).or_default().clone();
+        *slot.used.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        slot
+    }
+
+    /// Closes the tenants no request has named for [`Limits::idle`],
+    /// and the least recently used beyond [`Limits::open_max`]; how many.
+    /// One a request is using is left for the next time. One this server
+    /// was writing gets a new base first, when transactions follow its
+    /// last: the next open, here or elsewhere, is then two reads.
+    pub fn close_idle(&self) -> usize {
+        let now = Instant::now();
+        let mut open: Vec<(Duration, Arc<Slot>)> = {
+            let slots = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            slots.values().filter(|s| s.tenant.try_lock().is_ok_and(|t| t.is_some())).map(|s| (s.used.lock().unwrap_or_else(|e| e.into_inner()).map_or(Duration::MAX, |u| now.duration_since(u)), s.clone())).collect()
+        };
+        // Longest unused first.
+        open.sort_by(|a, b| b.0.cmp(&a.0));
+        let over = open.len().saturating_sub(self.limits.open_max);
+        let mut closed = 0;
+        for (i, (unused, slot)) in open.iter().enumerate() {
+            if *unused < self.limits.idle && i >= over {
+                break;
+            }
+            let Ok(mut held) = slot.tenant.try_lock() else { continue };
+            // In a request's hands: the slot's is not the only one.
+            let Some(t) = held.take_if(|t| Arc::strong_count(t) == 1) else { continue };
+            if t.is_writer().unwrap_or(false) && t.head().is_ok_and(|h| h.last_seq > h.base.seq) {
+                if let Err(e) = t.make_base() {
+                    tracing::warn!(tenant = t.id(), error = %e, "a tenant was closed without a new base");
+                }
+            }
+            closed += 1;
+        }
+        drop(open);
+        // Slots nobody holds and that hold nothing.
+        self.open.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, s| Arc::strong_count(s) > 1 || s.tenant.try_lock().map_or(true, |t| t.is_some()));
+        closed
+    }
+
+    /// Closes idle tenants from a thread of its own, until the last
+    /// `Arc` of these tenants is dropped.
+    pub fn spawn_closer(self: &Arc<Self>) {
+        let tenants: Weak<Tenants> = Arc::downgrade(self);
+        let every = (self.limits.idle / 4).clamp(Duration::from_millis(50), Duration::from_secs(15));
+        let spawned = std::thread::Builder::new().name("chloedb-tenants".into()).spawn(move || loop {
+            std::thread::sleep(every);
+            let Some(t) = tenants.upgrade() else { return };
+            t.close_idle();
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "idle tenants will not be closed: no thread for it");
+        }
+    }
+
+    /// The ids of the tenants open here, in order.
+    pub fn open_ids(&self) -> Vec<String> {
+        let slots = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ids: Vec<String> = slots.iter().filter(|(_, s)| s.tenant.try_lock().map_or(true, |t| t.is_some())).map(|(id, _)| id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    /// The store's tenants, and those open here.
+    pub fn list(&self) -> Result<Json, TenantError> {
+        let tenants = chloedb::tenant::list(&*self.store)?;
+        Ok(json!({"experimental": true, "store": self.store.describe(), "tenants": tenants, "open": self.open_ids(), "idle_s": self.limits.idle.as_secs_f64(), "open_max": self.limits.open_max}))
     }
 
     /// Tenant `id`, opened unless it is open.
@@ -99,7 +197,7 @@ impl Tenants {
             return Err(TenantError::Missing);
         }
         let slot = self.slot(id);
-        let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = slot.tenant.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(t) = &*held {
             return Ok(t.clone());
         }
@@ -120,7 +218,7 @@ impl Tenants {
     /// first committed.
     pub fn create(&self, id: &str, statements: &[String]) -> Result<Json, TenantError> {
         let slot = self.slot(id);
-        let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = slot.tenant.lock().unwrap_or_else(|e| e.into_inner());
         if held.is_some() {
             return Err(TenantError::Exists);
         }
