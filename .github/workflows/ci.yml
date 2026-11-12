@@ -608,6 +608,17 @@ jobs:
           STRATA_APPS_NEED_SERVER: "1"
           STRATA_APPS_TEST_SHARDS: "2"
         run: npm test
+      # Swarm (chloedb-swarm, Node): a run of simulated users with a scripted
+      # model in place of the API, each session in a sandbox server of this
+      # build, its checks, reviews and findings stored in another one.
+      - name: Swarm against a server
+        working-directory: chloedb-swarm
+        env:
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
+          CHLOEDB_SWARM_NEED_SERVER: "1"
+        run: |
+          npm ci
+          npm test
 
   python:
     name: Python package on ${{ matrix.os }}
