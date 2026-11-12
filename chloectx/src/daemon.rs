@@ -1268,9 +1268,11 @@ impl Daemon {
         let compacted = if dry || fixed.is_empty() {
             Json::Null
         } else {
-            match self.store.db.optimize() {
-                Ok(_) => json!(true),
-                Err(e) => json!(format!("the rewritten records are stored, but compacting failed ({e}): their old versions stay in the file until merges reach them")),
+            match self.store.db().map(|db| db.optimize()) {
+                Some(Ok(_)) => json!(true),
+                Some(Err(e)) => json!(format!("the rewritten records are stored, but compacting failed ({e}): their old versions stay in the file until merges reach them")),
+                // A cluster's table: the server's merges drop the old versions.
+                None => Json::Null,
             }
         };
 
