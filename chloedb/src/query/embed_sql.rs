@@ -300,7 +300,8 @@ impl Writer<'_> {
 
     /// The text of a literal or of a parameter that holds text; `None` for
     /// anything else, a parameter of a vector, or text that is a JSON array
-    /// of numbers (a vector written as text).
+    /// of numbers or of arrays of numbers (a vector, or a multi-vector
+    /// field's query vectors, written as text).
     fn text(&self, e: &Expr) -> Result<Option<String>> {
         let s = match e {
             Expr::Nested(x) => return self.text(x),
@@ -315,7 +316,8 @@ impl Writer<'_> {
             },
             _ => return Ok(None),
         };
-        Ok((serde_json::from_str::<Vec<f32>>(&s).is_err()).then_some(s))
+        let vectors = serde_json::from_str::<Vec<f32>>(&s).is_ok() || serde_json::from_str::<Vec<Vec<f32>>>(&s).is_ok();
+        Ok((!vectors).then_some(s))
     }
 
     fn schema(&self, table: &str) -> Option<&Schema> {
@@ -398,6 +400,7 @@ mod tests {
     #[test]
     fn vectors_sparse_terms_and_fields_of_no_model_are_left() {
         assert!(run("SELECT id FROM docs ORDER BY similarity(emb, '[1, 2, 3]') DESC", Params::new()).unwrap().is_none());
+        assert!(run("SELECT id FROM docs ORDER BY maxsim(emb, '[[1, 2, 3], [4, 5, 6]]') DESC", Params::new()).unwrap().is_none());
         assert!(run("SELECT id FROM docs ORDER BY similarity(emb, :v) DESC", Params::new().set("v", Value::Vector(vec![1.0, 2.0, 3.0].into()))).unwrap().is_none());
         assert!(run("SELECT id FROM docs ORDER BY similarity(terms, 'cat:1 dog:2') DESC", Params::new()).unwrap().is_none());
         assert!(run("SELECT id FROM docs ORDER BY similarity(raw, 'some words') DESC", Params::new()).unwrap().is_none());
