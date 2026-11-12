@@ -402,11 +402,91 @@ pub fn catalog(models: &Path) -> Vec<Listed> {
             if config["architectures"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str().is_some_and(|s| s.contains("SequenceClassification")))) {
                 continue;
             }
-            let dim = config["hidden_size"].as_u64().map(|d| d as usize);
+            let dim = config["hidden_size"].as_u64().or(config["hidden_dim"].as_u64()).map(|d| d as usize);
             out.push(Listed { name, dim, hosted: false, what: format!("{kind} model in {}", dir.display()), ready: Ok(()) });
         }
     }
     out
+}
+
+/// How a model makes its vectors, for a listing ([`describe`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Described {
+    /// `static` (Model2Vec: a table of token vectors, averaged),
+    /// `transformer` (BERT), `late-interaction` (ColBERT: a vector a
+    /// token, for a multi-vector field), `image-text` (SigLIP),
+    /// `sound-text` (CLAP), `hosted` (behind an API), `hash` (a test
+    /// model) or `unknown`.
+    pub technique: &'static str,
+    /// A static model's table: `F32`, `F16`, `BF16` or `I8`.
+    pub precision: Option<String>,
+    /// The bytes of its files here, when it is here.
+    pub bytes: Option<u64>,
+    /// The model a converted copy was made of (`potion-base-8M` of
+    /// `potion-base-8M-int8`), from [`quantized_of`] or its directory.
+    pub made_of: Option<String>,
+}
+
+/// What [`Described`] says of model `name` under `models`: from its files
+/// when it is here, else from its name.
+pub fn describe(name: &str, models: &Path) -> Described {
+    let none = |technique| Described { technique, precision: None, bytes: None, made_of: None };
+    if name.starts_with("hash:") {
+        return none("hash");
+    }
+    if crate::hosted::known_model(name).is_some() {
+        return none("hosted");
+    }
+    let dir = models.join(name);
+    let made_of = quantized_of(name).map(|(base, _)| base.to_string()).or_else(|| {
+        // A copy `quantize-model` wrote, by the name it suggests.
+        let base = name.strip_suffix("-int8").or_else(|| name.strip_suffix("-f16"))?;
+        models.join(base).join("model.safetensors").exists().then(|| base.to_string())
+    });
+    let bytes = std::fs::read_dir(&dir).ok().map(|d| d.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum());
+    if dir.join("endpoint.json").exists() {
+        return Described { technique: "hosted", precision: None, bytes, made_of };
+    }
+    let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    let technique = match config["model_type"].as_str() {
+        Some("bert") if dir.join("artifact.metadata").exists() => "late-interaction",
+        Some("bert") => "transformer",
+        Some("siglip") => "image-text",
+        Some("clap") => "sound-text",
+        Some("model2vec") => "static",
+        Some(_) => "unknown",
+        // Not here: by its name.
+        None if lower.contains("colbert") => "late-interaction",
+        None if lower.starts_with("potion") => "static",
+        None if lower.starts_with("bge") || lower.starts_with("snowflake") => "transformer",
+        None if lower.starts_with("siglip") => "image-text",
+        None if lower.starts_with("clap") => "sound-text",
+        None if dir.join("model.safetensors").exists() => "static",
+        None => "unknown",
+    };
+    let precision = match technique {
+        "static" => safetensors_dtype(&dir.join("model.safetensors"), "embeddings").or_else(|| quantized_of(name).map(|(_, e)| e.to_string())),
+        _ => None,
+    };
+    Described { technique, precision, bytes, made_of }
+}
+
+/// The dtype of tensor `tensor` in safetensors file `path`, from its
+/// header alone.
+fn safetensors_dtype(path: &Path, tensor: &str) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut len = [0u8; 8];
+    f.read_exact(&mut len).ok()?;
+    let n = u64::from_le_bytes(len);
+    if n > 100 << 20 {
+        return None;
+    }
+    let mut head = vec![0u8; n as usize];
+    f.read_exact(&mut head).ok()?;
+    let j: serde_json::Value = serde_json::from_slice(&head).ok()?;
+    j.get(tensor)?.get("dtype")?.as_str().map(str::to_string)
 }
 
 /// The files the model directory of `name` needs: CLAP's repository
@@ -1062,6 +1142,15 @@ mod static_table_tests {
         let again = dir.join("again");
         quantize_static(&f32_dir, &again, "I8").unwrap();
         assert_eq!(std::fs::read(again.join("model.safetensors")).unwrap(), std::fs::read(i8_dir.join("model.safetensors")).unwrap());
+        // what a listing says of each
+        let d = describe("tiny-int8", &dir);
+        assert_eq!((d.technique, d.precision.as_deref(), d.made_of.as_deref()), ("static", Some("I8"), Some("tiny")));
+        assert!(d.bytes.unwrap() > 0);
+        assert_eq!(describe("tiny", &dir).precision.as_deref(), Some("F32"));
+        assert_eq!(describe("tiny-f16", &dir).precision.as_deref(), Some("F16"));
+        assert_eq!(describe("answerai-colbert-small-v1", &dir).technique, "late-interaction");
+        assert_eq!(describe("potion-base-8M-int8", &dir).precision.as_deref(), Some("I8"));
+        assert_eq!(describe("openai/text-embedding-3-small", &dir).technique, "hosted");
         // in place
         let inplace = dir.join("inplace");
         tiny_model(&inplace);

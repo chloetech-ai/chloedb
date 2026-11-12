@@ -33,6 +33,17 @@ changes collect under "Unreleased".
 - The static embedder reads tables in F16, BF16 and I8 besides F32, and
   Model2Vec's `weights` and `mapping` tensors, without which a newer
   Model2Vec model was embedded wrongly.
+- The command center's **Models** page (Data): each vector field's model,
+  how it makes vectors (static, transformer, late interaction, hosted) and
+  how the field is searched and stored, and the models on the server with
+  their size, precision and the fields that use them. A field changes
+  model or technique without stopping searches: a new field is added
+  beside it and filled in, the two are compared on the same words, then
+  renamed into place, and the old vectors are dropped (or the switch
+  undone). `GET /v1/models` says each model's technique, precision, size
+  and fields; `POST /v1/admin/models/fetch` and
+  `POST /v1/admin/models/convert` fetch a model, or write a static one's
+  table in int8, in the background.
 
 ## 0.2.0
 

@@ -45,6 +45,7 @@ mod limits;
 mod llm_calls;
 mod local_shard;
 mod mcp;
+mod model_manager;
 mod oncall;
 mod opensearch;
 mod operator_kube;

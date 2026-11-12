@@ -32,6 +32,7 @@ import sql from "./sql.js";
 import schema from "./schema.js";
 import importer from "./import.js";
 import slices from "./slices.js";
+import models from "./models.js";
 import builder from "./builder.js";
 import relevance from "./relevance.js";
 import recsys from "./recsys.js";
@@ -42,7 +43,7 @@ import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, importer, slices, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -81,6 +82,7 @@ export const NAV = [
   ["Data", [
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },
     { id: "schema", title: "Schema", icon: "schema", key: "d" },
+    { id: "models", title: "Models", icon: "cpu" },
     { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },
     { id: "slices", title: "Slices", icon: "layers" },
   ]],

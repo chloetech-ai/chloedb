@@ -318,6 +318,21 @@ fn no_rows() -> ResultSet {
     ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }
 }
 
+/// A model the command center asked this server to fetch or convert
+/// ([`Service::start_model_job`]), by the model it makes.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ModelJob {
+    /// `fetch` or `convert`.
+    pub action: &'static str,
+    /// The model converted (`convert`).
+    pub from: Option<String>,
+    /// `running`, `done` or `failed`.
+    pub state: &'static str,
+    pub error: Option<String>,
+    pub started_ms: u64,
+    pub finished_ms: Option<u64>,
+}
+
 /// An embedded VECTOR field ([`chloedb::Embed`]) and its model, which
 /// computes the vectors writes leave out and embeds `{"embed": "text"}`
 /// parameters.
@@ -531,6 +546,9 @@ pub struct Service {
     backfills: Mutex<HashMap<(String, String), Backfill>>,
     /// The models a fetch was tried for, once each.
     fetch_tried: Mutex<HashSet<String>>,
+    /// The fetches and conversions asked for over HTTP, by the model each
+    /// makes (lower case).
+    model_jobs: Mutex<HashMap<String, ModelJob>>,
     /// A coordinator's ranking models ([`Service::open_ranking_models`]);
     /// a database keeps its own.
     ranking: Models,
@@ -725,6 +743,7 @@ impl Service {
             models_changed: tokio::sync::watch::Sender::new(0),
             backfills: Mutex::new(HashMap::new()),
             fetch_tried: Mutex::new(HashSet::new()),
+            model_jobs: Mutex::new(HashMap::new()),
             ranking: Models::default(),
             timeout,
             max_timeout: timeout.max(Duration::from_secs(60)),
@@ -1460,6 +1479,85 @@ impl Service {
         if fetched {
             self.reopen_models();
         }
+    }
+
+    /// The fetches and conversions of models asked for over HTTP.
+    pub fn model_jobs(&self) -> HashMap<String, ModelJob> {
+        self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Starts fetching model `name` of [`chloedb::embed::KNOWN_MODELS`]
+    /// into the models directory (`convert: None`), or writing static model
+    /// `name`'s table again in `I8` or `F16` as a model of its own,
+    /// `<name>-int8` or `<name>-f16` (`convert: Some(type)`), and answers
+    /// at once with the name of the model it makes; [`Self::model_jobs`]
+    /// says how it went. Then the fields that name the model open it, and
+    /// fill in the vectors their rows lack. Names only: never a path, nor
+    /// a repository the server does not know.
+    pub fn start_model_job(self: &Arc<Self>, name: &str, convert: Option<&str>) -> Result<String, ApiError> {
+        let dir = self.models_dir();
+        let (target, from) = match convert {
+            None => {
+                let &(known, _, _) = chloedb::embed::KNOWN_MODELS.iter().find(|m| m.0.eq_ignore_ascii_case(name)).ok_or_else(|| {
+                    let names: Vec<&str> = chloedb::embed::KNOWN_MODELS.iter().map(|m| m.0).collect();
+                    ApiError::bad(format!("{name} is not a model this server fetches: one of {}", names.join(", ")))
+                })?;
+                (known.to_string(), None)
+            }
+            Some(elem) => {
+                if let Some(why) = chloedb::query::embed_sql::refuse_model(name, &dir) {
+                    return Err(ApiError::bad(format!("model {name}: {why}")));
+                }
+                let suffix = match elem.to_ascii_uppercase().as_str() {
+                    "I8" | "INT8" => "int8",
+                    "F16" | "FLOAT16" => "f16",
+                    other => return Err(ApiError::bad(format!("a static model converts to I8 or F16, not {other}"))),
+                };
+                let d = chloedb::embed::describe(name, &dir);
+                if d.technique != "static" || !dir.join(name).join("model.safetensors").exists() {
+                    return Err(ApiError::bad(format!("model {name} is not a static model here: only a Model2Vec table converts (fetch it first)")));
+                }
+                if d.precision.as_deref().is_some_and(|p| p == "I8" || (p == "F16" && suffix == "f16")) {
+                    return Err(ApiError::bad(format!("model {name}'s table is {} already", d.precision.unwrap_or_default())));
+                }
+                (format!("{name}-{suffix}"), Some((name.to_string(), elem.to_ascii_uppercase().replace("INT8", "I8").replace("FLOAT16", "F16"))))
+            }
+        };
+        if from.is_some() && dir.join(&target).join("model.safetensors").exists() {
+            return Err(ApiError { status: 409, message: format!("model {target} is here already") });
+        }
+        {
+            let mut jobs = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner());
+            if jobs.get(&target.to_lowercase()).is_some_and(|j| j.state == "running") {
+                return Err(ApiError { status: 409, message: format!("model {target} is being made already") });
+            }
+            let job = ModelJob { action: if from.is_some() { "convert" } else { "fetch" }, from: from.as_ref().map(|f| f.0.clone()), state: "running", error: None, started_ms: crate::telemetry::now_ms(), finished_ms: None };
+            jobs.insert(target.to_lowercase(), job);
+        }
+        let svc = self.clone();
+        let t = target.clone();
+        tokio::spawn(async move {
+            let done = match from {
+                None => crate::server::fetch_model(&t, &dir).await.map(|_| ()),
+                Some((src, elem)) => {
+                    let (a, b) = (dir.join(&src), dir.join(&t));
+                    tokio::task::spawn_blocking(move || chloedb::embed::quantize_static(&a, &b, &elem).map(|_| ()).map_err(|e| e.to_string())).await.unwrap_or_else(|e| Err(e.to_string()))
+                }
+            };
+            match &done {
+                Ok(()) => tracing::info!(model = %t, "made a model asked for over HTTP"),
+                Err(e) => tracing::warn!(model = %t, error = %e, "could not make a model asked for over HTTP"),
+            }
+            if let Some(j) = svc.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&t.to_lowercase()) {
+                j.state = if done.is_ok() { "done" } else { "failed" };
+                j.error = done.as_ref().err().cloned();
+                j.finished_ms = Some(crate::telemetry::now_ms());
+            }
+            if done.is_ok() {
+                svc.reopen_models();
+            }
+        });
+        Ok(target)
     }
 
     /// Fills in the vectors each embedded field's rows lack
