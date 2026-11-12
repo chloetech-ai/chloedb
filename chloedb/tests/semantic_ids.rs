@@ -491,4 +491,9 @@ fn next_codes_are_a_tries_children() {
     assert!(e(&["01".into()], "sid").contains("not a prefix"));
     assert!(e(&[String::new()], "tag").contains("not a semantic-ID field"));
     assert!(db.sid_next("items", "sid", &[String::new()], Some("nope = 1"), &Params::new()).is_err());
+    // The filter is one condition, not text spliced into a statement
+    // (audit Q14): what would change the statement around it is refused.
+    for bad in ["tag = 'blue' LIMIT 0", "tag = 'blue' ORDER BY tag", "tag = 'blue' GROUP BY tag", "tag = 'blue') OR (TRUE", "TRUE; SELECT 1"] {
+        assert!(db.sid_next("items", "sid", &[String::new()], Some(bad), &Params::new()).is_err(), "filter {bad:?} was taken");
+    }
 }

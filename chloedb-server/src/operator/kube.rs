@@ -105,6 +105,21 @@ impl Kube {
         r
     }
 
+    /// A JSON call to `path`: the answer's status and body, whatever the
+    /// status (a 409 of a compare-and-swap is an answer, not an error).
+    pub async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Json>) -> Result<(u16, Json), String> {
+        let mut r = self.http.request(method.clone(), format!("{}{path}", self.api));
+        if let Some(t) = self.token() {
+            r = r.bearer_auth(t);
+        }
+        if let Some(b) = body {
+            r = r.header("content-type", "application/json").body(b.to_string());
+        }
+        let a = r.send().await.map_err(|e| format!("{method} {path}: {e}"))?;
+        let status = a.status().as_u16();
+        Ok((status, a.json().await.unwrap_or(Json::Null)))
+    }
+
     async fn send(&self, method: reqwest::Method, path: &str, body: Option<(&str, &Json)>) -> Result<Option<Json>, String> {
         let mut r = self.http.request(method.clone(), format!("{}{path}", self.api));
         if let Some(t) = self.token() {
@@ -259,7 +274,14 @@ impl Cluster {
         let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": self.meta(&account, self.labels())});
         let role = json!({
             "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": self.meta(&account, self.labels()),
-            "rules": [{"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": [self.name], "verbs": ["get", "patch"]}],
+            "rules": [
+                {"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": [self.name], "verbs": ["get", "patch"]},
+                // The Lease of the cluster's map, which one coordinator at
+                // a time holds while it changes the map (finding E-2,
+                // super::lease); a create cannot name the object.
+                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": [format!("{}-map", self.name)], "verbs": ["get", "update"]},
+                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]},
+            ],
         });
         let binding = json!({
             "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": self.meta(&account, self.labels()),
@@ -639,8 +661,14 @@ impl Cluster {
         let port = super::chloectx::PORT;
         let resources = c.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"memory": "1Gi"}}));
         let mounts = json!([{"name": "models", "mountPath": models}]);
+        let mut args = c.args(&format!("http://{}:7700", self.name));
+        if s.token_secret.is_none() {
+            // A cluster without a token serves anyone who reaches it, and so
+            // does its ChloeCtx: chloectx app refuses that unless told.
+            args.push("--insecure".into());
+        }
         let mut container = json!({
-            "name": "chloectx", "image": s.image, "command": ["chloectx"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
+            "name": "chloectx", "image": s.image, "command": ["chloectx"], "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": port}],
             "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5},
             "volumeMounts": mounts,
@@ -1286,6 +1314,11 @@ impl Link {
         format!("/apis/{GROUP}/{VERSION}/namespaces/{}/{PLURAL}/{}", self.namespace, self.name)
     }
 
+    /// The Lease of the cluster's map, taken as `me` ([`super::lease`]).
+    pub fn map_lease(&self, me: &str) -> super::lease::MapLease {
+        super::lease::MapLease::new(self.kube.clone(), &self.namespace, &self.name, me)
+    }
+
     /// The resource: its spec, its status and whether the operator has
     /// seen its latest spec.
     pub async fn get(&self) -> Result<Json, String> {
@@ -1806,6 +1839,11 @@ mod tests {
         let sheets = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always", "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}], "sheets": {}}));
         assert_eq!(c.spec.server_config(), sheets.spec.server_config());
         assert_ne!(c.spec.coordinator_config(), sheets.spec.coordinator_config());
+        // A cluster without a token: its ChloeCtx is open too, and says so.
+        let open = cluster(json!({"chloectx": {}}));
+        let d = open.chloectx_deployment(open.spec.chloectx.as_ref().unwrap());
+        let args = d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().clone();
+        assert_eq!(args.last(), Some(&json!("--insecure")), "{args:?}");
         // No model to download with the hash embedder; paused: no pod.
         let hash = cluster(json!({"tokenSecret": "admin", "chloectx": {"embedder": "hash:256"}}));
         let d = hash.chloectx_deployment(hash.spec.chloectx.as_ref().unwrap());
@@ -1921,7 +1959,15 @@ mod tests {
         assert!(spec["containers"][0]["env"].as_array().unwrap().contains(&json!({"name": "STRATA_KUBE_CLUSTER", "value": "db/orders"})));
         let objects = c.common();
         let role = &objects.iter().find(|(p, _)| p.ends_with("/roles/orders-coordinator")).unwrap().1;
-        assert_eq!(role["rules"], json!([{"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": ["orders"], "verbs": ["get", "patch"]}]));
+        assert_eq!(
+            role["rules"],
+            json!([
+                {"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": ["orders"], "verbs": ["get", "patch"]},
+                // The Lease of its map (finding E-2), and only it.
+                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": ["orders-map"], "verbs": ["get", "update"]},
+                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]},
+            ])
+        );
         let binding = &objects.iter().find(|(p, _)| p.ends_with("/rolebindings/orders-coordinator")).unwrap().1;
         assert_eq!(binding["subjects"][0], json!({"kind": "ServiceAccount", "name": "orders-coordinator", "namespace": "db"}));
     }

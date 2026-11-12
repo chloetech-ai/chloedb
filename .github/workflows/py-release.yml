@@ -10,7 +10,17 @@ name: chloedb-py release
 # platform and attaches the wheels to the tag's GitHub release, from
 # which `pip install chloedb -f <the release's assets page>` picks the
 # one for its machine; a run started by hand does the same and keeps
-# them as the run's artifacts. Publishing to PyPI comes later.
+# them as the run's artifacts.
+#
+# PyPI: a tag also publishes the wheels to PyPI as `chloedb`, so that
+# `pip install chloedb` takes them, once the repository variable
+# CHLOEDB_PUBLISH_PYPI is `true`; until then nothing goes to PyPI. Setup,
+# once: on pypi.org, the project chloedb's Publishing page, a trusted
+# publisher with owner chloetech-ai, repository chloedb, workflow
+# py-release.yml and environment pypi (no token is stored anywhere); in
+# this repository's settings, an environment `pypi` (with required
+# reviewers, so that each upload waits for a person) and the variable.
+# PyPI refuses a version it already holds, so a tag publishes once.
 # A tag builds nothing unless it is on main and CI's full matrix passed on
 # its commit (release-gate.yml): the tests here check the packages, CI's
 # check the code.
@@ -47,11 +57,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Built on glibc 2.35, so tagged manylinux_2_35: the wheel installs
-          # on that and later (Debian 12, Ubuntu 22.04, RHEL 10 and newer),
-          # as chloedb-js's addon runs.
-          - { platform: linux-x86_64, os: ubuntu-22.04, compat: manylinux_2_35 }
-          - { platform: linux-aarch64, os: ubuntu-22.04-arm, compat: manylinux_2_35 }
+          # Built in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28),
+          # so the wheel installs on that and later: RHEL 8 and 9, Amazon
+          # Linux 2023, Debian 10 and newer, Ubuntu 20.04 and newer.
+          - { platform: linux-x86_64, os: ubuntu-22.04, manylinux: "2_28" }
+          - { platform: linux-aarch64, os: ubuntu-22.04-arm, manylinux: "2_28" }
           - { platform: macos-arm64, os: macos-latest, compat: "" }
           - { platform: macos-x86_64, os: macos-15-intel, compat: "" }
     runs-on: ${{ matrix.os }}
@@ -71,12 +81,26 @@ jobs:
           v=$(python3 -c 'import tomllib; print(tomllib.load(open("chloedb-py/pyproject.toml", "rb"))["project"]["version"])')
           test "$GITHUB_REF_NAME" = "chloedb-py-v$v" || test "$GITHUB_REF_NAME" = "strata-py-v$v"
       - name: Build the wheel
+        if: ${{ !matrix.manylinux }}
         working-directory: chloedb-py
         shell: bash
         run: |
           pip install "maturin>=1.9,<2"
-          maturin build --release --locked --out dist ${{ matrix.compat && format('--compatibility {0}', matrix.compat) || '' }}
+          maturin build --release --locked --out dist
           ls -la dist
+      # On Linux, inside the manylinux container, with Rust installed there
+      # (the runner's arm64 machines build the aarch64 wheel natively).
+      - name: Build the wheel (manylinux_${{ matrix.manylinux }})
+        if: ${{ matrix.manylinux }}
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          working-directory: chloedb-py
+          manylinux: ${{ matrix.manylinux }}
+          maturin-version: "1.16.0"
+          args: --release --locked --out dist
+      - name: The wheel
+        if: ${{ matrix.manylinux }}
+        run: ls -la chloedb-py/dist
       # The wheel installs into an empty virtualenv, with no Rust to build
       # anything with, and the embedded tests run against it there.
       - name: Install the wheel and test it
@@ -130,8 +154,31 @@ jobs:
         run: |
           ls -la dist
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" --title "chloedb for Python ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) wheels for CPython 3.10 and later; no Rust needed: \`pip install chloedb -f https://github.com/$REPO/releases/expanded_assets/$TAG\` picks the one for your machine. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later)."
+            gh release create "$TAG" --repo "$REPO" --title "chloedb for Python ${TAG##*-v}" --notes "Prebuilt chloedb (ChloeDB, formerly Strata) wheels for CPython 3.10 and later; no Rust needed: \`pip install chloedb -f https://github.com/$REPO/releases/expanded_assets/$TAG\` picks the one for your machine. Platforms: Linux x86_64 and aarch64 (glibc 2.28 or later), macOS arm64 and x86_64 (macOS 11 or later)."
           fi
           # A checksum of each wheel, to check a download by (sha256sum -c).
           (cd dist && sha256sum *.whl > SHA256SUMS && cat SHA256SUMS)
           gh release upload "$TAG" dist/*.whl dist/SHA256SUMS --repo "$REPO" --clobber
+
+  # To PyPI, once the repository variable CHLOEDB_PUBLISH_PYPI is `true`
+  # (the header says what else it needs): the same wheels the release has.
+  pypi:
+    name: PyPI
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') && vars.CHLOEDB_PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/chloedb/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: chloedb-py-*
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1

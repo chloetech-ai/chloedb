@@ -176,6 +176,12 @@ struct Args {
     /// such query asks every shard first).
     #[arg(long, default_value_t = chloedb_server::coord::STATS_CACHE_TERMS)]
     stats_cache_terms: usize,
+    /// With --shards: send a write to every server of a shard whose servers
+    /// do not replicate (none started with --replicas or --replica), each
+    /// taking it on its own. Without it such a shard serves reads only: its
+    /// copies would diverge, and nothing would ever make them agree again.
+    #[arg(long)]
+    write_every_copy: bool,
     /// With --shards: the StrataCluster (namespace/name) that runs this
     /// coordinator on Kubernetes, read and scaled through the API server as
     /// the pod's service account (the operator sets it).
@@ -1093,6 +1099,7 @@ async fn run() {
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
             stats_cache_terms: a.stats_cache_terms,
+            write_every_copy: a.write_every_copy,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {

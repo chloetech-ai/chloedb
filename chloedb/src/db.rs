@@ -2155,8 +2155,7 @@ impl Db {
     /// numbers. At most [`crate::sid::MAX_PREFIXES`] prefixes.
     pub fn sid_next(&self, table: &str, field: &str, prefixes: &[String], filter: Option<&str>, params: &Params) -> Result<Vec<Vec<(String, u64)>>> {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Query(format!("no such table: {table}")))?;
-        let sql = format!("SELECT COUNT(*) FROM {}{}", qsql::ident(&snap.schema().table), filter.map(|c| format!(" WHERE {c}")).unwrap_or_default());
-        let select = qsql::bind(&sql, snap.schema(), params)?;
+        let select = qsql::bind_condition(snap.schema(), filter, params)?;
         self.sid_next_with(&snap, &select, field, prefixes, &self.exec)
     }
 
@@ -2191,8 +2190,7 @@ impl Db {
         let snap = snap.table(&call.table).ok_or_else(|| Error::Query(format!("no such table: {}", call.table)))?;
         let schema = snap.schema();
         let f = call.field_of(schema)?;
-        let sql = format!("SELECT COUNT(*) FROM {}{}", qsql::ident(&schema.table), call.filter.as_deref().map(|c| format!(" WHERE {c}")).unwrap_or_default());
-        let select = qsql::bind(&sql, schema, params)?;
+        let select = qsql::bind_condition(schema, call.filter.as_deref(), params)?;
         let readers = self.readers(&snap)?;
         Executor::new(&snap, &readers, opts).json_paths(&select, f, call)
     }

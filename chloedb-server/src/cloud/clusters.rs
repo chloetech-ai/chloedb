@@ -113,6 +113,11 @@ pub struct Made {
     /// What bringing them did: the copy's answer, or `{"error"}`.
     #[serde(default)]
     pub brought: Option<Json>,
+    /// Found in the account rather than made here ([`Clusters::adopt`]):
+    /// it came onto the list only to be deleted, and what it cost before
+    /// is not known here.
+    #[serde(default)]
+    pub found: bool,
 }
 
 /// How long the parts that wait wait before giving up.
@@ -163,7 +168,9 @@ impl Made {
     }
 
     fn installed(&self) -> bool {
-        self.steps.iter().any(|s| s.phase == Phase::Starting) || matches!(self.phase, Phase::Starting | Phase::Ready)
+        // One found in the account may hold ChloeDB's volumes: they go first.
+        self.found
+            || self.steps.iter().any(|s| s.phase == Phase::Starting) || matches!(self.phase, Phase::Starting | Phase::Ready)
     }
 
     /// What the page shows: everything but what makes it, with what it has
@@ -186,7 +193,7 @@ impl Made {
             "strata": self.strata, "summary": if self.strata.is_null() { Json::Null } else { json!(install::summary(&self.strata)) },
             "connect": if matches!(self.phase, Phase::Starting | Phase::Ready) { json!(connect) } else { json!([]) },
             "delete_at_ms": self.delete_at_ms,
-            "bring": self.bring, "brought": self.brought,
+            "bring": self.bring, "brought": self.brought, "found": self.found,
             // What it will have cost by then, at the planned price.
             "cost_by_delete": self.delete_at_ms.map(|t| self.cost_hour * t.saturating_sub(self.created_ms) as f64 / 3_600_000.0),
         })
@@ -311,6 +318,29 @@ impl Clusters {
         drop(list);
         self.wake.notify_one();
         Ok(out)
+    }
+
+    /// Puts a cluster found in the account ([`found`]) on the list to be
+    /// deleted, as one made here would be: its volumes, then the cloud's
+    /// cluster. Refused while the list has a live one with the same cloud
+    /// id, or of the same name in that cloud and region.
+    pub fn adopt(&self, mut m: Made, by: &str) -> Result<Made, String> {
+        let mut list = self.lock();
+        if let Some(o) = list.iter().find(|o| o.provider == m.provider && o.phase != Phase::Deleted && ((o.cloud_id.is_some() && o.cloud_id == m.cloud_id) || (o.region == m.region && o.cluster == m.cluster))) {
+            return Err(format!("{} is on this server's list already ({:?}): delete it there", o.cluster, o.phase));
+        }
+        m.found = true;
+        m.phase = Phase::Deleting;
+        m.deleting_since_ms = Some(now_ms());
+        m.delete_asked = false;
+        m.volumes_gone = false;
+        m.delete_at_ms = None;
+        m.note(format!("{by} asked to delete it: found in the account, not made here"));
+        list.push(m.clone());
+        self.save(&list)?;
+        drop(list);
+        self.wake.notify_one();
+        Ok(m)
     }
 
     /// Sets when the cluster `id` deletes itself (`None`: it is kept until
@@ -662,8 +692,60 @@ async fn deleting(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
     Ok(())
 }
 
+/// The account's DOKS clusters ([`DigitalOcean::clusters`]) that look like
+/// ChloeDB's (tagged `strata`, as a plan makes them, or named `strata-*`)
+/// and that this server's list does not follow: what the page offers to
+/// delete. `node` is the node this server runs on, if it says: the
+/// cluster that has it is this server's own, and is marked so.
+pub fn found_doks(clusters: &[Json], made: &[Made], node: Option<&str>) -> Vec<Json> {
+    clusters
+        .iter()
+        .filter(|c| {
+            let name = c["name"].as_str().unwrap_or_default();
+            let tagged = c["tags"].as_array().is_some_and(|t| t.iter().any(|t| t == "strata"));
+            (tagged || name.starts_with("strata-")) && c["status"]["state"] != "deleted"
+        })
+        .filter(|c| !made.iter().any(|m| m.provider == "digitalocean" && m.phase != Phase::Deleted && (m.cloud_id.as_deref() == c["id"].as_str() || (m.cluster == c["name"] && m.region == c["region"]))))
+        .map(|c| {
+            let pools = c["node_pools"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let nodes: u64 = pools.iter().map(|p| p["count"].as_u64().unwrap_or(0)).sum();
+            let machines: Vec<&str> = pools.iter().filter_map(|p| p["size"].as_str()).collect();
+            let here = node.is_some_and(|n| pools.iter().any(|p| p["nodes"].as_array().is_some_and(|ns| ns.iter().any(|x| x["name"] == n))));
+            json!({
+                "provider": "digitalocean", "cloud_id": c["id"], "cluster": c["name"], "region": c["region"],
+                "state": c["status"]["state"], "nodes": nodes, "machine": machines.join(", "), "created_at": c["created_at"],
+                "owner": c["tags"].as_array().and_then(|t| t.iter().filter_map(|t| t.as_str()).find_map(|t| t.strip_prefix("strata-owner:"))),
+                "here": here,
+            })
+        })
+        .collect()
+}
+
+/// The region's CloudFormation stacks ([`Aws::stacks`]) a plan made
+/// (tagged `strata.chloetech.ai/cluster`) that are not deleted and that
+/// this server's list does not follow.
+pub fn found_stacks(region: &str, stacks: &[Json], made: &[Made]) -> Vec<Json> {
+    stacks
+        .iter()
+        .filter(|s| s["Tags"].as_array().is_some_and(|t| t.iter().any(|t| t["Key"] == "strata.chloetech.ai/cluster")))
+        .filter(|s| s["StackStatus"].as_str().is_some_and(|st| st != "DELETE_COMPLETE"))
+        .filter(|s| !made.iter().any(|m| m.provider == "aws" && m.phase != Phase::Deleted && (m.cloud_id.as_deref() == s["StackId"].as_str() || (m.cluster == s["StackName"] && m.region == region))))
+        .map(|s| {
+            json!({
+                "provider": "aws", "cloud_id": s["StackId"], "cluster": s["StackName"], "region": region,
+                "state": s["StackStatus"], "nodes": Json::Null, "machine": Json::Null,
+                "created_at": s["CreationTime"], "owner": Json::Null, "here": false,
+            })
+        })
+        .collect()
+}
+
 fn gone(m: &mut Made) {
     m.ended_ms = Some(now_ms());
+    if m.found {
+        m.to(Phase::Deleted, "deleted");
+        return;
+    }
     let hours = m.ended_ms.unwrap_or_default().saturating_sub(m.created_ms) as f64 / 3_600_000.0;
     let minutes = (hours * 60.0).round().max(1.0);
     let up = if minutes == 1.0 { "a minute".to_string() } else if hours < 1.0 { format!("{minutes} minutes") } else { format!("{hours:.1} hours") };
@@ -680,6 +762,7 @@ mod tests {
             machine: "m8g.large".into(), nodes: 3, cost_hour: 0.4, by: "admin".into(), created_ms: 1, phase, cloud_id: None, request: json!({}),
             image: "img".into(), objects: Vec::new(), steps: Vec::new(), error: None, strata: Json::Null, progress: None, ready_ms: None, ended_ms: None,
             generation: 0, tries: 0, checked_ms: 0, deleting_since_ms: None, volumes_gone: false, delete_asked: false, delete_at_ms: None, bring: Vec::new(), brought: None,
+            found: false,
         }
     }
 
@@ -726,6 +809,25 @@ mod tests {
         let v = again.get(&m.id).unwrap().view();
         assert!(v.get("request").is_none() && v.get("objects").is_none() && v["cost_so_far"].as_f64().unwrap() > 0.0, "{v}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stacks_found_are_chloedbs_live_ones_not_on_the_list() {
+        let tag = json!([{"Key": "strata.chloetech.ai/cluster", "Value": "x"}]);
+        let stacks = vec![
+            json!({"StackId": "arn:1", "StackName": "strata-search", "StackStatus": "CREATE_COMPLETE", "Tags": tag}),
+            json!({"StackId": "arn:2", "StackName": "strata-old", "StackStatus": "DELETE_COMPLETE", "Tags": tag}),
+            json!({"StackId": "arn:3", "StackName": "billing", "StackStatus": "CREATE_COMPLETE", "Tags": []}),
+            json!({"StackId": "arn:4", "StackName": "strata-made", "StackStatus": "CREATE_COMPLETE", "Tags": tag}),
+        ];
+        let mut m = made(Phase::Ready);
+        m.cluster = "strata-made".into();
+        m.cloud_id = Some("arn:4".into());
+        let f = found_stacks("us-east-1", &stacks, &[m.clone()]);
+        assert_eq!(f.iter().map(|s| s["cluster"].as_str().unwrap()).collect::<Vec<_>>(), ["strata-search"], "{f:?}");
+        // Deleted from the list: found again.
+        m.phase = Phase::Deleted;
+        assert_eq!(found_stacks("us-east-1", &stacks, &[m]).len(), 2);
     }
 
     #[test]

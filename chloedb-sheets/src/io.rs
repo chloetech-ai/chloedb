@@ -1,7 +1,7 @@
 //! Files in and out: xlsx (IronCalc reads and writes Excel's format), CSV,
 //! and SQLite databases, each of whose tables becomes a sheet.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use ironcalc::base::types::Workbook;
 use ironcalc::base::{Model, UserModel};
@@ -12,6 +12,17 @@ use crate::book::{engine_of, Engine, LANG};
 /// Cells an import fills at most (a sheet holds the first rows of a table
 /// that has more, and says so).
 pub const MAX_IMPORT_CELLS: usize = 2_000_000;
+
+/// Bytes an xlsx file may expand to: its parts, decompressed, together. A
+/// file of a few megabytes can expand to gigabytes of XML, all of which
+/// IronCalc would hold at once.
+pub const MAX_XLSX_EXPANDED: u64 = 512 << 20;
+
+/// How long reading a SQLite file may take: listing its tables, or
+/// bringing them into sheets. A view of the file's can be a query that
+/// never ends.
+pub const SQLITE_LIST_SECS: u64 = 60;
+pub const SQLITE_IMPORT_SECS: u64 = 180;
 
 /// The kind of a file, by its first bytes, or by its name.
 pub fn sniff(bytes: &[u8], name: &str) -> &'static str {
@@ -28,9 +39,31 @@ pub fn sniff(bytes: &[u8], name: &str) -> &'static str {
     "csv"
 }
 
+/// Refuses an xlsx file whose parts expand past `limit` bytes, counted by
+/// decompressing them (the sizes a zip declares can lie).
+pub fn check_xlsx_size(bytes: &[u8], limit: u64) -> Result<(), String> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not an xlsx file: {e}"))?;
+    let mut total = 0u64;
+    for i in 0..zip.len() {
+        let mut part = zip.by_index(i).map_err(|e| format!("not an xlsx file: {e}"))?;
+        let room = limit.saturating_sub(total);
+        let n = std::io::copy(&mut (&mut part).take(room + 1), &mut std::io::sink()).map_err(|e| format!("not an xlsx file: {e}"))?;
+        total += n;
+        if total > limit {
+            return Err(format!("the xlsx file expands to more than {} MB; imports take at most that", limit >> 20));
+        }
+    }
+    Ok(())
+}
+
 /// A workbook from the bytes of an xlsx file.
 pub fn from_xlsx(bytes: &[u8], name: &str) -> Result<Engine, String> {
+    check_xlsx_size(bytes, MAX_XLSX_EXPANDED)?;
     let wb: Workbook = ironcalc::import::load_from_xlsx_bytes(bytes, name, "en", "UTC").map_err(|e| format!("not an xlsx file IronCalc reads: {e}"))?;
+    let cells: usize = wb.worksheets.iter().map(|w| w.sheet_data.cells().count()).sum();
+    if cells > MAX_IMPORT_CELLS {
+        return Err(format!("the xlsx file holds {cells} cells; imports take at most {MAX_IMPORT_CELLS}"));
+    }
     let mut e = engine_of(wb)?;
     e.set_name(name);
     Ok(e)
@@ -199,19 +232,58 @@ pub fn to_csv(model: &Model, sheet: u32) -> Result<String, String> {
     String::from_utf8(w.into_inner().map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
-/// The tables of a SQLite database: name, columns and rows.
+/// Interrupts what a connection runs once `secs` have passed, until it is
+/// dropped.
+pub struct Deadline(Option<std::sync::mpsc::Sender<()>>);
+
+impl Deadline {
+    pub fn new(conn: &rusqlite::Connection, secs: u64) -> Deadline {
+        let handle = conn.get_interrupt_handle();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(std::time::Duration::from_secs(secs)) {
+                handle.interrupt();
+            }
+        });
+        Deadline(Some(tx))
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        drop(self.0.take());
+    }
+}
+
+/// An error of a read the deadline cut short says so.
+fn sqlite_err(e: rusqlite::Error, secs: u64) -> String {
+    if e.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) {
+        format!("reading the SQLite file took more than {secs} s and was stopped (a view of the file's may be a query that does not end)")
+    } else {
+        e.to_string()
+    }
+}
+
+/// The tables of a SQLite database: name, columns and rows; and its views
+/// (`"kind": "view"`), whose rows are not counted, since counting runs
+/// the view's query.
 pub fn sqlite_tables(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> {
-    let mut st = conn.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name").map_err(|e| e.to_string())?;
-    let names: Vec<String> = st.query_map([], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    let _deadline = Deadline::new(conn, SQLITE_LIST_SECS);
+    let mut st = conn.prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name").map_err(|e| e.to_string())?;
+    let names: Vec<(String, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
     let mut out = Vec::new();
-    for t in names {
+    for (t, kind) in names {
         let q = crate::strata::ident(&t);
         let cols: Vec<Value> = match conn.prepare(&format!("PRAGMA table_info({q})")) {
             Ok(mut s) => s.query_map([], |r| Ok(json!({"name": r.get::<_, String>(1)?, "type": r.get::<_, String>(2).unwrap_or_default()}))).map_err(|e| e.to_string())?.filter_map(Result::ok).collect(),
             Err(e) => return Err(e.to_string()),
         };
+        if kind == "view" {
+            out.push(json!({"name": t, "kind": "view", "columns": cols, "rows": null}));
+            continue;
+        }
         let rows: i64 = conn.query_row(&format!("SELECT count(*) FROM {q}"), [], |r| r.get(0)).unwrap_or(0);
-        out.push(json!({"name": t, "columns": cols, "rows": rows}));
+        out.push(json!({"name": t, "kind": "table", "columns": cols, "rows": rows}));
     }
     Ok(out)
 }
@@ -221,21 +293,27 @@ pub fn open_sqlite(bytes: &[u8]) -> Result<(rusqlite::Connection, tempfile::Name
     let f = tempfile::Builder::new().prefix("strata-sheets-").suffix(".sqlite").tempfile().map_err(|e| e.to_string())?;
     std::fs::write(f.path(), bytes).map_err(|e| e.to_string())?;
     let conn = rusqlite::Connection::open_with_flags(f.path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| format!("not a SQLite database: {e}"))?;
+    // The file's schema is not ours: its views and triggers may call only
+    // functions without side effects.
+    conn.execute_batch("PRAGMA trusted_schema = OFF").map_err(|e| format!("not a SQLite database: {e}"))?;
     Ok((conn, f))
 }
 
 /// A workbook of a SQLite database: a sheet for each table (those of
-/// `only`, if given), its columns' names in the first row.
+/// `only`, if given, views among them only when named), its columns' names
+/// in the first row.
 pub fn from_sqlite(bytes: &[u8], name: &str, only: Option<&[String]>) -> Result<(Engine, Value), String> {
     let (conn, _file) = open_sqlite(bytes)?;
     let tables = sqlite_tables(&conn)?;
+    let _deadline = Deadline::new(&conn, SQLITE_IMPORT_SECS);
     let mut m = empty_model();
     let mut budget = MAX_IMPORT_CELLS;
     let mut taken: Vec<String> = Vec::new();
     let mut report = Vec::new();
     for t in &tables {
         let tname = t["name"].as_str().unwrap_or_default().to_string();
-        if only.is_some_and(|o| !o.iter().any(|x| x == &tname)) {
+        let named = only.is_some_and(|o| o.iter().any(|x| x == &tname));
+        if (only.is_some() && !named) || (t["kind"] == "view" && !named) {
             continue;
         }
         let sname = sheet_name(&tname, &taken);
@@ -248,14 +326,14 @@ pub fn from_sqlite(bytes: &[u8], name: &str, only: Option<&[String]>) -> Result<
         };
         taken.push(sname.clone());
         let q = crate::strata::ident(&tname);
-        let mut st = conn.prepare(&format!("SELECT * FROM {q}")).map_err(|e| e.to_string())?;
+        let mut st = conn.prepare(&format!("SELECT * FROM {q}")).map_err(|e| sqlite_err(e, SQLITE_IMPORT_SECS))?;
         let head: Vec<String> = st.column_names().into_iter().map(str::to_string).collect();
         let width = head.len();
-        let mut rows = st.query([]).map_err(|e| e.to_string())?;
+        let mut rows = st.query([]).map_err(|e| sqlite_err(e, SQLITE_IMPORT_SECS))?;
         let mut vals: Vec<Vec<Val>> = Vec::new();
         let mut more = false;
         let room = budget / width.max(1);
-        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+        while let Some(r) = rows.next().map_err(|e| sqlite_err(e, SQLITE_IMPORT_SECS))? {
             if vals.len() >= room {
                 more = true;
                 break;
@@ -278,7 +356,13 @@ pub fn from_sqlite(bytes: &[u8], name: &str, only: Option<&[String]>) -> Result<
         report.push(json!({"table": tname, "sheet": sname, "rows": n, "of": t["rows"], "cells": cells, "truncated": cut || more}));
     }
     if taken.is_empty() {
-        return Err(if tables.is_empty() { "the database has no tables".into() } else { "none of those tables is in the database".into() });
+        return Err(if tables.is_empty() {
+            "the database has no tables".into()
+        } else if only.is_none() {
+            "the database has only views: name the ones to bring in (a view runs its query as it is read)".into()
+        } else {
+            "none of those tables is in the database".into()
+        });
     }
     let stem = name.rsplit_once('.').map(|(a, _)| a).unwrap_or(name);
     m.workbook.name = stem.to_string();
@@ -337,5 +421,65 @@ mod tests {
         let back = from_xlsx(&x, "shop").unwrap();
         assert_eq!(back.get_formatted_cell_value(0, 3, 2).unwrap(), "007");
         assert_eq!(back.get_formatted_cell_value(0, 2, 3).unwrap(), "3");
+    }
+
+    /// A SQLite file whose view never ends: `forever`, over a recursive CTE.
+    fn endless_view() -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("trap.db");
+        let c = rusqlite::Connection::open(&p).unwrap();
+        c.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1); CREATE VIEW forever AS WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) AS c FROM n;").unwrap();
+        drop(c);
+        std::fs::read(&p).unwrap()
+    }
+
+    #[test]
+    fn a_sqlite_files_views_are_listed_not_run() {
+        let bytes = endless_view();
+        let (conn, _f) = open_sqlite(&bytes).unwrap();
+        let started = std::time::Instant::now();
+        let list = sqlite_tables(&conn).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "listing counted the view's rows");
+        assert_eq!(list.iter().map(|t| (t["name"].as_str().unwrap(), t["kind"].as_str().unwrap())).collect::<Vec<_>>(), [("t", "table"), ("forever", "view")]);
+        assert!(list[1]["rows"].is_null());
+        // Brought in without naming it, the view is left out.
+        let (e, r) = from_sqlite(&bytes, "trap.db", None).unwrap();
+        assert_eq!(e.get_worksheets_properties().len(), 1);
+        assert_eq!(r["tables"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_deadline_stops_a_query_that_does_not_end() {
+        let bytes = endless_view();
+        let (conn, _f) = open_sqlite(&bytes).unwrap();
+        let _d = Deadline::new(&conn, 1);
+        let started = std::time::Instant::now();
+        let e = conn.query_row("SELECT c FROM forever", [], |r| r.get::<_, i64>(0)).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert!(sqlite_err(e, 1).contains("took more than 1 s"));
+        // A deadline dropped in time interrupts nothing.
+        let d = Deadline::new(&conn, 1);
+        drop(d);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(conn.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn an_xlsx_that_expands_past_the_bound_is_refused() {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        let zeros = vec![b' '; 1 << 20];
+        for _ in 0..8 {
+            w.write_all(&zeros).unwrap();
+        }
+        let bytes = w.finish().unwrap().into_inner();
+        assert!(bytes.len() < 100_000, "8 MB of spaces compress to {} bytes", bytes.len());
+        let e = check_xlsx_size(&bytes, 4 << 20).unwrap_err();
+        assert!(e.contains("expands to more than 4 MB"), "{e}");
+        assert!(check_xlsx_size(&bytes, 16 << 20).is_ok());
+        // A real workbook passes the default bound.
+        let x = to_xlsx(&empty_model()).unwrap();
+        assert!(check_xlsx_size(&x, MAX_XLSX_EXPANDED).is_ok());
     }
 }

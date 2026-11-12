@@ -8,13 +8,13 @@ The package is in [`chloedb-js/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
+Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler. The package is not on npm yet, so install the tarball for your platform:
 
 ```sh
 npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.2.0/chloedb-0.2.0-darwin-arm64.tgz
 ```
 
-The tarballs are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do; release 0.1.0, from before the rename, was published as `strata-db` (tag `strata-js-v0.1.0`) and imports as `"strata-db"`.
+It imports as `"chloedb"`. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as `strata-db` and imports as `"strata-db"`.
 
 | platform | tarball |
 |---|---|
@@ -23,7 +23,7 @@ The tarballs are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as
 | Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `chloedb-<version>-linux-x64-gnu.tgz` |
 | Linux arm64, glibc 2.35+ | `chloedb-<version>-linux-arm64-gnu.tgz` |
 
-The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds them on a tag `chloedb-js-v<version>` (or `strata-js-v<version>`; the version in `chloedb-js/package.json`), tests each one, installs it into an empty app and runs it there, then attaches them to the release; `node scripts/pack.mjs <platform>` packs one by hand. The package is not on npm yet. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2).
+The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds the tarballs on a `chloedb-js-v<version>` tag and runs each one in an empty app before attaching it to the release; `node scripts/pack.mjs <platform>` packs one by hand.
 
 ### From source
 
@@ -32,8 +32,8 @@ It needs Rust (stable) and a C compiler.
 ```sh
 cd chloedb-js
 npm run build                    # cargo build --release, then copies the addon to chloedb.node
-cd ../my-app
-npm install ../chloedb/chloedb-js  # or "chloedb": "file:../chloedb/chloedb-js" in package.json
+cd /path/to/my-app
+npm install /path/to/chloedb/chloedb-js  # or "chloedb": "file:/path/to/chloedb/chloedb-js" in package.json
 ```
 
 `npm install` of the directory builds the addon itself when `chloedb.node` is missing. `npm run build -- --features bert` builds more of ChloeDB's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`) loads an addon from another place.

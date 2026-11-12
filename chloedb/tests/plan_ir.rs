@@ -201,6 +201,13 @@ fn plans_from_elsewhere_run_as_their_sql() {
         (serde_json::json!({"not": {"and": [cmp("lt", "year", serde_json::json!({"float": 2019.5})), cmp("eq", "done", serde_json::json!({"bool": true}))]}}), "NOT (year < 2019.5 AND done)"),
         (cmp("lt", "published", serde_json::json!({"timestamp": 1_791_158_400_000_000i64})), "published < '2026-10-05'"),
         (serde_json::json!({"or": [{"is_null": field("year")}, {"in": {"expr": field("done"), "list": [{"lit": {"bool": false}}]}}]}), "year IS NULL OR done = FALSE"),
+        // NOTs over NOTs and over !=, which the SQL binder simplifies
+        // first and a plan from elsewhere need not: each NOT is SQL's, so
+        // a row without a year matches none of them (audit Q7).
+        (serde_json::json!({"not": {"not": cmp("ge", "year", serde_json::json!({"int": 2020}))}}), "year >= 2020"),
+        (serde_json::json!({"not": cmp("ne", "year", serde_json::json!({"int": 2016}))}), "year = 2016"),
+        (serde_json::json!({"not": {"not": {"not": cmp("eq", "year", serde_json::json!({"int": 2016}))}}}), "NOT (year = 2016)"),
+        (serde_json::json!({"not": {"or": [{"not": cmp("lt", "year", serde_json::json!({"int": 2019}))}, cmp("eq", "category", serde_json::json!({"text": "db"}))]}}), "year < 2019 AND category != 'db'"),
     ];
     for (filter, cond) in cases {
         let sql = format!("SELECT id FROM papers WHERE {cond}");

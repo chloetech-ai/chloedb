@@ -9,7 +9,7 @@ answers with Arrow columns (`query_arrow`), which pyarrow, polars and pandas
 read without copying them.
 
 ```sh
-# a release's prebuilt wheel (Linux glibc 2.35+, macOS 11+); no Rust needed
+# a release's prebuilt wheel (Linux glibc 2.28+, macOS 11+); no Rust needed
 pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 pip install ./chloedb-py          # or from source, from the repository's root; needs Rust
 ```
