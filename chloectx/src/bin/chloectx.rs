@@ -12,6 +12,9 @@
 //!   chloectx redact [--all] [--dry-run]            redact secrets a store recorded before
 //!   chloectx fetch-model [static|bert]             download the embedding model
 //!   chloectx sync setup --url URL [--token-stdin]  copy the memory to a ChloeDB server (status|push|pull)
+//!   chloectx blame path[:line]                     the edit behind a line, and what memory had recalled before it
+//!   chloectx receipts | receipt ID                 what each recall showed and why, replayed
+//!   chloectx snapshot keep NAME | list | drop NAME snapshots of the store that receipts replay on
 //!   chloectx doctor                                check the install and the project's store
 //!   chloectx ui [--port N] [--home DIR]            browse every local store in the inspector
 //!   chloectx pack OUT [--kinds ..] [--since-days N] cut a capsule another agent can mount
@@ -100,6 +103,45 @@ enum Cmd {
     Sql { sql: String },
     /// Store a decision, preference, fact, todo or note.
     Remember { kind: String, text: String },
+    /// The edit behind a line of code (`path:line`) or a file: its session,
+    /// prompt and tool calls, the notes written from its turn, the records
+    /// memory had recalled into the agent's context before it (with their
+    /// scores and what became of them), and that recall replayed on the
+    /// snapshot kept at the time and on today's store.
+    Blame {
+        target: String,
+        /// Do not replay the recall.
+        #[arg(long)]
+        no_replay: bool,
+        /// Print the JSON result.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The newest receipts: one for every recall and memory search.
+    Receipts {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// One receipt: every candidate's scores, tokens and decision, and the
+    /// recall replayed on the snapshot kept at its commit and on today's store.
+    Receipt {
+        id: String,
+        #[arg(long)]
+        no_replay: bool,
+        /// Also print the text the agent was shown.
+        #[arg(long)]
+        text: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Snapshots of the store kept by name, which receipts replay on
+    /// (others are kept after recalls and pruned by age).
+    Snapshot {
+        #[command(subcommand)]
+        what: SnapCmd,
+    },
     /// Counts and sizes.
     Stats,
     /// Copy the project's store to a new directory while ChloeCtx runs: a
@@ -172,6 +214,12 @@ enum Cmd {
         /// The embedder (static, or hash:<dim> for tests; $CHLOECTX_EMBEDDER).
         #[arg(long, env = "CHLOECTX_EMBEDDER", default_value = "static")]
         embedder: String,
+        /// Also show this machine's Claude Code stores in the command
+        /// center (Receipts and Blame pages; $CHLOECTX_APP_LOCAL=1). Their
+        /// records are transcripts: turn it on only where the command
+        /// center's users may read them.
+        #[arg(long, env = "CHLOECTX_APP_LOCAL", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
+        local_stores: bool,
     },
     /// Cut a capsule from the project's memory: a read-only ChloeDB file of
     /// the selected records (default: distilled notes, entities and the
@@ -229,6 +277,16 @@ enum Cmd {
         #[arg(default_value = "static")]
         which: String,
     },
+}
+
+#[derive(Subcommand)]
+enum SnapCmd {
+    /// Keep a snapshot of the store now, under NAME, until it is dropped.
+    Keep { name: String },
+    /// The kept snapshots.
+    List,
+    /// Drop a kept snapshot.
+    Drop { name: String },
 }
 
 #[derive(Subcommand)]
@@ -343,6 +401,31 @@ fn main() {
             }
         }
         Cmd::Sql { sql } => text(&send(&project, json!({"op": "sql", "sql": sql}), 30)),
+        Cmd::Blame { target, no_replay, json: as_json } => {
+            let r = send(&project, json!({"op": "blame", "target": target, "replay": !no_replay}), 120);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
+        Cmd::Receipts { session, limit } => text(&send(&project, json!({"op": "receipts", "session": session, "limit": limit}), 30)),
+        Cmd::Receipt { id, no_replay, text: show, json: as_json } => {
+            let r = send(&project, json!({"op": "receipt", "id": id, "replay": !no_replay, "text": show}), 120);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
+        Cmd::Snapshot { what } => {
+            let req = match what {
+                SnapCmd::Keep { name } => json!({"op": "snapshot", "what": "keep", "name": name}),
+                SnapCmd::List => json!({"op": "snapshot", "what": "list"}),
+                SnapCmd::Drop { name } => json!({"op": "snapshot", "what": "drop", "name": name}),
+            };
+            text(&send(&project, req, 600));
+        }
         Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t}), 30)),
         Cmd::Stats => println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "stats"}), 30)).unwrap()),
         Cmd::Backup { dest } => {
@@ -453,8 +536,9 @@ fn main() {
             }
         }
         Cmd::Mount { dirs, log, embedder } => std::process::exit(chloectx::capsule::run_mcp(&dirs, log, embedder.as_deref())),
-        Cmd::App { server, key, host, port, token, insecure, embedder } => {
-            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder }) {
+        Cmd::App { server, key, host, port, token, insecure, embedder, local_stores } => {
+            let local = local_stores.then(paths::home);
+            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder, local }) {
                 eprintln!("chloectx app: {e}");
                 std::process::exit(1);
             }
