@@ -2475,6 +2475,15 @@ impl Service {
         }
         if req.plan.is_none() && !req.shard {
             if let Some(split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
+                // Calls of a classifier on a parameter, computed: the query
+                // runs as any does.
+                if split.is_folded() {
+                    let mut folded = req.clone();
+                    folded.sql = split.first.to_string();
+                    let mut a = self.query_admitted(folded).await?;
+                    a.rs.stats.plan.insert(0, split.folded_line());
+                    return Ok(a);
+                }
                 if req.scroll.is_some() {
                     return Err(ApiError::bad("a query that calls llm() is not scrolled: page it with LIMIT and OFFSET"));
                 }
@@ -3341,6 +3350,9 @@ impl Service {
     /// is kept under the key ([`Coordinator::sql`]).
     #[allow(clippy::too_many_arguments)]
     pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
+        if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
+            return self.classifier_statement(who, &st, timeout_ms).await;
+        }
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         if let Command::Function(f) = &command {
             // How a coordinator numbers a function's versions alike on
@@ -3403,6 +3415,56 @@ impl Service {
         };
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+    }
+
+    /// `CREATE CLASSIFIER`: the rows it trains on read as a query reads
+    /// them (a coordinator's from every shard), the classifier trained
+    /// here and kept as a stored function ([`Self::ddl`]), answered with
+    /// what the training measured; `DROP CLASSIFIER`, the function's drop
+    /// ([`chloedb::query::classify`]).
+    async fn classifier_statement(self: &Arc<Self>, who: &Principal, st: &chloedb::query::classify::Statement, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        use chloedb::query::classify::Statement;
+        who.may(Scope::Admin, "a classifier statement")?;
+        let t0 = Instant::now();
+        let c = match st {
+            Statement::Drop { .. } => {
+                let sql = st.drop_sql().expect("a drop");
+                keys::note(sql.clone());
+                let w = self.ddl(&sql, &Params::new(), timeout_ms, &who.name).await?;
+                return Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
+            }
+            Statement::Create(c) => c,
+        };
+        let schema = self.table(&c.table).await?;
+        c.check(&schema)?;
+        if !c.replace && self.functions().current(&c.name).is_some() {
+            return Err(ApiError::bad(format!("query error: function {} exists: CREATE OR REPLACE CLASSIFIER {} makes its next version", c.name, c.name)));
+        }
+        let read = self.query(QueryReq { sql: c.training_sql(), timeout_ms, ..Default::default() }).await?;
+        let (c2, schema2) = (c.clone(), schema.clone());
+        let trained = tokio::task::spawn_blocking(move || c2.train(&schema2, &read.rs)).await.map_err(ApiError::internal)??;
+        let sql = trained.function_sql(c);
+        keys::note(format!("CREATE CLASSIFIER {} ON {}({}) LABELS {}", c.name, c.table, c.field, c.labels));
+        self.ddl(&sql, &Params::new(), timeout_ms, &who.name).await?;
+        Ok(SqlAnswer::Rows(Answer { rs: trained.result_set(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "classifier", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+    }
+
+    /// The classes of `text` by the classifier `name`, its `k` best: the
+    /// text embedded by the model of the field the classifier was trained
+    /// on (through a coordinator, as a query's `{"embed": ...}` parameter
+    /// is).
+    pub async fn classify(self: &Arc<Self>, name: &str, text: &str, k: usize) -> Result<chloedb::query::classify::Classified, ApiError> {
+        // A database of its own embeds with the models it was given.
+        if let Backend::Local(db) = &self.backend {
+            let (db, name, text) = (db.clone(), name.to_string(), text.to_string());
+            return Ok(tokio::task::spawn_blocking(move || db.classify(&name, &text, k)).await.map_err(ApiError::internal)??);
+        }
+        let functions = self.functions();
+        let f = functions.current(name).ok_or_else(|| ApiError::bad(format!("no classifier named {name}")))?;
+        let c = chloedb::query::classify::of_function(f)?.ok_or_else(|| ApiError::bad(format!("function {name} is not a classifier CREATE CLASSIFIER made")))?;
+        let p = self.params(Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
+        let Some(Value::Vector(x)) = p.0.get("v") else { return Err(ApiError::bad(format!("{}.{} gave no vector of the text", c.table, c.field))) };
+        Ok(chloedb::query::classify::Classified::of(name, f.version, &c, x, k)?)
     }
 
     /// `CREATE TABLE`, `ALTER TABLE` or `DROP TABLE`, `CREATE RANK PROFILE`

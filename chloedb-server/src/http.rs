@@ -38,6 +38,7 @@
 //! | `GET /v1/media/<sha256>` | | the bytes of the file a row's MEDIA value names, by its hash, read as writes read files (`--media-store`, `--media-fetch`), served inert ([`media_headers`]); 404 when no row names it, 400 from a coordinator |
 //! | `GET /v1/synonyms`, `PUT /v1/synonyms` | `{text}` (Solr format) | the synonym list |
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
+//! | `POST /v1/classify` | `{name, text, k?}` | `{label, score, top: [[label, probability]], classifier, version, table, field, labels_from, min_score}`: a text's classes by a classifier `CREATE CLASSIFIER` made, the text embedded by its field's model |
 //! | `POST /v1/understand` | `{table, field, text, mode?, fields?, weight?}` | `{spans, ranges, ranked, filters, boosts, line, ...}`: the values of the table's keyword fields the words name, and ranges of numbers, as `bm25(.., understand => ..)` takes them |
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
@@ -244,6 +245,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/term_stats", post(term_stats))
         .route("/v1/correct", post(correct))
         .route("/v1/understand", post(understand))
+        .route("/v1/classify", post(classify))
         .route("/v1/sid/next", post(sid_next))
         .route("/v1/rank_log/export", post(export_rank_log))
         .route("/v1/rank_log/interleaving", post(interleaving))
@@ -2750,6 +2752,15 @@ async fn understand(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     v["boosts"] = json!(u.boosts());
     v["line"] = json!(u.line());
     Ok(AxJson(v))
+}
+
+/// `{name, text, k?}`: the classes of a text by a classifier `CREATE
+/// CLASSIFIER` made, its `k` best (3).
+async fn classify(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let (name, text) = (body_str(&b, "name")?, body_str(&b, "text")?);
+    let k = b.get("k").and_then(Json::as_u64).unwrap_or(3).clamp(1, 100) as usize;
+    let c = app.svc.classify(name, text, k).await?;
+    Ok(AxJson(serde_json::to_value(c).map_err(ApiError::internal)?))
 }
 
 async fn snapshot(State(app): State<App>) -> Res {

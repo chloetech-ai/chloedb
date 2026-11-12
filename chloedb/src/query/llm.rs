@@ -61,13 +61,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use sha2::{Digest, Sha256};
-use sqlparser::ast::{self as sql, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, SelectItem};
-use sqlparser::dialect::GenericDialect;
-use sqlparser::tokenizer::{Token, Tokenizer};
+use sqlparser::ast::{self as sql, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, SelectItem, Visit, Visitor};
 
 use super::compound;
 use super::exec::ResultSet;
@@ -147,6 +145,9 @@ fn err(m: impl Into<String>) -> Error {
 
 const USAGE: &str = "llm(model, instructions, input, ...): model a string such as 'anthropic/claude-haiku-5-5', then the instructions and the inputs, and options choices => 'a,b,c', returns => 'text' | 'number' | 'bool', max_tokens => n";
 
+/// Why a classifier's call over a row's vector stands where it does.
+const CLASSIFY_WHERE: &str = "classify() over a row's vector is a column of the rows a query returns (SELECT) or ranks them (ORDER BY), not part of WHERE, GROUP BY, HAVING, a join, a WITH or a subquery; to filter or group rows by their class, keep it in a column (a KEYWORD field OPTIONS (derive = 'title', model = 'classifier:topic') labels each row written), and a call with a parameter's vector, topic(:q), stands anywhere";
+
 const WHERE: &str = "llm() is a column of the rows a query returns (SELECT) or ranks them (ORDER BY), not part of WHERE, GROUP BY, HAVING, a join, a WITH or a subquery: each call is a request to the model, made for the rows the query returns and no others";
 
 /// What an answer is read as.
@@ -162,6 +163,9 @@ enum Returns {
 /// first step's columns ([`Split`]).
 #[derive(Clone, Debug)]
 struct Call {
+    /// A classifier's call ([`super::classify`]): computed here, from its
+    /// one argument, the vector. `model` is then [`super::classify::NAME`].
+    classifier: Option<(Arc<super::classify::Classifier>, super::classify::Returns)>,
     model: String,
     /// The instructions, then the inputs.
     args: Vec<Expr>,
@@ -270,6 +274,9 @@ pub struct Split {
     offset: usize,
     limit: Option<usize>,
     rows: usize,
+    /// Calls of a classifier computed before the first step
+    /// ([`super::classify::fold`]).
+    folded: usize,
 }
 
 /// Whether `f` calls [`NAME`].
@@ -278,21 +285,42 @@ fn is_llm(f: &sql::Function) -> bool {
 }
 
 /// How many calls of [`NAME`] the text of `x` holds.
-fn calls_in(x: &impl std::fmt::Display) -> usize {
-    let text = x.to_string();
-    if !text.to_ascii_lowercase().contains(NAME) {
-        return 0;
+fn calls_in<V: Visit>(x: &V) -> usize {
+    calls_named(x, &[NAME, super::classify::NAME])
+}
+
+/// How many calls of the functions `names` (an unquoted name, any case)
+/// `x` holds: by its tree, not its text, which a classifier's call makes
+/// hundreds of kilobytes long.
+fn calls_named<V: Visit>(x: &V, names: &[&str]) -> usize {
+    struct Count<'a> {
+        names: &'a [&'a str],
+        n: usize,
     }
-    let Ok(toks) = Tokenizer::new(&GenericDialect {}, &text).tokenize() else { return 0 };
-    let toks: Vec<&Token> = toks.iter().filter(|t| !matches!(t, Token::Whitespace(_))).collect();
-    toks.windows(2).filter(|w| matches!(w[0], Token::Word(x) if x.quote_style.is_none() && x.value.eq_ignore_ascii_case(NAME)) && matches!(w[1], Token::LParen)).count()
+    impl Visitor for Count<'_> {
+        type Break = ();
+        fn pre_visit_expr(&mut self, e: &Expr) -> std::ops::ControlFlow<()> {
+            if let Expr::Function(f) = e {
+                if let [sql::ObjectNamePart::Identifier(id)] = f.name.0.as_slice() {
+                    if id.quote_style.is_none() && self.names.iter().any(|n| id.value.eq_ignore_ascii_case(n)) {
+                        self.n += 1;
+                    }
+                }
+            }
+            std::ops::ControlFlow::Continue(())
+        }
+    }
+    let mut c = Count { names, n: 0 };
+    let _ = x.visit(&mut c);
+    c.n
 }
 
 /// Whether a query of text `sql` may call [`NAME`], itself or through a
 /// stored function of `functions`: a test that costs nothing, before
 /// [`split`] looks.
 pub fn may_call(sql: &str, functions: &FunctionSet) -> bool {
-    functions.calls_llm() || sql.as_bytes().windows(NAME.len()).any(|w| w.eq_ignore_ascii_case(NAME.as_bytes()))
+    let named = |n: &str| sql.as_bytes().windows(n.len()).any(|w| w.eq_ignore_ascii_case(n.as_bytes()));
+    functions.calls_llm() || named(NAME) || named(super::classify::NAME)
 }
 
 /// Whether `q` calls [`NAME`] anywhere.
@@ -349,6 +377,7 @@ impl Builder<'_> {
         let mut out = e.clone();
         match &mut out {
             Expr::Function(f) if is_llm(f) => return self.call(f),
+            Expr::Function(f) if super::classify::is_call(f) => return self.classify(f),
             Expr::Subquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => return Err(err(WHERE)),
             // coalesce(a, b, ...) as the CASE it is, so that a call after a
             // value that is not NULL asks nothing.
@@ -421,6 +450,17 @@ impl Builder<'_> {
             args.push(self.column(a));
         }
         self.calls.push(Call { args, ..call });
+        Ok(Expr::Identifier(Ident::new(answer_name(self.calls.len() - 1))))
+    }
+
+    /// A classifier's call: its value's name, its vector a column.
+    fn classify(&mut self, f: &sql::Function) -> Result<Expr> {
+        let (x, c, returns) = super::classify::parse_call(f, self.params)?;
+        if calls_in(&x) > 0 {
+            return Err(err(format!("{f}: the vector of classify() is not another call")));
+        }
+        let arg = self.column(&x);
+        self.calls.push(Call { classifier: Some((c, returns)), model: super::classify::NAME.into(), args: vec![arg], returns: Returns::Text, max_tokens: 0 });
         Ok(Expr::Identifier(Ident::new(answer_name(self.calls.len() - 1))))
     }
 }
@@ -505,7 +545,7 @@ fn parse_call(f: &sql::Function, params: &Params) -> Result<Call> {
         (None, r) => r.unwrap_or(Returns::Text),
     };
     let max_tokens = max_tokens.unwrap_or(if returns == Returns::Text { TEXT_TOKENS } else { SHORT_TOKENS });
-    Ok(Call { model, args: rest.to_vec(), returns, max_tokens })
+    Ok(Call { classifier: None, model, args: rest.to_vec(), returns, max_tokens })
 }
 
 /// Checks the calls of [`NAME`] in `e` (a stored function's body) as a
@@ -536,18 +576,31 @@ pub fn split(q: &sql::Query, functions: &FunctionSet, params: &Params) -> Result
         },
         false => q,
     };
+    // A classifier's calls of a value of no row, computed first.
+    let mut folded_q;
+    let mut folded = 0;
+    let q = match calls_named(q, &[super::classify::NAME]) > 0 {
+        true => {
+            folded_q = q.clone();
+            folded = super::classify::fold(&mut folded_q, params)?;
+            &folded_q
+        }
+        false => q,
+    };
     let total = calls_in(q);
     if total == 0 {
-        return Ok(None);
+        return Ok((folded > 0).then(|| Split::folded(q.clone(), folded)));
     }
-    let sql::SetExpr::Select(s) = q.body.as_ref() else { return Err(err(WHERE)) };
+    let llms = calls_named(q, &[NAME]);
+    let where_ = if llms == 0 { CLASSIFY_WHERE } else { WHERE };
+    let sql::SetExpr::Select(s) = q.body.as_ref() else { return Err(err(where_)) };
     if q.fetch.is_some() || !q.locks.is_empty() {
-        return Err(err(WHERE));
+        return Err(err(where_));
     }
     let order: Vec<sql::OrderByExpr> = match &q.order_by {
         None => Vec::new(),
         Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), interpolate: None }) => es.clone(),
-        Some(_) => return Err(err(WHERE)),
+        Some(_) => return Err(err(where_)),
     };
     // The calls a query may make: in its columns and its ORDER BY.
     let mut allowed = s.projection.iter().map(|i| match i {
@@ -580,10 +633,13 @@ pub fn split(q: &sql::Query, functions: &FunctionSet, params: &Params) -> Result
         keys.push((named.unwrap_or_else(|| o.expr.clone()), o.options.asc == Some(false), o.options.nulls_first));
     }
     if allowed != total {
-        return Err(err(WHERE));
+        return Err(err(where_));
     }
     let late_order = keys.iter().any(|(k, _, _)| calls_in(k) > 0);
-    let limits = limits();
+    let mut limits = limits();
+    if llms == 0 {
+        limits.rows = super::classify::MAX_CALL_ROWS;
+    }
     let mut b = Builder { hidden: Vec::new(), calls: Vec::new(), params };
     let mut first = q.clone();
     let sql::SetExpr::Select(fs) = first.body.as_mut() else { unreachable!("a SELECT") };
@@ -638,7 +694,7 @@ pub fn split(q: &sql::Query, functions: &FunctionSet, params: &Params) -> Result
     } else if limit.is_none() && offset == 0 {
         first.limit_clause = past();
     }
-    Ok(Some(Split { first, hidden: b.hidden.len(), calls: b.calls, items: out, order: order_keys, offset, limit, rows: limits.rows }))
+    Ok(Some(Split { first, hidden: b.hidden.len(), calls: b.calls, items: out, order: order_keys, offset, limit, rows: limits.rows, folded }))
 }
 
 /// [`split`] of the query of text `sql`: `None` when it calls no model.
@@ -820,10 +876,28 @@ fn text_of(v: &Value) -> Option<String> {
 }
 
 impl Split {
+    /// A query whose classifier calls were all of values of no row, `q`
+    /// with them computed: its first step is the whole query.
+    fn folded(q: sql::Query, folded: usize) -> Split {
+        Split { first: q, hidden: 0, calls: Vec::new(), items: Vec::new(), order: Vec::new(), offset: 0, limit: None, rows: usize::MAX, folded }
+    }
+
+    /// Whether the query called a classifier on values of no row alone,
+    /// computed: its first step is the whole query, and
+    /// [`Split::finish`] gives its rows as they are.
+    pub fn is_folded(&self) -> bool {
+        self.calls.is_empty()
+    }
+
+    /// The plan's line of the calls computed before planning.
+    pub fn folded_line(&self) -> String {
+        format!("classify: {} call{} of a parameter computed before planning", self.folded, if self.folded == 1 { "" } else { "s" })
+    }
+
     /// The models the calls name, each once.
     pub fn models(&self) -> Vec<&str> {
         let mut ms: Vec<&str> = Vec::new();
-        for c in &self.calls {
+        for c in self.calls.iter().filter(|c| c.classifier.is_none()) {
             if !ms.contains(&c.model.as_str()) {
                 ms.push(&c.model);
             }
@@ -836,6 +910,11 @@ impl Split {
     /// query says when its calls order the rows. `models` is the directory
     /// of the models' `endpoint.json` files.
     pub fn finish(&self, rs: ResultSet, params: &Params, models: &Path) -> Result<ResultSet> {
+        if self.calls.is_empty() {
+            let mut rs = rs;
+            rs.stats.plan.insert(0, self.folded_line());
+            return Ok(rs);
+        }
         let t0 = Instant::now();
         let ResultSet { columns, rows, keys, scores, parts: _, mut stats } = rs;
         let width = columns.len();
@@ -872,6 +951,10 @@ impl Split {
         for row in &rows {
             let mut mine = Vec::with_capacity(self.calls.len());
             for (c, args) in self.calls.iter().zip(&args) {
+                if c.classifier.is_some() {
+                    mine.push(None);
+                    continue;
+                }
                 let vals: Vec<Value> = args.iter().map(|a| eval(a, row)).collect::<Result<_>>()?;
                 let instructions = text_of(&vals[0]).unwrap_or_default();
                 let inputs: Vec<String> = vals[1..].iter().filter_map(text_of).filter(|t| !t.trim().is_empty()).collect();
@@ -886,6 +969,18 @@ impl Split {
         // found, until a round finds nothing new.
         let wild = pass.saturating_sub(self.items.iter().filter(|i| matches!(i, Item::Pass { wildcard: false })).count());
         let mut answers: Vec<Vec<Option<Value>>> = questions.iter().map(|qs| qs.iter().map(|q| if q.is_none() { Some(Value::Null) } else { None }).collect()).collect();
+        // A classifier's calls, computed here: each row's vector is a column.
+        let t_classify = Instant::now();
+        let mut classified = 0u64;
+        for (k, (c, args)) in self.calls.iter().zip(&args).enumerate() {
+            let Some((model, returns)) = &c.classifier else { continue };
+            for (r, row) in rows.iter().enumerate() {
+                let x = eval(&args[0], row)?;
+                answers[r][k] = Some(model.value(&x, *returns)?);
+                classified += 1;
+            }
+        }
+        let classify_ms = t_classify.elapsed().as_secs_f64() * 1e3;
         let (mut asked, mut from_memory) = (0u64, 0u64);
         let made: Vec<(Vec<Value>, Vec<Value>)> = loop {
             let needed = std::cell::RefCell::new(Vec::<(usize, usize)>::new());
@@ -984,6 +1079,10 @@ impl Split {
                 Item::Made { name, .. } | Item::Score { name } => names.push(name.clone()),
             }
         }
+        if classified > 0 || self.folded > 0 {
+            stats.plan.push(format!("classify: {classified} value{} of rows in {classify_ms:.1} ms, {} of a parameter before planning", if classified == 1 { "" } else { "s" }, self.folded));
+        }
+        if self.calls.iter().any(|c| c.classifier.is_none()) {
         stats.plan.push(format!(
             "llm: {} asked about {} row{}: {} request{}, {} answer{} from memory, in {:.0} ms",
             self.models().join(", "),
@@ -995,6 +1094,7 @@ impl Split {
             if from_memory == 1 { "" } else { "s" },
             t0.elapsed().as_secs_f64() * 1e3,
         ));
+        }
         let (mut out_rows, mut out_keys, mut out_scores) = (Vec::with_capacity(made.len()), Vec::with_capacity(made.len()), Vec::with_capacity(made.len()));
         for (row, _, key, score, _) in made {
             out_rows.push(row);
@@ -1047,7 +1147,7 @@ mod tests {
 
     #[test]
     fn answers_read_as_what_the_call_returns() {
-        let c = |r: Returns| Call { model: "m".into(), args: Vec::new(), returns: r, max_tokens: 1 };
+        let c = |r: Returns| Call { classifier: None, model: "m".into(), args: Vec::new(), returns: r, max_tokens: 1 };
         let choice = c(Returns::Choice(vec!["positive".into(), "negative".into(), "very mixed".into()]));
         for (a, want) in [("Positive.", Some("positive")), ("  NEGATIVE ", Some("negative")), ("It is very mixed, I think", Some("very mixed")), ("positive or negative", None), ("unclear", None)] {
             assert_eq!(choice.read(a), want.map_or(Value::Null, |w| Value::Str(w.into())), "{a}");
@@ -1065,8 +1165,9 @@ mod tests {
 
     #[test]
     fn calls_are_counted_by_their_tokens() {
-        assert_eq!(calls_in(&"SELECT llm('m', 'llm(', body), LLM ('m','x',t) FROM t WHERE x = 'llm(1)'"), 2);
-        assert_eq!(calls_in(&"SELECT \"llm\"(x), llm_score FROM t"), 0);
+        let q = |s: &str| super::super::sql::parse_query(s).unwrap();
+        assert_eq!(calls_in(&q("SELECT llm('m', 'llm(', body), LLM ('m','x',t) FROM t WHERE x = 'llm(1)'")), 2);
+        assert_eq!(calls_in(&q("SELECT \"llm\"(x), llm_score FROM t")), 0);
     }
 
     #[test]

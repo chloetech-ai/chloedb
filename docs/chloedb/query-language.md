@@ -1235,6 +1235,34 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 - **Inputs are data.** A row's text is the user's message and the instructions the system prompt, and the model has no tools, so a row's text can change that row's answer and nothing else.
 - **A coordinator** asks the model about the merged rows, on the coordinator, so no shard asks about a row the merge cuts, and its shards need no key. A body that calls `llm()` is a function that returns a value: `CREATE` refuses one in a `RETURNS TABLE` body, and checks each call's model and options. chloedb-server counts the requests in `chloedb_llm_requests_total`, `chloedb_llm_cached_total` and `chloedb_llm_failures_total`.
 
+## Classifiers: `CREATE CLASSIFIER` and `classify()`
+
+A classifier learns a table's labels from its rows' embeddings, and is kept as a [stored function](#stored-functions) of a vector: versioned, rolled back and dropped as any function is, and held by every shard of a cluster. It classifies rows by their stored vectors, and a query's text by the same model's vector of it.
+
+```sql
+-- trains on the rows with a label; answers what it measured
+CREATE CLASSIFIER topic ON products(emb) LABELS category
+  OPTIONS (method = 'logistic', holdout = 0.2) WHERE in_stock;
+
+-- each row's class, a column of the rows a query returns
+SELECT id, title, topic(emb) AS topic FROM products WHERE MATCH(title, :q) LIMIT 20;
+
+-- a query's class: :v is the query's vector ({"embed": "red leather sofa", "field": "emb", "table": "products"})
+SELECT topic(:v), topic(:v, 'score'), topic(:v, 'labels');
+SELECT id FROM products WHERE MATCH(body, :q)
+ORDER BY bm25(body, :q) * (1 + 0.25 * CASE WHEN category = topic(:v) THEN 1 ELSE 0 END) DESC LIMIT 10;
+
+CREATE OR REPLACE CLASSIFIER topic ON products(emb) LABELS category;   -- version 2
+CREATE OR REPLACE FUNCTION topic FROM VERSION 1;                       -- back to the first
+DROP CLASSIFIER topic;
+```
+
+- **Training.** `CREATE CLASSIFIER name ON table(vector_field) LABELS column [OPTIONS (...)] [WHERE condition]` reads `SELECT vector_field, column FROM table WHERE column IS NOT NULL [AND condition]`, at most `max_rows` rows (200,000), keeps the labels with at least `min_rows` rows (2), and holds out a share of them (`holdout`, 0.2, chosen by a hash of each vector, so the same rows every time) to measure the model it keeps. `method = 'logistic'` (the default) fits softmax regression (Adam, `epochs` 30, `learning_rate` 0.01, `l2` 0.0001); `method = 'centroid'` takes each label's mean vector, in one pass. The labels are the values of a `KEYWORD`, `TEXT`, `INT` or `BOOL` column, and the field a `VECTOR` field of one vector a row; a classifier has 10,000 labels at most. The statement answers one row: `labels`, `rows`, `train_accuracy`, `holdout_rows`, `holdout_accuracy`, `took_ms`. A coordinator reads the rows from its shards, trains, and writes the function on every shard.
+- **The function** is `name(v VECTOR, returns TEXT DEFAULT 'label') RETURNS KEYWORD`, its body a call of `classify(:v, model, returns => :returns)`, `model` the classifier as text: its labels, a row of weights a label quantized to 8 bits with a scale of its own, and a bias (about a kilobyte a label for a 512-number vector), and the table, field and embedding model it was trained on. `name(v)` is the label with the highest probability (the softmax of the scores), `NULL` for a `NULL` vector or one below the classifier's `min_score` option (0); `name(v, 'score')` that probability; `name(v, 'labels')` the best label and those whose probability is at least `min_score` and a tenth, best first.
+- **Where it runs.** A call of a value of no row, a parameter's vector, is computed before the query is planned, so it stands anywhere: `WHERE`, `ORDER BY`, a join (its `'labels'`, a list, is a column of the rows only). A call of a row's vector is a column of the rows a query returns, or ranks them in `ORDER BY`, as `llm()` is: computed after the query finds them, for 100,000 rows at most. To filter or group rows by their class, keep it in a column: a `KEYWORD` field `OPTIONS (derive = 'title', model = 'classifier:topic')` holds the label of each row written ([keywords made of text](server.md#keywords-made-of-text-languages-keyphrases-near-duplicates-entities)).
+- **Text.** `Db::classify(name, text, k)` (Rust) and `POST /v1/classify {"name", "text", "k"}` embed a text with the model of the field the classifier was trained on and give its `k` best labels with their probabilities.
+- **Measured** on Wayfair's WANDS (`chloedb-classify-eval`, `chloedb/results/text/classify_wands.json`, an Intel Xeon at 2.10 GHz, 4 cores): 42,994 products, `emb` potion-retrieval-32M's vector of a product's name, 501 product classes. The logistic classifier names the class of 81.9% of held-out products (centroid 81.3%) and the class of 62.9% of the 480 queries (centroid 51.0%; among its best three, 80.4%), at 0.07 ms a query's text, embedding included; it trains in 31 s (centroid 2 s), and a row's class costs 40 µs. As a boost, `bm25(body, :q) * (1 + 0.1 * CASE WHEN class = topic(:v) THEN 1 ELSE 0 END)` raised nDCG@10 from 0.433 to 0.439 (p = 0.002, the same on the odd-numbered queries not used to choose the weight), and a weight of 0.5 lowered it: a wrong class costs the rows that are right.
+
 ## Running SQL
 
 The `chloedb` shell runs one statement, or reads statements from standard input. It opens a database that exists and does not create one; these lines read the demo catalogue that `chloedb-server --demo 20000 --db products.chloedb` makes:

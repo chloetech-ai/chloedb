@@ -41,6 +41,9 @@ use crate::text::Analyzer;
 pub const BUILTIN: &str = "builtin:";
 /// The prefix of a dictionary's model name: `dict:brands.name`.
 pub const DICT: &str = "dict:";
+/// The prefix of a classifier's name as a model, `classifier:<name>`: a
+/// classifier `CREATE CLASSIFIER` made ([`crate::query::classify`]).
+pub const CLASSIFIER: &str = "classifier:";
 /// The built-in models, with the values they make.
 pub const MODELS: [(&str, &str); 3] = [("builtin:lang", "KEYWORD"), ("builtin:keyphrases", "KEYWORD[]"), ("builtin:minhash", "KEYWORD[]")];
 /// The values of a `KEYWORD[]` model's output for one row, joined by this
@@ -54,7 +57,12 @@ fn err(m: impl Into<String>) -> Error {
 /// Whether a model's name is one of this module's: `builtin:...` or
 /// `dict:...`.
 pub fn is_content_model(model: &str) -> bool {
-    model.starts_with(BUILTIN) || model.starts_with(DICT)
+    model.starts_with(BUILTIN) || model.starts_with(DICT) || model.starts_with(CLASSIFIER)
+}
+
+/// The classifier a model of name `classifier:<name>` names.
+pub fn classifier_name(model: &str) -> Option<&str> {
+    model.strip_prefix(CLASSIFIER).filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
 }
 
 /// Whether model `model` makes several values a row (a `KEYWORD[]`
@@ -527,6 +535,72 @@ impl DictEntities {
             }
         }
         out
+    }
+}
+
+/// A classifier's labels of a text, `classifier:<name>`: the text
+/// embedded by the model of the field the classifier was trained on, and
+/// classified; the best label for a `KEYWORD` field, and the labels
+/// `returns => 'labels'` gives for a `KEYWORD[]` one. A text written
+/// before the classifier exists has none.
+pub struct ClassifierTags {
+    pub model: String,
+    pub name: String,
+    pub many: bool,
+    /// The version it holds, its classifier and the field's model.
+    state: RwLock<Option<(i64, Arc<crate::query::classify::Classifier>, Option<Arc<dyn crate::embed::Embedder>>)>>,
+}
+
+impl ClassifierTags {
+    pub fn new(model: &str, many: bool) -> Result<ClassifierTags> {
+        let name = classifier_name(model).ok_or_else(|| err(format!("model {model} is not classifier:<name>")))?;
+        Ok(ClassifierTags { model: model.to_string(), name: name.to_ascii_lowercase(), many, state: RwLock::new(None) })
+    }
+
+    /// The version of the classifier it holds.
+    pub fn version(&self) -> Option<i64> {
+        self.state.read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.0)
+    }
+
+    /// Gives it version `version` of the classifier, and the model of its
+    /// field (`None` while that model is not open).
+    pub fn set(&self, version: i64, c: Arc<crate::query::classify::Classifier>, e: Option<Arc<dyn crate::embed::Embedder>>) {
+        *self.state.write().unwrap_or_else(|e| e.into_inner()) = Some((version, c, e));
+    }
+
+    /// Forgets the classifier, dropped.
+    pub fn clear(&self) {
+        *self.state.write().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+impl Deriver for ClassifierTags {
+    fn name(&self) -> String {
+        self.model.clone()
+    }
+    fn modality(&self) -> Modality {
+        Modality::Text
+    }
+    fn derive(&self, inputs: &[Input<'_>]) -> Result<Vec<String>> {
+        let ts = texts(&self.model, inputs)?;
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some((_, c, e)) = state else { return Ok(vec![String::new(); ts.len()]) };
+        let e = e.ok_or_else(|| err(format!("{}: the model of {}.{} is not open, so its text is not embedded", self.model, c.table, c.field)))?;
+        let vs = e.embed(&ts)?;
+        let returns = if self.many { crate::query::classify::Returns::Labels } else { crate::query::classify::Returns::Label };
+        vs.into_iter()
+            .zip(&ts)
+            .map(|(v, t)| {
+                if t.trim().is_empty() {
+                    return Ok(String::new());
+                }
+                Ok(match c.value(&crate::value::Value::Vector(v.into()), returns)? {
+                    crate::value::Value::Str(s) => s,
+                    crate::value::Value::List(ls) => ls.iter().filter_map(|l| l.as_str()).collect::<Vec<_>>().join(&SEP.to_string()),
+                    _ => String::new(),
+                })
+            })
+            .collect()
     }
 }
 

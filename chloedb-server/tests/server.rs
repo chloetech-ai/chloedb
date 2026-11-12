@@ -195,6 +195,19 @@ async fn http_answers_like_the_embedded_database() {
     assert_eq!(u["ranked"], "leather boots", "{u}");
     assert_eq!(u["ranges"][0]["field"], "price", "{u}");
     assert!(u["line"].as_str().unwrap().starts_with("bm25(body) understood 'leather boots under 300' with boost of products"), "{u}");
+    // A classifier of the products' categories: trained by SQL, kept as a
+    // function, and asked about a text.
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), json!({"sql": "CREATE CLASSIFIER cat ON products(emb) LABELS category OPTIONS (method = 'centroid')"})).await;
+    assert_eq!(status, 200, "{r}");
+    assert!(r["rows"][0][2].as_i64().unwrap() >= 2, "labels: {r}");
+    let (status, k) = post(&c, &format!("{base}/v1/classify"), json!({"name": "cat", "text": "waterproof hiking boots", "k": 2})).await;
+    assert_eq!(status, 200, "{k}");
+    assert_eq!((k["classifier"].as_str(), k["version"].as_i64(), k["top"].as_array().map(|t| t.len())), (Some("cat"), Some(1), Some(2)), "{k}");
+    let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id, cat(emb) FROM products ORDER BY id LIMIT 3"})).await;
+    assert_eq!(status, 200, "{q}");
+    assert!(q["rows"][0][1].is_string(), "{q}");
+    let (status, e) = post(&c, &format!("{base}/v1/classify"), json!({"name": "nope", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
 }
 
 /// Writes over HTTP: operations, SQL, counters, versions; then reads.
@@ -650,6 +663,20 @@ async fn coordinator_answers_like_one_database() {
     }
     let h = coord.health().await;
     assert_eq!((h["status"].as_str(), h["docs"].as_u64()), (Some("ok"), Some(N as u64)), "{h}");
+    // A classifier: the coordinator reads every shard's rows, trains, and
+    // every shard holds the function; a row's class is computed on the
+    // coordinator, a parameter's before the shards plan.
+    let train = "CREATE CLASSIFIER cat ON products(emb) LABELS category OPTIONS (method = 'centroid')";
+    let chloedb::db::SqlResult::Rows(one) = whole.sql(train, &Params::new()).unwrap() else { panic!("a report") };
+    let chloedb_server::service::SqlAnswer::Rows(r) = coord.sql(&Principal::open(), train, &Params::new(), After::Any, 0).await.unwrap() else { panic!("a report") };
+    assert_eq!(r.rs.rows[0][..8], one.rows[0][..8], "every shard's rows, trained alike");
+    let p = Params::new().set("q", vector_42(&whole));
+    for sql in ["SELECT id, cat(emb) AS c FROM products ORDER BY id LIMIT 25", "SELECT COUNT(*) FROM products WHERE category = cat(:q)"] {
+        let want = js::result(&whole.query(sql, &p).unwrap(), 0.0);
+        let got = coord.query(QueryReq { sql: sql.into(), params: p.clone(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+        same(sql, &want, &js::result(&got.rs, 0.0));
+        assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("classify: ")), "{sql}: {:?}", got.rs.stats.plan);
+    }
     // A coordinator runs a read's plan, a compound query's included, as it
     // runs the SQL: the shards take the plan's leaves. It takes writes as
     // SQL until its shards take write plans.

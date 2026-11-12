@@ -31,6 +31,7 @@ pub mod exec;
 pub mod function;
 pub mod fusion;
 pub mod hint;
+pub mod classify;
 pub mod llm;
 pub mod prf;
 pub mod understand;

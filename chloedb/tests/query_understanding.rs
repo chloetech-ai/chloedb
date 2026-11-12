@@ -259,3 +259,106 @@ fn derived_keywords_tag_rows_with_builtin_models_and_dictionaries() {
     let r = db.query("SELECT lang, brands FROM news WHERE id = 'e'", &Params::new()).unwrap();
     assert_eq!((r.rows[0][0].as_str(), &r.rows[0][1]), (Some("en"), &Value::List(vec![Value::Str("Acme Corp".into())])));
 }
+
+/// A shop whose products' names say their class, embedded by feature
+/// hashing of their words, which needs no model files.
+fn catalog(dir: &tempfile::TempDir) -> Db {
+    let seed = Schema::new("seed", vec![Field::new("id", FieldType::Keyword)], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("db.strata"), seed, DbOptions::default()).unwrap();
+    let none = Params::new();
+    db.sql("CREATE TABLE products (id KEYWORD PRIMARY KEY, name TEXT, label KEYWORD, emb VECTOR(256) OPTIONS (embed = 'name', model = 'hash:256', index = 'flat'))", &none).unwrap();
+    assert!(db.open_embedders(dir.path()).is_empty());
+    let kinds: [(&str, [&str; 4]); 3] = [
+        ("Sofas", ["leather sofa", "velvet couch", "sectional sofa with chaise", "loveseat couch"]),
+        ("Rugs", ["wool area rug", "jute runner rug", "shag rug", "outdoor area rug"]),
+        ("Lamps", ["brass floor lamp", "table lamp with shade", "desk lamp", "arc floor lamp"]),
+    ];
+    let mut values = Vec::new();
+    for (label, names) in kinds {
+        for (i, n) in names.iter().enumerate() {
+            for j in 0..6 {
+                let extra = ["grey", "blue", "modern", "rustic", "small", "large"][j];
+                values.push(format!("('{label}{i}{j}', '{extra} {n}', '{label}')"));
+            }
+        }
+    }
+    // Two products whose class is not known yet.
+    values.push("('u1', 'blue velvet sofa', NULL)".into());
+    values.push("('u2', 'round wool rug', NULL)".into());
+    db.sql(&format!("INSERT INTO products (id, name, label) VALUES {}", values.join(", ")), &none).unwrap();
+    db
+}
+
+#[test]
+fn classifiers_learn_a_tables_labels_and_classify_rows_and_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = catalog(&dir);
+    let none = Params::new();
+    for method in ["centroid", "logistic"] {
+        let name = format!("kind_{method}");
+        let r = db.sql(&format!("CREATE CLASSIFIER {name} ON products(emb) LABELS label OPTIONS (method = '{method}', holdout = 0.25)"), &none).unwrap();
+        let chloedb::db::SqlResult::Rows(r) = r else { panic!("a report") };
+        let col = |c: &str| r.rows[0][r.columns.iter().position(|x| x == c).unwrap()].clone();
+        assert_eq!(col("labels"), Value::Int(3), "{method}");
+        assert_eq!(col("rows"), Value::Int(72), "the two rows without a label are not read");
+        assert!(col("holdout_accuracy").as_f64().unwrap() >= 0.9, "{method}: {:?}", r.rows);
+
+        // A query's text, embedded by the field's model.
+        let c = db.classify(&name, "a comfy couch", 3).unwrap();
+        assert_eq!(c.label.as_deref(), Some("Sofas"), "{method}: {c:?}");
+        assert_eq!((c.top.len(), c.labels_from.as_str(), c.version), (3, "label", 1));
+
+        // Each row's class, a column of the rows a query returns.
+        let r = db.query(&format!("SELECT id, {name}(emb) AS kind FROM products WHERE label IS NULL ORDER BY id"), &none).unwrap();
+        assert_eq!(r.rows, vec![vec![Value::Str("u1".into()), Value::Str("Sofas".into())], vec![Value::Str("u2".into()), Value::Str("Rugs".into())]], "{method}");
+        assert!(r.stats.plan.iter().any(|l| l.starts_with("classify: 2 values of rows")), "{:?}", r.stats.plan);
+
+        // A parameter's class, computed before planning: it filters.
+        let v = db.embed_query_in("products", "emb", "lamp for reading").unwrap();
+        let p = Params::new().set("v", v);
+        let r = db.query(&format!("SELECT COUNT(*) FROM products WHERE label = {name}(:v)"), &p).unwrap();
+        assert_eq!(r.rows[0][0], Value::Int(24), "{method}");
+        let r = db.query(&format!("SELECT {name}(:v, 'score'), {name}(:v, 'labels')"), &p);
+        let r = r.unwrap_or_else(|e| panic!("{method}: {e}"));
+        assert!(matches!(r.rows[0][0], Value::Float(s) if s > 0.34), "{:?}", r.rows);
+        assert!(matches!(&r.rows[0][1], Value::List(ls) if ls.first() == Some(&Value::Str("Lamps".into()))), "{:?}", r.rows);
+    }
+
+    // Rows of another table tagged as they are written, by a classifier's
+    // best label (KEYWORD) or its labels (KEYWORD[]).
+    db.sql("CREATE TABLE listings (id KEYWORD PRIMARY KEY, title TEXT, kind KEYWORD OPTIONS (derive = 'title', model = 'classifier:kind_centroid'), kinds KEYWORD[] OPTIONS (derive = 'title', model = 'classifier:kind_logistic'), later KEYWORD OPTIONS (derive = 'title', model = 'classifier:not_yet'))", &none).unwrap();
+    db.sql("INSERT INTO listings (id, title) VALUES ('a', 'old leather couch'), ('b', 'shag rug, barely used'), ('c', '')", &none).unwrap();
+    let r = db.query("SELECT id, kind, kinds, later FROM listings ORDER BY id", &none).unwrap();
+    assert_eq!(r.rows[0][1], Value::Str("Sofas".into()), "{:?}", r.rows);
+    assert_eq!(r.rows[1][1], Value::Str("Rugs".into()), "{:?}", r.rows);
+    assert!(matches!(&r.rows[0][2], Value::List(ls) if ls.first() == Some(&Value::Str("Sofas".into()))), "{:?}", r.rows);
+    assert_eq!((&r.rows[2][1], &r.rows[0][3]), (&Value::Null, &Value::Null), "no text, or no classifier yet: no label");
+    let r = db.query("SELECT kind, COUNT(*) FROM listings WHERE kind IS NOT NULL GROUP BY kind ORDER BY kind", &none).unwrap();
+    assert_eq!(r.rows.len(), 2, "a column to group by: {:?}", r.rows);
+    let e = db.sql("CREATE TABLE bad (id KEYWORD PRIMARY KEY, t TEXT, k KEYWORD OPTIONS (derive = 't', model = 'classifier:'))", &none).unwrap_err().to_string();
+    assert!(e.contains("classifier:<name>"), "{e}");
+
+    // A version a training; refusals; a drop.
+    let e = db.sql("CREATE CLASSIFIER kind_centroid ON products(emb) LABELS label", &none).unwrap_err().to_string();
+    assert!(e.contains("CREATE OR REPLACE CLASSIFIER"), "{e}");
+    db.sql("CREATE OR REPLACE CLASSIFIER kind_centroid ON products(emb) LABELS label OPTIONS (method = 'centroid') WHERE id <> 'Sofas00'", &none).unwrap();
+    assert_eq!(db.classify("kind_centroid", "couch", 1).unwrap().version, 2);
+    for (bad, says) in [
+        ("CREATE CLASSIFIER k ON products(name) LABELS label", "not a VECTOR field"),
+        ("CREATE CLASSIFIER k ON products(emb) LABELS nothing", "no column nothing"),
+        ("CREATE CLASSIFIER k ON products(emb) LABELS label WHERE label = 'Rugs'", "tells two or more apart"),
+        ("CREATE CLASSIFIER lower ON products(emb) LABELS label", "built-in function"),
+    ] {
+        let e = db.sql(bad, &none).unwrap_err().to_string();
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    let e = db.query("SELECT id FROM products WHERE kind_logistic(emb) = 'Rugs'", &none).unwrap_err().to_string();
+    assert!(e.contains("keep it in a column"), "{e}");
+    db.sql("DROP CLASSIFIER kind_logistic", &none).unwrap();
+    assert!(db.classify("kind_logistic", "rug", 1).is_err());
+    // Kept across a reopen, as functions are.
+    drop(db);
+    let db = Db::open(&dir.path().join("db.strata"), DbOptions::default()).unwrap();
+    assert!(db.open_embedders(dir.path()).is_empty());
+    assert_eq!(db.classify("kind_centroid", "a wool rug", 1).unwrap().label.as_deref(), Some("Rugs"));
+}

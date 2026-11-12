@@ -193,6 +193,9 @@ pub struct Db {
     /// The dictionaries among them ([`crate::content::DictEntities`]), by
     /// table and field, given their values before each write derives.
     dicts: RwLock<Vec<(String, String, Arc<crate::content::DictEntities>)>>,
+    /// The classifiers among them ([`crate::content::ClassifierTags`]),
+    /// by table and field.
+    classifiers: RwLock<Vec<(String, String, Arc<crate::content::ClassifierTags>)>>,
     /// Where [`Db::open_embedders`] found models, for the tables created
     /// after it, and where ranking models are ([`Db::open_ranking_models`]).
     models: RwLock<Option<PathBuf>>,
@@ -292,6 +295,7 @@ impl Db {
             embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
             dicts: RwLock::new(Vec::new()),
+            classifiers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
             media: RwLock::new(Arc::new(Resolver::default())),
             ranking: Models::default(),
@@ -978,6 +982,7 @@ impl Db {
     /// field.
     fn derivers_of(&self, schema: &Schema) -> Vec<Option<Arc<dyn Deriver>>> {
         self.refresh_dicts(schema);
+        self.refresh_classifiers(schema);
         let all = self.derivers.read().unwrap_or_else(|e| e.into_inner());
         schema
             .fields
@@ -1015,6 +1020,36 @@ impl Db {
         }
     }
 
+    /// Gives the classifiers of the derived fields of the table `schema`
+    /// describes their current versions (decoded once a version), and the
+    /// models of the fields they were trained on.
+    fn refresh_classifiers(&self, schema: &Schema) {
+        let mine: Vec<Arc<crate::content::ClassifierTags>> = self
+            .classifiers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(t, _, _)| t.eq_ignore_ascii_case(&schema.table))
+            .map(|(_, _, c)| c.clone())
+            .collect();
+        if mine.is_empty() {
+            return;
+        }
+        let Ok(functions) = self.functions() else { return };
+        for tags in mine {
+            match functions.current(&tags.name) {
+                Some(f) if tags.version() != Some(f.version) => {
+                    if let Ok(Some(c)) = crate::query::classify::of_function(f) {
+                        let e = self.embedder_in(&c.table, &c.field);
+                        tags.set(f.version, c, e);
+                    }
+                }
+                Some(_) => {}
+                None => tags.clear(),
+            }
+        }
+    }
+
     /// Opens the built-in models and dictionaries of the derived fields of
     /// table `table` ([`crate::content`]), which need no model files.
     fn open_content_models_of(&self, table: &str) {
@@ -1034,6 +1069,13 @@ impl Db {
                 all.retain(|(t, n, _)| !(t.eq_ignore_ascii_case(&schema.table) && n.eq_ignore_ascii_case(&f.name)));
                 all.push((schema.table.clone(), f.name.clone(), dict.clone()));
                 dict
+            } else if d.model.starts_with(crate::content::CLASSIFIER) {
+                let Ok(tags) = crate::content::ClassifierTags::new(&d.model, f.multi) else { continue };
+                let tags = Arc::new(tags);
+                let mut all = self.classifiers.write().unwrap_or_else(|e| e.into_inner());
+                all.retain(|(t, n, _)| !(t.eq_ignore_ascii_case(&schema.table) && n.eq_ignore_ascii_case(&f.name)));
+                all.push((schema.table.clone(), f.name.clone(), tags.clone()));
+                tags
             } else {
                 continue;
             };
@@ -1581,6 +1623,9 @@ impl Db {
     /// [`Db::sql`], a SELECT run with `opts` (its deadline, cancel flag and
     /// memory budget); any other statement runs as [`Db::sql`] runs it.
     pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
+        if let Some(st) = crate::query::classify::parse_statement(sql)? {
+            return self.classifier_statement(&st, opts);
+        }
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         match bind_command(sql, &tables, params)? {
@@ -1669,6 +1714,41 @@ impl Db {
     /// operators over single-table queries ([`crate::query::compound`]).
     pub fn explain(&self, sql: &str, params: &Params) -> Result<Plan> {
         self.explain_statement(&qsql::parse_one(sql)?, params)
+    }
+
+    /// `CREATE CLASSIFIER`, which trains on the table's rows and keeps the
+    /// classifier as a stored function, answering what the training
+    /// measured; or `DROP CLASSIFIER`, that function's drop
+    /// ([`crate::query::classify`]).
+    fn classifier_statement(&self, st: &crate::query::classify::Statement, opts: &ExecOptions) -> Result<SqlResult> {
+        use crate::query::classify::Statement;
+        match st {
+            Statement::Drop { .. } => self.sql_with(&st.drop_sql().expect("a drop"), &Params::new(), opts),
+            Statement::Create(c) => {
+                let schema = self.table(&c.table)?;
+                c.check(&schema)?;
+                if !c.replace && self.functions()?.current(&c.name).is_some() {
+                    return Err(Error::Query(format!("function {} exists: CREATE OR REPLACE CLASSIFIER {} makes its next version", c.name, c.name)));
+                }
+                let rs = self.query_with(&c.training_sql(), &Params::new(), opts)?;
+                let trained = c.train(&schema, &rs)?;
+                self.sql_with(&trained.function_sql(c), &Params::new(), opts)?;
+                Ok(SqlResult::Rows(trained.result_set()))
+            }
+        }
+    }
+
+    /// The classes of `text` by the classifier `name` (a stored function
+    /// `CREATE CLASSIFIER` made), its `k` best labels: the text embedded by
+    /// the model of the field the classifier was trained on.
+    pub fn classify(&self, name: &str, text: &str, k: usize) -> Result<crate::query::classify::Classified> {
+        let functions = self.functions()?;
+        let f = functions.current(name).ok_or_else(|| Error::Query(format!("no classifier named {name}")))?;
+        let c = crate::query::classify::of_function(f)?.ok_or_else(|| Error::Query(format!("function {name} is not a classifier CREATE CLASSIFIER made")))?;
+        let Value::Vector(x) = self.embed_query_in(&c.table, &c.field, text)? else {
+            return Err(Error::Query(format!("{}.{} holds several vectors a row", c.table, c.field)));
+        };
+        crate::query::classify::Classified::of(name, f.version, &c, &x, k)
     }
 
     fn explain_statement(&self, stmt: &sqlparser::ast::Statement, params: &Params) -> Result<Plan> {
@@ -2656,6 +2736,10 @@ fn derived_value(f: &crate::schema::Field, t: &str) -> Value {
     if f.multi {
         let vs: Vec<Value> = t.split(crate::content::SEP).filter(|v| !v.is_empty()).map(|v| Value::Str(v.to_string())).collect();
         return if vs.is_empty() { Value::Null } else { Value::List(vs) };
+    }
+    // A keyword a model made none of (a classifier not trained yet).
+    if f.ty == crate::schema::FieldType::Keyword && t.is_empty() {
+        return Value::Null;
     }
     Value::Str(t.to_string())
 }

@@ -1488,8 +1488,13 @@ impl Schema {
             let bad = |m: &str| Err(Error::Schema(format!("field {}: {m}", f.name)));
             // Values a built-in model or a dictionary makes of a text.
             if f.ty == FieldType::Keyword || crate::content::is_content_model(&d.model) {
-                let Some(many) = crate::content::makes_many(&d.model) else {
-                    return bad(&format!("a derived KEYWORD field's model is one of {} or dict:<table>.<field>, not {}", crate::content::MODELS.map(|(m, _)| m).join(", "), d.model));
+                let many = match crate::content::classifier_name(&d.model) {
+                    // A classifier gives its best label, or its labels.
+                    Some(_) => Some(f.multi),
+                    None => crate::content::makes_many(&d.model),
+                };
+                let Some(many) = many else {
+                    return bad(&format!("a derived KEYWORD field's model is one of {}, dict:<table>.<field> or classifier:<name>, not {}", crate::content::MODELS.map(|(m, _)| m).join(", "), d.model));
                 };
                 if f.ty != FieldType::Keyword || f.multi != many || !f.stored || !f.generated_from.is_empty() || f.semantic_id.is_some() {
                     return bad(&format!("model {} makes a {} field", d.model, if many { "stored KEYWORD[]" } else { "stored KEYWORD" }));
