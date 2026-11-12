@@ -165,6 +165,10 @@ enum Cmd {
         /// sends its CHLOEDB_APP_TOKEN); none: any caller ($CHLOECTX_APP_TOKEN).
         #[arg(long, env = "CHLOECTX_APP_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Serve any caller with no token on an address other than loopback
+        /// (without it, the app refuses to start that way).
+        #[arg(long)]
+        insecure: bool,
         /// The embedder (static, or hash:<dim> for tests; $CHLOECTX_EMBEDDER).
         #[arg(long, env = "CHLOECTX_EMBEDDER", default_value = "static")]
         embedder: String,
@@ -449,8 +453,8 @@ fn main() {
             }
         }
         Cmd::Mount { dirs, log, embedder } => std::process::exit(chloectx::capsule::run_mcp(&dirs, log, embedder.as_deref())),
-        Cmd::App { server, key, host, port, token, embedder } => {
-            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), embedder }) {
+        Cmd::App { server, key, host, port, token, insecure, embedder } => {
+            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder }) {
                 eprintln!("chloectx app: {e}");
                 std::process::exit(1);
             }

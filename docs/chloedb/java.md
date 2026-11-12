@@ -2,7 +2,7 @@
 
 The `ai.chloetech.chloedb` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:chloedb:books.chloedb`), for code and tools that speak JDBC. It works on Java 11 and later.
 
-Before ChloeDB was renamed, the package was `ai.chloetech.strata`, its jar `ai.chloetech:strata`, its errors `StrataException` and its driver's classes `Strata*` (`StrataDriver`, `StrataConnection`, ...). They are `ai.chloetech.chloedb`, `ai.chloetech:chloedb`, `ChloeDBException` and `ChloeDB*` now: change the imports and the dependency when you rebuild. URLs that begin `jdbc:strata:` still open a database.
+Before ChloeDB was renamed, the package was `ai.chloetech.strata` and its jar `ai.chloetech:strata`: change the imports and the dependency when you rebuild (`StrataException` is `ChloeDBException`, and the driver's `Strata*` classes are `ChloeDB*`). URLs that begin `jdbc:strata:` still open a database.
 
 ## Build it
 
@@ -11,20 +11,20 @@ The package is in [`chloedb-java/`](https://github.com/chloetech-ai/chloedb/tree
 ```sh
 cd chloedb-java
 mvn package          # cargo builds the library, Maven the classes; tests run against both
-mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.1.0
+mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.2.0
 ```
 
-The jar (`target/java/chloedb-0.1.0.jar`) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:
+The jar (`target/java/chloedb-0.2.0.jar`) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:
 
 ```xml
 <dependency>
   <groupId>ai.chloetech</groupId>
   <artifactId>chloedb</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
-or, with Gradle, `implementation("ai.chloetech:chloedb:0.1.0")` with `mavenLocal()` among the repositories.
+or, with Gradle, `implementation("ai.chloetech:chloedb:0.2.0")` with `mavenLocal()` among the repositories.
 
 `-Dcargo.profile=ci` builds the library without link-time optimisation, much faster, for a build that only runs the tests. `-Dcargo.features=bert` (comma-separated) turns on Cargo features as the Python package has them: `bert` for BERT embedding models (`accelerate` on a Mac), `onnx`, `vision`, `audio`. The library already includes DataFusion, Parquet and `s3://` URLs. `-Dcargo.skip=true` packages the library cargo built before.
 

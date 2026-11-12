@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.1.0). The
+(November 2026, every crate and package at version 0.2.0). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -83,18 +83,18 @@ server of their own commit.
 
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
-server are of the same release. All packages are 0.1.0 whatever commit
-they were built from; until versions are bumped per release, name a build
-by its commit.
+server are of the same release. Every crate and package carries the
+version of the last release (0.2.0), and keeps it between releases: name a
+build from a commit after a release by its commit.
 
 ## A cluster of mixed versions
 
 Servers of a cluster (coordinators, shards, replicas, followers) talk over
 gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
-`MIN_PROTOCOL` 1, `PROTOCOL` 18; [the list of what each adds](chloedb/server.md)).
+`MIN_PROTOCOL` 1, `PROTOCOL` 20; [the list of what each adds](chloedb/server.md)).
 
 - When a coordinator or a peer connects it calls `Hello` with the range it
-  speaks (1 to 18) and the server answers its own range, the plan version
+  speaks (1 to 20) and the server answers its own range, the plan version
   it reads (plan IR version 1) and the plan features it has. The two use
   the highest protocol both speak; if the ranges do not meet the connection
   is refused, naming both ranges. A coordinator asks again every minute and
@@ -124,14 +124,46 @@ protocol fallbacks above, not as a matrix of releases.
 
 ## Old names
 
-ChloeDB was called Strata, and ChloeCtx Engram, until November 2026. The
-old names of programs (`strata-server`, `engram`), settings (`STRATA_*`,
-`ENGRAM_*`), headers (`x-strata-*`), packages (`import strata`) and error
-classes (`StrataError`) are still accepted, and are promised "for a
+ChloeDB was called Strata, and ChloeCtx was called Engram, until November
+2026. The old names below are still accepted, and are promised "for a
 release": they will be removed in a release that the changelog names in
-advance. The file format (`STRATADB` magic, `memory.strata`), the gRPC
-services and the internal names keep the old name and are not part of the
-rename.
+advance.
+
+| what | new name | old name, still accepted |
+|---|---|---|
+| programs | `chloedb-server`, `chloedb-crawl`, `chloedb-sheets` | `strata-server`, `strata-crawl`, `strata-sheets`, in the image and the release archives |
+| container image | `ghcr.io/chloetech-ai/chloedb-server` | `ghcr.io/chloetech-ai/strata-server` |
+| settings | `CHLOEDB_*` | `STRATA_*` |
+| HTTP headers and gRPC metadata | `x-chloedb-*` | `x-strata-*` |
+| Python package | `import chloedb`, `ChloeDBError` | `import strata`, `StrataError` (with a `DeprecationWarning`) |
+| JavaScript errors | `ChloeDBError` | `StrataError` |
+| JDBC URLs | `jdbc:chloedb:` | `jdbc:strata:` |
+| ChloeCtx program | `chloectx` | `engram`, a link to it |
+| ChloeCtx settings | `CHLOECTX_*` | `ENGRAM_*` |
+| repository | `chloetech-ai/chloedb` | `chloetech-ai/strata` and `rkonow/engram`, which GitHub redirects |
+| website | https://chloetech-ai.github.io/chloedb/ | the old address does not redirect |
+
+For the server in particular: when both a `CHLOEDB_*` setting and its
+`STRATA_*` name are set, the new one wins; an answer carries its headers
+under both names (`x-chloedb-took-ms` and `x-strata-took-ms`); the browser
+UI moves what it saved under `strata.*` to `chloedb.*` the first time it
+loads; the MCP server introduces itself as `chloedb`, and the OpenSearch
+API's cluster is named `chloedb`. The Kubernetes operator's pods start the
+programs by their old names, with `STRATA_*` settings, which every image
+understands.
+
+The metrics were renamed outright, from `strata_*` to `chloedb_*`: a
+dashboard over servers from before and after the rename can match
+`{__name__=~"(chloedb|strata)_.*"}`. So were the alert messages, which begin `[chloedb FIRING ...]`
+rather than `[strata FIRING ...]`.
+
+Some names have not been renamed yet and keep the old spelling: the file
+format (`STRATADB` magic, ChloeCtx's `memory.strata` and `engram.sock`), the
+gRPC services, the Kubernetes operator's resources (the `StrataCluster`
+kind, the `strata.chloetech.ai` API group, the `strata-system` namespace),
+the app engine in `chloedb-apps/`, and the default models directory
+(`~/.local/share/strata/models`). A machine that already has ChloeCtx's
+old folder, `~/.local/share/engram`, keeps using it.
 
 ## Not promised yet
 

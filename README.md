@@ -1,256 +1,177 @@
 # ChloeDB
 
-**An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.**
+**Search, data and recommendations in one embedded database.**
 
-> ChloeDB was called Strata until November 2026. The folders, crates, commands, settings (`CHLOEDB_*`), headers (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`, `ai.chloetech.chloedb`) carry the new name, as do the container image (`ghcr.io/chloetech-ai/chloedb-server`) and the repository (`chloetech-ai/chloedb`: links to `chloetech-ai/strata` redirect, but the website moved to [chloetech-ai.github.io/chloedb](https://chloetech-ai.github.io/chloedb/)); the Kubernetes operator's resources (`StrataCluster`) still carry the old one. The old names keep working for a release: `STRATA_*` settings, `x-strata-*` headers, `import strata`, `jdbc:strata:` URLs, the `strata-server` command in the image and the release archives, and the image's old name, `ghcr.io/chloetech-ai/strata-server`. ChloeCtx, its memory for Claude Code, was called Engram: the command is `chloectx` (`engram` still runs it), its settings are `CHLOECTX_*` (`ENGRAM_*` still read), and an install keeps its stores where they were ([what changes](docs/chloectx/setup.md#chloectx-was-called-engram)).
+ChloeDB keeps full text, structured columns, vectors and graph edges over the same rows, in one file, and answers all of them in one SQL query. Use it inside your app like SQLite, serve it over HTTP, or grow it to a sharded cluster without changing a query.
 
-ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions with snapshot isolation, and is queried with SQL. Every table is indexed three ways at once (posting lists for full text, a columnar forward index for structured fields, and vector indexes), rows can hold typed, weighted edges to other rows, and a cost-based planner chooses, per segment and from exact statistics, how to run each part of a statement. A database holds several tables, and queries join them. ChloeDB's posting lists come from its own study of compressed posting-list formats (the `postings` module), which produced the Loom and Pyramid codecs it uses.
-
-Around the library:
-
-- **[chloedb-server](docs/chloedb/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
-- **[chloedb-py](docs/chloedb/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods. Its [frames](docs/chloedb/frames.md) are lazy dataframes written as Polars writes them (filters, groups, joins, windows, and search as verbs), run as one SQL query where the data is, with the answer as Arrow for pandas, Polars and NumPy.
-- **[chloedb-java](docs/chloedb/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:chloedb:books.chloedb`.
-- **[chloedb-js](docs/chloedb/javascript.md)** does the same from JavaScript: a ChloeDB file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
-- **[Parquet and S3](docs/chloedb/parquet.md)**: `chloedb-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
-- **[Following Postgres](docs/chloedb/postgres.md)**: `chloedb-server follow-postgres` copies a Postgres publication's tables into ChloeDB and then applies their inserts, updates, deletes, truncates and new columns by logical replication (pgoutput), a moment behind, each change once across restarts: search over Postgres's rows without a Debezium or PGSync pipeline.
-- **[SQLite in and out](docs/chloedb/sqlite.md)**: `chloedb-server import` turns a SQLite database's tables into ChloeDB tables, and `chloedb-server export` writes a ChloeDB database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
-- **[chloedb-crawl](docs/chloedb/crawler.md)** crawls a site into a table: given a URL it reads the pages, finds their fields (JSON-LD, meta tags, spec tables, the site's template), makes a table from them and fills it, and adds shards to the cluster as the table grows. A program of its own that talks to chloedb-server over HTTP, shown in the command center as an app.
-- **[chloedb-sheets](docs/chloedb/sheets.md)** is a spreadsheet app whose workbooks live in ChloeDB: formulas (IronCalc, over 300 functions), formats, charts, pivots, filters and SQL queries of the cluster that fill cells; every cell is a row, so every workbook can be searched; the cluster's tables open as live sheets to sort, filter and edit; Excel, CSV and SQLite files come in, Excel and CSV go out. Shown in the command center as an app.
-- **[chloedb-apps](docs/chloedb/apps.md)** (a prototype) builds apps from a description: a model plans and writes them, the engine checks every piece, stores it in ChloeDB as a SQL statement and runs it, and you change an app by asking, each change a version you can go back from. Apps share components and helpers found by words, meaning and a graph, get sign-in, files, email and maps, and, when their owner switches it on, a model and the web.
-- **[ChloeCtx](#chloectx-memory-for-coding-agents-built-on-chloedb)** is an application built on ChloeDB: long-term memory for coding agents. It records every Claude Code session of a project into one ChloeDB file and brings the right pieces back when a prompt needs them.
-
-🌐 **Website:** [chloetech-ai.github.io/chloedb](https://chloetech-ai.github.io/chloedb/), with the benchmarks against other engines. 📖 **Documentation:** [`docs/`](docs/README.md).
-
-## ChloeDB in one query
+[Website](https://chloetech-ai.github.io/chloedb/) · [Documentation](docs/README.md) · [Query language](docs/chloedb/query-language.md) · [Benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) · [Changelog](CHANGELOG.md)
 
 ```sql
-SELECT id, title, score() FROM docs
-WHERE MATCH(body, 'vaccine AND (mrna OR "messenger rna") -animal')
-  AND year BETWEEN 2019 AND 2021 AND category IN ('c01', 'c02')
-ORDER BY 0.2 * minmax(bm25(body, :text)) + 0.8 * minmax(similarity(emb, :q)) DESC
-LIMIT 10;
+SELECT id, title, price, score() FROM products
+WHERE MATCH(title, 'wireles~ controller')              -- full text, typo forgiven
+  AND price BETWEEN 20 AND 60 AND in_stock              -- columns
+ORDER BY rrf(bm25(title, 'wireless controller'),        -- words
+             similarity(emb, :query_vector))            -- and meaning
+  DESC MAX 2 PER brand LIMIT 10;                        -- at most two per brand
 ```
 
-Boolean full text, structured filters and a weighted hybrid of BM25 and vector similarity, planned together by a cost-based optimizer over one file. Graph traversal joins the same statement:
+A cost-based planner decides, per segment and from exact statistics, how to run each part of that statement.
 
-```sql
-SELECT id, hops() FROM papers
-WHERE REACHABLE(cites, (SELECT id FROM papers ORDER BY similarity(emb, :q) DESC LIMIT 5), hops => 2, dir => 'both')
-  AND year >= 2018
-ORDER BY similarity(emb, :q) DESC LIMIT 20;
-```
+## Why ChloeDB
 
-See the [query language reference](docs/chloedb/query-language.md).
-
-```mermaid
-flowchart LR
-    subgraph LIB["ChloeDB: one file + WAL"]
-        direction TB
-        SQL["SQL: parser, binder,<br/>cost-based planner"] --> IDX["full text · columns · vectors · graph edges"]
-        IDX --- PB["posting lists<br/>Loom · Pyramid · BP128<br/>(chloedb::postings)"]
-    end
-    APP["your program<br/>(Rust)"] --> LIB
-    PY["chloedb-py<br/>in-process or HTTP client"] --> LIB
-    PY -.-> SRV
-    SRV["chloedb-server<br/>HTTP JSON · gRPC · UI · agent<br/>coordinator over shards · replicas"] --> LIB
-    EN["ChloeCtx<br/>memory for Claude Code"] --> LIB
-```
-
-## Results at a glance
-
-**ChloeDB**
-
-| | Result | Where |
-|---|---|---|
-| Against 13 search engines and databases, 14 kinds of query (MS MARCO 1M on DigitalOcean; ChloeDB's build of 7 November, after its own fixes, against each other engine's newest run, of 4 to 6 November, on other nodes) | **First** on places summed over 45 tests: 146 points, Solr 286, Elasticsearch 291, Qdrant 300; at 10M (the others' runs of 3 to 5 November), 87 against OpenSearch's 181 and Elasticsearch's 186. In the one run with every engine on the same day (4 November, each lane's engines taking turns on one set of nodes), also first: 156 against Elasticsearch's 284 at 1M, and 67 against OpenSearch's 83 at 10M among the three engines run there. Behind on typo search, key lookups and BM25 × recency | [Benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) |
-| ChloeDB vs Tantivy, warm BM25 top-10 | **1.7–3.2× faster**; conjunctions 2.7–4.1× faster; 24 of 28 text and filter comparisons won | [ChloeDB results](docs/chloedb/results.md#query-latency) |
-| ChloeDB vector top-10 (HNSW, 1,024-d) | **0.05–0.10 ms**, recall@10 0.99 on Quora; SQLite's scan takes 7.7 ms to 0.7 s | [ChloeDB results](docs/chloedb/results.md#vector-indexes) |
-| Filtered vector search planner | **1.8–6.1× faster** than the best fixed strategy, recall@10 0.991–0.998 | [ChloeDB results](docs/chloedb/results.md#filtered-vector-search-and-the-planner) |
-| Graph expansion for citation search (arXiv) | nDCG@20 **0.123 → 0.253** over vector search alone (p < 0.0001) | [ChloeDB graphs](docs/chloedb/graphs.md#does-the-graph-help-search) |
-| Loom posting lists vs partitioned Elias-Fano | same size, **2.4–3.0× faster AND**, 3.8–7.7× faster OR | [Posting lists](docs/posting-lists.md) |
-
-**ChloeCtx, on ChloeDB**
-
-| | Result | Where |
-|---|---|---|
-| **Claude Code with ChloeCtx and with the memory a user could pick instead** (4 projects, 208 follow-up runs a system, one small model) | **94%** solved with ChloeCtx as shipped (196 of 208), against 86% with mem0 (p = 0.009 against ChloeCtx `main`), 78% with grep over past transcripts, 74% with Claude Code's own memory and 44% with none; the whole history in context solves 93%, and ChloeCtx costs about a quarter as much a run | [ChloeCtx results](docs/chloectx/results.md#memory-systems-compared) |
-| Claude Code with ChloeCtx and with no memory at all (2 held-out projects; 20 tasks written to depend on earlier sessions, each run five times a condition) | **100 of 100** follow-up runs solved with ChloeCtx, **60 of 100** without. The whole gap is on facts said only in conversation: 60/60 against 20/60, mostly carried by the session briefing (memory tools called in 9 of 100 runs). A longer multi-day A/B showed no gain over compaction alone (27/30 against 26/30) | [ChloeCtx results](docs/chloectx/results.md#claude-code-with-and-without-chloectx) |
-| After a compaction, details the summary dropped | **13 of 15** came back automatically, 14 with one search | [ChloeCtx results](docs/chloectx/results.md#this-repositorys-own-26-hour-session) |
-| Live sessions asked about a 26-hour project history | **8 of 8** answered with ChloeCtx, **0 of 4** without | [ChloeCtx results](docs/chloectx/results.md#live-claude-code-runs) |
-| LongMemEval-S retrieval (115k-token histories) | **R@10 0.90**; the 4,000-character injection holds the evidence for 87% of questions | [ChloeCtx results](docs/chloectx/results.md#retrieval-on-long-conversation-benchmarks) |
-| Cost of a prompt hook | **14–26 ms** median from 10k to 1M records, mostly starting the hook process; 5.7 ms recall at a million records | [ChloeCtx results](docs/chloectx/results.md#scale-and-latency) |
-
-All numbers come from the experiments in this repository; [Reproducing the results](docs/reproduce.md) says how each was produced, and which ones were re-run for this release.
+- **One engine instead of four.** Other stacks keep a database, a search engine, a vector store and a recommender in step with application code. In ChloeDB they are the same rows and the same query.
+- **A file first, a cluster later.** A database is one file with ACID transactions. The same file can be served by `chloedb-server`, copied to replicas, or split over shards behind a coordinator.
+- **Measured, not claimed.** Every number in these docs comes from experiments committed to this repository, and the [benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) say where ChloeDB loses as well as where it wins.
 
 ## Quick start
 
-Everything is built from source and needs Rust (stable) and a C compiler.
+### Run a server
 
-```sh
-git clone https://github.com/chloetech-ai/chloedb && cd chloedb
-```
-
-ChloeDB as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/chloedb/server.md#run-it)):
+Download a prebuilt server (Linux x86_64 and aarch64, macOS arm64 and x86_64) and start it with a demo catalogue:
 
 ```sh
 v=0.2.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz
-chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # http://127.0.0.1:7700
+chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb
 ```
 
-Release 0.1.0, from before the rename, was published as `strata-server-v0.1.0`.
+Open http://127.0.0.1:7700 for the command center: a query console, the cluster's health, and an agent that answers questions by writing SQL.
 
-Or built from source:
-
-```sh
-cd chloedb-server && cargo build --release
-target/release/chloedb-server --demo 20000 --db products.chloedb
-```
-
-Or from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
+Or run the container image:
 
 ```sh
 docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
   ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.chloedb --listen 0.0.0.0:7700
 ```
 
-ChloeDB from its shell, which prints the plan it chose. The shell opens a database that exists and does not create one; here it reads the `products.chloedb` a server above made with `--demo` (`../products.chloedb` after the prebuilt server, `../chloedb-server/products.chloedb` after the source build; beside a running server it opens the file read-only):
+Or build it from source (Rust stable and a C compiler; the first build takes several minutes):
 
 ```sh
-cd chloedb && cargo build --release
-target/release/chloedb ../products.chloedb "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+git clone https://github.com/chloetech-ai/chloedb && cd chloedb/chloedb-server
+cargo build --release
+target/release/chloedb-server --demo 20000 --db products.chloedb
 ```
 
-ChloeDB from Python ([more](docs/chloedb/python.md)):
+Then query it over HTTP:
 
 ```sh
-pip install ./chloedb-py
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{
+  "sql": "SELECT id, title, price FROM products WHERE MATCH(body, :q) ORDER BY bm25(body, :q) DESC LIMIT 5",
+  "params": {"q": "waterproof tent"}}'
 ```
 
-ChloeDB from Java ([more](docs/chloedb/java.md)):
+More in [the server guide](docs/chloedb/server.md).
 
-```sh
-cd chloedb-java && mvn install    # ai.chloetech:chloedb:0.1.0, the native library inside the jar
+### Use it inside your app
+
+| language | install | guide |
+|---|---|---|
+| Python | `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md) |
+| JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.2.0` release | [JavaScript](docs/chloedb/javascript.md) |
+| Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
+| Rust | the `chloedb` crate in [`chloedb/`](chloedb/), by path | [Design](docs/chloedb/index.md) |
+
+```python
+import chloedb
+
+db = chloedb.open("books.chloedb", schema={
+    "table": "books", "key": "id",
+    "fields": [
+        {"name": "id", "type": "keyword"},
+        {"name": "title", "type": "text"},
+        {"name": "year", "type": "int"},
+    ],
+})
+db.insert({"id": "b1", "title": "The river and the dragon", "year": 1999})
+print(db.search("dragon").dicts())
+print(db.query("SELECT id, title FROM books WHERE year > :y", y=1990).dicts())
 ```
 
-```java
-try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.chloedb");
-     ResultSet rs = c.createStatement().executeQuery("SELECT id, title FROM books ORDER BY bm25(title, 'dragon') DESC LIMIT 5")) {
-    while (rs.next()) System.out.println(rs.getString("id") + " " + rs.getString("title"));
-}
-```
+The same methods work against a server: replace `chloedb.open(...)` with `chloedb.connect("http://127.0.0.1:7700")`.
 
-ChloeDB from JavaScript ([more](docs/chloedb/javascript.md)):
+## What you can do with it
 
-```sh
-cd chloedb-js && npm run build && cd ../my-app && npm install ../chloedb/chloedb-js
-```
+| | |
+|---|---|
+| **Full-text search** | BM25, boolean queries, phrases, typos, synonyms and autocomplete, on [ChloeDB's own posting lists](docs/posting-lists.md). |
+| **Vector search** | HNSW, IVF or exact search under any filter, hybrid fusion with text, multi-vector MaxSim, sparse vectors, and embeddings computed on write. |
+| **SQL** | Joins, subqueries, `WITH`, window functions, set operations, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, and ACID transactions with snapshot isolation. |
+| **Graphs** | Edges stored with the rows: reachability, shortest paths and personalised PageRank inside a query ([graphs](docs/chloedb/graphs.md)). |
+| **Ranking** | Any expression of scores and columns, rerank phases, rank profiles, LightGBM and XGBoost models, and cross-encoders. |
+| **Recommendations** | Sequence models, counted next items and bought-together walks, mixed with business rules in the same query. |
+| **Data in and out** | [SQLite](docs/chloedb/sqlite.md) and [Parquet](docs/chloedb/parquet.md) in and out (local files or S3), and [following a Postgres database](docs/chloedb/postgres.md) by logical replication. |
+| **Compatible APIs** | HTTP JSON, gRPC, [the OpenSearch API](docs/chloedb/opensearch.md) for apps written for OpenSearch or Elasticsearch, and [MCP](docs/chloedb/server.md#agents-over-mcp) for Claude Code and other agents. |
+| **A cluster** | Shards behind a coordinator, replicas with automatic failover, and a [Kubernetes operator](docs/chloedb/server.md#on-kubernetes). |
+| **Operations** | A command center in every server, Prometheus metrics, query profiles, and an on-call agent that proposes fixes for an admin to approve. |
 
-## ChloeCtx: memory for coding agents, built on ChloeDB
+## Apps built on ChloeDB
 
-Claude Code forgets. A long session gets compacted into a summary of about 15,000 characters, and a new session starts with almost nothing. ChloeCtx records everything a session does (prompts, answers, tool calls and their results, errors, compaction summaries) into one local ChloeDB file per project. It brings the right pieces back on its own when a prompt needs them, and it gives the model tools to search its own history. Every question it asks is ChloeDB SQL: recall is a BM25 search and a vector search under a filter that leaves out what the model can still see, and the model's `memory_sql` tool is ChloeDB's SQL itself, read-only.
+- **[ChloeCtx](#chloectx-long-term-memory-for-claude-code)**: long-term memory for Claude Code.
+- **[chloedb-crawl](docs/chloedb/crawler.md)**: give it a URL and it turns the site into a table, adding shards as the table grows.
+- **[chloedb-sheets](docs/chloedb/sheets.md)**: spreadsheets whose cells are rows, with formulas, charts, pivots and SQL queries of the cluster.
+- **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
 
-🧭 **Why ChloeCtx, in two pages:** where it wins, where it loses, how it searches and what it saves on coding sessions, with a cost calculator: [`docs/why/`](docs/why/index.html), live at [chloetech-ai.github.io/chloedb/why/](https://chloetech-ai.github.io/chloedb/why/).
+The crawler and sheets appear as apps in the command center.
 
-🚀 **Try it:** `git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh` sets ChloeCtx up for every Claude Code session on a Mac or Linux machine ([install ChloeCtx](#install-chloectx)). To have a coding agent do it, tell it: *"Clone https://github.com/chloetech-ai/chloedb and set ChloeCtx up for my Claude Code by following its AGENTS.md."* [`AGENTS.md`](AGENTS.md) gives an agent the steps, the checks and what to ask you first.
+## ChloeCtx: long-term memory for Claude Code
+
+Claude Code forgets. A long session is compacted into a summary, and a new session starts with almost nothing. ChloeCtx records everything a session does (prompts, answers, tool calls, errors and summaries) into a ChloeDB file per project, brings back the right pieces when a prompt needs them, and gives the model tools to search its own history.
 
 ![A new Claude Code session answers from ChloeCtx's memory: the storage decision, its reason, and the receipt-printer constraint, all stated in an earlier session](docs/assets/img/inspector-new-session.png)
 
-*The ChloeCtx live inspector. Left: a fresh Claude Code session is asked what was decided earlier, and answers from the briefing ChloeCtx injected. Right: the records the hooks stored and the decisions, rules and planned work a small model distilled from the first session.*
+*The ChloeCtx inspector. Left: a new session is asked what was decided earlier and answers from the briefing ChloeCtx injected. Right: the records the hooks stored and the notes a small model distilled from the first session.*
 
-```mermaid
-flowchart LR
-    subgraph CC["Claude Code session"]
-        HK["hooks<br/>SessionStart · UserPromptSubmit<br/>PreToolUse · PostToolUse · Stop · Compact"]
-        MCP["MCP tools<br/>memory_search · memory_timeline<br/>memory_sql · memory_remember"]
-    end
-    HK -- "chloectx hook &lt;event&gt;<br/>~15 ms, never blocks" --> D
-    MCP -- "chloectx mcp (stdio)" --> D
-    D["chloectx serve<br/>one daemon per project<br/>capture → embed → store<br/>recall → gate → pack"]
-    D -- "SQL: BM25 + vectors + filters" --> S[("ChloeDB<br/>memory.strata + WAL")]
-    D -. "after each turn" .-> DL["distiller<br/>(small model via claude -p)<br/>decisions · rules · planned work · facts"]
-    DL -.-> S
-```
-
-1. **Store without being asked.** Every hook event becomes records of at most 400 bytes in a ChloeDB table, with secrets redacted. A hook costs about 15 ms on a Mac, most of it process start.
-2. **Load without being asked, only when it helps.** A briefing at session start, a knowledge block and gated recall on every prompt, notes before editing a file. Nothing the model can still see is repeated.
-3. **Let the model ask precisely.** Hybrid search, a timeline around any record, and read-only SQL over its own memory.
-
-### Install ChloeCtx
-
-Requirements: macOS or Linux (WSL 2 on Windows), Rust (stable), a C compiler, and the [Claude Code](https://claude.com/claude-code) CLI, logged in (`claude auth status`).
+Install it on macOS or Linux (WSL 2 on Windows). You need Rust (stable), a C compiler and the [Claude Code](https://claude.com/claude-code) CLI, signed in:
 
 ```sh
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb
 ./install.sh                          # every Claude Code session on this machine
-./install.sh --project ~/code/app     # ... or one project
+./install.sh --project ~/code/app     # or just one project
 ```
 
-`install.sh` builds ChloeCtx, installs it to `~/.local/bin/chloectx`, downloads the embedding model (129 MB), wires the hooks and the MCP server into Claude Code (`chloectx install --user`, or `--project`), and runs `chloectx doctor` to check the result. Each project directory gets its own store under `~/.local/share/engram/projects/`, outside the repository. Run it again after `git pull` to upgrade; `chloectx uninstall --user` removes it and keeps the stores. [Install on your machine](docs/chloectx/setup.md) covers the details, remote machines, dev containers and troubleshooting.
+The installer builds `chloectx` into `~/.local/bin`, downloads its embedding model (129 MB), connects it to Claude Code and runs `chloectx doctor` to check the result. It takes effect in new Claude Code sessions. To have a coding agent install it for you, ask it to *"clone https://github.com/chloetech-ai/chloedb and set ChloeCtx up for my Claude Code by following its AGENTS.md"*.
 
-An agent can do all of this: [`AGENTS.md`](AGENTS.md) has its instructions, including which steps need you (choosing the scope, and `claude auth login` if the CLI is logged out). ChloeCtx takes effect in new Claude Code sessions.
-
-Then browse what it stored, per project and per session:
+Then look at what it stored:
 
 ```sh
-chloectx ui           # the inspector over every local store, at http://127.0.0.1:8765/?token=...
-chloectx doctor       # what is wired where, and whether the daemon and the distiller work
-```
-
-Try it by hand:
-
-```sh
+chloectx ui                                     # the inspector, per project and per session
 chloectx search "why did we pick JSON over SQLite"
-chloectx sql "SELECT ts, text FROM memory WHERE kind = 'error' ORDER BY ts DESC LIMIT 5"
-chloectx remember decision "Prices are integer cents"
 ```
 
-Or watch it work in the scripted demo, which chats with Claude Code in a scratch project (from `chloectx/`):
+Read more: [install guide](docs/chloectx/setup.md) · [how it works](docs/chloectx/index.md) · [results](docs/chloectx/results.md) · [why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/) · [ChloeCtx beside a cluster](docs/chloectx/app.md)
 
-```sh
-demo/run.sh --model <model> --distill-model <small model>     # http://127.0.0.1:8765
-demo/run.sh --embedder hash:256 ...                           # without downloading the embedding model
-```
+## Results at a glance
 
-### ChloeCtx beside a cluster
+| | result | source |
+|---|---|---|
+| Against 13 search engines and databases, 14 kinds of query, MS MARCO 1M | **First** on places summed over 45 tests (146 points; Solr 286, Elasticsearch 291). Behind on typo search, key lookups and BM25 × recency. | [Benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) |
+| Warm BM25 top-10 against Tantivy | **1.7–3.2× faster**, and 24 of 28 text and filter comparisons won | [Results](docs/chloedb/results.md#query-latency) |
+| Vector top-10 (HNSW, 1,024 dimensions, Quora) | **0.05–0.10 ms** at recall@10 0.99 | [Results](docs/chloedb/results.md#vector-indexes) |
+| Filtered vector search, planned | **1.8–6.1× faster** than the best fixed strategy | [Results](docs/chloedb/results.md#filtered-vector-search-and-the-planner) |
+| Graph expansion for citation search (arXiv) | nDCG@20 **0.123 → 0.253** over vector search alone | [Graphs](docs/chloedb/graphs.md#does-the-graph-help-search) |
+| Claude Code with ChloeCtx, against other memory (4 projects, 208 runs each) | **94%** of follow-up tasks solved, against 86% with mem0, 74% with Claude Code's own memory and 44% with none | [ChloeCtx results](docs/chloectx/results.md#memory-systems-compared) |
 
-`chloectx app` runs ChloeCtx as an app of a ChloeDB cluster, shown in the command center as the crawler and Sheets are, with its memory in the cluster's tables. **Context** gives any agent memory *spaces* to write notes and conversations to and to ask for context within a token budget, by search alone, with the reasons for every pick and what was left out. **Seen before** puts each firing alert beside the past incidents it looks like and the fix that worked, and hands it to the on-call agent with them ([ChloeCtx as an app](docs/chloectx/app.md)).
+[Reproducing the results](docs/reproduce.md) says how each number was produced and on which machine.
 
 ## Repository layout
 
 | path | what |
 |---|---|
-| [`chloedb/`](chloedb/) | the database: storage engine, segments, text / structured / vector / graph indexes, SQL binder, planner and executor, baselines and benchmarks; [`src/postings/`](chloedb/src/postings/) holds the compressed posting lists and set algorithms, the Pyramid, Loom and Entropic designs, and their testbed (`chloedb-posting-bench`) |
-| [`chloedb-server/`](chloedb-server/) | ChloeDB over HTTP JSON and gRPC: a coordinator over shards, replicas, deadlines, Prometheus metrics, a query-builder UI and an agent that answers questions with SQL ([docs](docs/chloedb/server.md)) |
-| [`chloedb-py/`](chloedb-py/) | ChloeDB from Python: the database in-process (a Rust extension) or a client of chloedb-server, with the same methods ([docs](docs/chloedb/python.md)) |
-| [`chloedb-java/`](chloedb-java/) | ChloeDB from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.chloedb` package, built by Maven) ([docs](docs/chloedb/java.md)) |
-| [`chloedb-js/`](chloedb-js/) | ChloeDB from JavaScript: the database in-process (a Node-API addon for Node, Bun and Deno) or a `fetch` client of chloedb-server, with the same methods ([docs](docs/chloedb/javascript.md)) |
-| [`chloedb-crawl/`](chloedb-crawl/) | the crawler: polite fetching, field extraction, a table's schema inferred from the pages, batched writes and a cluster grown a shard at a time; its command center view (`ui/view.js`) ([docs](docs/chloedb/crawler.md)) |
-| [`chloedb-sheets/`](chloedb-sheets/) | the spreadsheet app: workbooks kept as ChloeDB rows (IronCalc's formulas), live sheets of the cluster's tables, SQL query blocks, xlsx, CSV and SQLite in and out; its command center view (`ui/view.js`) ([docs](docs/chloedb/sheets.md)) |
-| [`chloedb-apps/`](chloedb-apps/) | the app engine (a prototype, in Node.js): the forge that has a model plan and write apps, their pieces stored as SQL rows, the checks, the studio, sandboxed views and QuickJS functions, a library of 150 shared pieces, and the services apps get ([docs](docs/chloedb/apps.md)) |
-| [`chloectx/`](chloectx/) | ChloeCtx, the memory system built on ChloeDB: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), `chloectx app` for a cluster and its command center view (`ui/view.js`) ([docs](docs/chloectx/app.md)), evaluation harnesses and results |
-| [`examples/parley/`](examples/parley/) | a prototype social network of LLM agents on ChloeDB, from a file in the process to a sharded cluster, and a founder's [log](examples/parley/FOUNDER_LOG.md) of building it |
-| [`docs/`](docs/) | this documentation, as Markdown and as a GitHub Pages site |
-| [`install.sh`](install.sh) | builds ChloeCtx, installs it to `~/.local/bin` and wires it into Claude Code |
-| [`AGENTS.md`](AGENTS.md) | instructions for a coding agent setting ChloeCtx up or working on this repository (`CLAUDE.md` imports it) |
+| [`chloedb/`](chloedb/) | the database engine (Rust): storage, indexes, SQL, planner, and the posting-list study |
+| [`chloedb-server/`](chloedb-server/) | the server: HTTP JSON and gRPC, coordinator, replication, Kubernetes operator, command center |
+| [`chloedb-py/`](chloedb-py/), [`chloedb-js/`](chloedb-js/), [`chloedb-java/`](chloedb-java/) | Python, JavaScript and Java packages |
+| [`chloedb-crawl/`](chloedb-crawl/), [`chloedb-sheets/`](chloedb-sheets/), [`chloedb-apps/`](chloedb-apps/) | the crawler, the spreadsheet app and the app engine prototype |
+| [`chloectx/`](chloectx/) | ChloeCtx, memory for Claude Code |
+| [`examples/parley/`](examples/parley/) | a prototype social network of LLM agents on ChloeDB |
+| [`docs/`](docs/README.md) | the documentation and the website |
+| [`AGENTS.md`](AGENTS.md) | instructions for coding agents working on this repository |
 
-Each crate also carries its own design document ([ChloeDB](chloedb/DESIGN.md), [ChloeCtx](chloectx/DESIGN.md)) and full HTML reports with every chart and table ([ChloeDB](chloedb/report/strata.html), [ChloeDB graphs](chloedb/report/graph.html), [posting lists](chloedb/report/postings/report.html), [designs](chloedb/report/postings/designs.html), [ChloeCtx](chloectx/report/engram.html), [record structure](chloectx/report/structure.html)).
+## Status
 
-## Documentation
+ChloeDB is young, at version 0.2, and much of it was measured on one machine (an Apple M2 MacBook Air; the comparisons with other engines ran on DigitalOcean). The file format and the shard protocol have [compatibility rules](docs/compatibility.md), but APIs can still change between releases. One process writes a database at a time, while other processes can read it. Each results page lists its own limitations.
 
-- [Overview](docs/README.md)
-- **ChloeDB:** [design](docs/chloedb/index.md) · [query language](docs/chloedb/query-language.md) · [graphs](docs/chloedb/graphs.md) · [server](docs/chloedb/server.md) · [Python](docs/chloedb/python.md) · [Java](docs/chloedb/java.md) · [JavaScript](docs/chloedb/javascript.md) · [SQLite](docs/chloedb/sqlite.md) · [Postgres](docs/chloedb/postgres.md) · [results](docs/chloedb/results.md)
-- [Posting lists](docs/posting-lists.md)
-- **ChloeCtx, built on ChloeDB:** [install on your machine](docs/chloectx/setup.md) · [how it works](docs/chloectx/index.md) · [live inspector](docs/chloectx/inspector.md) · [as an app of a cluster](docs/chloectx/app.md) · [results](docs/chloectx/results.md) · [why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/)
-- [Reproducing the results](docs/reproduce.md)
-
-## Status and limits
-
-This is a research prototype, measured carefully, most of it on one machine (an Apple M2 MacBook Air; the model-based runs on an earlier 4-core cloud VM, and the comparisons with other engines on DigitalOcean). A ChloeDB database has one writer process (the multi-process writer lock is designed but not built), and `chloedb-server` serves a database's first table for now; its sharding, replication and agent are new and have been tested, not yet measured at scale. ChloeCtx's coding evidence comes from one long session, a handful of live runs and three small A/B projects; the public benchmarks it uses (LongMemEval, LoCoMo) are chat histories, not coding sessions. Each results page lists its own limitations.
-
-The repository was called `rkonow/engram` until October 2026. GitHub redirects the old address, so existing clones keep working.
+ChloeDB was called Strata, and ChloeCtx was called Engram, until November 2026. The old names (`strata-server`, `STRATA_*` settings, `import strata`, `engram`) still work for a release; [old names](docs/compatibility.md#old-names) lists them.
 
 ## Licence
 

@@ -116,8 +116,31 @@ pub fn remote(home: &Path) -> Option<Remote> {
     Some(Remote { url: url.trim().trim_end_matches('/').to_string(), token, header_dir: home.to_path_buf() })
 }
 
+/// Refuses a server reached over plain HTTP anywhere but this machine:
+/// what sync sends is transcripts of the user's sessions, and with them the
+/// server's key. `CHLOECTX_SYNC_ALLOW_HTTP=1` allows it (a private network
+/// behind a proxy the user trusts).
+pub fn check_url(url: &str) -> Result<()> {
+    let u = url.trim();
+    let lower = u.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+    let Some(rest) = lower.strip_prefix("http://") else {
+        return Err(err(format!("sync server {u}: give an https:// URL")));
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if let Some(v6) = host.strip_prefix('[') { v6.split(']').next().unwrap_or("") } else { host.split(':').next().unwrap_or("") };
+    if crate::app::loopback(host) || std::env::var("CHLOECTX_SYNC_ALLOW_HTTP").is_ok_and(|v| v == "1") {
+        return Ok(());
+    }
+    Err(err(format!("sync server {u}: plain HTTP to another machine would send your sessions and the key in the clear; use https:// (or set CHLOECTX_SYNC_ALLOW_HTTP=1)")))
+}
+
 /// Writes the sync's settings (and the key, owner-only, when given).
 pub fn setup(home: &Path, url: &str, token: Option<&str>, token_env: &str, renames: &[String]) -> Result<()> {
+    check_url(url)?;
     crate::paths::create_private_dir(home)?;
     let mut map = std::collections::BTreeMap::new();
     for r in renames {
@@ -153,12 +176,18 @@ impl Remote {
         if self.token.as_deref().is_some_and(is_anthropic_key) {
             return Err(err(format!("the sync's key is an Anthropic API key (sk-ant-...), not a ChloeDB token or API key (sk_<id>_<secret>): it was not sent to {}. Set the variable or sync.token to the server's key", self.url)));
         }
+        check_url(&self.url)?;
         let mut cmd = Command::new("curl");
         cmd.args(["-sS", "-m", &TIMEOUT_SECS.to_string(), "-X", "POST", "-H", "content-type: application/json", "-H", "x-chloedb-client: chloectx-sync", "--data-binary", "@-", "-w", "\n%{http_code}"]);
         let header = match &self.token {
             Some(t) => {
-                let p = self.header_dir.join(format!(".sync-header-{}", std::process::id()));
-                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p)?;
+                // A file of this request's own: a push and an explicit `sync`
+                // may run at once, and neither may remove the other's.
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let p = self.header_dir.join(format!(".sync-header-{}-{n}", std::process::id()));
+                let _ = std::fs::remove_file(&p);
+                let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&p)?;
                 writeln!(f, "Authorization: Bearer {t}")?;
                 cmd.arg("-H").arg(format!("@{}", p.display()));
                 Some(p)
@@ -415,6 +444,20 @@ mod tests {
             assert_eq!(repo_of(u).as_deref(), Some("chloetech-ai/strata"), "{u}");
         }
         assert_eq!(repo_of("strata"), None);
+    }
+
+    #[test]
+    fn plain_http_is_for_this_machine_only() {
+        for u in ["https://chloedb.example.com", "HTTPS://x", "http://127.0.0.1:7700", "http://localhost:7700/", "http://[::1]:7700", "http://user@127.0.0.1:1"] {
+            assert!(check_url(u).is_ok(), "{u}");
+        }
+        std::env::remove_var("CHLOECTX_SYNC_ALLOW_HTTP");
+        for u in ["http://chloedb.example.com", "http://10.0.0.5:7700", "http://127.0.0.1.example.com", "http://127.0.0.1@evil.example.com/", "ftp://x"] {
+            assert!(check_url(u).is_err(), "{u}");
+        }
+        let r = Remote { url: "http://chloedb.example.com".into(), token: Some("sk_a_b".into()), header_dir: std::env::temp_dir() };
+        let e = r.post("/v1/query", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("plain HTTP") && !e.contains("sk_a_b"), "{e}");
     }
 
     #[test]
