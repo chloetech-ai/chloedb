@@ -34,8 +34,8 @@ This code knows: `added_fields`, `bool`, `cluster_by`, `cold_segments`,
 `compact_keys`, `default`, `derive`, `derive_text`, `edge_table`,
 `expire_by`, `field_ids`, `functions`, `json`, `json_text`, `media`,
 `multi_vector`, `not_null`, `packed_positions`, `rank_profiles`, `rabitq`,
-`retain`, `semantic_id`, `seq_no`, `shard_by`, `sources`, `timestamp`,
-`vector_partition` and `zstd` (the list `FEATURES` in `manifest.rs` is the
+`retain`, `semantic_id`, `seq_no`, `shard_by`, `sources`, `sparse_embed`,
+`timestamp`, `vector_partition` and `zstd` (the list `FEATURES` in `manifest.rs` is the
 authority).
 
 **What it writes.** Every database this code creates is format 3 with

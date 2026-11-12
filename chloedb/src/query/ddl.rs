@@ -33,7 +33,9 @@
 //! `'simple'`; another than `english` makes the database format 3), `index` (`'hnsw'` with `m` and
 //! `ef_construction`, `'flat'`, or `'ivf'` with `nlist`), `codes` (`'sq8'`,
 //! `'binary'`, `'rabitq1'`, `'rabitq2'` or `'rabitq4'`), `dim`, and `embed` with `model` (the fields a VECTOR
-//! field is the model's embedding of). Field lists are a string, `'title,
+//! field is the model's embedding of, or a SPARSE field a learned sparse
+//! model's term weights of: `sp SPARSE OPTIONS(embed = 'body', model =
+//! 'opensearch-sparse-doc-v3')`). Field lists are a string, `'title,
 //! abstract'`, or `ARRAY['title', 'abstract']`. A KEYWORD[] column with
 //! `semantic_id = 'emb'` and `codebook = 'name'` holds the semantic IDs of
 //! VECTOR column `emb`'s vectors ([`crate::sid`]; feature `semantic_id`):
@@ -381,6 +383,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
         "media" => &["stored", "indexed", "kind"],
         "keyword" if multi => &["stored", "indexed", "semantic_id", "codebook"],
         "json" => &["stored", "indexed", "text", "analyzer"],
+        "sparse" => &["stored", "indexed", "embed", "model"],
         _ => &["stored", "indexed"],
     };
     if !allowed.contains(&"semantic_id") && (opts.contains_key("semantic_id") || opts.contains_key("codebook")) {
@@ -449,6 +452,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
             f.insert("derive".into(), d);
         }
         _ if ty == "text" => return Err(bad("a derived text takes derive = 'media column' and model = 'name', or derive = 'text column', a language model and prompt = 'what to make of it'".into())),
+        _ if ty == "sparse" => return Err(bad("an embedded SPARSE column takes embed = 'fields' and model = 'a learned sparse model'".into())),
         _ => return Err(bad("an embedded vector takes embed = 'fields' and model = 'name'".into())),
     }
     if let Some(from) = opts.remove("from") {
@@ -814,6 +818,7 @@ mod tests {
             "CREATE TABLE cooc (id KEYWORD PRIMARY KEY, src KEYWORD NOT NULL REFERENCES papers, dst KEYWORD NOT NULL REFERENCES papers, w FLOAT DEFAULT 0) OPTIONS(edges = 'src, dst, w')",
             "CREATE TABLE \"select\" (\"order\" INT PRIMARY KEY, \"doc no\" KEYWORD, \"say \"\"hi\"\"\" TEXT, \"Mixed\" FLOAT, name TEXT, \"a,b\" TEXT, c TEXT OPTIONS(from = ARRAY['a,b', 'name']))",
             "CREATE TABLE log (line TEXT)",
+            "CREATE TABLE notes (id KEYWORD PRIMARY KEY, title TEXT, body TEXT, sp SPARSE OPTIONS(embed = 'title, body', model = 'opensearch-sparse-doc-v3'))",
             "CREATE TABLE items (id KEYWORD PRIMARY KEY, rating FLOAT, n INT, cat KEYWORD,
                emb VECTOR(8) OPTIONS(partition_by = 'rating', partition_bounds = '1, 2.5, 4'), e2 VECTOR(8) OPTIONS(m = 8, partition_by = 'cat'),
                e3 VECTOR(8) OPTIONS(partition_by = 'n', partition_bounds = ARRAY[10, 20]))",
@@ -980,6 +985,9 @@ mod tests {
             ("CREATE TABLE t (a MEDIA[])", "only KEYWORD[], INT[] and VECTOR(dimensions)[]"),
             ("CREATE TABLE t (a MEDIA, b TEXT OPTIONS(from = 'a'))", "not a source of text"),
             ("CREATE TABLE t (a MEDIA, e VECTOR OPTIONS(embed = 'a', model = 'hash:8'))", "is of kind image"),
+            ("CREATE TABLE t (a MEDIA OPTIONS(kind = 'image'), sp SPARSE OPTIONS(embed = 'a', model = 'm'))", "weighs the terms of text"),
+            ("CREATE TABLE t (a TEXT, sp SPARSE OPTIONS(embed = 'a'))", "embedded SPARSE column takes"),
+            ("CREATE TABLE t (a TEXT, sp SPARSE OPTIONS(model = 'm'))", "embedded SPARSE column takes"),
             ("CREATE TABLE t (id INT PRIMARY KEY, a MEDIA NOT NULL) OPTIONS(shard_by = 'a')", "KEYWORD or INT"),
         ] {
             let e = create(bad, &[]).unwrap_err().to_string();

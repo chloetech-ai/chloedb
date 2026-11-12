@@ -91,6 +91,31 @@ pub trait Embedder: Send + Sync {
     fn usage(&self) -> Option<Usage> {
         None
     }
+    /// Whether it makes term weights for a SPARSE field rather than
+    /// vectors ([`Embedder::embed_sparse`]), as a learned sparse encoder
+    /// ([`SparseEncoder`]) does.
+    fn sparse(&self) -> bool {
+        false
+    }
+    /// Documents' term weights, for a model whose [`Embedder::sparse`] is
+    /// true: a list of (term, weight) a text, the zero weights left out.
+    fn embed_sparse(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
+        let _ = texts;
+        Err(model_err(format!("model {} makes vectors, not term weights: a SPARSE field needs a learned sparse model", self.name())))
+    }
+    /// A search query's term weights ([`Embedder::embed_sparse`]).
+    fn embed_query_sparse(&self, text: &str) -> Result<Vec<(String, f32)>> {
+        Ok(self.embed_sparse(&[text])?.pop().unwrap_or_default())
+    }
+}
+
+/// Term weights as a SPARSE value: a JSON object of term to weight.
+pub fn terms_json(terms: &[(String, f32)]) -> String {
+    // A weight as its shortest decimal as an f32, not the f64 it widens
+    // to (0.011537966, not 0.011537966318428516).
+    let number = |w: f32| w.to_string().parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(serde_json::Value::Null, serde_json::Value::Number);
+    let m: serde_json::Map<String, serde_json::Value> = terms.iter().filter(|(_, w)| w.is_finite()).map(|(t, w)| (t.clone(), number(*w))).collect();
+    serde_json::Value::Object(m).to_string()
 }
 
 /// The model of an embedded field that is not open here, as a write sees
@@ -133,6 +158,12 @@ impl Embedder for NotOpen {
         Err(self.refuse())
     }
     fn embed_tokens(&self, texts: &[&str]) -> Result<Vec<Vec<Vec<f32>>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(self.refuse())
+    }
+    fn embed_sparse(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -403,11 +434,15 @@ pub fn catalog(models: &Path) -> Vec<Listed> {
             let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
             // Ranking models and cross-encoders live here too; only embedders are listed.
             let onnx = !dir.join("model.safetensors").exists();
-            let kind = format!("{}{}", config["model_type"].as_str().unwrap_or("model2vec"), if onnx { " (ONNX)" } else { "" });
+            let sparse = onnx && dir.join("idf.json").exists();
+            let kind = match sparse {
+                true => format!("learned sparse {} (ONNX)", config["model_type"].as_str().unwrap_or("")).replace("  ", " "),
+                false => format!("{}{}", config["model_type"].as_str().unwrap_or("model2vec"), if onnx { " (ONNX)" } else { "" }),
+            };
             if config["architectures"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str().is_some_and(|s| s.contains("SequenceClassification")))) {
                 continue;
             }
-            let dim = config["hidden_size"].as_u64().map(|d| d as usize);
+            let dim = if sparse { None } else { config["hidden_size"].as_u64().or_else(|| config["dim"].as_u64()).map(|d| d as usize) };
             let ready = match onnx && !cfg!(feature = "onnx") {
                 true => Err("built without the `onnx` feature".to_string()),
                 false => Ok(()),
@@ -432,7 +467,8 @@ pub fn model_files(name: &str) -> &'static [&'static str] {
 
 /// Opens the model a schema names: `hash:<dim>`, or a directory under
 /// `models` (or an absolute path) holding a Model2Vec, BERT, SigLIP or
-/// CLAP model ([`model_files`]), or a hosted model ([`crate::hosted`]):
+/// CLAP model ([`model_files`]), an ONNX export (`model.onnx`; with an
+/// `idf.json`, a learned sparse model, [`SparseEncoder`]), or a hosted model ([`crate::hosted`]):
 /// `<provider>/<model>` (`openai/text-embedding-3-small`), or a directory
 /// holding an `endpoint.json`. [`open_for`] opens one for a field's
 /// dimensions.
@@ -532,6 +568,11 @@ pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dy
     }
     let _ = dim;
     if !has_weights && dir.join(crate::query::cross_encoder::ONNX).exists() {
+        // A learned sparse model has the query side's IDF table beside it.
+        #[cfg(feature = "onnx")]
+        if dir.join("idf.json").exists() {
+            return Ok(Arc::new(SparseEncoder::open(&dir)?));
+        }
         #[cfg(feature = "onnx")]
         return Ok(Arc::new(OnnxEmbedder::open(&dir)?));
         #[cfg(not(feature = "onnx"))]
@@ -1259,12 +1300,6 @@ impl SparseEncoder {
         Ok(ids.into_iter().map(|i| (self.terms[i as usize].clone(), self.idf[i as usize])).collect())
     }
 
-    /// Term weights as a SPARSE value: a JSON object of term to weight.
-    pub fn to_json(terms: &[(String, f32)]) -> String {
-        let m: serde_json::Map<String, serde_json::Value> = terms.iter().map(|(t, w)| (t.clone(), serde_json::Value::from(*w as f64))).collect();
-        serde_json::Value::Object(m).to_string()
-    }
-
     fn run(&self, enc: &[&tokenizers::Encoding]) -> Result<Vec<Vec<(String, f32)>>> {
         use ort::value::Tensor;
         let attempt = || -> std::result::Result<Vec<Vec<(String, f32)>>, Box<dyn std::error::Error>> {
@@ -1297,6 +1332,36 @@ impl SparseEncoder {
                 .collect())
         };
         attempt().map_err(|e| model_err(format!("{}: {e}", self.name)))
+    }
+}
+
+/// A SPARSE field embedded by it (`embed`, `model`) gets its documents'
+/// term weights at write, and a query's text its weights by
+/// [`crate::db::Db::embed_query_in`] (a server's `{"embed": "text"}`).
+#[cfg(feature = "onnx")]
+impl Embedder for SparseEncoder {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+    /// It makes no vectors.
+    fn dim(&self) -> usize {
+        0
+    }
+    fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Err(model_err(format!("{} is a learned sparse model: it makes term weights for a SPARSE field, not vectors", self.name)))
+    }
+    /// ONNX Runtime runs a batch on every core itself.
+    fn parallel(&self) -> bool {
+        false
+    }
+    fn sparse(&self) -> bool {
+        true
+    }
+    fn embed_sparse(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
+        self.encode_documents(texts)
+    }
+    fn embed_query_sparse(&self, text: &str) -> Result<Vec<(String, f32)>> {
+        self.encode_query(text)
     }
 }
 

@@ -84,7 +84,8 @@ s3 = ["chloedb/s3"]
 bert = ["chloedb/bert"]
 # `bert` with matrix products in Apple's Accelerate framework (macOS only).
 accelerate = ["chloedb/accelerate"]
-# Cross-encoders exported to ONNX, int8 ones among them, run by ONNX Runtime.
+# Cross-encoders, embedding models and learned sparse models exported to
+# ONNX, int8 ones among them, run by ONNX Runtime.
 onnx = ["chloedb/onnx"]
 # Images: decoded, and embedded by SigLIP (siglip-base-patch16-224).
 vision = ["chloedb/vision"]

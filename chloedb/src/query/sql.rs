@@ -2023,7 +2023,19 @@ impl<'a> Binder<'a> {
             if distance {
                 return Err(err("a SPARSE field takes similarity(...), not distance(...)"));
             }
-            let terms = crate::text::sparse::parse(&self.literal(v)?).map_err(|e| err(format!("similarity({}, ..): {e}", self.schema.fields[field].name)))?;
+            let fld = &self.schema.fields[field];
+            let terms = crate::text::sparse::parse(&self.literal(v)?).map_err(|e| match &fld.embed {
+                // Text for a field a model weighs: the model weighs it too.
+                Some(m) => err(format!(
+                    "similarity({}, ..): {e}. {} holds {}'s term weights of {}: give the text as a parameter for the model to weigh, \"params\": {{\"q\": {{\"embed\": \"some words\"}}}} with similarity({}, :q) (Db::embed_query_in in Rust), or the terms as a JSON object",
+                    fld.name,
+                    fld.name,
+                    m.model,
+                    m.from.join(" and "),
+                    fld.name
+                )),
+                None => err(format!("similarity({}, ..): {e}", fld.name)),
+            })?;
             return Ok(Score::Sparse { field, terms, opts: without_norm(opts) });
         }
         let FieldType::Vector { dim, .. } = self.schema.fields[field].ty else { unreachable!() };

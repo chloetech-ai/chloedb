@@ -2217,7 +2217,8 @@ impl Service {
     /// the vector of an image or sound file by a model of that and text.
     /// The text of a multi-vector field (`VECTOR(d)[]`) embedded by a
     /// model of its tokens, such as ColBERT, is the list of its tokens'
-    /// vectors, as `maxsim` takes them.
+    /// vectors, as `maxsim` takes them; that of a SPARSE field embedded by
+    /// a learned sparse model, its term weights, as `similarity` takes them.
     pub async fn params(self: &Arc<Self>, j: Option<&Json>) -> Result<Params, ApiError> {
         let mut p = Params::new();
         let Some(j) = j.filter(|j| !j.is_null()) else { return Ok(p) };
@@ -2258,6 +2259,7 @@ impl Service {
                         let _core = core;
                         match file {
                             Some((_, data)) => chloedb::embed::embed_file(e.as_ref(), &data).map(|v| Value::Vector(v.into())),
+                            None if e.sparse() => e.embed_query_sparse(&text).map(|t| Value::Str(chloedb::embed::terms_json(&t))),
                             None if tokens => e.embed_query_tokens(&text).map(|vs| Value::List(vs.into_iter().map(|v| Value::Vector(v.into())).collect())),
                             None => e.embed_query(&text).map(|v| Value::Vector(v.into())),
                         }

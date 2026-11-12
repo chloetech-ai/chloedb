@@ -11,6 +11,12 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Query and indexes
+
+- **Learned sparse fields embedded by a model.** A `SPARSE` field can name a learned sparse model (`"embed": {"from": ["body"], "model": "..."}`; `sp SPARSE OPTIONS(embed = 'body', model = '...')`), as a `VECTOR` field names an embedding model: writes that leave it out get their text's term weights, an `UPDATE` of a source weighs it again, rows stored before the model opened are filled in, and `{"embed": "text", "field": "sp"}` (`Db::embed_query_in`) gives a query's weights from the model's IDF table, with no model run at query time. The model is an ONNX export with an `idf.json` (`chloedb::embed::SparseEncoder`, feature `onnx`; `research/cpu-encoders/sparse_onnx_export.py` writes OpenSearch's doc-v3-distill in int8). Fused with BM25 it came within 1.2 to 1.8 points of nDCG@10 of granite-small-r2's dense vectors on SciFact, NFCorpus and ArguAna, at 50 to 80 times their queries a second ([docs](docs/chloedb/server.md#term-weights-of-a-learned-sparse-model)).
+- **ONNX embedding models.** A models directory holding `model.onnx` (an encoder's export, such as ModernBERT's granite-embedding-small-english-r2 in int8) opens as an embedding model (`OnnxEmbedder`, feature `onnx`), with CLS or mean pooling and the query prompt from its sentence-transformers files.
+- **Static models in int8, f16 and bf16.** `StaticEmbedder` reads Model2Vec tables stored in int8 (with a scale), f16 or bf16, and Model2Vec's token weights and mapping: potion-retrieval-32M in int8 is 30 MB instead of 129, within 0.002 nDCG@10 on SciFact (0.6315 against 0.6331).
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

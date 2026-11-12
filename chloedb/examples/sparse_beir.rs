@@ -60,7 +60,7 @@ fn main() {
     std::fs::create_dir_all(&tmp).unwrap();
     let db = Db::create(&tmp.join("e.strata"), schema, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
     db.load(c.docs.iter().enumerate().map(|(i, (id, text))| {
-        let mut row = vec![Value::Str(id.clone()), Value::Str(text.clone()), Value::Str(SparseEncoder::to_json(&sparse[i]))];
+        let mut row = vec![Value::Str(id.clone()), Value::Str(text.clone()), Value::Str(chloedb::embed::terms_json(&sparse[i]))];
         if let Some(v) = &vectors {
             row.push(Value::Vector(v[i].clone().into()));
         }
@@ -73,11 +73,11 @@ fn main() {
     let e2 = enc.clone();
     let mut runs = vec![
         Run { label: "bm25", sql: bm25.into(), params: Box::new(|q| Params::new().set("t", Value::Str(q.into()))) },
-        Run { label: "learned sparse", sql: "similarity(sparse, :q)".into(), params: Box::new(move |q| Params::new().set("q", Value::Str(SparseEncoder::to_json(&e1.encode_query(q).unwrap())))) },
+        Run { label: "learned sparse", sql: "similarity(sparse, :q)".into(), params: Box::new(move |q| Params::new().set("q", Value::Str(chloedb::embed::terms_json(&e1.encode_query(q).unwrap())))) },
         Run {
             label: "rrf(bm25, learned sparse)",
             sql: format!("rrf({bm25}, similarity(sparse, :q))"),
-            params: Box::new(move |q| Params::new().set("t", Value::Str(q.into())).set("q", Value::Str(SparseEncoder::to_json(&e2.encode_query(q).unwrap())))),
+            params: Box::new(move |q| Params::new().set("t", Value::Str(q.into())).set("q", Value::Str(chloedb::embed::terms_json(&e2.encode_query(q).unwrap())))),
         },
     ];
     if let Some(m) = dense.clone() {
