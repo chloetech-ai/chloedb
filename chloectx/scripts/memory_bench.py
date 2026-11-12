@@ -44,6 +44,28 @@ place).
   python3 scripts/memory_bench.py report --scenario stockroom
   python3 scripts/memory_bench.py run --scenario kestrel --lanes engram --variant engram+tail=CHLOECTX_SESSION_CONTEXT=1 --lead-in "..."
 
+Handoff variants (an engram lane's variant with BENCH_HANDOFF=MODE) compare
+ways one agent hands its work to the next, on that lane's recorded history,
+with ChloeCtx itself off for the run (no hooks, no memory tools: only user
+settings, --strict-mcp-config):
+
+  none             nothing handed over
+  summary          a handoff note in the system prompt, written once per
+                   scenario by --model from the history's transcripts
+                   (results/handoff_note_<lane>.md)
+  capsule          `chloectx pack` of the lane's store, mounted with
+                   `chloectx mount` as the MCP server `capsule`
+  summary+capsule  both
+  short            a note the writer is asked to keep under 1,500 characters,
+                   about a sub-agent's report (handoff_note_<lane>_short.md)
+  short+capsule    the short note and the capsule
+
+  python3 scripts/memory_bench.py run --scenario stockroom --lanes engram --lane-bin engram=$PWD/target/release/chloectx \
+      --variant engram+summary=BENCH_HANDOFF=summary --variant engram+capsule=BENCH_HANDOFF=capsule
+
+Each run's row then has `handoff` and, with a capsule, `capsule`: the mount's
+open times and every tool call's time, characters and records, from its log.
+
 A --variant runs in its base lane's thread on the base lane's recorded
 history, with its variables added for the runs: two settings compared on the
 same snapshot, without the noise of recording the history twice. --lead-in
@@ -96,6 +118,22 @@ TRANSCRIPTS_PROMPT = (
     "oldest first: the user's requests, your replies, tool calls and short results). They can be searched "
     "with grep (or the Grep tool) when earlier requests, decisions or conventions may matter."
 )
+
+HANDOFF_PROMPT = "A handoff note from the agent who worked on this project before you, in earlier sessions:\n\n{note}"
+
+HANDOFF_WRITER = (
+    "You worked on this project in the sessions whose transcripts follow. Another agent will continue the work in a new session; "
+    "it has never seen the project or these conversations, and gets only your note. Write that handoff note: everything it needs "
+    "to continue well, such as what the project is, what was done, the decisions and their reasons, the rules and conventions the "
+    "user set, requirements for work planned later, what was tried and abandoned, and open tasks. Reply with the note only.\n\n{transcripts}"
+)
+
+# A short note, about the size of a sub-agent's final report.
+SHORT_NOTE = "Keep the note under {chars} characters: the next agent's context is shared with its own work, so keep only what matters most."
+SHORT_CHARS = 1500
+
+HANDOFF_MODES = ("none", "summary", "capsule", "summary+capsule", "short", "short+capsule")
+
 
 # kind: plain | transcripts | full | engram | claude-mem | mem0
 # auto_memory: leave Claude Code's auto memory on (off otherwise)
@@ -455,7 +493,35 @@ class Lane:
             env.update(self.run_extra_env)
         return env
 
+    def handoff(self, phase):
+        """The handoff mode of this run (a BENCH_HANDOFF variant), or None."""
+        mode = self.run_extra_env.get("BENCH_HANDOFF") if phase == "run" else None
+        if mode and mode not in HANDOFF_MODES:
+            raise RuntimeError(f"BENCH_HANDOFF={mode}: one of {', '.join(HANDOFF_MODES)}")
+        return mode
+
+    def capsule_dir(self):
+        return os.path.join(self.dir, "capsule")
+
+    def capsule_log(self):
+        return os.path.join(self.dir, "capsule_calls.jsonl")
+
+    def handoff_note_path(self, short=False):
+        return os.path.join(self.args.results, f"handoff_note_{slug(self.name)}{'_short' if short else ''}.md")
+
     def claude_args(self, phase):
+        mode = self.handoff(phase)
+        if mode:
+            # ChloeCtx off: no project or local settings (its hooks), no .mcp.json (its tools).
+            tools = BASE_TOOLS + (["mcp__capsule"] if "capsule" in mode else [])
+            out = ["--allowedTools", ",".join(tools), "--disallowedTools", "WebFetch,WebSearch", "--setting-sources", "user", "--strict-mcp-config"]
+            if "capsule" in mode:
+                cfg = {"mcpServers": {"capsule": {"command": os.path.join(self.bin, "engram"), "args": ["mount", self.capsule_dir(), "--log", self.capsule_log()]}}}
+                out += ["--mcp-config", json.dumps(cfg)]
+            if "summary" in mode or "short" in mode:
+                note = open(self.handoff_note_path(short="short" in mode), encoding="utf-8").read().strip()
+                out += ["--append-system-prompt", HANDOFF_PROMPT.format(note=note)]
+            return out
         out = ["--allowedTools", ",".join(BASE_TOOLS + self.d.get("mcp", [])), "--disallowedTools", "WebFetch,WebSearch"]
         if self.kind == "transcripts" and phase == "run":
             out += ["--add-dir", self.extra, "--append-system-prompt", TRANSCRIPTS_PROMPT.format(dir=self.extra)]
@@ -821,6 +887,88 @@ class Lane:
         for dst, name in ((self.repo, "repo"), (self.home, "home"), (self.extra, "transcripts")):
             sync_tree(os.path.join(self.snap, name), dst)
 
+    # -- handoff
+
+    def prepare_handoff(self, hist):
+        """The capsule and the handoff note the handoff variants hand over,
+        made once from the recorded history (kept in the lane's work
+        directory and the results)."""
+        info_path = os.path.join(self.args.results, f"handoff_{slug(self.name)}.json")
+        info = json.load(open(info_path)) if os.path.exists(info_path) else {}
+        if self.kind == "engram" and not os.path.exists(os.path.join(self.capsule_dir(), "manifest.json")):
+            if home_procs(self.home):
+                kill_home_procs(self.home)
+            self.restore()
+            t0 = time.time()
+            p = subprocess.run([os.path.join(self.bin, "engram"), "pack", self.capsule_dir(), "--project", self.repo, "--json"], env=self.env("run"),
+                               capture_output=True, text=True, timeout=600)
+            wall = time.time() - t0
+            self.settle("run")
+            if p.returncode:
+                raise RuntimeError(f"chloectx pack failed: {p.stdout}{p.stderr}")
+            info["capsule"] = dict(json.loads(p.stdout), wall_s=round(wall, 2))
+            log(self.name, f"capsule: {info['capsule']['records']} records, {info['capsule']['bytes']} bytes, packed in {info['capsule']['total_ms']:.0f} ms")
+        modes = {v.get("BENCH_HANDOFF") for v in variants(self.args, self.name).values()}
+        for short in (False, True):
+            if short and not any(m and "short" in m for m in modes):
+                continue
+            if not os.path.exists(self.handoff_note_path(short)):
+                info[("note_short" if short else "note")] = self.write_note(hist, short)
+        json.dump(info, open(info_path, "w"), indent=1)
+        return info
+
+    def write_note(self, hist, short):
+        """The handoff note, written by --model from the history's transcripts."""
+        exporter = load_module(os.path.join(COMPETITORS, "transcripts", "export_transcripts.py"), "export_transcripts")
+        tdir = os.path.join(self.dir, "handoff_transcripts")
+        shutil.rmtree(tdir, ignore_errors=True)
+        paths = [transcript_path(os.path.join(self.snap, "home"), s) for s in hist["sessions"]]
+        files = exporter.export([p for p in paths if p], tdir)
+        text = "\n\n".join(open(f, encoding="utf-8").read() for f in files)
+        # Written outside the repository, so that no project setting (ChloeCtx's hooks) runs.
+        wdir = os.path.join(self.dir, "handoff_writer")
+        os.makedirs(wdir, exist_ok=True)
+        env = {"PATH": os.pathsep.join([self.args.bench_bin, SYSTEM_PATH]), "HOME": os.path.join(self.dir, "handoff_home"), "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        if os.environ.get("ANTHROPIC_BASE_URL"):
+            env["ANTHROPIC_BASE_URL"] = os.environ["ANTHROPIC_BASE_URL"]
+        os.makedirs(env["HOME"], exist_ok=True)
+        t0 = time.time()
+        p = subprocess.run([os.path.join(self.args.bench_bin, "claude"), "-p", "--model", self.args.model, "--output-format", "json", "--tools", "",
+                            "--strict-mcp-config", "--setting-sources", "user"], input=HANDOFF_WRITER.format(transcripts=text) + ("\n\n" + SHORT_NOTE.format(chars=SHORT_CHARS) if short else ""), cwd=wdir, env=env,
+                           capture_output=True, text=True, timeout=self.args.timeout)
+        out = json.loads(p.stdout) if p.stdout.strip().startswith("{") else {"is_error": True, "result": (p.stdout + p.stderr)[-800:]}
+        if out.get("is_error") or not (out.get("result") or "").strip():
+            raise RuntimeError(f"handoff note failed: {out.get('result')}")
+        with open(self.handoff_note_path(short), "w", encoding="utf-8") as f:
+            f.write(out["result"].strip() + "\n")
+        u = out.get("usage") or {}
+        note = {"chars": len(out["result"].strip()), "transcript_chars": len(text), "cost_usd": out.get("total_cost_usd"), "wall_s": round(time.time() - t0, 1),
+                "input_tokens": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0),
+                "output_tokens": u.get("output_tokens", 0), "model": list((out.get("modelUsage") or {}).keys())}
+        log(self.name, f"handoff note{' (short)' if short else ''}: {note['chars']} chars from {len(text)} chars of transcripts, ${note['cost_usd'] or 0:.3f}")
+        return note
+
+    def capsule_activity(self, offset):
+        """What the capsule's mount did since `offset` of its log."""
+        out = {"opens": [], "calls": []}
+        path = self.capsule_log()
+        if not os.path.exists(path):
+            return out
+        with open(path, "rb") as f:
+            f.seek(offset)
+            for raw in f:
+                try:
+                    e = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("event") == "open":
+                    out["opens"].append({k: e.get(k) for k in ("verify_ms", "copy_ms", "open_ms", "records", "bytes")})
+                elif e.get("event") == "ready":
+                    out["ready_ms"] = e.get("ms")
+                elif e.get("event") == "call":
+                    out["calls"].append({k: e.get(k) for k in ("tool", "ms", "chars", "records", "error")})
+        return out
+
     # -- runs
 
     def save_patch(self, task, rep, name):
@@ -840,6 +988,8 @@ class Lane:
             kill_home_procs(self.home)
         self.restore()
         offs = self.memory_offsets()
+        mode = self.handoff("run")
+        cap_off = fsize(self.capsule_log())
         label = f"run_{task['id']}_{rep}" if name == self.name else f"run_{slug(name)}_{task['id']}_{rep}"
         lead_in = self.args.lead_in and self.kind != "full"
         if self.kind == "full":
@@ -880,7 +1030,10 @@ class Lane:
             "hook_context_chars": ts["hook_context_chars"], "memory_attachments": ts["memory_attachments"], "compactions": ts["compactions"],
             "memory_chars": ts["memory_chars"], "memory_tokens": mem.get("tokens"),
             "memory_cost_usd": mem["cost_usd"], "memory": {k: v for k, v in mem.items() if k != "cost_usd"}, "settle": settle, "session_id": sid,
+            "handoff": mode,
         }
+        if mode and "capsule" in mode:
+            row["capsule"] = self.capsule_activity(cap_off)
         with lock:
             with open(os.path.join(self.args.results, "runs.jsonl"), "a") as f:
                 f.write(json.dumps(row) + "\n")
@@ -916,6 +1069,12 @@ def lane_main(args, sc, name, lock, do_runs):
             done.add((r["lane"], r["task"], r["repeat"]))
     tasks = [t for t in sc["tasks"] if not args.tasks or t["id"] in args.tasks]
     names = [name, *variants(args, name)]
+    if any(v.get("BENCH_HANDOFF") for v in variants(args, name).values()):
+        try:
+            lane.prepare_handoff(hist)
+        except Exception as e:  # noqa: BLE001 - reported; the other lanes go on
+            log(name, f"handoff preparation failed: {type(e).__name__}: {e}")
+            return
     jobs = [(t, r, n) for r in range(args.repeats) for t in tasks for n in names if (n, t["id"], r) not in done]
     random.Random(zlib.crc32(name.encode())).shuffle(jobs)
     for i, (t, r, n) in enumerate(jobs, 1):
