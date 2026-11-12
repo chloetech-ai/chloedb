@@ -17,7 +17,7 @@ import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLI
 import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
-import { useTableFunctions } from './sql.mjs';
+import { useTableFunctions, useFunctionReads } from './sql.mjs';
 import { MODEL, spend, useSpendFile } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
@@ -92,6 +92,7 @@ if (process.env.STRATA_APPS_SQL_FUNCTIONS !== 'off') {
   engine.sqlFunctions = await installSqlFunctions(engine.db, readSqlLibrary(path.join(LIBRARY_DIR, 'sql')), log);
   useSqlFunctions(engine.sqlFunctions);
   useTableFunctions(engine.sqlFunctions.filter((f) => f.returns === 'TABLE').map((f) => f.name));
+  useFunctionReads(engine.sqlFunctions.map((f) => f.sql));
   if (engine.sqlFunctions.length) log(`${engine.sqlFunctions.length} SQL functions kept in ChloeDB`);
 }
 // The engine's own functions: the patterns in people's use, counted over
@@ -415,6 +416,7 @@ const STATIC = {
   '/graph.js': ['web/graph.js', 'text/javascript; charset=utf-8'],
   '/kit.css': ['web/kit.css', 'text/css; charset=utf-8'],
   '/design.js': ['web/design.js', 'text/javascript; charset=utf-8'],
+  '/policy.js': ['web/policy.js', 'text/javascript; charset=utf-8'],
   '/activity.js': ['web/activity.js', 'text/javascript; charset=utf-8'],
   // The engine's page in a cluster's command center (Apps -> App engine).
   '/cc/view.js': ['web/cc-view.js', 'text/javascript; charset=utf-8'],

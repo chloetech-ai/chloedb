@@ -87,6 +87,29 @@ changes collect under "Unreleased".
   its parts expand past 512 MB (counted by decompressing them, not by the
   sizes the file declares) or it holds more than 2 million cells, as CSV
   and SQLite imports were bounded already.
+- App engine: `app.sql` keeps a view to its app's tables. It reads the SQL
+  as ChloeDB's parser does, finds every table it names (a quoted name, a
+  name after a comment and a CTE's name outside its query were not
+  checked), refuses block comments, prefixed and `$$` strings, quoted or
+  qualified table names, `|>`, `INTO` and `TABLE`, and then asks the
+  server's plan (`/v1/explain`) which tables the query reads.
+- App engine: a view's frame takes images and media from the engine and
+  the photo hosts only (and, once the owner turns on "Web pages and APIs",
+  from the hosts allowed there to read from), submits no form and opens no
+  popup; its links open from the studio after a click. A frame that
+  navigates away is closed.
+- Crawler: it reaches the public internet only. An address on its
+  machine, a private network, a link-local range (cloud metadata) or
+  another reserved one is refused, linked, redirected to or resolved to,
+  unless it is started with `--allow-host HOST[:PORT]` or
+  `--allow-private`. Each redirect is checked as a link is (scope,
+  `include`, `exclude`, robots.txt); robots.txt is read to 500 KB and a
+  sitemap to 50 MB.
+- App proxy: a path under `/v1/apps/<name>/` (and the hub's `/c/<name>/`)
+  stays under the app's URL: a dot segment, once or twice encoded, is
+  refused, and a decoded `?` or `#` stays in its segment. `/v1/apps` asks
+  the apps at once and keeps a failure for 15 s, so an app that does not
+  answer no longer empties the command center's list.
 
 ### Storage
 

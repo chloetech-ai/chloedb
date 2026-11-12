@@ -4691,6 +4691,11 @@ async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): 
     if !(rest.starts_with("v1/") || matches!(rest, "livez" | "readyz" | "metrics")) {
         return Err(ApiError { status: 404, message: format!("/c/{name}/ forwards ChloeDB's API (/v1/...), not /{rest}") });
     }
+    // The path as decoded: no dot segment (once or twice encoded) to climb
+    // out of /v1, and no ? or # to start a query (audit D-B9).
+    if rest.split('/').any(crate::apps::dot_segment) || rest.contains(['?', '#']) {
+        return Err(ApiError::bad("a path the hub forwards has no . or .. segment, ? or # in it"));
+    }
     let path = format!("/{rest}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;
     let headers = req.headers().clone();
