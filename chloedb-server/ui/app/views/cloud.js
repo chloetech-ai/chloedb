@@ -9,6 +9,9 @@
 // from here, after its name is typed again: this server asks the cloud,
 // installs ChloeDB's operator through the new cluster's API, follows its
 // copies until they answer, and deletes it (its volumes first) when asked.
+// A ChloeDB cluster the account holds that this server did not make (made
+// from another server, or forgotten here) is found on asking and deleted
+// the same way, its name typed again; not the one this server runs on.
 
 import * as core from "../core.js";
 import { h, s, icon, clear, fmt, card, api, toast, confirm, seg, toggle, pill, empty, table, tipOn, hideTip, debounce, copy, failure, clamp, modal, menu, connectionName } from "../core.js";
@@ -151,8 +154,8 @@ const remembered = () => { try { return localStorage.getItem("chloedb.cloud") ||
 function render(page, r) {
   let prov = PROVIDERS[r?.params?.get("provider")] ? r.params.get("provider") : remembered();
   let P = PROVIDERS[prov];
-  const head = h("div"), made = h("div"), creds = h("div"), where = h("div"), machines = h("div"), planEl = h("div");
-  page.append(head, made, h("div", { class: "cloud-top" }, creds, where), machines, planEl);
+  const head = h("div"), made = h("div"), foundEl = h("div"), creds = h("div"), where = h("div"), machines = h("div"), planEl = h("div");
+  page.append(head, made, foundEl, h("div", { class: "cloud-top" }, creds, where), machines, planEl);
   let clusters = [], pollT = null, alive = true, creating = false;
   const createEl = h("div");
 
@@ -161,7 +164,11 @@ function render(page, r) {
   let running = null;   // this cluster's size: {shards, replicas, coordinators}
   let here = null;      // this server's tables, which a new cluster may bring
   let sized = false;    // the size was set by hand (or from this cluster's)
+  // The account's ChloeDB clusters this server does not follow: null until
+  // someone looks (opening the page asks no cloud), with the region looked in.
+  let found = null, foundErr = null, looking = false, foundRegion = null;
   function reset() {
+    found = null; foundErr = null; looking = false; foundRegion = null;
     status = null; regions = null; region = null; cat = null; catErr = null; loadingCat = false; editing = false;
     filt = { kind: "all", cpu: "any", spot: false, q: "" };
     // The machine starts as the cheapest that gives each copy a GiB and
@@ -189,7 +196,7 @@ function render(page, r) {
     drawHead();
     try { status = await api(P.base); } catch (e) { if (mine !== seq) return; clear(creds, failure(e, "The cloud view")); return; }
     if (mine !== seq) return;
-    drawHead(); drawCreds();
+    drawHead(); drawCreds(); drawFound();
     if (may()) {
       region = region || key().region || P.region;
       if (!regions) api(P.base + "/regions").then((x) => { if (mine === seq) { regions = x.regions; drawWhere(); } }).catch(() => { regions = null; });
@@ -368,7 +375,7 @@ function render(page, r) {
     }
     if (!have()) { clear(where, card({ title: "Region and limits", body: empty("cloud", `No ${P.name} key yet`, prov === "aws" ? "Save an access key to see the machines of a region, their prices and your account's quota." : "Save a token to see the sizes of a region, their prices and your account's droplet limit.") })); return; }
     const list = (regions || P.regions).map((x) => (typeof x === "string" ? { slug: x, name: x } : x));
-    const sel = h("select", { class: "select", onchange: () => { region = sel.value; plan = null; checked = null; loadCatalog(false); } }, list.map((x) => h("option", { value: x.slug, selected: x.slug === region }, x.name === x.slug ? x.slug : `${x.name} (${x.slug})`)));
+    const sel = h("select", { class: "select", onchange: () => { region = sel.value; plan = null; checked = null; drawFound(); loadCatalog(false); } }, list.map((x) => h("option", { value: x.slug, selected: x.slug === region }, x.name === x.slug ? x.slug : `${x.name} (${x.slug})`)));
     const need = plan?.quota?.needs;
     let meters = null, prices = null;
     if (cat && prov === "aws") {
@@ -730,6 +737,61 @@ function render(page, r) {
     catch (e) { toast(e.message, "bad", 8000); }
   }
 
+  /** Asks the cloud for its ChloeDB clusters that this server does not follow. */
+  async function look() {
+    looking = true; foundErr = null; drawFound();
+    const r = region || key()?.region || P.region;
+    try {
+      const q = prov === "aws" ? `provider=aws&region=${encodeURIComponent(r)}` : "provider=digitalocean";
+      found = (await api(`/v1/admin/cloud/found?${q}`)).clusters || []; foundRegion = r;
+    } catch (e) { foundErr = e; }
+    looking = false;
+    if (alive) drawFound();
+  }
+
+  async function removeFound(c) {
+    const ok = await typed({
+      title: `Delete ${c.cluster}?`, name: c.cluster, ok: "Delete it",
+      body: h("div", { class: "stack" },
+        h("p", { class: "dim", style: { margin: 0 } }, `It was not made from this server: made from another one, or forgotten here. This deletes the StrataCluster and its volumes (its data), then ${c.provider === "aws" ? "the stack: the nodes, the EKS cluster and the network" : "the DOKS cluster, its nodes and what it made"}. It cannot be undone.`),
+        c.owner ? h("p", { class: "small dim", style: { margin: 0 } }, `Its tag says ${c.owner} asked for it.`) : null),
+    });
+    if (!ok) return;
+    try {
+      const m = await api("/v1/admin/cloud/found/delete", { body: { provider: c.provider, cloud_id: c.cloud_id, region: c.region, confirm: c.cluster } });
+      clusters = [m, ...clusters.filter((x) => x.id !== m.id)];
+      found = (found || []).filter((x) => x.cloud_id !== c.cloud_id);
+      toast(`Deleting ${c.cluster}`, "ok");
+      drawMade(); drawFound(); poll(2000);
+    } catch (e) { toast(e.message, "bad", 8000); }
+  }
+
+  function drawFound() {
+    if (!may()) { clear(foundEl); return; }
+    const r = region || key()?.region || P.region;
+    const stale = found && prov === "aws" && foundRegion !== r;
+    const where = prov === "aws" ? `the CloudFormation stacks ChloeDB made in ${r}` : "the DOKS clusters ChloeDB made, in every region";
+    const lookBtn = h("button", { class: "btn sm", disabled: looking, onclick: look }, icon("search"), looking ? "Looking…" : "Look in the account");
+    let body;
+    if (foundErr) body = h("div", { class: "stack" }, failure(foundErr, "The account's clusters"), h("div", {}, lookBtn));
+    else if (!found || stale) body = h("div", { class: "row between" }, h("span", { class: "small dim" }, `A cluster made from another server, or forgotten here, is not on the list above. This asks ${P.name} for ${where}, and deletes none until you say which.`), lookBtn);
+    else if (!found.length) body = h("div", { class: "small dim" }, `None: every ChloeDB cluster in ${prov === "aws" ? r : "the account"} is on this server's list.`);
+    else body = h("div", { class: "stack" }, found.map((c) => h("div", { class: "cloud-made-row" },
+      h("div", { class: "row between" },
+        h("div", { class: "row nw" }, h("b", { class: "mono" }, c.cluster), pill(/^(running|CREATE_COMPLETE|UPDATE_COMPLETE)$/.test(c.state) ? "ok" : /FAILED|error|degraded/i.test(c.state) ? "bad" : "warn", String(c.state || "").toLowerCase().replace(/_/g, " ")),
+          h("span", { class: "small dim" }, [c.provider === "aws" ? "AWS" : "DigitalOcean", c.region, c.nodes ? `${c.nodes} × ${c.machine}` : null, c.owner ? `asked for by ${c.owner}` : null].filter(Boolean).join(" · "))),
+        c.here
+          ? h("span", { class: "row nw" }, pill("warn", "this server runs on it"), h("button", { class: "btn sm danger", disabled: true, title: "Deleting it from here would stop this server halfway: delete it from another server, or from the cloud's console" }, icon("trash"), "Delete"))
+          : h("button", { class: "btn sm danger", onclick: () => removeFound(c) }, icon("trash"), "Delete")),
+      c.created_at ? h("div", { class: "small dim" }, `Made ${fmt.ago(Date.parse(c.created_at))}`) : null)));
+    clear(foundEl, card({
+      title: "In the account, not made here", cls: "cloud-made",
+      sub: found && !stale ? `${found.length} found` : null,
+      tools: found && !stale ? [h("button", { class: "btn sm ghost", title: "Ask again now", disabled: looking, onclick: look }, icon("refresh"))] : [],
+      body,
+    }));
+  }
+
   async function forget(c) {
     try { await api(`/v1/admin/cloud/clusters/${encodeURIComponent(c.id)}`, { method: "DELETE" }); clusters = clusters.filter((x) => x.id !== c.id); drawMade(); }
     catch (e) { toast(e.message, "bad"); }
@@ -753,10 +815,11 @@ function render(page, r) {
   function drawMade() {
     if (!clusters.length) { clear(made); return; }
     const up = clusters.filter((c) => c.phase !== "deleted" && c.phase !== "failed").length;
-    const billing = clusters.filter((c) => c.phase !== "deleted").reduce((a, c) => a + c.cost_hour, 0);
+    // One found in the account has no planned price: it is left out.
+    const billing = clusters.filter((c) => c.phase !== "deleted" && !c.found).reduce((a, c) => a + c.cost_hour, 0);
     clear(made, card({
       title: "Clusters made here", cls: "cloud-made",
-      sub: up ? `${up} up or on the way, about ${usd(billing, 2)} an hour` : "none running",
+      sub: up ? `${up} up or on the way${billing ? `, about ${usd(billing, 2)} an hour` : ""}` : "none running",
       tools: [h("button", { class: "btn sm ghost", title: "Ask again now", onclick: loadMade }, icon("refresh"))],
       body: h("div", { class: "stack" }, clusters.map(madeRow)),
     }));
@@ -803,9 +866,11 @@ function render(page, r) {
     return h("div", { class: "cloud-made-row" },
       h("div", { class: "row between" },
         h("div", { class: "row nw" }, h("b", { class: "mono" }, c.cluster), pill(...PHASES[c.phase]),
-          h("span", { class: "small dim" }, `${c.provider === "aws" ? "AWS" : "DigitalOcean"} · ${c.region} · ${c.nodes} × ${c.machine}`)),
+          h("span", { class: "small dim" }, [c.provider === "aws" ? "AWS" : "DigitalOcean", c.region, c.nodes ? `${c.nodes} × ${c.machine}` : null].filter(Boolean).join(" · "))),
         h("div", { class: "row nw" },
-          h("span", { class: "small dim num", title: "at the planned price, from when it was asked for" }, `${usd(c.cost_so_far, 2)} so far${c.phase === "deleted" ? "" : ` · ${usd(c.cost_hour, 2)}/h`}`),
+          c.found
+            ? h("span", { class: "small dim", title: "It was made elsewhere: what it cost is in the cloud's billing" }, "found in the account")
+            : h("span", { class: "small dim num", title: "at the planned price, from when it was asked for" }, `${usd(c.cost_so_far, 2)} so far${c.phase === "deleted" ? "" : ` · ${usd(c.cost_hour, 2)}/h`}`),
           open, action)),
       track,
       ends,
