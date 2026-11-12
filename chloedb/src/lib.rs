@@ -33,6 +33,7 @@ pub mod arrow_rows;
 pub mod audio;
 #[cfg(feature = "baselines")]
 pub mod baselines;
+pub mod blackboard;
 pub mod beir;
 #[cfg(feature = "audio")]
 pub mod clap;
