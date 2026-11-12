@@ -46,6 +46,7 @@ mod llm_calls;
 mod local_shard;
 mod mcp;
 mod oncall;
+mod pack_cluster;
 mod opensearch;
 mod operator_kube;
 mod otlp;
