@@ -1,17 +1,19 @@
 # ChloeDB: design
 
-ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions, and is queried with SQL. Every table is indexed three ways at once (posting lists, a columnar forward index and vector indexes), rows can hold graph edges to other rows, and a cost-based planner combines all of it in one statement.
+ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions, and is queried with SQL. Every table is indexed for full text (posting lists), structured columns (a columnar forward index) and vectors, rows can hold graph edges to other rows, and a cost-based planner combines all of it in one statement.
+
+This page is the design: the file format, transactions, every index and the planner. To use ChloeDB, start with the [README](../../README.md) or [Build an app](build-an-app.md).
 
 ## Goals
 
 - **Embedded and single-file.** One `.chloedb` file plus a `-wal` sidecar, like SQLite in WAL mode. Opening a database maps the file and loads nothing eagerly, so databases larger than RAM work and a cold open costs the same whatever the size.
 - **ACID with snapshot isolation.** One writer, any number of readers. Readers never block and always see a consistent snapshot; a crash at any point leaves the last committed state. Threads that write at once take turns, and those that wait share the next commit.
 - **SQL with search extensions.** `SELECT … WHERE … ORDER BY … LIMIT`, `GROUP BY` for facets, plus `MATCH` (boolean full text), `bm25()`, `similarity()` and `distance()` (vectors and learned sparse weights), `rrf()`, weighted sums and products (fusion and boosts), `decay()` (closeness to a value or a time) and graph traversal, and `INSERT`, `UPDATE` and `DELETE`. The [query language](query-language.md) page is the reference.
-- **Three index families, freely combined.** Full text (BM25, boolean and phrase queries), structured fields (equality, `IN`, ranges, facets) and vectors (approximate and exact nearest neighbours), in any combination: filtered vector search, filtered BM25, hybrid ranking, facets over any result.
+- **Index families, freely combined.** Full text (BM25, boolean and phrase queries), structured fields (equality, `IN`, ranges, facets) and vectors (approximate and exact nearest neighbours), in any combination: filtered vector search, filtered BM25, hybrid ranking, facets over any result.
 - **Graphs over the same rows.** A row can hold typed, weighted edges to other rows. Traversals, shortest paths and personalized PageRank run in the same statement as everything else ([Graphs](graphs.md)).
 - **Disk-aware.** Every structure is read in place through `mmap`, with no deserialisation, and laid out so that a query's I/O is proportional to its work.
 
-Multiple writer processes are out of scope for the prototype. Joins across tables, and sharding and replication in [chloedb-server](server.md), came later; [current limits](#where-it-fits) has where they stand.
+One process writes a database at a time; other processes can [read it while it is written](#readers-in-other-processes). Joins across tables, and sharding and replication in [chloedb-server](server.md), came later; [current limits](#where-it-fits) has where they stand.
 
 ## Architecture
 

@@ -23,6 +23,9 @@
 // and its transaction are the same; the statement is kept as the rule's
 // source, shown to the model and to people instead of the JSON.
 
+import { parseEvery, everyText, ScheduleError } from './schedule.mjs';
+import { FEED_FIELDS } from './feeds.mjs';
+
 export class RuleSqlError extends Error {}
 const fail = (msg) => { throw new RuleSqlError(msg); };
 
@@ -315,9 +318,51 @@ function parseStatement(c, q) {
     if (!/^WHERE\b/i.test(rest)) fail(`DELETE FROM ${table}: give WHERE (WHERE id = :row.hold, or a condition)`);
     return writeWhere(table, rest.slice(5).trim(), (idSql, id) => ({ remove: table, id }));
   }
+  // PULL FEED 'url' INTO t (cols) KEY col: a feed's (or a JSON list's) new items as rows
+  if ((m = c.match(/^PULL\s+(FEED|RSS|ATOM|JSON)\s+/i))) return [pullOf(c.slice(m[0].length), m[1], 'PULL')];
   if (SELECT_RE.test(c)) fail('a SELECT among other statements does nothing: name its value (LET total = (SELECT ...)), check it (REQUIRE ...) or give it back (RETURN (SELECT ...)); a rule that is only a query is CREATE RULE name AS SELECT ...');
-  return fail(`"${c.slice(0, 40)}": a rule's statements are REQUIRE, LET, INSERT, UPDATE, DELETE, CALL, SEND EMAIL, FOR ... DO ... END, IF ... THEN ... END and RETURN`);
+  return fail(`"${c.slice(0, 40)}": a rule's statements are REQUIRE, LET, INSERT, UPDATE, DELETE, CALL, SEND EMAIL, FOR ... DO ... END, IF ... THEN ... END, PULL and RETURN`);
 }
+
+// PULL FEED | JSON 'url' (or :name) [AT 'path'] [SECRET 'name'] INTO t (col [= field], ...) KEY col [LIMIT n] [AS name]
+function pullOf(src, kind, what) {
+  let rest = String(src).trim();
+  const from = /^json$/i.test(kind) ? 'json' : 'feed';
+  let m = rest.match(/^'(?:[^']|'')*'/) || rest.match(new RegExp(`^:${NAME}(?:\\.${NAME})?`));
+  if (!m) fail(`${what} ${from.toUpperCase()}: give the address in single quotes ('https://example.com/feed.xml') or as :name`);
+  const url = m[0].startsWith("'") ? unquote(m[0]) : m[0];
+  if (url.startsWith("'") || (!url.startsWith(':') && !/^https?:\/\//i.test(url))) fail(`${what} ${from.toUpperCase()}: ${url.slice(0, 60)} is not an http or https address`);
+  rest = rest.slice(m[0].length).trim();
+  const out = { from, url };
+  const word = (re) => { const x = rest.match(re); if (x) rest = rest.slice(x[0].length).trim(); return x; };
+  let x;
+  if ((x = word(/^AT\s+('(?:[^']|'')*')/i))) {
+    if (from !== 'json') fail(`${what} FEED: AT says where the list is in a JSON answer; a feed's items are found by themselves`);
+    out.at = unquote(x[1]);
+  }
+  if ((x = word(/^SECRET\s+'([A-Za-z0-9_-]{1,40})'/i))) out.secret = x[1];
+  if (!(x = word(new RegExp(`^INTO\\s+(${NAME})\\s*`, 'i')))) fail(`${what}: say which table gets the items: INTO stories (title, link, published, summary) KEY link`);
+  out.into = x[1];
+  const g = group(rest);
+  if (!g) fail(`${what} ... INTO ${out.into}: list the columns it fills in parentheses, each a field of the item (title, link) or column = field (headline = title)`);
+  rest = g[1].trim();
+  out.cols = {};
+  for (const part of splitTop(g[0], ',').map((p) => p.trim()).filter(Boolean)) {
+    const pm = part.match(new RegExp(`^(${NAME})(?:\\s*=\\s*([A-Za-z_][A-Za-z0-9_.:-]*))?$`));
+    if (!pm) fail(`${what} ... INTO ${out.into} (${part.slice(0, 30)}): write a column, or column = field`);
+    out.cols[pm[1]] = pm[2] || pm[1];
+  }
+  if (!Object.keys(out.cols).length) fail(`${what} ... INTO ${out.into}: no columns`);
+  if (from === 'feed') for (const [col, f] of Object.entries(out.cols)) if (!FEED_FIELDS.includes(f)) fail(`${what} FEED ... ${col}${f !== col ? ` = ${f}` : ''}: a feed item's fields are ${FEED_FIELDS.join(', ')}`);
+  if (!(x = word(new RegExp(`^KEY\\s+(${NAME})`, 'i')))) fail(`${what} ... INTO ${out.into} (...): give KEY col, the column that tells items apart (such as link), so an item is added once`);
+  out.key = x[1];
+  if (!(out.key in out.cols)) fail(`${what} ... KEY ${out.key}: ${out.key} is not among the columns it fills`);
+  if ((x = word(/^LIMIT\s+(\d+)/i))) out.limit = Math.max(1, Math.min(200, Number(x[1])));
+  const as = word(new RegExp(`^AS\\s+(${NAME})$`, 'i'));
+  if (rest) fail(`${what}: "${rest.slice(0, 30)}" is not understood; the clauses are AT, SECRET, INTO, KEY, LIMIT and AS, in that order`);
+  return { pull: out, ...(as ? { as: as[1] } : {}) };
+}
+
 
 // WHERE id = value writes one row; any other condition, each row it selects.
 function writeWhere(table, cond, step) {
@@ -342,6 +387,7 @@ export function compileSteps(text) {
 export function compileRule(text) {
   seq = 0;
   const src = uncomment(String(text || '')).trim();
+  if (/^CREATE\s+(?:OR\s+REPLACE\s+)?SOURCE\b/i.test(src)) return compileSource(src);
   const m = src.match(new RegExp(`^CREATE\\s+(?:OR\\s+REPLACE\\s+)?RULE\\s+([A-Za-z][A-Za-z0-9_-]*)\\s*`, 'i'));
   if (!m) fail('start with CREATE RULE name');
   let rest = src.slice(m[0].length);
@@ -355,26 +401,62 @@ export function compileRule(text) {
   let h = head;
   const ret = h.match(/\bRETURNS\s+(ROWS|ROW|VALUE)\b/i);
   if (ret) { returns = ret[1].toLowerCase(); h = h.replace(ret[0], ' '); }
+  let every = null;
+  const ev = findWord(h, 'EVERY');
+  if (ev >= 0) {
+    const tail = h.slice(ev);
+    const stop = [findWord(tail, 'AFTER', 1), findWord(tail, 'RETURNS', 1)].filter((i) => i > 0);
+    const end = stop.length ? Math.min(...stop) : tail.length;
+    every = everyOf(m[1], tail.slice(0, end));
+    h = h.slice(0, ev) + ' ' + tail.slice(end);
+  }
   const after = h.match(new RegExp(`\\bAFTER\\s+((?:INSERT|UPDATE|DELETE)(?:\\s*(?:OR|,)\\s*(?:INSERT|UPDATE|DELETE))*)\\s+ON\\s+(${NAME})\\b`, 'i'));
   if (after) {
     const events = [...new Set(after[1].toLowerCase().split(/\s*(?:or|,)\s*/))];
     on = { table: after[2], event: events.length === 1 ? events[0] : events };
     h = h.replace(after[0], ' ');
   }
-  if (h.trim()) fail(`CREATE RULE ${m[1]}: "${h.trim().slice(0, 40)}" is not understood; before AS come RETURNS ROW | VALUE and AFTER INSERT [OR UPDATE] [OR DELETE] ON table`);
+  if (h.trim()) fail(`CREATE RULE ${m[1]}: "${h.trim().slice(0, 40)}" is not understood; before AS come RETURNS ROW | VALUE, AFTER INSERT [OR UPDATE] [OR DELETE] ON table, and EVERY ...`);
+  if (every && on) fail(`CREATE RULE ${m[1]}: a rule runs on a schedule (EVERY) or after writes (AFTER ... ON), not both`);
   if (!body) fail(`CREATE RULE ${m[1]}: the body after AS is empty`);
   const parts = splitTop(body, ';').filter((x) => x.trim());
   if (parts.length === 1 && SELECT_RE.test(parts[0])) {
     if (on) fail(`CREATE RULE ${m[1]}: a trigger writes; a SELECT alone changes nothing`);
-    return { name: m[1], on: null, rule: { query: parts[0].trim(), ...(returns === 'row' ? { one: true } : returns === 'value' ? { value: true } : {}) } };
+    if (every) fail(`CREATE RULE ${m[1]}: a scheduled rule writes, pulls or sends; a SELECT alone on a schedule changes nothing`);
+    return { name: m[1], on: null, every: null, rule: { query: parts[0].trim(), ...(returns === 'row' ? { one: true } : returns === 'value' ? { value: true } : {}) } };
   }
   if (ret) fail(`CREATE RULE ${m[1]}: RETURNS is for a rule that is one SELECT; steps give back a value with RETURN`);
   const steps = compileSteps(body);
   if (!steps.length) fail(`CREATE RULE ${m[1]}: no statements`);
-  return { name: m[1], on, rule: { steps } };
+  return { name: m[1], on, every, rule: { steps } };
 }
 
-export const isRuleStatement = (code) => typeof code === 'string' && /^\s*(--[^\n]*\n\s*)*CREATE\s+(OR\s+REPLACE\s+)?RULE\b/i.test(code);
+function everyOf(name, text) {
+  try { return parseEvery(text); } catch (e) {
+    if (e instanceof ScheduleError) fail(`${name}: ${e.message}`);
+    throw e;
+  }
+}
+
+// CREATE SOURCE name FROM FEED | JSON 'url' [AT 'path'] [SECRET 'name'] EVERY ...
+//   INTO table (col [= field], ...) KEY col [LIMIT n]
+// -> a rule that is one PULL step, on a schedule.
+function compileSource(src) {
+  const m = src.match(/^CREATE\s+(?:OR\s+REPLACE\s+)?SOURCE\s+([A-Za-z][A-Za-z0-9_-]*)\s+FROM\s+(FEED|RSS|ATOM|JSON)\s+/i);
+  if (!m) fail("write CREATE SOURCE name FROM FEED 'https://...' EVERY 1 HOUR INTO table (title, link, published, summary) KEY link");
+  let rest = src.slice(m[0].length).replace(/;\s*$/, '');
+  const ev = findWord(rest, 'EVERY');
+  const into = findWord(rest, 'INTO');
+  if (ev < 0 || into < 0 || into < ev) fail(`CREATE SOURCE ${m[1]}: give EVERY ... (how often it is read) before INTO table (...)`);
+  const every = everyOf(`CREATE SOURCE ${m[1]}`, rest.slice(ev, into));
+  rest = `${rest.slice(0, ev)} ${rest.slice(into)}`;
+  const step = pullOf(rest, m[2], `CREATE SOURCE ${m[1]}`);
+  if (step.as) fail(`CREATE SOURCE ${m[1]}: AS is for a PULL inside a rule`);
+  if (step.pull.url.startsWith(':')) fail(`CREATE SOURCE ${m[1]}: give the address in single quotes; for addresses kept in a table, write a rule that does FOR f IN (SELECT url FROM feeds) DO PULL FEED :f.url ... END`);
+  return { name: m[1], on: null, every, source: true, rule: { steps: [step] } };
+}
+
+export const isRuleStatement = (code) => typeof code === 'string' && /^\s*(--[^\n]*\n\s*)*CREATE\s+(OR\s+REPLACE\s+)?(RULE|SOURCE)\b/i.test(code);
 
 // A plan's CREATE RULE statements (in its functions' code blocks) become
 // rules, with their triggers; the statement is kept as the rule's source.
@@ -386,10 +468,12 @@ export function compileRuleStatements(plan, code) {
       const out = compileRule(code[f.slug]);
       f.rule = out.rule;
       f.on = out.on;
+      f.every = out.every || null;
+      if (out.source) f.source = true; else delete f.source;
       f.statement = code[f.slug].trim();
     } catch (e) {
       if (!(e instanceof RuleSqlError)) throw e;
-      problems.push(`function ${f.slug}: CREATE RULE: ${e.message}`);
+      problems.push(`function ${f.slug}: ${/^\s*(--[^\n]*\n\s*)*CREATE\s+(OR\s+REPLACE\s+)?SOURCE\b/i.test(code[f.slug]) ? 'CREATE SOURCE' : 'CREATE RULE'}: ${e.message}`);
       delete f.rule;
     }
   }
@@ -444,6 +528,16 @@ Triggers: CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS
   UPDATE features SET votes = (SELECT COUNT(*) FROM votes WHERE feature = :row.feature) WHERE id = :row.feature;
   It runs after each such write of that table with :row (the row as stored; the old row for a delete), :table and :event; give no "on" in the plan entry. Recompute a count or total with a SELECT rather than adding one, so deletes and edits stay right.
 
+Schedules: a rule that runs on its own takes EVERY before AS: CREATE RULE morning_brief EVERY DAY AT '07:00' TZ 'Europe/Madrid' AS SEND EMAIL TO (SELECT email FROM readers) SUBJECT 'Your morning brief' ROWS (SELECT title, summary, link FROM stories WHERE days_between(published, :today) <= 1 ORDER BY published DESC LIMIT 15) NONE 'Nothing new today.';
+  EVERY 30 MINUTES (15 at least) | EVERY HOUR | EVERY 6 HOURS | EVERY DAY AT 'HH:MM' | EVERY 3 DAYS AT 'HH:MM' | EVERY MONDAY AT 'HH:MM' | EVERY WEEKDAY AT 'HH:MM' | EVERY WEEK ON MONDAY, THURSDAY AT 'HH:MM'; then TZ 'Area/City' (UTC without it: give one whenever the request names a time of day). It runs with :today (the day in its TZ, 'YYYY-MM-DD') and :user null, once the owner switches schedules on. A schedule cannot also be a trigger.
+
+Feeds and APIs that fill a table: a source is a rule that reads an RSS or Atom feed, or a JSON list, on a schedule and adds each new item as a row, once (KEY says what tells items apart):
+CREATE SOURCE news FROM FEED 'https://example.com/rss.xml' EVERY 1 HOUR INTO stories (title, link, published, summary, image) KEY link;
+CREATE SOURCE rates FROM JSON 'https://api.example.com/v1/rates' AT 'data.items' SECRET 'rates' EVERY DAY AT '06:00' INTO rates (currency = code, rate = value.mid) KEY currency;
+  A feed item's fields are title, link, guid, published, updated (times), summary (the description as plain text), content (the full text, when the feed has it), author, categories and image; a column takes the field of its name, or column = field. A JSON source's fields are paths in each object (value.mid); AT is where the list is in the answer. SECRET names the API key its owner keeps (never write a key in the statement). LIMIT n reads the first n items (50 by default, 200 at most). The table needs those columns (TEXT for summary and content, TIMESTAMP for published); the owner allows the host.
+  Inside a rule, PULL FEED | JSON 'url' (or :row.url) INTO t (...) KEY col [AS got] does the same, and gives {added, items}: FOR f IN (SELECT url FROM feeds) DO PULL FEED :f.url INTO stories (title, link, published, summary) KEY link; END; for many feeds kept in a table.
+  What the model should do with each new item (a summary, a category) is a trigger AFTER INSERT ON stories, written in JavaScript with app.ask (only for what words need: SQL sorts, counts and dates).
+
 - A rule with statements is one transaction: its SELECTs see the data as it was when it started (not its own writes: compute a total from the cart, not from the order lines it adds), its writes happen together at the end or not at all, and two runs never overlap, so REQUIRE really holds (nothing is sold twice). Triggers on its writes run after.
 - :user.id is the signed-in person (also :user.name and :user.email; null when nobody is).
 - A rule is checked when the version is built: the tables and columns it writes must exist.`;
@@ -494,24 +588,42 @@ function stepSql(st, pad) {
     const e = st.email || {};
     return `SEND EMAIL TO ${valueSql(e.to)}${e.subject !== undefined ? ` SUBJECT ${sqlText(e.subject)}` : ''}${e.text !== undefined ? ` TEXT ${sqlText(e.text)}` : ''}${e.rows !== undefined ? ` ROWS (${e.rows})` : ''}${e.none !== undefined ? ` NONE ${sqlText(e.none)}` : ''}`;
   }
+  if (st.pull !== undefined) return pullSql(st.pull, as);
   if (st.each !== undefined) return `FOR ${st.as} IN (${st.each}) DO\n${(st.do || []).map((x) => `${pad}  ${stepSql(x, `${pad}  `)};`).join('\n')}\n${pad}END`;
   throw new RuleSqlError(`a step of an unknown kind: ${Object.keys(st).join(', ')}`);
 }
 
-// A rule (its JSON and trigger) as a CREATE RULE statement that compiles
-// back into exactly that rule, or null.
-export function ruleStatement(slug, rule, on) {
+function pullSql(p, as = '') {
+  const url = typeof p.url === 'string' && PARAM_RE.test(p.url) ? p.url : sqlText(p.url);
+  const cols = Object.entries(p.cols || {}).map(([c, f]) => (c === f ? c : `${c} = ${f}`)).join(', ');
+  return `PULL ${String(p.from || 'feed').toUpperCase()} ${url}${p.at ? ` AT ${sqlText(p.at)}` : ''}${p.secret ? ` SECRET ${sqlText(p.secret)}` : ''} INTO ${p.into} (${cols}) KEY ${p.key}${p.limit ? ` LIMIT ${p.limit}` : ''}${as}`;
+}
+
+// A rule (its JSON, trigger and schedule) as a CREATE RULE (or CREATE
+// SOURCE) statement that compiles back into exactly that rule, or null.
+export function ruleStatement(slug, rule, on, every = null, source = false) {
   try {
     const events = on && on.table ? ` AFTER ${[].concat(on.event || 'insert').map((e) => e.toUpperCase()).join(' OR ')} ON ${on.table}` : '';
+    const when = every ? ` ${everyText(every)}` : '';
     let text;
+    const one = rule && Array.isArray(rule.steps) && rule.steps.length === 1 ? rule.steps[0] : null;
+    if (source && every && one && one.pull && !one.as && !one.if && !PARAM_RE.test(one.pull.url)) {
+      const p = one.pull;
+      const pull = pullSql(p);
+      // PULL FEED 'url' [AT] [SECRET] INTO ... -> FROM FEED 'url' [AT] [SECRET] EVERY ... INTO ...
+      const into = pull.indexOf(' INTO ');
+      text = `CREATE SOURCE ${slug} FROM ${pull.slice(5, into)}${when} ${pull.slice(into + 1)}`;
+      const back = compileRule(text);
+      return same(back.rule, rule) && same(back.every, every) ? text : null;
+    }
     if (rule && typeof rule.query === 'string') {
-      if (events) return null;
+      if (events || when) return null;
       text = `CREATE RULE ${slug}${rule.one ? ' RETURNS ROW' : rule.value ? ' RETURNS VALUE' : ''} AS\n  ${rule.query}`;
     } else if (rule && Array.isArray(rule.steps) && rule.steps.length) {
-      text = `CREATE RULE ${slug}${events} AS\n${rule.steps.map((st) => `  ${stepSql(st, '  ')};`).join('\n')}`;
+      text = `CREATE RULE ${slug}${events}${when} AS\n${rule.steps.map((st) => `  ${stepSql(st, '  ')};`).join('\n')}`;
     } else return null;
     const back = compileRule(text);
-    return same(back.rule, rule) && same(back.on, onOf(on)) ? text : null;
+    return same(back.rule, rule) && same(back.on, onOf(on)) && same(back.every || null, every || null) ? text : null;
   } catch (e) {
     if (e instanceof RuleSqlError) return null;
     throw e;

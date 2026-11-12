@@ -16,24 +16,24 @@ Frames came in release 0.2.0: release 0.1.0's wheel (`strata-db`, from before th
 
 ```python
 import polars as pl
-import chloedb as st
+import chloedb as cdb
 from chloedb import col
 
-shop = st.connect("shop.chloedb")             # a file; st.connect("https://...") for a server
+shop = cdb.connect("shop.chloedb")             # a file; cdb.connect("https://...") for a server
 orders = shop.create_table("orders", pl.read_parquet("orders.parquet"), key="id", text=["note"])
 # or, once the table exists: orders = shop["orders"]
 
 top = (orders
        .filter(col("status") == "paid", country="cl")
        .group_by(month=col("ts").dt.truncate("month"))
-       .agg(revenue=col("amount").sum(), p90=col("amount").quantile(0.9), n=st.len())
+       .agg(revenue=col("amount").sum(), p90=col("amount").quantile(0.9), n=cdb.len())
        .sort("month"))
 
 top.to_polars()     # or .to_pandas(), .to_arrow(), .to_numpy(), .to_dicts()
 print(top.sql())    # the statement it runs; its values are parameters, top.params()
 ```
 
-`st.connect(path)` opens a database file, or makes it with its first `create_table`; `st.connect(url)` is a [`Client`](python.md#a-server-from-python) of a server or a coordinator of shards, with `token=` when the server asks for one. Both give frames and `create_table` the same way.
+`cdb.connect(path)` opens a database file, or makes it with its first `create_table`; `cdb.connect(url)` is a [`Client`](python.md#a-server-from-python) of a server or a coordinator of shards, with `token=` when the server asks for one. Both give frames and `create_table` the same way.
 
 ## Making tables
 
@@ -63,30 +63,30 @@ Each method returns a new frame, and none of them runs anything.
 | method | |
 |---|---|
 | `filter(cond, ..., name=value)` | the rows where every condition holds; conditions on indexed fields are answered by the indexes |
-| `select(*cols, name=expr)`, `with_columns(...)` | the answer's columns; every column with these added or replaced. Aggregates alone give one row: `select(n=st.len(), total=col("x").sum())` |
+| `select(*cols, name=expr)`, `with_columns(...)` | the answer's columns; every column with these added or replaced. Aggregates alone give one row: `select(n=cdb.len(), total=col("x").sum())` |
 | `drop(*cols)`, `rename({old: new})` | |
 | `sort(by, ..., descending=False, nulls_last=True)` | rows without a value come last |
 | `head(n=5)`, `slice(offset, length)` | the first rows; an unsorted, unranked frame's are any rows, as in SQL |
 | `group_by(*keys, name=expr).agg(...)`, `.len()` | a row per group; a key may be an expression (`month=col("ts").dt.truncate("month")`). A `filter` after it is `HAVING` |
 | `join(other, on=, left_on=, right_on=, how="inner", suffix="_right")` | `how` is `"inner"` or `"left"`, and both frames are of one store |
 | `unique()`, `unique(subset, keep="first")` | each row once; the first row of each value in the frame's order (`DISTINCT ON`) |
-| `union(*frames)`, `st.concat(frames)` | the rows of each (`UNION ALL`; `distinct=True` for `UNION`) |
+| `union(*frames)`, `cdb.concat(frames)` | the rows of each (`UNION ALL`; `distinct=True` for `UNION`) |
 | `sample(fraction=, seed=)`, `sample(n, seed=)`, `split(fraction, seed=)`, `shuffle(seed=)` | a seeded sample, train/test split or order ([below](#samples-and-splits)) |
 
 ## Expressions
 
 | | |
 |---|---|
-| `col(name)`, `st.lit(value)`, `+ - * / % **`, `== != < <= > >=`, `& \| ~` | columns, values, arithmetic, comparisons, and, or, not |
+| `col(name)`, `cdb.lit(value)`, `+ - * / % **`, `== != < <= > >=`, `& \| ~` | columns, values, arithmetic, comparisons, and, or, not |
 | `.is_in(values)`, `.is_between(lo, hi)`, `.is_null()`, `.is_not_null()`, `.fill_null(value)`, `.cast("int")` | |
-| `st.when(cond).then(a).when(...).then(b).otherwise(c)` | `CASE WHEN` |
+| `cdb.when(cond).then(a).when(...).then(b).otherwise(c)` | `CASE WHEN` |
 | `.str.lower()`, `.upper()`, `.len_chars()`, `.contains(s)`, `.starts_with(s)`, `.ends_with(s)`, `.like(p)`, `.ilike(p)` | strings |
 | `.dt.truncate("month")`, `.year()`, `.quarter()`, `.month()`, `.week()`, `.day()`, `.weekday()`, `.hour()`, `.epoch()`, `.strftime("%Y-%m")` | timestamps |
-| `.sum()`, `.mean()`, `.median()`, `.quantile(q, interpolation="linear")`, `.min()`, `.max()`, `.count()`, `.n_unique()`, `st.len()` | aggregates, for `agg` or a `select` of totals |
+| `.sum()`, `.mean()`, `.median()`, `.quantile(q, interpolation="linear")`, `.min()`, `.max()`, `.count()`, `.n_unique()`, `cdb.len()` | aggregates, for `agg` or a `select` of totals |
 | `.over(*partition_by, order_by=, descending=)` with `.rank(method="min")`, `.cum_sum()`, `.shift(n)` or an aggregate | windows: `col("amount").rank(descending=True).over("user")`, `col("x").shift(1).over("user", order_by="ts")` |
 | `.hash(seed=0)` | an int from 0 to 2<sup>63</sup> - 1 of the value and the seed, the same everywhere ([SQL's `hash`](query-language.md#samples-splits-and-shuffles-hash)); `col("item").hash(col("user").hash(7))` hashes two columns |
 
-Every function of [queries built in Python](python.md#queries-built-in-python) is an expression of a frame too: `st.bm25`, `st.similarity`, `st.rrf`, `st.minmax`, `st.zscore`, `st.gbdt`, `st.coalesce`, and the rest.
+Every function of [queries built in Python](python.md#queries-built-in-python) is an expression of a frame too: `cdb.bm25`, `cdb.similarity`, `cdb.rrf`, `cdb.minmax`, `cdb.zscore`, `cdb.gbdt`, `cdb.coalesce`, and the rest.
 
 ## Search and ranking
 
@@ -96,12 +96,12 @@ Search is a verb of the frame. Each of these keeps the `k` best rows (100 by def
 docs = shop["docs"]
 docs.search("refund damaged", on="body", k=20)                  # BM25 over a TEXT field
 docs.near("parcel arrived broken", on="emb", k=20)              # a text the field's model embeds, or a vector
-docs.rank_by(0.6 * st.minmax(st.bm25("body", q))                # any ranking expression
-             + 0.4 * st.minmax(st.similarity("emb", q)), k=100)
+docs.rank_by(0.6 * cdb.minmax(cdb.bm25("body", q))                # any ranking expression
+             + 0.4 * cdb.minmax(cdb.similarity("emb", q)), k=100)
 
 (docs.filter(col("lang") == "en")                               # filters first narrow what is ranked
      .search(q, on="body", k=200)
-     .rerank(st.gbdt("docs_ltr", st.bm25("body", q), col("rating")), k=20)   # rank the 200 again
+     .rerank(cdb.gbdt("docs_ltr", cdb.bm25("body", q), col("rating")), k=20)   # rank the 200 again
      .max_per(2, "site")                                         # at most two rows of a site
      .filter(col("rating") > 3))                                 # filters after narrow the hits
 ```
