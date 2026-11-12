@@ -64,10 +64,12 @@ rules:
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
     verbs: [get, list, create, delete, patch]
-  # A cluster's tokenSecret, to call its coordinators.
+  # A cluster's tokenSecret, to call its coordinators; and each app's
+  # credentials (<cluster>-<app>-credentials: its own key and token),
+  # made, changed and deleted by the operator.
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get]
+    verbs: [get, create, patch, delete]
   # The Lease of each cluster's map, which its coordinators' Role grants
   # (one coordinator at a time changes the map), and a Role grants only
   # what its maker holds.

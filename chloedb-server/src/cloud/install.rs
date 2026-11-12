@@ -29,7 +29,8 @@ pub fn operator_objects(image: &str) -> Vec<Json> {
             rule(&["rbac.authorization.k8s.io"], &["roles", "rolebindings"], &["get", "create", "patch"]),
             rule(&[""], &["pods"], &["get", "list", "delete"]),
             rule(&[""], &["persistentvolumeclaims"], &["get", "list", "create", "delete", "patch"]),
-            rule(&[""], &["secrets"], &["get"]),
+            // tokenSecret, and each app's credentials (made, changed, deleted).
+            rule(&[""], &["secrets"], &["get", "create", "patch", "delete"]),
             rule(&["coordination.k8s.io"], &["leases"], &["get", "create", "update"]),
         ]}),
         json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding", "metadata": {"name": "strata-operator"},
@@ -210,7 +211,7 @@ mod tests {
             // a shard's volumes (listed, grown, deleted) and the app engine's
             // (read, made by apply, grown)
             ("", "persistentvolumeclaims", &["get", "list", "create", "patch", "delete"]),
-            ("", "secrets", &["get"]),
+            ("", "secrets", &["get", "create", "patch", "delete"]),
         ] {
             for v in verbs {
                 assert!(may(group, resource, v), "the operator may not {v} {resource}");

@@ -399,11 +399,21 @@ impl Cluster {
         // apps the command center shows; the admin token is the one they
         // require.
         let apps: Vec<String> = s.apps().into_iter().map(|a| format!("{a}={}", self.app_url(a))).collect();
+        let mut volumes = Vec::new();
+        let mut mounts = Vec::new();
         if !apps.is_empty() {
             env.push(json!({"name": "STRATA_APPS", "value": apps.join(",")}));
+            // The admin token goes to an app that has no token of its own
+            // yet; each app's own, once the operator made it, is a file of
+            // the folder its credentials are mounted as, read as it is sent
+            // ([`super::credentials`]).
             if let Some(t) = &s.token_secret {
                 env.push(secret_env("STRATA_APP_TOKEN", t));
             }
+            env.push(json!({"name": "STRATA_APP_TOKEN_DIR", "value": super::credentials::TOKEN_DIR}));
+            let sources: Vec<Json> = s.apps().into_iter().map(|a| json!({"secret": {"name": super::credentials::secret_name(&self.name, a), "optional": true, "items": [{"key": super::credentials::TOKEN, "path": a}]}})).collect();
+            volumes.push(json!({"name": "app-tokens", "projected": {"sources": sources}}));
+            mounts.push(json!({"name": "app-tokens", "mountPath": super::credentials::TOKEN_DIR, "readOnly": true}));
         }
         env.push(json!({"name": "STRATA_KUBE_CLUSTER", "value": format!("{}/{}", self.ns, self.name)}));
         env.push(json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}));
@@ -419,8 +429,15 @@ impl Cluster {
         if let Some(p) = &s.image_pull_policy {
             container["imagePullPolicy"] = json!(p);
         }
+        if !mounts.is_empty() {
+            container["volumeMounts"] = json!(mounts);
+        }
         if let Some(r) = &s.coordinator_resources {
             container["resources"] = r.clone();
+        }
+        let mut pod = json!({"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "containers": [container]});
+        if !volumes.is_empty() {
+            pod["volumes"] = json!(volumes);
         }
         json!({
             "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&format!("{}-coordinator", self.name), labels.clone()),
@@ -434,7 +451,7 @@ impl Cluster {
                 "minReadySeconds": 2,
                 "template": {
                     "metadata": {"labels": labels, "annotations": {CONFIG: s.coordinator_config()}},
-                    "spec": {"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "containers": [container]},
+                    "spec": pod,
                 },
             },
         })
@@ -507,14 +524,11 @@ impl Cluster {
     /// while paused, never two at once (Recreate: each would hold crawls
     /// of its own), that writes through the coordinators' Service with
     /// the admin token, which its API requires too.
-    pub fn crawler_deployment(&self, c: &super::CrawlerSpec) -> Json {
+    pub fn crawler_deployment(&self, c: &super::CrawlerSpec, creds: Creds) -> Json {
         let s = &self.spec;
         let labels = self.crawler_labels();
         let mut env = vec![json!({"name": "RUST_LOG", "value": "info"})];
-        if let Some(t) = &s.token_secret {
-            env.push(secret_env("STRATA_KEY", t));
-            env.push(secret_env("STRATA_CRAWL_TOKEN", t));
-        }
+        env.extend(self.app_env(super::crawler::APP, creds, "STRATA_KEY", "STRATA_CRAWL_TOKEN"));
         let port = super::crawler::PORT;
         let mut container = json!({
             "name": "crawler", "image": s.image, "command": ["strata-crawl"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
@@ -597,14 +611,11 @@ impl Cluster {
     /// it has open in memory, and saves them), that reads and writes
     /// through the coordinators' Service with the admin token, which its
     /// API requires too.
-    pub fn sheets_deployment(&self, c: &super::SheetsSpec) -> Json {
+    pub fn sheets_deployment(&self, c: &super::SheetsSpec, creds: Creds) -> Json {
         let s = &self.spec;
         let labels = self.sheets_labels();
         let mut env = vec![json!({"name": "RUST_LOG", "value": "info"})];
-        if let Some(t) = &s.token_secret {
-            env.push(secret_env("STRATA_KEY", t));
-            env.push(secret_env("STRATA_SHEETS_TOKEN", t));
-        }
+        env.extend(self.app_env(super::sheets::APP, creds, "STRATA_KEY", "STRATA_SHEETS_TOKEN"));
         let port = super::sheets::PORT;
         let mut container = json!({
             "name": "sheets", "image": s.image, "command": ["strata-sheets"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
@@ -658,15 +669,11 @@ impl Cluster {
     /// too, and calls the model with the cluster's `secretEnv`. With the
     /// `static` embedder an init container first downloads the model into
     /// the pod's scratch volume.
-    pub fn chloectx_deployment(&self, c: &super::ChloectxSpec) -> Json {
+    pub fn chloectx_deployment(&self, c: &super::ChloectxSpec, creds: Creds) -> Json {
         let s = &self.spec;
         let labels = self.chloectx_labels();
         let models = super::chloectx::MODELS;
-        let mut env = Vec::new();
-        if let Some(t) = &s.token_secret {
-            env.push(secret_env("CHLOEDB_KEY", t));
-            env.push(secret_env("CHLOECTX_APP_TOKEN", t));
-        }
+        let mut env = self.app_env(super::chloectx::APP, creds, "CHLOEDB_KEY", "CHLOECTX_APP_TOKEN");
         env.push(json!({"name": "CHLOECTX_MODELS", "value": models}));
         env.extend(self.from_secrets());
         let port = super::chloectx::PORT;
@@ -748,14 +755,10 @@ impl Cluster {
     /// apps in the cluster through the coordinators' Service with the
     /// admin token, which is also what the coordinators send it, and calls
     /// the model with the cluster's `secretEnv`.
-    pub fn apps_deployment(&self, a: &super::AppsSpec) -> Json {
+    pub fn apps_deployment(&self, a: &super::AppsSpec, creds: Creds) -> Json {
         let s = &self.spec;
         let labels = self.apps_labels();
-        let mut env = Vec::new();
-        if let Some(t) = &s.token_secret {
-            env.push(secret_env("STRATA_TOKEN", t));
-            env.push(secret_env("STRATA_APP_TOKEN", t));
-        }
+        let mut env = self.app_env(super::apps::APP, creds, "STRATA_TOKEN", "STRATA_APP_TOKEN");
         if let Some(u) = &a.public_url {
             env.push(json!({"name": "STRATA_APPS_PUBLIC_URL", "value": u}));
         }
@@ -1004,12 +1007,67 @@ fn secret_env(name: &str, secret: &str) -> Json {
     json!({"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": "token"}}})
 }
 
+/// What an app beside the cluster holds of its own
+/// ([`super::credentials`]): a key limited to its tables, and a token. What
+/// it does not, it takes from the admin token, as before such keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Creds {
+    pub key: bool,
+    pub token: bool,
+}
+
+impl Cluster {
+    /// An app's two variables, its cluster `key` and its own API's
+    /// `token`: from its credentials Secret, or the admin token.
+    fn app_env(&self, app: &str, creds: Creds, key: &str, token: &str) -> Vec<Json> {
+        let own = |name: &str, entry: &str| json!({"name": name, "valueFrom": {"secretKeyRef": {"name": super::credentials::secret_name(&self.name, app), "key": entry}}});
+        let admin = self.spec.token_secret.as_deref();
+        let mut env = Vec::new();
+        match (creds.key, admin) {
+            (true, _) => env.push(own(key, super::credentials::KEY)),
+            (false, Some(t)) => env.push(secret_env(key, t)),
+            (false, None) => {}
+        }
+        match (creds.token, admin) {
+            (true, _) => env.push(own(token, super::credentials::TOKEN)),
+            (false, Some(t)) => env.push(secret_env(token, t)),
+            (false, None) => {}
+        }
+        env
+    }
+
+    /// What app `app` holds of its own now, by its credentials Secret.
+    async fn creds(&self, spec: &Spec, app: &str) -> Result<Creds, String> {
+        let s = self.kube.get(&self.credentials_path(app)).await?;
+        let e = s.as_ref().map(super::credentials::entries).unwrap_or_default();
+        let has = |k: &str| e.get(k).is_some_and(|v| !v.is_empty());
+        Ok(Creds { key: has(super::credentials::KEY) && super::credentials::keyed(spec, app), token: has(super::credentials::TOKEN) })
+    }
+
+    fn credentials_path(&self, app: &str) -> String {
+        format!("{}/{}", ns_path(&self.ns, "v1", "secrets"), super::credentials::secret_name(&self.name, app))
+    }
+}
+
 /// `args` quoted for a POSIX shell.
 fn shell_words(args: &[String]) -> String {
     args.iter().map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ")
 }
 
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
+/// `b` in base64, as a Secret's data holds it.
+pub fn base64_encode(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in b.chunks(3) {
+        let n = c.iter().enumerate().fold(0u32, |n, (i, x)| n | (*x as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
     let val = |c: u8| match c {
         b'A'..=b'Z' => Some(c - b'A'),
         b'a'..=b'z' => Some(c - b'a' + 26),
@@ -1105,17 +1163,20 @@ impl Platform for Cluster {
 
     async fn crawler(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
-        self.beside(self.crawler_paths(), spec.crawler.as_ref().map(|c| (with.crawler_service(), with.crawler_deployment(c)))).await
+        let creds = self.creds(spec, super::crawler::APP).await?;
+        self.beside(self.crawler_paths(), spec.crawler.as_ref().map(|c| (with.crawler_service(), with.crawler_deployment(c, creds)))).await
     }
 
     async fn sheets(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
-        self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), with.sheets_deployment(c)))).await
+        let creds = self.creds(spec, super::sheets::APP).await?;
+        self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), with.sheets_deployment(c, creds)))).await
     }
 
     async fn chloectx(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
-        self.beside(self.app_paths(&self.chloectx_name()), spec.chloectx.as_ref().map(|c| (with.chloectx_service(), with.chloectx_deployment(c)))).await
+        let creds = self.creds(spec, super::chloectx::APP).await?;
+        self.beside(self.app_paths(&self.chloectx_name()), spec.chloectx.as_ref().map(|c| (with.chloectx_service(), with.chloectx_deployment(c, creds)))).await
     }
 
     async fn apps(&self, spec: &Spec) -> Result<(), String> {
@@ -1123,7 +1184,84 @@ impl Platform for Cluster {
         if let Some(a) = &spec.apps {
             with.apps_volume(a).await?;
         }
-        self.beside(self.app_paths(&self.apps_name()), spec.apps.as_ref().map(|a| (with.apps_service(a), with.apps_deployment(a)))).await
+        let creds = self.creds(spec, super::apps::APP).await?;
+        self.beside(self.app_paths(&self.apps_name()), spec.apps.as_ref().map(|a| (with.apps_service(a), with.apps_deployment(a, creds)))).await
+    }
+
+    async fn app_credentials(&self, spec: &Spec, admin: &super::Admin) -> Result<(), String> {
+        use super::credentials as cr;
+        let apps = spec.apps();
+        // An app taken out of the spec: its key revoked, its Secret gone.
+        for app in [super::crawler::APP, super::sheets::APP, super::chloectx::APP, super::apps::APP] {
+            if apps.contains(&app) {
+                continue;
+            }
+            let path = self.credentials_path(app);
+            let Some(have) = self.kube.get(&path).await? else { continue };
+            if let Some(id) = have["metadata"]["annotations"][cr::KEY_ID].as_str() {
+                admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
+            }
+            self.kube.delete(&path).await?;
+        }
+        if apps.is_empty() || !cr::supported(admin).await {
+            return Ok(());
+        }
+        let mut failed = Vec::new();
+        for app in apps {
+            let path = self.credentials_path(app);
+            let have = self.kube.get(&path).await?;
+            let e = have.as_ref().map(cr::entries).unwrap_or_default();
+            let note = |k: &str| have.as_ref().and_then(|h| h["metadata"]["annotations"][k].as_str()).map(str::to_string);
+            let (old_id, old_hash) = (note(cr::KEY_ID), note(cr::TABLES));
+            let tables = cr::spec_tables(spec, app);
+            let hash = cr::tables_hash(&tables);
+            let token = match e.get(cr::TOKEN).filter(|t| !t.is_empty()) {
+                Some(t) => t.clone(),
+                None => crate::keys::random_hex(32).map_err(|e| e.message)?,
+            };
+            let mut key = e.get(cr::KEY).filter(|k| !k.is_empty()).cloned();
+            let mut id = old_id.clone();
+            let keyed = cr::keyed(spec, app);
+            if keyed && (key.is_none() || old_hash.as_deref() != Some(hash.as_str())) {
+                match cr::make_key(admin, app, &tables, old_id.as_deref()).await {
+                    Ok((i, k)) => (id, key) = (Some(i), Some(k)),
+                    Err(e) => {
+                        failed.push(format!("{app}: {e}"));
+                        (id, key) = (None, None);
+                    }
+                }
+            }
+            if !keyed {
+                // The crawler that grows the cluster: the admin token is
+                // its key, and the one it had is revoked.
+                if let Some(i) = &old_id {
+                    admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{i}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
+                }
+                (id, key) = (None, None);
+            }
+            let unchanged = have.is_some() && e.get(cr::TOKEN) == Some(&token) && e.get(cr::KEY) == key.as_ref() && old_id == id && (old_hash.as_deref() == Some(hash.as_str()) || key.is_none());
+            if unchanged {
+                continue;
+            }
+            let mut data = serde_json::Map::new();
+            data.insert(cr::TOKEN.into(), json!(base64_encode(token.as_bytes())));
+            if let Some(k) = &key {
+                data.insert(cr::KEY.into(), json!(base64_encode(k.as_bytes())));
+            }
+            let mut meta = self.meta(&cr::secret_name(&self.name, app), self.labels());
+            let mut notes = serde_json::Map::new();
+            if let Some(i) = &id {
+                notes.insert(cr::KEY_ID.into(), json!(i));
+                notes.insert(cr::TABLES.into(), json!(hash));
+            }
+            meta["annotations"] = Json::Object(notes);
+            self.kube.apply(&path, &json!({"apiVersion": "v1", "kind": "Secret", "metadata": meta, "type": "Opaque", "data": data})).await?;
+            tracing::info!(app, keyed = key.is_some(), "the app's credentials changed");
+        }
+        match failed.is_empty() {
+            true => Ok(()),
+            false => Err(format!("an app keeps the admin token for now: {}", failed.join("; "))),
+        }
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
@@ -1706,6 +1844,49 @@ mod tests {
         Cluster { kube, ns: "db".into(), name: "orders".into(), uid: "u-1".into(), spec: serde_json::from_value(spec).unwrap() }
     }
 
+
+    /// Each app's own key and token, from its credentials Secret, once
+    /// the operator made them; the admin token until then; the crawler
+    /// that grows keeps the admin token as its key.
+    #[test]
+    fn apps_take_their_own_credentials() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "crawler": {"grow": false}, "sheets": {}, "chloectx": {}, "apps": {}}));
+        let env = |d: &Json| d["spec"]["template"]["spec"]["containers"][0]["env"].clone();
+        let from = |d: &Json, name: &str| env(d).as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
+        let own = Creds { key: true, token: true };
+        let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), own);
+        assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "orders-sheets-credentials", "key": "key"})));
+        assert_eq!(from(&d, "STRATA_SHEETS_TOKEN"), Some(json!({"name": "orders-sheets-credentials", "key": "token"})));
+        assert!(!env(&d).to_string().contains("\"admin\""), "{}", env(&d));
+        let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), Creds::default());
+        assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "admin", "key": "token"})));
+        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap(), Creds { key: false, token: true });
+        assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "admin", "key": "token"})));
+        assert_eq!(from(&d, "STRATA_CRAWL_TOKEN"), Some(json!({"name": "orders-crawler-credentials", "key": "token"})));
+        let d = c.chloectx_deployment(c.spec.chloectx.as_ref().unwrap(), own);
+        assert_eq!(from(&d, "CHLOEDB_KEY"), Some(json!({"name": "orders-chloectx-credentials", "key": "key"})));
+        assert_eq!(from(&d, "CHLOECTX_APP_TOKEN"), Some(json!({"name": "orders-chloectx-credentials", "key": "token"})));
+        let d = c.apps_deployment(c.spec.apps.as_ref().unwrap(), own);
+        assert_eq!(from(&d, "STRATA_TOKEN"), Some(json!({"name": "orders-apps-credentials", "key": "key"})));
+        assert_eq!(from(&d, "STRATA_APP_TOKEN"), Some(json!({"name": "orders-apps-credentials", "key": "token"})));
+        // The coordinators read each app's token from a folder of them.
+        let co = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let pod = &co["spec"]["template"]["spec"];
+        let sources = pod["volumes"][0]["projected"]["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 4);
+        assert_eq!(sources[1]["secret"], json!({"name": "orders-sheets-credentials", "optional": true, "items": [{"key": "token", "path": "sheets"}]}));
+        assert_eq!(pod["containers"][0]["volumeMounts"][0]["mountPath"], super::super::credentials::TOKEN_DIR);
+        assert!(from(&co, "STRATA_APP_TOKEN").is_some() && env(&co).to_string().contains("STRATA_APP_TOKEN_DIR"));
+        // A cluster without apps mounts nothing.
+        let none = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
+        assert!(none.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["volumes"].is_null());
+        // base64 both ways.
+        for t in ["", "a", "ab", "abc", "sk_0a1b_00ff"] {
+            assert_eq!(base64_decode(&base64_encode(t.as_bytes())).unwrap(), t.as_bytes());
+        }
+        assert_eq!(base64_encode(b"ab"), "YWI=");
+    }
+
     #[test]
     fn a_follower_runs_one_follow_process_with_the_sources_key_and_its_own_token() {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always",
@@ -1744,7 +1925,7 @@ mod tests {
     fn a_crawler_runs_beside_the_cluster_and_the_coordinators_list_it() {
         let none = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner"}));
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "crawler": {"splitRows": 5000}}));
-        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap());
+        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap(), Creds::default());
         assert_eq!(d["metadata"]["name"], "orders-crawler");
         assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
         assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
@@ -1780,13 +1961,13 @@ mod tests {
         assert!(!serde_json::to_value(&none.spec).unwrap().as_object().unwrap().contains_key("crawler"));
         // Paused: no pod.
         let paused = cluster(json!({"tokenSecret": "admin", "crawler": {"paused": true}}));
-        assert_eq!(paused.crawler_deployment(paused.spec.crawler.as_ref().unwrap())["spec"]["replicas"], 0);
+        assert_eq!(paused.crawler_deployment(paused.spec.crawler.as_ref().unwrap(), Creds::default())["spec"]["replicas"], 0);
     }
 
     #[test]
     fn spreadsheets_run_beside_the_cluster_and_the_coordinators_list_them_with_the_crawler() {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "sheets": {}}));
-        let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap());
+        let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), Creds::default());
         assert_eq!(d["metadata"]["name"], "orders-sheets");
         assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
         assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
@@ -1810,22 +1991,24 @@ mod tests {
         assert_eq!(apps(&both).as_deref(), Some("crawler=http://orders-crawler:7800,sheets=http://orders-sheets:7820"));
         assert_eq!(env_of(&both).iter().filter(|e| e["name"] == "STRATA_APP_TOKEN").count(), 1);
         // The servers do not restart for it; the coordinators do. A
-        // cluster with the crawler alone keeps the hash it had.
+        // cluster with the crawler alone has the hash it had and the apps'
+        // token folder.
         let crawler = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "crawler": {}}));
         assert_eq!(both.spec.server_config(), crawler.spec.server_config());
         assert_ne!(both.spec.coordinator_config(), crawler.spec.coordinator_config());
         let mut j = json!({"image": crawler.spec.image, "imagePullPolicy": null, "resources": null, "args": [], "tokenSecret": "admin", "clusterTokenSecret": "inner"});
         j["apps"] = json!(["crawler"]);
+        j["appTokens"] = json!(super::super::credentials::TOKEN_DIR);
         assert_eq!(crawler.spec.coordinator_config(), super::super::short_hash(&j));
         let paused = cluster(json!({"tokenSecret": "admin", "sheets": {"paused": true}}));
-        assert_eq!(paused.sheets_deployment(paused.spec.sheets.as_ref().unwrap())["spec"]["replicas"], 0);
+        assert_eq!(paused.sheets_deployment(paused.spec.sheets.as_ref().unwrap(), Creds::default())["spec"]["replicas"], 0);
     }
 
     #[test]
     fn chloectx_runs_beside_the_cluster_with_its_model_and_the_clusters_model_key() {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always",
             "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}], "sheets": {}, "chloectx": {}}));
-        let d = c.chloectx_deployment(c.spec.chloectx.as_ref().unwrap());
+        let d = c.chloectx_deployment(c.spec.chloectx.as_ref().unwrap(), Creds::default());
         assert_eq!(d["metadata"]["name"], "orders-chloectx");
         assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
         assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
@@ -1862,16 +2045,16 @@ mod tests {
         assert_ne!(c.spec.coordinator_config(), sheets.spec.coordinator_config());
         // A cluster without a token: its ChloeCtx is open too, and says so.
         let open = cluster(json!({"chloectx": {}}));
-        let d = open.chloectx_deployment(open.spec.chloectx.as_ref().unwrap());
+        let d = open.chloectx_deployment(open.spec.chloectx.as_ref().unwrap(), Creds::default());
         let args = d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().clone();
         assert_eq!(args.last(), Some(&json!("--insecure")), "{args:?}");
         // No model to download with the hash embedder; paused: no pod.
         let hash = cluster(json!({"tokenSecret": "admin", "chloectx": {"embedder": "hash:256"}}));
-        let d = hash.chloectx_deployment(hash.spec.chloectx.as_ref().unwrap());
+        let d = hash.chloectx_deployment(hash.spec.chloectx.as_ref().unwrap(), Creds::default());
         assert!(d["spec"]["template"]["spec"]["initContainers"].is_null());
         assert_eq!(d["spec"]["template"]["spec"]["containers"][0]["args"][8], "hash:256");
         let paused = cluster(json!({"tokenSecret": "admin", "chloectx": {"paused": true}}));
-        assert_eq!(paused.chloectx_deployment(paused.spec.chloectx.as_ref().unwrap())["spec"]["replicas"], 0);
+        assert_eq!(paused.chloectx_deployment(paused.spec.chloectx.as_ref().unwrap(), Creds::default())["spec"]["replicas"], 0);
     }
 
     #[test]
@@ -1880,7 +2063,7 @@ mod tests {
             "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}],
             "apps": {"publicUrl": "https://studio.example", "serviceType": "NodePort", "nodePort": 30731, "spendCapUsd": 40, "env": [{"name": "STRATA_APPS_MODEL", "value": "m"}]}}));
         let a = c.spec.apps.as_ref().unwrap();
-        let d = c.apps_deployment(a);
+        let d = c.apps_deployment(a, Creds::default());
         assert_eq!(d["metadata"]["name"], "orders-apps");
         assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
         assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
@@ -1915,7 +2098,7 @@ mod tests {
         assert_eq!(apps, Some(json!("apps=http://orders-apps:7730")));
         let plain = cluster(json!({"demo": 10, "tokenSecret": "admin", "apps": {"image": "registry.example/apps:1", "paused": true, "storage": {"size": "2Gi", "storageClassName": "fast"}}}));
         let a = plain.spec.apps.as_ref().unwrap();
-        let d = plain.apps_deployment(a);
+        let d = plain.apps_deployment(a, Creds::default());
         assert_eq!(d["spec"]["replicas"], 0);
         let k = &d["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(k["image"], "registry.example/apps:1");
