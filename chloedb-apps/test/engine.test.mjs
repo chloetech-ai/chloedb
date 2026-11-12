@@ -2374,3 +2374,48 @@ test('the engine\'s own browser opens the app with its cookie', async (t) => {
     srv.close();
   }
 });
+
+// What an app is made of (engine/provenance.mjs): the lines the engine
+// generated from CREATE statements, the agent's own code, and the library's.
+test('provenance tells CREATE statements from code written from scratch and from reused pieces', async () => {
+  const { provenance, pieceOrigin } = await import('../engine/provenance.mjs');
+  const { fromSource, toSource } = await import('../engine/source.mjs');
+  const statement = `CREATE SCREEN guests TITLE 'Guests'
+LIST guests
+  ORDER BY name  SEARCH name
+  FORM (name REQUIRED, rsvp 'RSVP' SELECT ('yes', 'no'))
+  COLUMNS (name, rsvp 'RSVP' BADGE)
+  KPI 'Coming' = COUNT(*) WHERE rsvp = 'yes'`;
+  // A capability as the engine holds it: its SQL, and what it runs as.
+  const held = (c) => { const sql = toSource(c); const run = fromSource({ ...c, code: sql }); return { ...c, code: run.code, sql: run.sql, spec: { ...c.spec, ...(run.statement ? { statement: run.statement } : {}) } }; };
+  const screen = held({ id: 'a1/view/guests@1', kind: 'view', slug: 'guests', title: 'Guests', version: 1, author: 'forge', code: statement, spec: { screen: true, patterns: ['crud'] } });
+  const js = held({ id: 'a1/view/chart@1', kind: 'view', slug: 'chart', title: 'Chart', version: 1, author: 'forge', code: 'async function render(root, app) {\n  const rows = await app.sql("SELECT * FROM guests");\n\n  root.textContent = rows.length;\n}', spec: {} });
+  const table = held({ id: 'a1/table/guests@1', kind: 'table', slug: 'guests', title: 'guests', version: 1, author: 'forge', code: '', spec: { name: 'guests', columns: [{ name: 'name', type: 'text' }, { name: 'rsvp', type: 'keyword' }] } });
+  const starter = held({ id: 'a1/function/export-csv@1', kind: 'function', slug: 'export-csv', title: 'Export', version: 1, author: 'library', forked_from: 'lib/function/export-csv@1', code: 'async function run(input, app) {\n  return 1;\n}', spec: {} });
+  const builtin = { id: 'lib/component/barChart@1', kind: 'component', slug: 'barChart', title: 'Bar chart', version: 1, author: 'builtin', code: 'function component() {\n  return 1;\n}', spec: {} };
+  const mine = { id: 'lib/helper/odds@1', kind: 'helper', slug: 'odds', title: 'Odds', version: 1, author: 'forge', code: 'function helper() {\n  return {};\n}', spec: { by: 'a1' } };
+
+  const s = pieceOrigin(screen, 'a1');
+  assert.equal(s.origin, 'create');
+  assert.equal(s.statement, 'CREATE SCREEN');
+  assert.equal(s.wrote, 6);
+  assert.ok(s.runs > s.wrote * 3, `a CREATE SCREEN expands into its pattern's screen (${s.wrote} -> ${s.runs})`);
+  assert.deepEqual([pieceOrigin(js, 'a1').origin, pieceOrigin(js, 'a1').wrote], ['scratch', 4]);
+  assert.equal(pieceOrigin(table, 'a1').statement, 'CREATE TABLE');
+  assert.deepEqual([pieceOrigin(starter, 'a1').origin, pieceOrigin(starter, 'a1').wrote], ['reused', 0]);
+  assert.equal(pieceOrigin(builtin, 'a1').origin, 'reused');
+  assert.equal(pieceOrigin(mine, 'a1').origin, 'scratch');
+  assert.equal(pieceOrigin(mine, 'other').origin, 'reused', 'a shared piece another app wrote is reused');
+  // A screen patched since it was written as a statement is JSON the agent wrote.
+  assert.equal(pieceOrigin({ ...screen, spec: { ...screen.spec, derived: true } }, 'a1').origin, 'scratch');
+
+  const m = provenance({ app: { id: 'a1' }, comp: { n: 3 }, tables: [table], views: [screen, js], functions: [starter], components: [builtin], helpers: [mine] });
+  assert.equal(m.version, 3);
+  assert.equal(m.pieces.length, 6);
+  assert.equal(m.runs, m.pieces.reduce((a, p) => a + p.runs, 0));
+  const shares = Object.values(m.totals).reduce((a, t) => a + t.share, 0);
+  assert.ok(Math.abs(shares - 1) < 1e-9);
+  assert.equal(m.agent.wrote, m.totals.create.wrote + m.totals.scratch.wrote);
+  assert.ok(m.leverage > 1);
+  assert.deepEqual(m.pieces.map((p) => p.origin).slice(0, 2), ['create', 'create'], 'statements first');
+});
