@@ -190,6 +190,9 @@ pub struct Db {
     embed_later: std::sync::atomic::AtomicBool,
     /// Models of derived TEXT fields ([`Db::set_deriver_in`]).
     derivers: RwLock<Vec<Deriving>>,
+    /// The dictionaries among them ([`crate::content::DictEntities`]), by
+    /// table and field, given their values before each write derives.
+    dicts: RwLock<Vec<(String, String, Arc<crate::content::DictEntities>)>>,
     /// Where [`Db::open_embedders`] found models, for the tables created
     /// after it, and where ranking models are ([`Db::open_ranking_models`]).
     models: RwLock<Option<PathBuf>>,
@@ -247,6 +250,7 @@ impl Db {
         crate::embed::stamp_fingerprints(&mut schema, models);
         let db = Db::wrap(Database::create(path, schema, with_source(opts))?);
         db.open_codebooks(models);
+        db.open_content_models();
         Ok(db)
     }
 
@@ -270,6 +274,7 @@ impl Db {
     pub fn open(path: &Path, opts: DbOptions) -> Result<Db> {
         let db = Db::wrap(Database::open(path, with_source(opts))?);
         db.open_codebooks(&crate::embed::models_dir());
+        db.open_content_models();
         Ok(db)
     }
 
@@ -286,6 +291,7 @@ impl Db {
             embedders: RwLock::new(Vec::new()),
             embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
+            dicts: RwLock::new(Vec::new()),
             models: RwLock::new(None),
             media: RwLock::new(Arc::new(Resolver::default())),
             ranking: Models::default(),
@@ -501,6 +507,7 @@ impl Db {
             self.open_embedders_of(&name, &dir);
         }
         self.open_codebooks_of(&name, &models);
+        self.open_content_models_of(&name);
         Ok(())
     }
 
@@ -560,6 +567,7 @@ impl Db {
             let new = |f: &crate::schema::Field| before.fields.iter().find(|b| b.id == f.id).is_none_or(|b| model(b) != model(f));
             self.open_models_of(&after.table, &dir, new);
         }
+        self.open_content_models_of(&after.table);
     }
 
     /// Drops a table other than the first ([`Database::drop_table`]).
@@ -969,6 +977,7 @@ impl Db {
     /// The models of the derived fields of the table `schema` describes, by
     /// field.
     fn derivers_of(&self, schema: &Schema) -> Vec<Option<Arc<dyn Deriver>>> {
+        self.refresh_dicts(schema);
         let all = self.derivers.read().unwrap_or_else(|e| e.into_inner());
         schema
             .fields
@@ -978,6 +987,65 @@ impl Db {
                 all.iter().find(serves).map(|m| m.model.clone())
             })
             .collect()
+    }
+
+    /// Gives the dictionaries of the table `schema` describes the values
+    /// their tables hold now (read once per version of those tables); a
+    /// dictionary whose table or field is gone keeps the values it had.
+    fn refresh_dicts(&self, schema: &Schema) {
+        let dicts: Vec<Arc<crate::content::DictEntities>> = self
+            .dicts
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(t, _, _)| t.eq_ignore_ascii_case(&schema.table))
+            .map(|(_, _, d)| d.clone())
+            .collect();
+        if dicts.is_empty() {
+            return;
+        }
+        let snap = self.snapshot();
+        for d in dicts {
+            let Some(t) = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(&d.table)).map(|s| s.table.clone()) else { continue };
+            if let Ok(g) = self.gazetteers_at(&snap, &[(t.clone(), d.field.clone(), d.analyzer)], &self.exec) {
+                if let Some(g) = g.get(&(t, d.field.clone(), d.analyzer)) {
+                    d.set(g.clone());
+                }
+            }
+        }
+    }
+
+    /// Opens the built-in models and dictionaries of the derived fields of
+    /// table `table` ([`crate::content`]), which need no model files.
+    fn open_content_models_of(&self, table: &str) {
+        let Some(schema) = self.storage.table(table) else { return };
+        for f in &schema.fields {
+            let Some(d) = &f.derive else { continue };
+            let model: Arc<dyn Deriver> = if d.model.starts_with(crate::content::BUILTIN) {
+                match crate::content::open(&d.model) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                }
+            } else if d.model.starts_with(crate::content::DICT) {
+                let a = schema.field(&d.from).map(|s| s.text_analyzer()).unwrap_or_default();
+                let Ok(dict) = crate::content::DictEntities::new(&d.model, a) else { continue };
+                let dict = Arc::new(dict);
+                let mut all = self.dicts.write().unwrap_or_else(|e| e.into_inner());
+                all.retain(|(t, n, _)| !(t.eq_ignore_ascii_case(&schema.table) && n.eq_ignore_ascii_case(&f.name)));
+                all.push((schema.table.clone(), f.name.clone(), dict.clone()));
+                dict
+            } else {
+                continue;
+            };
+            let _ = self.set_deriver_in(table, &f.name, model);
+        }
+    }
+
+    /// [`Db::open_content_models_of`] for every table.
+    fn open_content_models(&self) {
+        for t in self.catalog() {
+            self.open_content_models_of(&t.table);
+        }
     }
 
     /// Opens the model of every embedded field of every table from `models`
@@ -1036,6 +1104,9 @@ impl Db {
         let Some(schema) = self.storage.table(table) else { return Vec::new() };
         let mut failed = Vec::new();
         for f in schema.fields.iter().filter(|f| which(f)) {
+            if f.derive.as_ref().is_some_and(|d| crate::content::is_content_model(&d.model)) {
+                continue;
+            }
             let opened = match (&f.embed, &f.derive) {
                 (Some(spec), _) => crate::embed::check_fingerprint(&f.name, &spec.model, spec.fingerprint.as_deref(), models)
                     .and_then(|_| crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models))
@@ -2562,7 +2633,7 @@ fn derive_known(derivers: &[Option<Arc<dyn Deriver>>], schema: &Schema, docs: &m
             }
             changed[j] = true;
             match ahead.and_then(|a| a.get(v)) {
-                Some(t) => doc[f] = Value::Str(t.clone()),
+                Some(t) => doc[f] = derived_value(&schema.fields[f], t),
                 None => {
                     todo.push(j);
                     values.push(v.clone());
@@ -2570,13 +2641,23 @@ fn derive_known(derivers: &[Option<Arc<dyn Deriver>>], schema: &Schema, docs: &m
             }
         }
         for (j, t) in todo.into_iter().zip(derive_sources(d.as_ref(), schema, m, &values, files)?) {
-            docs[j][f] = Value::Str(t);
+            docs[j][f] = derived_value(&schema.fields[f], &t);
         }
     }
     if schema.fields.iter().any(|f| !f.generated_from.is_empty()) {
         docs.iter_mut().zip(changed).filter(|(_, c)| *c).for_each(|(d, _)| schema.fill_generated(d));
     }
     Ok(())
+}
+
+/// A derived field's value of the text its model made: a multi-valued
+/// field's values one a line ([`crate::content::SEP`]).
+fn derived_value(f: &crate::schema::Field, t: &str) -> Value {
+    if f.multi {
+        let vs: Vec<Value> = t.split(crate::content::SEP).filter(|v| !v.is_empty()).map(|v| Value::Str(v.to_string())).collect();
+        return if vs.is_empty() { Value::Null } else { Value::List(vs) };
+    }
+    Value::Str(t.to_string())
 }
 
 /// The text `docs` leave out (null) of their derived fields, each file

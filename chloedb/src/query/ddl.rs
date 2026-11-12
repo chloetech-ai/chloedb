@@ -379,7 +379,8 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
         "vector" if multi => &["indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "embed", "model"],
         "vector" => &["stored", "indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "embed", "model", "partition_by", "partition_bounds"],
         "media" => &["stored", "indexed", "kind"],
-        "keyword" if multi => &["stored", "indexed", "semantic_id", "codebook"],
+        "keyword" if multi => &["stored", "indexed", "semantic_id", "codebook", "derive", "model"],
+        "keyword" => &["stored", "indexed", "derive", "model"],
         "json" => &["stored", "indexed", "text", "analyzer"],
         _ => &["stored", "indexed"],
     };
@@ -448,6 +449,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
             }
             f.insert("derive".into(), d);
         }
+        _ if ty == "keyword" => return Err(bad("a derived keyword takes derive = 'text column' and model = 'builtin:lang', 'builtin:keyphrases', 'builtin:minhash' or 'dict:table.field'".into())),
         _ if ty == "text" => return Err(bad("a derived text takes derive = 'media column' and model = 'name', or derive = 'text column', a language model and prompt = 'what to make of it'".into())),
         _ => return Err(bad("an embedded vector takes embed = 'fields' and model = 'name'".into())),
     }
@@ -946,7 +948,7 @@ mod tests {
         for (bad, says) in [
             ("CREATE TABLE t (a MEDIA, c TEXT OPTIONS(derive = 'a'))", "derive = 'media column' and model"),
             ("CREATE TABLE t (a MEDIA, c TEXT OPTIONS(model = 'colors'))", "derive = 'media column' and model"),
-            ("CREATE TABLE t (a MEDIA, c KEYWORD OPTIONS(derive = 'a', model = 'colors'))", "not an option of a KEYWORD"),
+            ("CREATE TABLE t (a MEDIA, c KEYWORD OPTIONS(derive = 'a', model = 'colors'))", "a derived KEYWORD field's model is one of builtin:lang"),
             ("CREATE TABLE t (a TEXT, c TEXT OPTIONS(derive = 'a', model = 'colors'))", "not a MEDIA field"),
             ("CREATE TABLE t (a MEDIA, c TEXT OPTIONS(derive = 'a', model = 'colors', stored = false))", "must be stored"),
             ("CREATE TABLE t (a MEDIA, b TEXT, c TEXT OPTIONS(derive = 'a', model = 'colors', from = 'b'))", "not generated"),

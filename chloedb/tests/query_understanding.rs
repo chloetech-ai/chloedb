@@ -203,3 +203,59 @@ fn understand_boosts_and_filters_a_ranking() {
         assert!(e.contains(says), "{sql}: {e}");
     }
 }
+
+#[test]
+fn derived_keywords_tag_rows_with_builtin_models_and_dictionaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("news.strata"), Schema::new("brands", vec![Field::new("name", FieldType::Keyword)], Some("name")).unwrap(), DbOptions::default()).unwrap();
+    db.sql("INSERT INTO brands (name) VALUES ('Acme Corp'), ('Globex')", &Params::new()).unwrap();
+    db.sql(
+        "CREATE TABLE news (id KEYWORD PRIMARY KEY, body TEXT, \
+         lang KEYWORD OPTIONS(derive = 'body', model = 'builtin:lang'), \
+         phrases KEYWORD[] OPTIONS(derive = 'body', model = 'builtin:keyphrases'), \
+         dup KEYWORD[] OPTIONS(derive = 'body', model = 'builtin:minhash'), \
+         brands KEYWORD[] OPTIONS(derive = 'body', model = 'dict:brands.name'))",
+        &Params::new(),
+    )
+    .unwrap();
+    let story = "Globex sued Acme Corp over the patent for linear induction motors on Tuesday, and the court agreed to hear the case.";
+    let p = Params::new()
+        .set("a", Value::Str(story.into()))
+        .set("b", Value::Str(format!("{story} More soon.")))
+        .set("c", Value::Str("Der schnelle braune Fuchs springt über den faulen Hund, und das ist nicht schlimm.".into()));
+    db.sql("INSERT INTO news (id, body) VALUES ('a', :a), ('b', :b), ('c', :c)", &p).unwrap();
+    let r = db.query("SELECT id, lang, brands FROM news ORDER BY id", &Params::new()).unwrap();
+    assert_eq!(r.rows[0][1].as_str(), Some("en"));
+    assert_eq!(r.rows[2][1].as_str(), Some("de"));
+    assert_eq!(r.rows[0][2], Value::List(vec![Value::Str("Globex".into()), Value::Str("Acme Corp".into())]));
+    assert_eq!(r.rows[2][2], Value::Null);
+    // The values are keywords: filters, facets and joins read them.
+    let r = db.query("SELECT COUNT(*) FROM news WHERE brands = 'Acme Corp' AND lang = 'en'", &Params::new()).unwrap();
+    assert_eq!(r.rows[0][0].as_i64(), Some(2));
+    let r = db.query("SELECT phrases FROM news WHERE id = 'a'", &Params::new()).unwrap();
+    assert!(matches!(&r.rows[0][0], Value::List(v) if v.contains(&Value::Str("linear induction motors".into()))), "{:?}", r.rows);
+    // Near duplicates share a band.
+    let r = db.query("SELECT dup, COUNT(*) FROM news GROUP BY dup ORDER BY COUNT(*) DESC LIMIT 1", &Params::new()).unwrap();
+    assert_eq!(r.rows[0][1].as_i64(), Some(2), "{:?}", r.rows);
+    // A brand added later tags the rows written after it.
+    db.sql("INSERT INTO brands (name) VALUES ('Initech')", &Params::new()).unwrap();
+    db.sql("INSERT INTO news (id, body) VALUES ('d', 'Initech hires.')", &Params::new()).unwrap();
+    let r = db.query("SELECT brands FROM news WHERE id = 'd'", &Params::new()).unwrap();
+    assert_eq!(r.rows[0][0], Value::List(vec![Value::Str("Initech".into())]));
+    // The table needs the derive_keyword feature; a wrong model or type is refused.
+    assert!(db.catalog().iter().find(|s| s.table == "news").unwrap().features().any(|f| f == "derive_keyword"));
+    for (sql, says) in [
+        ("CREATE TABLE t (id KEYWORD PRIMARY KEY, body TEXT, l KEYWORD[] OPTIONS(derive = 'body', model = 'builtin:lang'))", "makes a stored KEYWORD field"),
+        ("CREATE TABLE t (id KEYWORD PRIMARY KEY, body TEXT, l KEYWORD OPTIONS(derive = 'body', model = 'builtin:guess'))", "builtin:lang"),
+        ("CREATE TABLE t (id KEYWORD PRIMARY KEY, n INT, l KEYWORD OPTIONS(derive = 'n', model = 'builtin:lang'))", "stored TEXT or KEYWORD field"),
+    ] {
+        let e = db.sql(sql, &Params::new()).unwrap_err().to_string();
+        assert!(e.contains(says), "{sql}: {e}");
+    }
+    // A reopened database opens its built-in models itself.
+    drop(db);
+    let db = Db::open(&dir.path().join("news.strata"), DbOptions::default()).unwrap();
+    db.sql("INSERT INTO news (id, body) VALUES ('e', 'Acme Corp is hiring.')", &Params::new()).unwrap();
+    let r = db.query("SELECT lang, brands FROM news WHERE id = 'e'", &Params::new()).unwrap();
+    assert_eq!((r.rows[0][0].as_str(), &r.rows[0][1]), (Some("en"), &Value::List(vec![Value::Str("Acme Corp".into())])));
+}
