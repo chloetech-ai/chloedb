@@ -11,6 +11,8 @@ block matches what the block before it printed.
     python3 docs/guide/run.py search rag     # some of them, by page name
     python3 docs/guide/run.py --list         # what would run, block by block
     python3 docs/guide/run.py --keep rag     # keep the directory it ran in
+    python3 docs/guide/run.py --update rag   # write what blocks printed into the
+                                             # page's output blocks (review the diff)
 
 What a block's info string means (```lang words...):
 
@@ -121,8 +123,9 @@ def find_programs():
             if p.exists():
                 found[name] = p
             continue
-        crate = {"chloedb": "chloedb"}.get(name, name)
-        cands = [ROOT / crate / "target" / prof / name for prof in ("ci", "release", "debug")]
+        # Each crate's own target directory, or another's (a build with a
+        # shared CARGO_TARGET_DIR puts every program in one).
+        cands = [ROOT / crate / "target" / prof / name for crate in PROGRAMS for prof in ("ci", "release", "debug")]
         cands = [c for c in cands if c.exists()]
         if cands:
             found[name] = max(cands, key=lambda c: c.stat().st_mtime)
@@ -227,6 +230,9 @@ def run_page(page, source, programs, args):
     env.setdefault("CHLOEDB_MODELS", str(pathlib.Path.home() / ".cache" / "chloedb-docs" / "models"))
     pathlib.Path(env["CHLOEDB_MODELS"]).mkdir(parents=True, exist_ok=True)
     env["CHLOEDB_DOCS_RUN"] = "1"
+    env.pop("ANTHROPIC_API_KEY", None)  # pages print the prompt they would send, not a model's answer
+    if args.update:
+        env["CHLOEDB_DOCS_UPDATE"] = "1"
     script = script_for(page, source, blocks, work)
     (work / ".run" / "page.sh").write_text(script)
     t0 = time.time()
@@ -249,6 +255,8 @@ def run_page(page, source, programs, args):
         except ProcessLookupError:
             pass
     took = time.time() - t0
+    if args.update:
+        update_outputs(source, blocks, work)
     if args.verbose or status != 0:
         print(out)
     if not args.keep:
@@ -260,11 +268,35 @@ def run_page(page, source, programs, args):
     return ("pass" if status == 0 else "fail"), f"{rel}: {n_run} blocks run, {n_show} shown only, {took:.1f}s"
 
 
+def update_outputs(source, blocks, work):
+    """Write what each block printed into the output block under it, where they differ."""
+    lines = source.read_text().split("\n")
+    changed = 0
+    # From the end, so that earlier line numbers stay put.
+    for i in reversed(range(len(blocks))):
+        kind, line, lang, attrs, body = blocks[i]
+        printed = work / ".run" / f"expect-{i}.printed"
+        if kind != "output" or not printed.exists():
+            continue
+        start = line  # the fence line is line `line` (1-based), its body starts after it
+        end = start + body.count("\n")
+        new = printed.read_text().rstrip("\n").split("\n")
+        lines[start:end] = new
+        changed += 1
+    if changed:
+        source.write_text("\n".join(lines))
+        print(f"updated {changed} output blocks of {source.relative_to(ROOT)}")
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "--compare":
         expected, actual, where = sys.argv[2], sys.argv[3], sys.argv[4]
         e, a = open(expected).read(), open(actual).read()
-        if not compare(e, a):
+        if os.environ.get("CHLOEDB_DOCS_UPDATE") and (not compare(e, a) or e.strip() == "..."):
+            # --update: what the block printed, for run_page to put on the page
+            with open(expected + ".printed", "w") as f:
+                f.write(a)
+        elif not compare(e, a):
             print(f"--- {where}: the output differs from the page's\n--- expected:\n{e}--- printed:\n{a}", file=sys.stderr)
             sys.exit(1)
         return
@@ -274,6 +306,7 @@ def main():
     ap.add_argument("--keep", action="store_true", help="keep each page's directory")
     ap.add_argument("--verbose", "-v", action="store_true", help="print each page's output")
     ap.add_argument("--allow-missing", action="store_true", help="skip pages whose programs are not built")
+    ap.add_argument("--update", action="store_true", help="write what each block printed into the page's output blocks that differ (review the diff)")
     ap.add_argument("--timeout", type=int, default=900, help="seconds a page may take (default 900)")
     args = ap.parse_args()
     pages = list(guide_pages())

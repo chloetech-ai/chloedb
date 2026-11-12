@@ -122,7 +122,7 @@ class Memory:
         return list(self.db.query(&quot;&quot;&quot;
             SELECT id, session, role, text FROM turns
             ORDER BY rrf(bm25(text, :q), similarity(emb, :v))
-                     * decay(at, :now, &#x27;30 days&#x27;) DESC
+                     * decay(at, :now, 2592000) DESC  -- halves every 30 days
             MAX 2 PER session
             LIMIT :k
         &quot;&quot;&quot;, q=message, v={&quot;embed&quot;: message}, now=now, k=k))
@@ -136,7 +136,7 @@ class Memory:
 
     def close(self):
         self.db.close()</pre>
-<p><code>recall</code> ranks turns by a fusion of BM25 and vector similarity, multiplies it by <a href="sql.html#decayfield-origin-scale-closeness-to-a-value"><code>decay</code></a>, which halves a turn's weight for every 30 days of age, and keeps at most two turns of a session with <code>MAX 2 PER session</code>, so one long session does not crowd out the others. Facts need no history: <code>upsert</code> replaces a key's row, so a fact is always its latest value.</p>
+<p><code>recall</code> ranks turns by a fusion of BM25 and vector similarity, multiplies it by <a href="sql.html#decayfield-origin-scale-closeness-to-a-value"><code>decay</code></a>, which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with <code>MAX 2 PER session</code>, so one long session does not crowd out the others. Facts need no history: <code>upsert</code> replaces a key's row, so a fact is always its latest value.</p>
 <h2 id="remember-then-recall">Remember, then recall<a class="anchor" href="#remember-then-recall" aria-label="Link to this section">#</a></h2>
 <p>Two past sessions, a few weeks apart, and a fact that changed between them:</p>
 <pre data-lang="python" data-title="sessions.py">import datetime as dt
@@ -174,7 +174,10 @@ for f in mem.facts(message):
 mem.close()</pre>
 <pre data-lang="sh">python3 new_message.py</pre>
 <pre data-lang="text" data-title="Output" class="output">turns:
-...
+  [s2] agent: Switched the invoice PDF to one column and a larger font.
+  [s2] user: Customers complain the PDF invoice is hard to read on phones.
+  [s1] user: The receipt printer only takes 58 mm paper, keep lines short.
+  [s1] agent: Done: invoices go to Postgres, table invoices, keyed by number.
 facts:
   deploy.target = Kubernetes on DigitalOcean, since October</pre>
 <p>The printer's paper width comes back though the new message never says <em>58 mm</em>, and the deploy target is its current value, not the one from September. What goes into the model's context is a few lines, not two sessions of transcript.</p>

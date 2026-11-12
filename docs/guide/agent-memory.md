@@ -56,7 +56,7 @@ class Memory:
         return list(self.db.query("""
             SELECT id, session, role, text FROM turns
             ORDER BY rrf(bm25(text, :q), similarity(emb, :v))
-                     * decay(at, :now, '30 days') DESC
+                     * decay(at, :now, 2592000) DESC  -- halves every 30 days
             MAX 2 PER session
             LIMIT :k
         """, q=message, v={"embed": message}, now=now, k=k))
@@ -72,7 +72,7 @@ class Memory:
         self.db.close()
 ```
 
-`recall` ranks turns by a fusion of BM25 and vector similarity, multiplies it by [`decay`](../chloedb/query-language.md#decayfield-origin-scale-closeness-to-a-value), which halves a turn's weight for every 30 days of age, and keeps at most two turns of a session with `MAX 2 PER session`, so one long session does not crowd out the others. Facts need no history: `upsert` replaces a key's row, so a fact is always its latest value.
+`recall` ranks turns by a fusion of BM25 and vector similarity, multiplies it by [`decay`](../chloedb/query-language.md#decayfield-origin-scale-closeness-to-a-value), which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with `MAX 2 PER session`, so one long session does not crowd out the others. Facts need no history: `upsert` replaces a key's row, so a fact is always its latest value.
 
 ## Remember, then recall
 
@@ -130,7 +130,10 @@ python3 new_message.py
 
 ```text output
 turns:
-...
+  [s2] agent: Switched the invoice PDF to one column and a larger font.
+  [s2] user: Customers complain the PDF invoice is hard to read on phones.
+  [s1] user: The receipt printer only takes 58 mm paper, keep lines short.
+  [s1] agent: Done: invoices go to Postgres, table invoices, keyed by number.
 facts:
   deploy.target = Kubernetes on DigitalOcean, since October
 ```

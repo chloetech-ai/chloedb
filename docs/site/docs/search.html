@@ -69,7 +69,7 @@
       <h1>Search guide</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-catalogue">The catalogue</a></li><li><a href="#words-match-and-bm25">Words: MATCH and bm25</a></li><li><a href="#typos">Typos</a></li><li><a href="#filters-and-facets">Filters and facets</a></li><li><a href="#meaning-vectors">Meaning: vectors</a></li><li><a href="#both-hybrid-ranking">Both: hybrid ranking</a></li><li><a href="#spread-results-out-max-k-per">Spread results out: MAX k PER</a></li><li><a href="#what-the-planner-did-explain">What the planner did: EXPLAIN</a></li><li><a href="#next">Next</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-catalogue">The catalogue</a></li><li><a href="#words-match-and-bm25">Words: MATCH and bm25</a></li><li><a href="#typos">Typos</a></li><li><a href="#filters-and-facets">Filters and facets</a></li><li><a href="#meaning-vectors">Meaning: vectors</a></li><li><a href="#both-hybrid-ranking">Both: hybrid ranking</a></li><li><a href="#spread-results-out-max-k-per">Spread results out: MAX k PER</a></li><li><a href="#what-the-planner-did">What the planner did</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
 <p>This page builds a small catalogue of books and searches it every way ChloeDB can: words, phrases and typos, filters and facets, meaning, a blend of the two, and results spread across authors. Each query is SQL, and every block runs, in order, against the code it documents. The <a href="sql.html">SQL reference</a> has every function and option; this page shows which to reach for.</p>
@@ -120,22 +120,22 @@ db.close()</pre>
 <pre data-lang="sql">SELECT id, title, score() FROM books
 WHERE MATCH(description, &#x27;village&#x27;)
 ORDER BY bm25(description, &#x27;village&#x27;) DESC LIMIT 5</pre>
-<pre data-lang="text" data-title="Output" class="output">id  | title              | score()
-----+--------------------+--------
-b09 | Bread and Salt     | ...
-b01 | The River and t... ...
-...</pre>
+<pre data-lang="text" data-title="Output" class="output">id  | title                    | score()
+----+--------------------------+--------
+b01 | The River and the Dragon | 1.322
+b09 | Bread and Salt           | 1.322
+b02 | Winter Garden            | 1.213</pre>
 <p>Words are stemmed, so <code>dragon</code> finds <em>dragons</em>. <code>MATCH</code> reads a small query language: words side by side must all be there, <code>OR</code> and <code>-</code> (not) combine them, quotes ask for a phrase, <code>*</code> for a prefix:</p>
 <pre data-lang="sql">SELECT id, title FROM books WHERE MATCH(description, &#x27;(dragon OR robot) -sea&#x27;) ORDER BY id</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | title
-----+---------------------
+----+-------------------------
 b01 | The River and the Dragon
 b05 | Machine Hearts
 b10 | The Dragon Accords
 b11 | Quiet Machines</pre>
 <pre data-lang="sql">SELECT id, title FROM books WHERE MATCH(description, &#x27;&quot;salt flats&quot;&#x27;) OR MATCH(title, &#x27;mach*&#x27;) ORDER BY id</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | title
-----+------------------
+----+--------------------------
 b03 | Dragons of the Salt Coast
 b05 | Machine Hearts
 b11 | Quiet Machines</pre>
@@ -143,7 +143,7 @@ b11 | Quiet Machines</pre>
 <p><code>fuzzy =&gt; 'auto'</code> lets a word be an edit or two away, more for longer words; ranked, it corrects a typo rather than widening every word:</p>
 <pre data-lang="sql">SELECT id, title FROM books ORDER BY bm25(description, &#x27;lighthuose keeper&#x27;, fuzzy =&gt; &#x27;auto&#x27;) DESC LIMIT 1</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | title
-----+-------------------
+----+--------------------
 b04 | The Last Lighthouse</pre>
 <h2 id="filters-and-facets">Filters and facets<a class="anchor" href="#filters-and-facets" aria-label="Link to this section">#</a></h2>
 <p>Text, keyword, number and list conditions mix freely in <code>WHERE</code>, and the planner picks the order. A multi-valued keyword such as <code>genres</code> matches a row when any of its values does:</p>
@@ -160,7 +160,7 @@ WHERE MATCH(description, &#x27;dragon OR dragons OR sea OR robot&#x27;)
 GROUP BY author ORDER BY books DESC, author</pre>
 <pre data-lang="text" data-title="Output" class="output">author      | books | avg_rating
 ------------+-------+-----------
-Ana Ruiz    | 3     | ...
+Ana Ruiz    | 3     | 4.167
 Jonas Abara | 1     | 4
 Lena Novak  | 1     | 3.7
 Mei Chen    | 1     | 4.7</pre>
@@ -173,7 +173,9 @@ r = db.query(&quot;SELECT id, title FROM books ORDER BY similarity(emb, :v) DESC
              v={&quot;embed&quot;: &quot;artificial intelligence and feelings&quot;})
 for row in r:
     print(row[&quot;id&quot;], row[&quot;title&quot;])</pre>
-<pre data-lang="text" data-title="Output" class="output">...</pre>
+<pre data-lang="text" data-title="Output" class="output">b05 Machine Hearts
+b11 Quiet Machines
+b06 Stars Over Lagos</pre>
 <h2 id="both-hybrid-ranking">Both: hybrid ranking<a class="anchor" href="#both-hybrid-ranking" aria-label="Link to this section">#</a></h2>
 <p>Words find exact names and rare terms; vectors find paraphrases. <code>rrf</code> fuses the two rankings by reciprocal rank, and needs no tuning:</p>
 <pre data-lang="python">import chloedb
@@ -186,7 +188,9 @@ r = db.query(&quot;&quot;&quot;
 &quot;&quot;&quot;, q=q, v={&quot;embed&quot;: q})
 for row in r:
     print(row[&quot;id&quot;], row[&quot;title&quot;])</pre>
-<pre data-lang="text" data-title="Output" class="output">...</pre>
+<pre data-lang="text" data-title="Output" class="output">b03 Dragons of the Salt Coast
+b12 Tides of Glass
+b04 The Last Lighthouse</pre>
 <p>When one side should count more, normalise each score to 0..1 and weigh them: <code>ORDER BY 0.3 * minmax(bm25(description, :q)) + 0.7 * minmax(similarity(emb, :v)) DESC</code>. The same blend can boost by a column, <code>* (1 + 0.1 * rating)</code>; <a href="sql.html#ranking-expressions">ranking expressions</a> has the rest.</p>
 <p>For the common case, <code>db.search(text)</code> writes this query itself: BM25 over the text fields fused with the vector field's similarity.</p>
 <pre data-lang="python">import chloedb
@@ -194,26 +198,30 @@ for row in r:
 db = chloedb.open(&quot;books.chloedb&quot;, read_only=True)
 for row in db.search(&quot;lonely robots&quot;, limit=2, columns=[&quot;id&quot;, &quot;title&quot;]):
     print(row[&quot;id&quot;], row[&quot;title&quot;])</pre>
-<pre data-lang="text" data-title="Output" class="output">...</pre>
+<pre data-lang="text" data-title="Output" class="output">b11 Quiet Machines
+b05 Machine Hearts</pre>
 <h2 id="spread-results-out-max-k-per">Spread results out: <code>MAX k PER</code><a class="anchor" href="#spread-results-out-max-k-per" aria-label="Link to this section">#</a></h2>
 <p>A ranking where one author fills the page reads badly. <code>MAX 1 PER author</code> keeps each author's best row and the order of the rest:</p>
 <pre data-lang="sql">SELECT id, author, title FROM books ORDER BY rating DESC MAX 1 PER author</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | author      | title
-----+-------------+-------------------
+----+-------------+--------------------------
 b11 | Mei Chen    | Quiet Machines
 b09 | Lena Novak  | Bread and Salt
 b03 | Ana Ruiz    | Dragons of the Salt Coast
 b06 | Jonas Abara | Stars Over Lagos
 b08 | Tomas Berg  | Murder at the Observatory</pre>
-<h2 id="what-the-planner-did-explain">What the planner did: <code>EXPLAIN</code><a class="anchor" href="#what-the-planner-did-explain" aria-label="Link to this section">#</a></h2>
-<p><code>EXPLAIN</code> before a query prints the plan the planner chose for each segment: which condition it reads from an index, which it tests row by row, and how it ranks. <a href="sql.html#reading-a-plan">Reading a plan</a> explains the lines.</p>
+<h2 id="what-the-planner-did">What the planner did<a class="anchor" href="#what-the-planner-did" aria-label="Link to this section">#</a></h2>
+<p>Each answer says how it was found. In Python, <code>stats["plan"]</code> holds a line for each segment the query read: which conditions came from an index, which were tested row by row, and how the rows were ranked. <a href="sql.html#reading-a-plan">Reading a plan</a> explains the lines; the <code>chloedb</code> shell prints them with <code>--plan</code>, and a server's <code>POST /v1/explain</code> takes the same <code>SELECT</code>.</p>
 <pre data-lang="python">import chloedb
 
 db = chloedb.open(&quot;books.chloedb&quot;, read_only=True)
-plan = db.query(&quot;EXPLAIN SELECT id FROM books WHERE MATCH(description, &#x27;dragon&#x27;) AND year &gt; 2000 ORDER BY bm25(description, &#x27;dragon&#x27;) DESC LIMIT 3&quot;)
-for row in plan.rows:
-    print(*row)</pre>
-<pre data-lang="text" data-title="Output" class="output">...</pre>
+r = db.query(&quot;SELECT id FROM books WHERE MATCH(description, &#x27;dragon&#x27;) AND year &gt; 2000 &quot;
+             &quot;ORDER BY bm25(description, &#x27;dragon&#x27;) DESC LIMIT 3&quot;)
+print(r.keys)
+for line in r.stats[&quot;plan&quot;]:
+    print(line)</pre>
+<pre data-lang="text" data-title="Output" class="output">[&#x27;b10&#x27;, &#x27;b03&#x27;]
+seg 0: bm25 MaxScore, filter Probe</pre>
 <h2 id="next">Next<a class="anchor" href="#next" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><a href="rag.html">Retrieval for RAG</a>: the hybrid query above, feeding passages to a model.</li>

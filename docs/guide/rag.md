@@ -96,11 +96,13 @@ db.close()
 
 ```sh
 chloedb-server fetch-model potion-retrieval-32M    # once: about 130 MB
+```
+
+```sh
 python3 ingest.py
 ```
 
 ```text output
-...
 6 passages from 3 files
 ```
 
@@ -136,7 +138,10 @@ python3 retrieve.py
 ```
 
 ```text output
-...
+returns.md#1 | Damaged items
+warranty.md#1 | Claims
+returns.md#0 | Returns
+shipping.md#1 | Express
 ```
 
 The question says *parcel* and *broken*, which no passage does: the vector side finds the damaged-items passage by meaning, and BM25 still ranks exact terms such as an order number or a product name first when a question has them.
@@ -186,7 +191,30 @@ python3 ask.py "Can I get express delivery for a sofa?"
 ```text output
 Answer the question from the sources below. Cite each source you use by its id, like [returns.md#1]. If the sources do not answer it, say so.
 
-...
+<source id="shipping.md#1">
+Express
+Express delivery arrives the next working day and costs 12 euros.
+It is not available for furniture or other bulky items.
+</source>
+
+<source id="returns.md#0">
+Returns
+Customers can return an item within 30 days of delivery for a full refund.
+Items must be unused and in their original packaging.
+</source>
+
+<source id="shipping.md#0">
+Shipping
+Orders placed before 2 pm ship the same day from the Rotterdam warehouse.
+Standard delivery takes 2 to 4 working days inside the EU.
+</source>
+
+<source id="returns.md#1">
+Damaged items
+If an item arrives damaged, the customer should send a photo within 7 days.
+We ship a replacement at no cost and do not ask for the damaged item back.
+</source>
+
 Question: Can I get express delivery for a sofa?
 ```
 

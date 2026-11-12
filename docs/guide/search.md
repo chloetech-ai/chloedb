@@ -75,11 +75,11 @@ ORDER BY bm25(description, 'village') DESC LIMIT 5
 ```
 
 ```text output
-id  | title              | score()
-----+--------------------+--------
-b09 | Bread and Salt     | ...
-b01 | The River and t... ...
-...
+id  | title                    | score()
+----+--------------------------+--------
+b01 | The River and the Dragon | 1.322
+b09 | Bread and Salt           | 1.322
+b02 | Winter Garden            | 1.213
 ```
 
 Words are stemmed, so `dragon` finds *dragons*. `MATCH` reads a small query language: words side by side must all be there, `OR` and `-` (not) combine them, quotes ask for a phrase, `*` for a prefix:
@@ -90,7 +90,7 @@ SELECT id, title FROM books WHERE MATCH(description, '(dragon OR robot) -sea') O
 
 ```text output
 id  | title
-----+---------------------
+----+-------------------------
 b01 | The River and the Dragon
 b05 | Machine Hearts
 b10 | The Dragon Accords
@@ -103,7 +103,7 @@ SELECT id, title FROM books WHERE MATCH(description, '"salt flats"') OR MATCH(ti
 
 ```text output
 id  | title
-----+------------------
+----+--------------------------
 b03 | Dragons of the Salt Coast
 b05 | Machine Hearts
 b11 | Quiet Machines
@@ -119,7 +119,7 @@ SELECT id, title FROM books ORDER BY bm25(description, 'lighthuose keeper', fuzz
 
 ```text output
 id  | title
-----+-------------------
+----+--------------------
 b04 | The Last Lighthouse
 ```
 
@@ -151,7 +151,7 @@ GROUP BY author ORDER BY books DESC, author
 ```text output
 author      | books | avg_rating
 ------------+-------+-----------
-Ana Ruiz    | 3     | ...
+Ana Ruiz    | 3     | 4.167
 Jonas Abara | 1     | 4
 Lena Novak  | 1     | 3.7
 Mei Chen    | 1     | 4.7
@@ -172,7 +172,9 @@ for row in r:
 ```
 
 ```text output
-...
+b05 Machine Hearts
+b11 Quiet Machines
+b06 Stars Over Lagos
 ```
 
 ## Both: hybrid ranking
@@ -193,7 +195,9 @@ for row in r:
 ```
 
 ```text output
-...
+b03 Dragons of the Salt Coast
+b12 Tides of Glass
+b04 The Last Lighthouse
 ```
 
 When one side should count more, normalise each score to 0..1 and weigh them: `ORDER BY 0.3 * minmax(bm25(description, :q)) + 0.7 * minmax(similarity(emb, :v)) DESC`. The same blend can boost by a column, `* (1 + 0.1 * rating)`; [ranking expressions](../chloedb/query-language.md#ranking-expressions) has the rest.
@@ -209,7 +213,8 @@ for row in db.search("lonely robots", limit=2, columns=["id", "title"]):
 ```
 
 ```text output
-...
+b11 Quiet Machines
+b05 Machine Hearts
 ```
 
 ## Spread results out: `MAX k PER`
@@ -222,7 +227,7 @@ SELECT id, author, title FROM books ORDER BY rating DESC MAX 1 PER author
 
 ```text output
 id  | author      | title
-----+-------------+-------------------
+----+-------------+--------------------------
 b11 | Mei Chen    | Quiet Machines
 b09 | Lena Novak  | Bread and Salt
 b03 | Ana Ruiz    | Dragons of the Salt Coast
@@ -230,21 +235,24 @@ b06 | Jonas Abara | Stars Over Lagos
 b08 | Tomas Berg  | Murder at the Observatory
 ```
 
-## What the planner did: `EXPLAIN`
+## What the planner did
 
-`EXPLAIN` before a query prints the plan the planner chose for each segment: which condition it reads from an index, which it tests row by row, and how it ranks. [Reading a plan](../chloedb/query-language.md#reading-a-plan) explains the lines.
+Each answer says how it was found. In Python, `stats["plan"]` holds a line for each segment the query read: which conditions came from an index, which were tested row by row, and how the rows were ranked. [Reading a plan](../chloedb/query-language.md#reading-a-plan) explains the lines; the `chloedb` shell prints them with `--plan`, and a server's `POST /v1/explain` takes the same `SELECT`.
 
 ```python
 import chloedb
 
 db = chloedb.open("books.chloedb", read_only=True)
-plan = db.query("EXPLAIN SELECT id FROM books WHERE MATCH(description, 'dragon') AND year > 2000 ORDER BY bm25(description, 'dragon') DESC LIMIT 3")
-for row in plan.rows:
-    print(*row)
+r = db.query("SELECT id FROM books WHERE MATCH(description, 'dragon') AND year > 2000 "
+             "ORDER BY bm25(description, 'dragon') DESC LIMIT 3")
+print(r.keys)
+for line in r.stats["plan"]:
+    print(line)
 ```
 
 ```text output
-...
+['b10', 'b03']
+seg 0: bm25 MaxScore, filter Probe
 ```
 
 ## Next

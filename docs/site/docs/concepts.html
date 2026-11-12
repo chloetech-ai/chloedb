@@ -74,7 +74,7 @@
 
 <p>ChloeDB is a search engine and a database in one library. This page names the parts you meet when you use it: the file, tables and their fields, the three kinds of index every row gets, scores, the planner, and the server that serves the same database to many clients or many machines. <a href="design.html">How ChloeDB works</a> goes deeper into each.</p>
 <h2 id="one-database-one-file">One database, one file<a class="anchor" href="#one-database-one-file" aria-label="Link to this section">#</a></h2>
-<p>A database is one file plus a write-ahead log beside it (<code>books.chloedb</code> and <code>books.chloedb-wal</code>), the way SQLite keeps one in WAL mode. Your program opens it as a library, from Rust, <a href="python.html">Python</a>, <a href="javascript.html">JavaScript</a> or <a href="java.html">Java</a>, with no server and no configuration. The same file can be served by <a href="server.html">chloedb-server</a> when many clients, or many machines, need it.</p>
+<p>A database is one file plus a write-ahead log beside it (<code>books.chloedb</code> and <code>books.chloedb-wal</code>), the way SQLite keeps one in WAL mode, and a small directory (<code>-readers</code>) where processes that read it keep their place. Your program opens it as a library, from Rust, <a href="python.html">Python</a>, <a href="javascript.html">JavaScript</a> or <a href="java.html">Java</a>, with no server and no configuration. The same file can be served by <a href="server.html">chloedb-server</a> when many clients, or many machines, need it.</p>
 <pre data-lang="python">import os
 import chloedb
 
@@ -86,8 +86,8 @@ db.insert({&quot;id&quot;: &quot;n1&quot;, &quot;body&quot;: &quot;Water the tom
 print(sorted(f for f in os.listdir(&quot;.&quot;) if f.startswith(&quot;notes&quot;)))
 db.close()
 print(sorted(f for f in os.listdir(&quot;.&quot;) if f.startswith(&quot;notes&quot;)))</pre>
-<pre data-lang="text" data-title="Output" class="output">[&#x27;notes.chloedb&#x27;, &#x27;notes.chloedb-wal&#x27;]
-[&#x27;notes.chloedb&#x27;, &#x27;notes.chloedb-wal&#x27;]</pre>
+<pre data-lang="text" data-title="Output" class="output">[&#x27;notes.chloedb&#x27;, &#x27;notes.chloedb-readers&#x27;, &#x27;notes.chloedb-wal&#x27;]
+[&#x27;notes.chloedb&#x27;, &#x27;notes.chloedb-readers&#x27;, &#x27;notes.chloedb-wal&#x27;]</pre>
 <p>Writes are transactions with snapshot isolation: a query sees the database as it was when it started, readers never wait for the writer, and a crash leaves the last committed state. One process writes a database at a time; other processes can open it read-only and follow its commits. Back up a database that is in use with <code>checkpoint</code>, not by copying its files (<a href="python.html#backing-up-and-damaged-files">backups</a>).</p>
 <h2 id="tables-fields-and-keys">Tables, fields and keys<a class="anchor" href="#tables-fields-and-keys" aria-label="Link to this section">#</a></h2>
 <p>A database holds tables, and a table has typed fields and, usually, a primary key. A table is created from a schema, a JSON object as above or SQL:</p>

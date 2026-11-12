@@ -4,7 +4,7 @@ ChloeDB is a search engine and a database in one library. This page names the pa
 
 ## One database, one file
 
-A database is one file plus a write-ahead log beside it (`books.chloedb` and `books.chloedb-wal`), the way SQLite keeps one in WAL mode. Your program opens it as a library, from Rust, [Python](../chloedb/python.md), [JavaScript](../chloedb/javascript.md) or [Java](../chloedb/java.md), with no server and no configuration. The same file can be served by [chloedb-server](../chloedb/server.md) when many clients, or many machines, need it.
+A database is one file plus a write-ahead log beside it (`books.chloedb` and `books.chloedb-wal`), the way SQLite keeps one in WAL mode, and a small directory (`-readers`) where processes that read it keep their place. Your program opens it as a library, from Rust, [Python](../chloedb/python.md), [JavaScript](../chloedb/javascript.md) or [Java](../chloedb/java.md), with no server and no configuration. The same file can be served by [chloedb-server](../chloedb/server.md) when many clients, or many machines, need it.
 
 ```python
 import os
@@ -21,8 +21,8 @@ print(sorted(f for f in os.listdir(".") if f.startswith("notes")))
 ```
 
 ```text output
-['notes.chloedb', 'notes.chloedb-wal']
-['notes.chloedb', 'notes.chloedb-wal']
+['notes.chloedb', 'notes.chloedb-readers', 'notes.chloedb-wal']
+['notes.chloedb', 'notes.chloedb-readers', 'notes.chloedb-wal']
 ```
 
 Writes are transactions with snapshot isolation: a query sees the database as it was when it started, readers never wait for the writer, and a crash leaves the last committed state. One process writes a database at a time; other processes can open it read-only and follow its commits. Back up a database that is in use with `checkpoint`, not by copying its files ([backups](../chloedb/python.md#backing-up-and-damaged-files)).

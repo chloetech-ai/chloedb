@@ -148,10 +148,9 @@ for path in sorted(pathlib.Path(&quot;handbook&quot;).glob(&quot;*.md&quot;)):
 db.upsert(rows)
 print(f&quot;{len(rows)} passages from {len({r[&#x27;doc&#x27;] for r in rows})} files&quot;)
 db.close()</pre>
-<pre data-lang="sh">chloedb-server fetch-model potion-retrieval-32M    # once: about 130 MB
-python3 ingest.py</pre>
-<pre data-lang="text" data-title="Output" class="output">...
-6 passages from 3 files</pre>
+<pre data-lang="sh">chloedb-server fetch-model potion-retrieval-32M    # once: about 130 MB</pre>
+<pre data-lang="sh">python3 ingest.py</pre>
+<pre data-lang="text" data-title="Output" class="output">6 passages from 3 files</pre>
 <p><code>upsert</code> replaces a passage with the same key, so running it again after editing a file updates its passages. (A section that disappears from a file stays until you delete it: <code>db.delete(keys)</code>, or <code>DELETE FROM passages WHERE doc = 'returns.md'</code> before writing the file's passages again.)</p>
 <h2 id="retrieve">Retrieve<a class="anchor" href="#retrieve" aria-label="Link to this section">#</a></h2>
 <p>One query does the retrieval. <code>rrf</code> fuses a BM25 ranking over the text with a vector ranking, which finds passages that use the question's words and passages that mean the same thing in others; <code>MAX 2 PER doc</code> keeps at most two passages of a file:</p>
@@ -174,7 +173,10 @@ if __name__ == &quot;__main__&quot;:
     for row in retrieve(db, &quot;my parcel came broken, what do I do?&quot;):
         print(row[&quot;id&quot;], &quot;|&quot;, row[&quot;heading&quot;])</pre>
 <pre data-lang="sh">python3 retrieve.py</pre>
-<pre data-lang="text" data-title="Output" class="output">...</pre>
+<pre data-lang="text" data-title="Output" class="output">returns.md#1 | Damaged items
+warranty.md#1 | Claims
+returns.md#0 | Returns
+shipping.md#1 | Express</pre>
 <p>The question says <em>parcel</em> and <em>broken</em>, which no passage does: the vector side finds the damaged-items passage by meaning, and BM25 still ranks exact terms such as an order number or a product name first when a question has them.</p>
 <h2 id="ask">Ask<a class="anchor" href="#ask" aria-label="Link to this section">#</a></h2>
 <p>The passages go into the prompt with their sources, and the model is told to answer from them and cite them. Without <code>ANTHROPIC_API_KEY</code> set, the script prints the prompt it would send:</p>
@@ -212,7 +214,30 @@ print(&quot;&quot;.join(b.text for b in response.content if b.type == &quot;text
 <pre data-lang="sh">python3 ask.py &quot;Can I get express delivery for a sofa?&quot;</pre>
 <pre data-lang="text" data-title="Output" class="output">Answer the question from the sources below. Cite each source you use by its id, like [returns.md#1]. If the sources do not answer it, say so.
 
-...
+&lt;source id=&quot;shipping.md#1&quot;&gt;
+Express
+Express delivery arrives the next working day and costs 12 euros.
+It is not available for furniture or other bulky items.
+&lt;/source&gt;
+
+&lt;source id=&quot;returns.md#0&quot;&gt;
+Returns
+Customers can return an item within 30 days of delivery for a full refund.
+Items must be unused and in their original packaging.
+&lt;/source&gt;
+
+&lt;source id=&quot;shipping.md#0&quot;&gt;
+Shipping
+Orders placed before 2 pm ship the same day from the Rotterdam warehouse.
+Standard delivery takes 2 to 4 working days inside the EU.
+&lt;/source&gt;
+
+&lt;source id=&quot;returns.md#1&quot;&gt;
+Damaged items
+If an item arrives damaged, the customer should send a photo within 7 days.
+We ship a replacement at no cost and do not ask for the damaged item back.
+&lt;/source&gt;
+
 Question: Can I get express delivery for a sofa?</pre>
 <h2 id="make-it-better">Make it better<a class="anchor" href="#make-it-better" aria-label="Link to this section">#</a></h2>
 <ul>
