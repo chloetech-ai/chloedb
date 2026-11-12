@@ -35,6 +35,7 @@ import slices from "./slices.js";
 import models from "./models.js";
 import builder from "./builder.js";
 import relevance from "./relevance.js";
+import autopilot from "./autopilot.js";
 import recsys from "./recsys.js";
 import sid from "./sid.js";
 import autocomplete from "./autocomplete.js";
@@ -43,7 +44,7 @@ import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, media, graph, classic, apps];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -92,6 +93,7 @@ export const NAV = [
   ["Labs", [
     { id: "builder", title: "Query builder", icon: "builder", key: "b" },
     { id: "relevance", title: "Relevance lab", icon: "relevance" },
+    { id: "autopilot", title: "Relevance autopilot", icon: "relevance", scope: "admin" },
     { id: "recsys", title: "Recsys eval", icon: "recsys" },
     { id: "sid", title: "Semantic IDs", icon: "sid" },
     { id: "autocomplete", title: "Autocomplete", icon: "autocomplete" },

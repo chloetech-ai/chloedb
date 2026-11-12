@@ -11,39 +11,25 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-### Static embeddings
+### Added
 
-- SQL embeds the text it gives where a vector goes. On a field a model
-  embeds, `ORDER BY similarity(emb, 'some words') DESC` (or `:q` bound to
-  a string, `distance`, `maxsim`, `similarity(emb, embed(:q))`) embeds
-  the text as a query by the field's own model when the query is planned:
-  in the database from Rust, Python and JavaScript, and on a server's
-  embedding cores, as `{"embed": "text"}` parameters are. Before, text
-  there was refused. `embed('model', text)` is the query vector of a
-  text by a model named, wherever a vector goes; it takes a model's name
-  (as `llm()` does, never a path), and a model behind an API only when a
-  field uses it. A stored function can no longer be named `embed`.
-- `potion-retrieval-32M-int8` and `potion-base-8M-int8`: the Model2Vec
-  models with their tables in int8, 31 MB and 7 MB instead of 123 MB and
-  29 MB, within 0.004 nDCG@10 of the originals on SciFact, NFCorpus and
-  ArguAna. `chloedb-server fetch-model` fetches the pinned original and
-  writes the copy; `chloedb-server quantize-model` (and
-  `chloedb::embed::quantize_static`) writes any Model2Vec model in int8 or
-  F16, the same bytes on every machine.
-- The static embedder reads tables in F16, BF16 and I8 besides F32, and
-  Model2Vec's `weights` and `mapping` tensors, without which a newer
-  Model2Vec model was embedded wrongly.
-- The command center's **Models** page (Data): each vector field's model,
-  how it makes vectors (static, transformer, late interaction, hosted) and
-  how the field is searched and stored, and the models on the server with
-  their size, precision and the fields that use them. A field changes
-  model or technique without stopping searches: a new field is added
-  beside it and filled in, the two are compared on the same words, then
-  renamed into place, and the old vectors are dropped (or the switch
-  undone). `GET /v1/models` says each model's technique, precision, size
-  and fields; `POST /v1/admin/models/fetch` and
-  `POST /v1/admin/models/convert` fetch a model, or write a static one's
-  table in int8, in the background.
+- ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
+  queries the rank log kept that rank by a rank profile, on one snapshot,
+  with the profile as it is and with the numbers a coordinate-ascent search
+  finds (parameter defaults and the literals of its `ORDER BY`), and
+  reports nDCG@k before and after on queries held out of the search, the
+  queries made better and worse with a sign test, a bootstrap interval and
+  latency, with a verdict. Grades come from the rank log's labels and a
+  judgments table (`relevance_judgments`); the server can have Claude grade
+  the rows no one graded first. A proposal is kept in `relevance_proposals`
+  and applied as `CREATE OR REPLACE RANK PROFILE` only while the profile is
+  the one it was measured against. `POST /v1/relevance/autopilot`,
+  `/v1/relevance/proposals`, `Db::autopilot`, and the command center's
+  Labs > Relevance autopilot.
+- The rank log keeps each request's query and its bound parameters, in a
+  new column `query` of the request's first row. A log table made before
+  it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
+  query KEYWORD OPTIONS(indexed = false)` adds it).
 
 ## 0.2.1
 

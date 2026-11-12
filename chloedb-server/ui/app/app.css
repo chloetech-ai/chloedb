@@ -715,6 +715,24 @@ svg.focus .tbl:not(.hot) { opacity: .45; }
 @media (max-width: 1150px) { .sch-design { grid-template-columns: 200px minmax(0, 1fr); } .sch-right { grid-column: 1 / -1; border-left: 0; } .sch-design { height: auto; } }
 
 /* ---------------------------------------------------------------- relevance lab */
+/* Relevance autopilot (views/autopilot.js) */
+.ap { padding: 14px 18px 30px; display: flex; flex-direction: column; gap: 12px; max-width: 1100px; }
+.ap-head { display: flex; flex-direction: column; gap: 10px; }
+.ap-intro h2 { margin: 0 0 4px; font-size: 16px; }
+.ap-intro p { margin: 0; max-width: 70ch; }
+.ap-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ap-form .input { min-width: 0; flex: 1 1 220px; max-width: 320px; }
+.ap-body { display: flex; flex-direction: column; gap: 10px; }
+.ap-kicker { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; font-weight: 600; }
+.ap-kicker .ap-id { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.ap-headline { font-size: 14px; font-weight: 650; margin: 2px 0 4px; overflow-wrap: anywhere; }
+.ap-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 8px 0; }
+.ap-tile { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; background: var(--surface-2); min-width: 0; }
+.ap-tile b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.ap-tile b.tone-ok { color: var(--good-ink); }
+.ap-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ap-worse { margin-top: 10px; }
+.ap-detail pre.code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .rl { padding: 14px 18px 30px; display: flex; flex-direction: column; gap: 12px; }
 .rl-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .rl-qwrap { flex: 1 1 320px; display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px; padding: 0 12px; }

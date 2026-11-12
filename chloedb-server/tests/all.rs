@@ -16,6 +16,7 @@
 mod access;
 mod alerts;
 mod apps;
+mod autopilot;
 mod arrow_answers;
 mod arrow_leaves;
 mod autoscale;
