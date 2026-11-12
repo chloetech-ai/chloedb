@@ -58,13 +58,18 @@ app engine's schedules, sources and reach controls.
   of a database on another machine (`prefer` stays the default for
   `localhost` and loopback addresses), and warns when a URL asks for
   `prefer` or `disable` of one.
-- **Breaking:** the image `ghcr.io/chloetech-ai/chloedb-server` runs as
-  user 10001, not root, from base images pinned by digest, and holds
-  neither the benchmark tools nor `iproute2` (`docker build --target
-  bench` makes an image with `chloedb-server-bench` and `engine-compare`).
-  The operator's shard pods set `fsGroup: 10001`, which gives a volume a
-  root image wrote to that group; a Docker volume needs a `chown` once
-  ([the server's page](docs/chloedb/server.md)). Images carry build
+- The image `ghcr.io/chloetech-ai/chloedb-server` has a user 10001
+  (`chloedb`) that owns its `/data`; run it as that user
+  (`docker run --user 10001:10001`). Its own user stays root for now, so
+  that an operator installed before 0.2.1, which runs new images on volumes
+  a root image wrote and gives its pods no user, keeps working. The
+  operator of 0.2.1 runs the servers, the coordinators and the pre-flight
+  as user 10001 itself and gives the shards' volumes to its group
+  (`fsGroup`). A Docker volume a root image wrote needs a `chown` once
+  ([the server's page](docs/chloedb/server.md)). The image is built from
+  base images pinned by digest and holds neither the benchmark tools nor
+  `iproute2` (`docker build --target bench` makes an image with
+  `chloedb-server-bench` and `engine-compare`). Images carry build
   provenance.
 - ChloeCtx: **breaking:** `chloectx app` refuses to start on an address
   other than loopback (`--host 0.0.0.0`, say) with no `--token`, since
