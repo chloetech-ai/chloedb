@@ -194,6 +194,11 @@ app engine's schedules, sources and reach controls.
   where a column references a table created after its own table
   (`ALTER TABLE .. ADD COLUMN .. REFERENCES`) failed with "references ..,
   which is not a table". It copies such a database.
+- Semantic IDs: a background flush keeps the tie numbers of rows deleted
+  before it. It dropped them with the rows, so the next row under the
+  same levels was given a deleted row's whole code again: a code named
+  two rows over time, which the tie exists to prevent. A foreground flush
+  and a merge already kept them.
 
 ### Query and indexes
 
@@ -209,6 +214,26 @@ app engine's schedules, sources and reach controls.
 - The filter of `json_paths(.., filter => ..)`, `Db::json_paths` and
   `Db::sid_next` is one condition, parsed by itself. Its text was put
   into a statement's, so `'x = 1 LIMIT 0'` was taken as a filter.
+- Semantic IDs: `chloedb.train.codebook(balanced=True)` (Rust's
+  `TrainOptions.balance`, JavaScript's and Java's `balanced`) trains each
+  level of a codebook with every centroid given the same number of the
+  training vectors. Plain k-means uses the later levels' numbers
+  unevenly; on Amazon Beauty's 12,101 items, balanced, the third level's
+  256 numbers are all in use alike and the items sharing a code go from
+  3,288 to 2,601. Off by default, and a codebook's file is as before.
+  `chloedb.train.codebook_report` (`Codebook::report`,
+  `Db::codebook_report`) says what a codebook makes of a set of vectors:
+  the distinct codes, the rows sharing one, and each level's use.
+- Sequence models: `chloedb.train.sequence(logq=True, uniform_negatives=n)`
+  for catalogs too large to train against every item. With the other
+  targets of a batch as the negatives the model learns to rank popular
+  items low; `logq` takes that out of each negative's score and
+  `uniform_negatives` adds items drawn evenly. On Yambda-50M's 629,298
+  tracks, held-out Recall@10 after four epochs goes from 0.0229 to
+  0.0334. Both are off by default.
+- CI's recommender gate checks semantic IDs: a plain and a balanced
+  codebook on MovieLens-1M, the codes a table gives against
+  `codebook_report`, and the report against the fixtures.
 
 ### Replication
 
