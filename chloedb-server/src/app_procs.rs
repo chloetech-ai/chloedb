@@ -160,6 +160,8 @@ fn free_port() -> Result<u16, String> {
 /// open server, where a request needs no credential.
 pub trait AppKeys: Send + Sync {
     fn key_for(&self, app: &str) -> Result<Option<String>, String>;
+    /// The app stopped for good: its key ends.
+    fn end(&self, _app: &str) {}
 }
 
 /// What each app's key may touch: the tables it keeps, at the admin scope
@@ -176,21 +178,25 @@ pub fn grants(app: &str) -> &'static [(&'static str, crate::keys::Scope)] {
     }
 }
 
-/// The server's keys, which make each app its own ([`crate::keys`]).
+/// The server's keys, which make each app its own ([`crate::keys`]): an
+/// ephemeral key limited to [`grants`], kept in memory only, never in the
+/// keys file nor merged with other servers, and made again (the old one
+/// ended) at each start of the app. It does not close an open server.
 pub struct ServerKeys {
     pub keys: Arc<crate::keys::Keys>,
-    /// No token, no cluster token, no key: a request needs no credential.
-    pub open: bool,
 }
 
 impl AppKeys for ServerKeys {
     fn key_for(&self, app: &str) -> Result<Option<String>, String> {
-        if self.open {
-            return Ok(None);
+        let grants = grants(app).iter().map(|(t, s)| crate::keys::Grant::new(t, *s)).collect::<Result<Vec<_>, _>>().map_err(|e| e.message)?;
+        if grants.is_empty() {
+            return Err(format!("no grants for an app named {app}"));
         }
-        // TODO(scoped keys): Keys::app_key(app, grants(app)).
-        let _ = (&self.keys, app);
-        Err("this server asks for credentials, and an app is never given its token: it needs a key scoped to the app (per-app keys)".into())
+        self.keys.app_key(app, grants).map(Some).map_err(|e| e.message)
+    }
+
+    fn end(&self, app: &str) {
+        self.keys.end_app_key(app);
     }
 }
 
@@ -321,6 +327,7 @@ impl Proc {
             }
             wait = if t0.elapsed() > Duration::from_secs(60) { Duration::from_secs(1) } else { (wait * 2).min(Duration::from_secs(60)) };
         }
+        keys.end(&self.plan.name);
         self.done.store(true, Ordering::SeqCst);
     }
 

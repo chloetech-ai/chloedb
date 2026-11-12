@@ -131,6 +131,13 @@
                           }
                         },
                         "type": "object"
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: sa_*=admin, app_*=admin.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
@@ -283,6 +290,13 @@
                         "description": "Resources of its container.",
                         "type": "object",
                         "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: ctx_*=admin, chloectx_memory=read.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
@@ -340,6 +354,13 @@
                         "description": "Rows of a crawl's table on a shard past which the cluster gets one more shard (0: never; default 100000).",
                         "minimum": 0,
                         "type": "integer"
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: *=admin.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
@@ -548,6 +569,13 @@
                         "description": "Resources of its container.",
                         "type": "object",
                         "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: sheets_*=admin, *=read.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"

@@ -546,7 +546,9 @@ struct Args {
     /// $CHLOEDB_APPS): the server forwards /v1/apps/<name>/... to it.
     #[arg(long = "app", env = "CHLOEDB_APPS", value_delimiter = ',')]
     apps: Vec<String>,
-    /// The token the server sends its apps (Authorization: Bearer).
+    /// The token the server sends its apps (Authorization: Bearer), to
+    /// each that has no token of its own ($CHLOEDB_APP_TOKEN_<NAME>, or a
+    /// file of --app-token-dir).
     #[arg(long, env = "CHLOEDB_APP_TOKEN", hide_env_values = true)]
     app_token: Option<String>,
     /// The apps this server starts itself, as child processes on loopback
@@ -556,6 +558,11 @@ struct Args {
     /// names (crawler,sheets,chloectx; looked for on the PATH too).
     #[arg(long, env = "CHLOEDB_START_APPS", default_value = "auto")]
     start_apps: String,
+    /// A folder that holds each app's own token in a file of the app's
+    /// name, read as it is sent (so a token written there later, as a
+    /// Kubernetes Secret mounted there is, needs no restart).
+    #[arg(long, env = "CHLOEDB_APP_TOKEN_DIR")]
+    app_token_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -1203,6 +1210,7 @@ async fn run() {
         apps: a.apps.clone(),
         app_token: a.app_token.clone(),
         started_apps,
+        app_token_dir: a.app_token_dir.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
         image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {
@@ -1345,8 +1353,7 @@ async fn run() {
             std::net::IpAddr::V6(ip) if ip.is_unspecified() => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
             ip => ip,
         };
-        let open = token.is_none() && cluster.is_none() && svc.keys.is_empty();
-        svc.apps.start(&format!("http://{}", std::net::SocketAddr::new(host, at.port())), std::sync::Arc::new(chloedb_server::app_procs::ServerKeys { keys: svc.keys.clone(), open }));
+        svc.apps.start(&format!("http://{}", std::net::SocketAddr::new(host, at.port())), std::sync::Arc::new(chloedb_server::app_procs::ServerKeys { keys: svc.keys.clone() }));
     }
     let apps = svc.clone();
     if let Err(e) = server::serve_http(svc, http, access).await {

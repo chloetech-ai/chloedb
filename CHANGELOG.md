@@ -32,6 +32,29 @@ changes collect under "Unreleased".
 
 ### Security
 
+- `chloedb-server`: keys limited to tables, and no app holds the cluster's
+  admin token (audit A1, A2, D-B10). `POST /v1/admin/keys` takes
+  `"tables": {"crawl_*": "admin", "*": "read"}`: such a key reads, writes
+  and creates only the tables its grants name, at their scope, never has
+  the server's own admin, and is refused on every route that does not
+  check tables (gRPC, OpenSearch and `/v1/mcp` too). Statements are
+  checked by every table they name, with ChloeDB's own parser, and what
+  names cannot show (table functions, `llm()`, `encode()`) is refused.
+  Its digest is marked in the keys file, so a server from before limits
+  never admits it. A server can make such a key for an app it starts,
+  in memory only (`Keys::app_key`).
+- The app proxy sends each app its own token (`--app-token-dir`, or
+  `CHLOEDB_APP_TOKEN_<NAME>`; `CHLOEDB_APP_TOKEN` stays the fallback) and
+  tells it who called: `x-chloedb-principal`, `x-chloedb-key`,
+  `x-chloedb-scope`, `x-chloedb-tables`, set by the server alone.
+- The operator gives each app beside a cluster (`spec.crawler`,
+  `spec.sheets`, `spec.chloectx`, `spec.apps`) a key limited to its tables
+  (`spec.<app>.tables`, with defaults per app) and a token of its own, in
+  a Secret `<cluster>-<app>-credentials`, once the coordinators make such
+  keys. The crawler that grows the cluster (`grow`, the default) keeps the
+  admin token as its key. The operator's role may now create, change and
+  delete Secrets, and the coordinators restart once to mount the apps'
+  tokens.
 - `chloedb-server`: a key rotated on one server ends on every server of
   its cluster. Merging keys took only the time a key was last used, so the
   old secret of a key rotated on a coordinator stayed valid on the shards,

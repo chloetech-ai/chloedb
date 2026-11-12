@@ -67,6 +67,7 @@ pub mod profiler;
 pub mod profiling;
 pub mod reads;
 pub mod replication;
+pub mod scoped;
 pub mod server;
 pub mod service;
 pub mod sim;

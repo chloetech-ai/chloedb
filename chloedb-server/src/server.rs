@@ -216,6 +216,9 @@ pub struct Options {
     /// [`crate::app_procs`]); [`crate::apps::Apps::start`] starts them once
     /// the server listens.
     pub started_apps: Vec<crate::app_procs::Plan>,
+    /// A folder of each app's own token, a file by the app's name
+    /// (`CHLOEDB_APP_TOKEN_DIR`; [`crate::apps`]).
+    pub app_token_dir: Option<std::path::PathBuf>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -428,7 +431,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
-    svc.apps = crate::apps::Apps::with_started(crate::apps::parse(&o.apps)?, o.app_token.clone(), o.started_apps.clone());
+    svc.apps = crate::apps::Apps::with_started(crate::apps::parse(&o.apps)?, o.app_token.clone(), o.started_apps.clone()).with_token_dir(o.app_token_dir.clone());
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
@@ -1493,6 +1496,13 @@ impl tonic::service::Interceptor for Check {
         // x-chloedb-* metadata is read as its x-strata-* names (crate::names).
         crate::names::alias_metadata(req.metadata_mut());
         match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
+            // A key limited to tables is an app's, over HTTP: its routes
+            // check the tables they touch ([`crate::scoped`]), gRPC's
+            // methods do not.
+            Some(who) if who.limited() => {
+                self.svc.metrics.grpc("any", "PermissionDenied", 0.0);
+                Err(tonic::Status::permission_denied(format!("the key {:?} is limited to tables: it calls the HTTP API, not gRPC", who.name)))
+            }
             Some(who) => {
                 req.extensions_mut().insert(who);
                 Ok(req)

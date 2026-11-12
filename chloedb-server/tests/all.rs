@@ -63,6 +63,7 @@ mod rank_models;
 mod rank_profiles;
 mod replication;
 mod safety;
+mod scoped_keys;
 mod scroll_pages;
 mod server;
 mod sim;

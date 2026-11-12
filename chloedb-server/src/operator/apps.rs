@@ -23,6 +23,9 @@
 //! what the model has cost, Claude Code's home) is on a volume of its own,
 //! `<cluster>-apps`, which stays when `spec.apps` goes and goes with the
 //! cluster.
+//!
+//! Once the coordinators make keys limited to tables, it holds a key and a
+//! token of its own instead ([`super::credentials`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -42,6 +45,11 @@ pub struct AppsSpec {
     /// still list it, as an app that does not answer; the apps stay in
     /// their tables and the files on the volume).
     pub paused: bool,
+    /// The tables its key may touch, as `table=scope` (`crawl_*=admin`,
+    /// `*=read`; [`crate::keys::Grant`]); none: the app's own
+    /// ([`super::credentials::default_tables`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<String>,
     /// The engine's image ([`IMAGE`] when left out).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
@@ -81,6 +89,7 @@ impl Default for AppsSpec {
     fn default() -> Self {
         AppsSpec {
             paused: false,
+            tables: Vec::new(),
             image: None,
             public_url: None,
             service_type: "ClusterIP".into(),
@@ -125,6 +134,7 @@ const SET_ENV: &[&str] = &["STRATA_APPS_PUBLIC_URL", "STRATA_APPS_SPEND_CAP_USD"
 impl AppsSpec {
     /// What is wrong with it, if anything.
     pub fn check(&self) -> Result<(), String> {
+        super::credentials::check_tables(APP, &self.tables)?;
         for a in &self.args {
             let flag = a.split('=').next().unwrap_or_default();
             if SET.contains(&flag) {
@@ -195,6 +205,7 @@ pub fn schema() -> Json {
         "description": "The app engine beside the cluster: chloedb-apps in a Deployment of one, which the command center shows under Apps. It keeps the apps it builds as rows of the cluster, calls the model with secretEnv's ANTHROPIC_API_KEY, and needs tokenSecret: its studio, at publicUrl, signs admins in with a link the command center hands out.",
         "properties": {
             "paused": {"type": "boolean", "description": "No engine pod for now (the apps stay)."},
+            "tables": super::credentials::schema(APP),
             "image": {"type": "string", "description": format!("The engine's image (default {IMAGE}).")},
             "publicUrl": {"type": "string", "pattern": "^https?://[^?# ]+$", "description": "Where browsers reach the studio, which Open the studio links to: a NodePort, a LoadBalancer or an Ingress of your own in front of the Service."},
             "serviceType": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"], "description": "The Service's type (default ClusterIP)."},

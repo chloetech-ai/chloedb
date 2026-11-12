@@ -1921,6 +1921,12 @@ impl Service {
 
     /// The tables people made, the first first: [`Self::catalog_now`]
     /// without the placeholder of a database made with no tables.
+    /// The names of the tables, for a key limited to some
+    /// ([`crate::scoped`]).
+    pub fn table_names(&self) -> Vec<String> {
+        self.catalog().iter().map(|t| t.table.clone()).collect()
+    }
+
     pub async fn tables_listed(&self) -> Vec<Arc<Schema>> {
         self.catalog_now().await.into_iter().filter(|t| !t.is_placeholder()).collect()
     }
@@ -3240,6 +3246,9 @@ impl Service {
         }
         let need = command_scope(&command);
         who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?;
+        if who.limited() {
+            crate::scoped::check_statement(who, sql, &command, &self.table_names(), &self.functions())?;
+        }
         if need == Scope::Admin {
             keys::note(obs::truncate(sql, 500).into_owned());
         }
@@ -3767,6 +3776,9 @@ impl Service {
         if plan_only {
             return Ok(plan.to_json());
         }
+        for t in &plan.tables {
+            who.may_table(if t.exists { Scope::Write } else { Scope::Admin }, &t.schema.table, "an import")?;
+        }
         let creates: Vec<&str> = plan.tables.iter().filter(|t| !t.exists).map(|t| t.schema.table.as_str()).collect();
         if !creates.is_empty() {
             who.may(Scope::Admin, &format!("an import that creates tables ({})", creates.join(", ")))?;
@@ -3870,6 +3882,7 @@ impl Service {
         if plan_only {
             return Ok(plan.to_json());
         }
+        who.may_table(if plan.exists { Scope::Write } else { Scope::Admin }, &plan.schema.table, "an import")?;
         if !plan.exists {
             who.may(Scope::Admin, &format!("an import that creates a table ({})", plan.schema.table))?;
             keys::note(format!("Parquet import created table {}", plan.schema.table));
