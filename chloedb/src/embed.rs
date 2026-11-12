@@ -557,10 +557,21 @@ pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dy
 // ---------------------------------------------------------------- static
 
 /// Model2Vec: the embedding of a text is the mean of its tokens' rows.
+///
+/// The table is read as Model2Vec writes it: `embeddings` in F32, F16,
+/// BF16 or I8 (an int8 table has one scale for the whole table, which the
+/// unit length the vector is scaled to cancels: 4 times smaller than F32
+/// and, on BEIR, within 0.002 nDCG@10 of it), and, when the model has them,
+/// `weights` (a factor a token) and `mapping` (the row of each token, for a
+/// model whose vocabulary was quantised to fewer rows than tokens).
 #[cfg(feature = "embed")]
 pub struct StaticEmbedder {
     tokenizer: tokenizers::Tokenizer,
     table: Table,
+    /// A factor a token id (Model2Vec's `weights`).
+    weights: Option<Vec<f32>>,
+    /// The row of a token id (Model2Vec's `mapping`).
+    mapping: Option<Vec<u32>>,
     dim: usize,
     unk: Option<u32>,
     name: String,
@@ -571,22 +582,43 @@ pub struct StaticEmbedder {
 impl StaticEmbedder {
     pub fn open(dir: &Path) -> Result<StaticEmbedder> {
         let tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| model_err(format!("{}: {e}", dir.join("tokenizer.json").display())))?;
-        let table = Table::open(&dir.join("model.safetensors"), "embeddings")?;
+        let path = dir.join("model.safetensors");
+        let table = Table::open(&path, "embeddings")?;
         let (rows, dim) = (table.rows, table.dim);
-        if rows < tokenizer.get_vocab_size(true) {
-            return Err(model_err(format!("{}: embedding table has {rows} rows, tokenizer {} tokens", dir.display(), tokenizer.get_vocab_size(true))));
+        let vocab = tokenizer.get_vocab_size(true);
+        let weights = Table::open_vector(&path, "weights")?.map(|w| w.into_iter().map(|x| x as f32).collect::<Vec<f32>>());
+        let mapping = Table::open_vector(&path, "mapping")?.map(|m| m.into_iter().map(|x| x as u32).collect::<Vec<u32>>());
+        let bad = |m: String| Err(model_err(format!("{}: {m}", dir.display())));
+        match &mapping {
+            Some(m) if m.len() < vocab => return bad(format!("mapping has {} tokens, tokenizer {vocab}", m.len())),
+            Some(m) if m.iter().any(|&r| r as usize >= rows) => return bad(format!("mapping names a row past the table's {rows}")),
+            None if rows < vocab => return bad(format!("embedding table has {rows} rows, tokenizer {vocab} tokens")),
+            _ => {}
+        }
+        if weights.as_ref().is_some_and(|w| w.len() < vocab) {
+            return bad(format!("weights has fewer than the tokenizer's {vocab} tokens"));
         }
         let unk = tokenizer.token_to_id("[UNK]");
         let name = format!("static:{}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-        Ok(StaticEmbedder { tokenizer, table, dim, unk, name, max_tokens: 512 })
+        Ok(StaticEmbedder { tokenizer, table, weights, mapping, dim, unk, name, max_tokens: 512 })
     }
 
     fn embed_ids(&self, ids: &[u32]) -> Vec<f32> {
         let mut v = vec![0f32; self.dim];
         let mut n = 0usize;
         for &id in ids.iter().filter(|&&id| Some(id) != self.unk).take(self.max_tokens) {
-            if self.table.add_row(id as usize, &mut v) {
-                n += 1;
+            let row = match &self.mapping {
+                Some(m) => match m.get(id as usize) {
+                    Some(&r) => r as usize,
+                    None => continue,
+                },
+                None => id as usize,
+            };
+            let w = self.weights.as_ref().map_or(Some(1.0), |w| w.get(id as usize).copied());
+            if let Some(w) = w {
+                if self.table.add_row(row, w, &mut v) {
+                    n += 1;
+                }
             }
         }
         if n > 0 {
@@ -616,7 +648,54 @@ impl Embedder for StaticEmbedder {
     }
 }
 
-/// One F32 tensor of a safetensors file, mapped rather than read: a process
+/// The element types a static table can hold.
+#[cfg(feature = "embed")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Elem {
+    F32,
+    F16,
+    BF16,
+    I8,
+}
+
+#[cfg(feature = "embed")]
+impl Elem {
+    fn parse(s: &str) -> Option<Elem> {
+        Some(match s {
+            "F32" => Elem::F32,
+            "F16" => Elem::F16,
+            "BF16" => Elem::BF16,
+            "I8" => Elem::I8,
+            _ => return None,
+        })
+    }
+    fn bytes(self) -> usize {
+        match self {
+            Elem::F32 => 4,
+            Elem::F16 | Elem::BF16 => 2,
+            Elem::I8 => 1,
+        }
+    }
+}
+
+/// IEEE half precision to single.
+#[cfg(feature = "embed")]
+fn f16_to_f32(h: u16) -> f32 {
+    let (sign, exp, frac) = ((h as u32 & 0x8000) << 16, (h as u32 >> 10) & 0x1f, h as u32 & 0x3ff);
+    let bits = match (exp, frac) {
+        (0, 0) => sign,
+        (0, f) => {
+            // subnormal: normalise it
+            let shift = f.leading_zeros() - 21;
+            sign | ((113 - shift) << 23) | ((f << shift) & 0x3ff) << 13
+        }
+        (0x1f, f) => sign | 0x7f80_0000 | f << 13,
+        (e, f) => sign | (e + 112) << 23 | f << 13,
+    };
+    f32::from_bits(bits)
+}
+
+/// One tensor of a safetensors file, mapped rather than read: a process
 /// starts without loading the table, and only the rows of tokens it meets
 /// are paged in.
 #[cfg(feature = "embed")]
@@ -626,11 +705,13 @@ struct Table {
     start: usize,
     rows: usize,
     dim: usize,
+    elem: Elem,
 }
 
 #[cfg(feature = "embed")]
 impl Table {
-    fn open(path: &Path, tensor: &str) -> Result<Table> {
+    /// The mapped file, its JSON header, and the offset of its data.
+    fn header(path: &Path) -> Result<(memmap2::Mmap, serde_json::Value, usize)> {
         let file = std::fs::File::open(path).map_err(|e| model_err(format!("{}: {e}", path.display())))?;
         // SAFETY: the model file is not modified while mapped (fetching a
         // model writes a new file).
@@ -641,30 +722,169 @@ impl Table {
         }
         let hlen = u64::from_le_bytes(map[..8].try_into().unwrap()) as usize;
         let header: serde_json::Value = serde_json::from_slice(map.get(8..8 + hlen).ok_or_else(|| bad("truncated header".into()))?).map_err(|e| bad(e.to_string()))?;
-        let t = header.get(tensor).ok_or_else(|| bad(format!("no tensor {tensor}")))?;
-        if t["dtype"] != "F32" {
-            return Err(bad(format!("{tensor}: dtype {} (need F32)", t["dtype"])));
-        }
-        let shape: Vec<usize> = t["shape"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
-        let offs: Vec<usize> = t["data_offsets"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
-        let [rows, dim] = shape[..] else { return Err(bad(format!("{tensor}: shape {shape:?}"))) };
-        let (a, b) = (8 + hlen + offs.first().copied().unwrap_or(0), 8 + hlen + offs.get(1).copied().unwrap_or(0));
-        if b > map.len() || b - a != rows * dim * 4 {
-            return Err(bad(format!("{tensor}: {} bytes for shape {rows}x{dim}", b.saturating_sub(a))));
-        }
-        Ok(Table { map, start: a, rows, dim })
+        Ok((map, header, 8 + hlen))
     }
 
-    /// Adds row `id` to `acc`; false if there is no such row.
-    fn add_row(&self, id: usize, acc: &mut [f32]) -> bool {
+    /// A tensor's type, shape and byte range, checked against the file.
+    fn locate(path: &Path, map: &memmap2::Mmap, t: &serde_json::Value, base: usize, tensor: &str) -> Result<(String, Vec<usize>, usize, usize)> {
+        let bad = |m: String| model_err(format!("{}: {m}", path.display()));
+        let dtype = t["dtype"].as_str().unwrap_or_default().to_string();
+        let shape: Vec<usize> = t["shape"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
+        let offs: Vec<usize> = t["data_offsets"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
+        let (a, b) = (base + offs.first().copied().unwrap_or(0), base + offs.get(1).copied().unwrap_or(0));
+        if b > map.len() || a > b {
+            return Err(bad(format!("{tensor}: bytes {a}..{b} past the file's {}", map.len())));
+        }
+        Ok((dtype, shape, a, b))
+    }
+
+    fn open(path: &Path, tensor: &str) -> Result<Table> {
+        let (map, header, base) = Self::header(path)?;
+        let bad = |m: String| model_err(format!("{}: {m}", path.display()));
+        let t = header.get(tensor).ok_or_else(|| bad(format!("no tensor {tensor}")))?;
+        let (dtype, shape, a, b) = Self::locate(path, &map, t, base, tensor)?;
+        let elem = Elem::parse(&dtype).ok_or_else(|| bad(format!("{tensor}: dtype {dtype} (need F32, F16, BF16 or I8)")))?;
+        let [rows, dim] = shape[..] else { return Err(bad(format!("{tensor}: shape {shape:?}"))) };
+        if b - a != rows * dim * elem.bytes() {
+            return Err(bad(format!("{tensor}: {} bytes for shape {rows}x{dim} of {dtype}", b - a)));
+        }
+        Ok(Table { map, start: a, rows, dim, elem })
+    }
+
+    /// A one-dimensional tensor read whole (Model2Vec's `weights` and
+    /// `mapping`), or None if the file has no tensor of that name.
+    fn open_vector(path: &Path, tensor: &str) -> Result<Option<Vec<f64>>> {
+        let (map, header, base) = Self::header(path)?;
+        let Some(t) = header.get(tensor) else { return Ok(None) };
+        let bad = |m: String| model_err(format!("{}: {m}", path.display()));
+        let (dtype, shape, a, b) = Self::locate(path, &map, t, base, tensor)?;
+        let [n] = shape[..] else { return Err(bad(format!("{tensor}: shape {shape:?}"))) };
+        let bytes = &map[a..b];
+        let width = match dtype.as_str() {
+            "F64" | "I64" => 8,
+            "F32" | "I32" => 4,
+            "F16" | "BF16" => 2,
+            _ => return Err(bad(format!("{tensor}: dtype {dtype}"))),
+        };
+        if bytes.len() != n * width {
+            return Err(bad(format!("{tensor}: {} bytes for {n} values of {dtype}", bytes.len())));
+        }
+        let v = bytes
+            .chunks_exact(width)
+            .map(|c| match dtype.as_str() {
+                "F64" => f64::from_le_bytes(c.try_into().unwrap()),
+                "I64" => i64::from_le_bytes(c.try_into().unwrap()) as f64,
+                "F32" => f32::from_le_bytes(c.try_into().unwrap()) as f64,
+                "I32" => i32::from_le_bytes(c.try_into().unwrap()) as f64,
+                "F16" => f16_to_f32(u16::from_le_bytes(c.try_into().unwrap())) as f64,
+                _ => f32::from_bits((u16::from_le_bytes(c.try_into().unwrap()) as u32) << 16) as f64,
+            })
+            .collect();
+        Ok(Some(v))
+    }
+
+    /// Adds `w` times row `id` to `acc`; false if there is no such row.
+    fn add_row(&self, id: usize, w: f32, acc: &mut [f32]) -> bool {
         if id >= self.rows {
             return false;
         }
-        let off = self.start + id * self.dim * 4;
-        for (a, c) in acc.iter_mut().zip(self.map[off..off + self.dim * 4].chunks_exact(4)) {
-            *a += f32::from_le_bytes(c.try_into().unwrap());
+        let width = self.elem.bytes();
+        let off = self.start + id * self.dim * width;
+        let row = &self.map[off..off + self.dim * width];
+        match self.elem {
+            Elem::F32 => acc.iter_mut().zip(row.chunks_exact(4)).for_each(|(a, c)| *a += w * f32::from_le_bytes(c.try_into().unwrap())),
+            Elem::F16 => acc.iter_mut().zip(row.chunks_exact(2)).for_each(|(a, c)| *a += w * f16_to_f32(u16::from_le_bytes([c[0], c[1]]))),
+            Elem::BF16 => acc.iter_mut().zip(row.chunks_exact(2)).for_each(|(a, c)| *a += w * f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)),
+            Elem::I8 => acc.iter_mut().zip(row).for_each(|(a, &c)| *a += w * (c as i8) as f32),
         }
         true
+    }
+}
+
+
+#[cfg(all(test, feature = "embed"))]
+mod static_table_tests {
+    use super::*;
+
+    /// A safetensors file of the given tensors: (name, dtype, shape, bytes).
+    fn write(path: &Path, tensors: &[(&str, &str, Vec<usize>, Vec<u8>)]) {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        for (name, dtype, shape, bytes) in tensors {
+            header.insert(name.to_string(), serde_json::json!({"dtype": dtype, "shape": shape, "data_offsets": [data.len(), data.len() + bytes.len()]}));
+            data.extend_from_slice(bytes);
+        }
+        let h = serde_json::Value::Object(header).to_string().into_bytes();
+        let mut out = (h.len() as u64).to_le_bytes().to_vec();
+        out.extend(h);
+        out.extend(data);
+        std::fs::write(path, out).unwrap();
+    }
+
+    fn f16_bits(x: f32) -> u16 {
+        // round to nearest for zero and normal values, which is all the test uses
+        if x == 0.0 {
+            return 0;
+        }
+        let b = x.to_bits();
+        let sign = ((b >> 16) & 0x8000) as u16;
+        let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;
+        let frac = ((b & 0x7f_ffff) + 0x1000) >> 13;
+        sign | ((exp as u16) << 10) + frac as u16
+    }
+
+    #[test]
+    fn half_precision_converts() {
+        for x in [0.0f32, 1.0, -2.5, 0.333, 65504.0, -1e-3] {
+            assert!((f16_to_f32(f16_bits(x)) - x).abs() <= x.abs() * 1e-3, "{x}");
+        }
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24)); // smallest subnormal
+        assert_eq!(f16_to_f32(0x03ff), 1023.0 * 2f32.powi(-24)); // largest subnormal
+        assert!(f16_to_f32(0x7c00).is_infinite());
+        assert!(f16_to_f32(0x7e00).is_nan());
+    }
+
+    #[test]
+    fn every_element_type_reads_the_same_rows() {
+        let dir = std::env::temp_dir().join(format!("chloedb-static-table-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rows: Vec<f32> = (0..12).map(|i| (i as f32 - 5.5) / 4.0).collect(); // 3 rows of 4
+        let scale = rows.iter().fold(0f32, |m, x| m.max(x.abs())) / 127.0;
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("F32", rows.iter().flat_map(|x| x.to_le_bytes()).collect()),
+            ("F16", rows.iter().flat_map(|&x| f16_bits(x).to_le_bytes()).collect()),
+            ("BF16", rows.iter().flat_map(|x| ((x.to_bits() >> 16) as u16).to_le_bytes()).collect()),
+            ("I8", rows.iter().map(|x| (x / scale).round() as i8 as u8).collect()),
+        ];
+        for (dtype, bytes) in cases {
+            let path = dir.join(format!("{dtype}.safetensors"));
+            write(&path, &[("embeddings", dtype, vec![3, 4], bytes)]);
+            let t = Table::open(&path, "embeddings").unwrap();
+            assert_eq!((t.rows, t.dim, t.elem), (3, 4, Elem::parse(dtype).unwrap()));
+            let unit = if dtype == "I8" { scale } else { 1.0 };
+            for r in 0..3 {
+                let mut acc = vec![0f32; 4];
+                assert!(t.add_row(r, 2.0, &mut acc));
+                for (c, a) in acc.iter().enumerate() {
+                    let want = 2.0 * rows[r * 4 + c];
+                    assert!((a * unit - want).abs() < 0.02, "{dtype} row {r} col {c}: {} vs {want}", a * unit);
+                }
+            }
+            assert!(!t.add_row(3, 1.0, &mut vec![0f32; 4]));
+        }
+        // a table of the wrong size, and a type it does not read
+        let path = dir.join("bad.safetensors");
+        write(&path, &[("embeddings", "I8", vec![3, 5], vec![0; 12])]);
+        assert!(Table::open(&path, "embeddings").is_err());
+        write(&path, &[("embeddings", "I16", vec![3, 2], vec![0; 12])]);
+        assert!(Table::open(&path, "embeddings").is_err());
+        // weights and a mapping, as Model2Vec writes them
+        let path = dir.join("vectors.safetensors");
+        write(&path, &[("weights", "F32", vec![2], [0.5f32, 2.0].iter().flat_map(|x| x.to_le_bytes()).collect()), ("mapping", "I64", vec![2], [1i64, 0].iter().flat_map(|x| x.to_le_bytes()).collect())]);
+        assert_eq!(Table::open_vector(&path, "weights").unwrap(), Some(vec![0.5, 2.0]));
+        assert_eq!(Table::open_vector(&path, "mapping").unwrap(), Some(vec![1.0, 0.0]));
+        assert_eq!(Table::open_vector(&path, "nothing").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
