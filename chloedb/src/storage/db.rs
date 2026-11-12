@@ -880,6 +880,21 @@ impl SealedMem {
         self.deleted[p / 64] >> (p % 64) & 1 == 1
     }
 
+    /// The [`crate::sid::gone_sections`] of the segments built from the
+    /// live documents: the semantic-ID ties only the documents deleted
+    /// before the seal held, so that none is given again after a reopen.
+    fn gone_codes(&self) -> Vec<(String, Vec<u8>)> {
+        if crate::sid::fields(&self.schema).is_empty() {
+            return Vec::new();
+        }
+        let (mut dropped, mut kept) = (Ties::default(), Ties::default());
+        for (p, d) in self.chunks.iter().flat_map(|c| c.iter()).take(self.len).enumerate() {
+            let t = if self.was_deleted(p) { &mut dropped } else { &mut kept };
+            t.saw_doc(&self.schema, d);
+        }
+        crate::sid::gone_sections(&self.schema, &dropped, &kept)
+    }
+
     /// The live documents, with their values written in place, their
     /// sequence numbers, and each position's docID among them (`GONE` for
     /// deleted ones).
@@ -2707,11 +2722,17 @@ impl Database {
         let mut built = Vec::with_capacity(sealed.len());
         for s in &sealed {
             let (live, seqs, docids) = s.live();
-            let images = live
-                .chunks(max)
-                .zip(seqs.chunks(max))
-                .map(|(c, seqs)| Ok((rowseq::build(&s.schema, c, s.numbered.then_some(seqs), &self.opts.build)?, c.len() as u32)))
-                .collect::<Result<Vec<_>>>()?;
+            // The codes of the documents deleted before the seal, which the
+            // segments drop, are kept as the foreground flush keeps them
+            // (rows deleted after it are in the segments, marked deleted).
+            let mut gone = s.gone_codes();
+            let mut images = Vec::new();
+            if live.is_empty() && !gone.is_empty() {
+                images.push((rowseq::build_with(&s.schema, &[], s.numbered.then_some(&[]), &self.opts.build, std::mem::take(&mut gone))?, 0));
+            }
+            for (c, seqs) in live.chunks(max).zip(seqs.chunks(max)) {
+                images.push((rowseq::build_with(&s.schema, c, s.numbered.then_some(seqs), &self.opts.build, std::mem::take(&mut gone))?, c.len() as u32));
+            }
             built.push((images, docids));
         }
 
