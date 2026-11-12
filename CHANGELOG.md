@@ -13,25 +13,23 @@ changes collect under "Unreleased".
 
 ### Added
 
-- ChloeCtx: receipts and `chloectx blame`. Every recall (a prompt's context,
-  the records a compaction gets back, a `memory_search` answer) writes a
-  receipt: the store commit it read, its inputs, and each candidate's score
-  parts, tokens and decision (`take`, `excerpt`, `knowledge`, `listed`,
-  `skip: <reason>`, the words of ChloeDB's `PACK` receipts), with the text
-  the agent was shown. After a recall that showed records the daemon keeps a
-  snapshot of the store (a hard-linked checkpoint, pruned after 30 days), so
-  `chloectx receipt ID` replays the recall exactly on the data it read, and
-  on today's store. `chloectx blame path:line` finds the stored edit behind
-  a line, its prompt and tool calls, and the records recalled before it,
-  each checked against the store now (superseded, deleted, from the web).
-  `chloectx snapshot keep|list|drop` keeps snapshots by name. Receipts are
-  in their own file, `receipts.strata`; the store's file and format are
-  unchanged. `memory_forget` and `chloectx redact` scrub receipts and drop
-  the automatic snapshots. [Docs](docs/chloectx/receipts.md).
-- ChloeCtx in the command center: Receipts and Blame tabs on its page
-  (receipts with their candidates and replay, kept snapshots, blame of a
-  line), over this machine's Claude Code stores when `chloectx app` runs
-  with `--local-stores` (off by default: the stores are transcripts).
+- ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
+  queries the rank log kept that rank by a rank profile, on one snapshot,
+  with the profile as it is and with the numbers a coordinate-ascent search
+  finds (parameter defaults and the literals of its `ORDER BY`), and
+  reports nDCG@k before and after on queries held out of the search, the
+  queries made better and worse with a sign test, a bootstrap interval and
+  latency, with a verdict. Grades come from the rank log's labels and a
+  judgments table (`relevance_judgments`); the server can have Claude grade
+  the rows no one graded first. A proposal is kept in `relevance_proposals`
+  and applied as `CREATE OR REPLACE RANK PROFILE` only while the profile is
+  the one it was measured against. `POST /v1/relevance/autopilot`,
+  `/v1/relevance/proposals`, `Db::autopilot`, and the command center's
+  Labs > Relevance autopilot.
+- The rank log keeps each request's query and its bound parameters, in a
+  new column `query` of the request's first row. A log table made before
+  it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
+  query KEYWORD OPTIONS(indexed = false)` adds it).
 
 ## 0.2.1
 
