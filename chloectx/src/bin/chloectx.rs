@@ -14,6 +14,8 @@
 //!   chloectx sync setup --url URL [--token-stdin]  copy the memory to a ChloeDB server (status|push|pull)
 //!   chloectx doctor                                check the install and the project's store
 //!   chloectx ui [--port N] [--home DIR]            browse every local store in the inspector
+//!   chloectx pack OUT [--kinds ..] [--since-days N] cut a capsule another agent can mount
+//!   chloectx mount DIR...                          serve capsules as MCP tools (stdio)
 //!   chloectx rpc '{"op": ...}'                     send one raw request to the daemon
 //!   chloectx serve --dir D --project P             (the daemon; started on demand)
 
@@ -166,6 +168,43 @@ enum Cmd {
         /// The embedder (static, or hash:<dim> for tests; $CHLOECTX_EMBEDDER).
         #[arg(long, env = "CHLOECTX_EMBEDDER", default_value = "static")]
         embedder: String,
+    },
+    /// Cut a capsule from the project's memory: a read-only ChloeDB file of
+    /// the selected records (default: distilled notes, entities and the
+    /// conversation, no raw tool output), redacted again, with a manifest.
+    /// Another agent mounts it with `chloectx mount`.
+    Pack {
+        /// The capsule's directory (must not exist).
+        out: PathBuf,
+        /// Record kinds to include (default: decision, preference, fact, todo,
+        /// note, entity, prompt, answer, episode, summary, error; `all` for every kind).
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+        /// Only records from the last N days.
+        #[arg(long)]
+        since_days: Option<f64>,
+        /// At most this many records (the oldest first).
+        #[arg(long, default_value_t = 200_000)]
+        max_records: usize,
+        /// The capsule's title (default: the project's folder name).
+        #[arg(long)]
+        title: Option<String>,
+        /// Print the manifest as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Serve capsules to Claude Code as an MCP server on stdio
+    /// (capsule_ask, capsule_search, capsule_timeline, capsule_sql).
+    Mount {
+        /// Capsule directories.
+        #[arg(required = true)]
+        dirs: Vec<PathBuf>,
+        /// Append one JSON line per tool call (and the open) to this file ($CHLOECTX_CAPSULE_LOG).
+        #[arg(long)]
+        log: Option<PathBuf>,
+        /// Embedder spec, instead of the one each manifest names.
+        #[arg(long)]
+        embedder: Option<String>,
     },
     /// Send one raw JSON request to the daemon and print its JSON response
     /// (the demo inspector's transport).
@@ -365,6 +404,51 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
+        Cmd::Pack { out, kinds, since_days, max_records, title, json: as_json } => {
+            let t0 = std::time::Instant::now();
+            let out = std::path::absolute(&out).unwrap_or(out);
+            let kinds: Vec<chloectx::record::Kind> = if kinds.iter().any(|k| k == "all") {
+                chloectx::record::Kind::ALL.to_vec()
+            } else if kinds.is_empty() {
+                chloectx::capsule::DEFAULT_KINDS.to_vec()
+            } else {
+                kinds.iter().map(|k| chloectx::record::Kind::parse(k).unwrap_or_else(|| {
+                    eprintln!("chloectx pack: unknown kind {k}");
+                    std::process::exit(2)
+                })).collect()
+            };
+            // A consistent copy of the store, which no daemon writes while it is cut.
+            let tmp = std::env::temp_dir().join(format!("chloectx-pack-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::create_dir_all(&tmp);
+            let backup = tmp.join("backup");
+            send(&project, json!({"op": "backup", "dest": backup}), 3600);
+            let backup_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let spec = daemon::Config::load(&backup.join("config.json")).embedder;
+            let fail = |e: chloectx::Error| -> ! {
+                let _ = std::fs::remove_dir_all(&tmp);
+                eprintln!("chloectx pack: {e}");
+                std::process::exit(1)
+            };
+            let embedder: std::sync::Arc<dyn embed::Embedder> = std::sync::Arc::from(embed::open(&spec).unwrap_or_else(|e| fail(e)));
+            let store = chloectx::store::Store::open(&backup.join("memory.strata"), embedder, chloectx::store::StoreOptions { sync: false, ..Default::default() }).unwrap_or_else(|e| fail(e));
+            let opts = chloectx::capsule::PackOptions { kinds, since_ts: since_days.map(|d| chloectx::now() - (d * 86_400.0) as i64), max_records, title };
+            let m = chloectx::capsule::pack(&store, &spec, &project.to_string_lossy(), &out, &opts).unwrap_or_else(|e| fail(e));
+            drop(store);
+            let _ = std::fs::remove_dir_all(&tmp);
+            let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            if as_json {
+                let mut j = serde_json::to_value(&m).unwrap();
+                j["backup_ms"] = json!(backup_ms);
+                j["total_ms"] = json!(total_ms);
+                j["dir"] = json!(out);
+                println!("{}", serde_json::to_string_pretty(&j).unwrap());
+            } else {
+                println!("{}: {}", out.display(), chloectx::capsule::describe(&m));
+                println!("{} bytes, sha256 {}, {} redacted, packed in {:.0} ms", m.bytes, m.sha256, m.redacted, total_ms);
+            }
+        }
+        Cmd::Mount { dirs, log, embedder } => std::process::exit(chloectx::capsule::run_mcp(&dirs, log, embedder.as_deref())),
         Cmd::App { server, key, host, port, token, embedder } => {
             if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), embedder }) {
                 eprintln!("chloectx app: {e}");

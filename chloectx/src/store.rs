@@ -559,6 +559,24 @@ impl Store {
         Ok(rs.rows.iter().filter_map(|r| Some((row_record(r)?, r.last()?.as_f64()?))).collect())
     }
 
+    /// Every record `filter` matches, oldest first (at most `limit`), with
+    /// its vector: what a capsule copies ([`crate::capsule::pack`]).
+    pub fn export(&self, filter: &Filter, limit: usize) -> Result<Vec<(Record, Option<Vec<f32>>)>> {
+        let sql = format!("SELECT {COLUMNS}, emb FROM memory {} ORDER BY seq ASC LIMIT {limit}", filter.sql());
+        let rs = self.query_with(&sql, &filter.params())?;
+        Ok(rs
+            .rows
+            .iter()
+            .filter_map(|r| {
+                let v = match r.last()? {
+                    Value::Vector(v) => Some(v.to_vec()),
+                    _ => None,
+                };
+                Some((row_record(r)?, v))
+            })
+            .collect())
+    }
+
     /// The newest `n` records of `session`, newest first, with their vectors.
     pub fn tail(&self, session: &str, n: usize) -> Result<Vec<(Record, Option<Vec<f32>>)>> {
         let sql = format!("SELECT {COLUMNS}, emb FROM memory WHERE session = :session ORDER BY seq DESC LIMIT {n}");
