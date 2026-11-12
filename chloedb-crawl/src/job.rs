@@ -541,7 +541,7 @@ impl Job {
                 }
             }
         }
-        let got = self.fetcher.page(&item.url).await;
+        let got = self.fetcher.page_following(&item.url, &|u| self.follows(u)).await;
         let got = match got {
             Ok(g) => g,
             Err(miss) => {
