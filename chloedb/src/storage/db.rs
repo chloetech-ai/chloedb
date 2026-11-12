@@ -3610,12 +3610,22 @@ impl Database {
 
     fn write_checkpoint(&self, tmp: &Path, layout: Layout, manifest: &Manifest, handles: &[Arc<SegHandle>], link: Option<(PathBuf, HashMap<String, (u32, u64)>)>) -> Result<CheckpointStats> {
         let o = DbOptions { layout, sync: true, publish_snapshots: false, doc_source: None, ..DbOptions::default() };
-        let out = Database::create(tmp, manifest.tables[0].schema.clone(), o)?;
+        // The copy's tables are made in the source's order, without their
+        // references, which its version gets back below: ALTER TABLE ADD
+        // COLUMN may reference a table created after the column's own,
+        // which the copy would not have yet. The source's references were
+        // checked when they were made.
+        let unlinked = |s: &Schema| {
+            let mut s = s.clone();
+            s.fields.iter_mut().for_each(|f| f.references = None);
+            s
+        };
+        let out = Database::create(tmp, unlinked(&manifest.tables[0].schema), o)?;
         for t in &manifest.tables[1..] {
             match t.id {
                 SOURCES_ID => out.ensure_sources()?,
                 FUNCTIONS_ID => out.ensure_functions()?,
-                _ => out.create_table(t.schema.clone())?,
+                _ => out.create_table(unlinked(&t.schema))?,
             }
         }
         let mut stats = CheckpointStats { tables: manifest.tables.len(), ..CheckpointStats::default() };
@@ -3633,6 +3643,9 @@ impl Database {
             // the transactions a primary ships after a copy of it name.
             for (m, t) in vw.manifest.tables.iter_mut().zip(&manifest.tables) {
                 m.id = t.id;
+                for (f, from) in m.schema.fields.iter_mut().zip(&t.schema.fields) {
+                    f.references.clone_from(&from.references);
+                }
             }
             vw.manifest.next_table_id = manifest.next_table_id;
             for t in &manifest.tables {
