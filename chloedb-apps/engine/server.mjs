@@ -5,7 +5,8 @@
 // Without --strata it starts its own chloedb-server on DIR/apps.strata.
 
 import http from 'node:http';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
@@ -24,6 +25,7 @@ import { appScript } from './source.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
+import { Scheduler } from './schedule.mjs';
 import { ensureDesigns } from './designs.mjs';
 import { Evolver, MODES } from './evolve.mjs';
 import { activity as activityOf } from './activity.mjs';
@@ -107,8 +109,25 @@ await engine.store.usePatterns();
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
 engine.services = services;
 // A model and the web for apps, each switched on per app (reach.mjs).
-const reach = new Reach({ store: engine.store, log });
+// Apps' secrets (API keys) are sealed with STRATA_APPS_SECRET_KEY, or with a
+// key kept in DATA/secret.key, made on first start.
+async function secretKey() {
+  if (process.env.STRATA_APPS_SECRET_KEY) return process.env.STRATA_APPS_SECRET_KEY;
+  const file = path.join(DATA, 'secret.key');
+  try { return (await readFile(file, 'utf8')).trim(); } catch { /* made below */ }
+  await mkdir(DATA, { recursive: true });
+  const key = randomBytes(32).toString('base64');
+  await writeFile(file, `${key}\n`, { mode: 0o600, flag: 'wx' }).catch(async () => {});
+  await chmod(file, 0o600).catch(() => {});
+  log(`apps' secrets are sealed with a new key in ${file} (set STRATA_APPS_SECRET_KEY to keep it elsewhere)`);
+  return (await readFile(file, 'utf8')).trim();
+}
+const reach = new Reach({ store: engine.store, log, secretKey: await secretKey() });
 engine.reach = reach;
+// Rules and functions that run on a clock (schedule.mjs), once their app's
+// owner switched "Schedules" on.
+const scheduler = new Scheduler({ engine, reach, log });
+if (process.env.STRATA_APPS_SCHEDULES !== 'off') scheduler.start();
 // Beside a cluster, who may use the studio (login.mjs): chloedb-server with
 // its app token, and browsers it hands a login to.
 const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
@@ -498,7 +517,9 @@ async function appState(appId) {
 // What the app's code uses of the model and the web, what its owner has
 // switched on, and today's use.
 async function reachOf(appId, view) {
-  return { abilities: ABILITIES, uses: usesOf(view), on: await reach.switches(appId), today: await reach.usage(appId) };
+  return { abilities: ABILITIES, uses: usesOf(view), on: await reach.switches(appId), today: await reach.usage(appId),
+    wants: await reach.wants(appId, view), asked: await reach.asked(appId), secrets: await reach.secrets(appId),
+    schedules: await scheduler.list(appId, view).catch(() => []) };
 }
 
 const routes = [
@@ -588,6 +609,23 @@ const routes = [
     log(`[${id}] reach: ${Object.keys(ABILITIES).filter((k) => on[k]).join(', ') || 'nothing'} switched on, ${on.perDay} model calls a day`);
     return reachOf(id, await engine.view(id));
   }],
+  // Secrets (API keys): set, changed (hosts, where it goes) and removed by
+  // the owner; their values are never sent back.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/secrets$/, async (b, [id]) => ({ secrets: await reach.secrets(id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/secrets$/, async (b, [id]) => {
+    const secret = await reach.putSecret(id, b || {});
+    log(`[${id}] secret ${secret.name} set, sent only to ${secret.hosts.join(', ')}`);
+    return { secret, reach: await reachOf(id, await engine.view(id)) };
+  }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/secrets\/([A-Za-z0-9_-]+)\/delete$/, async (b, [id, name]) => {
+    const out = await reach.deleteSecret(id, name);
+    log(`[${id}] secret ${name} removed`);
+    return { ...out, reach: await reachOf(id, await engine.view(id)) };
+  }],
+  // Schedules: when each runs, how it went; run one now, pause or start it again.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/schedules$/, async (b, [id]) => ({ schedules: await scheduler.list(id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/schedules\/([a-z0-9_-]+)\/run$/, async (b, [id, slug]) => ({ run: await scheduler.runNow(id, slug), schedules: await scheduler.list(id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/schedules\/([a-z0-9_-]+)\/(pause|resume)$/, async (b, [id, slug, what]) => { await scheduler.setPaused(id, slug, what === 'pause'); return { schedules: await scheduler.list(id) }; }],
   ['GET', /^\/api\/geocode$/, async (b, m, url) => ({ places: await services.geocode(url.searchParams.get('q')) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/track$/, async (b, [id], url, cx) => {
     // open and leave name a screen (leave with the time spent on it); abandon

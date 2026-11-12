@@ -31,6 +31,41 @@ changes collect under "Unreleased".
   it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
   query KEYWORD OPTIONS(indexed = false)` adds it).
 
+### Security
+
+- ChloeCtx: **breaking:** `chloectx app` refuses to start on an address
+  other than loopback (`--host 0.0.0.0`, say) with no `--token`, since
+  whoever reached the port could read and write every space and start
+  model calls billed to the app's key; `--insecure` starts it anyway. The
+  operator passes `--insecure` for a cluster without a `tokenSecret`
+  (which is open itself), and the app's token otherwise, as before. The
+  app also serves 64 requests at once (one more is answered 503) and runs
+  at most four distillations, with 256 waiting; past that an exchange is
+  stored without notes and `/v1/info` counts it under `distill.skipped`.
+  Before, each request and each exchange started a thread, without bound.
+- ChloeCtx: **breaking:** `chloectx sync` refuses a server reached over
+  plain `http://` anywhere but this machine (`127.0.0.1`, `::1`,
+  `localhost`), since it sends transcripts and the server's key;
+  `CHLOECTX_SYNC_ALLOW_HTTP=1` allows it. Each request's header file (the
+  key, owner-only) is its own, so a push every 30 s and an explicit
+  `chloectx sync` no longer remove each other's.
+- ChloeCtx: the inspector (`chloectx ui`) is served with a
+  Content-Security-Policy that runs only its own script (by hash), loads
+  nothing from elsewhere and connects only to itself, and with
+  `X-Frame-Options: DENY`.
+- `install.sh` builds ChloeCtx with `--locked`: the dependency versions in
+  `chloectx/Cargo.lock`, the ones CI tested, not newer ones the registry
+  offers on the day.
+- `chloedb-sheets`: a SQLite file's views are listed but not counted, and
+  come into a workbook only when named (the UI leaves them unticked): a
+  view runs its query as it is read, and a file's can be a query that
+  never ends, which held a server thread for good. Reading a SQLite file
+  stops after 60 s for its list of tables and 180 s for an import, and the
+  file is opened with `trusted_schema` off. An xlsx file is refused when
+  its parts expand past 512 MB (counted by decompressing them, not by the
+  sizes the file declares) or it holds more than 2 million cells, as CSV
+  and SQLite imports were bounded already.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

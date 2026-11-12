@@ -660,15 +660,17 @@ SELECT id, score() FROM top ORDER BY sigmoid(gbdt('clicks', bm25(title, :t), bm2
 A cross-encoder reads the query and a row's text together and scores how well the text answers it. It costs thousands of times what BM25 does per row, so it reranks the top rows of a cheaper ranking, in a rerank phase of its own:
 
 ```sql
-WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 100)
+WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 20)
 SELECT id, title, score() FROM top
 ORDER BY cross_encoder('ms-marco-MiniLM-L-6-v2', title, body, :q) DESC LIMIT 10;
 
 -- mixed with other scores of the row, and a phase after it
-WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 100),
-     ce AS (SELECT * FROM top ORDER BY cross_encoder('bge-reranker-base', body, :q) + 0.1 * coalesce(rating, 0) DESC LIMIT 20)
-SELECT id, score() FROM ce ORDER BY bm25(title, :q) + decay(published, now(), 2592000) DESC LIMIT 10;
+WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 20),
+     ce AS (SELECT * FROM top ORDER BY cross_encoder('bge-reranker-base', body, :q) + 0.1 * coalesce(rating, 0) DESC LIMIT 10)
+SELECT id, score() FROM ce ORDER BY bm25(title, :q) + decay(published, now(), 2592000) DESC LIMIT 5;
 ```
+
+A server reranks at most 20 rows a query by default: start it with `--max-rerank 100` to rerank the top 100, as the measurements below do.
 
 - **The model** is a Hugging Face directory `<models>/<model>` holding `config.json`, `tokenizer.json` and its weights. A `model.onnx`, any sequence classifier with one label exported to ONNX (int8 ones too, as Hugging Face repositories ship them under `onnx/`, such as `model_qint8_avx512_vnni.onnx`), runs through ONNX Runtime in a server or Python package built with `--features onnx`, which downloads ONNX Runtime's library when it builds and links it in; its rows are sorted by length into batches of 16, so that little of a batch is padding. A `model.safetensors`, a `BertForSequenceClassification` (such as `cross-encoder/ms-marco-MiniLM-L-6-v2`) or an `XLMRobertaForSequenceClassification` (such as `BAAI/bge-reranker-base`) with one label, runs through candle in `f32` in one built with `--features bert` (`accelerate` on a Mac), as BERT embedding models do. A directory with both runs its `model.onnx`; without the feature its weights need, a query by it is refused. `chloedb-server fetch-model ms-marco-MiniLM-L-6-v2-int8` (or `gte-reranker-modernbert-base-int8`, a ModernBERT model) downloads an int8 export ready to run. A model is read when a query first uses it and again when one of its files changes. `builtin:overlap` needs no files: the share of the query's distinct words the text holds, for tests and demos.
 - **A model served elsewhere** is called over HTTP, a batch of rows a request (feature `hosted`, on by default), for models too large or slow for the server's CPU: a provider's by name, `cohere/rerank-v3.5`, `voyage/rerank-2.5` or `jina/jina-reranker-v2-base-multilingual`, with the key in `COHERE_API_KEY` (or `CO_API_KEY`), `VOYAGE_API_KEY` or `JINA_API_KEY`; or a server of one's own that a directory `<models>/<model>` names in an `endpoint.json`, such as Hugging Face TEI on a GPU (`{"api": "tei", "url": "http://gpu:8080/rerank"}`), or vLLM, Infinity or LiteLLM (`"api": "vllm"`, `"infinity"` or `"litellm"`, with a `base_url`; they answer at `/rerank` in Cohere's shape). `endpoint.json` takes the keys an [embedding model's](server.md#embedded-vector-fields) does that apply (`url` or `base_url`, `model`, `key_env`, `key_header`, `headers`, `batch`, `max_chars`, `concurrency`, `retries`, `timeout_s`), and `COHERE_BASE_URL`, `VOYAGE_BASE_URL` or `JINA_BASE_URL` sends a provider's requests to a server of its API. A request carries 1,000 rows at most (TEI's default batch, 32, for a server of one's own), four are sent at once, a rate limit or a server's error is tried twice more (pauses of at most 5 s; a request times out after 10 s), and a refused key, a server that keeps failing or an answer that misses a row fails the query. A provider's score is its `relevance_score`, between 0 and 1; TEI's is the logit (`raw_scores`), as a model run here gives it. A row with no text is not sent, and gets no score. The plan's hash is of the endpoint (its API, URL and model, not its key), so a plan made with one server is refused by another.
@@ -1332,7 +1334,7 @@ Each statement is one transaction, and returns the number of rows it wrote. From
 
 ## EXPLAIN
 
-`EXPLAIN <statement>` shows the plan of a `SELECT`, `INSERT`, `UPDATE` or `DELETE` without running it: a row per line, in a column named `plan`, the root first and each operator's input indented under it.
+`EXPLAIN <statement>` shows the plan of a `SELECT`, `INSERT`, `UPDATE` or `DELETE` without running it: a row per line, in a column named `plan`, the root first and each operator's input indented under it. It runs in-process (`db.sql` in Python, `Db::sql` in Rust); over HTTP, send the statement without `EXPLAIN` to [`POST /v1/explain`](server.md#http-api), which answers the same lines as `tree`.
 
 ```sql
 EXPLAIN SELECT category, COUNT(*) AS n FROM papers WHERE published >= '2026-10-01'
