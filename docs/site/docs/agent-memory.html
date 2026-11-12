@@ -22,7 +22,7 @@
     <a href="../benchmarks.html">Benchmarks</a>
     <a href="../use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html">Get started</a></div>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
@@ -136,7 +136,7 @@ class Memory:
 
     def close(self):
         self.db.close()</pre>
-<p><code>recall</code> ranks turns by a fusion of BM25 and vector similarity, multiplies it by <a href="sql.html#decayfield-origin-scale-closeness-to-a-value"><code>decay</code></a>, which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with <code>MAX 2 PER session</code>, so one long session does not crowd out the others. Facts need no history: <code>upsert</code> replaces a key's row, so a fact is always its latest value.</p>
+<p><code>recall</code> ranks turns by a fusion of BM25 and vector similarity, multiplies it by <a href="sql.html#decayfield-origin-scale--closeness-to-a-value"><code>decay</code></a>, which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with <code>MAX 2 PER session</code>, so one long session does not crowd out the others. Facts need no history: <code>upsert</code> replaces a key's row, so a fact is always its latest value.</p>
 <h2 id="remember-then-recall">Remember, then recall<a class="anchor" href="#remember-then-recall" aria-label="Link to this section">#</a></h2>
 <p>Two past sessions, a few weeks apart, and a fact that changed between them:</p>
 <pre data-lang="python" data-title="sessions.py">import datetime as dt

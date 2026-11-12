@@ -22,7 +22,7 @@
     <a href="../benchmarks.html">Benchmarks</a>
     <a href="../use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html">Get started</a></div>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
@@ -241,7 +241,7 @@ We ship a replacement at no cost and do not ask for the damaged item back.
 Question: Can I get express delivery for a sofa?</pre>
 <h2 id="make-it-better">Make it better<a class="anchor" href="#make-it-better" aria-label="Link to this section">#</a></h2>
 <ul>
-<li><strong>Rank by more than text.</strong> Multiply in what you know about a passage: <code>ORDER BY rrf(...) * (1 + 0.2 * is_current) DESC</code>, or decay old ones by date with <a href="sql.html#decayfield-origin-scale-closeness-to-a-value"><code>decay</code></a>.</li>
+<li><strong>Rank by more than text.</strong> Multiply in what you know about a passage: <code>ORDER BY rrf(...) * (1 + 0.2 * is_current) DESC</code>, or decay old ones by date with <a href="sql.html#decayfield-origin-scale--closeness-to-a-value"><code>decay</code></a>.</li>
 <li><strong>Filter before ranking.</strong> A <code>WHERE</code> clause (a product line, a language, what a user may see) is planned with the search, not applied after it: <code>WHERE audience IN ('public', :team)</code>.</li>
 <li><strong>Rerank the top.</strong> A cross-encoder reads the question and each of the top passages together and scores them more precisely, in the same query: <a href="sql.html#rerank-phases">rerank phases</a>.</li>
 <li><strong>Serve it.</strong> The same query runs on chloedb-server over HTTP (<code>chloedb.connect(url)</code> has the same <code>query</code>), so several workers can retrieve from one index, and on a cluster when the documents outgrow a machine.</li>

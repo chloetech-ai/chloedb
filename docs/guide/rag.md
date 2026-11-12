@@ -220,7 +220,7 @@ Question: Can I get express delivery for a sofa?
 
 ## Make it better
 
-- **Rank by more than text.** Multiply in what you know about a passage: `ORDER BY rrf(...) * (1 + 0.2 * is_current) DESC`, or decay old ones by date with [`decay`](../chloedb/query-language.md#decayfield-origin-scale-closeness-to-a-value).
+- **Rank by more than text.** Multiply in what you know about a passage: `ORDER BY rrf(...) * (1 + 0.2 * is_current) DESC`, or decay old ones by date with [`decay`](../chloedb/query-language.md#decayfield-origin-scale--closeness-to-a-value).
 - **Filter before ranking.** A `WHERE` clause (a product line, a language, what a user may see) is planned with the search, not applied after it: `WHERE audience IN ('public', :team)`.
 - **Rerank the top.** A cross-encoder reads the question and each of the top passages together and scores them more precisely, in the same query: [rerank phases](../chloedb/query-language.md#rerank-phases).
 - **Serve it.** The same query runs on chloedb-server over HTTP (`chloedb.connect(url)` has the same `query`), so several workers can retrieve from one index, and on a cluster when the documents outgrow a machine.

@@ -38,7 +38,7 @@ chloedb-sheets serve --strata http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN"
 chloectx app --server http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN" --embedder hash:64 > chloectx.log 2>&1 &
 ```
 
-`--embedder hash:64` makes ChloeCtx's vectors from hashed words, which needs no download; leave it out to use its embedding model (`chloectx fetch-model` fetches it once). This server has no keys, so anyone who reaches `127.0.0.1:7700` is an admin; give a server `--token` or keys before it listens anywhere else ([access](../chloedb/server.md#access-tokens-and-keys)).
+`--embedder hash:64` makes ChloeCtx's vectors from hashed words, which needs no download; leave it out to use its embedding model (`chloectx fetch-model` fetches it once). Without `--token` the server listens on loopback only and anything on this machine that reaches `127.0.0.1:7700` can change it; give it a token, and its clients keys, before it serves anyone else ([security](../chloedb/server.md#security)).
 
 The server lists the apps once they answer, which is what the command center's **Apps** menu shows:
 
@@ -47,12 +47,12 @@ until curl -sf http://127.0.0.1:7700/v1/apps | python3 -c 'import json, sys; sys
 curl -s http://127.0.0.1:7700/v1/apps | python3 -c '
 import json, sys
 for app in json.load(sys.stdin)["apps"]:
-    print(app["name"], "|", app["manifest"]["title"])'
+    print(app["name"], "|", app["title"], "|", app["description"])'
 ```
 
 ```text output
-sheets | Sheets
-chloectx | ChloeCtx
+sheets | Sheets | Spreadsheets kept in ChloeDB: formulas, charts and pivots, xlsx, CSV and SQLite in and out, and the cluster's tables as sheets
+chloectx | ChloeCtx | Memory spaces any agent writes to and asks for context, by search alone; and Seen before: the cluster's firing alerts beside the past incidents they look like
 ```
 
 Open `http://127.0.0.1:7700` in a browser to use them; the rest of this page drives them from a script.
@@ -95,13 +95,22 @@ call("sheets", f"/v1/books/{book}/query", {
     "sheet": 0, "row": 8, "col": 1,
     "sql": "SELECT region, sales FROM regions WHERE sales > 8 AND sales < 40 ORDER BY sales DESC"})
 
-cells = call("sheets", f"/v1/books/{book}/cells?sheet=0&r0=1&r1=10&c0=1&c1=2")
-for c in sorted(cells["cells"], key=lambda c: (c["row"], c["col"])):
-    print(f'{c["row"]},{c["col"]}: {c["text"]}')
+# Each cell is [row, column, what it shows, ...].
+shown = {(c[0], c[1]): c[2] for c in call("sheets", f"/v1/books/{book}/cells?sheet=0&r0=1&r1=10&c0=1&c1=2")["cells"]}
+for row in range(1, 11):
+    if (row, 1) in shown:
+        print(row, shown[(row, 1)], shown.get((row, 2), ""), sep=" | ")
 ```
 
 ```text output
-...
+1 | Region | Sales
+2 | North | 10
+3 | South | 32.5
+4 | East | 7
+5 | Total | 49.5
+8 | region | sales
+9 | South | 32.5
+10 | North | 10
 ```
 
 The total is a formula, computed by IronCalc; the rows from row 8 are the query's answer, and **Refresh** in the view (or `POST /v1/books/<id>/refresh`) runs it again when the table changes. The workbook's cells are themselves rows of the server, so the server can search every workbook at once.
@@ -111,14 +120,21 @@ The total is a formula, computed by IronCalc; the rows from row 8 are the query'
 A space is a table of the server, `ctx_<space>`, that agents write notes to and ask for context within a budget of tokens. A decision, then a newer one that replaces it:
 
 ```python
+import datetime as dt
 from apps import call
 
+def ts(when):
+    """A note's time, in Unix seconds (left out, it is now)."""
+    return int(dt.datetime.fromisoformat(when).replace(tzinfo=dt.timezone.utc).timestamp())
+
 call("chloectx", "/v1/spaces", {"name": "billing", "title": "Billing"})
-old = call("chloectx", "/v1/spaces/billing/notes", {"kind": "decision", "text": "Refunds above 500 EUR need a team lead's approval."})
+old = call("chloectx", "/v1/spaces/billing/notes", {"kind": "decision", "ts": ts("2026-09-01T10:00"),
+                                                    "text": "Refunds above 500 EUR need a team lead's approval."})
 call("chloectx", "/v1/spaces/billing/notes", {
-    "kind": "decision", "replaces": old["id"],
+    "kind": "decision", "replaces": old["id"], "ts": ts("2026-10-15T09:00"),
     "text": "Refunds above 1000 EUR need the finance manager's approval; team leads approve up to 1000 EUR."})
-call("chloectx", "/v1/spaces/billing/notes", {"kind": "fact", "text": "Refunds are paid back to the original card within 5 working days."})
+call("chloectx", "/v1/spaces/billing/notes", {"kind": "fact", "ts": ts("2026-10-20T12:00"),
+                                                "text": "Refunds are paid back to the original card within 5 working days."})
 
 answer = call("chloectx", "/v1/spaces/billing/ask", {"question": "a customer wants a 700 EUR refund, who approves it?", "budget": 500})
 print(answer["tokens"] <= 500)
@@ -127,7 +143,9 @@ print(answer["context"])
 
 ```text output
 True
-...
+Notes from earlier conversations with the user, in their current versions, oldest first (date, kind, note; what it replaced in brackets). Rules come first; a later note can change what an earlier one says:
+- 2026-10-15 decision: Refunds above 1000 EUR need the finance manager's approval; team leads approve up to 1000 EUR. (changed 2026-10-15; was: Refunds above 500 EUR need a team lead's approval.)
+- 2026-10-20 fact: Refunds are paid back to the original card within 5 working days.
 ```
 
 The context holds the current decision and says what it replaced; the old one is left out. No model is called to answer: it is a BM25 and vector search under the space's rules ([how ChloeCtx searches](../chloectx/index.md)).

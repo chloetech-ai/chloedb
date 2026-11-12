@@ -169,8 +169,9 @@ def script_for(page, source, blocks, work):
     run.mkdir()
     (run / "sql.py").write_text(SQL_RUNNER)
     rel = source.relative_to(ROOT).as_posix()
-    sh = ["set -eo pipefail", 'exec 3>&1 4>&2', 'step=""',
-          'on_exit() { st=$?; exec 1>&3 2>&4; if [ $st -ne 0 ] && [ -n "$step" ]; then echo "--- output of the failed block ---"; cat ".run/out-$step"; echo "--- $where failed (exit $st)"; fi; exit $st; }',
+    # .run is named by its full path: a block may cd elsewhere.
+    sh = ["set -eo pipefail", f"RUN={sh_quote(str(run))}", 'exec 3>&1 4>&2', 'step=""',
+          'on_exit() { st=$?; exec 1>&3 2>&4; if [ $st -ne 0 ] && [ -n "$step" ]; then echo "--- output of the failed block ---"; cat "$RUN/out-$step"; echo "--- $where failed (exit $st)"; fi; exit $st; }',
           "trap on_exit EXIT"]
     last = None
     for i, (kind, line, lang, attrs, body) in enumerate(blocks):
@@ -180,30 +181,31 @@ def script_for(page, source, blocks, work):
             dest.parent.mkdir(parents=True, exist_ok=True)
             # Written when the page reaches it, as a reader would.
             (run / f"file-{i}").write_text(body)
-            sh.append(f'mkdir -p "$(dirname {sh_quote(attrs["file"])})" && cp .run/file-{i} {sh_quote(attrs["file"])}')
+            sh.append(f'mkdir -p "$(dirname {sh_quote(attrs["file"])})" && cp "$RUN/file-{i}" {sh_quote(attrs["file"])}')
         elif kind == "run":
             if lang in ("python", "py"):
                 (run / f"block-{i}.py").write_text(body)
-                code = f"python3 .run/block-{i}.py"
+                # From stdin, as pasted: imports find the page's files.
+                code = f'python3 - < "$RUN/block-{i}.py"'
             elif lang in ("js", "javascript"):
                 (run / f"block-{i}.mjs").write_text(body)
-                code = f"node .run/block-{i}.mjs"
+                code = f'node "$RUN/block-{i}.mjs"'
             elif lang == "sql":
                 if "db" not in attrs:
                     raise SystemExit(f"{where}: a sql block runs against db=FILE, or says norun")
                 (run / f"block-{i}.sql").write_text(body)
-                code = f"python3 .run/sql.py {sh_quote(attrs['db'])} .run/block-{i}.sql"
+                code = f'python3 "$RUN/sql.py" {sh_quote(attrs["db"])} "$RUN/block-{i}.sql"'
             else:
                 code = body
-            sh.append(f'step={i}; where={sh_quote(where)}; echo "▶ {where}" >&4; exec >".run/out-{i}" 2>&1')
+            sh.append(f'step={i}; where={sh_quote(where)}; echo "▶ {where}" >&4; exec >"$RUN/out-{i}" 2>&1')
             sh.append(code)
-            sh.append(f'exec 1>&3 2>&4; cat ".run/out-{i}"; step=""')
+            sh.append(f'exec 1>&3 2>&4; cat "$RUN/out-{i}"; step=""')
             last = i
         elif kind == "output":
             if last is None:
                 raise SystemExit(f"{where}: an output block with no block before it")
             (run / f"expect-{i}").write_text(body)
-            sh.append(f'python3 {sh_quote(str(HERE / "run.py"))} --compare .run/expect-{i} .run/out-{last} {sh_quote(where)}')
+            sh.append(f'python3 {sh_quote(str(HERE / "run.py"))} --compare "$RUN/expect-{i}" "$RUN/out-{last}" {sh_quote(where)}')
     return "\n".join(sh) + "\n"
 
 
@@ -236,15 +238,19 @@ def run_page(page, source, programs, args):
     script = script_for(page, source, blocks, work)
     (work / ".run" / "page.sh").write_text(script)
     t0 = time.time()
-    proc = subprocess.Popen(["bash", ".run/page.sh"], cwd=work, env=env, start_new_session=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # Output to a file, not a pipe: a server a page starts in the background
+    # keeps the page's descriptors, and would hold a pipe open after the page ends.
+    log = work / ".run" / "page.log"
+    with open(log, "w") as f:
+        proc = subprocess.Popen(["bash", ".run/page.sh"], cwd=work, env=env, start_new_session=True,
+                                stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT)
     try:
-        out, _ = proc.communicate(timeout=args.timeout)
-        status = proc.returncode
+        status = proc.wait(timeout=args.timeout)
+        out = log.read_text(errors="replace")
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
-        out, _ = proc.communicate()
-        out += f"\n--- {rel} took longer than {args.timeout}s"
+        proc.wait()
+        out = log.read_text(errors="replace") + f"\n--- {rel} took longer than {args.timeout}s"
         status = -1
     finally:
         # The servers a page started, and their children.

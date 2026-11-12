@@ -59,19 +59,44 @@ until curl -sf http://127.0.0.1:8099/ > /dev/null; do sleep 0.2; done
 
 ## Look before you crawl
 
-`preview` reads a few pages and prints the table it would make, writing nothing:
+`preview` reads a few pages and prints, as JSON, the table it would make and why, writing nothing. Its `sql` is the table:
 
 ```sh
-chloedb-crawl preview http://127.0.0.1:8099/ --pages 7
+chloedb-crawl preview http://127.0.0.1:8099/ --pages 7 > preview.json
+python3 -c 'import json; p = json.load(open("preview.json")); print(len(p["pages"]), "pages read"); print(p["sql"])'
 ```
 
 ```text output
-...
+7 pages read
+CREATE TABLE IF NOT EXISTS site_127_0_0_1 (
+  url KEYWORD PRIMARY KEY,
+  host KEYWORD,
+  depth INT,
+  status INT,
+  fetched TIMESTAMP,
+  bytes INT,
+  fetch_ms INT,
+  title TEXT,
+  body TEXT,
+  words INT,
+  links INT,
+  description TEXT,
+  headings TEXT,
+  kind KEYWORD,
+  category KEYWORD,
+  name KEYWORD,
+  offers_availability KEYWORD,
+  offers_price FLOAT,
+  offers_pricecurrency KEYWORD,
+  offers_type KEYWORD,
+  price FLOAT,
+  data JSON
+)
 ```
 
 ## Crawl
 
-`crawl --local DIR` starts a cluster of its own in `DIR` (a coordinator on `127.0.0.1:7700` and a shard), crawls into it, prints what it did, and stops the cluster. On a site you don't run, keep the polite defaults (one request at a time, a second apart); this one is ours, so it can go faster:
+`crawl --local DIR` starts a cluster of its own in `DIR` (a coordinator on `127.0.0.1:7700` and a shard), crawls into it, prints its progress and then the table it made, and stops the cluster. `--table` names the table, which is otherwise named after the site's host. On a site you don't run, keep the defaults, which space the requests out and obey robots.txt; this one is ours, so it can go faster:
 
 ```sh
 chloedb-crawl crawl http://127.0.0.1:8099/ --local ./crawl-cluster \
@@ -80,6 +105,32 @@ chloedb-crawl crawl http://127.0.0.1:8099/ --local ./crawl-cluster \
 
 ```text output
 ...
+CREATE TABLE IF NOT EXISTS shop (
+  url KEYWORD PRIMARY KEY,
+  host KEYWORD,
+  depth INT,
+  status INT,
+  fetched TIMESTAMP,
+  bytes INT,
+  fetch_ms INT,
+  title TEXT,
+  body TEXT,
+  words INT,
+  links INT,
+  description TEXT,
+  headings TEXT,
+  kind KEYWORD,
+  category KEYWORD,
+  name KEYWORD,
+  offers_availability KEYWORD,
+  offers_price FLOAT,
+  offers_pricecurrency KEYWORD,
+  offers_type KEYWORD,
+  price FLOAT,
+  data JSON
+)
+
+{"table":"shop","phase":"done","counts":{"fetched":7,"pages":7,"written":7,...
 ```
 
 ## Search it
@@ -91,7 +142,7 @@ chloedb-crawl serve --local ./crawl-cluster > serve.log 2>&1 &
 until curl -sf http://127.0.0.1:7700/v1/health > /dev/null; do sleep 0.2; done
 ```
 
-The table has a column for each field most pages had: the page's own (`url`, `title`, `body`, ...) and the JSON-LD's, under `ld.` prefixes turned into column names. Ask the server which:
+The table has a column for each field most pages had: the page's own (`url`, `title`, `body`, ...), those of the JSON-LD, such as `offers_price`, and `price`, which it learned from the site's own template (the `<p class="price">` every product page has). Ask the server which:
 
 ```sh
 curl -s http://127.0.0.1:7700/v1/query -H 'content-type: application/json' \
@@ -99,19 +150,21 @@ curl -s http://127.0.0.1:7700/v1/query -H 'content-type: application/json' \
 ```
 
 ```text output
-...
+['url', 'host', 'depth', 'status', 'fetched', 'bytes', 'fetch_ms', 'title', 'body', 'words', 'links', 'description', 'headings', 'kind', 'category', 'name', 'offers_availability', 'offers_price', 'offers_pricecurrency', 'offers_type', 'price', 'data']
 ```
 
 Then search it like any table: full text over the pages' text, filtered and ranked by the fields the crawler found.
 
 ```sh
 curl -s http://127.0.0.1:7700/v1/query -H 'content-type: application/json' -d @- <<'JSON' | python3 -c 'import json, sys; [print(*r, sep=" | ") for r in json.load(sys.stdin)["rows"]]'
-{"sql": "SELECT title, ld_offers_price FROM shop WHERE MATCH(body, 'waterproof') ORDER BY bm25(body, 'waterproof') DESC LIMIT 5"}
+{"sql": "SELECT title, offers_price, offers_availability FROM shop WHERE MATCH(body, 'waterproof') ORDER BY bm25(body, 'waterproof') DESC LIMIT 5"}
 JSON
 ```
 
 ```text output
-...
+Down Parka | Northwind Outdoor | 240.0 | https://schema.org/InStock
+Dry Bag 20L | Northwind Outdoor | 32.0 | https://schema.org/InStock
+Rain Shell Jacket | Northwind Outdoor | 120.0 | https://schema.org/OutOfStock
 ```
 
 ## Next

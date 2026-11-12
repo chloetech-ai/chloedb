@@ -272,7 +272,7 @@ TEMPLATE = """<!doctype html>
     <a href="../benchmarks.html">Benchmarks</a>
     <a href="../use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="{github}">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="{github}">GitHub</a><a class="btn primary" href="{start}">Get started</a></div>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
@@ -343,7 +343,8 @@ def render_page(p, all_pages, by_source, hashes):
         h_site_css=hashes.get("site.css", ""), h_docs_css=hashes.get("docs.css", ""), h_site_js=hashes.get("site.js", ""),
         source=p.rel, github=GITHUB, branch=BRANCH, sidebar=sidebar(p, all_pages), section=html.escape(p.section),
         h1=title, badge=badge, toc=toc_html, body=body, edit=f"{GITHUB}/edit/{BRANCH}/{p.rel}", pager=pager,
-        mermaid=MERMAID if has_mermaid else "")
+        mermaid=MERMAID if has_mermaid else "",
+        start="quickstart.html" if any(q.page == "quickstart" for q in all_pages) else "index.html")
 
 
 def check_links(out, written):

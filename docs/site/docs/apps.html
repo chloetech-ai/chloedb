@@ -22,7 +22,7 @@
     <a href="../benchmarks.html">Benchmarks</a>
     <a href="../use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html">Get started</a></div>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
@@ -95,15 +95,15 @@ until curl -sf http://127.0.0.1:7700/v1/health &gt; /dev/null; do sleep 0.2; don
 
 chloedb-sheets serve --strata http://127.0.0.1:7700 --token &quot;$CHLOEDB_APP_TOKEN&quot; &gt; sheets.log 2&gt;&amp;1 &amp;
 chloectx app --server http://127.0.0.1:7700 --token &quot;$CHLOEDB_APP_TOKEN&quot; --embedder hash:64 &gt; chloectx.log 2&gt;&amp;1 &amp;</pre>
-<p><code>--embedder hash:64</code> makes ChloeCtx's vectors from hashed words, which needs no download; leave it out to use its embedding model (<code>chloectx fetch-model</code> fetches it once). This server has no keys, so anyone who reaches <code>127.0.0.1:7700</code> is an admin; give a server <code>--token</code> or keys before it listens anywhere else (<a href="server.html#access-tokens-and-keys">access</a>).</p>
+<p><code>--embedder hash:64</code> makes ChloeCtx's vectors from hashed words, which needs no download; leave it out to use its embedding model (<code>chloectx fetch-model</code> fetches it once). Without <code>--token</code> the server listens on loopback only and anything on this machine that reaches <code>127.0.0.1:7700</code> can change it; give it a token, and its clients keys, before it serves anyone else (<a href="server.html#security">security</a>).</p>
 <p>The server lists the apps once they answer, which is what the command center's <strong>Apps</strong> menu shows:</p>
 <pre data-lang="sh">until curl -sf http://127.0.0.1:7700/v1/apps | python3 -c &#x27;import json, sys; sys.exit(0 if all(a.get(&quot;up&quot;) for a in json.load(sys.stdin)[&quot;apps&quot;]) else 1)&#x27;; do sleep 0.3; done
 curl -s http://127.0.0.1:7700/v1/apps | python3 -c &#x27;
 import json, sys
 for app in json.load(sys.stdin)[&quot;apps&quot;]:
-    print(app[&quot;name&quot;], &quot;|&quot;, app[&quot;manifest&quot;][&quot;title&quot;])&#x27;</pre>
-<pre data-lang="text" data-title="Output" class="output">sheets | Sheets
-chloectx | ChloeCtx</pre>
+    print(app[&quot;name&quot;], &quot;|&quot;, app[&quot;title&quot;], &quot;|&quot;, app[&quot;description&quot;])&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">sheets | Sheets | Spreadsheets kept in ChloeDB: formulas, charts and pivots, xlsx, CSV and SQLite in and out, and the cluster&#x27;s tables as sheets
+chloectx | ChloeCtx | Memory spaces any agent writes to and asks for context, by search alone; and Seen before: the cluster&#x27;s firing alerts beside the past incidents they look like</pre>
 <p>Open <code>http://127.0.0.1:7700</code> in a browser to use them; the rest of this page drives them from a script.</p>
 <h2 id="sheets-a-workbook-with-a-formula-and-a-query">Sheets: a workbook with a formula and a query<a class="anchor" href="#sheets-a-workbook-with-a-formula-and-a-query" aria-label="Link to this section">#</a></h2>
 <p>A small client for the apps' APIs through the server:</p>
@@ -136,27 +136,45 @@ call(&quot;sheets&quot;, f&quot;/v1/books/{book}/query&quot;, {
     &quot;sheet&quot;: 0, &quot;row&quot;: 8, &quot;col&quot;: 1,
     &quot;sql&quot;: &quot;SELECT region, sales FROM regions WHERE sales &gt; 8 AND sales &lt; 40 ORDER BY sales DESC&quot;})
 
-cells = call(&quot;sheets&quot;, f&quot;/v1/books/{book}/cells?sheet=0&amp;r0=1&amp;r1=10&amp;c0=1&amp;c1=2&quot;)
-for c in sorted(cells[&quot;cells&quot;], key=lambda c: (c[&quot;row&quot;], c[&quot;col&quot;])):
-    print(f&#x27;{c[&quot;row&quot;]},{c[&quot;col&quot;]}: {c[&quot;text&quot;]}&#x27;)</pre>
-<pre data-lang="text" data-title="Output" class="output">...</pre>
+# Each cell is [row, column, what it shows, ...].
+shown = {(c[0], c[1]): c[2] for c in call(&quot;sheets&quot;, f&quot;/v1/books/{book}/cells?sheet=0&amp;r0=1&amp;r1=10&amp;c0=1&amp;c1=2&quot;)[&quot;cells&quot;]}
+for row in range(1, 11):
+    if (row, 1) in shown:
+        print(row, shown[(row, 1)], shown.get((row, 2), &quot;&quot;), sep=&quot; | &quot;)</pre>
+<pre data-lang="text" data-title="Output" class="output">1 | Region | Sales
+2 | North | 10
+3 | South | 32.5
+4 | East | 7
+5 | Total | 49.5
+8 | region | sales
+9 | South | 32.5
+10 | North | 10</pre>
 <p>The total is a formula, computed by IronCalc; the rows from row 8 are the query's answer, and <strong>Refresh</strong> in the view (or <code>POST /v1/books/&lt;id&gt;/refresh</code>) runs it again when the table changes. The workbook's cells are themselves rows of the server, so the server can search every workbook at once.</p>
 <h2 id="chloectx-a-memory-space-and-its-context">ChloeCtx: a memory space and its context<a class="anchor" href="#chloectx-a-memory-space-and-its-context" aria-label="Link to this section">#</a></h2>
 <p>A space is a table of the server, <code>ctx_&lt;space&gt;</code>, that agents write notes to and ask for context within a budget of tokens. A decision, then a newer one that replaces it:</p>
-<pre data-lang="python">from apps import call
+<pre data-lang="python">import datetime as dt
+from apps import call
+
+def ts(when):
+    &quot;&quot;&quot;A note&#x27;s time, in Unix seconds (left out, it is now).&quot;&quot;&quot;
+    return int(dt.datetime.fromisoformat(when).replace(tzinfo=dt.timezone.utc).timestamp())
 
 call(&quot;chloectx&quot;, &quot;/v1/spaces&quot;, {&quot;name&quot;: &quot;billing&quot;, &quot;title&quot;: &quot;Billing&quot;})
-old = call(&quot;chloectx&quot;, &quot;/v1/spaces/billing/notes&quot;, {&quot;kind&quot;: &quot;decision&quot;, &quot;text&quot;: &quot;Refunds above 500 EUR need a team lead&#x27;s approval.&quot;})
+old = call(&quot;chloectx&quot;, &quot;/v1/spaces/billing/notes&quot;, {&quot;kind&quot;: &quot;decision&quot;, &quot;ts&quot;: ts(&quot;2026-09-01T10:00&quot;),
+                                                    &quot;text&quot;: &quot;Refunds above 500 EUR need a team lead&#x27;s approval.&quot;})
 call(&quot;chloectx&quot;, &quot;/v1/spaces/billing/notes&quot;, {
-    &quot;kind&quot;: &quot;decision&quot;, &quot;replaces&quot;: old[&quot;id&quot;],
+    &quot;kind&quot;: &quot;decision&quot;, &quot;replaces&quot;: old[&quot;id&quot;], &quot;ts&quot;: ts(&quot;2026-10-15T09:00&quot;),
     &quot;text&quot;: &quot;Refunds above 1000 EUR need the finance manager&#x27;s approval; team leads approve up to 1000 EUR.&quot;})
-call(&quot;chloectx&quot;, &quot;/v1/spaces/billing/notes&quot;, {&quot;kind&quot;: &quot;fact&quot;, &quot;text&quot;: &quot;Refunds are paid back to the original card within 5 working days.&quot;})
+call(&quot;chloectx&quot;, &quot;/v1/spaces/billing/notes&quot;, {&quot;kind&quot;: &quot;fact&quot;, &quot;ts&quot;: ts(&quot;2026-10-20T12:00&quot;),
+                                                &quot;text&quot;: &quot;Refunds are paid back to the original card within 5 working days.&quot;})
 
 answer = call(&quot;chloectx&quot;, &quot;/v1/spaces/billing/ask&quot;, {&quot;question&quot;: &quot;a customer wants a 700 EUR refund, who approves it?&quot;, &quot;budget&quot;: 500})
 print(answer[&quot;tokens&quot;] &lt;= 500)
 print(answer[&quot;context&quot;])</pre>
 <pre data-lang="text" data-title="Output" class="output">True
-...</pre>
+Notes from earlier conversations with the user, in their current versions, oldest first (date, kind, note; what it replaced in brackets). Rules come first; a later note can change what an earlier one says:
+- 2026-10-15 decision: Refunds above 1000 EUR need the finance manager&#x27;s approval; team leads approve up to 1000 EUR. (changed 2026-10-15; was: Refunds above 500 EUR need a team lead&#x27;s approval.)
+- 2026-10-20 fact: Refunds are paid back to the original card within 5 working days.</pre>
 <p>The context holds the current decision and says what it replaced; the old one is left out. No model is called to answer: it is a BM25 and vector search under the space's rules (<a href="chloectx.html">how ChloeCtx searches</a>).</p>
 <h2 id="the-crawler">The crawler<a class="anchor" href="#the-crawler" aria-label="Link to this section">#</a></h2>
 <p>The crawler attaches the same way (<code>--app crawler=URL</code>), and <code>chloedb-crawl serve --local DIR</code> starts a cluster with it already listed. <a href="crawl-to-search.html">Crawl a site into search</a> runs it end to end.</p>

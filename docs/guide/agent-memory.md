@@ -72,7 +72,7 @@ class Memory:
         self.db.close()
 ```
 
-`recall` ranks turns by a fusion of BM25 and vector similarity, multiplies it by [`decay`](../chloedb/query-language.md#decayfield-origin-scale-closeness-to-a-value), which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with `MAX 2 PER session`, so one long session does not crowd out the others. Facts need no history: `upsert` replaces a key's row, so a fact is always its latest value.
+`recall` ranks turns by a fusion of BM25 and vector similarity, multiplies it by [`decay`](../chloedb/query-language.md#decayfield-origin-scale--closeness-to-a-value), which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with `MAX 2 PER session`, so one long session does not crowd out the others. Facts need no history: `upsert` replaces a key's row, so a fact is always its latest value.
 
 ## Remember, then recall
 
