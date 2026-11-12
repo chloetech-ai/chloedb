@@ -75,6 +75,8 @@ RUN ln -s chloedb-server /usr/local/bin/strata-server \
     && ln -s chloedb-sheets /usr/local/bin/strata-sheets
 WORKDIR /data
 EXPOSE 7700 7701 7760 7800 7820
+# The database lives in /data: mount a volume there to keep it.
+RUN mkdir -p /data
 ENTRYPOINT ["chloedb-server"]
 
 # The benchmark tools on top, as root (deploy/kind-test.sh and
@@ -88,3 +90,13 @@ COPY chloedb-server/deploy/compare/profiles /usr/local/share/engine-compare/prof
 # The image published: the last stage, so the default target.
 FROM runtime AS server
 USER 10001:10001
+# With no arguments, `docker run` serves /data/chloedb.chloedb (created
+# with no tables the first time) on all of the container's interfaces,
+# which the server allows only with a token:
+#
+#   docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data ghcr.io/chloetech-ai/chloedb-server
+#
+# Arguments replace all of these (pass --listen 0.0.0.0:7700 again). The
+# operator's pods give their own command or arguments, so this default never
+# applies to them.
+CMD ["--db", "/data/chloedb.chloedb", "--listen", "0.0.0.0:7700", "--grpc", "0.0.0.0:7701"]

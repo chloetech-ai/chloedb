@@ -643,8 +643,14 @@ impl Cluster {
         let port = super::chloectx::PORT;
         let resources = c.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"memory": "1Gi"}}));
         let mounts = json!([{"name": "models", "mountPath": models}]);
+        let mut args = c.args(&format!("http://{}:7700", self.name));
+        if s.token_secret.is_none() {
+            // A cluster without a token serves anyone who reaches it, and so
+            // does its ChloeCtx: chloectx app refuses that unless told.
+            args.push("--insecure".into());
+        }
         let mut container = json!({
-            "name": "chloectx", "image": s.image, "command": ["chloectx"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
+            "name": "chloectx", "image": s.image, "command": ["chloectx"], "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": port}],
             "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5},
             "volumeMounts": mounts,
@@ -1810,6 +1816,11 @@ mod tests {
         let sheets = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always", "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}], "sheets": {}}));
         assert_eq!(c.spec.server_config(), sheets.spec.server_config());
         assert_ne!(c.spec.coordinator_config(), sheets.spec.coordinator_config());
+        // A cluster without a token: its ChloeCtx is open too, and says so.
+        let open = cluster(json!({"chloectx": {}}));
+        let d = open.chloectx_deployment(open.spec.chloectx.as_ref().unwrap());
+        let args = d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().clone();
+        assert_eq!(args.last(), Some(&json!("--insecure")), "{args:?}");
         // No model to download with the hash embedder; paused: no pod.
         let hash = cluster(json!({"tokenSecret": "admin", "chloectx": {"embedder": "hash:256"}}));
         let d = hash.chloectx_deployment(hash.spec.chloectx.as_ref().unwrap());

@@ -54,7 +54,10 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 say "building ChloeCtx ($(cargo --version))"
-(cd "$ROOT/chloectx" && cargo build --release --bin chloectx)
+# --locked: the versions in chloectx/Cargo.lock (the ones CI tested), not
+# whatever newer ones the registry offers today.
+(cd "$ROOT/chloectx" && cargo build --locked --release --bin chloectx) ||
+  die "the build failed; if cargo says the lock file needs updating, this checkout's chloectx/Cargo.lock is out of date (git pull, or git checkout chloectx/Cargo.lock)"
 
 BIN="$PREFIX/bin/chloectx"
 mkdir -p "$PREFIX/bin"
