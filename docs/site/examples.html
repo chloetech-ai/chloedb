@@ -12,7 +12,6 @@
 <link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
-<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
   <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
@@ -29,7 +28,7 @@
   <div class="gutter head-band"><div class="wrap page-head">
     <span class="eyebrow">Queries</span>
     <h1>One shop, every kind of query</h1>
-    <p class="lede">One schema, a game shop's products, reviews and the items bought together. Every statement runs unchanged on a file in your app, one server or a cluster.</p>
+    <p class="lede">One schema, a game shop's products, reviews and the items bought together. Every statement runs unchanged on a file in your app or on one server, and all but the graph queries and <code>ON CONFLICT</code> run through a cluster's coordinator too.</p>
   </div></div>
 
   <section class="gutter"><div class="wrap ex-layout">
@@ -61,7 +60,7 @@
   brand KEYWORD, category KEYWORD, platforms KEYWORD[],
   price FLOAT, rating FLOAT, ratings INT, in_stock BOOL DEFAULT TRUE,
   released TIMESTAMP, attrs JSON OPTIONS(text = true),
-  emb VECTOR OPTIONS(embed = 'title, features', model = 'bge-small-en-v1.5')
+  emb VECTOR OPTIONS(embed = 'title, features', model = 'potion-retrieval-32M')
 );
 
 CREATE TABLE reviews (
@@ -161,10 +160,10 @@ ORDER BY ln(1 + bm25(title, :q)) * (1 + 0.2 * coalesce(rating, 0))
         </div>
         <div class="ex">
           <h3>A cheap first phase, then a reranker</h3>
-          <p>A cheap first phase keeps a hundred rows; a cross-encoder orders the top ten.</p>
+          <p>A cheap first phase keeps twenty rows; a cross-encoder orders the top ten. A server reranks at most 20 rows unless started with <code>--max-rerank</code>.</p>
 <pre data-lang="sql">WITH top AS (
   SELECT * FROM products
-  ORDER BY rrf(bm25(title, :q), similarity(emb, :v)) DESC LIMIT 100
+  ORDER BY rrf(bm25(title, :q), similarity(emb, :v)) DESC LIMIT 20
 )
 SELECT id, title, score() FROM top
 ORDER BY cross_encoder('ms-marco-MiniLM-L-6-v2', title, features, :q) DESC LIMIT 10;</pre>
@@ -224,7 +223,7 @@ ORDER BY rrf(
           <h3>Two steps out, either direction</h3>
 <pre data-lang="sql">SELECT id, title, hops() FROM products
 WHERE REACHABLE(bought_with, 'B07XYZ', hops => 2, dir => 'both') AND in_stock
-ORDER BY hops(), rating DESC LIMIT 20;</pre>
+ORDER BY hops(), id LIMIT 20;</pre>
           <div class="ex-meta"></div>
         </div>
         <div class="ex">

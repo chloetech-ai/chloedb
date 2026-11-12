@@ -12,7 +12,6 @@
 <link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
-<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
   <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
@@ -236,7 +235,7 @@ ORDER BY similarity(emb, encode('next',
 DESC MAX 2 PER brand LIMIT 10;</pre></div>
         <div data-panel="q-graph"><pre data-lang="sql" data-title="Bought together">SELECT id, title, hops() FROM products
 WHERE REACHABLE(bought_with, 'B07XYZ', hops => 2, dir => 'both') AND in_stock
-ORDER BY hops(), rating DESC LIMIT 20;</pre></div>
+ORDER BY hops(), id LIMIT 20;</pre></div>
         <div data-panel="q-sql"><pre data-lang="sql" data-title="Plain SQL">SELECT p.brand, COUNT(*) AS reviews, AVG(r.stars) AS stars
 FROM reviews r JOIN products p ON r.item = p.id
 WHERE r.ts >= '2026-01-01'
