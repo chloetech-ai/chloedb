@@ -4724,18 +4724,24 @@ async fn cloud_one(State(app): State<App>, axum::extract::Path(id): axum::extrac
     Ok(AxJson(m.view()))
 }
 
-/// `{"provider", "plan", "confirm", "delete_after_hours"?, "bring"?}`:
+/// `{"provider", "plan", "confirm", "delete_after_hours" | "keep", "bring"?}`:
 /// makes the plan's cluster, which bills the account until it is deleted.
-/// `confirm` is the cluster's name, typed again; `bring` names tables of
-/// this server the cluster copies in once it is ready
-/// ([`crate::copy::bring_when_ready`]). Refused when the account's limit
-/// would not start the nodes, or when the cloud already has a cluster of
-/// that name. 202: the cluster is on its way; `GET` it to follow.
+/// `confirm` is the cluster's name, typed again; `delete_after_hours` has
+/// it delete itself then, and without it `keep: true` says it is kept
+/// until someone deletes it; `bring` names tables of this server the
+/// cluster copies in once it is ready ([`crate::copy::bring_when_ready`]).
+/// Refused when this server would forget the cluster or the account's key
+/// when it restarts (finding E-6: a coordinator keeps no file by default,
+/// and the cluster then bills until someone finds it in the cloud's
+/// console), when the account's limit would not start the nodes, or when
+/// the cloud already has a cluster of that name. 202: the cluster is on
+/// its way; `GET` it to follow.
 async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     use crate::cloud::clusters::{Made, Phase};
     let provider = b["provider"].as_str().unwrap_or_default().to_string();
     let plan = b["plan"].clone();
     let refuse = |m: String| ApiError { status: 409, message: m };
+    cloud_durable(&app, &provider).map_err(refuse)?;
     let (j, nodes) = match provider.as_str() {
         "aws" => {
             let (p, j) = aws_planned(&app, plan).await?;
@@ -4785,6 +4791,11 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
     }
     if b["confirm"].as_str() != Some(cluster.as_str()) {
         return Err(ApiError::bad(format!("confirm is the cluster's name, {cluster}, typed again: making it bills the account until it is deleted")));
+    }
+    match (after_ms, b["keep"].as_bool()) {
+        (Some(_), Some(true)) => return Err(ApiError::bad("delete_after_hours or keep, not both")),
+        (None, Some(true)) | (Some(_), _) => {}
+        (None, _) => return Err(ApiError::bad("delete_after_hours (it deletes itself then), or keep: true (it bills the account until someone deletes it)")),
     }
     let who = who(w);
     let now = crate::operator::now_ms();
@@ -4839,6 +4850,29 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
+}
+
+/// Whether a cluster made here, and the key of `provider`'s account that
+/// deletes it, outlive a restart of this server: kept in files, or the key
+/// in the environment. A coordinator keeps no file unless it is given one
+/// (`--cloud-file`, `--aws-file`, `--digitalocean-file`): its list of made
+/// clusters, their deletion times and the key would last as long as the
+/// process (finding E-6).
+fn cloud_durable(app: &App, provider: &str) -> Result<(), String> {
+    let svc = &app.svc;
+    if svc.clouds.file().is_none() {
+        return Err("this server keeps the clusters it makes in memory only (a coordinator keeps no file unless given one): restarted, it would forget this one, which would bill the account until someone deletes it in the cloud's console, and would not delete itself when asked to. Start it with --cloud-file on a disk that outlives it, or make the cluster from a server of a database".into());
+    }
+    let memory_key = match provider {
+        "aws" => svc.aws.creds().is_some_and(|(_, source)| source == "stored") && svc.aws.file().is_none(),
+        "digitalocean" => svc.digitalocean.token().is_some_and(|(_, source)| source == "stored") && svc.digitalocean.file().is_none(),
+        _ => false,
+    };
+    if memory_key {
+        let flag = if provider == "aws" { "--aws-file" } else { "--digitalocean-file" };
+        return Err(format!("this server keeps the account's key in memory only: restarted, it could not delete the cluster. Start it with {flag} on a disk that outlives it, or give the key in its environment"));
+    }
+    Ok(())
 }
 
 /// `delete_after_hours`: a number of hours (above 0, at most 30 days) as

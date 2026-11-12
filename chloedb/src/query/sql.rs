@@ -846,6 +846,20 @@ pub fn bind(sql_text: &str, schema: &Schema, params: &Params) -> Result<Select> 
     bind_query(&*parse_query(sql_text)?, schema, params)
 }
 
+/// `SELECT COUNT(*) FROM` the table of `schema`, `WHERE` SQL condition
+/// `condition` if there is one, bound. The condition is parsed alone, as
+/// one expression ([`super::parse::parse_expr`]), and set as the query's
+/// WHERE: its text is never spliced into the statement's, where a `LIMIT`
+/// or an `ORDER BY` in it would change the statement around it.
+pub(crate) fn bind_condition(schema: &Schema, condition: Option<&str>, params: &Params) -> Result<Select> {
+    let mut q = parse_query(&format!("SELECT COUNT(*) FROM {}", ident(&schema.table)))?;
+    if let Some(c) = condition {
+        let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("not a SELECT")) };
+        s.selection = Some(super::parse::parse_expr(c)?);
+    }
+    bind_query(&q, schema, params)
+}
+
 /// [`bind`] of a parsed query.
 pub(crate) fn bind_query(q: &sql::Query, schema: &Schema, params: &Params) -> Result<Select> {
     Binder::new(schema, params).query(q)

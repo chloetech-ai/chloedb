@@ -736,6 +736,11 @@ fn listings(db: &Db, rows: &[Row]) {
     listing(db, &call(Some("nowhere"), None), rows);
     listing(db, &call(None, Some("name = 'n1'")), rows.iter().filter(|r| r.name == "n1"));
     listing(db, &call(Some("dims"), Some("attrs.color IS NOT NULL")), rows.iter().filter(|r| value_at(&r.attrs, &["color"]) != Value::Null));
+    // The filter is one condition, not text spliced into a statement
+    // (audit Q14): what would change the statement around it is refused.
+    for bad in ["name = 'n1' LIMIT 0", "name = 'n1' ORDER BY name", "name = 'n1' GROUP BY name", "name = 'n1') OR (TRUE", "TRUE; SELECT 1"] {
+        assert!(db.json_paths(&call(None, Some(bad)), &Params::new()).is_err(), "filter {bad:?} was taken");
+    }
     let all = model_listing(rows);
     assert!(all.len() >= 12 && all["color"].values.len() == 5 && all["dims"].kinds == [0, 0, 0] && all["voltage"].kinds[0] > 0 && all["voltage"].kinds[1] > 0 && all["long"].kinds == [0, 0, 0], "{all:?}");
 }

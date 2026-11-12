@@ -45,6 +45,7 @@ mod key_value;
 mod limits;
 mod llm_calls;
 mod local_shard;
+mod map_lease;
 mod mcp;
 mod oncall;
 mod opensearch;
