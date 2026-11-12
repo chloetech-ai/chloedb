@@ -82,6 +82,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      guide: ${{ steps.diff.outputs.guide }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Changed files
@@ -102,9 +103,18 @@ jobs:
           # fetched (a force push): test everything.
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git fetch --no-tags --depth=1 origin "$base"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "guide=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
+          # The documentation's guide pages run as scripts (the docs job):
+          # a change to them, or to the site's generator, runs them even
+          # when no code changed.
+          if grep -qE '^docs/(guide/|quickstart\.md$|site/scripts/build_docs\.py$)' "$RUNNER_TEMP/changed"; then
+            echo "guide=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "guide=false" >> "$GITHUB_OUTPUT"
+          fi
           grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
           if grep -qvE '^(chloedb|chloedb-server|chloectx)/results/' "$RUNNER_TEMP/rest" \
             || grep -qE '^(chloedb|chloedb-server|chloectx)/results/.*\.py$|^chloedb/results/workloads/' "$RUNNER_TEMP/rest"; then
@@ -811,10 +821,72 @@ jobs:
   # because the change touches only the documentation. A failed or
   # cancelled job fails it. It does not wait for `macos`, the ChloeDB tests
   # on macOS of a pull request and a push to main (see the top of this file).
+  # The documentation site's pages (docs/site/docs/, written by
+  # docs/site/scripts/build_docs.py from docs/guide/ and the Markdown
+  # under docs/) are up to date with their sources. Every change: an edit
+  # of docs/chloedb/*.md changes a page too.
+  docs-site:
+    name: Documentation site is up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: python3 docs/site/scripts/build_docs.py --check
+        run: |
+          pip install -r docs/site/scripts/requirements.txt
+          python docs/site/scripts/build_docs.py --check
+
+  # Every code block of the guide's pages (docs/guide/*.md,
+  # docs/quickstart.md) runs, in order, against this commit's programs, and
+  # prints what the page shows (docs/guide/run.py).
+  docs:
+    name: Documentation site and its examples
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.guide == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: |
+            chloedb-server
+            chloedb-crawl
+            chloedb-sheets
+            chloectx
+            chloedb-py
+          key: docs
+      - name: Build the programs the pages use
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          for crate in chloedb-server chloedb-crawl chloedb-sheets chloectx; do
+            (cd "$crate" && cargo build --locked --profile ci)
+          done
+          . "$RUNNER_TEMP/venv/bin/activate"
+          pip install maturin numpy
+          (cd chloedb-py && maturin develop --locked --profile ci)
+      # The embedding models the pages name are kept between runs.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/chloedb-docs/models
+          key: docs-models-v1
+      - name: Run the guide's pages
+        run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
+          python docs/guide/run.py
+
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript, java]
+    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript, java, docs-site, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
