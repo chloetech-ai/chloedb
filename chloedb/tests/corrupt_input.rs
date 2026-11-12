@@ -110,6 +110,11 @@ fn patterns_on_intact_and_damaged_substring_indexes() {
             harness::substring(&[&[how][..], p.as_bytes()].concat());
         }
     }
+    // An input with its first byte alone: the empty pattern, which the
+    // fuzzer found to panic as `ILIKE` in a build that checks overflow.
+    for how in [0xd0, 0xd1, 0x00, 0x01, 0x03] {
+        harness::substring(&[how]);
+    }
     // Damaged: an error or an answer.
     for data in inputs(10, 6000, 40) {
         harness::substring(&[&[data[0] | 4][..], &data[1..]].concat());

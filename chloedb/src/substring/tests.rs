@@ -236,6 +236,9 @@ fn plans() {
     assert_eq!(exact(""), [SEP, SEP]);
     assert_eq!(Like::new("%%", false).plan(), Plan::All);
     assert_eq!(Like::new("%", true).plan(), Plan::All);
+    // No token at all, which `ILIKE` reaches without a simple shape.
+    assert_eq!(Like::new("", true).plan(), Like::new("", false).plan());
+    assert!(matches!(Like::new("", true).plan(), Plan::Exact(b) if b.len() == 2));
     assert_eq!(Like::new("_%", false).plan(), Plan::Pieces(Vec::new()));
     let Plan::Pieces(p) = Like::new("ab%cd_e", false).plan() else { panic!() };
     assert_eq!(p.iter().map(|p| p.units[0][0].clone()).collect::<Vec<_>>(), [[&[SEP][..], b"ab"].concat(), b"cd".to_vec(), [b"e", &[SEP][..]].concat()]);

@@ -176,8 +176,9 @@ impl Like {
             Some(Simple::Contains(a)) => return Plan::Exact(around(a, false, false)),
             None => {}
         }
+        // The empty pattern, in any case: the empty value alone.
+        let Some(last) = self.toks.len().checked_sub(1) else { return Plan::Exact(around("", true, true)) };
         let mut pieces = Vec::new();
-        let last = self.toks.len() - 1;
         for (i, t) in self.toks.iter().enumerate() {
             let Tok::Lit(a) = t else { continue };
             if !self.ci {
