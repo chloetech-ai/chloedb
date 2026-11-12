@@ -185,6 +185,9 @@ pub struct Db {
     pub exec: ExecOptions,
     /// Models of embedded VECTOR fields ([`Db::set_embedder_in`]).
     embedders: RwLock<Vec<Model>>,
+    /// Models queries named in `embed('model', ..)`, by name, opened from
+    /// [`Db::models_dir`] at their first query.
+    named_models: RwLock<HashMap<String, Arc<dyn Embedder>>>,
     /// Writes may store rows without the vector of an embedded field whose
     /// model is not open here ([`Db::set_embed_later`]).
     embed_later: std::sync::atomic::AtomicBool,
@@ -280,6 +283,7 @@ impl Db {
                 ..ExecOptions::default()
             },
             embedders: RwLock::new(Vec::new()),
+            named_models: RwLock::new(HashMap::new()),
             embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
@@ -1259,6 +1263,8 @@ impl Db {
             }
         }
         let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(snap, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
         if crate::query::llm::may_call(sql, &functions) {
@@ -1297,6 +1303,45 @@ impl Db {
         self.models.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(crate::embed::models_dir)
     }
 
+    /// Query `q` (of text `sql`) with the texts it gives where vectors go
+    /// embedded, and the parameters that hold their vectors
+    /// ([`crate::query::embed_sql`]); `q` as it is when it has none.
+    fn embed_texts(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params) -> Result<(Arc<qsql::Parsed>, Option<Params>)> {
+        if !crate::query::embed_sql::may_embed(sql) {
+            return Ok((q, None));
+        }
+        let catalog: Vec<&Schema> = snap.schemas().collect();
+        Ok(match crate::query::embed_sql::rewrite(&q.query, &catalog, params, self)? {
+            Some((query, p)) => (Arc::new(qsql::Parsed { query, profiles: q.profiles }), Some(p)),
+            None => (q, None),
+        })
+    }
+
+    /// The model a query names in `embed('model', ..)`: one an embedded
+    /// field has open, else one opened from [`Db::models_dir`] and kept,
+    /// named as [`crate::query::embed_sql::refuse_model`] allows.
+    pub fn named_model(&self, name: &str) -> Result<Arc<dyn Embedder>> {
+        if let Some(m) = self.embedders.read().unwrap_or_else(|e| e.into_inner()).iter().find(|m| m.embed.model.eq_ignore_ascii_case(name)) {
+            return Ok(m.model.clone());
+        }
+        if let Some(m) = self.named_models.read().unwrap_or_else(|e| e.into_inner()).get(name) {
+            return Ok(m.clone());
+        }
+        let dir = self.models_dir();
+        if let Some(why) = crate::query::embed_sql::refuse_model(name, &dir) {
+            return Err(Error::Query(format!("embed('{name}', ..): {why}")));
+        }
+        let m = crate::embed::open(name, &dir).map_err(|e| match crate::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(name)) {
+            true => Error::Schema(format!("{} (chloedb-server fetch-model {name} downloads it into {})", match e { Error::Schema(m) => m, e => e.to_string() }, dir.display())),
+            false => e,
+        })?;
+        if !m.single() {
+            return Err(Error::Schema(format!("model {name} embeds a text into a vector a token, not one vector: embed('{name}', ..) needs a model of one vector a text")));
+        }
+        self.named_models.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), m.clone());
+        Ok(m)
+    }
+
     /// Runs a query ([`Db::query`]) and logs what it served to a log table
     /// ([`crate::rank_log`]), made by the first query logged to it: one row
     /// per row answered, or per candidate ([`Log::candidates`]), with the
@@ -1312,7 +1357,7 @@ impl Db {
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
         let p = rank_log::prepare(sql, params, log)?;
-        let served = match &log.interleave {
+        let mut served = match &log.interleave {
             None => rank_log::serve(self.query(&p.sql, params)?, &p, log)?,
             Some(il) => {
                 let pb = rank_log::prepare(&il.sql, params, log)?;
@@ -1322,6 +1367,7 @@ impl Db {
                 rank_log::interleave(a, b, &p, il)?
             }
         };
+        rank_log::keep_query(&mut served, &p, &schema);
         let now = crate::timestamp::now();
         let mut t = self.storage.begin()?;
         {
@@ -1332,6 +1378,81 @@ impl Db {
         }
         let seq_no = t.commit_seq()?;
         Ok(Logged { rs: served.rs, request: served.request, seq_no, teams: served.teams })
+    }
+
+    /// Runs the relevance autopilot ([`crate::autopilot`]) on one snapshot:
+    /// the logged queries that rank by a rank profile replayed with the
+    /// profile and with the best numbers its search finds, and the measured
+    /// before and after. Reads only; [`Db::keep_proposal`] keeps the report.
+    pub fn autopilot(&self, o: &crate::autopilot::Options) -> Result<crate::autopilot::Report> {
+        let snap = self.snapshot();
+        crate::autopilot::run(self, &snap, &self.exec, o)
+    }
+
+    /// Keeps a report of [`Db::autopilot`] in the proposals table
+    /// ([`crate::autopilot::PROPOSALS`], made by the first), status
+    /// `open`, and returns its key.
+    pub fn keep_proposal(&self, r: &crate::autopilot::Report) -> Result<String> {
+        use crate::autopilot as ap;
+        self.sql(&ap::proposals_sql(ap::PROPOSALS)?, &Params::new())?;
+        let now = crate::timestamp::now();
+        let id = ap::proposal_id(r, now);
+        self.upsert_json(ap::PROPOSALS, &[r.proposal_doc(&id, now)])?;
+        Ok(id)
+    }
+
+    /// A kept proposal's row: its columns but the proof, or with it.
+    pub fn proposal(&self, id: &str, proof: bool) -> Result<serde_json::Value> {
+        use crate::autopilot as ap;
+        let cols = if proof { "id, target, profile, ts, status, verdict, gain, before, after, baseline_hash, statement, proof" } else { "id, target, profile, ts, status, verdict, gain, before, after, baseline_hash, statement" };
+        if self.storage.table(ap::PROPOSALS).is_none() {
+            return Err(Error::Query(format!("no proposal {id}: none was kept")));
+        }
+        let rs = self.query(&format!("SELECT {cols} FROM {} WHERE id = :id", ap::PROPOSALS), &Params::new().set("id", Value::Str(id.into())))?;
+        let row = rs.rows.first().ok_or_else(|| Error::Query(format!("no proposal {id}")))?;
+        Ok(serde_json::Value::Object(rs.columns.iter().zip(row).map(|(c, v)| (c.clone(), crate::autopilot::cell_json(v))).collect()))
+    }
+
+    /// Applies kept proposal `id` ([`crate::autopilot::check_apply`]): its
+    /// `CREATE OR REPLACE RANK PROFILE`, while the profile is the one it was
+    /// measured against, and marks it `applied`.
+    pub fn apply_proposal(&self, id: &str, force: bool) -> Result<()> {
+        use crate::autopilot as ap;
+        let row = self.proposal(id, false)?;
+        let s = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let now = self.snapshot().table(&s("target")).and_then(|t| t.rank_profile(&s("profile")).map(|p| p.hash()));
+        let statement = ap::check_apply(&row, now.as_deref(), force)?;
+        self.sql(&statement, &Params::new())?;
+        self.set_proposal_status(id, "applied")
+    }
+
+    /// Marks kept proposal `id` `dismissed` (or another status).
+    pub fn set_proposal_status(&self, id: &str, status: &str) -> Result<()> {
+        self.proposal(id, false)?;
+        self.sql(&format!("UPDATE {} SET status = :s WHERE id = :id", crate::autopilot::PROPOSALS), &Params::new().set("s", Value::Str(status.into())).set("id", Value::Str(id.into())))?;
+        Ok(())
+    }
+
+    /// Writes judgments ([`crate::autopilot::judgment_doc`]) to judgments
+    /// table `table`, made by the first write.
+    pub fn add_judgments(&self, table: &str, docs: &[serde_json::Value]) -> Result<()> {
+        self.sql(&crate::autopilot::judgments_sql(table)?, &Params::new())?;
+        self.upsert_json(table, docs)
+    }
+
+    /// Upserts JSON documents to `table` in one transaction.
+    fn upsert_json(&self, table: &str, docs: &[serde_json::Value]) -> Result<()> {
+        let schema = self.table(table)?;
+        let now = crate::timestamp::now();
+        let mut t = self.storage.begin()?;
+        {
+            let mut tt = t.table(&schema.table)?;
+            for d in docs {
+                tt.upsert(crate::ingest::document_at(&schema, d, now)?)?;
+            }
+        }
+        t.commit_seq()?;
+        Ok(())
     }
 
     /// The credit of each pair of interleaved rankings in a log table
@@ -1387,6 +1508,8 @@ impl Db {
             return self.json_paths_at(&snap, &call, params, opts).map(|p| Leaf::Rows(p.to_result()));
         }
         let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(&snap, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
         let plan = plan_of_parsed(&snap, &q, params, &*self.functions_at(&snap)?)?;
         self.run_leaf_on(&snap, &plan, opts, Some(0))
     }
@@ -1572,13 +1695,23 @@ impl Db {
             // The plan names the files of its ranking models.
             let snap = self.snapshot();
             let functions = self.functions_at(&snap)?;
+            // Texts embedded where vectors go, as the query runs them.
+            let text = q.to_string();
+            let embedded = match crate::query::embed_sql::may_embed(&text) {
+                true => crate::query::embed_sql::rewrite(q, &snap.schemas().collect::<Vec<_>>(), params, self)?,
+                false => None,
+            };
+            let (q, params) = match &embedded {
+                Some((q, p)) => (q, p),
+                None => (&**q, params),
+            };
             // A query that calls a language model: the plan of the rows it
             // asks about.
             let split = match crate::query::llm::may_call(&q.to_string(), &functions) {
                 true => crate::query::llm::split(q, &functions, params)?,
                 false => None,
             };
-            let mut plan = plan_of(&snap, split.as_ref().map_or(&**q, |s| &s.first), params, &functions)?;
+            let mut plan = plan_of(&snap, split.as_ref().map_or(q, |s| &s.first), params, &functions)?;
             self.open_ranking_models(&mut plan, false)?;
             return Ok(plan);
         }
@@ -2987,6 +3120,16 @@ impl DocumentSource for StoredSource {
 /// The plan of a SELECT over `snap`'s tables: the executor's query of one
 /// table, or a compound one's operators ([`compound::needs`]) over any
 /// ([`compound::plan_read`]).
+/// Texts a query gives where vectors go, by this database's models.
+impl crate::query::embed_sql::Embeds for Db {
+    fn field_query(&self, table: &str, field: &str, text: &str) -> Result<Value> {
+        self.embed_query_in(table, field, text)
+    }
+    fn model_query(&self, model: &str, text: &str) -> Result<Vec<f32>> {
+        self.named_model(model)?.embed_query(text)
+    }
+}
+
 fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
     compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)

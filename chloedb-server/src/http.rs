@@ -40,6 +40,8 @@
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
+//! | `POST /v1/relevance/autopilot` | the autopilot's options, `judge?`, `keep?` | `{report, proposal, judged}`: logged queries replayed on one snapshot with the rank profile and with the numbers the search finds, measured on held-out queries ([`crate::autopilot`]) |
+//! | `GET /v1/relevance/proposals`, `GET /v1/relevance/proposals/:id`, `POST .../:id/apply` `{force?}`, `POST .../:id/dismiss` | | the proposals kept, one with its proof, applied or dismissed |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
 //! | `POST /v1/admin/oncall` | `{question?, alert?, follows?, model?, effort?, api_key?, max_steps?, note?, wait?}` | the run, `{run, answer, proposals, steps, said, usage, ...}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline; `follows` asks a run's follow-up in its conversation; `wait: false` answers `{run, state: "running"}` at once |
 //! | `GET /v1/admin/oncall` | | `{configured, model, steps, max_steps, runs, running, pending}`: whether the server has a Claude key, its defaults, and the runs kept, newest first, each in short |
@@ -237,6 +239,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/explain", post(explain))
         .route("/v1/embed", post(embed))
         .route("/v1/models", get(models))
+        // The command center's model manager: an admin's (route_scope).
+        .route("/v1/admin/models/fetch", post(fetch_model))
+        .route("/v1/admin/models/convert", post(convert_model))
         .route("/v1/media/:sha256", get(media_file))
         .route("/v1/synonyms", get(synonyms).merge(put(put_synonyms)))
         .route("/v1/term_stats", post(term_stats))
@@ -274,6 +279,11 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
+        .route("/v1/relevance/autopilot", post(autopilot_run))
+        .route("/v1/relevance/proposals", get(autopilot_list))
+        .route("/v1/relevance/proposals/:id", get(autopilot_get))
+        .route("/v1/relevance/proposals/:id/apply", post(autopilot_apply))
+        .route("/v1/relevance/proposals/:id/dismiss", post(autopilot_dismiss))
         .route("/v1/admin/oncall", get(oncall_overview).post(oncall_run))
         .route("/v1/admin/oncall/runs", get(oncall_runs))
         .route("/v1/admin/oncall/runs/:id", get(oncall_run_get))
@@ -907,6 +917,9 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // otlp: logs in; reading the server's own lines stays the admin's.
         "/v1/logs" if method == Method::POST => Scope::Write,
         "/v1/export" => Scope::Admin,
+        // The autopilot writes its tables, may spend Claude's tokens on
+        // grades, and applying a proposal replaces a rank profile.
+        "/v1/relevance/autopilot" | "/v1/relevance/proposals/:id/apply" | "/v1/relevance/proposals/:id/dismiss" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
         "/v1/alerts/routes" | "/v1/alerts/routes/:name/test" => Scope::Admin,
@@ -2544,12 +2557,59 @@ async fn schema_check(AxJson(b): AxJson<Json>) -> Res {
 /// The embedding models a schema can name, local and hosted, and whether
 /// each would open on this server ([`chloedb::embed::catalog`]): fetched,
 /// its key set, its feature built. Nothing is loaded or sent.
+/// The models a field may name ([`chloedb::embed::catalog`]), each with
+/// how it makes its vectors ([`chloedb::embed::describe`]), the fields
+/// that name it, and a fetch or conversion asked for here.
 async fn models(State(app): State<App>) -> Res {
     let dir = app.svc.models_dir();
     let d = dir.clone();
-    let list = tokio::task::spawn_blocking(move || chloedb::embed::catalog(&d)).await.map_err(ApiError::internal)?;
-    let models: Vec<Json> = list.iter().map(|m| json!({"name": m.name, "dim": m.dim, "hosted": m.hosted, "what": m.what, "ready": m.ready.is_ok(), "error": m.ready.as_ref().err()})).collect();
-    Ok(AxJson(json!({"dir": dir.display().to_string(), "models": models})))
+    let list = tokio::task::spawn_blocking(move || chloedb::embed::catalog(&d).into_iter().map(|m| { let x = chloedb::embed::describe(&m.name, &d); (m, x) }).collect::<Vec<_>>()).await.map_err(ApiError::internal)?;
+    let fields = app.svc.models();
+    let mut jobs = app.svc.model_jobs();
+    let mut models: Vec<Json> = list
+        .iter()
+        .map(|(m, d)| {
+            let used: Vec<Json> = fields.iter().filter(|f| f.spec.model.eq_ignore_ascii_case(&m.name)).map(|f| json!({"table": f.table, "field": f.field})).collect();
+            json!({
+                "name": m.name, "dim": m.dim, "hosted": m.hosted, "what": m.what, "ready": m.ready.is_ok(), "error": m.ready.as_ref().err(),
+                "technique": d.technique, "precision": d.precision, "bytes": d.bytes, "made_of": d.made_of,
+                // Fetched by the server for a field that names it.
+                "known": chloedb::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(&m.name)),
+                "fields": used, "job": jobs.remove(&m.name.to_lowercase()),
+            })
+        })
+        .collect();
+    // A conversion that failed before its directory held a model.
+    for (name, job) in jobs {
+        models.push(json!({"name": name, "dim": null, "hosted": false, "what": "", "ready": false, "error": job.error, "technique": "static", "fields": [], "job": job}));
+    }
+    // Names a field gave that the catalog does not list (`hash:16`).
+    for f in fields.iter() {
+        if !models.iter().any(|m| m["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&f.spec.model))) {
+            let d = chloedb::embed::describe(&f.spec.model, &dir);
+            let used: Vec<Json> = fields.iter().filter(|g| g.spec.model == f.spec.model).map(|g| json!({"table": g.table, "field": g.field})).collect();
+            models.push(json!({"name": f.spec.model, "dim": chloedb::embed::known_dim(&f.spec.model), "hosted": d.technique == "hosted", "what": "", "ready": f.model.is_ok(), "error": f.model.as_ref().err(), "technique": d.technique, "precision": d.precision, "bytes": d.bytes, "known": false, "fields": used, "job": null}));
+        }
+    }
+    Ok(AxJson(json!({"dir": dir.display().to_string(), "fetches": app.svc.fetch_models, "models": models})))
+}
+
+/// `{"model": name}`: fetches a model the server knows into its models
+/// directory, in the background ([`Service::start_model_job`]).
+async fn fetch_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = body_str(&b, "model")?;
+    let made = app.svc.start_model_job(name, None)?;
+    Ok(AxJson(json!({"model": made, "state": "running"})))
+}
+
+/// `{"model": name, "to": "I8" | "F16"}`: writes a static model's table
+/// again in fewer bits, as model `<name>-int8` (or `-f16`), in the
+/// background ([`Service::start_model_job`]).
+async fn convert_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = body_str(&b, "model")?;
+    let to = b.get("to").and_then(Json::as_str).unwrap_or("I8");
+    let made = app.svc.start_model_job(name, Some(to))?;
+    Ok(AxJson(json!({"model": made, "from": name, "state": "running"})))
 }
 
 async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
@@ -3226,6 +3286,28 @@ async fn judge(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     };
     let req = judge::JudgeReq { table: opt("table"), query: body_str(&b, "query")?.to_string(), keys, fields, model: opt("model"), api_key: opt("api_key") };
     Ok(AxJson(judge::run(&app.svc, req).await?))
+}
+
+/// `POST /v1/relevance/autopilot` ([`crate::autopilot`]).
+async fn autopilot_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::autopilot::run(&app.svc, &who(w), b).await?))
+}
+
+async fn autopilot_list(State(app): State<App>) -> Res {
+    Ok(AxJson(crate::autopilot::list(&app.svc).await?))
+}
+
+async fn autopilot_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::autopilot::get(&app.svc, id).await?))
+}
+
+async fn autopilot_apply(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let force = b.and_then(|AxJson(b)| b.get("force").and_then(|f| f.as_bool())).unwrap_or(false);
+    Ok(AxJson(crate::autopilot::apply(&app.svc, &who(w), id, force).await?))
+}
+
+async fn autopilot_dismiss(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::autopilot::dismiss(&app.svc, &who(w), id).await?))
 }
 
 type Params = Query<std::collections::HashMap<String, String>>;

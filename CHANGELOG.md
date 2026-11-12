@@ -11,6 +11,54 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Added
+
+- ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
+  queries the rank log kept that rank by a rank profile, on one snapshot,
+  with the profile as it is and with the numbers a coordinate-ascent search
+  finds (parameter defaults and the literals of its `ORDER BY`), and
+  reports nDCG@k before and after on queries held out of the search, the
+  queries made better and worse with a sign test, a bootstrap interval and
+  latency, with a verdict. Grades come from the rank log's labels and a
+  judgments table (`relevance_judgments`); the server can have Claude grade
+  the rows no one graded first. A proposal is kept in `relevance_proposals`
+  and applied as `CREATE OR REPLACE RANK PROFILE` only while the profile is
+  the one it was measured against. `POST /v1/relevance/autopilot`,
+  `/v1/relevance/proposals`, `Db::autopilot`, and the command center's
+  Labs > Relevance autopilot.
+- The rank log keeps each request's query and its bound parameters, in a
+  new column `query` of the request's first row. A log table made before
+  it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
+  query KEYWORD OPTIONS(indexed = false)` adds it).
+
+### App engine
+
+- App engine: the app creator is a page of the command center (Apps → App
+  creator) rather than a separate studio: describe an app and build it
+  there, follow each build (its steps, its screens drawn while the rest is
+  written, its timeline), use the app on a phone, a tablet or the whole
+  stage, and read, edit and go back through what it is made of. Its views
+  run in frames with the studio's sandbox and policy, every read and write
+  sent to the page and from there to the engine for that one app. The
+  standalone studio stays, for the engine run on its own and as **Studio**.
+- App engine: **Made of** says how much of an app's code the engine
+  generated from the CREATE TABLE, CREATE SCREEN and CREATE RULE statements
+  the agent wrote, how much the agent wrote from scratch, and how much is
+  the library's, in lines written and lines that run, piece by piece
+  (`GET /api/apps/:id/made`, and `made` in an app's state).
+- App engine: apps can be published, open to everyone with no account
+  here: **Publish** in the app creator, `/a/<id>` at once, and
+  `<name>.<domain>` (or a host of the owner's own) with a domain. The public
+  reaches what the app's screens do and nothing of how it is made, at a
+  rate a minute per visitor. The operator's `spec.apps.publish` (`domain`:
+  your own or `sslip`) adds a load balancer and Caddy for the apps'
+  certificates.
+- App engine: **Usage** in the app creator is the studio's Activity view:
+  each visit step by step, and the paths people take between screens.
+- App engine: `GET /api/events?after=N` gives the studio's live events to a
+  page that cannot hold a stream open (chloedb-server forwards whole
+  answers), and `GET /api/kit` the frames' runtime and policy.
+
 ## 0.2.1
 
 Safety fixes from the audit of 12 November 2026, with no change to the file
