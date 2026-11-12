@@ -11,6 +11,24 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Added
+
+- ChloeCtx: receipts and `chloectx blame`. Every recall (a prompt's context,
+  the records a compaction gets back, a `memory_search` answer) writes a
+  receipt: the store commit it read, its inputs, and each candidate's score
+  parts, tokens and decision (`take`, `excerpt`, `knowledge`, `listed`,
+  `skip: <reason>`, the words of ChloeDB's `PACK` receipts), with the text
+  the agent was shown. After a recall that showed records the daemon keeps a
+  snapshot of the store (a hard-linked checkpoint, pruned after 30 days), so
+  `chloectx receipt ID` replays the recall exactly on the data it read, and
+  on today's store. `chloectx blame path:line` finds the stored edit behind
+  a line, its prompt and tool calls, and the records recalled before it,
+  each checked against the store now (superseded, deleted, from the web).
+  `chloectx snapshot keep|list|drop` keeps snapshots by name. Receipts are
+  in their own file, `receipts.strata`; the store's file and format are
+  unchanged. `memory_forget` and `chloectx redact` scrub receipts and drop
+  the automatic snapshots. [Docs](docs/chloectx/receipts.md).
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

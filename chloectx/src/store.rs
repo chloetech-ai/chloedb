@@ -238,6 +238,37 @@ impl Store {
         Ok(Store { back: Back::Local { db, writer }, embedder, snap: None })
     }
 
+    /// Opens a store to read it and nothing else: a kept snapshot
+    /// ([`crate::snapshots`]), which a replay searches as the live store
+    /// was searched. No flusher or merger runs, and a write is refused.
+    pub fn open_read_only(path: &Path, embedder: Arc<dyn Embedder>) -> Result<Store> {
+        let mut dbo = DbOptions::default();
+        dbo.read_only = true;
+        let db = Db::open(path, dbo)?;
+        let want = embedder.dim();
+        if let Some(chloedb::FieldType::Vector { dim, .. }) = db.schema().field("emb").map(|f| f.ty.clone()) {
+            if dim != want {
+                return Err(err(format!("{} holds {dim}-dimension vectors; the embedder {} makes {want}", path.display(), embedder.name())));
+            }
+        }
+        let last = db.query("SELECT seq FROM memory ORDER BY seq DESC LIMIT 1", &Params::new())?;
+        let next = last.rows.first().and_then(|r| r[0].as_i64()).map_or(1, |s| s + 1);
+        let db = Arc::new(db);
+        let writer = Arc::new(Writer::start(db.clone(), next)?);
+        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None })
+    }
+
+    /// Sets the number of the newest record, which recency is measured
+    /// from, on a store opened with [`Store::open_read_only`]: a replay
+    /// measures it as the recall it replays did.
+    pub fn set_last_seq(&self, seq: i64) {
+        if let Back::Local { writer, db } = &self.back {
+            if db.storage().is_read_only() {
+                writer.next_seq.store(seq + 1, Ordering::SeqCst);
+            }
+        }
+    }
+
     /// Opens the store kept in `table` of the ChloeDB server `cluster`,
     /// creating the table if needed. This process must be the table's only
     /// writer: it numbers the records it writes.
