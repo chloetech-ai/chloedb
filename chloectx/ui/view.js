@@ -134,7 +134,7 @@ const CSS = `
 .cx-rec .cx-text { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
 .cx-rec.tool .cx-text { font-family: var(--mono); font-size: 12px; -webkit-line-clamp: 2; color: var(--text-2); }
 .cx-rec.turn { margin-top: 10px; border-top: 1px solid var(--line-2); }
-.cx-full { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; margin: 0; }
+.cx-full { font-family: var(--sans); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; margin: 0; }
 .cx-dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 10px; font-size: 12.5px; margin: 12px 0; }
 .cx-dl dt { color: var(--muted); }
 .cx-dl dd { margin: 0; overflow-wrap: anywhere; }
@@ -785,7 +785,7 @@ function inspectorPage(root, ctx) {
     list.replaceChildren(...j.projects.map((p) => h("a", { class: "card cx-space", href: ctx.href("inspector", p.project) },
       h("div", { class: "row", style: { justifyContent: "space-between", gap: "8px" } }, h("h4", { class: "mono" }, p.project)),
       h("p", {}, p.last ? "last recorded " + when(p.last) : ""),
-      h("div", { class: "cx-counts" }, h("span", {}, h("b", {}, fmt.n(p.sessions)), " sessions"), h("span", {}, h("b", {}, fmt.n(p.records)), " records")))));
+      h("div", { class: "cx-counts" }, h("span", {}, fmt.plural(p.sessions, "session")), h("span", {}, fmt.plural(p.records, "record"))))));
     root.append(ctx.core.card({ title: "In SQL", sub: `the rows of ${j.table}`, body: sqlBlock(`SELECT project, session, kind, content, ts FROM ${j.table} WHERE kind IN ('decision', 'preference', 'fact') ORDER BY ts DESC LIMIT 20`) }));
   })();
   return null;
