@@ -11,6 +11,22 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Experimental
+
+- Tenants: a database kept whole in an object store (a directory, or S3
+  and the stores that speak its API), committed by replacing one `HEAD`
+  object on the condition that it is unchanged, so that of two nodes
+  writing one tenant the store refuses the later. `chloedb::tenant` in
+  the engine, and `chloedb-server --tenants URL` with admin routes under
+  `/v1/admin/tenants`. It is a first slice of the 0.7.0 design
+  ([docs/design/0.7.0-file-per-agent.md](docs/design/0.7.0-file-per-agent.md)),
+  off unless asked for, and its layout (`layout: 0`) may change without a
+  migration ([docs/chloedb/tenants.md](docs/chloedb/tenants.md)).
+- `chloedb::storage::ObjectStore` has conditional writes, whole-object
+  reads and listing (`put_if_absent`, `put_if_version`, `get`, `list`,
+  `get_file`), on the directory store and on S3. A store written outside
+  this repository keeps compiling: the new methods default to an error.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

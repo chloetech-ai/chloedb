@@ -68,6 +68,7 @@ pub mod simd;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod storage;
+pub mod tenant;
 pub mod text;
 pub mod timestamp;
 pub mod upgrade;
