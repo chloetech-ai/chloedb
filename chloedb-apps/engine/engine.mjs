@@ -5,7 +5,7 @@
 import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Store, physical, newId } from './store.mjs';
-import { rewriteSql } from './sql.mjs';
+import { rewriteSql, checkReads } from './sql.mjs';
 import { runFunction } from './sandbox.mjs';
 import { runRule } from './rules.mjs';
 import { rowLabel, tablesOf } from './activity.mjs';
@@ -140,6 +140,7 @@ export class Engine extends EventEmitter {
     const view = await this.view(appId);
     const names = view.tables.map((t) => t.spec.name);
     const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
+    await checkReads(this.db, phys, params, names.map((t) => physical(appId, t)));
     let rows = await this.db.query(phys, params || {});
     if (rows.length > MAX_ROWS) rows = rows.slice(0, MAX_ROWS);
     // Strata names a qualified column as written (`t.title`); code expects `title`.

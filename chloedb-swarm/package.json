@@ -1,0 +1,15 @@
+{
+  "name": "chloedb-swarm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Swarms of simulated users (persona, task, context) that use ChloeDB and its command center in a sandbox, and the findings they leave",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "bin": { "chloedb-swarm": "bin/swarm.mjs" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.3.0"
+  }
+}

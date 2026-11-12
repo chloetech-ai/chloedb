@@ -97,6 +97,7 @@ async fn aws(State(seen): State<Arc<Mutex<Seen>>>, headers: HeaderMap, body: Byt
                 ("AmazonEC2", Some("Storage")) => product("EBS:VolumeUsage.gp3", "0.08"),
                 ("AmazonEKS", _) => product("USE1-AmazonEKS-Hours:perCluster", "0.10"),
                 ("AmazonVPC", _) => product("USE1-PublicIPv4:InUseAddress", "0.005"),
+                ("AmazonEC2", Some("NAT Gateway")) => product("NatGateway-Hours", "0.045"),
                 other => panic!("no prices for {other:?}"),
             }
             .into_response()
@@ -263,9 +264,9 @@ async fn the_aws_view_keeps_its_keys_private_and_plans_from_aws_prices() {
     assert_eq!(p["layout"]["copies_per_node"], 2, "{j}");
     assert_eq!(p["layout"]["nodes"].as_array().unwrap().len(), 3);
     // The nodes, EKS, six 10 GiB volumes and three 20 GiB roots of gp3, and
-    // the nodes' addresses, an hour.
+    // the NAT gateway the nodes reach out through and its address, an hour.
     let hour = p["cost"]["hour"].as_f64().unwrap();
-    let want = 3.0 * 0.0816 + 0.10 + (6.0 * 10.0 + 3.0 * 20.0) * 0.08 / 730.0 + 3.0 * 0.005;
+    let want = 3.0 * 0.0816 + 0.10 + (6.0 * 10.0 + 3.0 * 20.0) * 0.08 / 730.0 + 0.045 + 0.005;
     assert!((hour - want).abs() < 1e-9, "{hour} vs {want}: {}", p["cost"]);
     assert_eq!(p["cost"]["unknown"], json!([]), "{j}");
     assert_eq!(p["quota"]["vcpus"].as_f64(), Some(64.0));
@@ -278,7 +279,7 @@ async fn the_aws_view_keeps_its_keys_private_and_plans_from_aws_prices() {
     for (bad, says) in [
         (json!({"name": "Not A Name", "region": "us-east-1", "machine": "m7g.large", "nodes": 3, "spot": false, "volume_gb": 10, "cluster": {}}), "is not a cluster name"),
         (json!({"name": "search", "region": "us-east-1", "machine": "p5.48xlarge", "nodes": 3, "spot": false, "volume_gb": 10, "cluster": {}}), "is not a machine"),
-        (json!({"name": "search", "region": "us-east-1", "machine": "m7g.large", "nodes": 0, "spot": false, "volume_gb": 10, "cluster": {}}), "nodes is 1 to 1,000"),
+        (json!({"name": "search", "region": "us-east-1", "machine": "m7g.large", "nodes": 0, "spot": false, "volume_gb": 10, "cluster": {}}), "nodes is 1 to 100"),
     ] {
         let (status, j) = call(&base, "POST", "/v1/admin/aws/plan", root, Some(bad)).await;
         assert!(status == 400 && j.contains(says), "{status} {j}");

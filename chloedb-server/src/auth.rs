@@ -25,6 +25,32 @@ pub struct Access {
     pub hosts: Option<Vec<String>>,
     /// A certificate chain and its key, as PEM, for both listeners.
     pub tls: Option<Tls>,
+    /// How long a client may take, and how many connections it may hold,
+    /// on the HTTP listeners ([`Limits`]).
+    pub limits: Limits,
+}
+
+/// What an HTTP listener allows a connection, and how long it waits for
+/// the requests under way when it stops.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// The longest a client may take to send a request's headers, and the
+    /// longest an idle keep-alive connection stays open.
+    pub header_read: std::time::Duration,
+    /// The connections the listener holds open at once (`0`: three
+    /// quarters of the process's open-file limit); past it, new ones wait
+    /// to be accepted.
+    pub max_connections: usize,
+    /// Once the listener stops taking connections, how long the requests
+    /// under way have to end before the server stops anyway
+    /// (`--stop-grace-ms`).
+    pub stop_grace: std::time::Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits { header_read: std::time::Duration::from_secs(30), max_connections: 0, stop_grace: std::time::Duration::from_secs(20) }
+    }
 }
 
 #[derive(Clone)]

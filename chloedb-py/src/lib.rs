@@ -1135,14 +1135,25 @@ impl Database {
     /// Trains a semantic-ID codebook on the vectors of `field` of `table`
     /// (the first table by default), saves it as `name` under `models`, and
     /// returns its SHA-256.
-    #[pyo3(signature = (field, name, table = None, models = None, levels = 3, k = 256, iterations = 25, sample = None, seed = 0))]
+    #[pyo3(signature = (field, name, table = None, models = None, levels = 3, k = 256, iterations = 25, sample = None, seed = 0, balanced = false))]
     #[allow(clippy::too_many_arguments)]
-    fn train_codebook(&self, py: Python<'_>, field: &str, name: &str, table: Option<String>, models: Option<PathBuf>, levels: usize, k: usize, iterations: usize, sample: Option<usize>, seed: u64) -> PyResult<String> {
+    fn train_codebook(&self, py: Python<'_>, field: &str, name: &str, table: Option<String>, models: Option<PathBuf>, levels: usize, k: usize, iterations: usize, sample: Option<usize>, seed: u64, balanced: bool) -> PyResult<String> {
         let db = self.get()?;
         let table = table.unwrap_or_else(|| db.schema().table.clone());
         let models = models.unwrap_or_else(chloedb::embed::models_dir);
-        let opts = train_options(levels, k, iterations, sample, seed);
+        let opts = train_options(levels, k, iterations, sample, seed, balanced);
         py.detach(|| db.train_codebook(&table, field, name, &models, &opts)).map_err(err)
+    }
+
+    /// What the codebook `name` under `models` makes of the vectors of
+    /// VECTOR field `field` of `table` (the first table by default), as
+    /// JSON text.
+    #[pyo3(signature = (field, name, table = None, models = None))]
+    fn codebook_report(&self, py: Python<'_>, field: &str, name: &str, table: Option<String>, models: Option<PathBuf>) -> PyResult<String> {
+        let db = self.get()?;
+        let table = table.unwrap_or_else(|| db.schema().table.clone());
+        let models = models.unwrap_or_else(chloedb::embed::models_dir);
+        Ok(report_json(&py.detach(|| db.codebook_report(&table, field, name, &models)).map_err(err)?))
     }
 
     /// Writes the memtable's rows into segments, merges them into as few
@@ -1176,17 +1187,13 @@ impl Database {
     }
 }
 
-fn train_options(levels: usize, k: usize, iters: usize, sample: Option<usize>, seed: u64) -> TrainOptions {
-    TrainOptions { levels, k, iters, sample: sample.unwrap_or(TrainOptions::default().sample), seed }
+fn train_options(levels: usize, k: usize, iters: usize, sample: Option<usize>, seed: u64, balance: bool) -> TrainOptions {
+    TrainOptions { levels, k, iters, sample: sample.unwrap_or(TrainOptions::default().sample), seed, balance }
 }
 
-/// Trains a semantic-ID codebook on `vectors` (a list of vectors, or
-/// anything with `tolist()`), saves it as `name` under `models`, and
-/// returns its SHA-256.
-#[pyfunction]
-#[pyo3(signature = (vectors, name, models = None, levels = 3, k = 256, iterations = 25, sample = None, seed = 0))]
-#[allow(clippy::too_many_arguments)]
-fn train_codebook(py: Python<'_>, vectors: &Bound<'_, PyAny>, name: &str, models: Option<PathBuf>, levels: usize, k: usize, iterations: usize, sample: Option<usize>, seed: u64) -> PyResult<String> {
+/// A list of vectors (or anything with `tolist()`) as one run of numbers,
+/// and their dimension.
+fn flat_vectors(vectors: &Bound<'_, PyAny>) -> PyResult<(Vec<f32>, usize)> {
     let Json::Array(rows) = to_json(vectors)? else { return Err(PyValueError::new_err("vectors are a list of lists of numbers")) };
     let dim = match rows.first() {
         Some(Json::Array(v)) => v.len(),
@@ -1203,8 +1210,41 @@ fn train_codebook(py: Python<'_>, vectors: &Bound<'_, PyAny>, name: &str, models
             _ => return Err(PyValueError::new_err(format!("vector {} does not have {dim} numbers, as the first does", i + 1))),
         }
     }
+    Ok((flat, dim))
+}
+
+fn report_json(r: &chloedb::sid::Report) -> String {
+    let levels: Vec<Json> = r.levels.iter().map(|l| serde_json::json!({"used": l.used, "fullest": l.fullest, "perplexity": l.perplexity, "residual": l.residual})).collect();
+    serde_json::json!({"rows": r.rows, "codes": r.codes, "shared_rows": r.shared, "largest_group": r.largest, "levels": levels}).to_string()
+}
+
+/// What the codebook `name` under `models` makes of `vectors` (a list of
+/// vectors, or anything with `tolist()`), as JSON text.
+#[pyfunction]
+#[pyo3(signature = (vectors, name, models = None))]
+fn codebook_report(py: Python<'_>, vectors: &Bound<'_, PyAny>, name: &str, models: Option<PathBuf>) -> PyResult<String> {
+    let (flat, dim) = flat_vectors(vectors)?;
     let models = models.unwrap_or_else(chloedb::embed::models_dir);
-    let opts = train_options(levels, k, iterations, sample, seed);
+    let r = py.detach(|| {
+        let (cb, _) = Codebook::open(name, &models)?;
+        if cb.dim != dim {
+            return Err(chloedb::Error::Schema(format!("codebook {name} is of {} dimensions, the vectors of {dim}", cb.dim)));
+        }
+        cb.report(&flat)
+    });
+    Ok(report_json(&r.map_err(err)?))
+}
+
+/// Trains a semantic-ID codebook on `vectors` (a list of vectors, or
+/// anything with `tolist()`), saves it as `name` under `models`, and
+/// returns its SHA-256.
+#[pyfunction]
+#[pyo3(signature = (vectors, name, models = None, levels = 3, k = 256, iterations = 25, sample = None, seed = 0, balanced = false))]
+#[allow(clippy::too_many_arguments)]
+fn train_codebook(py: Python<'_>, vectors: &Bound<'_, PyAny>, name: &str, models: Option<PathBuf>, levels: usize, k: usize, iterations: usize, sample: Option<usize>, seed: u64, balanced: bool) -> PyResult<String> {
+    let (flat, dim) = flat_vectors(vectors)?;
+    let models = models.unwrap_or_else(chloedb::embed::models_dir);
+    let opts = train_options(levels, k, iterations, sample, seed, balanced);
     py.detach(|| Codebook::train(&flat, dim, &opts)?.save(name, &models)).map_err(err)
 }
 
@@ -1364,6 +1404,7 @@ fn _chloedb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "datafusion")]
     m.add_class::<arrow::Arrow>()?;
     m.add_function(wrap_pyfunction!(train_codebook, m)?)?;
+    m.add_function(wrap_pyfunction!(codebook_report, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add_function(wrap_pyfunction!(create_sql, m)?)?;
     m.add("ChloeDBError", m.py().get_type::<ChloeDBError>())?;

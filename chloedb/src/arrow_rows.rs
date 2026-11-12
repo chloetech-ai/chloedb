@@ -310,14 +310,15 @@ pub struct Written {
 /// Writes record batches of columns `arrow` into the table `table` of
 /// `db`, each column filling the field of its name (in any case; the
 /// others are left out): into an empty table in one bulk load (all or
-/// nothing), else upserted by key (inserted, in a table without one),
+/// nothing), unless the database numbers its writes (a bulk load would
+/// reach no replica); else upserted by key (inserted, in a table without one),
 /// [`ingest::IMPORT_BATCH`] rows a transaction. Embedded vectors the rows
 /// leave out are computed when `db` has the field's model.
 pub fn import_batches(db: &crate::db::Db, table: &str, arrow: &ArrowSchema, batches: &mut dyn Iterator<Item = Result<RecordBatch>>) -> Result<Written> {
     let schema = db.storage().table(table).ok_or_else(|| Error::Query(format!("no such table: {table}")))?;
     let mut reader = RowReader::new(&schema, arrow)?;
     let skipped = reader.unknown(arrow);
-    let bulk = db.snapshot().table(&schema.table).is_none_or(|s| s.n_live_docs() == 0);
+    let bulk = db.storage().seq_no().is_none() && db.snapshot().table(&schema.table).is_none_or(|s| s.n_live_docs() == 0);
     let mut first = 0u64;
     let mut ready = Vec::new().into_iter();
     let mut docs = std::iter::from_fn(|| loop {
