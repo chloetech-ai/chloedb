@@ -1152,10 +1152,7 @@ impl Daemon {
 
     fn op_sql(&self, req: &Json) -> Result<Json> {
         let sql = req.get("sql").and_then(|v| v.as_str()).unwrap_or("").trim();
-        if !sql.get(..6).map_or(false, |s| s.eq_ignore_ascii_case("select")) {
-            return Err(err("only SELECT statements over the memory table are allowed"));
-        }
-        let rs = self.store.query(sql)?;
+        let rs = self.store.query_guarded(sql, &chloedb::query::Params::new(), &crate::sqlguard::Limits::TOOL)?;
         let mut text = rs.columns.join(" | ") + "\n";
         for row in rs.rows.iter().take(100) {
             let cells: Vec<String> = row

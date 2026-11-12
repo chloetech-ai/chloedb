@@ -31,6 +31,7 @@ pub mod paths;
 pub mod recall;
 pub mod record;
 pub mod redact;
+pub mod sqlguard;
 pub mod store;
 pub mod sync;
 pub mod transcript;

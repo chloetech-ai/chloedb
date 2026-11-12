@@ -55,10 +55,12 @@ fn check_hooks(r: &mut Report, what: &str, path: &Path) -> bool {
         return false;
     }
     let events: Vec<&str> = hooks.iter().map(|(e, _)| e.as_str()).collect();
-    let exe = install::hook_exe(&hooks[0].1).unwrap_or("").to_string();
+    let exe = install::hook_exe(&hooks[0].1).unwrap_or_default();
     let old_name = Path::new(&exe).file_name().map_or(false, |n| !n.to_string_lossy().contains(install::SERVER));
     if !Path::new(&exe).is_file() {
         r.fail(what, format!("{} calls {exe}, which does not exist; run `chloectx install` again from the binary you want the hooks to use", path.display()));
+    } else if let Err(e) = runs_in_a_shell(&hooks[0].1) {
+        r.fail(what, format!("{} has the hook command `{}`, which a shell cannot run ({e}); run `chloectx install` again", path.display(), hooks[0].1));
     } else if old_name {
         r.warn(what, format!("{} calls {exe}, ChloeCtx's name before the rename; run `chloectx install` again to move to the new names", path.display()));
     } else if events.len() < 9 {
@@ -67,6 +69,21 @@ fn check_hooks(r: &mut Report, what: &str, path: &Path) -> bool {
         r.ok(what, format!("{} ({} events, {exe})", path.display(), events.len()));
     }
     true
+}
+
+/// Runs a hook command's program, as the command spells it, with a shell
+/// (as Claude Code does) and `--version`: a path with a space that is not
+/// quoted runs something else.
+pub fn runs_in_a_shell(command: &str) -> std::result::Result<(), String> {
+    let exe = install::hook_exe_text(command).ok_or("not a ChloeCtx hook command")?;
+    let out = std::process::Command::new("sh").arg("-c").arg(format!("{exe} --version")).stdin(std::process::Stdio::null()).output().map_err(|e| format!("sh: {e}"))?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    if out.status.success() && (said.contains(install::SERVER) || said.contains(install::OLD_SERVER)) {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        Err(err.lines().next().unwrap_or("it failed").trim().to_string())
+    }
 }
 
 fn command_output(cmd: &str, args: &[&str]) -> Option<(bool, String)> {

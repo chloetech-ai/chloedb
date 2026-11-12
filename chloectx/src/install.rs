@@ -65,12 +65,135 @@ fn read_settings(path: &Path) -> Result<Json> {
     }
 }
 
+/// Writes `v` to `path` as pretty JSON, so that the file is either as it
+/// was or as it is now, never cut short (a machine that sleeps or a disk
+/// that fills mid-write would leave Claude Code with broken settings):
+/// written to a file beside it, flushed to disk and renamed over it. A
+/// link (a dotfiles manager's) stays a link: the file it points to is
+/// replaced. Keys keep the order the file had them in ([`in_order`]),
+/// new ones after, so the rewrite's diff is what changed.
 fn write_json(path: &Path, v: &Json) -> Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
+    use std::io::Write;
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let before = std::fs::read_to_string(&target).ok();
+    let order = before.as_deref().and_then(|t| serde_json::from_str::<Order>(t).ok());
+    let text = serde_json::to_string_pretty(&in_order(v, order.as_ref()))? + "\n";
+    let name = target.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let tmp = dir.join(format!(".{name}.chloectx-{}.tmp", std::process::id()));
+    let written = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        if let Ok(m) = std::fs::metadata(&target) {
+            f.set_permissions(m.permissions())?;
+        }
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &target)?;
+        // The rename itself, on disk (best effort: not every platform
+        // opens a directory).
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::write(path, serde_json::to_string_pretty(v)? + "\n")?;
-    Ok(())
+    Ok(written?)
+}
+
+/// The order of the keys of a JSON text's objects, nested as its values
+/// are (`serde_json`'s own map sorts them).
+#[derive(Default)]
+struct Order {
+    keys: Vec<(String, Order)>,
+    items: Vec<Order>,
+}
+
+impl<'de> serde::Deserialize<'de> for Order {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Order, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Order;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("JSON")
+            }
+            fn visit_bool<E>(self, _: bool) -> std::result::Result<Order, E> {
+                Ok(Order::default())
+            }
+            fn visit_i64<E>(self, _: i64) -> std::result::Result<Order, E> {
+                Ok(Order::default())
+            }
+            fn visit_u64<E>(self, _: u64) -> std::result::Result<Order, E> {
+                Ok(Order::default())
+            }
+            fn visit_f64<E>(self, _: f64) -> std::result::Result<Order, E> {
+                Ok(Order::default())
+            }
+            fn visit_str<E>(self, _: &str) -> std::result::Result<Order, E> {
+                Ok(Order::default())
+            }
+            fn visit_unit<E>(self) -> std::result::Result<Order, E> {
+                Ok(Order::default())
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> std::result::Result<Order, A::Error> {
+                let mut items = Vec::new();
+                while let Some(o) = a.next_element::<Order>()? {
+                    items.push(o);
+                }
+                Ok(Order { keys: Vec::new(), items })
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut a: A) -> std::result::Result<Order, A::Error> {
+                let mut keys = Vec::new();
+                while let Some((k, o)) = a.next_entry::<String, Order>()? {
+                    keys.push((k, o));
+                }
+                Ok(Order { keys, items: Vec::new() })
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// `v` serialised with each object's keys in `order`'s order, the keys
+/// `order` lacks after them.
+fn in_order<'a>(v: &'a Json, order: Option<&'a Order>) -> InOrder<'a> {
+    InOrder(v, order)
+}
+
+struct InOrder<'a>(&'a Json, Option<&'a Order>);
+
+impl serde::Serialize for InOrder<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        match self.0 {
+            Json::Object(m) => {
+                let mut out = s.serialize_map(Some(m.len()))?;
+                let known = self.1.map(|o| o.keys.as_slice()).unwrap_or(&[]);
+                for (k, o) in known {
+                    if let Some(v) = m.get(k) {
+                        out.serialize_entry(k, &InOrder(v, Some(o)))?;
+                    }
+                }
+                for (k, v) in m.iter().filter(|(k, _)| !known.iter().any(|(o, _)| o == *k)) {
+                    out.serialize_entry(k, &InOrder(v, None))?;
+                }
+                out.end()
+            }
+            Json::Array(a) => {
+                let mut out = s.serialize_seq(Some(a.len()))?;
+                for (i, v) in a.iter().enumerate() {
+                    out.serialize_element(&InOrder(v, self.1.and_then(|o| o.items.get(i))))?;
+                }
+                out.end()
+            }
+            v => serde::Serialize::serialize(v, s),
+        }
+    }
 }
 
 /// Copies `path` to `path.chloectx-<time>.bak` before it is rewritten.
@@ -85,17 +208,89 @@ fn backup(path: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(to))
 }
 
+/// [`backup`], when the file exists and writing `v` would change what it holds.
+fn backup_if_changed(path: &Path, v: &Json) -> Result<Option<PathBuf>> {
+    match std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Json>(&t).ok()) {
+        Some(old) if &old == v => Ok(None),
+        _ => backup(path),
+    }
+}
+
+/// The line that names the backups a command made.
+fn saved_note(saved: &[PathBuf]) -> String {
+    match saved {
+        [] => String::new(),
+        s => format!("\n  previous versions saved as {}", s.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")),
+    }
+}
+
 /// The commands of a hooks entry.
 fn entry_commands(entry: &Json) -> impl Iterator<Item = &str> {
     entry.get("hooks").and_then(|h| h.as_array()).into_iter().flatten().filter_map(|h| h.get("command").and_then(|c| c.as_str()))
 }
 
+/// `s` as one word of a POSIX shell command: as it is when it holds only
+/// characters no shell treats specially, else in single quotes (Claude
+/// Code runs a hook's command with a shell, so `/Users/jo/My Tools/bin/chloectx`
+/// unquoted would run `/Users/jo/My`).
+pub fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+=:@,%".contains(c));
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+/// The first word of a shell command and the rest after it: a single- or
+/// double-quoted word is unquoted (the quoting [`shell_word`] writes, and
+/// a double-quoted path without escapes); an unquoted one runs to the first ` hook `,
+/// as installs before the quoting wrote paths with spaces.
+fn first_word(command: &str) -> Option<(String, &str)> {
+    let c = command.trim_start();
+    let quote = c.chars().next().filter(|q| *q == '\'' || *q == '"');
+    let Some(q) = quote else {
+        let (exe, _) = c.split_once(" hook ")?;
+        return Some((exe.trim().to_string(), &c[exe.len()..]));
+    };
+    let mut word = String::new();
+    let mut rest = &c[1..];
+    loop {
+        let end = rest.find(q)?;
+        let part = &rest[..end];
+        rest = &rest[end + 1..];
+        word.push_str(part);
+        // `'\''` continues a single-quoted word with a quote.
+        if q == '\'' && rest.starts_with("\\''") {
+            word.push('\'');
+            rest = &rest[3..];
+            continue;
+        }
+        if rest.is_empty() || rest.starts_with(' ') {
+            return Some((word, rest));
+        }
+        return None;
+    }
+}
+
 /// The program a ChloeCtx hook command calls: `<exe> hook [--user] <Event>`,
-/// where the program is chloectx, or engram (its name before the rename).
-pub fn hook_exe(command: &str) -> Option<&str> {
-    let (exe, _) = command.split_once(" hook ")?;
-    let name = Path::new(exe.trim()).file_name()?.to_str()?;
-    (name.contains(SERVER) || name.contains(OLD_SERVER)).then(|| exe.trim())
+/// where the program is chloectx, or engram (its name before the rename),
+/// and `<exe>` may be quoted.
+pub fn hook_exe(command: &str) -> Option<String> {
+    let (exe, rest) = first_word(command)?;
+    if !rest.starts_with(" hook ") {
+        return None;
+    }
+    let name = Path::new(&exe).file_name()?.to_str()?.to_string();
+    (name.contains(SERVER) || name.contains(OLD_SERVER)).then_some(exe)
+}
+
+/// The shell text of a hook command's program, as written (quotes and
+/// all): what `doctor` runs to see that a shell finds the program.
+pub fn hook_exe_text(command: &str) -> Option<&str> {
+    let c = command.trim_start();
+    let (_, rest) = first_word(c)?;
+    rest.starts_with(" hook ").then(|| &c[..c.len() - rest.len()])
 }
 
 /// Whether a hooks entry calls ChloeCtx.
@@ -115,8 +310,8 @@ fn old_exes(settings: &Json) -> Vec<String> {
     for list in settings.get("hooks").and_then(|h| h.as_object()).into_iter().flat_map(|h| h.values()) {
         for c in list.as_array().into_iter().flatten().flat_map(entry_commands) {
             if let Some(exe) = hook_exe(c).filter(|e| !Path::new(e).file_name().map_or(false, |n| n.to_string_lossy().contains(SERVER))) {
-                if !out.iter().any(|o| o == exe) {
-                    out.push(exe.to_string());
+                if !out.iter().any(|o| *o == exe) {
+                    out.push(exe);
                 }
             }
         }
@@ -155,7 +350,7 @@ pub fn hooks(exe: &str, user: bool) -> Json {
     let flag = if user { " --user" } else { "" };
     let mut h = serde_json::Map::new();
     for (event, matcher, timeout) in EVENTS {
-        let mut entry = json!({"hooks": [{"type": "command", "command": format!("{exe} hook{flag} {event}"), "timeout": timeout}]});
+        let mut entry = json!({"hooks": [{"type": "command", "command": format!("{} hook{flag} {event}", shell_word(exe)), "timeout": timeout}]});
         if let Some(m) = matcher {
             entry["matcher"] = json!(m);
         }
@@ -268,6 +463,8 @@ pub fn install(project: &Path, exe: &str, shared: bool, distill_model: Option<&s
     let mut mcp = read_settings(&mcp_path)?;
     let old = project_old_exes(project);
     add_to_settings(&mut settings, exe, false, distill_model);
+    let mut saved = Vec::new();
+    saved.extend(backup_if_changed(&settings_path, &settings)?);
     write_json(&settings_path, &settings)?;
 
     if !mcp.is_object() {
@@ -281,13 +478,15 @@ pub fn install(project: &Path, exe: &str, shared: bool, distill_model: Option<&s
         servers.remove(OLD_SERVER);
     }
     servers.insert(SERVER.into(), json!({"command": exe, "args": ["mcp"]}));
+    saved.extend(backup_if_changed(&mcp_path, &mcp)?);
     write_json(&mcp_path, &mcp)?;
     Ok(format!(
-        "ChloeCtx installed for {}:\n  hooks and MCP approval: {}\n  MCP server: {}\n  store: {}",
+        "ChloeCtx installed for {}:\n  hooks and MCP approval: {}\n  MCP server: {}\n  store: {}{}",
         project.display(),
         settings_path.display(),
         mcp_path.display(),
-        crate::paths::store_dir(project).display()
+        crate::paths::store_dir(project).display(),
+        saved_note(&saved)
     ))
 }
 
@@ -348,11 +547,13 @@ pub fn install_user(exe: &str, distill_model: Option<&str>) -> Result<String> {
 /// Removes ChloeCtx from a project's settings and `.mcp.json`; keeps the store.
 pub fn uninstall(project: &Path) -> Result<String> {
     let mut changed = Vec::new();
+    let mut saved = Vec::new();
     let old = project_old_exes(project);
     for f in ["settings.local.json", "settings.json"] {
         let path = project.join(".claude").join(f);
         let mut settings = read_settings(&path)?;
         if path.exists() && remove_from_settings(&mut settings) {
+            saved.extend(backup(&path)?);
             write_json(&path, &settings)?;
             changed.push(path);
         }
@@ -362,6 +563,7 @@ pub fn uninstall(project: &Path) -> Result<String> {
     if let Some(servers) = mcp.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
         let old_server = is_old_server(servers.get(OLD_SERVER), &old) && servers.remove(OLD_SERVER).is_some();
         if servers.remove(SERVER).is_some() || old_server {
+            saved.extend(backup(&mcp_path)?);
             write_json(&mcp_path, &mcp)?;
             changed.push(mcp_path);
         }
@@ -370,9 +572,10 @@ pub fn uninstall(project: &Path) -> Result<String> {
         return Ok(format!("ChloeCtx was not installed in {}", project.display()));
     }
     Ok(format!(
-        "ChloeCtx removed from {}\n  store kept: {}",
+        "ChloeCtx removed from {}\n  store kept: {}{}",
         changed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
-        crate::paths::store_dir(project).display()
+        crate::paths::store_dir(project).display(),
+        saved_note(&saved)
     ))
 }
 
@@ -493,8 +696,8 @@ mod tests {
         assert!(!is_old_server(Some(&json!({"command": "/opt/other/engram", "args": ["mcp"]})), &old));
         assert!(!is_old_server(Some(&json!({"command": "/old/engram", "args": ["serve"]})), &old));
         assert!(!is_old_server(None, &old));
-        assert_eq!(hook_exe("/a b/engram hook --user Stop"), Some("/a b/engram"));
-        assert_eq!(hook_exe("/bin/chloectx hook Stop"), Some("/bin/chloectx"));
+        assert_eq!(hook_exe("/a b/engram hook --user Stop").as_deref(), Some("/a b/engram"));
+        assert_eq!(hook_exe("/bin/chloectx hook Stop").as_deref(), Some("/bin/chloectx"));
         assert_eq!(hook_exe("/bin/other hook Stop"), None);
         assert_eq!(hook_exe("say done"), None);
     }

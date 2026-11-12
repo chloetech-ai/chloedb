@@ -472,6 +472,22 @@ impl Store {
         }
     }
 
+    /// A caller's statement ([`crate::sqlguard`]): checked to be one
+    /// `SELECT` without model calls, and run with `limits`' deadline,
+    /// memory budget and row cap. On a server's table the server's own
+    /// limits hold as well.
+    pub fn query_guarded(&self, sql: &str, params: &Params, limits: &crate::sqlguard::Limits) -> Result<ResultSet> {
+        crate::sqlguard::check_select(sql)?;
+        match &self.back {
+            Back::Local { db, .. } => {
+                let mut opts = db.exec.limited(Some(limits.timeout), Some(limits.memory_bytes), None);
+                opts.max_rows = Some(opts.max_rows.map_or(limits.max_rows, |m| m.min(limits.max_rows)));
+                Ok(db.query_at(&self.snapshot(), sql, params, &opts)?)
+            }
+            Back::Remote(r) => r.cluster.query(&for_table(sql, &r.table), params),
+        }
+    }
+
     /// Records by id (any order).
     pub fn get(&self, ids: &[String]) -> Result<Vec<Record>> {
         if ids.is_empty() {

@@ -120,21 +120,104 @@ impl StorePaths {
 /// `dir/engram.sock`, or a short path in a private runtime directory when
 /// that would exceed the Unix socket limit (about 107 bytes). They keep the
 /// old name: a daemon started before the rename listens on them.
+///
+/// The short path's directory must be this user's alone: another local user
+/// who made `/tmp/engram-<uid>` first, and listened on the socket's
+/// predictable name in it, would read every prompt and tool result the hooks
+/// send and answer them with context of their own. So the directory is used
+/// only when it is a real directory (not a link), owned by this user, that
+/// no one else may write to (`$XDG_RUNTIME_DIR`) or open at all
+/// (`/tmp/engram-<uid>`); otherwise the socket goes to `~/.cache/chloectx`.
 fn socket_path(dir: &Path) -> PathBuf {
     let p = dir.join("engram.sock");
     if p.as_os_str().len() < 100 {
         return p;
     }
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()).map(PathBuf::from);
+    let cache = std::env::var_os("HOME").filter(|d| !d.is_empty()).map(|h| PathBuf::from(h).join(".cache/chloectx"));
+    short_socket_path(dir, runtime.as_deref(), Path::new("/tmp"), cache.as_deref())
+}
+
+/// [`socket_path`]'s choice for a store directory whose own socket path is
+/// too long: in `runtime` (`$XDG_RUNTIME_DIR`), else in `<tmp>/engram-<uid>`,
+/// else in `cache`, the first of them that is private to this user; the
+/// store directory itself when none is (binding there fails, saying the
+/// path is too long, rather than listening where another user could).
+pub fn short_socket_path(dir: &Path, runtime: Option<&Path>, tmp: &Path, cache: Option<&Path>) -> PathBuf {
+    let name = format!("engram-{:016x}.sock", crate::embed::fnv(&dir.to_string_lossy()));
+    if let Some(r) = runtime.filter(|r| check_owned_dir(r, 0o022).is_ok()) {
+        return r.join(name);
+    }
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
-    let base = std::env::var("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(format!("/tmp/engram-{uid}")));
-    let _ = std::fs::create_dir_all(&base);
+    let tmp_dir = tmp.join(format!("engram-{uid}"));
+    if ensure_private_dir(&tmp_dir).is_ok() {
+        return tmp_dir.join(name);
+    }
+    if let Some(c) = cache.filter(|c| ensure_private_dir(c).is_ok()) {
+        return c.join(name);
+    }
+    dir.join("engram.sock")
+}
+
+/// Makes `dir` (its parent must exist, or is created) a directory only this
+/// user may open, and checks that it is one: created with mode 0700, or,
+/// when it was there already, a real directory (not a link) owned by this
+/// user, whose mode is narrowed to 0700. A directory someone else owns is
+/// refused, since its owner can put anything in it.
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        if check_owned_dir(dir, 0o077).is_err() {
+            // Ours but too open (an older ChloeCtx, or a umask): narrow it.
+            check_owned_dir(dir, 0)?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        check_owned_dir(dir, 0o077)
     }
-    base.join(format!("engram-{:016x}.sock", crate::embed::fnv(&dir.to_string_lossy())))
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)
+}
+
+/// Whether `dir` is a directory (not a link to one) owned by this user with
+/// none of the mode bits in `refused` set.
+#[cfg(unix)]
+fn check_owned_dir(dir: &Path, refused: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(dir)?;
+    let denied = |why: String| Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{}: {why}", dir.display())));
+    if !m.file_type().is_dir() {
+        return denied("not a directory (a link or a file)".into());
+    }
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    if m.uid() != uid {
+        return denied(format!("owned by user {}, not by this user ({uid})", m.uid()));
+    }
+    if m.mode() & refused != 0 {
+        return denied(format!("mode {:o} lets other users in", m.mode() & 0o777));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_owned_dir(dir: &Path, _refused: u32) -> std::io::Result<()> {
+    if dir.is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{}: not a directory", dir.display())))
+    }
 }
 
 /// Creates a store directory readable only by its owner: it holds
@@ -162,5 +245,64 @@ mod tests {
         assert_eq!(home_in(d), d.join("engram"), "an install from before the rename");
         std::fs::create_dir(d.join("chloectx")).unwrap();
         assert_eq!(home_in(d), d.join("chloectx"), "the new folder wins once it exists");
+    }
+
+    /// B-13: a `/tmp/engram-<uid>` that another user made first is never
+    /// where the socket goes, nor is a link standing in for it.
+    #[cfg(unix)]
+    #[test]
+    fn the_short_socket_directory_is_this_users_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let store = t.path().join("store");
+        let tmp = t.path().join("tmp");
+        let cache = t.path().join("cache/chloectx");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let uid = unsafe { libc::getuid() };
+        let ours = tmp.join(format!("engram-{uid}"));
+
+        // Made here: private.
+        let p = short_socket_path(&store, None, &tmp, Some(&cache));
+        assert_eq!(p.parent(), Some(ours.as_path()));
+        assert_eq!(std::fs::metadata(&ours).unwrap().permissions().mode() & 0o777, 0o700);
+
+        // Ours but left open: narrowed to 0700 and used.
+        std::fs::set_permissions(&ours, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(short_socket_path(&store, None, &tmp, Some(&cache)).parent(), Some(ours.as_path()));
+        assert_eq!(std::fs::metadata(&ours).unwrap().permissions().mode() & 0o777, 0o700);
+
+        // A link where the directory should be: not followed.
+        std::fs::remove_dir(&ours).unwrap();
+        let elsewhere = t.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &ours).unwrap();
+        let p = short_socket_path(&store, None, &tmp, Some(&cache));
+        assert_eq!(p.parent(), Some(cache.as_path()), "{}", p.display());
+        std::fs::remove_file(&ours).unwrap();
+
+        // A runtime directory others may write to is skipped too.
+        let runtime = t.path().join("run");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert_ne!(short_socket_path(&store, Some(&runtime), &tmp, Some(&cache)).parent(), Some(runtime.as_path()));
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(short_socket_path(&store, Some(&runtime), &tmp, Some(&cache)).parent(), Some(runtime.as_path()));
+
+        // Another user's directory (needs root to make one): refused.
+        if uid == 0 {
+            std::fs::remove_dir_all(&cache).unwrap();
+            let theirs = tmp.join("engram-0");
+            std::fs::create_dir_all(&theirs).unwrap();
+            std::os::unix::fs::chown(&theirs, Some(65534), Some(65534)).unwrap();
+            std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let p = short_socket_path(&store, None, &tmp, Some(&cache));
+            assert_eq!(p.parent(), Some(cache.as_path()), "another user's {} was used", theirs.display());
+            assert!(ensure_private_dir(&theirs).is_err());
+            // And with nowhere private, the store's own (too long) path.
+            std::fs::remove_dir_all(&cache).unwrap();
+            std::fs::create_dir_all(&cache).unwrap();
+            std::os::unix::fs::chown(&cache, Some(65534), Some(65534)).unwrap();
+            assert_eq!(short_socket_path(&store, None, &tmp, Some(&cache)), store.join("engram.sock"));
+        }
     }
 }
