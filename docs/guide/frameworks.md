@@ -123,7 +123,6 @@ message.
 import operator, sys
 from typing import Annotated, TypedDict
 
-import chloedb
 from langgraph.graph import END, START, StateGraph
 from chloedb.langgraph import ChloeDBSaver, ChloeDBStore
 
@@ -153,11 +152,9 @@ builder.add_edge(START, "remember")
 builder.add_edge("remember", "recall")
 builder.add_edge("recall", END)
 
-# A process opens a database once; both adapters share it.
-db = chloedb.connect("support.chloedb")
 graph = builder.compile(
-    checkpointer=ChloeDBSaver(db),
-    store=ChloeDBStore(db, index={"model": "potion-retrieval-32M", "fields": ["text"]}),
+    checkpointer=ChloeDBSaver("support.chloedb"),
+    store=ChloeDBStore("support.chloedb", index={"model": "potion-retrieval-32M", "fields": ["text"]}),
 )
 
 if __name__ == "__main__":
@@ -166,10 +163,10 @@ if __name__ == "__main__":
     print(state["log"][-2:])
 ```
 
-Both adapters are given one `chloedb.Database`, opened once: a database
-file is opened by one `Database` at a time, and a second open of the same
-path, in this process or another, is refused as busy. Processes that share
-one database go through [a server](../chloedb/server.md) instead.
+Adapters given the same path in one process share one open database. A
+database file is open in one process at a time, though, and another process
+that opens it while this one has it is refused as busy: processes that
+work on one database at once go through [a server](../chloedb/server.md).
 
 Each run below is a new process. The memories outlive the conversation they
 were said in, and the conversation's state outlives the process:
