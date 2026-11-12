@@ -11,6 +11,48 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Storage
+
+- A SPARSE value whose term holds the character `\0` is refused when it
+  is written. It was accepted, and the next flush panicked building the
+  field's dictionary: on the flusher thread, which ended for good, and
+  again at each reopen, which replays the row. A term of that kind in a
+  row written before is left out of the index.
+- A panic in background work is that round's error, tried again as an
+  error is, and no longer ends the thread: the build of a background
+  flush, a merge on a merger thread, the cold tier's offload and eviction,
+  and a read-only database's refresh.
+- A checkpoint (a backup, the copy a replica is seeded from) of a database
+  where a column references a table created after its own table
+  (`ALTER TABLE .. ADD COLUMN .. REFERENCES`) failed with "references ..,
+  which is not a table". It copies such a database.
+
+### Query and indexes
+
+- **Breaking:** on the operators engine, a `LIMIT` over a join, `DISTINCT
+  ON` or `MAX k PER` whose first table holds more than 1,000,000 rows is
+  an error when the rows it wants are not among the first 1,000,000 read,
+  as the same query without its `LIMIT` is. It answered a short page,
+  down to no rows at all, without a word.
+- A plan from elsewhere (`Db::run`, `POST /v1/plan`) with a NOT over a NOT
+  or over `!=` matched the rows whose field is NULL: `not(not(price > 5))`
+  returned rows without a price. Each NOT is SQL's now, as in SQL text,
+  which was not affected.
+- The filter of `json_paths(.., filter => ..)`, `Db::json_paths` and
+  `Db::sid_next` is one condition, parsed by itself. Its text was put
+  into a statement's, so `'x = 1 LIMIT 0'` was taken as a filter.
+
+### Replication
+
+- **Breaking:** a database that numbers its writes (`--seq-no`) refuses a
+  bulk load (`Db::load`, `Database::bulk_load`) and `attach_segments` once
+  it has numbered a write or replicates: they write no log record, so its
+  replicas never got the rows. Before that they still seed it. Imports
+  (`POST /v1/import`, `chloedb-server import`, SQLite, Parquet and Arrow)
+  into such a database upsert in transactions of 10,000 rows, also into an
+  empty table: a bad row then stops the import after the transactions
+  before it, and a key the file holds twice keeps its last row.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,
