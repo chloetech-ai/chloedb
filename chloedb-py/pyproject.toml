@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.9,<2"]
+requires = ["maturin>=1.16.0,<2"]
 build-backend = "maturin"
 
 [project]
@@ -15,9 +15,9 @@ classifiers = ["Programming Language :: Python :: 3", "Programming Language :: R
 [project.optional-dependencies]
 test = ["pytest"]
 # chloedb.Frame (dataframes run in ChloeDB; Arrow in and out)
-frame = ["pyarrow>=14"]
+frame = ["pyarrow>=25.0.1"]
 # chloedb.ingest.kafka
-kafka = ["confluent-kafka>=2.3"]
+kafka = ["confluent-kafka>=2.16.1"]
 
 [tool.maturin]
 python-source = "python"
