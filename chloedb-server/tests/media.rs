@@ -158,6 +158,134 @@ async fn writes_fetch_what_the_list_allows() {
     assert_eq!(rows(&db).len(), 6);
 }
 
+/// A wildcard entry lets a write fetch from the domain's hosts only: a
+/// URL whose host the allowlist and the HTTP client would read
+/// differently is refused before anything is fetched.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wildcard_entry_fetches_only_from_its_domain() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let h = hits.clone();
+    let app = axum::Router::new().fallback(move || {
+        let h = h.clone();
+        async move {
+            h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ([("content-type", "image/png")], png(4, 3))
+        }
+    });
+    tokio::spawn(async move { axum::serve(l, app).await });
+    let db = create(dir.path(), "p.strata");
+    let svc = Arc::new(service(db.clone()));
+    let allow = Allowlist::parse(&[format!("http://*.example.test:{port}")]).unwrap();
+    let http = HttpFetcher::new(allow.clone(), Duration::from_secs(5)).unwrap();
+    svc.set_media(Resolver { allow, http: Some(Arc::new(http)), ..Resolver::default() }).unwrap();
+    for url in [
+        format!("http://127.0.0.1:{port}/a.png"),
+        format!("http://127.0.0.1:{port}\\.example.test:{port}/a.png"),
+        format!("http://127.0.0.1:{port}%5c.example.test:{port}/a.png"),
+        format!("http://127.0.0.1:{port}\t.example.test:{port}/a.png"),
+        format!("http://127.0.0.1:{port}/.example.test:{port}/a.png"),
+    ] {
+        let e = svc.write_ops(vec![insert("x", json!(url))], None).await.unwrap_err();
+        assert_eq!(e.status, 400, "{url:?}: {}", e.message);
+    }
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing was fetched");
+    assert!(rows(&db).is_empty());
+}
+
+/// `GET /v1/media/<sha256>` serves a stored file so that a browser never
+/// runs it on the server's origin: an image, a sound or a video with its
+/// type; any other file, whatever type its writer gave, as a download of
+/// `application/octet-stream` (a PDF keeps its type); never sniffed, and
+/// in a sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn stored_files_are_served_inert() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = Schema::new("files", vec![Field::new("id", FieldType::Keyword), Field::media("file", MediaKind::Any)], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("f.strata"), schema.clone(), DbOptions { publish_snapshots: true, sync: false, ship_log_bytes: 64 << 20, ..DbOptions::default() }).unwrap();
+    db.storage().start_seq_no().unwrap();
+    let db = Arc::new(db);
+    let svc = Arc::new(Service::new(Backend::Local(db.clone()), schema, agent(), 16, Duration::from_secs(10)));
+    svc.set_media(Resolver { store: Some(dir.path().join("store")), ..Resolver::default() }).unwrap();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let page = b"<!doctype html><p>a page</p>".to_vec();
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".to_vec();
+    let script = b"void 0;".to_vec();
+    let pdf = b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n".to_vec();
+    let files = [(&page, "text/html"), (&svg, "image/svg+xml"), (&script, "Text/JavaScript; charset=utf-8"), (&pdf, "application/pdf")];
+    let mut ops: Vec<Json> = files.iter().enumerate().map(|(i, (b, mime))| json!({"op": "insert", "doc": {"id": format!("f{i}"), "file": {"data": b64(b), "mime": mime}}})).collect();
+    ops.push(json!({"op": "insert", "doc": {"id": "img", "file": {"data": b64(&png(4, 3))}}}));
+    svc.write_ops(ops, None).await.unwrap();
+
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(server::serve_http(svc.clone(), l, Access::default()));
+    let client = reqwest::Client::new();
+    let get = |bytes: Vec<u8>| {
+        let (client, base) = (client.clone(), base.clone());
+        async move {
+            let r = client.get(format!("{base}/v1/media/{}", sha256_hex(&bytes))).send().await.unwrap();
+            assert_eq!(r.status(), 200);
+            let h = r.headers().clone();
+            assert_eq!(r.bytes().await.unwrap().as_ref(), &bytes[..]);
+            let v = |k: &str| h.get(k).map(|v| v.to_str().unwrap().to_string());
+            assert_eq!(v("x-content-type-options").as_deref(), Some("nosniff"));
+            assert!(v("content-security-policy").is_some_and(|c| c.contains("sandbox") && c.contains("default-src 'none'")));
+            (v("content-type").unwrap(), v("content-disposition"))
+        }
+    };
+    for (b, _) in &files[..3] {
+        let (ty, disposition) = get(b.to_vec()).await;
+        assert_eq!(ty, "application/octet-stream", "{}", String::from_utf8_lossy(b));
+        assert!(disposition.is_some_and(|d| d.starts_with("attachment")));
+    }
+    let (ty, disposition) = get(pdf.clone()).await;
+    assert!(ty == "application/pdf" && disposition.is_some_and(|d| d.starts_with("attachment")));
+    let (ty, disposition) = get(png(4, 3)).await;
+    assert_eq!((ty.as_str(), disposition), ("image/png", None));
+}
+
+/// What the allowlist reads of a URL it accepts is what the HTTP client
+/// connects to.
+#[test]
+fn the_host_checked_is_the_host_fetched() {
+    for url in [
+        "https://cdn.example.com/a.png",
+        "HTTPS://CDN.Example.COM./a.png?x=1#y",
+        "http://127.0.0.1:8080/a",
+        "https://[::1]:9/x",
+        "https://[0:0:0:0:0:0:0:1]/x",
+        "https://cdn.example.com:0443/a",
+        "https://a.example.org\\b.example.org/x",
+        "https://a.example.org%5cb.example.org/x",
+        "https://a.example.org\t.b.example.org/x",
+        "https://a.example.org\n/x",
+        "https://a.example.org /x",
+        "https://a.example.org/a b.png",
+        "https://0x7f.1/",
+        "https://2130706433/",
+        "https://127.1/",
+        "https://127.0.0.01/",
+        "https://a.example.org@b.example.org/",
+        "https://a.example.org:443:80/",
+        "https://a.example.org?.b.example.org/",
+        "https://a.example.org#.b.example.org/",
+        "http:/a.example.org/",
+        "http:///a.example.org/",
+        "https://xn--bcher-kva.example/",
+        "https://bücher.example/",
+        "https://a.example.org./",
+        "https://a.example.org../",
+    ] {
+        let Ok(chloedb::media::Source::Http { scheme, host, port }) = chloedb::media::Source::parse(url) else { continue };
+        let u = reqwest::Url::parse(url).unwrap_or_else(|e| panic!("{url:?}: taken, but the client refuses it: {e}"));
+        let theirs = chloedb::media::normal_host(u.host_str().unwrap()).unwrap();
+        assert_eq!((scheme, host.as_str(), port), (u.scheme(), theirs.as_str(), u.port_or_known_default().unwrap()), "{url:?}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replica_gets_media_and_vectors_without_fetching() {
     let dir = tempfile::tempdir().unwrap();

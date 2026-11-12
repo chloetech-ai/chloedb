@@ -11,6 +11,37 @@ still 0.1.0, and the next release will name its version here.
 
 ## Unreleased
 
+### Security
+
+- `chloedb-server`: media fetches (`--media-fetch`) check the host the
+  HTTP client connects to. The allowlist is compared with the URL as the
+  client parses it, before the request and at each redirect, and a URL
+  that URL parsers could read differently is refused: one with a
+  backslash or a control character (a tab, a newline), a host with
+  characters other than letters, digits, `-`, `_` and `.` (percent-encoded
+  or not in its `xn--` form), or a host ending in a number that is not a
+  plain IPv4 address. Before, a wildcard entry (`*.example.com`) could be
+  passed by a URL whose host the server fetched from was not under it.
+- `llm()` takes a model's name, never a path: letters, digits, `_`, `-`
+  and `.`, two such names joined by `/` at most, as `cross_encoder()`
+  takes. An absolute name or `..` is refused, so a query reads no
+  `endpoint.json` outside the models directory.
+- **Breaking:** an `endpoint.json`'s `key_env` names a provider's key
+  variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) or one whose name
+  starts with `CHLOEDB_MODEL_KEY_`; any other name is refused when the
+  model is opened, so an endpoint is never given another of the server's
+  variables (its tokens, a cloud's credentials). Rename a variable such
+  as `GPU_BOX_KEY` to `CHLOEDB_MODEL_KEY_GPU_BOX`.
+- `GET /v1/media/<sha256>` serves a stored file so that a browser never
+  runs it on the server's origin: images (PNG, JPEG, GIF, WebP, BMP,
+  AVIF), sounds and videos with their type; a PDF as a download; any
+  other file, whatever type its writer gave (HTML, SVG, XML, JavaScript),
+  as a download of `application/octet-stream`; every answer with
+  `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
+  An SVG in an image field is no longer shown inline by the command
+  center's media views.
+
 ### Storage
 
 - Opening no longer falls back silently past a damaged newest version (a
