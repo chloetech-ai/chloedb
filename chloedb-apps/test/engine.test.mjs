@@ -2359,7 +2359,7 @@ test('a PULL step adds each new item once, through app.fetch, and is checked aga
   const rule = { steps: [{ pull: { from: 'feed', url: 'https://n.example/rss', into: 'stories', cols: { headline: 'title', link: 'link' }, key: 'link', secret: 'news' }, as: 'got' }, { return: ':got.added' }] };
   assert.equal(await runRule(rule, {}, host), 2, 'a is there already, b comes twice');
   assert.deepEqual(inserted.map((x) => x[1]), [{ headline: 'B', link: 'https://n.example/b' }, { headline: 'C', link: 'https://n.example/c' }]);
-  assert.deepEqual(fetched[0], ['https://n.example/rss', { secret: 'news' }]);
+  assert.deepEqual(fetched[0], ['https://n.example/rss', { fresh: true, secret: 'news' }]);
   // a build's tests reach nothing: the pull adds nothing
   const quiet = async (m) => (m === 'fetch' ? { ok: false, status: 0 } : []);
   assert.deepEqual(await runRule({ steps: [{ pull: rule.steps[0].pull, as: 'got' }, { return: ':got.added' }] }, {}, quiet), 0);
@@ -2549,9 +2549,9 @@ test('a source on a schedule fills a table in Strata once per item, through the 
   const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
   try {
     const engine = new Engine(client, { log: () => {} });
-    await engine.init();
+    await engine.store.init(); // (without following the feed of changes, which would keep the test running)
     const store = engine.store;
-    const app = await store.createApp({ name: 'News' });
+    const app = { id: await store.createApp({ name: 'News' }) };
     const table = { name: 'stories', columns: [{ name: 'title', type: 'text' }, { name: 'link', type: 'keyword' }, { name: 'published', type: 'timestamp' }, { name: 'summary', type: 'text' }] };
     await store.ensureTable(app.id, table, new Set());
     const tableId = await store.putCapability({ app: app.id, slug: 'stories', kind: 'table', title: 'stories', spec: table, code: '' });
@@ -2580,9 +2580,9 @@ test('a source on a schedule fills a table in Strata once per item, through the 
     await engine.settle();
     const rows = async () => engine.sql(app.id, 'SELECT title, link, published, summary FROM stories ORDER BY link');
     assert.deepEqual(await rows(), [
-      { title: 'Story 1', link: 'https://news.example.com/1', published: '2026-11-12T01:00:00.000Z', summary: 'About 1' },
-      { title: 'Story 2', link: 'https://news.example.com/2', published: '2026-11-12T02:00:00.000Z', summary: 'About 2' },
-    ].map((r) => ({ ...r, published: (r.published) })).map((r) => r), 'rows as the feed gave them');
+      { title: 'Story 1', link: 'https://news.example.com/1', published: '2026-11-12T01:00:00Z', summary: 'About 1' },
+      { title: 'Story 2', link: 'https://news.example.com/2', published: '2026-11-12T02:00:00Z', summary: 'About 2' },
+    ], 'rows as the feed gave them');
     feed = `<rss><channel>${item(3)}${item(2)}${item(1)}</channel></rss>`;
     now += 3_600_000;
     await s.tick();

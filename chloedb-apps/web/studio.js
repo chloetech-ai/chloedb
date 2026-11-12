@@ -1326,9 +1326,9 @@ function secretsBox(r) {
   const have = new Set((r.secrets || []).map((x) => x.name));
   const missing = (r.uses?.secrets || []).filter((n) => !have.has(n));
   const f = {
-    name: h('input', { class: 'inp small', placeholder: 'name (as the code says)', value: missing[0] || '', style: 'flex:1;min-width:0' }),
-    value: h('input', { class: 'inp small', type: 'password', autocomplete: 'off', placeholder: 'the key', style: 'flex:2;min-width:0' }),
-    hosts: h('input', { class: 'inp small', placeholder: 'sent only to: api.example.com', value: (r.wants?.hosts || r.uses?.hosts || [])[0] || '', style: 'flex:2;min-width:0' }),
+    name: h('input', { class: 'inp small', placeholder: 'name (as the code says)', value: missing[0] || '', style: 'flex:1 1 160px;min-width:120px' }),
+    value: h('input', { class: 'inp small', type: 'password', autocomplete: 'off', placeholder: 'the key', style: 'flex:2 1 220px;min-width:160px' }),
+    hosts: h('input', { class: 'inp small', placeholder: 'sent only to: api.example.com', value: (r.wants?.hosts || r.uses?.hosts || [])[0] || '', style: 'flex:2 1 220px;min-width:160px' }),
     where: h('select', { class: 'evmode' }, h('option', { value: 'bearer' }, 'Authorization: Bearer'), h('option', { value: 'header' }, 'a header...'), h('option', { value: 'param' }, 'a query parameter...')),
     pname: h('input', { class: 'inp small', placeholder: 'x-api-key or key', style: 'width:130px;display:none' }),
   };

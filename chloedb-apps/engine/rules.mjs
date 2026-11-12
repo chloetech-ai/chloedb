@@ -83,7 +83,8 @@ export async function runRule(rule, input, host) {
   const pull = async (p) => {
     const url = typeof p.url === 'string' && p.url.startsWith(':') ? await value(p.url) : p.url;
     if (!url) return { added: 0, items: 0 };
-    const page = await host('fetch', [String(url), p.secret ? { secret: p.secret } : {}]);
+    // (fresh: a source wants the feed as it is now, not a copy kept 10 minutes)
+    const page = await host('fetch', [String(url), { fresh: true, ...(p.secret ? { secret: p.secret } : {}) }]);
     if (page && page.status === 0) return { added: 0, items: 0 }; // a build's tests reach nothing
     if (!page || !page.ok) throw new Error(`PULL ${String(url).slice(0, 100)}: it answered ${page?.status ?? 'nothing'}`);
     let raw;
