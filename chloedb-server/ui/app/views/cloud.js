@@ -232,7 +232,7 @@ function render(page, r) {
     if (!running) return;
     form.shards = running.shards; form.replicas = running.replicas; form.coordinators = running.coordinators;
     if (running.volume_gb) form.volume_gb = clamp(running.volume_gb, 1, 16384);
-    form.nodes = clamp(Math.max(form.replicas, Math.ceil(running.shards * running.replicas / 4)), 1, 1000);
+    form.nodes = clamp(Math.max(form.replicas, Math.ceil(running.shards * running.replicas / 4)), 1, 100);
     if (byHand) sized = true;
     if (cat) replan(); else drawPlan();
   }
@@ -592,7 +592,7 @@ function render(page, r) {
       h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Machine"), form.machine === SMALLEST
         ? h("div", { class: "row nw", title: "The cheapest machine whose nodes give each copy at least 1 GiB and half a core, with room for its pods. Pick one above to choose it yourself." }, h("b", { class: "mono" }, plan?.machine?.type || "…"), pill("ok", "smallest that fits"))
         : h("div", { class: "row nw" }, h("b", { class: "mono" }, form.machine || "pick one above"), h("button", { class: "btn sm ghost", title: "The cheapest machine whose nodes give each copy at least 1 GiB and half a core", onclick: () => select(SMALLEST) }, "Smallest that fits"))),
-      stepper(form.nodes, 1, 1000, (v) => set("nodes", v), "Nodes"),
+      stepper(form.nodes, 1, 100, (v) => set("nodes", v), "Nodes"),
       stepper(form.shards, 1, 4096, (v) => set("shards", v), "Shards"),
       stepper(form.replicas, 1, 9, (v) => set("replicas", v), "Copies a shard"),
       stepper(form.coordinators, 1, 16, (v) => set("coordinators", v), "Coordinators"),
@@ -705,7 +705,7 @@ function render(page, r) {
     try {
       // The machine confirmed, not "smallest" again: the cloud's prices may
       // have moved since the plan.
-      const m = await api("/v1/admin/cloud/clusters", { body: { provider: prov, plan: { ...body(), machine: p.machine.type }, confirm: name, ...(form.delete_after ? { delete_after_hours: form.delete_after } : {}), ...(form.bring.length ? { bring: form.bring } : {}) } });
+      const m = await api("/v1/admin/cloud/clusters", { body: { provider: prov, plan: { ...body(), machine: p.machine.type }, confirm: name, ...(form.delete_after ? { delete_after_hours: form.delete_after } : { keep: true }), ...(form.bring.length ? { bring: form.bring } : {}) } });
       clusters = [m, ...clusters.filter((c) => c.id !== m.id)];
       toast(`${name} is on its way`, "ok");
       drawMade(); poll(2000);
