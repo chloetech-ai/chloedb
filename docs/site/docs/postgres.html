@@ -47,6 +47,8 @@
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
       <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
       <a href="sqlite.html">SQLite in and out</a>
@@ -61,6 +63,7 @@
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
       <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
@@ -96,7 +99,7 @@ GRANT SELECT ON products, reviews TO chloedb;</pre>
 <tbody>
 <tr>
 <td><code>--source</code></td>
-<td>the database's URL (or <code>CHLOEDB_POSTGRES_URL</code>); <code>PGPASSWORD</code> gives a password it leaves out; <code>sslmode</code> is <code>disable</code>, <code>prefer</code> (the default), <code>require</code>, <code>verify-ca</code> or <code>verify-full</code>, and <code>sslrootcert</code> (or <code>--source-ca</code>) a CA certificate to check the server's by; with <code>verify-*</code> and no CA given, the public CAs are trusted</td>
+<td>the database's URL (or <code>CHLOEDB_POSTGRES_URL</code>); <code>PGPASSWORD</code> gives a password it leaves out; <code>sslmode</code> is <code>disable</code>, <code>prefer</code>, <code>require</code>, <code>verify-ca</code> or <code>verify-full</code>; without one, <code>require</code> for a database on another machine (a connection that could fall back to plain text would send the password's proof and every row in the clear) and <code>prefer</code> for one on <code>localhost</code> or a loopback address, and <code>sslrootcert</code> (or <code>--source-ca</code>) a CA certificate to check the server's by; with <code>verify-*</code> and no CA given, the public CAs are trusted</td>
 </tr>
 <tr>
 <td><code>--target</code></td>

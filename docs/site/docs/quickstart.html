@@ -47,6 +47,8 @@
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
       <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
       <a href="sqlite.html">SQLite in and out</a>
@@ -61,6 +63,7 @@
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
       <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
@@ -171,7 +174,7 @@ EOF</pre>
 <p>The same methods talk to a server: <code>chloedb.connect("http://127.0.0.1:7700")</code> in place of <code>chloedb.open(...)</code>.</p>
 <h2 id="chloedb-in-docker">ChloeDB in Docker<a class="anchor" href="#chloedb-in-docker" aria-label="Link to this section">#</a></h2>
 <p>The image <code>ghcr.io/chloetech-ai/chloedb-server</code> (Linux, x86-64 and arm64) keeps its database in <code>/data</code>: mount a volume there to keep it. Inside a container the server listens on all of the container's interfaces, which it allows only with a token, so pick one. Publishing the port on <code>127.0.0.1</code> keeps it to this machine.</p>
-<pre data-lang="sh">docker run -d --name chloedb -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
+<pre data-lang="sh">docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
   ghcr.io/chloetech-ai/chloedb-server:0.2.0</pre>
 <p>Then every request sends the token, and the console asks for it once:</p>
 <pre data-lang="sh">sql() { curl -sS http://127.0.0.1:7700/v1/sql -H &#x27;content-type: application/json&#x27; -H &#x27;authorization: Bearer pick-a-secret&#x27; --data-binary @-; echo; }</pre>

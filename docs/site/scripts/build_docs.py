@@ -83,6 +83,7 @@ NAV = [
         ("chloectx-setup", "Install ChloeCtx", "docs/chloectx/setup.md", "reference"),
         ("chloectx-inspector", "ChloeCtx inspector", "docs/chloectx/inspector.md", "reference"),
         ("chloectx-app", "ChloeCtx on a cluster", "docs/chloectx/app.md", "reference"),
+        ("chloectx-capsules", "Context capsules", "docs/chloectx/capsules.md", "reference"),
         ("app-engine", "App engine (prototype)", "docs/chloedb/apps.md", "reference"),
     ]),
 ]
