@@ -186,6 +186,11 @@ const CSS = `
 .ac .reach { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-top: 1px solid var(--line); background: var(--surface); }
 .ac .reach:first-child { border-top: 0; } .ac .reach.wants { background: var(--warn-soft); }
 .ac .reach .what { display: block; color: var(--muted); font-size: 11.5px; }
+.ac .pubtag { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text-2); border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.ac .pubtag i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.ac .pubtag.on { color: var(--text); border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.ac .pubtag.on i { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+.ac .pubtag[hidden] { display: none; }
 .ac .rows { overflow: auto; max-height: 340px; border: 1px solid var(--line); border-radius: 8px; }
 .ac .rows table { font-size: 11.5px; }
 
@@ -644,8 +649,10 @@ __sa_ready();
       deviceBox.className = `device ${v}`;
     });
     const ownLink = h('a', { class: 'btn sm', target: '_blank', rel: 'noopener', title: 'The app on its own, as people use it: sign-in, a phone', hidden: true }, icon('ext'), 'Its own page');
+    // Open to the public, or not: the tag opens the Publish tab.
+    const pubTag = h('button', { class: 'pubtag', type: 'button', onclick: () => { W.tab = 'publish'; paintInspector(); } });
     const studioBtn = h('button', { class: 'btn sm ghost', type: 'button', title: 'Open the standalone studio in a tab of its own', onclick: () => openStudio(`#/app/${appId}`) }, 'Studio');
-    const bar = h('div', { class: 'wsbar' }, h('a', { class: 'crumb', href: ctx.href() }, icon('left'), 'Apps'), title, verTag, status, h('span', { class: 'grow' }), devices, ownLink, studioBtn);
+    const bar = h('div', { class: 'wsbar' }, h('a', { class: 'crumb', href: ctx.href() }, icon('left'), 'Apps'), title, verTag, status, h('span', { class: 'grow' }), devices, pubTag, ownLink, studioBtn);
 
     const convo = h('div', { class: 'convo' });
     const convoScroll = h('div', { class: 'scroll' }, convo);
@@ -728,6 +735,13 @@ __sa_ready();
       title.textContent = st.app.name || appId;
       verTag.replaceChildren(st.version.n ? h('span', { class: `tag ${st.version.trying ? 'try' : 'live'}` }, st.version.trying ? `trying v${st.version.trying} · live v${st.version.live}` : `v${st.version.n} live`) : h('span', { class: 'tag try' }, 'first version'));
       status.replaceChildren(...(W.lines.length ? [h('span', { class: 'spin' }), ' building'] : []));
+      const pub = st.publish;
+      pubTag.hidden = !pub || !st.views.length;
+      if (pub) {
+        pubTag.className = `pubtag${pub.on ? ' on' : ''}`;
+        pubTag.title = pub.on ? `Open to the public${pub.urls[0] ? ` at ${pub.urls[0]}` : ''}` : 'Only you and other admins can open it; publish it under Publish';
+        pubTag.replaceChildren(h('i'), pub.on ? 'Public' : 'Private');
+      }
       if (kit.publicUrl && st.views.length) { ownLink.hidden = false; ownLink.href = `${kit.publicUrl}/a/${appId}${atV()}`; } else ownLink.hidden = true;
       studioBtn.hidden = !kit.publicUrl;
       applyDesign();
@@ -1031,13 +1045,13 @@ __sa_ready();
 
     // ---- the inspector
 
-    const TABS = [['made', 'Made of'], ['time', 'Time'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach']];
+    const TABS = [['made', 'Made of'], ['time', 'Time'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach'], ['publish', 'Publish']];
     function paintInspector() {
       const st = W.st;
       itabs.replaceChildren(...TABS.map(([k, label]) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(W.tab === k), onclick: () => { W.tab = k; W.pick = null; paintInspector(); } }, label,
         k === 'versions' && st.versions?.length ? h('span', { class: 'muted' }, ` ${st.versions.length}`) : null)));
       const keepScroll = ibody.parentNode.scrollTop;
-      const draw = { made: madeTab, time: timeTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab }[W.tab] || madeTab;
+      const draw = { made: madeTab, time: timeTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab, publish: publishTab }[W.tab] || madeTab;
       // A tab with a field being typed in is left as it is.
       if (ibody.contains(document.activeElement) && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName) && ibody.dataset.tab === W.tab) return;
       ibody.dataset.tab = W.tab;
@@ -1284,6 +1298,39 @@ __sa_ready();
         secretRows.length ? [h('div', { class: 'lbl' }, 'Secrets'), h('div', { class: 'note' }, 'A secret is pasted once, in the studio, and never shown again.'), h('div', { class: 'list' }, secretRows)] : null,
         h('div', { class: 'row' }, h('span', { class: 'small dim grow' }, 'Questions to the model'), perDay),
         h('div', { class: 'note' }, `Today: ${t.asks || 0} question${t.asks === 1 ? '' : 's'} to the model${t.cached ? ` and ${t.cached} answered from kept answers` : ''}, $${(t.usd || 0).toFixed(3)}; ${t.fetches || 0} page${t.fetches === 1 ? '' : 's'} fetched.`),
+      ];
+    }
+
+    // Open to the public (engine/publish.mjs): the switch, its addresses,
+    // and hosts of the owner's own.
+    function publishTab(st) {
+      const p = st.publish;
+      if (!p) return [h('div', { class: 'note' }, 'This engine cannot publish apps yet: it is older than the app creator.')];
+      const set = async (patch, said) => {
+        try { await post(`${base}/publish`, patch); if (said) toast(said, 'ok'); } catch (e) { toast(e.message, 'bad'); }
+        refresh();
+      };
+      const onIp = kit.publicUrl ? `${kit.publicUrl}/a/${appId}` : null;
+      const links = [...p.urls, ...(onIp ? [onIp] : [])];
+      const name = h('input', { class: 'input mono', value: p.name || '', placeholder: 'kids-reading', 'aria-label': 'The app’s name in its address', style: { flex: '1 1 120px', minWidth: '0' } });
+      const host = h('input', { class: 'input mono', placeholder: 'books.example.org', 'aria-label': 'A host of your own', style: { flex: '1 1 160px', minWidth: '0' } });
+      const linkRow = (u) => h('div', { class: 'reach' }, icon('ext'), h('a', { class: 'grow mono', href: u, target: '_blank', rel: 'noopener', style: { wordBreak: 'break-all' } }, u.replace(/\/$/, '')),
+        h('button', { class: 'btn sm ghost', onclick: () => core.copy(u) }, icon('copy'), 'Copy'));
+      return [
+        h('div', { class: 'reach' }, core.toggle(p.on, (v) => set({ on: v }, v ? 'Open to the public' : 'Only admins can open it now')),
+          h('span', { class: 'grow' }, h('b', {}, 'Open to the public'), h('span', { class: 'what' }, p.on ? 'Anyone with the address can use it, with no account here.' : 'Only you and other admins can open it, from here or the studio.'))),
+        p.on && links.length ? [h('div', { class: 'lbl' }, 'Its addresses'), h('div', { class: 'list' }, links.map(linkRow))] : null,
+        p.domain ? [
+          h('div', { class: 'lbl' }, 'Name'),
+          h('div', { class: 'row nw' }, name, h('span', { class: 'small muted mono' }, `.${p.domain}`), h('button', { class: 'btn sm', onclick: () => set({ name: name.value.trim() }, 'Name saved') }, 'Save')),
+          h('div', { class: 'lbl' }, 'Hosts of your own'),
+          p.hosts.length ? h('div', { class: 'list' }, p.hosts.map((x) => h('div', { class: 'reach' }, h('b', { class: 'grow mono' }, x), h('button', { class: 'btn sm ghost', onclick: () => set({ hosts: p.hosts.filter((y) => y !== x) }, `${x} removed`) }, 'Remove')))) : null,
+          h('div', { class: 'row nw' }, host, h('button', { class: 'btn sm', onclick: () => host.value.trim() && set({ hosts: [...p.hosts, host.value.trim()] }, `${host.value.trim()} added`) }, 'Add')),
+          h('div', { class: 'note' }, `Point a CNAME record for your host at ${p.name || 'its name'}.${p.domain}; the cluster gets its certificate once the record resolves.`),
+        ] : h('div', { class: 'note' }, `This engine has no domain yet, so a published app is reached at ${onIp || '/a/<id> on the engine’s address'}. Give it one (the operator’s spec.apps.domain, with a wildcard DNS record) and each app gets a name of its own, like kids-reading.apps.example.com.`),
+        h('div', { class: 'lbl' }, 'What the public can do'),
+        h('div', { class: 'note' }, 'Use the app as its screens let them: read and write its tables, run its functions, sign up and in, upload files; and ask the model or fetch pages if Reach allows it, within its questions a day. Each visitor is held to a rate a minute. They never see how it is made, its versions or its people, nor reach other apps or this studio.'),
+        h('div', { class: 'note', style: { color: 'var(--warn-ink, var(--text-2))' } }, 'Anyone with the address can do what its screens do, edits and deletes included. For an app strangers use, ask for sign-in and for each person to see only their own rows.'),
       ];
     }
 

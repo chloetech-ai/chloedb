@@ -26,7 +26,10 @@ const CODE_MS = 2 * 60000;
 const COOKIE = 'sa_studio';
 // Loaded from inside sandboxed frames, which send no cookies (deploy/gate.mjs
 // lets the same through).
-const OPEN = [/^\/api\/tiles\/\d{1,2}\/\d{1,7}\/\d{1,7}\.png$/, /^\/api\/apps\/[a-z0-9]+\/files\/[a-z0-9]{6,20}$/, /^\/healthz$/];
+// /api/tls/ask is Caddy's question, before it gets a certificate for a host
+// (spec.apps.publish): whether the host is a published app's, which anyone
+// may learn by opening it.
+const OPEN = [/^\/api\/tiles\/\d{1,2}\/\d{1,7}\/\d{1,7}\.png$/, /^\/api\/apps\/[a-z0-9]+\/files\/[a-z0-9]{6,20}$/, /^\/healthz$/, /^\/api\/tls\/ask$/];
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 const hex = (s) => digest(s).toString('hex');

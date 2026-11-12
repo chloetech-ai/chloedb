@@ -24,6 +24,15 @@ changes collect under "Unreleased".
   the agent wrote, how much the agent wrote from scratch, and how much is
   the library's, in lines written and lines that run, piece by piece
   (`GET /api/apps/:id/made`, and `made` in an app's state).
+- App engine: apps can be published, open to everyone with no account
+  here: **Publish** in the app creator, `/a/<id>` at once, and
+  `<name>.<domain>` (or a host of the owner's own) with a domain. The public
+  reaches what the app's screens do and nothing of how it is made, at a
+  rate a minute per visitor. The operator's `spec.apps.publish` (`domain`:
+  your own or `sslip`) adds a load balancer and Caddy for the apps'
+  certificates.
+- App engine: **Usage** in the app creator is the studio's Activity view:
+  each visit step by step, and the paths people take between screens.
 - App engine: `GET /api/events?after=N` gives the studio's live events to a
   page that cannot hold a stream open (chloedb-server forwards whole
   answers), and `GET /api/kit` the frames' runtime and policy.

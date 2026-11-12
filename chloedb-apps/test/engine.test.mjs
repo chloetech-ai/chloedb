@@ -2419,3 +2419,50 @@ LIST guests
   assert.ok(m.leverage > 1);
   assert.deepEqual(m.pieces.map((p) => p.origin).slice(0, 2), ['create', 'create'], 'statements first');
 });
+
+test('a published app is open to the public at its own host, and nothing else is', async () => {
+  const { Publish, nameFor } = await import('../engine/publish.mjs');
+  assert.equal(nameFor("Kids' reading"), 'kids-reading');
+  assert.equal(nameFor('Café — Orders!'), 'cafe-orders');
+  assert.equal(nameFor('API'), 'app-api');
+  const rows = new Map();
+  const store = { db: { query: async () => [...rows].map(([app, value]) => ({ app, value })) }, putSetting: async (app, name, value) => rows.set(app, value) };
+  const pub = new Publish({ store, domain: 'apps.example.com', rate: { calls: 5, dear: 2 } });
+  await pub.load(true);
+  const req = (method, host, extra = {}) => ({ method, headers: { host, ...extra }, socket: { remoteAddress: '203.0.113.9' } });
+  const at = (p) => new URL(p, 'http://x');
+  // Not published: nothing of it is open.
+  assert.equal(await pub.allows(req('GET', 'engine:7730'), at('/a/a1')), null);
+  const out = await pub.set('a1', "Kids' reading", { on: true });
+  assert.deepEqual(out.urls, ['https://kids-reading.apps.example.com/']);
+  await assert.rejects(pub.set('a2', 'Other', { on: true, name: 'kids-reading' }), /another app is called/);
+  await assert.rejects(pub.set('a2', 'Other', { name: 'www' }), /kept for the service/);
+  await assert.rejects(pub.set('a2', 'Other', { hosts: ['x.apps.example.com'] }), /not a host of your own/);
+  assert.equal((await pub.set('a2', 'Other', { on: true, hosts: ['Books.Example.org.'] })).hosts[0], 'books.example.org');
+  const host = 'kids-reading.apps.example.com';
+  assert.equal(pub.appForHost(req('GET', `${host}:443`)), 'a1');
+  assert.equal(pub.appForHost(req('GET', 'books.example.org')), 'a2');
+  assert.deepEqual(await pub.allows(req('GET', host), at('/')), { app: 'a1', page: true });
+  assert.ok(await pub.allows(req('GET', 'engine'), at('/a/a1')));
+  assert.ok(await pub.allows(req('GET', host), at('/api/apps/a1')));
+  assert.ok((await pub.allows(req('POST', host), at('/api/apps/a1/insert'))).app === 'a1');
+  assert.ok((await pub.allows(req('POST', host), at('/api/apps/a1/ask'))).dear);
+  assert.ok((await pub.allows(req('GET', host), at('/studio.js'))).file);
+  // How it is made, other apps, versions to try and the studio's own calls stay shut.
+  for (const [m, p, h] of [['GET', '/api/apps', host], ['POST', '/api/apps/a1/requests', host], ['GET', '/api/apps/a1/activity', host],
+    ['POST', '/api/apps/a1/publish', host], ['GET', '/api/apps/a1?v=2', host], ['GET', '/api/apps/a2', host], ['GET', '/api/kit', host],
+    ['GET', '/', 'engine'], ['GET', '/api/stream', host], ['POST', '/api/apps/a1/screens/books', host]]) {
+    assert.equal(await pub.allows(req(m, h), at(p)), null, `${m} ${p} on ${h}`);
+  }
+  assert.ok(await pub.allows(req('GET', host), at('/api/stream?app=a1')));
+  // A visitor's rate: 5 calls a minute, 2 of them dear.
+  const r = req('POST', host, { 'x-forwarded-for': '198.51.100.7, 10.0.0.1' });
+  assert.equal(pub.limit(r, true), null);
+  assert.equal(pub.limit(r, true), null);
+  assert.ok(pub.limit(r, true) > 0);
+  assert.equal(pub.limit(req('POST', host, { 'x-forwarded-for': '198.51.100.8' }), false), null);
+  // Switched off: shut again, at every address.
+  await pub.set('a1', "Kids' reading", { on: false });
+  assert.equal(await pub.allows(req('GET', host), at('/')), null);
+  assert.equal(await pub.allows(req('GET', 'engine'), at('/a/a1')), null);
+});
