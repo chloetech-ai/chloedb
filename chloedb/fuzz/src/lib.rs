@@ -7,7 +7,7 @@
 //! ones rather than noise that fails the first check. Every target must
 //! return without undefined behaviour, a hang or a runaway allocation.
 //! Beyond that:
-//! - `loom`, `wal`, `manifest`, `sql`, `text_query` and `media` must not panic: a damaged input is
+//! - `loom`, `wal`, `manifest`, `sql`, `text_query`, `analyzer` and `media` must not panic: a damaged input is
 //!   an error, and a list that passes [`Loom::validate`] decodes, seeks and
 //!   combines like its docIDs.
 //! - `segment` must open without panicking (a damaged segment is an error)
@@ -419,6 +419,37 @@ pub fn text_query(data: &[u8]) {
         format!("SELECT id FROM docs WHERE MATCH(body, '{q}') ORDER BY bm25(body, '{q}') DESC LIMIT 5"),
     ] {
         let _ = db.query(&sql, &params());
+    }
+}
+
+/// Characters of the scripts the analyzers treat apart, and those their
+/// normalization changes: [`analyzer`] maps bytes to them.
+const ANALYZER_CHARS: &str = "aZé ß.,3'’-\u{301}\u{ad}\u{200c}\u{200d}ＡﬁİIıσςёЁ\u{301}東京都庁に行きカタｶﾞ學门서울시에ไทย่ງកမြहिन्दी़্ాمَكْتَبَةكیہ\u{640}שׁ🙂\u{10400}\u{fffd}";
+
+/// Any text through every analyzer, as a document and as a query. Must
+/// not panic; a text gives the same terms twice, and for `standard` and
+/// the analyzers built on it a query's terms, stopwords kept, are its
+/// text's.
+/// The first byte chooses how the rest is read: as UTF-8, or as characters
+/// of [`ANALYZER_CHARS`].
+pub fn analyzer(data: &[u8]) {
+    use chloedb::schema::Analyzer;
+    let Some((&which, rest)) = data.split_first() else { return };
+    let text: String = if which % 2 == 0 {
+        String::from_utf8_lossy(rest).into_owned()
+    } else {
+        let chars: Vec<char> = ANALYZER_CHARS.chars().collect();
+        rest.iter().map(|b| chars[*b as usize % chars.len()]).collect()
+    };
+    for a in Analyzer::ALL {
+        let terms = a.analyze(&text);
+        assert_eq!(terms, a.analyze(&text), "{}: {text:?}", a.name());
+        // (`english` and `simple` read a query's contractions their own way.)
+        if !matches!(a, Analyzer::English | Analyzer::Simple) {
+            assert_eq!(a.query_term_seq(&text, false), terms, "{}: {text:?}", a.name());
+        }
+        assert!(a.query_term_seq(&text, true).len() <= terms.len(), "{}: {text:?}", a.name());
+        let _ = a.prefix_of(&text);
     }
 }
 

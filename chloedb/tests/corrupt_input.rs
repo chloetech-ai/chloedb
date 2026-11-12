@@ -85,6 +85,16 @@ fn damaged_media_and_arbitrary_media_values() {
 }
 
 #[test]
+fn arbitrary_text_through_every_analyzer() {
+    for t in ["The Quick brown foxes", "東京都庁に行きました。", "서울특별시에 갑니다.", "ภาษาไทยง่ายมาก", "हिन्दी भाषा", "مَكْتَبَة", "ＣｈｌｏｅＤＢ ３.１４ ﬁle café I’ll", ""] {
+        harness::analyzer(&[[0].as_slice(), t.as_bytes()].concat());
+    }
+    for data in inputs(8, 1500, 48) {
+        harness::analyzer(&data);
+    }
+}
+
+#[test]
 fn arbitrary_text_queries() {
     for q in ["alpha", "\"bravo charlie\" -delta", "(echo OR golf) AND NOT kilo", "lim* india~2", "a'b", ""] {
         harness::text_query(q.as_bytes());

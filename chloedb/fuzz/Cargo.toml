@@ -65,6 +65,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "analyzer"
+path = "fuzz_targets/analyzer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "text_query"
 path = "fuzz_targets/text_query.rs"
 test = false
