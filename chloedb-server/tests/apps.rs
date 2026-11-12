@@ -199,6 +199,7 @@ async fn apps_that_do_not_answer_do_not_hold_up_the_listing() {
     let (s, _) = call(&base, "GET", "/v1/apps", Some("root-token"), None).await;
     assert_eq!(s, 200);
     assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
+}
 
 /// A stand-in for chloedb-sheets: serves `--listen`, asks for its token,
 /// and answers `/env` with the names of the settings it was given.
