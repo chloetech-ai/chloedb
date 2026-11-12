@@ -2,6 +2,8 @@
 
 The `chloedb` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [chloedb-server](server.md). Both have the same methods, so a script written against a local file works against a server.
 
+LangChain, LangGraph and LlamaIndex take ChloeDB as a vector store, a checkpointer and a memory store, and `chloedb.dbapi` is a DB-API 2.0 driver: see [frameworks](frameworks.md).
+
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
 ## Install
