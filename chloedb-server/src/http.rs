@@ -344,6 +344,8 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/cloud/clusters/:id", get(cloud_one).merge(axum::routing::delete(cloud_forget)))
         .route("/v1/admin/cloud/clusters/:id/delete", post(cloud_delete))
         .route("/v1/admin/cloud/clusters/:id/expiry", post(cloud_expiry))
+        .route("/v1/admin/cloud/found", get(cloud_found))
+        .route("/v1/admin/cloud/found/delete", post(cloud_found_delete))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
@@ -4822,6 +4824,7 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
         delete_at_ms: after_ms.map(|a| now + a),
         bring,
         brought: None,
+        found: false,
     };
     let m = app.svc.clouds.add(m).map_err(refuse)?;
     app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
@@ -4870,6 +4873,95 @@ async fn cloud_delete(State(app): State<App>, w: Option<axum::Extension<Principa
     let m = app.svc.clouds.delete(&id, &who.name).map_err(|e| ApiError { status: 409, message: e })?;
     app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
     let detail = format!("deleting the cluster {} on {} in {}", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
+    let mut r = audited(m.view(), detail);
+    *r.status_mut() = axum::http::StatusCode::ACCEPTED;
+    Ok(r)
+}
+
+/// The ChloeDB clusters the cloud's account holds that this server's list
+/// does not follow (made from another server, or forgotten here):
+/// `?provider=digitalocean` (every region), or `?provider=aws&region=`
+/// (CloudFormation's stacks are a region's). Each says whether this
+/// server runs on it (`here`), which may not be deleted from here.
+async fn cloud_found(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<AxJson<Json>, ApiError> {
+    Ok(AxJson(json!({"clusters": found(&app, q.get("provider").map(String::as_str).unwrap_or_default(), q.get("region").map(String::as_str)).await?})))
+}
+
+async fn found(app: &App, provider: &str, region: Option<&str>) -> Result<Vec<Json>, ApiError> {
+    let made = app.svc.clouds.list();
+    match provider {
+        "digitalocean" => {
+            let list = app.svc.digitalocean.clusters().await.map_err(do_error)?;
+            Ok(crate::cloud::clusters::found_doks(&list, &made, app.svc.place.node.as_deref()))
+        }
+        "aws" => {
+            let region = region.filter(|r| !r.is_empty()).ok_or_else(|| ApiError::bad("region: CloudFormation's stacks are a region's"))?;
+            let stacks = app.svc.aws.stacks(region).await.map_err(aws_error)?;
+            Ok(crate::cloud::clusters::found_stacks(region, &stacks, &made))
+        }
+        _ => Err(ApiError::bad("provider is aws or digitalocean")),
+    }
+}
+
+/// `{"provider", "cloud_id", "region"?, "confirm"}`: deletes a cluster
+/// [`cloud_found`] lists, as one made here is deleted (its volumes, then
+/// the cloud's cluster), after it is put on this server's list to be
+/// followed. `confirm` is its name, typed again. Refused for one this
+/// list has already, one the cloud no longer has, and the one this server
+/// runs on (deleting it would stop this server halfway).
+async fn cloud_found_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    use crate::cloud::clusters::{Made, Phase};
+    let provider = b["provider"].as_str().unwrap_or_default().to_string();
+    let id = b["cloud_id"].as_str().filter(|i| !i.is_empty()).ok_or_else(|| ApiError::bad("cloud_id is the cloud's id of the cluster, as /v1/admin/cloud/found lists it"))?;
+    let c = found(&app, &provider, b["region"].as_str()).await?.into_iter().find(|c| c["cloud_id"] == id).ok_or_else(|| ApiError {
+        status: 404,
+        message: format!("the account has no ChloeDB cluster {id} that this server does not follow already"),
+    })?;
+    let cluster = c["cluster"].as_str().unwrap_or_default().to_string();
+    if c["here"] == true {
+        return Err(ApiError { status: 409, message: format!("this server runs on {cluster}: deleting it from here would stop it halfway; delete it from another server, or from the cloud's console") });
+    }
+    if b["confirm"].as_str() != Some(cluster.as_str()) {
+        return Err(ApiError::bad(format!("confirm is the cluster's name, {cluster}, typed again: deleting it deletes its data")));
+    }
+    let who = who(w);
+    let now = crate::operator::now_ms();
+    let m = Made {
+        id: format!("{provider}-{cluster}-{now}"),
+        provider: provider.clone(),
+        name: cluster.trim_start_matches("strata-").to_string(),
+        cluster: cluster.clone(),
+        region: c["region"].as_str().unwrap_or_default().to_string(),
+        machine: c["machine"].as_str().unwrap_or_default().to_string(),
+        nodes: c["nodes"].as_u64().unwrap_or(0) as u32,
+        cost_hour: 0.0,
+        by: who.name.clone(),
+        created_ms: now,
+        phase: Phase::Deleting,
+        cloud_id: Some(id.to_string()),
+        request: Json::Null,
+        image: String::new(),
+        objects: Vec::new(),
+        steps: Vec::new(),
+        error: None,
+        strata: Json::Null,
+        progress: None,
+        ready_ms: None,
+        ended_ms: None,
+        generation: 0,
+        tries: 0,
+        checked_ms: 0,
+        deleting_since_ms: None,
+        volumes_gone: false,
+        delete_asked: false,
+        delete_at_ms: None,
+        bring: Vec::new(),
+        brought: None,
+        found: true,
+    };
+    let m = app.svc.clouds.adopt(m, &who.name).map_err(|e| ApiError { status: 409, message: e })?;
+    app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
+    let detail = format!("deleting the cluster {} on {} in {}, found in the account", m.cluster, if m.provider == "aws" { "AWS" } else { "DigitalOcean" }, m.region);
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)

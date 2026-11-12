@@ -352,11 +352,16 @@ impl DigitalOcean {
         Ok(self.send(reqwest::Method::GET, &t, &format!("/v2/kubernetes/clusters/{id}"), None).await?.map(|j| j["kubernetes_cluster"].clone()))
     }
 
-    /// The account's DOKS cluster named `name`, if there is one.
-    pub async fn cluster_named(&self, name: &str) -> Result<Option<Json>, String> {
+    /// The account's DOKS clusters (`kubernetes_clusters`), every region's.
+    pub async fn clusters(&self) -> Result<Vec<Json>, String> {
         let t = self.need()?;
         let j = self.get(&t, "/v2/kubernetes/clusters?per_page=200").await?;
-        Ok(j["kubernetes_clusters"].as_array().and_then(|a| a.iter().find(|c| c["name"] == name).cloned()))
+        Ok(j["kubernetes_clusters"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// The account's DOKS cluster named `name`, if there is one.
+    pub async fn cluster_named(&self, name: &str) -> Result<Option<Json>, String> {
+        Ok(self.clusters().await?.into_iter().find(|c| c["name"] == name))
     }
 
     /// The API of the DOKS cluster `id`: its endpoint, CA (PEM) and a
