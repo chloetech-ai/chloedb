@@ -32,8 +32,8 @@ It needs Rust (stable) and a C compiler.
 ```sh
 cd chloedb-js
 npm run build                    # cargo build --release, then copies the addon to chloedb.node
-cd ../my-app
-npm install ../chloedb/chloedb-js  # or "chloedb": "file:../chloedb/chloedb-js" in package.json
+cd /path/to/my-app
+npm install /path/to/chloedb/chloedb-js  # or "chloedb": "file:/path/to/chloedb/chloedb-js" in package.json
 ```
 
 `npm install` of the directory builds the addon itself when `chloedb.node` is missing. `npm run build -- --features bert` builds more of ChloeDB's features in (`bert`, `onnx`, `vision`, `audio`; `datafusion`, `parquet` and `s3` are on by default). `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`) loads an addon from another place.

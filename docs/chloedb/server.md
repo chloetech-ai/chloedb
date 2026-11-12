@@ -4,7 +4,7 @@
 
 New to it? [Build an app](build-an-app.md) is one page from an empty server to search, stock, holds, events counted once and a cluster; this page is the reference.
 
-**Old and new names.** ChloeDB was called Strata, and the names on this page are the new ones. The old ones go on working for a release, so that a deployment can move one piece at a time: the server image and the release archives also run the programs as `strata-server`, `strata-crawl` and `strata-sheets`; every `CHLOEDB_*` setting can be set as `STRATA_*` (`STRATA_TOKEN` for `CHLOEDB_TOKEN`; when both are set, the new one wins); a client may send the headers it sets (`x-chloedb-client`, `-app`, `-reason`, `-confirm`, `-table`) as `x-strata-*`, over HTTP and as gRPC metadata; and an answer carries its headers under both names (`x-chloedb-took-ms` and `x-strata-took-ms`). The metrics are renamed outright, from `strata_*` to `chloedb_*` (a dashboard over servers from before and after the rename matches `{__name__=~"(chloedb|strata)_.*"}`), and so are the alert messages, which begin `[chloedb FIRING ...]` rather than `[strata FIRING ...]`. The browser UI moves what it saved under `strata.*` to `chloedb.*` the first time it loads, the MCP server introduces itself as `chloedb`, and the OpenSearch API's cluster is named `chloedb`. The container image is `ghcr.io/chloetech-ai/chloedb-server`, and every version is also published as `ghcr.io/chloetech-ai/strata-server`, the same image under its old name, so that a cluster that follows the old name keeps getting new versions. The Kubernetes operator's resources keep the old name (the `StrataCluster` kind, the `strata-system` namespace), and its pods start the programs by their old names, with `STRATA_*` settings, which every image understands, those from before the rename too.
+**Old names.** ChloeDB was called Strata until November 2026. The names on this page are the new ones, and the old ones (`strata-server`, `STRATA_*` settings, `x-strata-*` headers) still work for a release: [Compatibility](../compatibility.md#old-names) lists them.
 
 ## Run it
 
@@ -550,6 +550,8 @@ curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{
   "params": {"c": "kitchen", "t": "quiet espresso", "v": {"vector_of": "p0011051"}}
 }'
 ```
+
+<a id="writes"></a>
 
 `/v1/write` takes a batch of operations, applied in one transaction:
 
