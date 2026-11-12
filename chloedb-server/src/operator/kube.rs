@@ -252,6 +252,23 @@ impl Cluster {
     }
 
     /// The objects every cluster has: the schema, and the two Services.
+    /// The coordinators' Role: this one StrataCluster, read and scaled
+    /// from the command center, and (`lease`) the Lease of the cluster's
+    /// map, which one coordinator at a time holds while it changes the map
+    /// (finding E-2, [`super::lease`]). Kubernetes lets the operator make
+    /// a Role only of what its own ClusterRole holds: one from before the
+    /// Lease (operator.yaml as it was, or the cloud view's install) holds
+    /// no Leases, and [`common`] makes the Role without them then.
+    pub fn coordinator_role(&self, lease: bool) -> Json {
+        let mut rules = vec![json!({"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": [self.name], "verbs": ["get", "patch"]})];
+        if lease {
+            // A create cannot name the object.
+            rules.push(json!({"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": [format!("{}-map", self.name)], "verbs": ["get", "update"]}));
+            rules.push(json!({"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]}));
+        }
+        json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": self.meta(&self.coordinator_account(), self.labels()), "rules": rules})
+    }
+
     pub fn common(&self) -> Vec<(String, Json)> {
         let ns = &self.ns;
         let schema = json!({"apiVersion": "v1", "kind": "ConfigMap", "metadata": self.meta(&format!("{}-schema", self.name), self.labels()), "data": {"schema.json": self.spec.schema_json()}});
@@ -272,17 +289,7 @@ impl Cluster {
         // from the command center.
         let account = self.coordinator_account();
         let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": self.meta(&account, self.labels())});
-        let role = json!({
-            "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": self.meta(&account, self.labels()),
-            "rules": [
-                {"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": [self.name], "verbs": ["get", "patch"]},
-                // The Lease of the cluster's map, which one coordinator at
-                // a time holds while it changes the map (finding E-2,
-                // super::lease); a create cannot name the object.
-                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": [format!("{}-map", self.name)], "verbs": ["get", "update"]},
-                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]},
-            ],
-        });
+        let role = self.coordinator_role(true);
         let binding = json!({
             "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": self.meta(&account, self.labels()),
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": account},
@@ -1194,7 +1201,10 @@ impl Platform for Cluster {
             if let Some(id) = have["metadata"]["annotations"][cr::KEY_ID].as_str() {
                 admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
             }
-            self.kube.delete(&path).await?;
+            match self.kube.delete(&path).await {
+                Err(e) if forbidden(&e) => tracing::warn!(cluster = %self.name, app, error = %e, "{OLD_ROLE}: the Secret of an app taken out of the spec is left (its key is revoked)"),
+                r => r?,
+            }
         }
         if apps.is_empty() || !cr::supported(admin).await {
             return Ok(());
@@ -1212,6 +1222,24 @@ impl Platform for Cluster {
                 Some(t) => t.clone(),
                 None => crate::keys::random_hex(32).map_err(|e| e.message)?,
             };
+            if have.is_none() {
+                // The Secret first, with its token alone: an operator whose
+                // ClusterRole is from before apps' credentials (an
+                // installed operator upgrades neither itself nor it) may
+                // not make Secrets, and then makes no key either, which it
+                // would make again at every reconcile. Its apps keep the
+                // admin token, as they had it.
+                let mut data = serde_json::Map::new();
+                data.insert(cr::TOKEN.into(), json!(base64_encode(token.as_bytes())));
+                let meta = self.meta(&cr::secret_name(&self.name, app), self.labels());
+                match self.kube.apply(&path, &json!({"apiVersion": "v1", "kind": "Secret", "metadata": meta, "type": "Opaque", "data": data})).await {
+                    Err(e) if forbidden(&e) => {
+                        tracing::warn!(cluster = %self.name, error = %e, "{OLD_ROLE}: the apps keep the admin token");
+                        return Ok(());
+                    }
+                    r => drop(r?),
+                }
+            }
             let mut key = e.get(cr::KEY).filter(|k| !k.is_empty()).cloned();
             let mut id = old_id.clone();
             let keyed = cr::keyed(spec, app);
@@ -1809,11 +1837,29 @@ fn same(a: &Json, b: &Json) -> bool {
     }
 }
 
+/// Whether the API server refused a request as not allowed (403).
+fn forbidden(e: &str) -> bool {
+    e.contains(" 403 ")
+}
+
+/// What an operator is told when its ClusterRole may not make Secrets.
+const OLD_ROLE: &str = "the operator's ClusterRole may not make, change or delete Secrets (it is from an older operator.yaml), so apps get no keys and tokens of their own; apply deploy/k8s/operator/operator.yaml again to give it";
+
 /// Applies the objects every cluster has, and the coordinators' client.
 async fn common(c: &Cluster) -> Result<Admin, String> {
     c.spec.check()?;
     for (path, obj) in c.common() {
-        c.kube.apply(&path, &obj).await?;
+        match c.kube.apply(&path, &obj).await {
+            // The coordinators' Role, refused as granting what this
+            // operator's ClusterRole does not hold (one from before the
+            // map's Lease): made without the Lease, so the cluster is still
+            // kept, and its coordinators change the map without one.
+            Err(e) if obj["kind"] == "Role" && e.contains(" 403 ") => {
+                tracing::warn!(cluster = %c.name, error = %e, "the operator's ClusterRole holds no Leases (it is from an older operator.yaml): the coordinators' Role is made without the cluster map's Lease; apply deploy/k8s/operator/operator.yaml again to give it");
+                c.kube.apply(&path, &c.coordinator_role(false)).await?;
+            }
+            r => drop(r?),
+        }
     }
     Ok(Admin::new(&c.admin_url(), c.admin_token().await?))
 }
@@ -2267,5 +2313,103 @@ mod tests {
             let closed = run("orders-s0-1", false, &[(t, "x")]);
             assert!(!closed.contains("--no-token") && closed.contains("--schema\n"), "{t}: {closed}");
         }
+    }
+
+    /// Kubernetes refuses a Role that grants what its maker does not hold
+    /// (RBAC's escalation check): every rule of the coordinators' Role is
+    /// one the operator's ClusterRole (operator.yaml, and the cloud view's
+    /// copy of it) holds, or no cluster gets past its Role.
+    #[test]
+    fn the_operator_holds_what_it_grants_the_coordinators() {
+        let c = cluster(json!({"demo": 10}));
+        let operator = crate::cloud::install::operator_objects("chloedb-server:dev").into_iter().find(|o| o["kind"] == "ClusterRole").unwrap();
+        let strs = |j: &Json| j.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        for lease in [true, false] {
+            for rule in c.coordinator_role(lease)["rules"].as_array().unwrap() {
+                for (g, r, v) in strs(&rule["apiGroups"]).iter().flat_map(|g| strs(&rule["resources"]).into_iter().map(move |r| (g.clone(), r))).flat_map(|(g, r)| strs(&rule["verbs"]).into_iter().map(move |v| (g.clone(), r.clone(), v))) {
+                    let held = operator["rules"].as_array().unwrap().iter().any(|o| {
+                        let all = |k: &str, x: &str| strs(&o[k]).iter().any(|y| y == x || y == "*");
+                        all("apiGroups", &g) && all("resources", &r) && all("verbs", &v) && o["resourceNames"].is_null()
+                    });
+                    assert!(held, "the coordinators' Role grants {v} {g}/{r}, which the operator's ClusterRole does not hold");
+                }
+            }
+        }
+        let leases = |role: &Json| role["rules"].as_array().unwrap().iter().any(|r| r["resources"] == json!(["leases"]));
+        assert!(leases(&c.coordinator_role(true)) && !leases(&c.coordinator_role(false)));
+    }
+
+    /// An operator whose ClusterRole is from before the map's Lease (the
+    /// live clusters' until operator.yaml is applied again) is refused the
+    /// coordinators' Role with the Lease: it makes the Role without it and
+    /// keeps the cluster, rather than failing every reconcile there.
+    #[tokio::test]
+    async fn a_role_refused_for_its_lease_is_made_without_it() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<(String, Json)>>> = Arc::default();
+        let s = seen.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: axum::body::Bytes| {
+            let s = s.clone();
+            async move {
+                let j: Json = serde_json::from_slice(&body).unwrap_or(Json::Null);
+                s.lock().unwrap().push((uri.path().to_string(), j.clone()));
+                if j["kind"] == "Role" && j.to_string().contains("coordination.k8s.io") {
+                    let m = json!({"message": "roles.rbac.authorization.k8s.io \"orders-coordinator\" is forbidden: user is attempting to grant RBAC permissions not currently held"});
+                    return (axum::http::StatusCode::FORBIDDEN, axum::Json(m));
+                }
+                (axum::http::StatusCode::OK, axum::Json(j))
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let mut c = cluster(json!({"demo": 10}));
+        c.kube = Kube::new(&Options { api: Some(url), token: Some("t".into()), ..Default::default() }).unwrap();
+        common(&c).await.unwrap();
+        let seen = seen.lock().unwrap();
+        let roles: Vec<&Json> = seen.iter().filter(|(p, _)| p.ends_with("/roles/orders-coordinator")).map(|(_, j)| j).collect();
+        assert_eq!(roles.len(), 2, "{seen:?}");
+        assert_eq!(*roles[1], c.coordinator_role(false));
+        assert!(seen.iter().any(|(p, _)| p.ends_with("/rolebindings/orders-coordinator")), "the binding after it is made too");
+    }
+
+    /// An operator whose ClusterRole may not make Secrets (one from before
+    /// apps' credentials: an installed operator upgrades neither itself
+    /// nor it) makes no key for its apps, which keep the admin token, and
+    /// the reconcile goes on.
+    #[tokio::test]
+    async fn an_operator_that_may_not_make_secrets_makes_no_keys() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let s = seen.clone();
+        let app = axum::Router::new().fallback(move |method: axum::http::Method, uri: axum::http::Uri| {
+            let s = s.clone();
+            async move {
+                let path = uri.path().to_string();
+                s.lock().unwrap().push((method.to_string(), path.clone()));
+                match (method.as_str(), path.as_str()) {
+                    ("GET", "/v1/whoami") => (axum::http::StatusCode::OK, axum::Json(json!({"auth": {"app_keys": true}}))),
+                    ("GET", "/v1/admin/keys") => (axum::http::StatusCode::OK, axum::Json(json!({"keys": []}))),
+                    ("POST", "/v1/admin/keys") => (axum::http::StatusCode::OK, axum::Json(json!({"key": {"id": "k1", "tables": {"sheets_*": "admin"}}, "secret": "sk_k1_x"}))),
+                    ("GET", p) if p.contains("/secrets/") => (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({"message": "not found"}))),
+                    (_, p) if p.contains("/secrets/") => (axum::http::StatusCode::FORBIDDEN, axum::Json(json!({"message": "secrets is forbidden: User \"system:serviceaccount:strata-system:strata-operator\" cannot patch resource \"secrets\""}))),
+                    _ => (axum::http::StatusCode::OK, axum::Json(json!({}))),
+                }
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let mut c = cluster(json!({"tokenSecret": "admin", "sheets": {}, "chloectx": {}}));
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let spec = c.spec.clone();
+        c.app_credentials(&spec, &admin).await.unwrap();
+        // Its apps keep the admin token, for their key and their token.
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert!(!creds.key && !creds.token);
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|(m, p)| m == "POST" && p == "/v1/admin/keys"), "no key is made: {seen:?}");
+        assert!(seen.iter().any(|(m, p)| m == "PATCH" && p.contains("/secrets/")), "{seen:?}");
     }
 }

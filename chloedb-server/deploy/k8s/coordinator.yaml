@@ -5,6 +5,9 @@
 # fails or has not answered after --hedge-ms (default 100). `kind-test.sh
 # coordinator N R [ARGS...]` points it at the set of N shards × R replicas,
 # adding ARGS (such as --partial --shard-timeout-ms=500).
+# These shards' copies do not replicate (each is its own copy of the same
+# data), so the coordinator refuses writes (409): add --write-every-copy
+# to write each copy on its own, which can leave them different.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -31,6 +31,7 @@ pub fn operator_objects(image: &str) -> Vec<Json> {
             rule(&[""], &["persistentvolumeclaims"], &["get", "list", "create", "delete", "patch"]),
             // tokenSecret, and each app's credentials (made, changed, deleted).
             rule(&[""], &["secrets"], &["get", "create", "patch", "delete"]),
+            rule(&["coordination.k8s.io"], &["leases"], &["get", "create", "update"]),
         ]}),
         json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding", "metadata": {"name": "strata-operator"},
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "strata-operator"},

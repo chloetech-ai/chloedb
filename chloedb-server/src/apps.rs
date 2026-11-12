@@ -23,6 +23,13 @@
 //! (`crawl_*=admin,*=read`). A caller's own headers of those names are
 //! never passed on.
 //!
+//! The path is the app's own: `<path>` is joined to the app's URL segment
+//! by segment, each encoded again, so no `..` (written `%2e%2e`, once or
+//! twice encoded) climbs above the app's URL and no decoded `?` or `#`
+//! starts a query (audit D-B9, G-B17). The listing asks every app at once
+//! and keeps a failure as long as a manifest, so an app that does not
+//! answer neither slows the others nor is waited for at every page (G-B10).
+//!
 //! The server also starts apps itself (`--start-apps`, [`crate::app_procs`]):
 //! those are listed here too, each with a token of its own ([`App::token`]),
 //! and with their process's state.
@@ -91,8 +98,9 @@ pub struct Apps {
     /// (`--app-token-dir`).
     token_dir: Option<std::path::PathBuf>,
     http: Option<reqwest::Client>,
-    /// Each app's manifest, read at most every 15 s.
-    manifests: Mutex<HashMap<String, (Instant, Json)>>,
+    /// Each app's manifest, or why it could not be read, read at most every
+    /// 15 s.
+    manifests: Mutex<HashMap<String, (Instant, Result<Json, String>)>>,
     /// The apps this server runs as child processes ([`crate::app_procs`]).
     pub procs: Vec<Arc<Proc>>,
 }
@@ -107,6 +115,13 @@ impl Apps {
     pub fn new(list: Vec<App>, token: Option<String>) -> Apps {
         let http = (!list.is_empty()).then(|| crate::http_client().connect_timeout(Duration::from_secs(5)).build().expect("an HTTP client"));
         Apps { list, token: token.filter(|t| !t.is_empty()), token_dir: None, http, manifests: Mutex::new(HashMap::new()), procs: Vec::new() }
+    }
+
+    /// These apps, each one's own token read from `dir` (a file of its
+    /// name) when it holds one.
+    pub fn with_token_dir(mut self, dir: Option<std::path::PathBuf>) -> Apps {
+        self.token_dir = dir;
+        self
     }
 
     /// These apps and the ones the server starts (`plans`), which are
@@ -135,13 +150,6 @@ impl Apps {
         self.procs.iter().find(|p| p.plan.name == name)
     }
 
-    /// These apps, each one's own token read from `dir` (a file of its
-    /// name) when it holds one.
-    pub fn with_token_dir(mut self, dir: Option<std::path::PathBuf>) -> Apps {
-        self.token_dir = dir;
-        self
-    }
-
     fn find(&self, name: &str) -> Option<&App> {
         self.list.iter().find(|a| a.name == name)
     }
@@ -155,9 +163,9 @@ impl Apps {
 
     /// `GET /v1/apps`: each app with its manifest, or why it does not answer.
     pub async fn listing(&self) -> Json {
+        let manifests = futures::future::join_all(self.list.iter().map(|a| self.manifest(a))).await;
         let mut out = Vec::new();
-        for a in &self.list {
-            let m = self.manifest(a).await;
+        for (a, m) in self.list.iter().zip(manifests) {
             let process = self.proc_of(&a.name).map(|p| p.json());
             let mut entry = match m {
                 Ok(m) => json!({
@@ -178,9 +186,15 @@ impl Apps {
     async fn manifest(&self, a: &App) -> Result<Json, String> {
         if let Some((at, m)) = self.manifests.lock().unwrap_or_else(|e| e.into_inner()).get(&a.name) {
             if at.elapsed() < Duration::from_secs(15) {
-                return Ok(m.clone());
+                return m.clone();
             }
         }
+        let m = self.read_manifest(a).await;
+        self.manifests.lock().unwrap_or_else(|e| e.into_inner()).insert(a.name.clone(), (Instant::now(), m.clone()));
+        m
+    }
+
+    async fn read_manifest(&self, a: &App) -> Result<Json, String> {
         let http = self.http.as_ref().ok_or("no apps")?;
         let mut req = http.get(format!("{}/app.json", a.url)).timeout(Duration::from_secs(5));
         if let Some(t) = self.token_of(a) {
@@ -190,9 +204,7 @@ impl Apps {
         if !r.status().is_success() {
             return Err(format!("{}/app.json answers {}", a.url, r.status()));
         }
-        let m: Json = r.json().await.map_err(|e| format!("{}/app.json is not JSON: {e}", a.url))?;
-        self.manifests.lock().unwrap_or_else(|e| e.into_inner()).insert(a.name.clone(), (Instant::now(), m.clone()));
-        Ok(m)
+        r.json().await.map_err(|e| format!("{}/app.json is not JSON: {e}", a.url))
     }
 
     /// `/v1/apps/<name>/<rest>`: the request, sent on to the app, with who
@@ -203,15 +215,12 @@ impl Apps {
         let Some(a) = self.find(name) else {
             return err(StatusCode::NOT_FOUND, format!("no app {name}: this server's are {}", if self.list.is_empty() { "none (--app)".into() } else { self.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ") }));
         };
-        if rest.split('/').any(|s| s == ".." || s == ".") {
-            return err(StatusCode::BAD_REQUEST, "a path of an app has no . or .. in it".into());
-        }
-        let Some(http) = &self.http else { return err(StatusCode::NOT_FOUND, "no apps".into()) };
-        let url = match query {
-            Some(q) if !q.is_empty() => format!("{}/{}?{q}", a.url, rest.trim_start_matches('/')),
-            _ => format!("{}/{}", a.url, rest.trim_start_matches('/')),
+        let url = match app_url(&a.url, rest, query) {
+            Ok(u) => u,
+            Err(m) => return err(StatusCode::BAD_REQUEST, m),
         };
-        let mut req = http.request(method, &url).timeout(Duration::from_secs(120));
+        let Some(http) = &self.http else { return err(StatusCode::NOT_FOUND, "no apps".into()) };
+        let mut req = http.request(method, url).timeout(Duration::from_secs(120));
         for h in [header::CONTENT_TYPE, header::ACCEPT] {
             if let Some(v) = headers.get(&h) {
                 req = req.header(h, v);
@@ -238,6 +247,61 @@ impl Apps {
             Err(e) => err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer was cut off: {e}")),
         }
     }
+}
+
+/// Whether a path segment (as the router decoded it) is a dot segment, or
+/// one once decoded again (`%2e`, `%2E`, `%252e`...).
+pub fn dot_segment(seg: &str) -> bool {
+    let mut s = seg.to_string();
+    for _ in 0..4 {
+        if s == "." || s == ".." {
+            return true;
+        }
+        let next = percent_decode(&s);
+        if next == s {
+            return false;
+        }
+        s = next;
+    }
+    true
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The app's URL for `rest` (the decoded path after `/v1/apps/<name>/`) and
+/// the request's query as it came: `rest`'s segments added to the app's
+/// path, each encoded, so the URL stays under the app's.
+pub fn app_url(base: &str, rest: &str, query: Option<&str>) -> Result<reqwest::Url, String> {
+    let segs: Vec<&str> = rest.trim_start_matches('/').split('/').collect();
+    if segs.iter().any(|s| dot_segment(s)) {
+        return Err("a path of an app has no . or .. in it".into());
+    }
+    let mut u = reqwest::Url::parse(base).map_err(|e| format!("the app's URL {base}: {e}"))?;
+    let prefix = u.path().trim_end_matches('/').to_string();
+    u.path_segments_mut().map_err(|_| format!("the app's URL {base} has no path"))?.pop_if_empty().extend(segs);
+    u.set_query(query.filter(|q| !q.is_empty()));
+    u.set_fragment(None);
+    if !u.path().starts_with(&format!("{prefix}/")) {
+        return Err(format!("{rest} is not a path of the app"));
+    }
+    Ok(u)
 }
 
 /// The headers that tell an app who called it through the server
@@ -280,6 +344,22 @@ mod tests {
         assert!(parse(&["Crawler=http://h".into()]).is_err());
         assert!(parse(&["c=ftp://h".into()]).is_err());
         assert!(parse(&["c=http://a".into(), "c=http://b".into()]).is_err());
+    }
+
+    #[test]
+    fn an_apps_path_stays_under_its_url() {
+        let u = |base: &str, rest: &str, q: Option<&str>| app_url(base, rest, q).map(|u| u.to_string());
+        assert_eq!(u("http://h:1", "v1/crawls/c1", Some("x=1")).unwrap(), "http://h:1/v1/crawls/c1?x=1");
+        assert_eq!(u("http://h:1/tools/x", "ui/view.js", None).unwrap(), "http://h:1/tools/x/ui/view.js");
+        assert_eq!(u("http://h:1/tools/x/", "a", None).unwrap(), "http://h:1/tools/x/a");
+        // The router decodes once: %252e%252e arrives as %2e%2e.
+        for rest in ["..", "a/../b", ".", "%2e%2e/admin", "a/%2E%2e/b", "%252e%252e", "%2e"] {
+            assert!(app_url("http://h:1/tools/x", rest, None).is_err(), "{rest}");
+        }
+        // A decoded ? or # stays in its segment.
+        assert_eq!(u("http://h:1/tools/x", "a?admin=1#y", None).unwrap(), "http://h:1/tools/x/a%3Fadmin=1%23y");
+        assert_eq!(u("http://h:1", "a\\..\\b", None).unwrap(), "http://h:1/a%5C..%5Cb");
+        assert!(!dot_segment("...") && !dot_segment("a.") && !dot_segment("%2"));
     }
 }
 
