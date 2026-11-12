@@ -37,6 +37,7 @@ pub mod logical;
 pub mod memory;
 pub mod model;
 pub mod ops;
+pub mod pack;
 pub mod parse;
 pub mod paths;
 pub mod plan;

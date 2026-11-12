@@ -2367,6 +2367,33 @@ impl Service {
         // ([`chloedb::query::llm`]): the rows first, as any query finds them
         // (a coordinator's from its shards, merged), then the questions,
         // here.
+        // A query that packs its rows into a budget of tokens
+        // ([`chloedb::query::pack`]): its slices of candidates, and the rows
+        // it follows, each a query as any other (a coordinator's merged
+        // from its shards), and the choice here.
+        if req.plan.is_none() && !req.shard && chloedb::query::pack::may_pack(&req.sql) {
+            let catalog = self.catalog();
+            let key_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).and_then(|s| s.primary_key.map(|k| s.fields[k].name.clone()));
+            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &key_of)? {
+                if req.scroll.is_some() {
+                    return Err(ApiError::bad("a query that packs its rows is not scrolled: PACK n TOKENS reads what fills the budget"));
+                }
+                let t0 = Instant::now();
+                let mut last = None;
+                while let Some(sql) = p.next_query()? {
+                    let mut sub = req.clone();
+                    sub.sql = sql;
+                    let mut a = Box::pin(self.query(sub)).await?;
+                    p.feed(std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }))?;
+                    last = Some(a);
+                }
+                let packed = p.finish(None, None)?;
+                let Some(mut a) = last else { return Err(ApiError::bad("PACK: the query read no rows")) };
+                a.rs = packed.rs;
+                a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
         if req.plan.is_none() && !req.shard {
             if let Some(split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
                 if req.scroll.is_some() {

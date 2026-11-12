@@ -9,6 +9,7 @@
 
 pub mod anchor;
 pub mod app;
+pub mod capsule;
 pub mod benchdata;
 pub mod capture;
 pub mod cluster;

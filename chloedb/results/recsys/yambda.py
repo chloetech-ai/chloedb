@@ -336,8 +336,10 @@ def cmd_train(a):
         None, MODEL, vectors=vectors, sequences=seqs, models=models, width=a.width, layers=2, heads=1, max_len=200,
         learn_items=True, negatives="in_batch", temperature=0.05, epochs=a.epochs, batch=a.batch, lr=1e-3, dropout=0.2,
         holdout=True, patience=3, max_seconds=a.minutes * 60, seed=a.seed, log=lambda row: log(json.dumps(row)),
+        logq=a.logq, uniform_negatives=a.uniform_negatives,
     )
-    json.dump({"history": r["history"], "width": a.width, "batch": a.batch, "max_events": a.max_events, "minutes": a.minutes, "init": a.init}, open(os.path.join(a.work, "train.json"), "w"), indent=1)
+    about = {"width": a.width, "batch": a.batch, "max_events": a.max_events, "minutes": a.minutes, "init": a.init, "logq": a.logq, "uniform_negatives": a.uniform_negatives}
+    json.dump({"history": r["history"], **about}, open(os.path.join(a.work, "train.json"), "w"), indent=1)
 
 
 EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
@@ -460,6 +462,8 @@ def main():
     ap.add_argument("--width", type=int, default=64)
     ap.add_argument("--max-events", type=int, default=1000)
     ap.add_argument("--init", choices=["svd", "random"], default="svd", help="train: where the item vectors start")
+    ap.add_argument("--logq", action="store_true", help="train: take from each in-batch negative's score the log of the chance the batch holds it")
+    ap.add_argument("--uniform-negatives", type=int, default=0, help="train: this many tracks drawn evenly, added to each batch's negatives")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--users", type=int, default=None)

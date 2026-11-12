@@ -1119,67 +1119,21 @@ impl Daemon {
         if let Some(s) = req.get("session").and_then(|v| v.as_str()) {
             f.session = Some(s.to_string());
         }
-        let (hits, ev) = recall::search(&self.store, q, &f, &self.cfg.rank)?;
-        let terms: HashSet<String> = chloedb::text::analyze_query(q).into_iter().collect();
-        let mut text = String::new();
-        for h in hits.iter().take(limit) {
-            text += &recall::fmt_record(&h.record, &recall::snippet(&h.record.text, &terms, 700), now());
-            text += &format!("\n(score {:.3})\n\n", h.score);
-        }
-        if text.is_empty() {
-            text = "No matching records.".into();
-        }
-        Ok(json!({"text": text, "evidence": ev, "ids": hits.iter().take(limit).map(|h| h.record.id.clone()).collect::<Vec<_>>()}))
+        let (text, ids, ev) = search_text(&self.store, q, &f, &self.cfg.rank, limit)?;
+        Ok(json!({"text": text, "evidence": ev, "ids": ids}))
     }
 
     fn op_timeline(&self, req: &Json) -> Result<Json> {
         let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let before = req.get("before").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
         let after = req.get("after").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
-        let store = self.store.pinned();
-        let rec = store.get(&[id.to_string()])?.pop().ok_or_else(|| err(format!("no record {id}")))?;
-        let near = store.range(&rec.session, rec.seq - 200, rec.seq + 200)?;
-        let at = near.iter().position(|r| r.id == rec.id).unwrap_or(0);
-        let lo = at.saturating_sub(before);
-        let hi = (at + after + 1).min(near.len());
-        let mut text = String::new();
-        for r in &near[lo..hi] {
-            let body: String = r.text.chars().take(1500).collect();
-            text += &format!("{}{}\n\n", if r.id == rec.id { ">> " } else { "" }, recall::fmt_record(r, &body, now()));
-        }
-        Ok(json!({"text": text}))
+        Ok(json!({"text": timeline_text(&self.store, id, before, after)?}))
     }
 
     fn op_sql(&self, req: &Json) -> Result<Json> {
         let sql = req.get("sql").and_then(|v| v.as_str()).unwrap_or("").trim();
         let rs = self.store.query_guarded(sql, &chloedb::query::Params::new(), &crate::sqlguard::Limits::TOOL)?;
-        let mut text = rs.columns.join(" | ") + "\n";
-        for row in rs.rows.iter().take(100) {
-            let cells: Vec<String> = row
-                .iter()
-                .map(|v| match v {
-                    chloedb::Value::Null => "NULL".into(),
-                    chloedb::Value::Int(x) => x.to_string(),
-                    chloedb::Value::Float(x) => format!("{x:.4}"),
-                    chloedb::Value::Str(s) => {
-                        let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
-                        if one.chars().count() > 400 {
-                            format!("{}…", one.chars().take(400).collect::<String>())
-                        } else {
-                            one
-                        }
-                    }
-                    chloedb::Value::Vector(v) => format!("vector({})", v.len()),
-                    chloedb::Value::List(xs) => format!("list({})", xs.len()),
-                    chloedb::Value::Bool(b) => b.to_string(),
-                    chloedb::Value::Timestamp(t) => chloedb::timestamp::format(*t),
-                })
-                .collect();
-            text += &cells.join(" | ");
-            text += "\n";
-        }
-        text += &format!("({} rows)", rs.rows.len());
-        Ok(json!({"text": text}))
+        Ok(json!({"text": rows_text(&rs)}))
     }
 
     fn op_remember(&self, req: &Json) -> Result<Json> {
@@ -1422,6 +1376,72 @@ impl Daemon {
             "segments": fs.segments.len(), "memtable_docs": fs.memtable_docs, "store": self.paths.db,
         }))
     }
+}
+
+/// One hybrid search of `store`, as `memory_search` shows it: the first
+/// `limit` hits with a snippet each, their ids, and the search's evidence.
+pub fn search_text(store: &Store, q: &str, f: &Filter, rank: &RankParams, limit: usize) -> Result<(String, Vec<String>, Json)> {
+    let (hits, ev) = recall::search(store, q, f, rank)?;
+    let terms: HashSet<String> = chloedb::text::analyze_query(q).into_iter().collect();
+    let mut text = String::new();
+    for h in hits.iter().take(limit) {
+        text += &recall::fmt_record(&h.record, &recall::snippet(&h.record.text, &terms, 700), now());
+        text += &format!("\n(score {:.3})\n\n", h.score);
+    }
+    if text.is_empty() {
+        text = "No matching records.".into();
+    }
+    let ids = hits.iter().take(limit).map(|h| h.record.id.clone()).collect();
+    Ok((text, ids, serde_json::to_value(ev).unwrap_or(Json::Null)))
+}
+
+/// The records just before and after record `id` in its session, with
+/// their text, as `memory_timeline` shows them.
+pub fn timeline_text(store: &Store, id: &str, before: usize, after: usize) -> Result<String> {
+    let store = store.pinned();
+    let rec = store.get(&[id.to_string()])?.pop().ok_or_else(|| err(format!("no record {id}")))?;
+    let near = store.range(&rec.session, rec.seq - 200, rec.seq + 200)?;
+    let at = near.iter().position(|r| r.id == rec.id).unwrap_or(0);
+    let lo = at.saturating_sub(before);
+    let hi = (at + after + 1).min(near.len());
+    let mut text = String::new();
+    for r in &near[lo..hi] {
+        let body: String = r.text.chars().take(1500).collect();
+        text += &format!("{}{}\n\n", if r.id == rec.id { ">> " } else { "" }, recall::fmt_record(r, &body, now()));
+    }
+    Ok(text)
+}
+
+/// A result set as `memory_sql` shows it: a header, at most 100 rows of
+/// cells cut to 400 characters, and the row count.
+pub fn rows_text(rs: &chloedb::query::exec::ResultSet) -> String {
+    let mut text = rs.columns.join(" | ") + "\n";
+    for row in rs.rows.iter().take(100) {
+        let cells: Vec<String> = row
+            .iter()
+            .map(|v| match v {
+                chloedb::Value::Null => "NULL".into(),
+                chloedb::Value::Int(x) => x.to_string(),
+                chloedb::Value::Float(x) => format!("{x:.4}"),
+                chloedb::Value::Str(s) => {
+                    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if one.chars().count() > 400 {
+                        format!("{}…", one.chars().take(400).collect::<String>())
+                    } else {
+                        one
+                    }
+                }
+                chloedb::Value::Vector(v) => format!("vector({})", v.len()),
+                chloedb::Value::List(xs) => format!("list({})", xs.len()),
+                chloedb::Value::Bool(b) => b.to_string(),
+                chloedb::Value::Timestamp(t) => chloedb::timestamp::format(*t),
+            })
+            .collect();
+        text += &cells.join(" | ");
+        text += "\n";
+    }
+    text += &format!("({} rows)", rs.rows.len());
+    text
 }
 
 // ---------------------------------------------------------------- server

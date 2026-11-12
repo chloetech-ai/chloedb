@@ -1,0 +1,938 @@
+{
+ "scenarios": [
+  "stockroom",
+  "slotwise",
+  "bakehouse",
+  "kestrel"
+ ],
+ "lanes": {
+  "engram+none": {
+   "what": "nothing (ChloeCtx off)",
+   "runs": 208,
+   "solved": 94,
+   "needs_history_runs": 156,
+   "needs_history_solved": 42,
+   "score": 0.6341346153846155,
+   "cost_usd": 0.004701749471153847,
+   "memory_cost_usd": 0.0,
+   "input_tokens_p50": 131037.0,
+   "input_tokens_mean": 144098.92307692306,
+   "uncached_input_tokens_mean": 8564.408653846154,
+   "output_tokens_mean": 3269.4471153846152,
+   "steps_mean": 7.447115384615385,
+   "wall_s_p50": 14.75,
+   "wall_s_p95": 30.859999999999992,
+   "wall_s_mean": 16.08076923076923,
+   "memory_tool_calls_mean": 0.0,
+   "runs_with_memory_tool_call": 0,
+   "capsule": null
+  },
+  "engram+summary": {
+   "what": "a handoff note in the system prompt",
+   "runs": 208,
+   "solved": 198,
+   "needs_history_runs": 156,
+   "needs_history_solved": 146,
+   "score": 0.9750000000000001,
+   "cost_usd": 0.004896142115384615,
+   "memory_cost_usd": 0.0,
+   "input_tokens_p50": 139421.5,
+   "input_tokens_mean": 137854.38461538462,
+   "uncached_input_tokens_mean": 7782.7692307692305,
+   "output_tokens_mean": 4079.7403846153848,
+   "steps_mean": 6.153846153846154,
+   "wall_s_p50": 17.25,
+   "wall_s_p95": 38.68999999999994,
+   "wall_s_mean": 18.698557692307695,
+   "memory_tool_calls_mean": 0.0,
+   "runs_with_memory_tool_call": 0,
+   "capsule": null
+  },
+  "engram+capsule": {
+   "what": "a capsule mounted as MCP tools",
+   "runs": 208,
+   "solved": 189,
+   "needs_history_runs": 156,
+   "needs_history_solved": 137,
+   "score": 0.9352564102564103,
+   "cost_usd": 0.006284153173076923,
+   "memory_cost_usd": 0.0,
+   "input_tokens_p50": 160170.0,
+   "input_tokens_mean": 168852.125,
+   "uncached_input_tokens_mean": 13276.807692307691,
+   "output_tokens_mean": 4148.461538461538,
+   "steps_mean": 8.211538461538462,
+   "wall_s_p50": 18.1,
+   "wall_s_p95": 36.83,
+   "wall_s_mean": 19.388942307692307,
+   "memory_tool_calls_mean": 0.7548076923076923,
+   "runs_with_memory_tool_call": 154,
+   "capsule": {
+    "calls": 157,
+    "by_tool": {
+     "capsule_ask": 154,
+     "capsule_search": 3
+    },
+    "call_ms_p50": 8.758782,
+    "call_ms_p95": 12.53810239999999,
+    "call_ms_max": 17.033056000000002,
+    "ask_ms_p50": 8.804098499999998,
+    "ask_chars_mean": 16198.077922077922,
+    "chars_mean": 15953.605095541401,
+    "mount_ready_ms_p50": 64.67561599999999,
+    "mount_ready_ms_p95": 84.95167109999998,
+    "open_ms_p50": 61.1608085
+   }
+  },
+  "engram+both": {
+   "what": "the note and the capsule",
+   "runs": 208,
+   "solved": 198,
+   "needs_history_runs": 156,
+   "needs_history_solved": 146,
+   "score": 0.9750000000000001,
+   "cost_usd": 0.006050787788461538,
+   "memory_cost_usd": 0.0,
+   "input_tokens_p50": 150554.5,
+   "input_tokens_mean": 159500.03846153847,
+   "uncached_input_tokens_mean": 11970.39423076923,
+   "output_tokens_mean": 4364.826923076923,
+   "steps_mean": 6.8701923076923075,
+   "wall_s_p50": 18.5,
+   "wall_s_p95": 39.124999999999986,
+   "wall_s_mean": 19.91201923076923,
+   "memory_tool_calls_mean": 0.6057692307692307,
+   "runs_with_memory_tool_call": 125,
+   "capsule": {
+    "calls": 126,
+    "by_tool": {
+     "capsule_ask": 126
+    },
+    "call_ms_p50": 9.011426,
+    "call_ms_p95": 14.354811999999999,
+    "call_ms_max": 16.494643,
+    "ask_ms_p50": 9.011426,
+    "ask_chars_mean": 16072.531746031746,
+    "chars_mean": 16072.531746031746,
+    "mount_ready_ms_p50": 66.83892800000001,
+    "mount_ready_ms_p95": 87.42185909999999,
+    "open_ms_p50": 64.102222
+   }
+  },
+  "engram+short": {
+   "what": "a short note (under 1,500 characters)",
+   "runs": 208,
+   "solved": 149,
+   "needs_history_runs": 156,
+   "needs_history_solved": 97,
+   "score": 0.8254807692307692,
+   "cost_usd": 0.004802806778846154,
+   "memory_cost_usd": 0.0,
+   "input_tokens_p50": 132284.5,
+   "input_tokens_mean": 132550.32211538462,
+   "uncached_input_tokens_mean": 8224.788461538461,
+   "output_tokens_mean": 3831.3125,
+   "steps_mean": 6.538461538461538,
+   "wall_s_p50": 17.25,
+   "wall_s_p95": 34.83,
+   "wall_s_mean": 17.572596153846153,
+   "memory_tool_calls_mean": 0.0,
+   "runs_with_memory_tool_call": 0,
+   "capsule": null
+  },
+  "engram+shortcap": {
+   "what": "the short note and the capsule",
+   "runs": 208,
+   "solved": 186,
+   "needs_history_runs": 156,
+   "needs_history_solved": 134,
+   "score": 0.9360576923076922,
+   "cost_usd": 0.006075446490384616,
+   "memory_cost_usd": 0.0,
+   "input_tokens_p50": 147227.0,
+   "input_tokens_mean": 152890.36057692306,
+   "uncached_input_tokens_mean": 12761.528846153846,
+   "output_tokens_mean": 4245.822115384615,
+   "steps_mean": 7.278846153846154,
+   "wall_s_p50": 17.95,
+   "wall_s_p95": 38.52499999999999,
+   "wall_s_mean": 19.270673076923078,
+   "memory_tool_calls_mean": 0.7211538461538461,
+   "runs_with_memory_tool_call": 147,
+   "capsule": {
+    "calls": 150,
+    "by_tool": {
+     "capsule_ask": 148,
+     "capsule_search": 2
+    },
+    "call_ms_p50": 8.394724499999999,
+    "call_ms_p95": 11.267612349999999,
+    "call_ms_max": 18.445898,
+    "ask_ms_p50": 8.4414595,
+    "ask_chars_mean": 16222.216216216217,
+    "chars_mean": 16045.14,
+    "mount_ready_ms_p50": 60.851688,
+    "mount_ready_ms_p95": 81.58035174999995,
+    "open_ms_p50": 57.642047000000005
+   }
+  },
+  "engram": {
+   "what": "ChloeCtx itself: briefing, recall and memory tools",
+   "runs": 208,
+   "solved": 197,
+   "needs_history_runs": 156,
+   "needs_history_solved": 145,
+   "score": 0.9686698717948717,
+   "cost_usd": 0.007118291923076924,
+   "memory_cost_usd": 0.0018780384615384614,
+   "input_tokens_p50": 165094.5,
+   "input_tokens_mean": 167442.88942307694,
+   "uncached_input_tokens_mean": 17289.514423076922,
+   "output_tokens_mean": 4320.004807692308,
+   "steps_mean": 7.283653846153846,
+   "wall_s_p50": 19.700000000000003,
+   "wall_s_p95": 37.129999999999995,
+   "wall_s_mean": 21.558653846153845,
+   "memory_tool_calls_mean": 0.2403846153846154,
+   "runs_with_memory_tool_call": 50,
+   "capsule": null
+  },
+  "full": {
+   "what": "the whole history in context (a fork of it)",
+   "runs": 208,
+   "solved": 198,
+   "needs_history_runs": 156,
+   "needs_history_solved": 146,
+   "score": 0.9815705128205128,
+   "cost_usd": 0.011661972644230769,
+   "memory_cost_usd": 0.0,
+   "input_tokens_p50": 194426.5,
+   "input_tokens_mean": 226649.67307692306,
+   "uncached_input_tokens_mean": 3115.081730769231,
+   "output_tokens_mean": 2847.730769230769,
+   "steps_mean": 3.75,
+   "wall_s_p50": 11.05,
+   "wall_s_p95": 32.224999999999945,
+   "wall_s_mean": 12.909615384615384,
+   "memory_tool_calls_mean": 0.0,
+   "runs_with_memory_tool_call": 0,
+   "capsule": null
+  }
+ },
+ "handoff": {
+  "stockroom": {
+   "capsule": {
+    "backup_ms": 77.961349,
+    "by_kind": {
+     "answer": 103,
+     "decision": 15,
+     "entity": 96,
+     "episode": 13,
+     "error": 21,
+     "fact": 11,
+     "preference": 5,
+     "prompt": 15,
+     "todo": 4
+    },
+    "bytes": 983040,
+    "created_ts": 1794477881,
+    "dim": 512,
+    "dir": "/home/user/bench/work/stockroom/engram/capsule",
+    "embedder": "static",
+    "embedder_name": "static:potion-retrieval-32M",
+    "format": "chloectx-capsule/1",
+    "kinds": [
+     "decision",
+     "preference",
+     "fact",
+     "todo",
+     "note",
+     "entity",
+     "prompt",
+     "answer",
+     "episode",
+     "summary",
+     "error"
+    ],
+    "pack_ms": 30.415785,
+    "project": "/home/user/bench/work/stockroom/engram/stockroom",
+    "records": 283,
+    "redacted": 0,
+    "sha256": "c7ae6e928547cb70d0c9169a21557c7a7d128b9454fa93b58b078bd38255437b",
+    "since_ts": null,
+    "source_last_seq": 475,
+    "title": "stockroom",
+    "topics": [
+     "storage.py",
+     "items.py",
+     "movements.csv",
+     "src/stockroom/inventory.py",
+     "src/stockroom/storage.py",
+     "stockroom CLI",
+     "Catalog",
+     "load_movements",
+     "reorder.py",
+     "src/stockroom/cli.py",
+     "tests/test_cli.py",
+     "tests/test_reorder.py",
+     "tests/test_storage.py",
+     "movements CSV",
+     "reason column",
+     "receive command",
+     "src/stockroom/items.py",
+     "src/stockroom/reorder.py",
+     "Item",
+     "Movement"
+    ],
+    "total_ms": 187.01394,
+    "wall_s": 0.19
+   },
+   "note": {
+    "chars": 5792,
+    "transcript_chars": 76026,
+    "cost_usd": 0.00890957,
+    "wall_s": 22.3,
+    "input_tokens": 34588,
+    "output_tokens": 4880,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   },
+   "note_short": {
+    "chars": 1906,
+    "transcript_chars": 76026,
+    "cost_usd": 0.007375970000000001,
+    "wall_s": 8.7,
+    "input_tokens": 34625,
+    "output_tokens": 1798,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   }
+  },
+  "slotwise": {
+   "capsule": {
+    "backup_ms": 67.794938,
+    "by_kind": {
+     "answer": 102,
+     "decision": 7,
+     "entity": 79,
+     "episode": 14,
+     "error": 24,
+     "fact": 12,
+     "preference": 11,
+     "prompt": 15,
+     "todo": 9
+    },
+    "bytes": 950272,
+    "created_ts": 1794477855,
+    "dim": 512,
+    "dir": "/home/user/bench/work/slotwise/engram/capsule",
+    "embedder": "static",
+    "embedder_name": "static:potion-retrieval-32M",
+    "format": "chloectx-capsule/1",
+    "kinds": [
+     "decision",
+     "preference",
+     "fact",
+     "todo",
+     "note",
+     "entity",
+     "prompt",
+     "answer",
+     "episode",
+     "summary",
+     "error"
+    ],
+    "pack_ms": 31.613059999999997,
+    "project": "/home/user/bench/work/slotwise/engram/slotwise",
+    "records": 273,
+    "redacted": 0,
+    "sha256": "8b9e6799a8af1db6ff529a5355c94bedfd9467273191e4be53ab19235e4ffe70",
+    "since_ts": null,
+    "source_last_seq": 442,
+    "title": "slotwise",
+    "topics": [
+     "slotwise",
+     "src/slotwise/schedule.py",
+     "book()",
+     "schedule.py",
+     "Appointment",
+     "tests/test_schedule.py",
+     "SMS reminders",
+     "Schedule",
+     "front-desk app",
+     "reception",
+     "BookingError",
+     "SMS gateway",
+     "src/slotwise/clients.py",
+     "therapist",
+     "ClientBook",
+     "SlotTaken",
+     "appointment gap",
+     "client register",
+     "clients.py",
+     "tests/test_clients.py"
+    ],
+    "total_ms": 161.45580900000002,
+    "wall_s": 0.16
+   },
+   "note": {
+    "chars": 9329,
+    "transcript_chars": 69597,
+    "cost_usd": 0.009003170000000001,
+    "wall_s": 29.2,
+    "input_tokens": 30791,
+    "output_tokens": 6586,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   },
+   "note_short": {
+    "chars": 2044,
+    "transcript_chars": 69597,
+    "cost_usd": 0.007108070000000001,
+    "wall_s": 13.4,
+    "input_tokens": 30828,
+    "output_tokens": 2781,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   }
+  },
+  "bakehouse": {
+   "capsule": {
+    "backup_ms": 73.299054,
+    "by_kind": {
+     "answer": 329,
+     "decision": 23,
+     "entity": 190,
+     "episode": 40,
+     "error": 49,
+     "fact": 52,
+     "preference": 25,
+     "prompt": 48,
+     "todo": 14
+    },
+    "bytes": 2506752,
+    "created_ts": 1794478343,
+    "dim": 512,
+    "dir": "/home/user/bench/work/bakehouse/engram/capsule",
+    "embedder": "static",
+    "embedder_name": "static:potion-retrieval-32M",
+    "format": "chloectx-capsule/1",
+    "kinds": [
+     "decision",
+     "preference",
+     "fact",
+     "todo",
+     "note",
+     "entity",
+     "prompt",
+     "answer",
+     "episode",
+     "summary",
+     "error"
+    ],
+    "pack_ms": 75.378241,
+    "project": "/home/user/bench/work/bakehouse/engram/bakehouse",
+    "records": 770,
+    "redacted": 0,
+    "sha256": "39cd9595d8329cc352f1f9008d874b3c517cd72363159fc0a4c1214a610d903d",
+    "since_ts": null,
+    "source_last_seq": 1386,
+    "title": "bakehouse",
+    "topics": [
+     "tests/test_orders.py",
+     "src/bakehouse/products.py",
+     "customers.csv",
+     "src/bakehouse/production.py",
+     "Greta Vogel",
+     "Greenway Grocers",
+     "Tomasz",
+     "config.py",
+     "production plan",
+     "orders.py",
+     "production.py",
+     "Dev",
+     "scripts/print_plan.py",
+     "Larkspur Bakery",
+     "src/bakehouse/orders.py",
+     "tests/test_production.py",
+     "print_plan.py",
+     "src/bakehouse/invoice.py",
+     "tests/test_invoice.py",
+     "tests/test_products.py"
+    ],
+    "total_ms": 222.844076,
+    "wall_s": 0.23
+   },
+   "note": {
+    "chars": 12136,
+    "transcript_chars": 204402,
+    "cost_usd": 0.019441870000000003,
+    "wall_s": 22.7,
+    "input_tokens": 87232,
+    "output_tokens": 4887,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   },
+   "note_short": {
+    "chars": 2079,
+    "transcript_chars": 204402,
+    "cost_usd": 0.01880977,
+    "wall_s": 17.1,
+    "input_tokens": 87269,
+    "output_tokens": 3608,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   }
+  },
+  "kestrel": {
+   "capsule": {
+    "backup_ms": 73.705777,
+    "by_kind": {
+     "answer": 242,
+     "decision": 27,
+     "entity": 178,
+     "episode": 30,
+     "error": 28,
+     "fact": 32,
+     "note": 2,
+     "preference": 12,
+     "prompt": 33,
+     "todo": 8
+    },
+    "bytes": 1929216,
+    "created_ts": 1794478212,
+    "dim": 512,
+    "dir": "/home/user/bench/work/kestrel/engram/capsule",
+    "embedder": "static",
+    "embedder_name": "static:potion-retrieval-32M",
+    "format": "chloectx-capsule/1",
+    "kinds": [
+     "decision",
+     "preference",
+     "fact",
+     "todo",
+     "note",
+     "entity",
+     "prompt",
+     "answer",
+     "episode",
+     "summary",
+     "error"
+    ],
+    "pack_ms": 60.684394000000005,
+    "project": "/home/user/bench/work/kestrel/engram/kestrel",
+    "records": 592,
+    "redacted": 0,
+    "sha256": "33b2bfcb8eb486e385a4eefa68d522ab9e48e9dd4c7703fbe06230d16467f7f6",
+    "since_ts": null,
+    "source_last_seq": 1007,
+    "title": "kestrel",
+    "topics": [
+     "Appointment",
+     "src/kestrel/invoices.py",
+     "Calendar",
+     "calendar.py",
+     "Calendar.cancel",
+     "data/legacy_appointments.csv",
+     "kestrel",
+     "legacy import",
+     "storage.py",
+     "src/kestrel/cli.py",
+     "tests/test_cli.py",
+     "tests/test_invoices.py",
+     "cancelled_at",
+     "data/does-not-exist.json",
+     "normalize_patient_id",
+     "session price",
+     "src/kestrel/calendar.py",
+     "waitlist.py",
+     "CHANGELOG.md",
+     "Harbour"
+    ],
+    "total_ms": 209.782085,
+    "wall_s": 0.21
+   },
+   "note": {
+    "chars": 10758,
+    "transcript_chars": 159078,
+    "cost_usd": 0.01938177,
+    "wall_s": 53.1,
+    "input_tokens": 69589,
+    "output_tokens": 11824,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   },
+   "note_short": {
+    "chars": 2315,
+    "transcript_chars": 159078,
+    "cost_usd": 0.01478417,
+    "wall_s": 12.6,
+    "input_tokens": 69626,
+    "output_tokens": 2614,
+    "model": [
+     "claude-haiku-5-5"
+    ]
+   }
+  }
+ },
+ "history": {
+  "stockroom/engram": {
+   "agent_usd": 0.06597932,
+   "memory_usd": 0.0313725,
+   "wall_s": 237.6
+  },
+  "stockroom/full": {
+   "agent_usd": 0.03806552,
+   "memory_usd": 0.0,
+   "wall_s": 135.9
+  },
+  "slotwise/engram": {
+   "agent_usd": 0.055333230000000004,
+   "memory_usd": 0.0328849,
+   "wall_s": 211.0
+  },
+  "slotwise/full": {
+   "agent_usd": 0.04381511,
+   "memory_usd": 0.0,
+   "wall_s": 148.9
+  },
+  "bakehouse/engram": {
+   "agent_usd": 0.20578002,
+   "memory_usd": 0.119156,
+   "wall_s": 699.5
+  },
+  "bakehouse/full": {
+   "agent_usd": 0.29245094000000005,
+   "memory_usd": 0.0,
+   "wall_s": 327.7
+  },
+  "kestrel/engram": {
+   "agent_usd": 0.15805968,
+   "memory_usd": 0.08315309999999998,
+   "wall_s": 568.8
+  },
+  "kestrel/full": {
+   "agent_usd": 0.08649389000000002,
+   "memory_usd": 0.0,
+   "wall_s": 271.2
+  }
+ },
+ "per_scenario": {
+  "stockroom": {
+   "engram+none": {
+    "runs": 40,
+    "solved": 20
+   },
+   "engram+summary": {
+    "runs": 40,
+    "solved": 40
+   },
+   "engram+capsule": {
+    "runs": 40,
+    "solved": 39
+   },
+   "engram+both": {
+    "runs": 40,
+    "solved": 40
+   },
+   "engram+short": {
+    "runs": 40,
+    "solved": 40
+   },
+   "engram+shortcap": {
+    "runs": 40,
+    "solved": 40
+   },
+   "engram": {
+    "runs": 40,
+    "solved": 38
+   },
+   "full": {
+    "runs": 40,
+    "solved": 40
+   }
+  },
+  "slotwise": {
+   "engram+none": {
+    "runs": 40,
+    "solved": 16
+   },
+   "engram+summary": {
+    "runs": 40,
+    "solved": 40
+   },
+   "engram+capsule": {
+    "runs": 40,
+    "solved": 39
+   },
+   "engram+both": {
+    "runs": 40,
+    "solved": 40
+   },
+   "engram+short": {
+    "runs": 40,
+    "solved": 28
+   },
+   "engram+shortcap": {
+    "runs": 40,
+    "solved": 38
+   },
+   "engram": {
+    "runs": 40,
+    "solved": 40
+   },
+   "full": {
+    "runs": 40,
+    "solved": 40
+   }
+  },
+  "bakehouse": {
+   "engram+none": {
+    "runs": 72,
+    "solved": 29
+   },
+   "engram+summary": {
+    "runs": 72,
+    "solved": 67
+   },
+   "engram+capsule": {
+    "runs": 72,
+    "solved": 61
+   },
+   "engram+both": {
+    "runs": 72,
+    "solved": 66
+   },
+   "engram+short": {
+    "runs": 72,
+    "solved": 34
+   },
+   "engram+shortcap": {
+    "runs": 72,
+    "solved": 60
+   },
+   "engram": {
+    "runs": 72,
+    "solved": 68
+   },
+   "full": {
+    "runs": 72,
+    "solved": 66
+   }
+  },
+  "kestrel": {
+   "engram+none": {
+    "runs": 56,
+    "solved": 29
+   },
+   "engram+summary": {
+    "runs": 56,
+    "solved": 51
+   },
+   "engram+capsule": {
+    "runs": 56,
+    "solved": 50
+   },
+   "engram+both": {
+    "runs": 56,
+    "solved": 52
+   },
+   "engram+short": {
+    "runs": 56,
+    "solved": 47
+   },
+   "engram+shortcap": {
+    "runs": 56,
+    "solved": 48
+   },
+   "engram": {
+    "runs": 56,
+    "solved": 51
+   },
+   "full": {
+    "runs": 56,
+    "solved": 52
+   }
+  }
+ },
+ "comparisons": [
+  {
+   "a": "engram+capsule",
+   "b": "engram+none",
+   "solved": [
+    189,
+    94
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 1.0736752088993351e-24,
+   "solved_diff": 0.4567307692307692,
+   "perm_p": 4.999750012499375e-05,
+   "input_tokens_diff": 24753.201923076937,
+   "input_tokens_p": 0.0001999600079984003,
+   "wall_s_diff": 3.3081730769230795,
+   "wall_s_p": 0.0001999600079984003
+  },
+  {
+   "a": "engram+summary",
+   "b": "engram+none",
+   "solved": [
+    198,
+    94
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 1.2232850844818476e-31,
+   "solved_diff": 0.49999999999999994,
+   "perm_p": 4.999750012499375e-05,
+   "input_tokens_diff": -6244.538461538439,
+   "input_tokens_p": 0.11577684463107378,
+   "wall_s_diff": 2.6177884615384635,
+   "wall_s_p": 0.0001999600079984003
+  },
+  {
+   "a": "engram+capsule",
+   "b": "engram+summary",
+   "solved": [
+    189,
+    198
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 0.1222400730893384,
+   "solved_diff": -0.043269230769230727,
+   "perm_p": 0.01064946752662367,
+   "input_tokens_diff": 30997.740384615376,
+   "input_tokens_p": 0.0001999600079984003,
+   "wall_s_diff": 0.690384615384616,
+   "wall_s_p": 0.05678864227154569
+  },
+  {
+   "a": "engram+both",
+   "b": "engram+summary",
+   "solved": [
+    198,
+    198
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 0.9999999999991681,
+   "solved_diff": 0.0,
+   "perm_p": 1.0,
+   "input_tokens_diff": 21645.653846153844,
+   "input_tokens_p": 0.0001999600079984003,
+   "wall_s_diff": 1.2134615384615337,
+   "wall_s_p": 0.0009998000399920016
+  },
+  {
+   "a": "engram+shortcap",
+   "b": "engram+short",
+   "solved": [
+    186,
+    149
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 6.217953194378894e-06,
+   "solved_diff": 0.17788461538461542,
+   "perm_p": 4.999750012499375e-05,
+   "input_tokens_diff": 20340.03846153844,
+   "input_tokens_p": 0.0001999600079984003,
+   "wall_s_diff": 1.6980769230769255,
+   "wall_s_p": 0.0001999600079984003
+  },
+  {
+   "a": "engram+short",
+   "b": "engram+summary",
+   "solved": [
+    149,
+    198
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 4.5130132298359067e-11,
+   "solved_diff": -0.23557692307692302,
+   "perm_p": 4.999750012499375e-05,
+   "input_tokens_diff": -5304.0625,
+   "input_tokens_p": 0.1347730453909218,
+   "wall_s_diff": -1.1259615384615387,
+   "wall_s_p": 0.001999600079984003
+  },
+  {
+   "a": "engram+both",
+   "b": "engram",
+   "solved": [
+    198,
+    197
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 0.9999999999995294,
+   "solved_diff": 0.004807692307692291,
+   "perm_p": 1.0,
+   "input_tokens_diff": -7942.850961538468,
+   "input_tokens_p": 0.07638472305538892,
+   "wall_s_diff": -1.6466346153846168,
+   "wall_s_p": 0.0001999600079984003
+  },
+  {
+   "a": "engram+both",
+   "b": "full",
+   "solved": [
+    198,
+    198
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 0.9999999999991681,
+   "solved_diff": 0.0,
+   "perm_p": 1.0,
+   "input_tokens_diff": -67149.6346153846,
+   "input_tokens_p": 0.0001999600079984003,
+   "wall_s_diff": 7.002403846153845,
+   "wall_s_p": 0.0001999600079984003
+  },
+  {
+   "a": "engram",
+   "b": "full",
+   "solved": [
+    197,
+    198
+   ],
+   "runs": [
+    208,
+    208
+   ],
+   "fisher_p": 0.9999999999995294,
+   "solved_diff": -0.004807692307692291,
+   "perm_p": 1.0,
+   "input_tokens_diff": -59206.78365384613,
+   "input_tokens_p": 0.0001999600079984003,
+   "wall_s_diff": 8.649038461538462,
+   "wall_s_p": 0.0001999600079984003
+  }
+ ]
+}
