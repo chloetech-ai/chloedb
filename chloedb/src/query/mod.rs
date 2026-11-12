@@ -31,8 +31,10 @@ pub mod exec;
 pub mod function;
 pub mod fusion;
 pub mod hint;
+pub mod chunks;
 pub mod classify;
 pub mod llm;
+pub mod mine;
 pub mod prf;
 pub mod understand;
 pub mod ir;
@@ -50,6 +52,7 @@ pub mod sequence;
 pub mod sql;
 pub mod stats;
 pub mod steps;
+pub mod table_synonyms;
 pub mod tables;
 pub(crate) mod window;
 

@@ -36,8 +36,10 @@
 //! | `POST /v1/embed` | `{text, field?, table?}` | `{table, field, vector}`: the text's vector by an embedded field's model; `vectors`, a vector a token, for a multi-vector field's (ColBERT) |
 //! | `GET /v1/models` | | `{dir, models: [{name, dim, hosted, what, ready, error}]}`: the embedding models a schema can name, and whether each would open here |
 //! | `GET /v1/media/<sha256>` | | the bytes of the file a row's MEDIA value names, by its hash, read as writes read files (`--media-store`, `--media-fetch`), served inert ([`media_headers`]); 404 when no row names it, 400 from a coordinator |
-//! | `GET /v1/synonyms`, `PUT /v1/synonyms` | `{text}` (Solr format) | the synonym list |
+//! | `GET /v1/synonyms`, `PUT /v1/synonyms` | `{text}` (Solr format) | the server's synonym list; `GET` also lists each table's own (`tables`: `[{table, text, rules, version}]`, `CREATE SYNONYMS ON table`) |
+//! | `POST /v1/synonyms/mine` | `{table, field, vector? \| log?, min_cos?, per_word?, max_words?, min_df?, window?, min_support?}` | `{proposals: [{from, to, rule, score, from_count, to_count}], rules, rows, words, took_ms}`: synonyms of a text field mined from its words' vectors or from a table of searches, proposed and not applied; on a server of its own |
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
+//! | `GET /v1/classifiers` | | `{classifiers: [{name, version, method, table, field, labels_from, model, labels, label_names, holdout_accuracy, trained_rows, ...}]}`: the classifiers `CREATE CLASSIFIER` made, without their weights |
 //! | `POST /v1/classify` | `{name, text, k?}` | `{label, score, top: [[label, probability]], classifier, version, table, field, labels_from, min_score}`: a text's classes by a classifier `CREATE CLASSIFIER` made, the text embedded by its field's model |
 //! | `POST /v1/understand` | `{table, field, text, mode?, fields?, weight?}` | `{spans, ranges, ranked, filters, boosts, line, ...}`: the values of the table's keyword fields the words name, and ranges of numbers, as `bm25(.., understand => ..)` takes them |
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
@@ -242,10 +244,12 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/models", get(models))
         .route("/v1/media/:sha256", get(media_file))
         .route("/v1/synonyms", get(synonyms).merge(put(put_synonyms)))
+        .route("/v1/synonyms/mine", post(mine_synonyms))
         .route("/v1/term_stats", post(term_stats))
         .route("/v1/correct", post(correct))
         .route("/v1/understand", post(understand))
         .route("/v1/classify", post(classify))
+        .route("/v1/classifiers", get(classifiers))
         .route("/v1/sid/next", post(sid_next))
         .route("/v1/rank_log/export", post(export_rank_log))
         .route("/v1/rank_log/interleaving", post(interleaving))
@@ -2669,11 +2673,50 @@ async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 
 async fn synonyms(State(app): State<App>) -> AxJson<Json> {
     let s = app.svc.synonyms();
+    let tables: Vec<Json> = app
+        .svc
+        .table_synonyms()
+        .into_iter()
+        .map(|(table, text, version)| {
+            let rules = chloedb::text::Synonyms::parse(&text).map_or(0, |s| s.rules());
+            json!({"table": table, "text": text, "rules": rules, "version": version})
+        })
+        .collect();
     AxJson(json!({
         "text": s.as_ref().map_or("", |s| s.text()),
         "rules": s.as_ref().map_or(0, |s| s.rules()),
         "file": app.svc.synonyms_file().map(|p| p.display().to_string()),
+        "tables": tables,
     }))
+}
+
+/// `{table, field, vector? | log?, min_cos?, per_word?, max_words?,
+/// min_df?, max_rows?, window?, min_support?}`: synonyms of `table.field`
+/// mined from the vectors of its words (by the model of vector field
+/// `vector`) or from the searches of table `log` (`context`, `ts`,
+/// `text`), as proposals and as the text of a list
+/// ([`chloedb::query::mine`]).
+async fn mine_synonyms(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    use chloedb::query::mine::{Options, Request, Source};
+    let (table, field) = (body_str(&b, "table")?.to_string(), body_str(&b, "field")?.to_string());
+    let source = match (b.get("vector").and_then(Json::as_str), b.get("log").and_then(Json::as_str)) {
+        (Some(v), None) => Source::Vectors { vector: v.to_string() },
+        (None, Some(l)) => Source::Log { log: l.to_string() },
+        _ => return Err(ApiError::bad("name one source: vector (a vector field of the table, whose model embeds the words) or log (a table of searches: context, ts, text)")),
+    };
+    let d = Options::default();
+    let n = |k: &str, d: usize, max: usize| b.get(k).and_then(Json::as_u64).map_or(d, |v| (v as usize).clamp(1, max));
+    let options = Options {
+        max_rows: n("max_rows", d.max_rows, 1_000_000),
+        max_words: n("max_words", d.max_words, 20_000),
+        min_df: n("min_df", d.min_df, 1_000_000),
+        min_cos: b.get("min_cos").and_then(Json::as_f64).map_or(d.min_cos, |c| c.clamp(-1.0, 1.0) as f32),
+        per_word: n("per_word", d.per_word, 100),
+        window: b.get("window").and_then(Json::as_i64).map_or(d.window, |w| w.max(0)),
+        min_support: n("min_support", d.min_support, 1_000_000),
+    };
+    let m = app.svc.mine_synonyms(Request { table, field, source, options }).await?;
+    Ok(AxJson(serde_json::to_value(m).map_err(ApiError::internal)?))
 }
 
 async fn put_synonyms(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
@@ -2761,6 +2804,25 @@ async fn classify(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let k = b.get("k").and_then(Json::as_u64).unwrap_or(3).clamp(1, 100) as usize;
     let c = app.svc.classify(name, text, k).await?;
     Ok(AxJson(serde_json::to_value(c).map_err(ApiError::internal)?))
+}
+
+/// The classifiers `CREATE CLASSIFIER` made, without their weights: what
+/// each was trained on and what it measured.
+async fn classifiers(State(app): State<App>) -> Res {
+    app.svc.learn_functions().await;
+    let set = app.svc.functions();
+    let mut out: Vec<Json> = Vec::new();
+    for f in set.currents() {
+        let Ok(Some(c)) = chloedb::query::classify::of_function(f) else { continue };
+        out.push(json!({
+            "name": f.def.name, "version": f.version, "method": c.method, "table": c.table, "field": c.field, "labels_from": c.labels_from,
+            "model": c.model, "dim": c.dim, "labels": c.labels.len(), "label_names": c.labels.iter().take(50).collect::<Vec<_>>(),
+            "min_score": c.min_score, "trained_rows": c.trained_rows, "holdout_rows": c.holdout_rows, "holdout_accuracy": c.holdout_accuracy,
+            "created": f.created.map(chloedb::timestamp::format), "created_by": f.created_by,
+        }));
+    }
+    out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Ok(AxJson(json!({"classifiers": out})))
 }
 
 async fn snapshot(State(app): State<App>) -> Res {

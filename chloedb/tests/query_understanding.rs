@@ -362,3 +362,128 @@ fn classifiers_learn_a_tables_labels_and_classify_rows_and_queries() {
     assert!(db.open_embedders(dir.path()).is_empty());
     assert_eq!(db.classify("kind_centroid", "a wool rug", 1).unwrap().label.as_deref(), Some("Rugs"));
 }
+
+#[test]
+fn chunks_of_splits_a_tables_text_and_inserts_its_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(&dir);
+    let long = (0..80).map(|i| format!("Sentence {i} of a long paper about vaccines.")).collect::<Vec<_>>().join(" ");
+    db.sql("INSERT INTO papers (id, body, year) VALUES ('long', :b, 2030)", &Params::new().set("b", Value::Str(long.clone()))).unwrap();
+    let r = db.query("SELECT id, n, chunk_id, chunk, tokens, start_char, end_char FROM chunks_of(papers, body, max_tokens => 64) WHERE year = 2030", &Params::new()).unwrap();
+    assert!(r.rows.len() > 5, "{:?}", r.rows);
+    assert_eq!(r.columns, ["id", "n", "chunk_id", "chunk", "tokens", "start_char", "end_char"]);
+    for (i, row) in r.rows.iter().enumerate() {
+        assert_eq!(row[0], Value::Str("long".into()));
+        assert_eq!(row[1], Value::Int(i as i64));
+        assert_eq!(row[2], Value::Str(format!("long#{i}")));
+        let chunk = row[3].as_str().unwrap();
+        assert!(row[4].as_i64().unwrap() <= 64 && chunk.ends_with('.'), "cut after a sentence: {chunk:?}");
+        let (s, e) = (row[5].as_i64().unwrap() as usize, row[6].as_i64().unwrap() as usize);
+        assert_eq!(&long[s..e], chunk);
+    }
+    assert!(r.stats.plan.iter().any(|l| l.starts_with("chunks_of: 1 rows of papers.body in")), "{:?}", r.stats.plan);
+    // Its columns by name, `*`, overlap, LIMIT and parameters.
+    let p = Params::new().set("m", Value::Int(32)).set("y", Value::Int(2030));
+    let r = db.query("SELECT chunk AS text, n FROM chunks_of(papers, body, max_tokens => :m, overlap => 8) WHERE year = :y LIMIT 3", &p).unwrap();
+    assert_eq!((r.columns.clone(), r.rows.len()), (vec!["text".to_string(), "n".to_string()], 3));
+    assert!(r.rows[1][0].as_str().unwrap().starts_with("of a long paper") || r.rows[1][0].as_str().unwrap().contains("vaccines. Sentence"), "{:?}", r.rows);
+    assert_eq!(db.query("SELECT * FROM chunks_of(papers, body) LIMIT 4", &Params::new()).unwrap().columns.len(), 7);
+    // INSERT ... SELECT writes them to a table of chunks.
+    db.sql("CREATE TABLE chunks (id KEYWORD PRIMARY KEY, doc KEYWORD, n INT, body TEXT, tokens INT)", &Params::new()).unwrap();
+    let written = db.sql("INSERT INTO chunks (id, doc, n, body, tokens) SELECT chunk_id, id, n, chunk, tokens FROM chunks_of(papers, body, max_tokens => 64)", &Params::new()).unwrap();
+    let all = db.query("SELECT count(*) FROM chunks_of(papers, body, max_tokens => 64)", &Params::new());
+    assert!(all.is_err(), "count(*) is not a column of chunks_of");
+    let n = db.query("SELECT id FROM chunks_of(papers, body, max_tokens => 64)", &Params::new()).unwrap().rows.len();
+    assert!(matches!(written, chloedb::db::SqlResult::Written(w) if w as usize == n && n > 61), "{n}");
+    let r = db.query("SELECT doc, n FROM chunks WHERE MATCH(body, 'sentence') ORDER BY bm25(body, 'sentence 42') DESC LIMIT 1", &Params::new()).unwrap();
+    assert_eq!(r.rows[0][0], Value::Str("long".into()));
+    // What it refuses.
+    for (sql, says) in [
+        ("SELECT id FROM chunks_of(papers, year)", "not a stored TEXT field"),
+        ("SELECT id FROM chunks_of(papers, body, max_tokens => 4)", "max_tokens is from 16"),
+        ("SELECT id FROM chunks_of(papers, body, max_tokens => 32, overlap => 40)", "overlap"),
+        ("SELECT id FROM chunks_of(papers, body) ORDER BY n", "INSERT INTO chunks SELECT"),
+        ("SELECT words FROM chunks_of(papers, body)", "gives the columns"),
+        ("SELECT id FROM chunks_of(nope, body)", "no table nope"),
+        ("SELECT id FROM chunks_of(papers, body, size => 3)", "no option size"),
+    ] {
+        let e = db.query(sql, &Params::new()).unwrap_err().to_string();
+        assert!(e.contains(says), "{sql}: {e}");
+    }
+}
+
+#[test]
+fn a_tables_synonym_list_widens_its_searches() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(&dir);
+    let none = Params::new();
+    let count = |db: &Db, opts: &chloedb::query::exec::ExecOptions, q: &str| -> i64 {
+        db.query_with(&format!("SELECT COUNT(*) FROM papers WHERE MATCH(body, '{q}', synonyms => 1)"), &none, opts).unwrap_or_else(|e| panic!("{q}: {e}")).rows[0][0].as_i64().unwrap()
+    };
+    let e = db.query("SELECT COUNT(*) FROM papers WHERE MATCH(body, 'rodents', synonyms => 1)", &none).unwrap_err().to_string();
+    assert!(e.contains("no synonym list"), "{e}");
+    db.sql("CREATE SYNONYMS ON papers AS 'rodents => mice\nshots, vaccines'", &none).unwrap();
+    let opts = chloedb::query::exec::ExecOptions::default();
+    assert_eq!(count(&db, &opts, "rodents"), 1);
+    assert_eq!(count(&db, &opts, "shots"), 30);
+    assert_eq!(db.query("SELECT COUNT(*) FROM papers WHERE MATCH(body, 'rodents')", &none).unwrap().rows[0][0], Value::Int(0), "only with synonyms => 1");
+    // Ranked, as a stored function a query could read, and with the
+    // server's list before it.
+    let r = db.query("SELECT id FROM papers ORDER BY bm25(body, 'rodents immune', synonyms => 1) DESC LIMIT 1", &none).unwrap();
+    assert_eq!(r.rows[0][0], Value::Str("ab".into()));
+    assert!(db.functions().unwrap().current("synonyms_papers").is_some());
+    let base = std::sync::Arc::new(chloedb::text::Synonyms::parse("molecules, chemistry").unwrap());
+    let with_base = chloedb::query::exec::ExecOptions { synonyms: Some(base), ..Default::default() };
+    assert_eq!((count(&db, &with_base, "chemistry"), count(&db, &with_base, "rodents")), (30, 1));
+    // Its next version, what it refuses, and its drop.
+    let e = db.sql("CREATE SYNONYMS ON papers AS 'rodents => mice'", &none).unwrap_err().to_string();
+    assert!(e.contains("exists") || e.contains("OR REPLACE"), "{e}");
+    db.sql("CREATE OR REPLACE SYNONYMS ON papers AS 'rodents => graph'", &none).unwrap();
+    assert_eq!(count(&db, &opts, "rodents"), 30);
+    for (sql, says) in [("CREATE SYNONYMS ON nope AS 'a, b'", "nope"), ("CREATE OR REPLACE SYNONYMS ON papers AS '=> x'", "synonyms of papers"), ("CREATE OR REPLACE SYNONYMS ON papers AS '# none'", "no rules")] {
+        let e = db.sql(sql, &none).unwrap_err().to_string();
+        assert!(e.contains(says), "{sql}: {e}");
+    }
+    db.sql("DROP SYNONYMS ON papers", &none).unwrap();
+    assert!(db.query("SELECT COUNT(*) FROM papers WHERE MATCH(body, 'rodents', synonyms => 1)", &none).is_err());
+    db.sql("DROP SYNONYMS IF EXISTS ON papers", &none).unwrap();
+    // A reopened database keeps a list.
+    db.sql("CREATE OR REPLACE SYNONYMS ON papers AS 'rodents => mice'", &none).unwrap();
+    drop(db);
+    let db = Db::open(&dir.path().join("db.strata"), DbOptions::default()).unwrap();
+    assert_eq!(count(&db, &opts, "rodents"), 1);
+}
+
+#[test]
+fn synonyms_are_mined_from_a_query_log_and_from_vectors() {
+    use chloedb::query::mine::{Options, Request, Source};
+    let dir = tempfile::tempdir().unwrap();
+    let db = catalog(&dir);
+    let none = Params::new();
+    db.sql("CREATE TABLE searches (id KEYWORD PRIMARY KEY, context KEYWORD, ts INT, text TEXT)", &none).unwrap();
+    let mut values = Vec::new();
+    for u in 0..5 {
+        values.push(format!("('s{u}a', 'u{u}', {}, 'grey couch')", 1000 * u));
+        values.push(format!("('s{u}b', 'u{u}', {}, 'grey sofa')", 1000 * u + 20));
+    }
+    values.push("('x', 'u9', 0, 'rug')".into());
+    db.sql(&format!("INSERT INTO searches (id, context, ts, text) VALUES {}", values.join(", ")), &none).unwrap();
+    let m = db.mine_synonyms(&Request { table: "products".into(), field: "name".into(), source: Source::Log { log: "searches".into() }, options: Options::default() }).unwrap();
+    assert_eq!((m.rows, m.proposals.len()), (11, 1), "{m:?}");
+    assert_eq!((m.proposals[0].rule.as_str(), m.proposals[0].score), ("couch => sofa", 5.0));
+    assert!(m.rules.starts_with("# mined from the searches of searches") && m.rules.ends_with("couch => sofa\n"), "{}", m.rules);
+    // The rules as the table's list.
+    db.sql(&format!("CREATE SYNONYMS ON products AS '{}'", m.rules.replace('\'', "''")), &none).unwrap();
+    let r = db.query("SELECT COUNT(*) FROM products WHERE MATCH(name, 'couch', synonyms => 1)", &none).unwrap();
+    assert_eq!(r.rows[0][0], Value::Int(6 * 4 + 1), "every couch and sofa");
+    // From vectors: the words of the names, each embedded.
+    let req = Request { table: "products".into(), field: "name".into(), source: Source::Vectors { vector: "emb".into() }, options: Options { min_cos: -1.0, per_word: 1, ..Options::default() } };
+    let m = db.mine_synonyms(&req).unwrap();
+    assert_eq!(m.rows, 74);
+    assert!(m.words > 15 && !m.proposals.is_empty() && m.proposals.len() <= m.words / 2, "{m:?}");
+    assert!(m.proposals.iter().all(|p| p.rule.contains(", ")));
+    let e = db.mine_synonyms(&Request { source: Source::Vectors { vector: "nope".into() }, ..req.clone() }).unwrap_err().to_string();
+    assert!(e.contains("no model"), "{e}");
+    let e = db.mine_synonyms(&Request { field: "label".into(), ..req }).unwrap_err().to_string();
+    assert!(e.contains("not a TEXT field"), "{e}");
+}

@@ -2419,6 +2419,21 @@ impl Service {
         // ([`chloedb::query::llm`]): the rows first, as any query finds them
         // (a coordinator's from its shards, merged), then the questions,
         // here.
+        // The chunks of a table's text (`FROM chunks_of(table, field)`,
+        // [`chloedb::query::chunks`]): its rows as any query finds them,
+        // split here.
+        if req.plan.is_none() && !req.shard {
+            if let Some(c) = chloedb::query::chunks::of_sql(&req.sql, &req.params)? {
+                let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", c.table)))?;
+                let mut source = req.clone();
+                (source.sql, source.scroll, source.hold) = (c.source_sql(&schema)?, None, false);
+                let mut a = Box::pin(self.query(source)).await?;
+                let t0 = Instant::now();
+                a.rs = c.finish(&a.rs);
+                a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
         // Understood words (`bm25(.., understand => 'boost')`,
         // [`chloedb::query::understand`]): the table's keyword values the
         // words name become conditions, then the query runs as any does
@@ -3353,6 +3368,38 @@ impl Service {
         if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
             return self.classifier_statement(who, &st, timeout_ms).await;
         }
+        // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
+        // as a function ([`chloedb::query::table_synonyms`]).
+        if let Some(st) = chloedb::query::table_synonyms::parse_statement(sql)? {
+            if !self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(st.table())) {
+                return Err(ApiError::bad(format!("query error: no table {}", st.table())));
+            }
+            return Box::pin(self.sql_in(who, &st.function_sql()?, &Params::new(), after, timeout_ms, None, None)).await;
+        }
+        // `SELECT ... FROM chunks_of(...)`, a query; `INSERT INTO t (...)
+        // SELECT ... FROM chunks_of(...)`, the chunks found, then their
+        // INSERTs.
+        if chloedb::query::chunks::of_sql(sql, params)?.is_some() {
+            who.may(Scope::Read, "a query")?;
+            let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, ..Default::default() }).await?;
+            return Ok(SqlAnswer::Rows(a));
+        }
+        if let Some(ins) = chloedb::query::chunks::insert_of_sql(sql, params)? {
+            who.may(Scope::Write, "a write statement")?;
+            let t0 = Instant::now();
+            let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&ins.query.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", ins.query.table)))?;
+            let a = self.query(QueryReq { sql: ins.query.source_sql(&schema)?, params: params.clone(), timeout_ms, after, ..Default::default() }).await?;
+            let mut total = Written::default();
+            for (statement, p) in ins.inserts(&ins.query.finish(&a.rs)) {
+                if let SqlAnswer::Written { w, .. } = Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await? {
+                    total.rows += w.rows;
+                    total.skipped += w.skipped;
+                    total.seq_no = w.seq_no.or(total.seq_no);
+                    total.seq_nos.extend(w.seq_nos);
+                }
+            }
+            return Ok(SqlAnswer::Written { w: total, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
+        }
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         if let Command::Function(f) = &command {
             // How a coordinator numbers a function's versions alike on
@@ -3465,6 +3512,32 @@ impl Service {
         let p = self.params(Some(&json!({ "v": { "embed": text, "field": c.field, "table": c.table } }))).await?;
         let Some(Value::Vector(x)) = p.0.get("v") else { return Err(ApiError::bad(format!("{}.{} gave no vector of the text", c.table, c.field))) };
         Ok(chloedb::query::classify::Classified::of(name, f.version, &c, x, k)?)
+    }
+
+    /// Synonyms mined from a table ([`chloedb::query::mine`]): on a
+    /// database of its own, which holds the rows and the models.
+    pub async fn mine_synonyms(self: &Arc<Self>, req: chloedb::query::mine::Request) -> Result<chloedb::query::mine::Mined, ApiError> {
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("synonyms are mined on a server of its own (a shard holds the rows and models of a part); run CREATE SYNONYMS here with what it proposes"));
+        };
+        let db = db.clone();
+        Ok(tokio::task::spawn_blocking(move || db.mine_synonyms(&req)).await.map_err(ApiError::internal)??)
+    }
+
+    /// The synonym lists of the tables that have one
+    /// ([`chloedb::query::table_synonyms`]): table, rules, version.
+    pub fn table_synonyms(&self) -> Vec<(String, String, i64)> {
+        let functions = self.functions();
+        let mut out: Vec<(String, String, i64)> = self
+            .catalog()
+            .iter()
+            .filter_map(|s| {
+                let f = functions.current(&chloedb::query::table_synonyms::function_name(&s.table))?;
+                Some((s.table.clone(), chloedb::query::table_synonyms::rules_of(f)?, f.version))
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// `CREATE TABLE`, `ALTER TABLE` or `DROP TABLE`, `CREATE RANK PROFILE`

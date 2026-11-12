@@ -1347,6 +1347,13 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
+        // The chunks of a table's text (`FROM chunks_of(table, field)`):
+        // the rows it reads, split.
+        if let Some(c) = crate::query::chunks::of_sql(sql, params)? {
+            let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| Error::Query(format!("no table {}", c.table)))?.clone();
+            let rs = self.query_at(snap, &c.source_sql(&schema)?, params, opts)?;
+            return Ok(c.finish(&rs));
+        }
         let q = qsql::parse_query_cached(sql)?;
         // Understood words (`bm25(.., understand => 'boost')`): the
         // dictionaries of the table's keyword fields, then the query with
@@ -1626,6 +1633,25 @@ impl Db {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
         }
+        // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
+        // as a function.
+        if let Some(st) = crate::query::table_synonyms::parse_statement(sql)? {
+            self.table(st.table())?;
+            return self.sql_with(&st.function_sql()?, &Params::new(), opts);
+        }
+        // `INSERT INTO t (...) SELECT ... FROM chunks_of(...)`: the chunks,
+        // then their INSERTs.
+        if let Some(ins) = crate::query::chunks::insert_of_sql(sql, params)? {
+            let schema = self.table(&ins.query.table)?;
+            let rs = self.query_with(&ins.query.source_sql(&schema)?, params, opts)?;
+            let mut n = 0;
+            for (statement, p) in ins.inserts(&ins.query.finish(&rs)) {
+                if let SqlResult::Written(w) = self.sql_with(&statement, &p, opts)? {
+                    n += w;
+                }
+            }
+            return Ok(SqlResult::Written(n));
+        }
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         match bind_command(sql, &tables, params)? {
@@ -1736,6 +1762,64 @@ impl Db {
                 Ok(SqlResult::Rows(trained.result_set()))
             }
         }
+    }
+
+    /// Synonyms mined from table `req.table` ([`crate::query::mine`]):
+    /// proposals for its synonym list, which nothing applies until a
+    /// `CREATE SYNONYMS` takes them.
+    pub fn mine_synonyms(&self, req: &crate::query::mine::Request) -> Result<crate::query::mine::Mined> {
+        use crate::query::mine;
+        let t0 = std::time::Instant::now();
+        let schema = self.table(&req.table)?;
+        let f = schema.field(&req.field).ok_or_else(|| Error::Query(format!("{} has no field {}", req.table, req.field)))?;
+        if !matches!(f.ty, FieldType::Text { .. }) {
+            return Err(Error::Query(format!("{}.{} is not a TEXT field: synonyms are of a text's words", req.table, req.field)));
+        }
+        let (analyzer, opts) = (f.text_analyzer(), &req.options);
+        let (source, rows, words, proposals, header) = match &req.source {
+            mine::Source::Vectors { vector } => {
+                if !f.stored {
+                    return Err(Error::Query(format!("{}.{} is not stored: its words are read from the stored text", req.table, req.field)));
+                }
+                let e = self.embedder_in(&req.table, vector).ok_or_else(|| Error::Query(format!("{}.{vector} has no model here to embed words with", req.table)))?;
+                let sql = format!("SELECT {} FROM {} LIMIT {}", qsql::ident(&f.name), qsql::ident(&schema.table), opts.max_rows);
+                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+                let (rows, words) = mine::vocabulary(rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str())), analyzer, opts);
+                let vectors = words.iter().map(|w| e.embed_query(&w.word)).collect::<Result<Vec<_>>>()?;
+                let ps = mine::by_vectors(&words, &vectors, opts);
+                let header = format!("mined from the words of {}.{}, embedded by the model of {vector}: cosine {} or more", req.table, req.field, opts.min_cos);
+                ("vectors", rows, words.len(), ps, header)
+            }
+            mine::Source::Log { log } => {
+                let sql = format!("SELECT context, ts, text FROM {} LIMIT {}", qsql::ident(log), opts.max_rows);
+                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+                let searches: Vec<mine::Search> = rs
+                    .rows
+                    .iter()
+                    .filter_map(|r| {
+                        let ctx = match &r[0] {
+                            Value::Null => return None,
+                            Value::Str(s) => s.clone(),
+                            v => crate::query::hint::sql_value(v),
+                        };
+                        Some((ctx, r[1].as_i64()?, r[2].as_str()?.to_string()))
+                    })
+                    .collect();
+                let (words, ps) = mine::by_log(&searches, analyzer, opts);
+                let header = format!("mined from the searches of {log}: one-word rewrites within {} seconds, by {} contexts or more", opts.window, opts.min_support);
+                ("log", searches.len(), words, ps, header)
+            }
+        };
+        Ok(mine::Mined {
+            source: source.into(),
+            table: req.table.clone(),
+            field: req.field.clone(),
+            rows,
+            words,
+            rules: mine::rules(&header, &proposals),
+            proposals,
+            took_ms: t0.elapsed().as_secs_f64() * 1e3,
+        })
     }
 
     /// The classes of `text` by the classifier `name` (a stored function
@@ -2245,6 +2329,22 @@ impl Db {
         Ok(total)
     }
 
+    /// `opts` for a query of the table `snap` looks at: with the table's
+    /// own synonym list after the server's, when it has one
+    /// ([`crate::query::table_synonyms`]).
+    fn table_options<'a>(&self, snap: &Snapshot, opts: &'a ExecOptions) -> Result<std::borrow::Cow<'a, ExecOptions>> {
+        let table = &snap.shared_schema().table;
+        // The system tables have none, and reading the functions reads one.
+        if table.starts_with('_') {
+            return Ok(std::borrow::Cow::Borrowed(opts));
+        }
+        let functions = self.functions_at(snap)?;
+        Ok(match crate::query::table_synonyms::for_table(&functions, table, opts.synonyms.as_ref())? {
+            Some(s) => std::borrow::Cow::Owned(ExecOptions { synonyms: Some(s), ..opts.clone() }),
+            None => std::borrow::Cow::Borrowed(opts),
+        })
+    }
+
     /// The answer of query `select` on snapshot `snap`, of the table it
     /// looks at, with options `opts`: by the executor, or by key when its
     /// filter only names keys ([`Db::by_key`]).
@@ -2257,7 +2357,8 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
-        let mut rs = Executor::new(snap, &readers, opts).execute(select)?;
+        let opts = self.table_options(snap, opts)?;
+        let mut rs = Executor::new(snap, &readers, &opts).execute(select)?;
         opened_step(&mut rs.stats, t0, opened, readers.len());
         Ok(rs)
     }
@@ -2278,6 +2379,7 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
+        let opts = self.table_options(snap, &opts)?;
         let (mut rs, s) = Executor::new(snap, &readers, &opts).scroll(select, page, hold)?;
         opened_step(&mut rs.stats, t0, opened, readers.len());
         Ok((rs, s))
@@ -2295,6 +2397,7 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
+        let opts = self.table_options(snap, &opts)?;
         let mut rs = Executor::new(snap, &readers, &opts).scroll_next(scroll, page)?;
         opened_step(&mut rs.stats, t0, opened, readers.len());
         Ok(rs)
@@ -2321,7 +2424,8 @@ impl Db {
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
         let opened = t0.elapsed();
-        let mut leaf = Executor::new(snap, &readers, opts).execute_arrow(select, over)?;
+        let opts = self.table_options(snap, opts)?;
+        let mut leaf = Executor::new(snap, &readers, &opts).execute_arrow(select, over)?;
         let stats = match &mut leaf {
             Leaf::Rows(rs) => &mut rs.stats,
             Leaf::Arrow(c) => &mut c.stats,
@@ -2340,7 +2444,7 @@ impl Db {
     /// [`Db::term_stats`] with options (their synonyms widen the terms).
     pub fn term_stats_with(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions) -> Result<TermStats> {
         let readers = self.readers(snap)?;
-        Executor::new(snap, &readers, opts).term_stats(select)
+        Executor::new(snap, &readers, &*self.table_options(snap, opts)?).term_stats(select)
     }
 
     /// The words of `text` that look like typos of the terms of TEXT field
@@ -2368,7 +2472,7 @@ impl Db {
             return Err(Error::Query("the query has no guard (min_rows, max_rows) to count the levels of".into()));
         }
         let readers = self.readers(snap)?;
-        Executor::new(snap, &readers, opts).guard_counts(select)
+        Executor::new(snap, &readers, &*self.table_options(snap, opts)?).guard_counts(select)
     }
 
     /// The codes that can follow each of `prefixes` in semantic-ID field
