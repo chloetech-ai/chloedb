@@ -709,14 +709,22 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
             return Err(format!("unknown model {name}: one of {}, or a Hugging Face repository owner/name", names.join(", ")));
         }
     };
-    let out = dir.join(&local);
+    // A model of a table in fewer bits (`potion-retrieval-32M-int8`) is
+    // its original fetched aside, then written into its own directory, so
+    // that a fetch cut short never leaves the original under its name.
+    let quantized = chloedb::embed::quantized_of(&local);
+    let model_dir = dir.join(&local);
+    let out = match quantized {
+        Some(_) => dir.join(format!(".{local}.fetch")),
+        None => model_dir.clone(),
+    };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let client = crate::http_client().build().map_err(|e| e.to_string())?;
     // Each file's path in the repository, and its name here.
     let files: Vec<(&str, &str)> = match (derives, cross_encoder::fetch_files(&local)) {
         (true, _) => chloedb::derive::model_files(&local).iter().map(|&f| (f, f)).collect(),
         (false, Some(f)) => f,
-        (false, None) => chloedb::embed::model_files(&local).iter().map(|&f| (f, f)).collect(),
+        (false, None) => chloedb::embed::model_files(quantized.map_or(local.as_str(), |q| q.0)).iter().map(|&f| (f, f)).collect(),
     };
     // A model ChloeDB knows comes from the commit it was pinned at, each
     // file checked against its SHA-256 ([`chloedb::model_pins`]); another
@@ -739,6 +747,13 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
         let tmp = out.join(format!("{file}.part"));
         std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, out.join(file))).map_err(|e| format!("{}: {e}", out.join(file).display()))?;
         tracing::info!(file, bytes = bytes.len(), "downloaded");
+    }
+    if let Some((_, elem)) = quantized {
+        let q = chloedb::embed::quantize_static(&out, &model_dir, elem).map_err(|e| e.to_string())?;
+        tracing::info!(model = %local, bytes = q.bytes_after, was = q.bytes_before, "wrote the table in {elem}");
+        let _ = std::fs::remove_dir_all(&out);
+        chloedb::embed::open(&local, dir).map_err(|e| e.to_string())?;
+        return Ok(model_dir);
     }
     if derives {
         chloedb::derive::open(&local, dir).map_err(|e| e.to_string())?;

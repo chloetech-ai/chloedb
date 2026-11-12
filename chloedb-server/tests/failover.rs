@@ -23,17 +23,19 @@ use chloedb_server::service::{AgentConfig, Backend, QueryReq, Service};
 const N: usize = 300;
 const AFTER_MS: u64 = 600;
 
-/// A port free now, of a block of 40 that this test process takes alone
+/// A port free now, from a block of 40 that this test process starts at
 /// (by its process id) below the ranges the other tests and the system's
 /// own connections take ports from: a port taken with port 0 can be handed
 /// to a connection's own end before the server, started again, binds it.
+/// When ports of its block are held by another process, it goes on into
+/// the next blocks, up to 400 ports in all.
 fn port() -> u16 {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let base = 10_000 + (std::process::id() % 500) * 40;
+    let base = (std::process::id() % 500) * 40;
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        assert!(n < 40, "this test process took its 40 ports");
-        let p = (base + n) as u16;
+        assert!(n < 400, "this test process tried 400 ports and found none free");
+        let p = (10_000 + (base + n) % 20_000) as u16;
         if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
             return p;
         }

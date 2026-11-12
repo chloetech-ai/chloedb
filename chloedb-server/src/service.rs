@@ -318,6 +318,21 @@ fn no_rows() -> ResultSet {
     ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }
 }
 
+/// A model the command center asked this server to fetch or convert
+/// ([`Service::start_model_job`]), by the model it makes.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ModelJob {
+    /// `fetch` or `convert`.
+    pub action: &'static str,
+    /// The model converted (`convert`).
+    pub from: Option<String>,
+    /// `running`, `done` or `failed`.
+    pub state: &'static str,
+    pub error: Option<String>,
+    pub started_ms: u64,
+    pub finished_ms: Option<u64>,
+}
+
 /// An embedded VECTOR field ([`chloedb::Embed`]) and its model, which
 /// computes the vectors writes leave out and embeds `{"embed": "text"}`
 /// parameters.
@@ -531,6 +546,9 @@ pub struct Service {
     backfills: Mutex<HashMap<(String, String), Backfill>>,
     /// The models a fetch was tried for, once each.
     fetch_tried: Mutex<HashSet<String>>,
+    /// The fetches and conversions asked for over HTTP, by the model each
+    /// makes (lower case).
+    model_jobs: Mutex<HashMap<String, ModelJob>>,
     /// A coordinator's ranking models ([`Service::open_ranking_models`]);
     /// a database keeps its own.
     ranking: Models,
@@ -587,6 +605,9 @@ pub struct Service {
     pub max_concurrent: usize,
     /// Texts embedded at once (one per core): writes' and queries'.
     embedding: Arc<Semaphore>,
+    /// Models queries named in `embed('model', ..)`, opened from the models
+    /// directory at their first query ([`Service::named_model`]).
+    named_models: Mutex<HashMap<String, Arc<dyn Embedder>>>,
     cores: usize,
     /// Queries running, counted until their work ends ([`Running`]).
     running: Arc<AtomicUsize>,
@@ -722,6 +743,7 @@ impl Service {
             models_changed: tokio::sync::watch::Sender::new(0),
             backfills: Mutex::new(HashMap::new()),
             fetch_tried: Mutex::new(HashSet::new()),
+            model_jobs: Mutex::new(HashMap::new()),
             ranking: Models::default(),
             timeout,
             max_timeout: timeout.max(Duration::from_secs(60)),
@@ -744,6 +766,7 @@ impl Service {
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
             embedding: Arc::new(Semaphore::new(cores)),
+            named_models: Mutex::new(HashMap::new()),
             cores,
             running: Arc::new(AtomicUsize::new(0)),
             writes,
@@ -1458,6 +1481,85 @@ impl Service {
         }
     }
 
+    /// The fetches and conversions of models asked for over HTTP.
+    pub fn model_jobs(&self) -> HashMap<String, ModelJob> {
+        self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Starts fetching model `name` of [`chloedb::embed::KNOWN_MODELS`]
+    /// into the models directory (`convert: None`), or writing static model
+    /// `name`'s table again in `I8` or `F16` as a model of its own,
+    /// `<name>-int8` or `<name>-f16` (`convert: Some(type)`), and answers
+    /// at once with the name of the model it makes; [`Self::model_jobs`]
+    /// says how it went. Then the fields that name the model open it, and
+    /// fill in the vectors their rows lack. Names only: never a path, nor
+    /// a repository the server does not know.
+    pub fn start_model_job(self: &Arc<Self>, name: &str, convert: Option<&str>) -> Result<String, ApiError> {
+        let dir = self.models_dir();
+        let (target, from) = match convert {
+            None => {
+                let &(known, _, _) = chloedb::embed::KNOWN_MODELS.iter().find(|m| m.0.eq_ignore_ascii_case(name)).ok_or_else(|| {
+                    let names: Vec<&str> = chloedb::embed::KNOWN_MODELS.iter().map(|m| m.0).collect();
+                    ApiError::bad(format!("{name} is not a model this server fetches: one of {}", names.join(", ")))
+                })?;
+                (known.to_string(), None)
+            }
+            Some(elem) => {
+                if let Some(why) = chloedb::query::embed_sql::refuse_model(name, &dir) {
+                    return Err(ApiError::bad(format!("model {name}: {why}")));
+                }
+                let suffix = match elem.to_ascii_uppercase().as_str() {
+                    "I8" | "INT8" => "int8",
+                    "F16" | "FLOAT16" => "f16",
+                    other => return Err(ApiError::bad(format!("a static model converts to I8 or F16, not {other}"))),
+                };
+                let d = chloedb::embed::describe(name, &dir);
+                if d.technique != "static" || !dir.join(name).join("model.safetensors").exists() {
+                    return Err(ApiError::bad(format!("model {name} is not a static model here: only a Model2Vec table converts (fetch it first)")));
+                }
+                if d.precision.as_deref().is_some_and(|p| p == "I8" || (p == "F16" && suffix == "f16")) {
+                    return Err(ApiError::bad(format!("model {name}'s table is {} already", d.precision.unwrap_or_default())));
+                }
+                (format!("{name}-{suffix}"), Some((name.to_string(), elem.to_ascii_uppercase().replace("INT8", "I8").replace("FLOAT16", "F16"))))
+            }
+        };
+        if from.is_some() && dir.join(&target).join("model.safetensors").exists() {
+            return Err(ApiError { status: 409, message: format!("model {target} is here already") });
+        }
+        {
+            let mut jobs = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner());
+            if jobs.get(&target.to_lowercase()).is_some_and(|j| j.state == "running") {
+                return Err(ApiError { status: 409, message: format!("model {target} is being made already") });
+            }
+            let job = ModelJob { action: if from.is_some() { "convert" } else { "fetch" }, from: from.as_ref().map(|f| f.0.clone()), state: "running", error: None, started_ms: crate::telemetry::now_ms(), finished_ms: None };
+            jobs.insert(target.to_lowercase(), job);
+        }
+        let svc = self.clone();
+        let t = target.clone();
+        tokio::spawn(async move {
+            let done = match from {
+                None => crate::server::fetch_model(&t, &dir).await.map(|_| ()),
+                Some((src, elem)) => {
+                    let (a, b) = (dir.join(&src), dir.join(&t));
+                    tokio::task::spawn_blocking(move || chloedb::embed::quantize_static(&a, &b, &elem).map(|_| ()).map_err(|e| e.to_string())).await.unwrap_or_else(|e| Err(e.to_string()))
+                }
+            };
+            match &done {
+                Ok(()) => tracing::info!(model = %t, "made a model asked for over HTTP"),
+                Err(e) => tracing::warn!(model = %t, error = %e, "could not make a model asked for over HTTP"),
+            }
+            if let Some(j) = svc.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&t.to_lowercase()) {
+                j.state = if done.is_ok() { "done" } else { "failed" };
+                j.error = done.as_ref().err().cloned();
+                j.finished_ms = Some(crate::telemetry::now_ms());
+            }
+            if done.is_ok() {
+                svc.reopen_models();
+            }
+        });
+        Ok(target)
+    }
+
     /// Fills in the vectors each embedded field's rows lack
     /// ([`Self::backfill_field`]); whether a model failed, for another try.
     async fn backfill_all(self: &Arc<Self>) -> bool {
@@ -2026,6 +2128,12 @@ impl Service {
     /// tables a query may read ([`Self::readable`]), its rank profiles and
     /// its stored functions written out.
     async fn bound_read(&self, sql: &str, params: &Params) -> Result<Plan, ApiError> {
+        // Texts where vectors go, embedded before the query is bound.
+        let embedded = self.embed_texts(sql, params).await?;
+        let (sql, params) = match &embedded {
+            Some((s, p)) => (s.as_str(), p),
+            None => (sql, params),
+        };
         let functions = self.functions();
         let run = || {
             let c = self.readable();
@@ -2036,6 +2144,88 @@ impl Service {
             Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => Ok(run()?),
             r => Ok(r?),
         }
+    }
+
+    /// Query `sql` with the texts it gives where vectors go embedded
+    /// ([`chloedb::query::embed_sql`]: `similarity(emb, 'some words')` by
+    /// the field's model, `embed('model', text)` by a model named), on the
+    /// embedding cores as a parameter's `{"embed": ..}` is, and its
+    /// parameters with their vectors; `None` when it has none.
+    async fn embed_texts(&self, sql: &str, params: &Params) -> Result<Option<(String, Params)>, ApiError> {
+        use chloedb::query::embed_sql::{self, Request};
+        if !embed_sql::may_embed(sql) {
+            return Ok(None);
+        }
+        let catalog = self.readable();
+        let refs: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+        let requests = embed_sql::requests(sql, &refs, params)?;
+        if requests.is_empty() {
+            return Ok(None);
+        }
+        let mut given: HashMap<Request, Value> = HashMap::new();
+        for r in requests {
+            if given.contains_key(&r) {
+                continue;
+            }
+            let (e, tokens, text) = match &r {
+                Request::Field { table, field, text } => {
+                    let (_, _, e) = self.model(Some(table), Some(field))?;
+                    let tokens = refs.iter().find(|s| s.table.eq_ignore_ascii_case(table)).and_then(|s| s.field(field)).is_some_and(|f| f.multi);
+                    (e, tokens, text.clone())
+                }
+                Request::Model { model, text } => (self.named_model(model)?, false, text.clone()),
+            };
+            let t0 = Instant::now();
+            let core = match tokio::time::timeout(self.timeout, self.embedding.clone().acquire_owned()).await {
+                Ok(p) => p.map_err(ApiError::internal)?,
+                Err(_) => return Err(ApiError { status: 429, message: "every core is embedding; try again".into() }),
+            };
+            let v = tokio::task::spawn_blocking(move || {
+                let _core = core;
+                match tokens {
+                    true => e.embed_query_tokens(&text).map(|vs| Value::List(vs.into_iter().map(|v| Value::Vector(v.into())).collect())),
+                    false => e.embed_query(&text).map(|v| Value::Vector(v.into())),
+                }
+            })
+            .await
+            .map_err(ApiError::internal)??;
+            self.metrics.embedded("query", 1, t0.elapsed().as_secs_f64());
+            given.insert(r, v);
+        }
+        Ok(embed_sql::written(sql, &refs, params, &given)?)
+    }
+
+    /// The model a query names in `embed('model', ..)`: one an embedded
+    /// field has open, `hash:N`, or a model directory directly under the
+    /// models directory, opened once and kept. A path, or a model behind
+    /// an API that no field uses, is refused: a query may not make the
+    /// server read other files, or spend its keys.
+    fn named_model(&self, name: &str) -> Result<Arc<dyn Embedder>, ApiError> {
+        if let Some(e) = self.models().iter().filter(|m| m.spec.model.eq_ignore_ascii_case(name)).find_map(|m| m.model.as_ref().ok()) {
+            return Ok(e.clone());
+        }
+        if let Some(e) = self.named_models.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+            return Ok(e.clone());
+        }
+        let refuse = |why: &str| ApiError::bad(format!("query error: embed('{name}', ..): {why}"));
+        let Some(dir) = self.models_dir.clone() else { return Err(refuse("this server has no models directory (--models)")) };
+        if let Some(why) = chloedb::query::embed_sql::refuse_model(name, &dir) {
+            return Err(refuse(why));
+        }
+        let e = chloedb::embed::open(name, &dir).map_err(|e| match chloedb::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(name)) {
+            true => refuse(&format!("{} (chloedb-server fetch-model {name} downloads it)", e.to_string().trim_start_matches("schema error: "))),
+            false => refuse(e.to_string().trim_start_matches("schema error: ")),
+        })?;
+        if !e.single() {
+            return Err(refuse("it embeds a text into a vector a token: embed() needs a model of one vector a text"));
+        }
+        let mut kept = self.named_models.lock().unwrap_or_else(|e| e.into_inner());
+        // A few: each is a model's tokenizer and mapped table.
+        if kept.len() >= 16 {
+            kept.clear();
+        }
+        kept.insert(name.to_string(), e.clone());
+        Ok(e)
     }
 
     /// Runs `bind` over the database's tables; a coordinator whose tables

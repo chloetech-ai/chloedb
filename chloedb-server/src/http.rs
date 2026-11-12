@@ -239,6 +239,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/explain", post(explain))
         .route("/v1/embed", post(embed))
         .route("/v1/models", get(models))
+        // The command center's model manager: an admin's (route_scope).
+        .route("/v1/admin/models/fetch", post(fetch_model))
+        .route("/v1/admin/models/convert", post(convert_model))
         .route("/v1/media/:sha256", get(media_file))
         .route("/v1/synonyms", get(synonyms).merge(put(put_synonyms)))
         .route("/v1/term_stats", post(term_stats))
@@ -2617,12 +2620,59 @@ async fn schema_check(AxJson(b): AxJson<Json>) -> Res {
 /// The embedding models a schema can name, local and hosted, and whether
 /// each would open on this server ([`chloedb::embed::catalog`]): fetched,
 /// its key set, its feature built. Nothing is loaded or sent.
+/// The models a field may name ([`chloedb::embed::catalog`]), each with
+/// how it makes its vectors ([`chloedb::embed::describe`]), the fields
+/// that name it, and a fetch or conversion asked for here.
 async fn models(State(app): State<App>) -> Res {
     let dir = app.svc.models_dir();
     let d = dir.clone();
-    let list = tokio::task::spawn_blocking(move || chloedb::embed::catalog(&d)).await.map_err(ApiError::internal)?;
-    let models: Vec<Json> = list.iter().map(|m| json!({"name": m.name, "dim": m.dim, "hosted": m.hosted, "what": m.what, "ready": m.ready.is_ok(), "error": m.ready.as_ref().err()})).collect();
-    Ok(AxJson(json!({"dir": dir.display().to_string(), "models": models})))
+    let list = tokio::task::spawn_blocking(move || chloedb::embed::catalog(&d).into_iter().map(|m| { let x = chloedb::embed::describe(&m.name, &d); (m, x) }).collect::<Vec<_>>()).await.map_err(ApiError::internal)?;
+    let fields = app.svc.models();
+    let mut jobs = app.svc.model_jobs();
+    let mut models: Vec<Json> = list
+        .iter()
+        .map(|(m, d)| {
+            let used: Vec<Json> = fields.iter().filter(|f| f.spec.model.eq_ignore_ascii_case(&m.name)).map(|f| json!({"table": f.table, "field": f.field})).collect();
+            json!({
+                "name": m.name, "dim": m.dim, "hosted": m.hosted, "what": m.what, "ready": m.ready.is_ok(), "error": m.ready.as_ref().err(),
+                "technique": d.technique, "precision": d.precision, "bytes": d.bytes, "made_of": d.made_of,
+                // Fetched by the server for a field that names it.
+                "known": chloedb::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(&m.name)),
+                "fields": used, "job": jobs.remove(&m.name.to_lowercase()),
+            })
+        })
+        .collect();
+    // A conversion that failed before its directory held a model.
+    for (name, job) in jobs {
+        models.push(json!({"name": name, "dim": null, "hosted": false, "what": "", "ready": false, "error": job.error, "technique": "static", "fields": [], "job": job}));
+    }
+    // Names a field gave that the catalog does not list (`hash:16`).
+    for f in fields.iter() {
+        if !models.iter().any(|m| m["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&f.spec.model))) {
+            let d = chloedb::embed::describe(&f.spec.model, &dir);
+            let used: Vec<Json> = fields.iter().filter(|g| g.spec.model == f.spec.model).map(|g| json!({"table": g.table, "field": g.field})).collect();
+            models.push(json!({"name": f.spec.model, "dim": chloedb::embed::known_dim(&f.spec.model), "hosted": d.technique == "hosted", "what": "", "ready": f.model.is_ok(), "error": f.model.as_ref().err(), "technique": d.technique, "precision": d.precision, "bytes": d.bytes, "known": false, "fields": used, "job": null}));
+        }
+    }
+    Ok(AxJson(json!({"dir": dir.display().to_string(), "fetches": app.svc.fetch_models, "models": models})))
+}
+
+/// `{"model": name}`: fetches a model the server knows into its models
+/// directory, in the background ([`Service::start_model_job`]).
+async fn fetch_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = body_str(&b, "model")?;
+    let made = app.svc.start_model_job(name, None)?;
+    Ok(AxJson(json!({"model": made, "state": "running"})))
+}
+
+/// `{"model": name, "to": "I8" | "F16"}`: writes a static model's table
+/// again in fewer bits, as model `<name>-int8` (or `-f16`), in the
+/// background ([`Service::start_model_job`]).
+async fn convert_model(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = body_str(&b, "model")?;
+    let to = b.get("to").and_then(Json::as_str).unwrap_or("I8");
+    let made = app.svc.start_model_job(name, Some(to))?;
+    Ok(AxJson(json!({"model": made, "from": name, "state": "running"})))
 }
 
 async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {

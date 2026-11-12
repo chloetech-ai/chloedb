@@ -48,6 +48,7 @@ mod llm_calls;
 mod local_shard;
 mod map_lease;
 mod mcp;
+mod model_manager;
 mod oncall;
 mod pack_cluster;
 mod opensearch;
