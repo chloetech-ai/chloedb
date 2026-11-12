@@ -69,6 +69,8 @@ jobs:
           "$bin" --version
           "$bin" --db try.strata --demo 20 --listen 127.0.0.1:7790 --grpc 127.0.0.1:7791 > server.log 2>&1 &
           pid=$!
+          # Whatever step fails, the server's log says why.
+          trap 'test $? -eq 0 || { echo "--- server.log"; cat server.log; }' EXIT
           for _ in $(seq 1 60); do curl -sf http://127.0.0.1:7790/livez > /dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:7790/v1/sql -H 'content-type: application/json' -d '{"sql": "CREATE TABLE notes (id KEYWORD PRIMARY KEY, body TEXT)"}'
           curl -sf http://127.0.0.1:7790/v1/write -H 'content-type: application/json' -d '{"ops": [{"op": "upsert", "table": "notes", "doc": {"id": "a", "body": "rivers and mountains"}}]}'

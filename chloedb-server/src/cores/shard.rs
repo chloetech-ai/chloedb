@@ -784,6 +784,17 @@ impl Failover {
         copies >= 2 && silent >= self.after && now >= self.next
     }
 
+    /// The look before this one was at `last`. A copy that did not run
+    /// for longer than the delay itself (its process stopped, or its
+    /// machine starved it) heard nothing because it was not listening, not
+    /// because its primary was silent: it asks not before a delay and
+    /// `jitter` from `now`, by when a primary that serves has called.
+    pub fn resumed(&mut self, last: Instant, now: Instant, jitter: Duration) {
+        if now.saturating_duration_since(last) > self.after {
+            self.next = self.next.max(now + self.after + jitter);
+        }
+    }
+
     /// An election starts at `now`: the next not before half the delay
     /// and `jitter` more.
     pub fn started(&mut self, now: Instant, jitter: Duration) {
@@ -1696,6 +1707,22 @@ impl Primary {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_copy_that_did_not_run_waits_a_delay_before_it_asks() {
+        let after = Duration::from_millis(600);
+        let t0 = Instant::now();
+        let mut f = Failover::new(after, t0, Duration::ZERO);
+        // Looks every few ms: nothing changes.
+        f.resumed(t0, t0 + Duration::from_millis(75), Duration::ZERO);
+        assert!(f.due(3, Duration::from_secs(1), t0 + Duration::from_millis(75)));
+        // Stopped for 10 s: its primary's silence is its own.
+        let woke = t0 + Duration::from_secs(10);
+        f.resumed(t0 + Duration::from_millis(75), woke, Duration::from_millis(50));
+        assert!(!f.due(3, Duration::from_secs(10), woke), "not at once");
+        assert!(!f.due(3, Duration::from_secs(10), woke + after), "nor before the jitter");
+        assert!(f.due(3, Duration::from_secs(11), woke + after + Duration::from_millis(50)), "a delay and the jitter on, if the primary is still silent");
+    }
+
     use super::*;
 
     fn n(term: u64, seq: u64, terms: &[(u64, u64)]) -> Numbering {
