@@ -1,0 +1,228 @@
+{
+  "body_bytes": 231908263,
+  "input": "bgl.jsonl",
+  "lines": 4747963,
+  "plain": {
+    "file_bytes": 267993088,
+    "load_seconds": 26.7,
+    "merge_seconds": 9.9,
+    "segments": 3,
+    "store_bytes": 95809255,
+    "text_body_bytes": 33475550
+  },
+  "queries": [
+    {
+      "count_ms": {
+        "index": 0.116,
+        "scan": 3678.59
+      },
+      "first_10_ms": {
+        "index": 0.136,
+        "scan": 4729.27
+      },
+      "op": "LIKE",
+      "pattern": "%0x0b85eee0%",
+      "rows": 25
+    },
+    {
+      "count_ms": {
+        "index": 0.106,
+        "scan": 3700.83
+      },
+      "first_10_ms": {
+        "index": 0.182,
+        "scan": 4276.17
+      },
+      "op": "LIKE",
+      "pattern": "generating core.971",
+      "rows": 99
+    },
+    {
+      "count_ms": {
+        "index": 26.345,
+        "scan": 3943.4
+      },
+      "first_10_ms": {
+        "index": 20.701,
+        "scan": 4921.86
+      },
+      "op": "LIKE",
+      "pattern": "%instruction address: 0x00004ed8",
+      "rows": 47104
+    },
+    {
+      "count_ms": {
+        "index": 9.449,
+        "scan": 3654.83
+      },
+      "first_10_ms": {
+        "index": 9.879,
+        "scan": 4517.59
+      },
+      "op": "LIKE",
+      "pattern": "%Lustre%",
+      "rows": 31531
+    },
+    {
+      "count_ms": {
+        "index": 119.914,
+        "scan": 4132.58
+      },
+      "first_10_ms": {
+        "index": 108.455,
+        "scan": 4907.01
+      },
+      "op": "ILIKE",
+      "pattern": "%machine check%",
+      "rows": 40026
+    },
+    {
+      "count_ms": {
+        "index": 8.176,
+        "scan": 3897.28
+      },
+      "first_10_ms": {
+        "index": 8.452,
+        "scan": 4665.8
+      },
+      "op": "LIKE",
+      "pattern": "%machine check%",
+      "rows": 25488
+    },
+    {
+      "count_ms": {
+        "index": 319.566,
+        "scan": 4123.26
+      },
+      "first_10_ms": {
+        "index": 361.432,
+        "scan": 5160.47
+      },
+      "op": "LIKE",
+      "pattern": "%instruction cache parity error corrected%",
+      "rows": 105924
+    },
+    {
+      "count_ms": {
+        "index": 293.554,
+        "scan": 4121.8
+      },
+      "first_10_ms": {
+        "index": 297.463,
+        "scan": 4854.0
+      },
+      "op": "LIKE",
+      "pattern": "%data TLB error interrupt%",
+      "rows": 152734
+    },
+    {
+      "count_ms": {
+        "index": 541.061,
+        "scan": 4240.02
+      },
+      "first_10_ms": {
+        "index": 538.612,
+        "scan": 4927.24
+      },
+      "op": "LIKE",
+      "pattern": "generating core%",
+      "rows": 1706751
+    },
+    {
+      "count_ms": {
+        "index": 832.603,
+        "scan": 4162.12
+      },
+      "first_10_ms": {
+        "index": 732.576,
+        "scan": 4824.56
+      },
+      "op": "LIKE",
+      "pattern": "%ciod: Error%No such file%",
+      "rows": 49464
+    },
+    {
+      "count_ms": {
+        "index": 1134.865,
+        "scan": 3815.08
+      },
+      "first_10_ms": {
+        "index": 1161.707,
+        "scan": 4858.73
+      },
+      "op": "LIKE",
+      "pattern": "%core.9_1",
+      "rows": 961
+    },
+    {
+      "count_ms": {
+        "index": 0.087,
+        "scan": 4049.76
+      },
+      "first_10_ms": {
+        "index": 0.093,
+        "scan": 4754.78
+      },
+      "op": "LIKE",
+      "pattern": "%no such text anywhere%",
+      "rows": 0
+    },
+    {
+      "count_ms": {
+        "index": 803.447,
+        "scan": 4676.51
+      },
+      "first_10_ms": {
+        "index": 815.252,
+        "scan": 5861.87
+      },
+      "op": "LIKE",
+      "pattern": "%e%",
+      "rows": 4579893
+    },
+    {
+      "count_ms": {
+        "index": 12.147,
+        "scan": 88.1
+      },
+      "first_10_ms": {
+        "index": 12.532,
+        "scan": 96.02
+      },
+      "op": "WHERE",
+      "pattern": "host = 'R02-M1-N0-C:J12-U11' AND body LIKE '%error%'",
+      "rows": 64479
+    },
+    {
+      "count_ms": {
+        "index": 65.502,
+        "scan": 913.73
+      },
+      "first_10_ms": {
+        "index": 60.743,
+        "scan": 912.46
+      },
+      "op": "WHERE",
+      "pattern": "severity = 'FATAL' AND body LIKE '%0x00004ed8'",
+      "rows": 47104
+    }
+  ],
+  "substring": {
+    "file_bytes": 491995136,
+    "load_seconds": 35.4,
+    "merge_seconds": 21.8,
+    "segments": 3,
+    "store_bytes": 95809255,
+    "sub_body": {
+      "bwt_bytes": 169561088,
+      "bytes": 223982746,
+      "docs_bytes": 0,
+      "parts": 5,
+      "runs": 7858397,
+      "sa_bytes": 54420824,
+      "samples": 14301326,
+      "text_bytes": 236656231
+    },
+    "text_body_bytes": 33475550
+  }
+}

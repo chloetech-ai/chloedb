@@ -11,6 +11,25 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Query and indexes
+
+- A substring index: a stored `TEXT` or `KEYWORD` column with one value a
+  row, declared with `OPTIONS(substring = true)`, answers `LIKE` and
+  `ILIKE` with any pattern from an FM-index of its values in each segment
+  (the Burrows-Wheeler transform of their bytes in a wavelet tree, with a
+  sample of the suffix array), where a pattern with `%` or `_` before its
+  end tested every row. The rows are the ones that test gives. On three
+  of Loghub's logs a pattern in few rows takes 0.02 to 2 ms where the
+  test of every row takes 0.6 to 4 s; the index is about as large as the
+  text it indexes, and loading and merging take 1.3 to 3.6 times as long
+  ([`results/substring`](chloedb/results/substring/README.md), a 4-core
+  cloud VM, Intel Xeon @ 2.10GHz). A database with such a column carries the
+  format feature `substring:1`, which a version from before this one
+  refuses by name; other databases are written as before. `ESCAPE` is not
+  taken on a pattern the index answers
+  ([docs](docs/chloedb/query-language.md#substrings-like-and-ilike-anywhere-in-a-value),
+  [format](chloedb/notes/substring.md)).
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,
