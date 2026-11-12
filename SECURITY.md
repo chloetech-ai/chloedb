@@ -56,10 +56,27 @@ to check a download against.
   sound or a video, never sniffed, and sandboxed).
 - An app (the crawler, sheets, the app engine) reached through a server
   acting beyond what that server's credential allows.
-- ChloeCtx exposing one project's memory to another, or its inspector
-  answering without its access token.
+- ChloeCtx exposing one project's memory to another, its inspector
+  answering without its access token, or `chloectx app` answering without
+  its token when one is set.
 
 A server started with no token and no key is open by design: it is for a
 machine of one's own, and refuses to listen beyond loopback.
 Denial of service by an authenticated client (an expensive query, a large
 import) is a bug to report as an issue, not an advisory.
+
+## Holes closed
+
+Each release lists the holes it closes under **Security** in
+[CHANGELOG.md](CHANGELOG.md), with what changes for a user. Since 0.2.0
+(not yet released):
+
+- `chloectx app` served any caller with no token on any address;
+- `chloectx app` started a thread per request and per exchange, without
+  bound;
+- `chloectx sync` sent transcripts and its key over plain HTTP to another
+  machine, and two syncs at once shared one header file;
+- the ChloeCtx inspector had no Content-Security-Policy;
+- `install.sh` built ChloeCtx without `--locked`;
+- `chloedb-sheets` ran a SQLite file's views with no deadline, and read an
+  xlsx file of any expanded size.
