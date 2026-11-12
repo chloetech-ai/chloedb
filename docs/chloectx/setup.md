@@ -53,12 +53,12 @@ Tell Claude Code (or another coding agent) in any session:
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb/chloectx
 cargo build --release --bin chloectx
 cargo install --path . --bin chloectx --root ~/.local       # a stable path for the hooks: ~/.local/bin/chloectx
-chloectx fetch-model                                        # potion-retrieval-32M, 129 MB
+chloectx fetch-model                                        # potion-retrieval-32M, 129 MB, at a pinned revision, SHA-256 checked
 chloectx install --user --distill-model haiku               # or: chloectx install --project /path/to/project
 chloectx doctor
 ```
 
-`chloectx install --user` merges nine hooks and a permission for the memory tools into `~/.claude/settings.json` (saving the previous file next to it as `settings.json.chloectx-<time>.bak`) and registers the MCP server at user scope with `claude mcp add-json`. A project with its own `chloectx install` keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.
+`chloectx install --user` merges nine hooks and a permission for the memory tools into `~/.claude/settings.json` (saving the previous file next to it as `settings.json.chloectx-<time>.bak`) and registers the MCP server at user scope with `claude mcp add-json`. A project install backs up the project's `.claude/settings.local.json` and `.mcp.json` the same way before it changes them (delete the `.bak` files once you are happy, and do not commit them). Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own `chloectx install` keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.
 
 ## Check it
 
@@ -118,7 +118,8 @@ It is also the quickest way to debug an install. A `DISTILL` event with an error
 | MCP server | `~/.claude.json` at user scope, or the project's `.mcp.json` |
 | stores | `~/.local/share/chloectx/projects/<folder>-<hash>/`, one per project directory: `memory.strata` and its WAL, `state.json`, `events.log` (recall and distill decisions), `daemon.log`, `project.txt`. A machine that has `~/.local/share/engram` from before the rename, and no `~/.local/share/chloectx`, keeps using the old folder |
 | embedding model | `~/.local/share/chloectx/models/potion-retrieval-32M/` (or in the old folder, as the stores) |
-| daemon socket | `engram.sock` in the store, or `$XDG_RUNTIME_DIR` / `/tmp/engram-<uid>/` when that path is too long |
+| daemon socket | `engram.sock` in the store, or, when that path is too long, `$XDG_RUNTIME_DIR`, `/tmp/engram-<uid>/` or `~/.cache/chloectx/`: the first that is a directory of yours alone (a `/tmp/engram-<uid>` another user made, or a link, is skipped) |
+| model calls' working directory | `distill/` in the stores' folder, private to you (the distiller's `claude -p` reads project settings from where it runs) |
 
 Store directories are created readable by their owner only. ChloeCtx redacts secrets before it stores anything ([below](#secrets-and-chloectx-redact)), but a store is still a transcript of your sessions: treat it like your shell history.
 

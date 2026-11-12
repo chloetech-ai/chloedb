@@ -429,21 +429,16 @@ fn main() {
             println!("ingested {} events as {n} records from {}", events.len(), path.display());
         }
         Cmd::FetchModel { which } => {
-            let (repo, name, files): (&str, &str, &[&str]) = match which.as_str() {
-                "bert" => ("BAAI/bge-small-en-v1.5", "bge-small-en-v1.5", &["config.json", "tokenizer.json", "model.safetensors"]),
-                _ => ("minishlab/potion-retrieval-32M", "potion-retrieval-32M", &["config.json", "tokenizer.json", "model.safetensors"]),
-            };
+            let &(_, repo, name, files) = embed::FETCHED.iter().find(|m| m.0 == which).unwrap_or(&embed::FETCHED[0]);
             let dir = embed::models_dir().join(name);
-            std::fs::create_dir_all(&dir).expect("create model dir");
-            for f in files {
-                let url = format!("https://huggingface.co/{repo}/resolve/main/{f}");
-                let ok = std::process::Command::new("curl").args(["-fsSL", "-o"]).arg(dir.join(f)).arg(&url).status().map_or(false, |s| s.success());
-                if !ok {
-                    eprintln!("chloectx: failed to download {url}");
+            match embed::fetch_model("https://huggingface.co", repo, &dir, files) {
+                Ok(done) if done.iter().all(|f| matches!(f, embed::Fetched::Kept(_))) => println!("{repo} is already in {}, as pinned", dir.display()),
+                Ok(_) => println!("downloaded {repo} to {}, each file checked against its pinned SHA-256", dir.display()),
+                Err(e) => {
+                    eprintln!("chloectx: {e}");
                     std::process::exit(1);
                 }
             }
-            println!("downloaded {repo} to {}", dir.display());
         }
     }
 }
