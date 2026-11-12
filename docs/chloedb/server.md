@@ -1140,6 +1140,8 @@ Prices are DigitalOcean's: a node costs its size's hourly price up to its monthl
 | `GET /v1/admin/cloud/clusters/{id}` | one of them |
 | `POST /v1/admin/cloud/clusters/{id}/delete` | `{"confirm": "<the cluster's name>"}`: deletes it; 202 |
 | `DELETE /v1/admin/cloud/clusters/{id}` | takes it off the list, once it is deleted or failed before the cloud made anything; a 409 while it may still be billed |
+| `GET /v1/admin/cloud/found?provider=digitalocean` (or `?provider=aws&region=`) | the ChloeDB clusters the account holds that this server's list does not follow, made from another server or forgotten here: DOKS clusters tagged `strata` or named `strata-*` (every region), or a region's CloudFormation stacks tagged `strata.chloetech.ai/cluster`, each with its cloud id, state, nodes and owner, and `here` for the one this server runs on |
+| `POST /v1/admin/cloud/found/delete` | `{"provider", "cloud_id", "region"?, "confirm": "<the cluster's name>"}`: puts it on the list (`found: true`) and deletes it as **Delete** does, its volumes first; 202. A 400 unless `confirm` is its name, a 404 when the account no longer has it, a 409 for the cluster this server runs on (deleting it from here would stop the server halfway) |
 
 ![The Cloud view's Clusters made here card: a cluster on AWS on its way, its stack 7 of 19 resources made, and one on DigitalOcean ready, with every step it went through (against stand-ins for the clouds)](../assets/img/strata-command-center-cloud-clusters.png)
 

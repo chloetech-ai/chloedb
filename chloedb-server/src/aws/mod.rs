@@ -514,6 +514,28 @@ impl Aws {
         }))
     }
 
+    /// The region's stacks (`DescribeStacks` with no name: the live ones
+    /// and those deleted in the last 90 days), each with its tags.
+    pub async fn stacks(&self, region: &str) -> Result<Vec<Json>, String> {
+        let c = self.need()?;
+        let mut out = Vec::new();
+        let mut next: Option<String> = None;
+        // A page holds 100 stacks; a region with more than a thousand is
+        // not one this page lists.
+        for _ in 0..10 {
+            let p: Vec<(&str, String)> = next.iter().map(|t| ("NextToken", t.clone())).collect();
+            let t = self.query(&c, "cloudformation", region, "2010-05-15", "DescribeStacks", &p, true).await?;
+            let j: Json = serde_json::from_str(&t).map_err(|e| format!("cloudformation DescribeStacks: {e}"))?;
+            let r = &j["DescribeStacksResponse"]["DescribeStacksResult"];
+            out.extend(r["Stacks"].as_array().cloned().unwrap_or_default());
+            next = r["NextToken"].as_str().filter(|t| !t.is_empty()).map(str::to_string);
+            if next.is_none() {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Why the stack failed: the first of its resources that did, and why.
     pub async fn stack_failure(&self, region: &str, id: &str) -> Result<Option<String>, String> {
         let c = self.need()?;
