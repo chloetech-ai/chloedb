@@ -55,6 +55,10 @@ class Ctl:
         self.seed = 0
         self.meta_time = 0.0   # seconds spent building metadata (k-means, codes)
         self.meta_key = None
+        self.blend_pos = None
+        self.record = None     # {layer: [ (H,C) bool per step ]} of clusters read, when a dict
+        self.record_size = {}
+        self.cur_layer = None  # mode blend: positions of the prefix tokens recomputed
 
     def reset_prefix(self, L):
         assert L % self.page == 0
@@ -175,6 +179,10 @@ def _select(method, budget, q, m, S_pre, probs_pre):
         cum = size.unsqueeze(1).expand_as(order).gather(-1, order).cumsum(-1)
         take = cum <= (nb - 1) * P
         cm = torch.zeros_like(take).scatter_(-1, order, take)
+        if ctl.record is not None:
+            # which clusters the last query of the chunk read (reuse across decode steps)
+            ctl.record.setdefault(ctl.cur_layer, []).append(cm[:, -1].clone())
+            ctl.record_size[ctl.cur_layer] = size
         return cm.gather(-1, m["assign"].unsqueeze(1).expand(H, T, L))
     raise ValueError(method)
 
@@ -213,6 +221,20 @@ def kvsel_attention(module, query, key, value, attention_mask, scaling=None, **k
     if Tq == N:
         # prefill of the prefix: plain causal attention
         return sdpa_attention_forward(module, query, key, value, attention_mask, scaling=scaling, **kw)
+    if ctl.mode == "blend":
+        # CacheBlend-style recompute: the Tq queries are chosen tokens of the
+        # stitched prefix (positions ctl.blend_pos), run again through every layer.
+        # Each sees the prefix before it with its own old entries hidden, and the
+        # fresh entries of the chosen tokens before it (appended after the prefix).
+        P = N - Tq
+        pos = ctl.blend_pos
+        is_sel = torch.zeros(P, dtype=torch.bool)
+        is_sel[pos] = True
+        allow = torch.cat([(torch.arange(P)[None, :] <= pos[:, None]) & ~is_sel[None, :],
+                           pos[None, :] <= pos[:, None]], 1)
+        o = torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask=allow, scale=scaling, enable_gqa=True)
+        return o.transpose(1, 2).contiguous(), None
     if ctl.mode == "dense" or ctl.L == 0:
         # plain attention over the cache, the new tokens causal among themselves
         allow = torch.arange(N)[None, :] <= (N - Tq + torch.arange(Tq))[:, None]
@@ -251,6 +273,7 @@ def kvsel_attention(module, query, key, value, attention_mask, scaling=None, **k
                 o, _ = _attend(S, None, vf, t0, L)
             else:
                 probs = torch.softmax(S, -1)[..., :L] if ctl.method.startswith("oracle") else None
+                ctl.cur_layer = layer
                 sel = select(ctl.method, ctl.budget, qc, m, S[..., :L], probs)
                 o, _ = _attend(S, sel, vf, t0, L)
             outs.append(o)

@@ -20,6 +20,10 @@
 //! | `{"uri": ..}`, or the URI alone as text | fetches it, if the [`Allowlist`] has it | uri, hash, metadata |
 //! | `{"data": ..}` alone | keeps the bytes in the media store, `DIR/<sha256>`, if there is one | `media:<sha256>`, hash, metadata |
 //!
+//! Bytes can also reach the media store alone, without base64
+//! ([`Resolver::keep_bytes`], a server's `POST /v1/media`): the answer is a
+//! complete value to write.
+//!
 //! The allowlist names `file:` roots (a path inside one, after symbolic
 //! links and `..` are resolved) and `https:` hosts (`http:` only when
 //! spelled out); fetches over HTTP are a [`Fetcher`]'s, which a server
@@ -736,6 +740,30 @@ impl Resolver {
         Ok(Resolved { media, data: Some(data.into()) })
     }
 
+    /// Keeps `data` in the media store, `DIR/<sha256>`, and answers the
+    /// complete value that names it: what a `{"data": ..}` write keeps,
+    /// without base64 or a row. A write that then gives this value whole is
+    /// kept as given (the module's first form), so large files (stored KV
+    /// caches, videos) cross the wire once, as bytes.
+    pub fn keep_bytes(&self, data: &[u8]) -> std::result::Result<Media, Error> {
+        if data.len() as u64 > self.max_bytes {
+            return Err(too_big("the data", self.max_bytes));
+        }
+        let dir = self.store.as_ref().ok_or_else(|| Error::Schema("keeping a file needs a media store (--media-store DIR)".into()))?;
+        let d = describe(data);
+        keep(dir, &d.sha256, data)?;
+        Ok(Media {
+            uri: format!("media:{}", d.sha256),
+            sha256: d.sha256,
+            mime: d.mime.map(String::from).unwrap_or_else(|| "application/octet-stream".into()),
+            bytes: d.bytes,
+            width: d.width,
+            height: d.height,
+            duration_ms: d.duration_ms,
+            pages: d.pages,
+        })
+    }
+
     /// [`Resolver::resolve`] of many values, [`PARALLEL_FETCHES`] at a time.
     pub fn resolve_all(&self, kind: MediaKind, inputs: &[&str]) -> Vec<std::result::Result<Resolved, Error>> {
         let threads = PARALLEL_FETCHES.min(inputs.len());
@@ -1073,6 +1101,17 @@ mod tests {
         assert_eq!(std::fs::read(store.join(sha256_hex(&img))).unwrap(), img);
         let again = r.resolve(MediaKind::Any, &serde_json::json!({"uri": kept.uri}).to_string()).unwrap().media;
         assert_eq!(again, kept);
+        // Bytes kept alone (POST /v1/media) answer the same value, which a
+        // write then gives whole; without a store, or too big, they are refused.
+        assert_eq!(r.keep_bytes(&img).unwrap(), kept);
+        let blob = vec![7u8; 1000];
+        let m = r.keep_bytes(&blob).unwrap();
+        assert_eq!((m.mime.as_str(), m.bytes), ("application/octet-stream", 1000));
+        assert_eq!(std::fs::read(store.join(&m.sha256)).unwrap(), blob);
+        assert_eq!(r.resolve(MediaKind::Any, &m.to_text()).unwrap().media, m);
+        assert!(none.keep_bytes(&blob).unwrap_err().to_string().contains("--media-store"));
+        let small = Resolver { max_bytes: 10, ..r.clone() };
+        assert!(small.keep_bytes(&blob).is_err());
         // A complete value is kept as given; a wrong hash, kind or size is refused.
         let full = serde_json::json!({"uri": "s3://b/a.jpg", "sha256": sha256_hex(b"x"), "mime": "image/jpeg", "bytes": 9, "width": 3});
         assert_eq!(r.resolve(MediaKind::Image, &full.to_string()).unwrap().media.to_text(), Media::parse(&full.to_string()).unwrap().to_text());

@@ -35,6 +35,7 @@
 //! | `POST /v1/explain` | `{sql, params?, hits?}` | the bound query, its plan IR and the executor's plan; with `hits`, the top rows with their `score()` and `features()` |
 //! | `POST /v1/embed` | `{text, field?, table?}` | `{table, field, vector}`: the text's vector by an embedded field's model; `vectors`, a vector a token, for a multi-vector field's (ColBERT) |
 //! | `GET /v1/models` | | `{dir, models: [{name, dim, hosted, what, ready, error}]}`: the embedding models a schema can name, and whether each would open here |
+//! | `POST /v1/media` | a file's bytes (any type; up to `--media-max-bytes`) | `{uri, sha256, mime, bytes, ...}`: kept in the media store (`--media-store`) as `media:<sha256>`, the complete MEDIA value for a write to give whole, so the bytes cross once and without base64; 400 from a coordinator, 409 on a replica |
 //! | `GET /v1/media/<sha256>` | | the bytes of the file a row's MEDIA value names, by its hash, read as writes read files (`--media-store`, `--media-fetch`); 404 when no row names it, 400 from a coordinator |
 //! | `GET /v1/synonyms`, `PUT /v1/synonyms` | `{text}` (Solr format) | the synonym list |
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
@@ -237,6 +238,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/explain", post(explain))
         .route("/v1/embed", post(embed))
         .route("/v1/models", get(models))
+        .route("/v1/media", post(keep_media).layer(rows.clone()))
         .route("/v1/media/:sha256", get(media_file))
         .route("/v1/synonyms", get(synonyms).merge(put(put_synonyms)))
         .route("/v1/term_stats", post(term_stats))
@@ -900,7 +902,7 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     match route {
         // All a feed key may read: the feed, and whether it is up.
         "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
-        "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
+        "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" | "/v1/media" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         // otlp: logs in; reading the server's own lines stays the admin's.
         "/v1/logs" if method == Method::POST => Scope::Write,
@@ -2572,6 +2574,11 @@ async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 /// file some row names, read from where the row says and checked against
 /// the hash ([`Service::media_file`]). Its bytes never change, so clients
 /// may keep it.
+async fn keep_media(State(app): State<App>, body: Bytes) -> Res {
+    let m = app.svc.keep_media(body).await?;
+    Ok(AxJson(serde_json::from_str(&m.to_text()).map_err(ApiError::internal)?))
+}
+
 async fn media_file(State(app): State<App>, axum::extract::Path(sha256): axum::extract::Path<String>) -> Result<Response, ApiError> {
     let (mime, bytes) = app.svc.media_file(&sha256).await?;
     Ok(([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string())], bytes).into_response())

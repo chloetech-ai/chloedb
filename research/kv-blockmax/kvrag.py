@@ -87,6 +87,53 @@ class Runner:
             cache.update(torch.cat([k for k, _ in parts[li]], 2), torch.cat([v for _, v in parts[li]], 2), li)
         return cache, pos
 
+    # ------------------------------------------------------------ blending
+    @torch.no_grad()
+    def first_layers(self, ids, n=2):
+        """A fresh, joint prefill of ids through the first n layers only (n/L of a
+        full prefill): the reference CacheBlend compares the stitched cache to."""
+        full = self.model.model.layers
+        self.model.model.layers = torch.nn.ModuleList(list(full)[:n])
+        try:
+            c = self.prefill(ids)
+        finally:
+            self.model.model.layers = full
+        return self.layers(c)
+
+    @staticmethod
+    def deviation(cache, fresh, layer=1):
+        """Per prefix token, how far the stitched K and V of a layer are from the
+        fresh joint ones (squared L2 over heads, relative to the fresh norm)."""
+        k, v = cache.layers[layer].keys.float(), cache.layers[layer].values.float()
+        fk, fv = fresh[layer][0].float(), fresh[layer][1].float()
+        num = ((k - fk) ** 2).sum((0, 1, 3)) + ((v - fv) ** 2).sum((0, 1, 3))
+        den = (fk ** 2).sum((0, 1, 3)) + (fv ** 2).sum((0, 1, 3))
+        return num / den.clamp(min=1e-6)
+
+    @torch.no_grad()
+    def blend(self, cache, ids, pos, fresh=None):
+        """Recompute the stitched prefix's tokens at positions pos (sorted) through
+        every layer, attending to the rest of the stitched cache, and write their
+        fresh K and V back in place. With fresh (first_layers' output), those
+        layers are first replaced wholesale, as they are exact."""
+        P = cache.layers[0].keys.shape[2]
+        if fresh is not None:
+            for li, (k, v) in enumerate(fresh):
+                cache.layers[li].keys, cache.layers[li].values = k.clone(), v.clone()
+        pos = torch.as_tensor(pos).sort().values
+        ctl.mode, ctl.L, ctl.blend_pos = "blend", 0, pos
+        try:
+            self.model(input_ids=ids[pos][None], position_ids=pos[None],
+                       past_key_values=cache, use_cache=True, logits_to_keep=1)
+        finally:
+            ctl.mode, ctl.blend_pos = "dense", None
+        for l in cache.layers:
+            k, v = l.keys, l.values
+            k[:, :, pos] = k[:, :, P:]
+            v[:, :, pos] = v[:, :, P:]
+            l.keys, l.values = k[:, :, :P].contiguous(), v[:, :, :P].contiguous()
+        return cache
+
     # ------------------------------------------------------------ answering
     @torch.no_grad()
     def answer(self, cache, P, tail_ids, mode="dense", method=None, frac=0.0625, max_new=32, meta_key=None):

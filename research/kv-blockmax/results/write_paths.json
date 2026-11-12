@@ -1,0 +1,51 @@
+{
+ "args": {
+  "server": "http://127.0.0.1:7700",
+  "tokens": "2048,8192,16384,32768",
+  "layers": 28,
+  "bytes_per_token": 1024,
+  "out": "results/write_paths.json"
+ },
+ "runs": [
+  {
+   "tokens": 2048,
+   "bytes": 58720256,
+   "base64_s": 1.3292510509490967,
+   "base64_read_s": 0.2225933074951172,
+   "base64_ok": true,
+   "binary_s": 0.15730953216552734,
+   "binary_read_s": 0.24828505516052246,
+   "binary_ok": true
+  },
+  {
+   "tokens": 8192,
+   "bytes": 234881024,
+   "base64_s": 5.099709987640381,
+   "base64_read_s": 0.8397095203399658,
+   "base64_ok": true,
+   "binary_s": 0.3965470790863037,
+   "binary_read_s": 0.7421126365661621,
+   "binary_ok": true
+  },
+  {
+   "tokens": 16384,
+   "bytes": 469762048,
+   "base64_s": 10.944364547729492,
+   "base64_read_s": 1.9402339458465576,
+   "base64_ok": true,
+   "binary_s": 0.7670753002166748,
+   "binary_read_s": 1.728224754333496,
+   "binary_ok": true
+  },
+  {
+   "tokens": 32768,
+   "bytes": 939524096,
+   "base64_s": 23.433295488357544,
+   "base64_read_s": 3.839252233505249,
+   "base64_ok": true,
+   "binary_s": 2.006136894226074,
+   "binary_read_s": 3.722363233566284,
+   "binary_ok": true
+  }
+ ]
+}

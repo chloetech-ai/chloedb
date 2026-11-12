@@ -1,0 +1,14 @@
+[package]
+name = "kv-decode-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Research: one decode step of attention over a long KV cache, dense against IVF over keys"
+
+[dependencies]
+
+[profile.release]
+codegen-units = 1
+debug = "line-tables-only"
+
+[workspace]

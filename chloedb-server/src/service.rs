@@ -2288,6 +2288,18 @@ impl Service {
     /// writes read files (the media store, or a place `--media-fetch`
     /// lists), checked against the hash. Only files rows name can be
     /// read. A coordinator refuses: its shards hold the files.
+    /// Keeps a file's bytes in the media store (`POST /v1/media`) and
+    /// answers the complete MEDIA value that names it, for a write to give
+    /// whole. A coordinator holds no files, and a replica takes no writes.
+    pub async fn keep_media(self: &Arc<Self>, data: axum::body::Bytes) -> Result<chloedb::media::Media, ApiError> {
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("a coordinator holds no files: send the file to the shard server that will hold its row"));
+        };
+        self.takes_writes()?;
+        let resolver = db.media_resolver();
+        tokio::task::spawn_blocking(move || resolver.keep_bytes(&data)).await.map_err(ApiError::internal)?.map_err(ApiError::from)
+    }
+
     pub async fn media_file(self: &Arc<Self>, sha256: &str) -> Result<(String, Vec<u8>), ApiError> {
         if !chloedb::media::is_sha256(sha256) {
             return Err(ApiError::bad("a file is named by the SHA-256 of its bytes: 64 lowercase hex digits"));

@@ -172,3 +172,56 @@ into `longbench/`. Results in [results/uses.md](results/uses.md)
   with its keys re-rotated to their new positions (`kvrag.py`). Stitching
   loses 19 F1 against a joint prefill (37.0 vs 55.7) and 6 against BM25 text
   retrieval: passages cached alone never attended to each other.
+
+## Next steps, measured
+
+Tables in [results/next.md](results/next.md) (`python analyze_next.py`).
+
+- **Repairing stitched caches** (`run_blend.py`, the same 40 LongBench
+  questions, Qwen2.5-1.5B). After stitching, a share of the passage tokens is
+  run again through every layer, attending to the stitched cache, and written
+  back (`Runner.blend` in `kvrag.py`; `kvsel.py`'s `blend` mode). Recomputing
+  the first 15% of the tokens of every passage scores 55.9 F1, against 55.7
+  for a joint prefill and 37.0 for the plain stitch. That costs 3.1 s, against
+  17.6 s for the joint prefill (medians). Choosing the tokens by their K/V
+  deviation at layer 1, as CacheBlend does, reaches 50.1. Random tokens don't
+  help at all (35.7). With 40 questions, differences of a few F1 points are
+  within noise.
+- **Decode timing in Rust** (`decode-bench/`, `cargo run --release`). One
+  decode step of one layer, shaped like an 8B model's: 8 KV heads, 4 query
+  heads each, head dim 128, bf16. Dense attention runs against an IVF over the
+  keys: clusters of about 16 keys, scored by `q·centroid`, whole clusters
+  gathered from a cluster-ordered layout up to 6.25% of the tokens, plus the
+  sink and a 256-token dense tail. The IVF method follows `chloedb/src/vector/ivf.rs`.
+  Both run on AVX-512 kernels, on 4 threads.
+  - Attention is 7.1x faster at 32k (real Qwen3-0.6B keys) and 9.1x faster at
+    128k (synthetic keys).
+  - Adding the time to read 4.9 GB of 4-bit 8B weights once per token, at the
+    measured bandwidth, decode is 2.1x faster at 32k and 4.1x faster at 128k.
+  - The dense kernel reaches about 60% of the streaming bandwidth. At full
+    bandwidth the 32k gain would be about 1.6x.
+  - Building the index (8 k-means rounds) costs 5% of an 8B prefill's FLOPs at
+    32k and 10% at 128k. With 4 rounds on a quarter of the keys, it costs 2%.
+    That cheaper index's quality hasn't been measured.
+- **Cluster reuse** (`reuse.py`, Qwen3-0.6B, a 32k book, 127 decoded tokens).
+  A step reads 6.1% of the prefix, and 69% of that was read by the step
+  before. A RAM cache holding the clusters of the last 16 steps (19% of the
+  prefix) holds 93% of what a step reads. So a cache kept on SSD, with
+  centroids and that working set in RAM, fetches about 0.4% of the prefix per
+  token.
+- **Binary writes** (`bench_write.py`): `POST /v1/media` on chloedb-server takes
+  a file's raw bytes into the media store and returns the complete MEDIA
+  value, which a write then gives as it is. Writing a 32k cache (896 MiB,
+  28 rows) takes 2.0 s, against 23.4 s with base64 in `/v1/write`. Reading it
+  back takes 3.7 s, so reads are now the slower side.
+
+Reproduce, after the runs above:
+
+```bash
+python run_blend.py --out results/blend_1p5b.json                      # about 2 h on 4 cores
+python reuse.py --model Qwen/Qwen3-0.6B --L 32768 --out results/reuse_qwen3_32k.json --dump-dir kvdump
+(cd decode-bench && cargo build --release && ./target/release/kv-decode-bench --tokens 32768 --check \
+   --keys ../kvdump/k_l14_32768.bf16 --values ../kvdump/v_l14_32768.bf16 && ./target/release/kv-decode-bench)
+python bench_write.py --server http://127.0.0.1:7700 --out results/write_paths.json   # a server with --media-store
+python analyze_next.py > results/next.md
+```
