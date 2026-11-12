@@ -219,7 +219,8 @@ pub fn child_env() -> Vec<(String, String)> {
 /// against the server at `server`, with `key`.
 fn command(p: &Plan, server: &str, key: Option<&str>) -> (Vec<String>, Vec<(&'static str, String)>) {
     let listen = format!("127.0.0.1:{}", p.port);
-    let mut env: Vec<(&'static str, String)> = vec![("CHLOEDB_START_APPS", "off".into())];
+    // CHLOEDB_APP_OF: the server it is an app of, which lists it already.
+    let mut env: Vec<(&'static str, String)> = vec![("CHLOEDB_START_APPS", "off".into()), ("CHLOEDB_APP_OF", server.to_string())];
     if let Some(k) = key {
         env.push(("CHLOEDB_KEY", k.to_string()));
     }

@@ -305,7 +305,8 @@ async fn run() {
             }
             let svc = Service::with_prefix(strata.clone(), grower, token.clone(), local.is_some(), a.contact.clone(), a.table_prefix.clone());
             eprintln!("chloedb-crawl: the API answers at {me}{}", if token.is_some() && a.token.is_none() { " (token made for the coordinator)" } else { "" });
-            if local.is_none() {
+            // A chloedb-server that started it (CHLOEDB_APP_OF) shows it already.
+            if local.is_none() && std::env::var_os("CHLOEDB_APP_OF").is_none() {
                 eprintln!("chloedb-crawl: to see it in the command center, start the coordinator with --app crawler={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN set to the crawler's token" } else { "" });
             }
             let svc2 = svc.clone();

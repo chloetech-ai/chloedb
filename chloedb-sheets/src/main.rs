@@ -237,7 +237,8 @@ async fn run() {
             tokio::spawn(books.clone().keeper());
             let svc = Arc::new(Service { books: books.clone(), token: token.clone(), local: local.is_some() });
             eprintln!("chloedb-sheets: the API answers at {me}{}", if token.is_some() && a.token.is_none() { " (token made for the server)" } else { "" });
-            if local.is_none() {
+            // A chloedb-server that started it (CHLOEDB_APP_OF) shows it already.
+            if local.is_none() && std::env::var_os("CHLOEDB_APP_OF").is_none() {
                 eprintln!("chloedb-sheets: to see it in the command center, start chloedb-server with --app sheets={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN set to this token" } else { "" });
             }
             let server = axum::serve(listener, api::router(svc)).with_graceful_shutdown(shutdown_signal());
