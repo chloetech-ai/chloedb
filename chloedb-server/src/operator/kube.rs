@@ -752,6 +752,13 @@ impl Cluster {
     /// admin token, which is also what the coordinators send it, and calls
     /// the model with the cluster's `secretEnv`.
     pub fn apps_deployment(&self, a: &super::AppsSpec) -> Json {
+        self.apps_deployment_at(a, a.publish.as_ref().and_then(|p| p.domain(None)).as_deref())
+    }
+
+    /// The same, with published apps answering under `domain` (none yet
+    /// for `sslip` before its load balancer has an address); with
+    /// `spec.apps.publish`, Caddy beside the engine gets their certificates.
+    pub fn apps_deployment_at(&self, a: &super::AppsSpec, domain: Option<&str>) -> Json {
         let s = &self.spec;
         let labels = self.apps_labels();
         let mut env = Vec::new();
@@ -761,6 +768,9 @@ impl Cluster {
         }
         if let Some(u) = &a.public_url {
             env.push(json!({"name": "STRATA_APPS_PUBLIC_URL", "value": u}));
+        }
+        if let Some(d) = domain.filter(|_| a.publish.is_some()) {
+            env.push(json!({"name": "STRATA_APPS_DOMAIN", "value": d}));
         }
         env.push(json!({"name": "STRATA_APPS_SPEND_CAP_USD", "value": a.spend_cap()}));
         env.extend(a.env.iter().map(|e| json!({"name": e.name, "value": e.value})));
@@ -777,6 +787,20 @@ impl Cluster {
         if let Some(p) = &s.image_pull_policy {
             container["imagePullPolicy"] = json!(p);
         }
+        let mut containers = vec![container];
+        if let Some(p) = &a.publish {
+            // Its certificates are kept on the engine's volume, so a new pod
+            // does not ask Let's Encrypt for them again.
+            containers.push(json!({
+                "name": "caddy", "image": super::apps::CADDY_IMAGE,
+                "command": ["sh", "-c", "printf '%s' \"$CADDYFILE\" > /tmp/Caddyfile && exec caddy run --config /tmp/Caddyfile --adapter caddyfile"],
+                "env": [{"name": "CADDYFILE", "value": p.caddyfile()}, {"name": "XDG_DATA_HOME", "value": "/data"}, {"name": "XDG_CONFIG_HOME", "value": "/tmp"}],
+                "ports": [{"name": "public-http", "containerPort": super::apps::CADDY_HTTP}, {"name": "public-https", "containerPort": super::apps::CADDY_HTTPS}],
+                "volumeMounts": [{"name": "data", "mountPath": "/data", "subPath": "caddy"}],
+                "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"memory": "256Mi"}},
+                "terminationMessagePolicy": "FallbackToLogsOnError",
+            }));
+        }
         json!({
             "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&self.apps_name(), labels.clone()),
             "spec": {
@@ -792,7 +816,7 @@ impl Cluster {
                         "securityContext": {"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000},
                         "terminationGracePeriodSeconds": 30,
                         "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": self.apps_name()}}],
-                        "containers": [container],
+                        "containers": containers,
                     },
                 },
             },
@@ -812,6 +836,47 @@ impl Cluster {
             "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.apps_name(), self.labels()),
             "spec": {"type": a.service_type, "selector": self.apps_labels(), "ports": [p]},
         })
+    }
+
+    fn apps_public_name(&self) -> String {
+        format!("{}-public", self.apps_name())
+    }
+
+    fn apps_public_path(&self) -> String {
+        format!("{}/{}", ns_path(&self.ns, "v1", "services"), self.apps_public_name())
+    }
+
+    /// Published apps' load balancer (`spec.apps.publish`): 80 and 443 to
+    /// Caddy beside the engine.
+    pub fn apps_public_service(&self) -> Json {
+        json!({
+            "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.apps_public_name(), self.labels()),
+            "spec": {"type": "LoadBalancer", "selector": self.apps_labels(), "externalTrafficPolicy": "Local", "ports": [
+                {"name": "http", "port": 80, "targetPort": super::apps::CADDY_HTTP},
+                {"name": "https", "port": 443, "targetPort": super::apps::CADDY_HTTPS},
+            ]},
+        })
+    }
+
+    /// The load balancer, applied when it changes (or gone without
+    /// `spec.apps.publish`), and its address once it has one.
+    async fn apps_public(&self, a: Option<&super::AppsSpec>) -> Result<Option<String>, String> {
+        let path = self.apps_public_path();
+        let have = self.kube.get(&path).await?;
+        if a.and_then(|a| a.publish.as_ref()).is_none() {
+            if have.is_some() {
+                self.kube.delete(&path).await?;
+            }
+            return Ok(None);
+        }
+        let mut want = self.apps_public_service();
+        let hash = super::short_hash(&want);
+        want["metadata"]["annotations"] = json!({CONFIG: hash});
+        let have = match have {
+            Some(h) if h["metadata"]["annotations"][CONFIG] == hash.as_str() => h,
+            _ => self.kube.apply(&path, &want).await?,
+        };
+        Ok(have["status"]["loadBalancer"]["ingress"][0]["ip"].as_str().map(String::from))
     }
 
     /// The app engine's volume: made once, owned by the cluster.
@@ -1144,7 +1209,10 @@ impl Platform for Cluster {
         if let Some(a) = &spec.apps {
             with.apps_volume(a).await?;
         }
-        self.beside(self.app_paths(&self.apps_name()), spec.apps.as_ref().map(|a| (with.apps_service(a), with.apps_deployment(a)))).await
+        // Published apps' load balancer first: an sslip domain is its address.
+        let address = with.apps_public(spec.apps.as_ref()).await?;
+        let domain = spec.apps.as_ref().and_then(|a| a.publish.as_ref()).and_then(|p| p.domain(address.as_deref()));
+        self.beside(self.app_paths(&self.apps_name()), spec.apps.as_ref().map(|a| (with.apps_service(a), with.apps_deployment_at(a, domain.as_deref())))).await
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
@@ -1945,6 +2013,32 @@ mod tests {
         assert_eq!(plain.apps_service(a)["spec"]["type"], "ClusterIP");
         assert!(plain.apps_service(a)["spec"]["ports"][0].get("nodePort").is_none());
         assert_eq!(plain.apps_claim(a)["spec"]["storageClassName"], "fast");
+        assert_eq!(d["spec"]["template"]["spec"]["containers"].as_array().unwrap().len(), 1, "no Caddy without publish");
+    }
+
+    #[test]
+    fn published_apps_get_a_load_balancer_and_caddy_for_their_certificates() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "apps": {"publish": {"domain": "sslip", "email": "ops@example.com"}}}));
+        let a = c.spec.apps.as_ref().unwrap();
+        let value = |d: &Json, n: &str| d["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().iter().find(|e| e["name"] == n).map(|e| e["value"].clone());
+        // sslip has no domain until the load balancer has an address.
+        let d = c.apps_deployment(a);
+        assert_eq!(value(&d, "STRATA_APPS_DOMAIN"), None);
+        let d = c.apps_deployment_at(a, Some("203-0-113-5.sslip.io"));
+        assert_eq!(value(&d, "STRATA_APPS_DOMAIN"), Some(json!("203-0-113-5.sslip.io")));
+        let pod = &d["spec"]["template"]["spec"];
+        let caddy = &pod["containers"][1];
+        assert_eq!((&caddy["name"], &caddy["image"]), (&json!("caddy"), &json!(super::super::apps::CADDY_IMAGE)));
+        assert!(caddy["env"][0]["value"].as_str().unwrap().contains("ask http://127.0.0.1:7730/api/tls/ask"));
+        assert_eq!((&caddy["volumeMounts"][0]["claimName"], &caddy["volumeMounts"][0]["subPath"]), (&Json::Null, &json!("caddy")), "its certificates on the engine's volume");
+        assert_eq!(pod["securityContext"]["runAsNonRoot"], true, "Caddy runs as the engine's user, on ports over 1024");
+        let s = c.apps_public_service();
+        assert_eq!((&s["metadata"]["name"], &s["spec"]["type"]), (&json!("orders-apps-public"), &json!("LoadBalancer")));
+        assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
+        assert_eq!(s["spec"]["ports"], json!([{"name": "http", "port": 80, "targetPort": 8080}, {"name": "https", "port": 443, "targetPort": 8443}]));
+        // A domain of one's own is known at once.
+        let own = cluster(json!({"demo": 10, "tokenSecret": "admin", "apps": {"publish": {"domain": "apps.example.com"}}}));
+        assert_eq!(value(&own.apps_deployment(own.spec.apps.as_ref().unwrap()), "STRATA_APPS_DOMAIN"), Some(json!("apps.example.com")));
     }
 
     #[test]

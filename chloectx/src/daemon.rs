@@ -54,6 +54,22 @@ pub struct Config {
     pub consolidate: crate::consolidate::ConsolidateConfig,
     /// Query understanding: model-planned searches and a model ranker.
     pub deep: crate::deep::DeepConfig,
+    /// A receipt for every recall, and snapshots to replay them on.
+    pub receipts: ReceiptConfig,
+}
+
+/// Receipts ([`crate::receipt`]) and kept snapshots ([`crate::snapshots`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReceiptConfig {
+    pub enabled: bool,
+    pub snapshots: crate::snapshots::Retention,
+}
+
+impl Default for ReceiptConfig {
+    fn default() -> Self {
+        ReceiptConfig { enabled: std::env::var("CHLOECTX_RECEIPTS").map_or(true, |v| v != "0"), snapshots: Default::default() }
+    }
 }
 
 impl Default for Config {
@@ -73,6 +89,7 @@ impl Default for Config {
             distill: Default::default(),
             consolidate: Default::default(),
             deep: Default::default(),
+            receipts: Default::default(),
         }
     }
 }
@@ -159,6 +176,11 @@ pub struct Daemon {
     /// shell or the MCP server without them.
     from_hooks: Mutex<(String, Option<crate::deep::DeepConfig>)>,
     last_activity: AtomicI64,
+    /// Receipts of recalls (none when they are off or their file failed to open).
+    receipts: Option<crate::receipt::Book>,
+    snapshots: crate::snapshots::Snapshots,
+    /// A recall showed records since the last snapshot was kept.
+    keep_pending: std::sync::atomic::AtomicBool,
 }
 
 /// Work to do after the response is sent (so hooks return at once).
@@ -172,8 +194,20 @@ impl Daemon {
         let embedder: Arc<dyn embed::Embedder> = Arc::from(embed::open(&cfg.embedder)?);
         let store = Arc::new(Store::open(&paths.db, embedder, StoreOptions { sync: cfg.sync, ..Default::default() })?);
         let state: State = std::fs::read_to_string(&paths.state).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let receipts = match cfg.receipts.enabled {
+            true => match crate::receipt::Book::open(dir, cfg.sync) {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    eprintln!("chloectx: receipts are off: {e}");
+                    None
+                }
+            },
+            false => None,
+        };
+        let snapshots = crate::snapshots::Snapshots::new(dir);
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
-            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), last_activity: AtomicI64::new(now()) })
+            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), last_activity: AtomicI64::new(now()),
+            receipts, snapshots, keep_pending: Default::default() })
     }
 
     /// Writes the session state: copied under the session lock, written
@@ -225,7 +259,14 @@ impl Daemon {
                 self.note_hook_settings(req);
                 self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), req.get("payload").unwrap_or(&Json::Null))
             }
-            "search" => self.op_search(req).map(|r| (r, None)),
+            "search" => self.op_search(req).map(|r| {
+                let me = self.clone();
+                (r, Some(Box::new(move || me.keep_after_recall()) as Deferred))
+            }),
+            "receipts" => self.op_receipts(req).map(|r| (r, None)),
+            "receipt" => self.op_receipt(req).map(|r| (r, None)),
+            "blame" => self.op_blame(req).map(|r| (r, None)),
+            "snapshot" => self.op_snapshot(req).map(|r| (r, None)),
             "timeline" => self.op_timeline(req).map(|r| (r, None)),
             "sql" => self.op_sql(req).map(|r| (r, None)),
             "remember" => self.op_remember(req).map(|r| (r, None)),
@@ -375,17 +416,29 @@ impl Daemon {
                     s.last_prompts.clone()
                 });
                 let mut ck = self.checker();
-                let (mut text, shown) = recall::briefing_checked(&self.store, &sid, self.cfg.briefing_chars, now(), Some(&mut ck))?;
+                let pinned = self.store.pinned();
+                let (mut text, shown) = recall::briefing_checked(&pinned, &sid, self.cfg.briefing_chars, now(), Some(&mut ck))?;
+                if !shown.is_empty() {
+                    let inputs = crate::receipt::Inputs::briefing(&sid, self.cfg.briefing_chars);
+                    let rows = crate::receipt::retrieve(&pinned, &inputs);
+                    if let Ok(mut out) = rows {
+                        // The receipt names what was shown, checks and all.
+                        out.ids = shown.clone();
+                        let turn = self.state.lock().unwrap().sessions.get(&sid).map_or(0, |s| s.turn);
+                        self.write_receipt(&sid, turn, "briefing", &pinned, inputs, &out, &text);
+                    }
+                }
                 self.with_session(&sid, |s| s.injected.extend(shown));
                 if source == "compact" && !last_prompts.is_empty() {
                     let q: Vec<String> = last_prompts.iter().rev().take(2).cloned().collect();
-                    if let Some((r, _)) = self.recall_for(&sid, &q.join("\n"), true)? {
+                    if let Some((r, _)) = self.recall_for(&sid, &q.join("\n"), true, "compact")? {
                         text += "\n\nRecords relevant to the work in progress, which the compaction summary may have left out:\n";
                         text += &r;
                     }
                 }
                 self.log(&json!({"ts": now(), "event": event, "session": sid, "source": source, "chars": text.len()}));
-                Ok((ctx_out("SessionStart", text), None))
+                let me = self.clone();
+                Ok((ctx_out("SessionStart", text), Some(Box::new(move || me.keep_after_recall()) as Deferred)))
             }
             "UserPromptSubmit" => {
                 // Redacted at once: the prompt is kept in the session state
@@ -405,7 +458,7 @@ impl Daemon {
                 // Recall first: the prompt is in the live window anyway, and
                 // storing it afterwards keeps the write (and the memtable
                 // rebuild it causes) off the prompt's critical path.
-                let mut text = self.recall_for(&sid, &prompt, false)?.map(|x| x.0).unwrap_or_default();
+                let mut text = self.recall_for(&sid, &prompt, false, "prompt")?.map(|x| x.0).unwrap_or_default();
                 let deep = deep_cfg.wants(&prompt, self.store.len());
                 let deep_async = deep && mode == "async";
                 if deep && mode == "sync" {
@@ -426,6 +479,7 @@ impl Daemon {
                 Ok((
                     ctx_out("UserPromptSubmit", text),
                     Some(Box::new(move || {
+                        me.keep_after_recall();
                         if let Err(e) = me.store.append(&sid, turn, now(), capture::prompt_drafts(&prompt)) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "UserPromptSubmit"}));
                         }
@@ -953,12 +1007,13 @@ impl Daemon {
     }
 
     /// Gated recall for a prompt in a session; `force` skips the gate.
-    /// Returns the context and the ids it shows.
-    fn recall_for(&self, sid: &str, prompt: &str, force: bool) -> Result<Option<(String, Vec<String>)>> {
-        let (w, mut skip) = {
+    /// Returns the context and the ids it shows. `source` names the recall
+    /// in its receipt (`prompt`, `compact`).
+    fn recall_for(&self, sid: &str, prompt: &str, force: bool, source: &str) -> Result<Option<(String, Vec<String>)>> {
+        let (w, skip, turn) = {
             let st = self.state.lock().unwrap();
             let s = st.sessions.get(sid).cloned().unwrap_or_default();
-            (s.window_start, s.injected)
+            (s.window_start, s.injected, s.turn)
         };
         let query: String = prompt.chars().take(2000).collect();
         let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
@@ -967,44 +1022,23 @@ impl Daemon {
         // when the gate holds back the rest: a request that does not sound
         // like earlier work can still be bound by what was agreed.
         // The two searches are independent (only packing needs both), so
-        // they run side by side when a core is free, on one snapshot.
+        // they run side by side when a core is free, on one snapshot
+        // ([`crate::receipt::retrieve`], which a receipt's replay runs too).
         let store = self.store.pinned();
-        let tail = match &self.cfg.rank.tail {
-            t if t.enabled => Some(recall::Tail::of(&store.tail(sid, t.records)?, t)),
-            _ => None,
-        };
-        let (known, searched) = recall::both(
-            || if self.cfg.knowledge.enabled { recall::knowledge(&store, &query, &filter, &skip, &self.cfg.knowledge) } else { Ok(Vec::new()) },
-            || recall::search_with(&store, &query, tail.as_ref(), &filter, &self.cfg.rank),
-        );
-        let known = known?;
-        let (hits, ev) = searched?;
-        let mut ids: Vec<String> = known.iter().map(|(r, _, _)| r.id.clone()).collect();
-        skip.extend(ids.iter().cloned());
-        let g = self.cfg.gate.score(&ev);
-        let decision = if force && !hits.is_empty() { Decision::Inject } else { self.cfg.gate.decide(&ev) };
+        let inputs = crate::receipt::Inputs::recall(&query, sid, &filter, &skip, force, &self.cfg.rank, &self.cfg.pack, &self.cfg.gate, &self.cfg.knowledge);
+        let out = crate::receipt::retrieve(&store, &inputs)?;
+        let decision = out.decision.unwrap_or(Decision::Skip);
         let mut parts = Vec::new();
         let mut ck = self.checker();
-        if !known.is_empty() {
-            parts.push(recall::fmt_knowledge_checked(&known, now(), Some(&mut ck)));
+        if !out.known.is_empty() {
+            parts.push(recall::fmt_knowledge_checked(&out.known, now(), Some(&mut ck)));
         }
-        match decision {
-            _ if hits.is_empty() => {}
-            Decision::Inject | Decision::Brief => {
-                let weak = decision == Decision::Brief;
-                let params = if weak { PackParams::brief() } else { self.cfg.pack.clone() };
-                let items = recall::pack(&hits, &query, &skip, &params);
-                if !items.is_empty() {
-                    let packed: Vec<String> = items.iter().map(|(r, _)| r.id.clone()).collect();
-                    let shown: HashSet<String> = packed.iter().cloned().chain(skip.iter().cloned()).collect();
-                    let mut t = recall::fmt_recall_checked(&items, now(), weak, Some(&mut ck));
-                    t += &recall::fmt_more(&hits, &shown, if weak { 5 } else { 3 });
-                    parts.push(t);
-                    ids.extend(packed);
-                }
-            }
-            Decision::Skip => {}
+        if !out.items.is_empty() {
+            let mut t = recall::fmt_recall_checked(&out.items, now(), out.weak, Some(&mut ck));
+            t += &recall::fmt_more(&out.hits, &out.shown, if out.weak { crate::receipt::MORE_BRIEF } else { crate::receipt::MORE_FULL });
+            parts.push(t);
         }
+        let ids = out.ids.clone();
         let text = if parts.is_empty() { None } else { Some((parts.join("\n"), ids.clone())) };
         if !ids.is_empty() {
             let mut st = self.state.lock().unwrap();
@@ -1013,13 +1047,53 @@ impl Daemon {
             }
             self.dirty.store(true, Ordering::Release);
         }
-        let known: Vec<Json> = known.iter().map(|(r, c, v)| json!({"id": r.id, "cos": c, "cov": v})).collect();
+        let receipt = self.write_receipt(sid, turn, source, &store, inputs, &out, text.as_ref().map_or("", |t| t.0.as_str()));
+        let known: Vec<Json> = out.known.iter().map(|(r, c, v)| json!({"id": r.id, "cos": c, "cov": v})).collect();
         self.log(&json!({
-            "ts": now(), "event": "recall", "session": sid, "decision": format!("{decision:?}"), "gate": g,
-            "evidence": ev, "candidates": hits.len(), "injected": ids, "knowledge": known, "chars": text.as_ref().map_or(0, |t| t.0.len()),
+            "ts": now(), "event": "recall", "session": sid, "decision": format!("{decision:?}"), "gate": out.gate,
+            "evidence": out.ev, "candidates": out.hits.len(), "injected": ids, "knowledge": known, "chars": text.as_ref().map_or(0, |t| t.0.len()),
+            "receipt": receipt, "txn": store.db().map(|_| store.snapshot().txn()),
             "ms": t0.elapsed().as_secs_f64() * 1e3,
         }));
         Ok(text)
+    }
+
+    /// Writes a recall's receipt; its id, or None when receipts are off.
+    /// A recall that showed records asks for a snapshot to be kept, which
+    /// [`Daemon::keep_after_recall`] takes once the hook has answered.
+    #[allow(clippy::too_many_arguments)]
+    fn write_receipt(&self, sid: &str, turn: i64, source: &str, store: &Store, inputs: crate::receipt::Inputs, out: &crate::receipt::Outcome, text: &str) -> Option<String> {
+        let book = self.receipts.as_ref()?;
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let r = crate::receipt::Receipt::new(book.next_id(ms), now(), sid, turn, source, store, inputs, out, text);
+        if let Err(e) = book.put(&r) {
+            self.log(&json!({"ts": now(), "error": e.to_string(), "event": "receipt"}));
+            return None;
+        }
+        if !out.ids.is_empty() && self.cfg.receipts.snapshots.after_recall {
+            self.keep_pending.store(true, Ordering::Release);
+        }
+        Some(r.id)
+    }
+
+    /// Keeps a snapshot of the store if a recall asked for one since the
+    /// last, before anything else is written: the receipt then replays on
+    /// the very version it read. Runs after the hook has answered.
+    fn keep_after_recall(&self) {
+        if !self.keep_pending.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let Some(db) = self.store.db() else { return };
+        let r = &self.cfg.receipts.snapshots;
+        match self.snapshots.keep(db, None, r) {
+            Ok(k) => {
+                if let Err(e) = self.snapshots.prune(r) {
+                    self.log(&json!({"ts": now(), "error": e.to_string(), "event": "snapshot_prune"}));
+                }
+                let _ = k;
+            }
+            Err(e) => self.log(&json!({"ts": now(), "error": e.to_string(), "event": "snapshot"})),
+        }
     }
 
     fn file_notes(&self, sid: &str, rel: &str) -> Result<String> {
@@ -1111,7 +1185,7 @@ impl Daemon {
         let (active, w) = self.active_session();
         let mut f = Filter { kinds, ..Default::default() };
         if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
-            f.exclude_window = Some((active, w));
+            f.exclude_window = Some((active.clone(), w));
         }
         if let Some(days) = req.get("since_days").and_then(|v| v.as_f64()) {
             f.since_ts = Some(now() - (days * 86_400.0) as i64);
@@ -1119,8 +1193,146 @@ impl Daemon {
         if let Some(s) = req.get("session").and_then(|v| v.as_str()) {
             f.session = Some(s.to_string());
         }
-        let (text, ids, ev) = search_text(&self.store, q, &f, &self.cfg.rank, limit)?;
-        Ok(json!({"text": text, "evidence": ev, "ids": ids}))
+        let store = self.store.pinned();
+        let inputs = crate::receipt::Inputs::search(q, &f, limit, &self.cfg.rank);
+        let out = crate::receipt::retrieve(&store, &inputs)?;
+        let terms: HashSet<String> = chloedb::text::analyze_query(q).into_iter().collect();
+        let mut text = String::new();
+        for h in out.hits.iter().take(limit) {
+            text += &recall::fmt_record(&h.record, &recall::snippet(&h.record.text, &terms, 700), now());
+            text += &format!("\n(score {:.3})\n\n", h.score);
+        }
+        if text.is_empty() {
+            text = "No matching records.".into();
+        }
+        let turn = self.state.lock().unwrap().sessions.get(&active).map_or(0, |s| s.turn);
+        let receipt = self.write_receipt(&active, turn, "search", &store, inputs, &out, &text);
+        if let Some(id) = receipt.as_ref().filter(|_| !out.ids.is_empty()) {
+            text += &format!("(receipt {id}: `chloectx receipt {id}` shows why each record ranked where it did, and replays it)");
+        }
+        Ok(json!({"text": text, "evidence": out.ev, "ids": out.ids, "receipt": receipt}))
+    }
+
+    fn book(&self) -> Result<&crate::receipt::Book> {
+        self.receipts.as_ref().ok_or_else(|| err("receipts are off for this store (config.json receipts.enabled, or CHLOECTX_RECEIPTS=0)"))
+    }
+
+    /// `{"op": "receipts", "session"?, "limit"?}`: the newest receipts.
+    fn op_receipts(&self, req: &Json) -> Result<Json> {
+        let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+        let rs = self.book()?.latest(req.get("session").and_then(|v| v.as_str()), limit)?;
+        let mut text = String::new();
+        for r in &rs {
+            text += &format!(
+                "{}  {}  session {} turn {:<3} {:<7} {:<6} {} shown, {} tokens · {}\n",
+                r.id,
+                recall::fmt_time(r.ts),
+                r.session.chars().take(8).collect::<String>(),
+                r.turn,
+                r.source,
+                r.decision.as_deref().unwrap_or("-"),
+                r.shown.len(),
+                r.tokens,
+                r.inputs.query.chars().take(60).collect::<String>().replace('\n', " ")
+            );
+        }
+        if text.is_empty() {
+            text = "No receipts yet.".into();
+        }
+        let list: Vec<Json> = rs.iter().map(|r| json!({"id": r.id, "ts": r.ts, "session": r.session, "turn": r.turn, "source": r.source, "decision": r.decision, "shown": r.shown, "tokens": r.tokens, "txn": r.snapshot.txn})).collect();
+        Ok(json!({"text": text, "receipts": list}))
+    }
+
+    /// `{"op": "receipt", "id", "replay"?}`: one receipt, and its replay on
+    /// the snapshot kept at its commit and on today's store.
+    fn op_receipt(&self, req: &Json) -> Result<Json> {
+        let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let r = self.book()?.get(id)?.ok_or_else(|| err(format!("no receipt {id}")))?;
+        let mut text = crate::receipt::fmt_receipt(&r);
+        let replays = if req.get("replay").and_then(|v| v.as_bool()).unwrap_or(true) {
+            let rs = crate::receipt::replay(&r, &self.snapshots, &self.store)?;
+            text += "\nreplay:\n";
+            text += &crate::blame::fmt_replays(&rs);
+            rs
+        } else {
+            Vec::new()
+        };
+        if req.get("text").and_then(|v| v.as_bool()).unwrap_or(false) {
+            text += &format!("\nwhat the agent was shown:\n{}\n", r.text);
+        }
+        // Each candidate's text as it is now (gone if deleted since), for a page.
+        let ids: Vec<String> = r.rows.iter().map(|x| x.id.clone()).collect();
+        let records: serde_json::Map<String, Json> = self
+            .store
+            .get(&ids)?
+            .iter()
+            .map(|x| (x.id.clone(), json!({"text": x.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect::<String>(), "tag": x.tag})))
+            .collect();
+        Ok(json!({"text": text, "receipt": r, "replays": replays, "records": records}))
+    }
+
+    /// `{"op": "blame", "target": "path[:line]", "replay"?}`.
+    fn op_blame(&self, req: &Json) -> Result<Json> {
+        let target = req.get("target").and_then(|v| v.as_str()).ok_or_else(|| err("blame needs a target: path or path:line"))?;
+        let replay = req.get("replay").and_then(|v| v.as_bool()).unwrap_or(true);
+        crate::blame::blame(&self.store, self.receipts.as_ref(), &self.snapshots, &self.project, target, replay)
+    }
+
+    /// `{"op": "snapshot", "what": "keep" | "list" | "drop", "name"?}`.
+    fn op_snapshot(&self, req: &Json) -> Result<Json> {
+        let name = req.get("name").and_then(|v| v.as_str()).filter(|n| !n.is_empty());
+        match req.get("what").and_then(|v| v.as_str()).unwrap_or("list") {
+            "keep" => {
+                let db = self.store.db().ok_or_else(|| err("the store is a table of a ChloeDB server"))?;
+                let k = self.snapshots.keep(db, Some(name.ok_or_else(|| err("keep needs a name"))?), &self.cfg.receipts.snapshots)?;
+                Ok(json!({"text": format!("kept {} at commit {} ({} records)", k.name, k.at, k.records), "snapshot": k}))
+            }
+            "drop" => {
+                let n = name.ok_or_else(|| err("drop needs a name"))?;
+                let found = self.snapshots.drop_named(n)?;
+                Ok(json!({"text": if found { format!("dropped {n}") } else { format!("no snapshot {n}") }, "dropped": found}))
+            }
+            _ => {
+                let all = self.snapshots.list();
+                let mut text = String::new();
+                for k in &all {
+                    text += &format!("{:<28} commit {:<8} {}  {} records{}\n", k.name, k.at, recall::fmt_time(k.ts), k.records, if k.auto { "  (automatic)" } else { "" });
+                }
+                if text.is_empty() {
+                    text = "No snapshots kept.".into();
+                }
+                Ok(json!({"text": text, "snapshots": all}))
+            }
+        }
+    }
+
+    /// After a record is forgotten or records are redacted: the receipts'
+    /// copies of their text are scrubbed, and the automatic snapshots,
+    /// which hold the old text, are dropped. What it did, in words.
+    fn scrub_history(&self, forgotten: Option<&str>) -> String {
+        let mut out = Vec::new();
+        if let Some(b) = &self.receipts {
+            match b.scrub(forgotten) {
+                Ok(0) => {}
+                Ok(n) => out.push(format!("{n} receipt{} scrubbed", if n == 1 { "" } else { "s" })),
+                Err(e) => out.push(format!("scrubbing the receipts failed: {e}")),
+            }
+        }
+        let all = self.snapshots.list();
+        let mut dropped = 0;
+        for k in all.iter().filter(|k| k.auto) {
+            if self.snapshots.drop_named(&k.name).unwrap_or(false) {
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            out.push(format!("{dropped} automatic snapshot{} dropped", if dropped == 1 { "" } else { "s" }));
+        }
+        let named: Vec<&str> = all.iter().filter(|k| !k.auto).map(|k| k.name.as_str()).collect();
+        if !named.is_empty() {
+            out.push(format!("the named snapshots {} still hold the old text (`chloectx snapshot drop NAME`)", named.join(", ")));
+        }
+        out.join("; ")
     }
 
     fn op_timeline(&self, req: &Json) -> Result<Json> {
@@ -1171,7 +1383,11 @@ impl Daemon {
     fn op_forget(&self, req: &Json) -> Result<Json> {
         let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let found = self.store.delete(id)?;
-        Ok(json!({"text": if found { format!("Deleted {id}.") } else { format!("No record {id}.") }}))
+        if !found {
+            return Ok(json!({"text": format!("No record {id}.")}));
+        }
+        let scrubbed = self.scrub_history(Some(id));
+        Ok(json!({"text": if scrubbed.is_empty() { format!("Deleted {id}.") } else { format!("Deleted {id}; {scrubbed}.") }}))
     }
 
     /// `{"op": "redact", "dry_run": bool}`, for a store written before
@@ -1310,6 +1526,13 @@ impl Daemon {
         );
         if let Some(e) = compacted.as_str() {
             text += &format!(" Note: {e}.");
+        }
+        // The receipts' copies of the text, and the snapshots that hold it.
+        if !dry && (!fixed.is_empty() || sessions > 0 || log_lines > 0) {
+            let scrubbed = self.scrub_history(None);
+            if !scrubbed.is_empty() {
+                text += &format!(" Receipts and snapshots: {scrubbed}.");
+            }
         }
         match (sync.get("replaced"), sync.get("error")) {
             (Some(n), _) => text += &format!(" Replaced {n} records on {}.", sync["server"].as_str().unwrap_or("")),

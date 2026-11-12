@@ -1312,7 +1312,7 @@ impl Db {
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
         let p = rank_log::prepare(sql, params, log)?;
-        let served = match &log.interleave {
+        let mut served = match &log.interleave {
             None => rank_log::serve(self.query(&p.sql, params)?, &p, log)?,
             Some(il) => {
                 let pb = rank_log::prepare(&il.sql, params, log)?;
@@ -1322,6 +1322,7 @@ impl Db {
                 rank_log::interleave(a, b, &p, il)?
             }
         };
+        rank_log::keep_query(&mut served, &p, &schema);
         let now = crate::timestamp::now();
         let mut t = self.storage.begin()?;
         {
@@ -1332,6 +1333,81 @@ impl Db {
         }
         let seq_no = t.commit_seq()?;
         Ok(Logged { rs: served.rs, request: served.request, seq_no, teams: served.teams })
+    }
+
+    /// Runs the relevance autopilot ([`crate::autopilot`]) on one snapshot:
+    /// the logged queries that rank by a rank profile replayed with the
+    /// profile and with the best numbers its search finds, and the measured
+    /// before and after. Reads only; [`Db::keep_proposal`] keeps the report.
+    pub fn autopilot(&self, o: &crate::autopilot::Options) -> Result<crate::autopilot::Report> {
+        let snap = self.snapshot();
+        crate::autopilot::run(self, &snap, &self.exec, o)
+    }
+
+    /// Keeps a report of [`Db::autopilot`] in the proposals table
+    /// ([`crate::autopilot::PROPOSALS`], made by the first), status
+    /// `open`, and returns its key.
+    pub fn keep_proposal(&self, r: &crate::autopilot::Report) -> Result<String> {
+        use crate::autopilot as ap;
+        self.sql(&ap::proposals_sql(ap::PROPOSALS)?, &Params::new())?;
+        let now = crate::timestamp::now();
+        let id = ap::proposal_id(r, now);
+        self.upsert_json(ap::PROPOSALS, &[r.proposal_doc(&id, now)])?;
+        Ok(id)
+    }
+
+    /// A kept proposal's row: its columns but the proof, or with it.
+    pub fn proposal(&self, id: &str, proof: bool) -> Result<serde_json::Value> {
+        use crate::autopilot as ap;
+        let cols = if proof { "id, target, profile, ts, status, verdict, gain, before, after, baseline_hash, statement, proof" } else { "id, target, profile, ts, status, verdict, gain, before, after, baseline_hash, statement" };
+        if self.storage.table(ap::PROPOSALS).is_none() {
+            return Err(Error::Query(format!("no proposal {id}: none was kept")));
+        }
+        let rs = self.query(&format!("SELECT {cols} FROM {} WHERE id = :id", ap::PROPOSALS), &Params::new().set("id", Value::Str(id.into())))?;
+        let row = rs.rows.first().ok_or_else(|| Error::Query(format!("no proposal {id}")))?;
+        Ok(serde_json::Value::Object(rs.columns.iter().zip(row).map(|(c, v)| (c.clone(), crate::autopilot::cell_json(v))).collect()))
+    }
+
+    /// Applies kept proposal `id` ([`crate::autopilot::check_apply`]): its
+    /// `CREATE OR REPLACE RANK PROFILE`, while the profile is the one it was
+    /// measured against, and marks it `applied`.
+    pub fn apply_proposal(&self, id: &str, force: bool) -> Result<()> {
+        use crate::autopilot as ap;
+        let row = self.proposal(id, false)?;
+        let s = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let now = self.snapshot().table(&s("target")).and_then(|t| t.rank_profile(&s("profile")).map(|p| p.hash()));
+        let statement = ap::check_apply(&row, now.as_deref(), force)?;
+        self.sql(&statement, &Params::new())?;
+        self.set_proposal_status(id, "applied")
+    }
+
+    /// Marks kept proposal `id` `dismissed` (or another status).
+    pub fn set_proposal_status(&self, id: &str, status: &str) -> Result<()> {
+        self.proposal(id, false)?;
+        self.sql(&format!("UPDATE {} SET status = :s WHERE id = :id", crate::autopilot::PROPOSALS), &Params::new().set("s", Value::Str(status.into())).set("id", Value::Str(id.into())))?;
+        Ok(())
+    }
+
+    /// Writes judgments ([`crate::autopilot::judgment_doc`]) to judgments
+    /// table `table`, made by the first write.
+    pub fn add_judgments(&self, table: &str, docs: &[serde_json::Value]) -> Result<()> {
+        self.sql(&crate::autopilot::judgments_sql(table)?, &Params::new())?;
+        self.upsert_json(table, docs)
+    }
+
+    /// Upserts JSON documents to `table` in one transaction.
+    fn upsert_json(&self, table: &str, docs: &[serde_json::Value]) -> Result<()> {
+        let schema = self.table(table)?;
+        let now = crate::timestamp::now();
+        let mut t = self.storage.begin()?;
+        {
+            let mut tt = t.table(&schema.table)?;
+            for d in docs {
+                tt.upsert(crate::ingest::document_at(&schema, d, now)?)?;
+            }
+        }
+        t.commit_seq()?;
+        Ok(())
     }
 
     /// The credit of each pair of interleaved rankings in a log table

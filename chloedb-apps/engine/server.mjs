@@ -22,6 +22,8 @@ import { MODEL, spend, useSpendFile } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
+import { provenance } from './provenance.mjs';
+import { Publish } from './publish.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
@@ -134,6 +136,10 @@ if (process.env.STRATA_APPS_SCHEDULES !== 'off') scheduler.start();
 const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
 useSelfCookie(login.selfCookie);
 if (login.on) log(`the studio needs a login, handed over by the command center${login.publicUrl ? `; it is reached at ${login.publicUrl}` : ' (set STRATA_APPS_PUBLIC_URL to say where browsers reach it)'}`);
+// Apps open to the public (publish.mjs): /a/<id>, and <name>.<domain> with a domain.
+const publish = new Publish({ store: engine.store, domain: process.env.STRATA_APPS_DOMAIN, scheme: process.env.STRATA_APPS_DOMAIN_SCHEME, log });
+await publish.load(true);
+if (publish.domain) log(`published apps answer at <name>.${publish.domain}`);
 log(services.smtpUrl && services.smtpFrom ? `email goes out through ${new URL(services.smtpUrl).host}` : 'email is held in the outbox (set SMTP_URL and SMTP_FROM to send it)');
 
 // ---- who is asking: a session cookie, the same for every app here
@@ -214,10 +220,40 @@ async function rawBody(req, limit) {
 
 // ---- live updates: one stream per open studio page
 
-const clients = new Set();
+const clients = new Map(); // the response -> null, or {app} for the public's
+// The same events kept for a while, numbered, for a page that cannot hold a
+// stream open: the command center reaches the engine through chloedb-server,
+// which forwards whole answers, so it asks GET /api/events?after=N and the
+// answer waits (up to ~20 s) for the next event.
+const EVENTS_KEPT = 500;
+const events = [];
+let eventSeq = 0;
+const eventWaiters = new Set();
+// The public's streams get one app's changes to its data, look and version.
+const PUBLIC_EVENTS = new Set(['data', 'app', 'design']);
 function broadcast(type, payload) {
   const line = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const res of clients) res.write(line);
+  for (const [res, only] of clients) if (!only || (payload?.app === only.app && PUBLIC_EVENTS.has(type))) res.write(line);
+  events.push({ seq: ++eventSeq, type, data: payload });
+  if (events.length > EVENTS_KEPT) events.splice(0, events.length - EVENTS_KEPT);
+  for (const w of eventWaiters) w();
+}
+function eventsAfter(after, app) {
+  const from = after > eventSeq ? 0 : after; // the engine restarted: start again
+  return events.filter((e) => e.seq > from && (!app || !e.data || !e.data.app || e.data.app === app));
+}
+async function waitEvents(after, app, ms) {
+  let list = eventsAfter(after, app);
+  if (!list.length && ms > 0) {
+    await new Promise((ok) => {
+      const done = () => { clearTimeout(t); eventWaiters.delete(check); ok(); };
+      const check = () => { if (eventsAfter(after, app).length) done(); };
+      const t = setTimeout(done, ms);
+      eventWaiters.add(check);
+    });
+    list = eventsAfter(after, app);
+  }
+  return { seq: eventSeq, feed: engine.feed, events: list };
 }
 // Data changes come in bursts (a trigger's writes, a batch); send each app's at most every 150 ms.
 const pending = new Map();
@@ -418,14 +454,15 @@ const STATIC = {
   '/design.js': ['web/design.js', 'text/javascript; charset=utf-8'],
   '/policy.js': ['web/policy.js', 'text/javascript; charset=utf-8'],
   '/activity.js': ['web/activity.js', 'text/javascript; charset=utf-8'],
-  // The engine's page in a cluster's command center (Apps -> App engine).
+  '/activity.css': ['web/activity.css', 'text/css; charset=utf-8'],
+  // The app creator, the engine's page in a cluster's command center (Apps -> App creator).
   '/cc/view.js': ['web/cc-view.js', 'text/javascript; charset=utf-8'],
 };
 
 // What chloedb-server shows of the engine (its apps, GET /v1/apps).
 const MANIFEST = {
   name: 'apps',
-  title: 'App engine',
+  title: 'App creator',
   description: 'Apps built from a description: written by a model, checked, kept in this cluster as rows, and changed by asking',
   icon_svg: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/>',
   view: 'cc/view.js',
@@ -513,6 +550,32 @@ async function appState(appId) {
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
     drawn: drawnOf.get(appId) || null,
     reach: await reachOf(appId, view),
+    // Where its code came from: CREATE statements, the agent's own code, the library (provenance.mjs).
+    made: provenance(view, appId),
+    publish: publish.of(appId),
+  };
+}
+
+// A published app's state for the public: what its page needs to run its
+// screens (their code, its design, the live version), and nothing of how it
+// is made (requests, versions, suggestions), its people or its outbox.
+async function publicState(appId) {
+  const view = await engine.view(appId);
+  const head = Number(view.app.head);
+  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: c.code, spec: c.spec });
+  const reachNow = await reachOf(appId, view).catch(() => null);
+  return {
+    public: true,
+    app: { id: appId, name: view.app.name },
+    design: await engine.store.designs(appId),
+    version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
+    evolve: { mode: 'off', signals: [], candidates: [] },
+    views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
+    functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
+    components: view.components.map(cap),
+    helpers: view.helpers.map(cap),
+    tables: [], people: [], outbox: [], suggestions: [], versions: [], requests: [], running: null, drawn: null,
+    reach: { on: { fetch: !!reachNow?.on?.fetch, hosts: (reachNow?.on?.hosts || []).map((x) => ({ host: x.host })) } },
   };
 }
 
@@ -532,6 +595,20 @@ const routes = [
     login: login.on ? { publicUrl: login.publicUrl } : null,
     spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
   ['GET', /^\/api\/apps$/, async () => ({ apps: await engine.store.listApps() })],
+  // The events since ?after=N (see broadcast), for one app with ?app=.
+  ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
+    Math.min(25000, Math.max(0, Number(url.searchParams.get('wait') ?? 20000) || 0)))],
+  // What a view's frame is made of, for a page that builds frames itself
+  // (the command center's app creator): the stylesheet, the runtime, the
+  // screen renderer, the design tokens, the frame's policy and the Activity
+  // view as the modules the studio imports (web/design.js, web/policy.js,
+  // web/activity.js, with its stylesheet).
+  ['GET', /^\/api\/kit$/, async () => {
+    const read = (f) => readFile(path.join(ROOT, 'web', f), 'utf8');
+    const [kit, frontCss, frame, screen, front, design, policy, activityJs, activityCss] = await Promise.all(['kit.css', 'front.css', 'frame.js', 'screen.js', 'front.js', 'design.js', 'policy.js', 'activity.js', 'activity.css'].map(read));
+    return { kit: `${kit}\n${frontCss}`, frame, screen, front, design, policy, activity: activityJs, activityCss, publicUrl: login.publicUrl || null, login: login.on };
+  }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/made$/, async (b, [id]) => provenance(await engine.view(id), id)],
   ['POST', /^\/api\/apps$/, async (b) => {
     const description = String(b.description || '').trim();
     if (description.length < 5) throw Object.assign(new Error('describe the app in a sentence or more'), { status: 400 });
@@ -543,7 +620,16 @@ const routes = [
     const request = await submit(app, description, 'user');
     return { app, request: request.id };
   }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id]) => appState(id)],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id) : appState(id))],
+  // Open to the public, or not (publish.mjs); only from the studio and the command center.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/publish$/, async (b, [id]) => publish.of(id)],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/publish$/, async (b, [id]) => {
+    const app = await engine.store.getApp(id);
+    if (!app) throw Object.assign(new Error(`no app ${id}`), { status: 404 });
+    const out = await publish.set(id, app.name, b || {});
+    broadcast('app', { app: id });
+    return out;
+  }],
   // Designs: three per app, made on first ask; choosing one is instant.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/designs$/, async (b, [id]) => designsOf(id)],
   // The whole app as one SQL script (every piece is stored as its SQL).
@@ -726,18 +812,39 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+    // Caddy asks before it gets a certificate for a host (the operator's
+    // spec.apps.publish): only for published apps' hosts.
+    if (req.method === 'GET' && url.pathname === '/api/tls/ask') {
+      await publish.load();
+      const ok = !!publish.appForHost({ headers: { host: String(url.searchParams.get('domain') || '') } });
+      return send(res, ok ? 200 : 404, { ok });
+    }
     if (req.method === 'GET' && url.pathname === '/login' && login.on) return await login.redeem(url, res);
-    const refused = await login.check(req, url);
+    // Someone not signed in to the studio may still open a published app.
+    let refused = await login.check(req, url);
+    const open = login.on && refused ? await publish.allows(req, url) : !login.on ? await publish.allows(req, url) : null;
+    if (refused && open) {
+      refused = null;
+      if (!open.file) {
+        const wait = publish.limit(req, open.dear);
+        if (wait) { res.setHeader('retry-after', String(wait)); return send(res, 429, { error: `too many requests; try again in ${wait} s` }); }
+      }
+    }
+    // What the request is, for the routes: the published app it may use.
+    const cx0 = { public: login.on && open && !open.file ? open.app : null };
     if (refused) {
       if (refused.json) return send(res, refused.status, refused.json);
       res.writeHead(refused.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(refused.html);
     }
     // An app on its own, without the studio around it (for phones and sharing).
-    const page = req.method === 'GET' && /^\/a\/[a-z0-9]+\/?$/.test(url.pathname) ? STATIC['/'] : STATIC[url.pathname];
+    // On a published app's own host, / is the app.
+    const hostApp = req.method === 'GET' && url.pathname === '/' ? publish.appForHost(req) : null;
+    const page = req.method === 'GET' && (hostApp || /^\/a\/[a-z0-9]+\/?$/.test(url.pathname)) ? STATIC['/'] : STATIC[url.pathname];
     if (req.method === 'GET' && page) {
       const [file, type] = page;
-      const data = await readFile(path.join(ROOT, file));
+      let data = await readFile(path.join(ROOT, file));
+      if (hostApp) data = Buffer.from(String(data).replace('<head>', `<head>\n<meta name="sa-app" content="${hostApp}">`));
       const headers = { 'content-type': type, 'cache-control': 'no-cache' };
       if (page === STATIC['/'] && !visitorOf(req)) headers['set-cookie'] = `${VISITOR}=${newId(12)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`;
       res.writeHead(200, headers);
@@ -758,7 +865,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/stream') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
       res.write(`event: hello\ndata: ${JSON.stringify({ feed: engine.feed })}\n\n`);
-      clients.add(res);
+      clients.set(res, cx0.public ? { app: cx0.public } : null);
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => { clearInterval(ping); clients.delete(res); });
       return;
@@ -781,7 +888,7 @@ const server = http.createServer(async (req, res) => {
     // A write or a run also says how many taps led to it (x-sa-taps).
     const taps = Number(req.headers['x-sa-taps']);
     const where = (session) => ({ session: tag(req.headers['x-sa-session']) || tag(session), screen: tag(req.headers['x-sa-view']), ...(Number.isInteger(taps) && taps >= 0 && taps < 10000 ? { taps } : {}) });
-    const cx = { req, res, where, user: (appId) => userOf(req, appId), who: async (appId) => (await userOf(req, appId))?.id || visitorOf(req) };
+    const cx = { ...cx0, req, res, where, user: (appId) => userOf(req, appId), who: async (appId) => (await userOf(req, appId))?.id || visitorOf(req) };
     // ?v=N runs a request on version N of the app (a version built to try).
     const v = Number(url.searchParams.get('v')) || null;
     for (const [method, re, fn] of routes) {

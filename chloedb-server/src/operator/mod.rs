@@ -2013,7 +2013,7 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         };
         steps.push(match (&old.apps, &new.apps) {
             (None, Some(a)) => format!(
-                "the app engine starts beside the cluster (chloedb-apps, a Deployment of one, with a {} volume) and the coordinators list it, so the command center shows Apps → App engine; its apps are kept in this cluster's tables; {}",
+                "the app engine starts beside the cluster (chloedb-apps, a Deployment of one, with a {} volume) and the coordinators list it, so the command center shows Apps → App creator; its apps are kept in this cluster's tables; {}",
                 a.storage.size,
                 what(a)
             ),
@@ -2191,7 +2191,7 @@ mod tests {
         let p = plan(&none, &new, 1, 3);
         assert!(p["refused"].is_null(), "{p}");
         let (steps, warnings) = (p["steps"].to_string(), p["warnings"].to_string());
-        for want in ["the coordinators restart", "the app engine starts beside the cluster", "1Gi volume", "Apps → App engine", "may cost $25 before calls are refused"] {
+        for want in ["the coordinators restart", "the app engine starts beside the cluster", "1Gi volume", "Apps → App creator", "may cost $25 before calls are refused"] {
             assert!(steps.contains(want), "{want}: {steps}");
         }
         for want in ["no model key", "publicUrl is not set"] {
