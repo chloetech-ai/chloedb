@@ -358,6 +358,10 @@ pub struct Database {
     /// The writer's hold on the files, kept while it is open; `None`
     /// read-only.
     _writer_lock: Option<WriterLock>,
+    /// The txn of the version the log record names
+    /// ([`WriterLock::vouch`]) as this writer last wrote it, 0 for none:
+    /// the first append after a version writes it, once.
+    log_vouched: AtomicU64,
     /// What follows another process's writes, read-only.
     reader: Option<Arc<Reader>>,
     /// Serialises memtable segment builds, so concurrent readers build once.
@@ -1046,6 +1050,7 @@ impl Database {
             state: reader.state.clone(),
             share: share_path,
             _writer_lock: None,
+            log_vouched: AtomicU64::new(0),
             reader: Some(reader.clone()),
             build_lock: Mutex::new(()),
             published: RwLock::new(None),
@@ -1111,6 +1116,9 @@ impl Database {
 
     fn load_dir(path: &Path, lockf: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
         let (cur, manifest) = dir::read_current(path)?;
+        let meta = dir_meta(&cur);
+        // Before anything is changed.
+        let gone = accept_deleted_log(path, deleted_log(&path.join(dir::WAL), lock.log_record()?, &meta, manifest.wal_txn)?, opts.recover)?;
         // Files a crash left behind: written for a commit that did not
         // finish, or no longer named after one that did.
         for (f, _) in dir::orphans(path, &dir::referenced(&cur, &manifest))? {
@@ -1129,8 +1137,26 @@ impl Database {
             .iter()
             .map(|t| t.segments.iter().map(|m| SegHandle::open_in(path, m, &t.schema, opts.read_ahead, opts.read_ahead && opts.random_hints, opts.check_at_open(), cold.as_ref()).map(Arc::new)).collect())
             .collect::<Result<_>>()?;
-        let meta = dir_meta(&cur);
-        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, lock, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles, cold)
+        let mut db = Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, lock, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles, cold)?;
+        db.opened_past_deleted_log(gone)?;
+        Ok(db)
+    }
+
+    /// After an open that [`DbOptions::recover`] let past a deleted log
+    /// (`gone`, what was lost): clears the log record, which named the
+    /// version opened, and says what was lost.
+    fn opened_past_deleted_log(&mut self, gone: Option<String>) -> Result<()> {
+        let Some(gone) = gone else { return Ok(()) };
+        if let Some(l) = &self._writer_lock {
+            l.clear_log_record()?;
+        }
+        self.log_vouched.store(0, Ordering::Release);
+        self.damaged = Some(match self.damaged.take() {
+            Some(d) => format!("{gone}; {d}"),
+            None => gone,
+        });
+        tracing::warn!(path = %self.path.display(), "opened past damage: {}", self.damaged.as_deref().unwrap_or_default());
+        Ok(())
     }
 
     /// Opens the newest version named by a valid meta slot, or, when that
@@ -1185,6 +1211,7 @@ impl Database {
                 msg
             });
         }
+        let gone = accept_deleted_log(path, deleted_log(&wal_path(path), lock.log_record()?, &meta, v.0.wal_txn)?, opts.recover)?;
         // Decided: now the file may be fitted to the version's page count.
         let (manifest, freelist, map, handles) = match file.metadata()?.len() == meta.page_count * PAGE {
             true => v,
@@ -1201,6 +1228,7 @@ impl Database {
         if let Some(d) = &db.damaged {
             tracing::warn!(path = %path.display(), "opened past damage: {d}");
         }
+        db.opened_past_deleted_log(gone)?;
         Ok(db)
     }
 
@@ -1315,6 +1343,7 @@ impl Database {
             pin_versions: false,
         };
         let mut flushed = false;
+        let mut replayed = false;
         for t in txns {
             if t.seq.is_some() != numbered {
                 return Err(corrupt(format!("a sealed write-ahead log holds transactions {} sequence numbers, and the database {}", if numbered { "without" } else { "with" }, if numbered { "numbers its writes" } else { "does not number its writes" })));
@@ -1336,7 +1365,20 @@ impl Database {
                 }
             }
             st.txn = st.txn.max(t.txn);
+            replayed = true;
         }
+        // The logs hold acknowledged transactions the version does not (a
+        // writer before this one appended them, perhaps a version of Strata
+        // from before log records): the log record says so before this
+        // writer appends or changes anything else ([`WriterLock::vouch`]).
+        let vouched = match writer_lock.log_record()? {
+            Some(r) if r == (meta.db_id, meta.txn) => meta.txn,
+            _ if replayed => {
+                writer_lock.vouch(meta.db_id, meta.txn)?;
+                meta.txn
+            }
+            _ => 0,
+        };
         let mut sealed = sealed;
         if flushed && st.mem_len() == 0 && st.pending.is_empty() && st.pending_updates.is_empty() {
             wal.reset(opts.sync)?;
@@ -1371,6 +1413,7 @@ impl Database {
             state: Arc::new(Mutex::new(st)),
             share,
             _writer_lock: Some(writer_lock),
+            log_vouched: AtomicU64::new(vouched),
             reader: None,
             build_lock: Mutex::new(()),
             published: RwLock::new(None),
@@ -4577,6 +4620,19 @@ impl Database {
         Ok(Some(doc))
     }
 
+    /// Writes the log record for version `txn` ([`WriterLock::vouch`])
+    /// unless this writer did already. Callers hold the writer lock.
+    fn vouch_log(&self, db_id: u64, txn: u64) -> Result<()> {
+        if self.log_vouched.load(Ordering::Acquire) == txn {
+            return Ok(());
+        }
+        if let Some(l) = &self._writer_lock {
+            l.vouch(db_id, txn)?;
+        }
+        self.log_vouched.store(txn, Ordering::Release);
+        Ok(())
+    }
+
     /// Commits `ops` as one transaction; returns its sequence number when
     /// the database numbers its writes.
     fn commit_ops(&self, wal: &mut Wal, ops: Vec<(u32, Op)>) -> Result<Option<u64>> {
@@ -4599,10 +4655,15 @@ impl Database {
         if self.over_twice() && (flusher.is_some() || self.flush_error().is_some()) {
             self.flush_locked(wal).map_err(|e| Error::Io(std::io::Error::other(format!("writes wait for a flush to succeed: {e}"))))?;
         }
-        let (txn, seq) = {
+        let (txn, seq, version) = {
             let st = lock(&self.state);
-            (st.txn + 1, st.manifest.seq_no.as_ref().map(|n| SeqNo { term: n.term, seq: st.seq + 1 }))
+            (st.txn + 1, st.manifest.seq_no.as_ref().map(|n| SeqNo { term: n.term, seq: st.seq + 1 }), st.meta)
         };
+        // The first append after a version: the log record names that
+        // version first, durably, whatever `sync` is, so that it is on disk
+        // before any record of the log it vouches for can be. Nothing is
+        // logged yet if it fails, so the database is not poisoned.
+        self.vouch_log(version.db_id, version.txn)?;
         // A failed append is cut off the log, so the transaction is not
         // committed; but the page cache may be in doubt after a failed
         // fsync, so stop writing.
@@ -5664,9 +5725,29 @@ impl<'a> VersionWriter<'a> {
         }
     }
 
+    /// Writes the version ([`VersionWriter::write_version`]). When the log
+    /// still holds transactions it does not (appended while a background
+    /// flush built its segments, or before a merge, a vacuum or a new
+    /// term), the log record names it from now on, as the first append
+    /// after it would. Written once the version is durable: until then
+    /// the version on disk is the one before, which the record named.
+    fn commit(self, wal: &mut Wal) -> Result<Committed> {
+        let db = self.db;
+        let wal_txn = self.manifest.wal_txn;
+        let c = self.write_version(wal)?;
+        if !wal.is_empty() && lock(&db.state).txn > wal_txn {
+            // The version is committed whatever happens here; if the record
+            // cannot be written, the next append tries again.
+            if let Err(e) = db.vouch_log(c.meta.db_id, c.meta.txn) {
+                tracing::warn!(path = %db.path.display(), error = %e, "could not write the log record of a new version");
+            }
+        }
+        Ok(c)
+    }
+
     /// Writes the manifest and freelist, syncs, then writes the other meta
     /// slot and syncs again.
-    fn commit(mut self, wal: &mut Wal) -> Result<Committed> {
+    fn write_version(mut self, wal: &mut Wal) -> Result<Committed> {
         // The transactions in the WAL come before this version, which may
         // hold their effects (a merge drops the documents they deleted):
         // without `sync` they are made durable now, before it can be.
@@ -6168,6 +6249,66 @@ pub(crate) fn refused_fallback(path: &Path, d: &Fallback, txn: u64) -> String {
         d.lost,
         path.display()
     )
+}
+
+/// What is lost when the write-ahead log at `wal_path` was deleted while
+/// it held acknowledged transactions: the log record (`record`,
+/// [`WriterLock::vouch`]) names this database and the version opened
+/// (`meta`, holding the log's transactions up to `wal_txn`), the log file
+/// is missing, and no sealed log the version does not hold is beside it.
+/// `None` otherwise. Reads only.
+///
+/// Only a deleted log matches: a crash never removes the log (it is
+/// created before the database is first opened, and replaced only by a
+/// rename over it), and sealing renames it away only while a sealed log
+/// holds what it held. A checkpoint, or any copy of the file elsewhere,
+/// has a database id or a path of its own, so no record of the source's
+/// matches it. Not caught: a log deleted together with the record (the
+/// `-readers` directory, or `WRITER` in the directory layout), a copy of
+/// the file taken without its log and opened where no record is, and a
+/// log deleted while a background flush holds a sealed one.
+pub(crate) fn deleted_log(wal_path: &Path, record: Option<(u64, u64)>, meta: &Meta, wal_txn: u64) -> Result<Option<String>> {
+    if record != Some((meta.db_id, meta.txn)) {
+        return Ok(None);
+    }
+    match std::fs::symlink_metadata(wal_path) {
+        Ok(_) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if wal::sealed_files(wal_path)?.iter().any(|&(t, _)| t > wal_txn) {
+        return Ok(None);
+    }
+    // A flush is numbered right after the last transaction it holds; a
+    // version of another kind (a merge) after transactions it does not.
+    let after = if wal_txn + 1 >= meta.txn { meta.txn } else { wal_txn };
+    Ok(Some(format!(
+        "the write-ahead log {} is missing, though it held acknowledged writes: the transactions committed after txn {after}, which the version on disk (txn {}) does not hold (as the writer recorded in {})",
+        wal_path.display(),
+        meta.txn,
+        share::WRITER
+    )))
+}
+
+/// The error of an open that refuses to open without a deleted log
+/// ([`deleted_log`] says what it held).
+pub(crate) fn refused_deleted_log(path: &Path, what: &str) -> String {
+    format!(
+        "{}: {what}; opening without it would lose acknowledged writes. Nothing was changed. Put the log back, or open with DbOptions::recover (Python: chloedb.open(..., recover=True); chloedb-server --recover) to open the version on disk, losing those transactions",
+        path.display()
+    )
+}
+
+/// [`deleted_log`] at a writer's open: refused unless `recover`; with it,
+/// what was lost.
+fn accept_deleted_log(path: &Path, what: Option<String>, recover: bool) -> Result<Option<String>> {
+    let Some(what) = what else { return Ok(None) };
+    if !recover {
+        return Err(corrupt(refused_deleted_log(path, &what)));
+    }
+    let msg = format!("{what}: opened the version on disk as DbOptions::recover asked, losing them");
+    tracing::error!(path = %path.display(), "{msg}");
+    Ok(Some(msg))
 }
 
 /// Copies the file at `path` to `<path>.damaged-<unix seconds>` (synced),

@@ -39,21 +39,40 @@
 //!
 //! A pin or a session is 24 bytes: an 8-byte tag, the value (u64), the pid
 //! (u32) and a crc32 of the 20 bytes before it.
+//!
+//! `WRITER` holds a second record at byte 24, the log record
+//! ([`WriterLock::vouch`]): a tag (`STRLOG01`), the database's id (u64),
+//! a version's txn (u64) and a crc32 of the 24 bytes before it, 28 bytes
+//! in all. The writer writes it, synced, before the first append to the
+//! write-ahead log after that version, so that opening can tell a log
+//! that was deleted while it held acknowledged transactions (the version
+//! on disk is the one named, and the log is gone) from one that never
+//! held any: the database file is not written between versions, and each
+//! commit of a version empties the log, so nothing in either says so.
+//! Versions of Strata before it read and write bytes 0..24 only, and
+//! leave the record alone; one they leave stale names a version that is
+//! no longer the newest, or another database, and matches nothing.
 
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
+use crate::storage::io;
 
 /// The writer's lock and session, in the share directory.
 pub const WRITER: &str = "WRITER";
 const PIN_TAG: &[u8; 8] = b"STRPIN01";
 const SESSION_TAG: &[u8; 8] = b"STRWRT01";
+const LOG_TAG: &[u8; 8] = b"STRLOG01";
 const RECORD: usize = 24;
+/// Where the log record is in `WRITER`, and its length.
+const LOG_AT: u64 = RECORD as u64;
+const LOG_RECORD: usize = 28;
 const PIN_SUFFIX: &str = ".pin";
 
 /// How long an open waits for a lock that is held.
@@ -101,6 +120,45 @@ fn parse(tag: &[u8; 8], b: &[u8]) -> Option<(u64, u32)> {
         return None;
     }
     Some((u64::from_le_bytes(b[8..16].try_into().unwrap()), u32::from_le_bytes(b[16..20].try_into().unwrap())))
+}
+
+fn log_record_bytes(db_id: u64, txn: u64) -> [u8; LOG_RECORD] {
+    let mut b = [0u8; LOG_RECORD];
+    b[..8].copy_from_slice(LOG_TAG);
+    b[8..16].copy_from_slice(&db_id.to_le_bytes());
+    b[16..24].copy_from_slice(&txn.to_le_bytes());
+    let crc = crc32fast::hash(&b[..24]);
+    b[24..].copy_from_slice(&crc.to_le_bytes());
+    b
+}
+
+/// The database id and txn of a log record; `None` for one that is
+/// cleared, torn or missing.
+fn parse_log_record(b: &[u8]) -> Option<(u64, u64)> {
+    if b.len() < LOG_RECORD || &b[..8] != LOG_TAG || crc32fast::hash(&b[..24]).to_le_bytes() != b[24..LOG_RECORD] {
+        return None;
+    }
+    Some((u64::from_le_bytes(b[8..16].try_into().unwrap()), u64::from_le_bytes(b[16..24].try_into().unwrap())))
+}
+
+/// Reads the log record of `WRITER`, again while it is torn by a write
+/// under way; `None` if there is none or it stays torn.
+fn read_log_record(f: &File) -> std::io::Result<Option<(u64, u64)>> {
+    let mut b = [0u8; LOG_AT as usize + LOG_RECORD];
+    for _ in 0..3 {
+        let n = read_up_to(f, &mut b)?;
+        if n <= LOG_AT as usize {
+            return Ok(None);
+        }
+        if let Some(r) = parse_log_record(&b[LOG_AT as usize..n]) {
+            return Ok(Some(r));
+        }
+        if b[LOG_AT as usize..n].iter().all(|&x| x == 0) {
+            return Ok(None);
+        }
+        std::thread::yield_now();
+    }
+    Ok(None)
 }
 
 /// Reads a record, again while it is torn by a write under way; `None` if
@@ -235,8 +293,12 @@ pub fn lock_shared(main: &File) -> Result<()> {
 /// The writer's hold on a database: `main` shared, a write lock on a byte
 /// of `main` ([`WRITER_BYTE`]), and `WRITER` exclusive.
 pub struct WriterLock {
-    _file: File,
+    file: File,
     session: u64,
+    share: PathBuf,
+    /// Whether the directory entries of `WRITER` were made durable, which
+    /// the first log record written needs.
+    entries_synced: AtomicBool,
 }
 
 impl WriterLock {
@@ -271,11 +333,53 @@ impl WriterLock {
         // durable (they are alive, and read the page cache), and is not
         // part of what a crash leaves (so not written through `io`).
         file.write_all_at(&record(SESSION_TAG, session), 0)?;
-        Ok(WriterLock { _file: file, session })
+        Ok(WriterLock { file, session, share: share.to_path_buf(), entries_synced: AtomicBool::new(false) })
     }
 
     pub fn session(&self) -> u64 {
         self.session
+    }
+
+    /// The log record ([`share`](self)): the database id and the txn of
+    /// the version after which the write-ahead log was said to hold
+    /// acknowledged transactions, `None` if none is.
+    pub fn log_record(&self) -> Result<Option<(u64, u64)>> {
+        Ok(read_log_record(&self.file)?)
+    }
+
+    /// Writes the log record for version `txn` of database `db_id` and
+    /// makes it durable (and, the first time, `WRITER`'s directory
+    /// entries): the write-ahead log after that version holds, or is about
+    /// to hold, acknowledged transactions. Through [`io`], as part of what
+    /// a crash leaves.
+    pub fn vouch(&self, db_id: u64, txn: u64) -> Result<()> {
+        self.write_log(&log_record_bytes(db_id, txn))
+    }
+
+    /// Clears the log record: nothing is said about the log.
+    pub fn clear_log_record(&self) -> Result<()> {
+        self.write_log(&[0u8; LOG_RECORD])
+    }
+
+    fn write_log(&self, b: &[u8; LOG_RECORD]) -> Result<()> {
+        io::write_at(&self.file, b, LOG_AT)?;
+        io::sync(&self.file)?;
+        if !self.entries_synced.load(Ordering::Acquire) {
+            // `WRITER`, and the `-readers` directory beside a single file,
+            // may be new and their names not yet durable. One deleted
+            // under the writer takes the record with it (a loss opening
+            // cannot see), and fails no commit.
+            let gone = |r: std::io::Result<()>| match r {
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                r => r,
+            };
+            gone(io::sync_dir(&self.share))?;
+            if let Some(parent) = self.share.parent().filter(|p| !p.as_os_str().is_empty()) {
+                gone(io::sync_dir(parent))?;
+            }
+            self.entries_synced.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 }
 
@@ -302,6 +406,16 @@ impl Session {
         }
         let f = self.file.as_ref().expect("opened above");
         Ok(read_record(f, SESSION_TAG)?.map_or(0, |(s, _)| s))
+    }
+
+    /// The log record the writer left ([`WriterLock::log_record`]), `None`
+    /// if there is none (or no `WRITER`).
+    pub fn log_record(&self) -> Result<Option<(u64, u64)>> {
+        match File::open(&self.path) {
+            Ok(f) => Ok(read_log_record(&f)?),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -442,6 +556,39 @@ mod tests {
             assert_eq!(parse(PIN_TAG, &bad), None, "flip at byte {i}");
         }
         assert_eq!(parse(PIN_TAG, &r[..20]), None);
+    }
+
+    #[test]
+    fn the_log_record_follows_the_session_and_survives_a_new_one() {
+        let r = log_record_bytes(7, 42);
+        assert_eq!(parse_log_record(&r), Some((7, 42)));
+        for i in 0..LOG_RECORD {
+            let mut bad = r;
+            bad[i] ^= 1;
+            assert_eq!(parse_log_record(&bad), None, "flip at byte {i}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.strata");
+        std::fs::write(&path, b"").unwrap();
+        let share = share_dir(&path, false);
+        let main = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let w = WriterLock::take(&main, &share).unwrap();
+        assert_eq!(w.log_record().unwrap(), None);
+        w.vouch(7, 42).unwrap();
+        assert_eq!(Session::new(&share).log_record().unwrap(), Some((7, 42)));
+        let mut seen = Session::new(&share);
+        assert_eq!(seen.read().unwrap(), w.session());
+        drop(w);
+        drop(main);
+        // A new writer's session (as an older version writes it: bytes
+        // 0..24) leaves the record.
+        let main = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let w = WriterLock::take(&main, &share).unwrap();
+        assert_eq!(w.log_record().unwrap(), Some((7, 42)));
+        assert_eq!(seen.read().unwrap(), w.session());
+        w.clear_log_record().unwrap();
+        assert_eq!(w.log_record().unwrap(), None);
+        assert_eq!(seen.read().unwrap(), w.session());
     }
 
     #[test]

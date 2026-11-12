@@ -103,7 +103,7 @@ A database is its file plus `<path>-wal`, the write-ahead log, which holds the r
 
 Copying a database's files while it is written is not a backup, even with its `-wal`.
 
-When the newest version of a database or its log is damaged so that opening it would lose acknowledged writes (bit rot, a copy cut short), `chloedb.open` raises `ChloeDBError` naming the file, what is damaged and how to recover, and changes nothing: restore a backup, or open with `recover=True` to accept the loss. That keeps copies of the damaged files first (`<path>.damaged-<time>`, `<path>-wal.damaged`), opens what is left, issues a `RuntimeWarning`, and `db.damaged` says what was lost (it is `None` for a database that opened whole).
+When the newest version of a database or its log is damaged so that opening it would lose acknowledged writes (bit rot, a copy cut short, a log deleted while it held transactions), `chloedb.open` raises `ChloeDBError` naming the file, what is damaged and how to recover, and changes nothing: restore a backup, or open with `recover=True` to accept the loss. That keeps copies of the damaged files first (`<path>.damaged-<time>`, `<path>-wal.damaged`), opens what is left, issues a `RuntimeWarning`, and `db.damaged` says what was lost (it is `None` for a database that opened whole).
 
 ## Writing
 

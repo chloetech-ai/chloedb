@@ -317,6 +317,23 @@ impl Reader {
         if self.probe(session)? != probe || tail.as_ref().map(|t| t.id) != probe.log {
             return Ok(None);
         }
+        // A log missing while the version stayed (a writer starts a new
+        // one only beside the sealed log it renamed away) and the record
+        // names this version: the log was deleted, refused as the writer
+        // refuses it. The message is one `load` reads again before it
+        // believes it.
+        let gone = match &tail {
+            Some(_) => None,
+            None => crate::storage::db::deleted_log(&self.wal_path, session.log_record()?, &meta, manifest.wal_txn)?,
+        };
+        let damaged = match gone {
+            Some(what) if !self.opts.recover => return Err(corrupt(crate::storage::db::refused_deleted_log(&self.path, &what))),
+            Some(what) => Some(match damaged {
+                Some(d) => format!("{what}: reading the version on disk as DbOptions::recover asked; {d}"),
+                None => format!("{what}: reading the version on disk as DbOptions::recover asked"),
+            }),
+            None => damaged,
+        };
         let tail = tail.map(|mut t| {
             t.advance(end, logged);
             t

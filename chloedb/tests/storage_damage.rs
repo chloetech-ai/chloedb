@@ -582,3 +582,282 @@ fn a_crash_in_the_first_commit_opens() {
         db.check().unwrap();
     }
 }
+
+/// The txn of the newest version on disk, in either layout.
+fn version_txn(path: &Path) -> u64 {
+    if path.is_dir() {
+        return chloedb::storage::dir::read_current(path).unwrap().0.txn;
+    }
+    slots(path).into_iter().flatten().max().unwrap()
+}
+
+fn log_of(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        path.join("wal")
+    } else {
+        wal_of(path)
+    }
+}
+
+/// The files beside (or in) the database, and the log record in `WRITER`:
+/// a writer's open rewrites the session in front of it, and nothing else.
+fn files_and_record(dir: &Path, path: &Path) -> (Vec<(String, Vec<u8>)>, Vec<u8>) {
+    let writer = if path.is_dir() { path.join("WRITER") } else { dir.join("db.strata-readers").join("WRITER") };
+    let mut files = files_of(if path.is_dir() { path } else { dir });
+    files.retain(|(n, _)| n != "WRITER");
+    let record = std::fs::read(writer).map(|b| b.get(24..).unwrap_or_default().to_vec()).unwrap_or_default();
+    (files, record)
+}
+
+/// Refused read-write and read-only, naming the log, the version on disk
+/// and `recover`; the read-write refusal.
+fn refused_deleted(path: &Path, o: DbOptions, what: &str) -> String {
+    let txn = version_txn(path);
+    let m = refused(path, o.clone(), what);
+    assert!(
+        m.contains(&log_of(path).display().to_string())
+            && m.contains("is missing")
+            && m.contains("transactions committed after txn ")
+            && m.contains(&format!("the version on disk (txn {txn})"))
+            && m.contains("would lose acknowledged writes")
+            && m.contains("recover"),
+        "{what}: {m}"
+    );
+    let r = refused(path, DbOptions { read_only: true, ..o }, what);
+    assert!(r.contains("is missing") && r.contains(&format!("the version on disk (txn {txn})")) && r.contains("recover"), "{what}, read-only: {r}");
+    m
+}
+
+// A log deleted outright while it held acknowledged transactions: opening
+// started a new, empty one and opened the version on disk without a word,
+// losing them. The file is not written between versions, so the writer's
+// log record in `-readers/WRITER` says the log after that version held
+// some. Refused read-write and read-only, changing nothing; `recover`
+// opens the version on disk, says what was lost, and clears the record.
+#[test]
+fn a_deleted_log_fails_to_open() {
+    use chloedb::storage::Layout;
+    for (layout, sync) in [(Layout::SingleFile, true), (Layout::SingleFile, false), (Layout::Directory, true), (Layout::Directory, false)] {
+        let what = format!("{layout:?}, sync {sync}");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(if layout == Layout::Directory { "db.dir" } else { "db.strata" });
+        let src = Arc::new(MapSource::default());
+        let o = DbOptions { sync, layout, ..opts(&src) };
+        {
+            let db = Database::create(&path, schema(), o.clone()).unwrap();
+            insert(&db, &src, 0..300);
+            db.flush().unwrap();
+            for i in 300..310 {
+                insert(&db, &src, i..i + 1);
+            }
+        }
+        std::fs::remove_file(log_of(&path)).unwrap();
+        let before = files_and_record(dir.path(), &path);
+        assert!(!before.1.is_empty(), "{what}: the writer left a log record");
+        let m = refused_deleted(&path, o.clone(), &what);
+        // A flush is numbered right after the last transaction it holds.
+        assert!(m.contains(&format!("transactions committed after txn {}", version_txn(&path))), "{what}: {m}");
+        assert!(files_and_record(dir.path(), &path) == before, "{what}: opening changed the files");
+
+        let db = Database::open(&path, DbOptions { recover: true, ..o.clone() }).unwrap();
+        let why = db.damaged().expect("says what was lost").to_string();
+        assert!(why.contains("is missing") && why.contains("recover") && why.contains("losing them"), "{what}: {why}");
+        assert_keys(&db.snapshot(), &keys(0..300));
+        db.check().unwrap();
+        drop(db);
+        // The record is cleared: the log the recovered open started holds
+        // nothing, and its loss loses nothing.
+        std::fs::remove_file(log_of(&path)).unwrap();
+        let db = Database::open(&path, o.clone()).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        assert_keys(&db.snapshot(), &keys(0..300));
+        // And the database goes on: a new row, in the log again, is covered.
+        insert(&db, &src, 310..311);
+        drop(db);
+        std::fs::remove_file(log_of(&path)).unwrap();
+        refused_deleted(&path, o.clone(), &what);
+    }
+}
+
+// The log after a version a background flush or a merge made while the
+// log held transactions it does not: the record names that version from
+// when it is made, not from the next append.
+#[test]
+fn a_log_deleted_after_a_background_flush_or_a_merge_fails_to_open() {
+    for merge in [false, true] {
+        let what = if merge { "merge" } else { "background flush" };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        let o = sync_opts(&src);
+        {
+            let db = Database::create(&path, schema(), o.clone()).unwrap();
+            insert(&db, &src, 0..300);
+            if merge {
+                db.flush().unwrap();
+                insert(&db, &src, 300..600);
+                db.flush().unwrap();
+                insert(&db, &src, 600..610);
+                let stats = db.merge(&chloedb::storage::MergePolicy::compact()).unwrap();
+                assert_eq!(stats.merges, 1, "{what}");
+            } else {
+                db.background_flush_with(|| insert(&db, &src, 600..610)).unwrap();
+            }
+        }
+        std::fs::remove_file(wal_of(&path)).unwrap();
+        refused_deleted(&path, o.clone(), what);
+        let db = Database::open(&path, DbOptions { recover: true, ..o }).unwrap();
+        assert_keys(&db.snapshot(), &keys(0..if merge { 600 } else { 300 }));
+    }
+}
+
+// A log that a writer without log records left (a version of ChloeDB from
+// before them, or one whose `-readers` was removed) is covered from the
+// next open that replays it.
+#[test]
+fn a_log_replayed_at_open_is_covered() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    rows_in_the_log(&path, &src);
+    std::fs::remove_dir_all(dir.path().join("db.strata-readers")).unwrap();
+    assert_eq!(Database::open(&path, sync_opts(&src)).unwrap().snapshot().n_live_docs(), 500);
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    refused_deleted(&path, sync_opts(&src), "replayed");
+}
+
+// A clean close flushes and empties the log: deleting it afterwards loses
+// nothing, and the database opens as it was.
+#[test]
+fn a_log_deleted_after_a_clean_close_opens() {
+    use chloedb::db::Db;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    {
+        let db = Db::create(&path, schema(), sync_opts(&src)).unwrap();
+        for i in 0..50u64 {
+            let mut tx = db.storage().begin().unwrap();
+            tx.insert(doc(i, 0)).unwrap();
+            tx.commit().unwrap();
+        }
+        db.close().unwrap();
+    }
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!(db.damaged(), None);
+    assert_keys(&db.snapshot(), &keys(0..50));
+    drop(db);
+    // A flush without a close too.
+    {
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        insert(&db, &src, 50..60);
+        db.flush().unwrap();
+    }
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, DbOptions { read_only: true, ..sync_opts(&src) }).unwrap();
+    assert_keys(&db.snapshot(), &keys(0..60));
+    drop(db);
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!(db.damaged(), None);
+    assert_keys(&db.snapshot(), &keys(0..60));
+}
+
+// What has no log, or another database's record, opens: a database never
+// written; a new database made where another was deleted (its `-readers`
+// left behind, with a record naming the old one); and a checkpoint renamed
+// into place with the old log removed, as backups are restored.
+#[test]
+fn a_missing_log_that_held_nothing_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    drop(Database::create(&path, schema(), sync_opts(&src)).unwrap());
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!((db.snapshot().n_live_docs(), db.damaged()), (0, None));
+    drop(db);
+
+    // Another database at the same path: the record names the first.
+    {
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..10);
+    }
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    assert!(dir.path().join("db.strata-readers").join("WRITER").exists());
+    drop(Database::create(&path, schema(), sync_opts(&src)).unwrap());
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!((db.snapshot().n_live_docs(), db.damaged()), (0, None));
+    drop(db);
+
+    // A checkpoint restored over a database whose log held rows.
+    let backup = dir.path().join("backup.strata");
+    {
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..100);
+        db.checkpoint(&backup, &Default::default()).unwrap();
+        insert(&db, &src, 100..110);
+    }
+    std::fs::rename(&backup, &path).unwrap();
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!(db.damaged(), None);
+    assert_keys(&db.snapshot(), &keys(0..100));
+    db.check().unwrap();
+}
+
+// Databases the release before log records wrote (format_fixtures' newest
+// set, with a transaction in the log): they have no record, and open with
+// their log or without it; the first open that replays the log covers it.
+#[test]
+fn files_from_before_log_records_open() {
+    let set = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fieldids/format3");
+    for dir_layout in [false, true] {
+        let what = if dir_layout { "directory" } else { "one file" };
+        let copy = |with_log: bool| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = if dir_layout {
+                let p = dir.path().join("db.dir");
+                std::fs::create_dir(&p).unwrap();
+                for e in std::fs::read_dir(set.join("db.dir")).unwrap() {
+                    let e = e.unwrap();
+                    if with_log || e.file_name() != "wal" {
+                        std::fs::copy(e.path(), p.join(e.file_name())).unwrap();
+                    }
+                }
+                p
+            } else {
+                let p = dir.path().join("db.strata");
+                std::fs::copy(set.join("db.strata"), &p).unwrap();
+                if with_log {
+                    std::fs::copy(set.join("db.strata-wal"), wal_of(&p)).unwrap();
+                }
+                p
+            };
+            (dir, path)
+        };
+        let o = DbOptions { sync: false, ..DbOptions::default() };
+        let (_d, without) = copy(false);
+        let db = Database::open(&without, DbOptions { read_only: true, ..o.clone() }).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        drop(db);
+        let db = Database::open(&without, o.clone()).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        assert!(db.snapshot().n_live_docs() > 0, "{what}");
+        drop(db);
+
+        let (_d, with) = copy(true);
+        let db = Database::open(&with, DbOptions { read_only: true, ..o.clone() }).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        drop(db);
+        let db = Database::open(&with, o.clone()).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        let stats = db.file_stats();
+        assert!(stats.memtable_docs > 0 || stats.pending_deletes > 0, "{what}: the log's transaction is replayed");
+        drop(db);
+        std::fs::remove_file(log_of(&with)).unwrap();
+        refused_deleted(&with, o.clone(), what);
+    }
+}
