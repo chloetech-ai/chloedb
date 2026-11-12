@@ -3,6 +3,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 
 export class Strata {
@@ -150,16 +151,40 @@ export async function startServer({ bin, db, listen, log, shards = Number(proces
   return startOne({ bin, args: ['--db', db, '--seq-no', '--listen', listen, '--grpc', 'off'], listen, log, db });
 }
 
+// A port of 127.0.0.1 that nothing listens on now, as the system hands one out.
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
+  });
+}
+
+// A shard's ports are the system's free ones, not the ones after `listen`'s:
+// those can be another process's (tests run side by side), and between
+// asking and the server's bind one can still be taken, so a shard that
+// finds its port in use is started again on new ones.
+async function startShard({ bin, db, i, log }) {
+  for (let attempt = 1; ; attempt++) {
+    const http = `127.0.0.1:${await freePort()}`;
+    const grpc = `127.0.0.1:${await freePort()}`;
+    try {
+      const { child } = await startOne({ bin, args: ['--db', `${db}.shard-${i}`, '--seq-no', '--listen', http, '--grpc', grpc], listen: http, log, db });
+      return { child, grpc };
+    } catch (e) {
+      if (attempt >= 5 || !/Address already in use/.test(e.message)) throw e;
+      log(`shard ${i}: a port was taken, starting it again`);
+    }
+  }
+}
+
 async function startCluster({ bin, db, listen, log, shards }) {
-  const port = Number(listen.split(':').pop());
   const kids = [];
   const stop = () => { for (const k of kids) k.kill(); };
   try {
     const grpcs = [];
     for (let i = 0; i < shards; i++) {
-      const http = `127.0.0.1:${port + 1 + 2 * i}`;
-      const grpc = `127.0.0.1:${port + 2 + 2 * i}`;
-      const { child } = await startOne({ bin, args: ['--db', `${db}.shard-${i}`, '--seq-no', '--listen', http, '--grpc', grpc], listen: http, log, db });
+      const { child, grpc } = await startShard({ bin, db, i, log });
       kids.push(child);
       grpcs.push(`http://${grpc}`);
     }
