@@ -62,6 +62,24 @@ struct Target {
     max_shards: usize,
 }
 
+/// What the crawler may reach beyond the public internet.
+#[derive(Args, Clone)]
+struct ReachArgs {
+    /// Fetch from private, loopback and link-local addresses too (an intranet crawl). Without it, and without --allow-host, the crawler reaches the public internet only.
+    #[arg(long, env = "CHLOEDB_CRAWL_ALLOW_PRIVATE")]
+    allow_private: bool,
+    /// A host (HOST or HOST:PORT) reachable whatever its addresses, such as an intranet site (repeatable).
+    #[arg(long)]
+    allow_host: Vec<String>,
+}
+
+impl ReachArgs {
+    fn set(&self) {
+        let hosts = chloedb_crawl::reach::Reach::parse_hosts(&self.allow_host).unwrap_or_else(|e| fail(e));
+        chloedb_crawl::reach::set(chloedb_crawl::reach::Reach { private: self.allow_private, hosts });
+    }
+}
+
 #[derive(Args, Clone)]
 struct SpecArgs {
     /// Where to start.
@@ -164,6 +182,8 @@ struct ServeArgs {
     #[arg(long, env = "CHLOEDB_CRAWL_CONTACT")]
     contact: Option<String>,
     #[command(flatten)]
+    reach: ReachArgs,
+    #[command(flatten)]
     target: Target,
 }
 
@@ -171,6 +191,8 @@ struct ServeArgs {
 struct CrawlArgs {
     #[command(flatten)]
     spec: SpecArgs,
+    #[command(flatten)]
+    reach: ReachArgs,
     #[command(flatten)]
     target: Target,
     /// With --local: keep the cluster serving after the crawl, until Ctrl-C.
@@ -182,6 +204,8 @@ struct CrawlArgs {
 struct PreviewArgs {
     #[command(flatten)]
     spec: SpecArgs,
+    #[command(flatten)]
+    reach: ReachArgs,
     /// Pages to read: the URL and some it links to.
     #[arg(long, default_value_t = 6)]
     pages: usize,
@@ -283,6 +307,7 @@ async fn run() {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Preview(a) => {
+            a.reach.set();
             let spec = a.spec.spec().unwrap_or_else(|e| fail(e));
             match chloedb_crawl::job::preview(&spec, a.pages.max(1)).await {
                 Ok(j) => println!("{}", serde_json::to_string_pretty(&j).expect("json")),
@@ -290,6 +315,7 @@ async fn run() {
             }
         }
         Cmd::Serve(a) => {
+            a.reach.set();
             let token = a.token.clone().or_else(|| a.target.local.as_ref().map(|_| random_token()));
             let listener = tokio::net::TcpListener::bind(&a.listen).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.listen)));
             let me = format!("http://{}", listener.local_addr().map(|x| x.to_string()).unwrap_or(a.listen.clone()));
@@ -316,6 +342,7 @@ async fn run() {
             }
         }
         Cmd::Crawl(a) => {
+            a.reach.set();
             let spec = a.spec.spec().unwrap_or_else(|e| fail(e));
             let (strata, local, grower) = connect(&a.target, None).await;
             let svc = Service::new(strata, grower.clone(), None, local.is_some());

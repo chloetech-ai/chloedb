@@ -1,7 +1,12 @@
-//! Fetching: one HTTP client for a crawl (compressed answers, at most 5
-//! redirects, a timeout, a cap on the size of a page), each host's
-//! robots.txt read before its first page and again after a day, and
-//! sitemaps.
+//! Fetching: one HTTP client for a crawl (compressed answers, a timeout, a
+//! cap on the size of a page), each host's robots.txt read before its first
+//! page and again after a day, and sitemaps.
+//!
+//! Redirects (at most 5) are followed here, not by the client, so that each
+//! hop is a request checked as the first was: its address may be reached
+//! ([`crate::reach`]), its site's robots.txt allows it, and the crawl
+//! follows it (its scope, `include` and `exclude`; audit G-B4). robots.txt
+//! and sitemaps are read to a cap, as pages are (G-B5).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,6 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::OnceCell;
 use url::Url;
 
+use crate::reach::{self, Reach};
 use crate::robots::Robots;
 
 pub const AGENT_TOKEN: &str = "chloedb-crawl";
@@ -27,12 +33,21 @@ pub const ROBOTS_TTL: Duration = Duration::from_secs(24 * 3600);
 /// How long a site whose robots.txt did not answer waits before it is
 /// asked again, unless its Retry-After says.
 pub const ROBOTS_RETRY: Duration = Duration::from_secs(60);
+/// The most of a robots.txt that is read (RFC 9309 asks for at least 500
+/// KiB); the rest is ignored.
+pub const ROBOTS_MAX_BYTES: usize = 500 * 1024;
+/// The most of a sitemap that is read (the sitemaps protocol's limit,
+/// uncompressed); a larger one is skipped.
+pub const SITEMAP_MAX_BYTES: usize = 50 * 1024 * 1024;
+/// Redirects followed from one request.
+pub const MAX_REDIRECTS: usize = 5;
 
 pub struct Fetcher {
     http: reqwest::Client,
     max_bytes: usize,
     robots: Mutex<HashMap<String, Arc<OnceCell<Read>>>>,
     pub obey_robots: bool,
+    reach: Arc<Reach>,
 }
 
 /// A site's robots.txt as read, and until when it holds.
@@ -62,6 +77,10 @@ pub enum Miss {
     /// Not HTML: its content type.
     NotHtml(String),
     TooLarge,
+    /// The address is not one the crawler may reach (why).
+    Private(String),
+    /// A redirect led to a page the crawl does not follow (where).
+    Redirected(String),
     /// 429, 502, 503 or 504: the site is busy; its Retry-After, if any.
     Busy(u16, Option<Duration>),
     Status(u16),
@@ -77,6 +96,8 @@ impl Miss {
             Miss::RobotsUnreachable(..) => "robots_unreachable",
             Miss::NotHtml(_) => "not_html",
             Miss::TooLarge => "too_large",
+            Miss::Private(_) => "private",
+            Miss::Redirected(_) => "redirected_out",
             Miss::Busy(..) => "busy",
             Miss::Status(s) if *s >= 500 => "http_5xx",
             Miss::Status(_) => "http_4xx",
@@ -86,12 +107,12 @@ impl Miss {
     }
 
     pub fn is_error(&self) -> bool {
-        !matches!(self, Miss::Robots | Miss::NotHtml(_))
+        !matches!(self, Miss::Robots | Miss::NotHtml(_) | Miss::Redirected(_))
     }
 
     /// Whether a request went out for it (robots.txt kept it from going).
     pub fn fetched(&self) -> bool {
-        !matches!(self, Miss::Robots | Miss::RobotsUnreachable(..))
+        !matches!(self, Miss::Robots | Miss::RobotsUnreachable(..) | Miss::Private(_))
     }
 
     /// Whether it is the site pushing back, so that the crawler waits
@@ -115,6 +136,8 @@ impl std::fmt::Display for Miss {
             Miss::RobotsUnreachable(why, _) => write!(f, "{why}: nothing is fetched from a site whose robots.txt cannot be read"),
             Miss::NotHtml(t) => write!(f, "not HTML ({t})"),
             Miss::TooLarge => write!(f, "larger than the most a page may be"),
+            Miss::Private(why) => write!(f, "{why}"),
+            Miss::Redirected(to) => write!(f, "redirected to {to}, which the crawl does not follow"),
             Miss::Busy(s, Some(d)) => write!(f, "HTTP {s}: the site is busy and asks to wait {}", secs(*d)),
             Miss::Busy(s, None) => write!(f, "HTTP {s}: the site is busy"),
             Miss::Status(s) => write!(f, "HTTP {s}"),
@@ -170,19 +193,96 @@ pub fn retry_after(h: &reqwest::header::HeaderMap) -> Option<Duration> {
 }
 
 impl Fetcher {
+    /// A fetcher that reaches what this process's crawls may
+    /// ([`reach::current`]).
     pub fn new(agent: &str, timeout: Duration, max_bytes: usize, per_host: usize, obey_robots: bool) -> Fetcher {
+        Fetcher::reaching(agent, timeout, max_bytes, per_host, obey_robots, reach::current())
+    }
+
+    pub fn reaching(agent: &str, timeout: Duration, max_bytes: usize, per_host: usize, obey_robots: bool, reach: Arc<Reach>) -> Fetcher {
+        let reach = Arc::new(Reach::clone(&reach).with_proxies());
         let http = reqwest::Client::builder()
             .user_agent(agent)
             .timeout(timeout)
             .connect_timeout(Duration::from_secs(10).min(timeout))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(reach::Resolver(reach.clone())))
             .pool_max_idle_per_host(per_host.max(1))
             .gzip(true)
             .brotli(true)
             .deflate(true)
             .build()
             .expect("an HTTP client");
-        Fetcher { http, max_bytes, robots: Mutex::new(HashMap::new()), obey_robots }
+        Fetcher { http, max_bytes, robots: Mutex::new(HashMap::new()), obey_robots, reach }
+    }
+
+    /// One GET of `u`, its address checked first; a redirect is answered
+    /// as it came, with where it leads.
+    async fn get_once(&self, u: &Url, timeout: Option<Duration>, accept: Option<&str>) -> Result<(reqwest::Response, Option<Url>), Miss> {
+        self.reach.check(u).map_err(Miss::Private)?;
+        let mut req = self.http.get(u.as_str());
+        if let Some(t) = timeout {
+            req = req.timeout(t);
+        }
+        if let Some(a) = accept {
+            req = req.header("accept", a);
+        }
+        let r = req.send().await.map_err(|e| self.miss(&e))?;
+        let next = match r.status().is_redirection() && r.status() != reqwest::StatusCode::NOT_MODIFIED {
+            true => r.headers().get(reqwest::header::LOCATION).and_then(|l| l.to_str().ok()).and_then(|l| u.join(l).ok()),
+            false => None,
+        };
+        Ok((r, next))
+    }
+
+    /// GET `u`, following redirects by hand, each hop's address checked
+    /// before it is asked (robots.txt and sitemaps: not pages, so no
+    /// robots.txt of their own).
+    async fn get(&self, u: &Url, timeout: Option<Duration>) -> Result<reqwest::Response, Miss> {
+        let mut at = u.clone();
+        for _ in 0..=MAX_REDIRECTS {
+            match self.get_once(&at, timeout, None).await? {
+                (_, Some(next)) => at = next,
+                (r, None) => return Ok(r),
+            }
+        }
+        Err(Miss::Network(format!("more than {MAX_REDIRECTS} redirects")))
+    }
+
+    /// A request's failure as a miss: refused by the resolver, timed out,
+    /// or the network's.
+    fn miss(&self, e: &reqwest::Error) -> Miss {
+        let c = chain(e);
+        if let Some(i) = c.find(reach::REFUSED) {
+            // The resolver's sentence, from its name on.
+            let start = c[..i].rfind(": ").map_or(0, |j| j + 2);
+            return Miss::Private(c[start..].chars().take(200).collect());
+        }
+        if e.is_timeout() {
+            Miss::Timeout
+        } else {
+            Miss::Network(short_error(e))
+        }
+    }
+
+    /// Whether the site's robots.txt lets the crawler fetch `u` (when it
+    /// obeys robots.txt).
+    async fn allowed(&self, u: &Url) -> Result<(), Miss> {
+        if !self.obey_robots {
+            return Ok(());
+        }
+        let (robots, until) = self.robots_read(u).await;
+        if let Some(why) = &robots.unreachable {
+            return Err(Miss::RobotsUnreachable(why.clone(), until.saturating_duration_since(Instant::now())));
+        }
+        let pq = match u.query() {
+            Some(q) => format!("{}?{}", u.path(), q),
+            None => u.path().to_string(),
+        };
+        if !robots.allowed(&pq) {
+            return Err(Miss::Robots);
+        }
+        Ok(())
     }
 
     /// The robots.txt of the URL's host (scheme and port too), read once
@@ -215,13 +315,16 @@ impl Fetcher {
     /// 5xx, a 429 or no answer refuses everything until it is read again
     /// in a minute (or when its Retry-After says, up to 10 minutes).
     async fn read_robots(&self, origin: &str) -> (Robots, Duration) {
-        let url = format!("{origin}/robots.txt");
-        let r = match self.http.get(&url).timeout(Duration::from_secs(15)).send().await {
+        let Ok(url) = Url::parse(&format!("{origin}/robots.txt")) else { return (Robots::allow_all(), ROBOTS_RETRY) };
+        let r = match self.get(&url, Some(Duration::from_secs(15))).await {
             Ok(r) => r,
+            // An address the crawler may not reach: its pages are refused
+            // the same way, with the reason.
+            Err(Miss::Private(_)) => return (Robots::allow_all(), ROBOTS_RETRY),
             // No such host: no site to keep rules for (its pages fail too).
-            Err(e) if e.is_connect() && chain(&e).contains("dns") => return (Robots::allow_all(), ROBOTS_RETRY),
-            Err(e) if e.is_timeout() => return (Robots::unreachable("robots.txt did not answer in time".into()), ROBOTS_RETRY),
-            Err(e) => return (Robots::unreachable(format!("robots.txt could not be read ({})", short_error(&e))), ROBOTS_RETRY),
+            Err(Miss::Network(e)) if e.to_ascii_lowercase().contains("dns") || e.contains("failed to lookup") => return (Robots::allow_all(), ROBOTS_RETRY),
+            Err(Miss::Timeout) => return (Robots::unreachable("robots.txt did not answer in time".into()), ROBOTS_RETRY),
+            Err(m) => return (Robots::unreachable(format!("robots.txt could not be read ({m})")), ROBOTS_RETRY),
         };
         let status = r.status().as_u16();
         if status == 429 || (500..600).contains(&status) {
@@ -231,35 +334,45 @@ impl Fetcher {
         if status != 200 {
             return (Robots::allow_all(), ROBOTS_TTL);
         }
-        match r.text().await {
-            Ok(t) => (Robots::parse(&t[..t.floor_char_boundary(500_000)], &AGENT_TOKENS), ROBOTS_TTL),
-            Err(e) => (Robots::unreachable(format!("robots.txt could not be read ({})", short_error(&e))), ROBOTS_RETRY),
+        match read_capped(r, ROBOTS_MAX_BYTES).await {
+            Ok((b, _)) => (Robots::parse(&String::from_utf8_lossy(&b), &AGENT_TOKENS), ROBOTS_TTL),
+            Err(e) => (Robots::unreachable(format!("robots.txt could not be read ({e})")), ROBOTS_RETRY),
         }
     }
 
-    /// Fetches a page: HTML only, at most `max_bytes`, as text.
+    /// Fetches a page: HTML only, at most `max_bytes`, as text; a redirect
+    /// is followed when its site's robots.txt allows the page it leads to.
     pub async fn page(&self, u: &Url) -> Result<Got, Miss> {
-        if self.obey_robots {
-            let (robots, until) = self.robots_read(u).await;
-            if let Some(why) = &robots.unreachable {
-                return Err(Miss::RobotsUnreachable(why.clone(), until.saturating_duration_since(Instant::now())));
-            }
-            let pq = match u.query() {
-                Some(q) => format!("{}?{}", u.path(), q),
-                None => u.path().to_string(),
-            };
-            if !robots.allowed(&pq) {
-                return Err(Miss::Robots);
-            }
-        }
+        self.page_following(u, &|_| true).await
+    }
+
+    /// [`Fetcher::page`], following a redirect only to a page `follows`
+    /// takes: the crawl's own test of a link.
+    pub async fn page_following(&self, u: &Url, follows: &(dyn Fn(&Url) -> bool + Sync)) -> Result<Got, Miss> {
+        self.reach.check(u).map_err(Miss::Private)?;
+        self.allowed(u).await?;
         let t0 = Instant::now();
-        let r = self.http.get(u.as_str()).header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5").send().await.map_err(|e| {
-            if e.is_timeout() {
-                Miss::Timeout
-            } else {
-                Miss::Network(short_error(&e))
+        // Each hop is a page of its own: followed only where the crawl
+        // goes, and where its site's robots.txt allows.
+        let mut at = u.clone();
+        let mut hops = 0;
+        let r = loop {
+            match self.get_once(&at, None, Some("text/html,application/xhtml+xml;q=0.9,*/*;q=0.5")).await? {
+                (r, None) => break r,
+                (_, Some(next)) => {
+                    hops += 1;
+                    if hops > MAX_REDIRECTS {
+                        return Err(Miss::Network(format!("more than {MAX_REDIRECTS} redirects")));
+                    }
+                    self.reach.check(&next).map_err(Miss::Private)?;
+                    if !follows(&next) {
+                        return Err(Miss::Redirected(next.to_string()));
+                    }
+                    self.allowed(&next).await?;
+                    at = next;
+                }
             }
-        })?;
+        };
         let status = r.status().as_u16();
         let final_url = r.url().clone();
         let ctype = r.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
@@ -298,11 +411,13 @@ impl Fetcher {
             if out.len() >= limit {
                 break;
             }
-            let Ok(r) = self.http.get(&u).timeout(Duration::from_secs(20)).send().await else { continue };
+            let Ok(at) = Url::parse(&u) else { continue };
+            let Ok(r) = self.get(&at, Some(Duration::from_secs(20))).await else { continue };
             if !r.status().is_success() {
                 continue;
             }
-            let Ok(text) = r.text().await else { continue };
+            let Ok((bytes, false)) = read_capped(r, SITEMAP_MAX_BYTES).await else { continue };
+            let text = String::from_utf8_lossy(&bytes);
             let index = text.contains("<sitemapindex");
             for loc in locs(&text) {
                 if index {
@@ -316,6 +431,21 @@ impl Fetcher {
         }
         out
     }
+}
+
+/// An answer's body, read in chunks to at most `cap` bytes (decompressed),
+/// and whether there was more.
+async fn read_capped(mut r: reqwest::Response, cap: usize) -> Result<(Vec<u8>, bool), String> {
+    let mut out = Vec::new();
+    while let Some(chunk) = r.chunk().await.map_err(|e| short_error(&e))? {
+        let room = cap - out.len();
+        if chunk.len() > room {
+            out.extend_from_slice(&chunk[..room]);
+            return Ok((out, true));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok((out, false))
 }
 
 /// The `<loc>`s of a sitemap.

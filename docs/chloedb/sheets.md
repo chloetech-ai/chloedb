@@ -64,7 +64,7 @@ target/release/chloedb-sheets export <workbook id> -o budget.xlsx --strata http:
 
 ## The app
 
-**Sheets** lists the workbooks, newest first, the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes).
+**Sheets** lists the workbooks, newest first, the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes). A file is not trusted: a SQLite file's views come in only when named (a view runs its query as it is read, and that query may not end), and reading one stops after 60 s for the list of tables and 180 s for the import; an xlsx file may expand to at most 512 MB and hold at most 2 million cells.
 
 ![A workbook: a color scale, data bars, number formats, a frozen header row and a stacked column chart over the sheet](../assets/img/strata-sheets-workbook.png)
 
@@ -102,7 +102,7 @@ Each route is under the app's address (through chloedb-server: `/v1/apps/sheets/
 |---|---|
 | `GET /v1/books`, `POST /v1/books {name}` | the workbooks; a new one |
 | `POST /v1/import?name=&format=&tables=&header=` | a file (the body) as a new workbook: xlsx, csv, tsv or sqlite (by default what the bytes are); a SQLite file's `tables`, a CSV file's `header` |
-| `POST /v1/sqlite/tables` | a SQLite file's tables, their columns and row counts |
+| `POST /v1/sqlite/tables` | a SQLite file's tables, their columns and row counts, and its views (`"kind": "view"`, not counted) |
 | `POST /v1/from-table {table \| sql, name, limit}` | a table of the cluster, or a SELECT's answer, as a new workbook |
 | `GET /v1/search?q=&limit=` | the cells and workbooks that hold the words |
 | `GET`, `DELETE /v1/books/<id>` | a workbook's summary (sheets, names, charts, queries, filters, whether it can undo); deleting it |

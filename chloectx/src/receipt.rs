@@ -53,11 +53,10 @@ pub const MAX_ROWS: usize = 40;
 pub const MORE_FULL: usize = 3;
 pub const MORE_BRIEF: usize = 5;
 
-/// A token estimate: four characters a token. (ChloeDB's `PACK` will
-/// count with `chloedb::query::pack::count_tokens`; receipts switch to it
-/// when it lands, so both count alike.)
+/// A token estimate, counted as ChloeDB's `PACK` counts, so a receipt and
+/// a `PACK ... WITH RECEIPT` answer agree on what a text costs.
 pub fn tokens(s: &str) -> usize {
-    s.chars().count().div_ceil(4)
+    chloedb::query::pack::count_tokens(s)
 }
 
 pub fn sha(s: &str) -> String {

@@ -58,8 +58,8 @@ result), or `skip: ` with the reason: `shown before`, `over budget`,
 `per-turn cap`, `record cap`, `uncertain`, `same question`, `shown as
 knowledge`, `the gate held back`, `below the limit`. The words are those of
 ChloeDB's `PACK` receipts, so a ChloeCtx receipt and a `PACK ... WITH
-RECEIPT` answer read alike. Tokens are estimated at four characters each
-until ChloeDB's own counter lands.
+RECEIPT` answer read alike, and tokens are counted as `PACK` counts them
+(`chloedb::query::pack::count_tokens`).
 
 Receipts live in their own ChloeDB file beside the store,
 `receipts.strata` (table `receipts`). The store's file and its format are

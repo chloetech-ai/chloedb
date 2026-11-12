@@ -176,6 +176,12 @@ struct Args {
     /// such query asks every shard first).
     #[arg(long, default_value_t = chloedb_server::coord::STATS_CACHE_TERMS)]
     stats_cache_terms: usize,
+    /// With --shards: send a write to every server of a shard whose servers
+    /// do not replicate (none started with --replicas or --replica), each
+    /// taking it on its own. Without it such a shard serves reads only: its
+    /// copies would diverge, and nothing would ever make them agree again.
+    #[arg(long)]
+    write_every_copy: bool,
     /// With --shards: the StrataCluster (namespace/name) that runs this
     /// coordinator on Kubernetes, read and scaled through the API server as
     /// the pod's service account (the operator sets it).
@@ -480,6 +486,20 @@ struct Args {
     /// stops taking connections; then end the requests under way and stop.
     #[arg(long, env = "CHLOEDB_DRAIN_MS", default_value_t = 0)]
     drain_ms: u64,
+    /// Once the server stops taking connections, how long the requests
+    /// under way have to end (a follower's feed ends at once) before it
+    /// stops anyway: keep the drain time and this within the time a
+    /// supervisor waits (30 s in Kubernetes).
+    #[arg(long, env = "CHLOEDB_STOP_GRACE_MS", default_value_t = 20_000)]
+    stop_grace_ms: u64,
+    /// The connections the HTTP listeners hold open at once; past it, new
+    /// ones wait to be accepted (0: three quarters of the open-file limit).
+    #[arg(long, env = "CHLOEDB_MAX_CONNECTIONS", default_value_t = 0)]
+    max_connections: usize,
+    /// The longest a client may take to send a request's headers, and the
+    /// longest an idle connection stays open, in seconds.
+    #[arg(long, env = "CHLOEDB_HEADER_TIMEOUT_SECS", default_value_t = 30)]
+    header_timeout_secs: u64,
     /// Do not count how often each document is retrieved and each key
     /// asked for (the index inspector's reads; counted in memory by
     /// default, cheaply: see docs/chloedb/server.md).
@@ -1093,6 +1113,7 @@ async fn run() {
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
             stats_cache_terms: a.stats_cache_terms,
+            write_every_copy: a.write_every_copy,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {
@@ -1228,7 +1249,11 @@ async fn run() {
         }
     };
     let (http, ip) = bind(&a.listen).await;
-    let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls };
+    let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls, limits: auth::Limits {
+        header_read: std::time::Duration::from_secs(a.header_timeout_secs.max(1)),
+        max_connections: a.max_connections,
+        stop_grace: std::time::Duration::from_millis(a.stop_grace_ms),
+    } };
     // fleet: a coordinator names itself to its shards, which tell the others.
     if coordinator {
         let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));

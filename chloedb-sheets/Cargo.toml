@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-sheets"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Spreadsheets on Strata: workbooks whose cells are rows of Strata tables, the cluster's tables opened as live sheets, xlsx, SQLite and CSV in and out"
@@ -24,6 +24,9 @@ csv = "1"
 # SQLite files read into sheets (into Strata tables, chloedb-server reads them).
 rusqlite = { version = "0.41", features = ["bundled"] }
 tempfile = "3"
+# The xlsx reader IronCalc uses, read here first to bound what a file
+# expands to (the version and features IronCalc's are).
+zip = { version = "9.4.2", default-features = false, features = ["deflate"] }
 libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }

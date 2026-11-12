@@ -235,3 +235,111 @@ fn a_boosted_sparse_score_ranks_every_match() {
         assert!(plan.contains("sparse") && plan.contains("ranks by the expression") && plan.contains("rank-safe"), "{sql}:\n{plan}");
     }
 }
+
+/// A sparse term holding `\0` was accepted, and the next flush panicked
+/// building its dictionary: on the flusher thread, which then stopped for
+/// good, and again at every reopen, which replays the row (audit S-1).
+/// It is refused when written, by SQL, a transaction or a load, and
+/// flushing goes on.
+#[test]
+fn a_sparse_term_with_a_zero_byte_is_refused_and_flushing_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("z.strata");
+    let opts = DbOptions { memtable_max_docs: 50, memtable_chunk_docs: 16, segment_max_docs: 700, sync: false, ..DbOptions::default() };
+    let db = Db::create(&path, schema(), opts.clone()).unwrap();
+    db.spawn_flusher();
+    let bad = r#"{"a\u0000b": 1, "ok": 2}"#;
+    let e = db.sql(&format!("INSERT INTO docs (id, year, splade) VALUES ('z', 1, '{bad}')"), &Params::new()).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("\\0"), "{e:?}");
+    let row = |id: &str, s: &str| vec![Value::Str(id.into()), Value::Int(1), Value::Null, Value::Str(s.into())];
+    let stored = {
+        let mut t = db.storage().begin().unwrap();
+        match t.insert(row("z", bad)) {
+            Err(_) => false,
+            Ok(_) => t.commit().is_ok(),
+        }
+    };
+    assert!(!stored, "a transaction stored the term");
+    assert!(db.load([row("z", bad)]).is_err());
+    // Enough rows to fill the memtable twice over: the flusher keeps up.
+    for i in 0..200 {
+        db.sql(&format!("INSERT INTO docs (id, year, splade) VALUES ('d{i}', 1, '{{\"ok\": 1, \"t{i}\": 0.5}}')"), &Params::new()).unwrap();
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while db.storage().file_stats().memtable_docs > 50 {
+        assert!(std::time::Instant::now() < deadline, "the flusher did not catch up");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(db.storage().flush_error().is_none());
+    db.storage().flush().unwrap();
+    let q = Params::new().set("q", Value::Str(r#"{"ok": 1}"#.into()));
+    let r = db.query("SELECT id FROM docs ORDER BY similarity(splade, :q) DESC LIMIT 500", &q).unwrap();
+    assert_eq!(r.rows.len(), 200);
+    drop(db);
+    let db = Db::open(&path, opts).unwrap();
+    assert_eq!(db.query("SELECT id FROM docs ORDER BY similarity(splade, :q) DESC LIMIT 500", &q).unwrap().rows.len(), 200);
+}
+
+/// A row written before terms were checked may hold a term with `\0`, in
+/// a log no flush could empty (each one panicked). It is still a valid
+/// row: the log replays whole, with the writes after it (a row replay did
+/// not take would make the log damaged from there on), the flush that
+/// follows leaves that term out of the index, and the row reads as it was
+/// written.
+#[test]
+fn a_logged_row_with_a_zero_byte_term_replays_and_flushes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.strata");
+    let wal = dir.path().join("old.strata-wal");
+    let opts = DbOptions { memtable_max_docs: 1_000_000, sync: true, ..DbOptions::default() };
+    let db = Db::create(&path, schema(), opts.clone()).unwrap();
+    // The row as an earlier version logged it: written with a stand-in of
+    // the escape's length, which is then changed in the log.
+    let (stand_in, escape) = (r#""aQQQQQQb""#, r#""a\u0000b""#);
+    db.sql(&format!("INSERT INTO docs (id, year, splade) VALUES ('old', 1, '{{{stand_in}: 1, \"ok\": 2}}')"), &Params::new()).unwrap();
+    for i in 0..5 {
+        db.sql(&format!("INSERT INTO docs (id, year, splade) VALUES ('d{i}', 1, '{{\"ok\": 1}}')"), &Params::new()).unwrap();
+    }
+    // The files as a crash now would leave them.
+    let copy = dir.path().join("copy.strata");
+    let copy_wal = dir.path().join("copy.strata-wal");
+    std::fs::copy(&path, &copy).unwrap();
+    let mut log = std::fs::read(&wal).unwrap();
+    let at = log.windows(stand_in.len()).position(|w| w == stand_in.as_bytes()).expect("the row in the log");
+    log[at..at + stand_in.len()].copy_from_slice(escape.as_bytes());
+    // Each record's checksum, after the log's 16-byte header.
+    let mut pos = 16;
+    while pos + 8 <= log.len() {
+        let len = u32::from_le_bytes(log[pos..pos + 4].try_into().unwrap()) as usize;
+        let Some(end) = (pos + 8).checked_add(len).filter(|&e| e <= log.len()) else { break };
+        let crc = crc32fast::hash(&log[pos + 8..end]);
+        log[pos + 4..pos + 8].copy_from_slice(&crc.to_le_bytes());
+        pos = end;
+    }
+    std::fs::write(&copy_wal, &log).unwrap();
+    drop(db);
+
+    let ids = |db: &Db| {
+        let q = Params::new().set("q", Value::Str(r#"{"ok": 1}"#.into()));
+        let mut ids = keys(&db.query("SELECT id FROM docs ORDER BY similarity(splade, :q) DESC LIMIT 100", &q).unwrap());
+        ids.sort();
+        ids
+    };
+    let want: Vec<String> = ["d0", "d1", "d2", "d3", "d4", "old"].iter().map(|s| s.to_string()).collect();
+    let db = Db::open(&copy, opts.clone()).unwrap();
+    assert!(db.storage().damaged().is_none(), "{:?}", db.storage().damaged());
+    assert_eq!(ids(&db), want, "from the log");
+    db.storage().flush().unwrap();
+    assert_eq!(ids(&db), want, "from the segment");
+    let r = db.query("SELECT splade FROM docs WHERE id = 'old'", &Params::new()).unwrap();
+    let stored = chloedb::text::sparse::parse_stored(&r.rows[0][0]).unwrap();
+    assert_eq!(stored, vec![("a\0b".to_string(), 1.0), ("ok".to_string(), 2.0)]);
+    // The row can be written again without the term, or with another
+    // column changed; the term itself is refused in a new value.
+    db.sql("UPDATE docs SET year = 2 WHERE id = 'old'", &Params::new()).unwrap();
+    assert!(db.sql(&format!("UPDATE docs SET splade = '{{{escape}: 1}}' WHERE id = 'old'"), &Params::new()).is_err());
+    db.storage().flush().unwrap();
+    db.storage().check().unwrap();
+    drop(db);
+    assert_eq!(ids(&Db::open(&copy, opts).unwrap()), want);
+}

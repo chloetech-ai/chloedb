@@ -30,10 +30,24 @@ pub const SCALE: f32 = 1024.0;
 /// The largest weight a document can store (the posting frequency limit).
 pub const MAX_WEIGHT: f32 = ((1u32 << 24) - 1) as f32 / SCALE;
 
-/// The terms and weights of a sparse value: a JSON object in a string
-/// (`Null` is empty). Weights must be finite and non-negative; a term given
-/// twice keeps its last weight (JSON objects do not repeat keys).
+/// The terms and weights of a new sparse value or a query's: a JSON
+/// object in a string (`Null` is empty). Weights must be finite and
+/// non-negative; a term given twice keeps its last weight (JSON objects do
+/// not repeat keys). A term must not hold the character `\0`, which no
+/// dictionary stores.
 pub fn parse(v: &Value) -> Result<Vec<(String, f32)>> {
+    let terms = parse_stored(v)?;
+    if let Some((t, _)) = terms.iter().find(|(t, _)| t.contains('\0')) {
+        return Err(Error::Schema(format!("a sparse term must not hold the character \\0, as {t:?} does")));
+    }
+    Ok(terms)
+}
+
+/// [`parse`] of a value a row holds, with any term: terms were not checked
+/// at first, so a row written then (in a segment, or still in the log) may
+/// hold one with `\0`. Such a row stays valid, and readable as written;
+/// its index leaves that term out.
+pub fn parse_stored(v: &Value) -> Result<Vec<(String, f32)>> {
     let s = match v {
         Value::Null => return Ok(Vec::new()),
         Value::Str(s) => s,
@@ -80,7 +94,11 @@ impl FieldIndexBuilder for SparseBuilder {
         if doc as usize != self.n {
             return Err(Error::Schema(format!("sparse field {}: document {doc} added out of order", self.field)));
         }
-        let terms: Vec<(String, u32)> = parse(value)?.into_iter().map(|(t, w)| (t, quantise(w))).filter(|(_, q)| *q > 0).collect();
+        // A term a dictionary cannot hold (in a row written before `parse`
+        // refused it) is left out of the index, not a failed build: the
+        // row stays as it was written.
+        let terms: Vec<(String, u32)> =
+            parse_stored(value)?.into_iter().filter(|(t, _)| !t.contains('\0')).map(|(t, w)| (t, quantise(w))).filter(|(_, q)| *q > 0).collect();
         self.text.add_weighted(&terms);
         self.n += 1;
         Ok(())

@@ -419,8 +419,12 @@ impl Reader {
                 return;
             }
             drop(stop);
-            if let Err(e) = self.sync(REFRESH_IDLE, false) {
-                tracing::warn!(path = %self.path.display(), error = %e, "a read-only database could not follow its writer");
+            // A panic while following is a failed refresh, tried again in
+            // a second, not the end of the thread.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.sync(REFRESH_IDLE, false))) {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(path = %self.path.display(), error = %e, "a read-only database could not follow its writer"),
+                Err(_) => tracing::warn!(path = %self.path.display(), "following the writer panicked; the reader tries again"),
             }
             stop = lock(&self.stop);
         }
