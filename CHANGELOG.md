@@ -133,6 +133,10 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
 - `ppr` gives the same scores when every edge weight is scaled alike, so
   counts work as weights (weights of 1,000 used to return nothing at the
   default `eps`); `max_pushes_reached` is reported when a walk stops early.
+  Its rankings move on MovieLens-1M (the recommender gate's fixtures):
+  Recall@100 0.568 to 0.577 and coverage@10 0.528 to 0.475 leaving one
+  out, Recall@10 0.059 to 0.062 on the time split, where it now beats
+  both baselines.
 - Vectors: an unfiltered segment small enough to scan is searched exactly,
   the cost model scales with dimension, and the default `ef` is 200
   (was 64): on 20,000 random 64-dimension vectors the default now finds
