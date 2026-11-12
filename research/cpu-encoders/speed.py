@@ -1,13 +1,13 @@
 """Throughput of each encoder on the same texts, nothing else running:
-documents per second (512 SciFact abstracts, about 300 tokens each) and
-the latency of one query (median over 200 SciFact claims, batch of one),
+documents per second (256 SciFact abstracts, about 300 tokens each) and
+the latency of one query (median over 100 SciFact claims, batch of one),
 at 1 and 4 threads."""
 import os, sys, time, json
 import numpy as np, torch
 from common import load, hf
 
 _, texts, _, qs, _ = load("scifact")
-docs, queries = texts[:512], qs[:200]
+docs, queries = texts[:256], qs[:100]
 
 
 def bench(name, make, threads):

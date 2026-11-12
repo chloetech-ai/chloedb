@@ -18,6 +18,10 @@
 //! * [`SiglipEmbedder`] (feature `vision`): SigLIP's image and text
 //!   towers through candle, `siglip-base-patch16-224`. A tenth of a second
 //!   an image on a few cores.
+//! * [`OnnxEmbedder`] (feature `onnx`): any encoder exported to ONNX
+//!   (`model.onnx`), run by ONNX Runtime, such as a ModernBERT embedder
+//!   (`granite-embedding-small-english-r2`) quantised to int8: CLS or mean
+//!   pooling as its sentence-transformers configuration says.
 //! * [`HashEmbedder`]: feature hashing of words (`hash:<dim>`), and of an
 //!   image's colours, for tests and demos without model files; it matches
 //!   words and colours, not meanings. For a multi-vector field each word is
@@ -393,15 +397,20 @@ pub fn catalog(models: &Path) -> Vec<Listed> {
                 None => Err(format!("{}: not JSON", endpoint.display())),
             };
             out.push(Listed { name, dim, hosted: true, what: format!("{api} endpoint ({})", endpoint.display()), ready });
-        } else if dir.join("model.safetensors").exists() {
+        } else if dir.join("model.safetensors").exists() || dir.join(crate::query::cross_encoder::ONNX).exists() {
             let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
             // Ranking models and cross-encoders live here too; only embedders are listed.
-            let kind = config["model_type"].as_str().unwrap_or("model2vec").to_string();
+            let onnx = !dir.join("model.safetensors").exists();
+            let kind = format!("{}{}", config["model_type"].as_str().unwrap_or("model2vec"), if onnx { " (ONNX)" } else { "" });
             if config["architectures"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str().is_some_and(|s| s.contains("SequenceClassification")))) {
                 continue;
             }
             let dim = config["hidden_size"].as_u64().map(|d| d as usize);
-            out.push(Listed { name, dim, hosted: false, what: format!("{kind} model in {}", dir.display()), ready: Ok(()) });
+            let ready = match onnx && !cfg!(feature = "onnx") {
+                true => Err("built without the `onnx` feature".to_string()),
+                false => Ok(()),
+            };
+            out.push(Listed { name, dim, hosted: false, what: format!("{kind} model in {}", dir.display()), ready });
         }
     }
     out
@@ -520,6 +529,12 @@ pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dy
         return Err(model_err(format!("model {model} is a hosted model ({}): build with the `hosted` feature", ep.api.as_str())));
     }
     let _ = dim;
+    if !has_weights && dir.join(crate::query::cross_encoder::ONNX).exists() {
+        #[cfg(feature = "onnx")]
+        return Ok(Arc::new(OnnxEmbedder::open(&dir)?));
+        #[cfg(not(feature = "onnx"))]
+        return Err(model_err(format!("model {model} is an ONNX model: build with the `onnx` feature")));
+    }
     if !has_weights {
         return Err(model_err(format!("model {model}: no {} (fetch it first)", dir.join("model.safetensors").display())));
     }
@@ -967,6 +982,146 @@ pub fn fnv(s: &str) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+// ---------------------------------------------------------------- onnx
+
+/// An encoder exported to ONNX (`model.onnx`, taking `input_ids` and
+/// `attention_mask`, and `token_type_ids` if a BERT's), run by ONNX
+/// Runtime on every core, its vector the first token's output (CLS) or the
+/// mean of its tokens', as the directory's sentence-transformers files
+/// say (`1_Pooling/config.json`; CLS if there are none). A query is
+/// prefixed with the model's query prompt
+/// (`config_sentence_transformers.json`), if it has one, and a text is cut
+/// to `max_seq_length` tokens (`sentence_bert_config.json`; at most 512).
+/// An int8 export
+/// (ONNX Runtime's dynamic quantisation) runs a ModernBERT about twice as
+/// fast as float32, within 0.01 nDCG@10 of it on BEIR.
+#[cfg(feature = "onnx")]
+pub struct OnnxEmbedder {
+    tokenizer: tokenizers::Tokenizer,
+    session: std::sync::Mutex<ort::session::Session>,
+    types: bool,
+    mean: bool,
+    pad: u32,
+    dim: usize,
+    query_prefix: String,
+    name: String,
+}
+
+#[cfg(feature = "onnx")]
+impl OnnxEmbedder {
+    /// Texts in one run, sorted by length so that little of it is padding.
+    const BATCH: usize = 32;
+
+    pub fn open(dir: &Path) -> Result<OnnxEmbedder> {
+        use ort::session::builder::GraphOptimizationLevel;
+        use ort::session::Session;
+        let e = |x: String| model_err(format!("{}: {x}", dir.display()));
+        let json = |f: &str| -> Option<serde_json::Value> { std::fs::read_to_string(dir.join(f)).ok().and_then(|t| serde_json::from_str(&t).ok()) };
+        let config = json("config.json").unwrap_or_default();
+        let pooling = json("1_Pooling/config.json").unwrap_or_default();
+        let mean = pooling["pooling_mode_mean_tokens"].as_bool().unwrap_or(false) && !pooling["pooling_mode_cls_token"].as_bool().unwrap_or(false);
+        let query_prefix = json("config_sentence_transformers.json").and_then(|c| c["prompts"]["query"].as_str().map(String::from)).unwrap_or_default();
+        let pad = config["pad_token_id"].as_u64().unwrap_or(0) as u32;
+        // sentence-transformers' max_seq_length, if set, else the model's
+        // positions, at most 512: fewer tokens run faster (128 tokens embed
+        // about 7 times faster than 512, for 0.01 to 0.04 nDCG@10 on BEIR).
+        let max_tokens = json("sentence_bert_config.json")
+            .and_then(|c| c["max_seq_length"].as_u64())
+            .or_else(|| config["max_position_embeddings"].as_u64())
+            .map_or(512, |n| n as usize)
+            .min(512);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let session = Session::builder(crate::query::cross_encoder::onnx_environment().map_err(|x| e(x.to_string()))?)
+            .map_err(|x| e(x.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|x| e(x.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|x| e(x.to_string()))?
+            .commit_from_file(dir.join(crate::query::cross_encoder::ONNX))
+            .map_err(|x| e(format!("model.onnx: {x}")))?;
+        let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
+        if !names.iter().any(|n| n == "input_ids") || !names.iter().any(|n| n == "attention_mask") {
+            return Err(e("model.onnx does not take input_ids and attention_mask".into()));
+        }
+        let types = names.iter().any(|n| n == "token_type_ids");
+        let dim = config["hidden_size"].as_u64().or_else(|| config["dim"].as_u64()).ok_or_else(|| e("config.json has no hidden_size".into()))? as usize;
+        let mut tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|x| e(x.to_string()))?;
+        tokenizer.with_truncation(Some(tokenizers::TruncationParams { max_length: max_tokens, ..Default::default() })).map_err(|x| e(x.to_string()))?;
+        tokenizer.with_padding(None);
+        let name = format!("onnx:{}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        Ok(OnnxEmbedder { tokenizer, session: std::sync::Mutex::new(session), types, mean, pad, dim, query_prefix, name })
+    }
+
+    fn run(&self, enc: &[&tokenizers::Encoding]) -> Result<Vec<Vec<f32>>> {
+        use ort::value::Tensor;
+        let attempt = || -> std::result::Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+            let (n, len) = (enc.len(), enc.iter().map(|e| e.len()).max().unwrap_or(0).max(1));
+            let (mut ids, mut mask) = (vec![self.pad as i64; n * len], vec![0i64; n * len]);
+            for (k, e) in enc.iter().enumerate() {
+                for (j, &id) in e.get_ids().iter().enumerate() {
+                    ids[k * len + j] = id as i64;
+                    mask[k * len + j] = 1;
+                }
+            }
+            let shape = vec![n as i64, len as i64];
+            let tensor = |v: Vec<i64>| Tensor::from_array((shape.clone(), v));
+            let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+            let outputs = match self.types {
+                true => session.run(ort::inputs!["input_ids" => tensor(ids)?, "attention_mask" => tensor(mask.clone())?, "token_type_ids" => tensor(vec![0i64; n * len])?])?,
+                false => session.run(ort::inputs!["input_ids" => tensor(ids)?, "attention_mask" => tensor(mask.clone())?])?,
+            };
+            let (shape, h) = outputs[0].try_extract_tensor::<f32>()?;
+            let d = *shape.last().ok_or("the model's output has no dimensions")? as usize;
+            if d != self.dim || h.len() != n * len * d {
+                return Err(format!("the model's output is {shape:?}, not [{n}, {len}, {}]", self.dim).into());
+            }
+            Ok((0..n)
+                .map(|k| {
+                    let mut v = vec![0f32; d];
+                    let rows = if self.mean { 0..enc[k].len() } else { 0..1 };
+                    let count = rows.len().max(1) as f32;
+                    for j in rows {
+                        v.iter_mut().zip(&h[(k * len + j) * d..(k * len + j + 1) * d]).for_each(|(a, &x)| *a += x / count);
+                    }
+                    normalize(&mut v);
+                    v
+                })
+                .collect())
+        };
+        attempt().map_err(|e| model_err(format!("{}: {e}", self.name)))
+    }
+}
+
+#[cfg(feature = "onnx")]
+impl Embedder for OnnxEmbedder {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    /// ONNX Runtime runs a batch on every core itself.
+    fn parallel(&self) -> bool {
+        false
+    }
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let enc = self.tokenizer.encode_batch(texts.to_vec(), true).map_err(|e| model_err(format!("{}: {e}", self.name)))?;
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&i| enc[i].len());
+        let mut out = vec![Vec::new(); texts.len()];
+        for chunk in order.chunks(Self::BATCH) {
+            let batch: Vec<&tokenizers::Encoding> = chunk.iter().map(|&i| &enc[i]).collect();
+            for (&i, v) in chunk.iter().zip(self.run(&batch)?) {
+                out[i] = v;
+            }
+        }
+        Ok(out)
+    }
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        Ok(self.embed(&[&format!("{}{text}", self.query_prefix)])?.pop().unwrap_or_default())
+    }
 }
 
 // ---------------------------------------------------------------- bert
