@@ -37,6 +37,7 @@ pub mod chloectx;
 pub mod crawler;
 pub mod follow;
 pub mod kube;
+pub mod lease;
 pub mod sheets;
 pub mod upgrade;
 

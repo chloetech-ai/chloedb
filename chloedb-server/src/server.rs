@@ -436,6 +436,12 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         match crate::operator::kube::Link::new(c) {
             Ok(l) => {
                 tracing::info!(cluster = %c, "run by the Kubernetes operator: the command center shows and scales the StrataCluster");
+                // One coordinator at a time changes the map (finding E-2),
+                // known by its pod's name.
+                if let crate::service::Backend::Cluster(coord) = &svc.backend {
+                    let me = std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| format!("coordinator-{}", std::process::id()));
+                    coord.lease_map_changes(l.map_lease(&me));
+                }
                 svc.kube = Some(l);
             }
             Err(e) => tracing::warn!(cluster = %c, error = %e, "cannot reach the StrataCluster that runs this coordinator"),

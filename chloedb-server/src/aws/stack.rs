@@ -10,7 +10,7 @@ use serde_json::{json, Value as Json};
 
 use super::catalog::Machine;
 use super::Catalog;
-use crate::cloud::{check_name, cluster_objects, cluster_yaml, fit, operator_yaml, Node};
+use crate::cloud::{check_name, cluster_objects, cluster_yaml, fit, operator_yaml, Node, MAX_NODES};
 pub use crate::cloud::IMAGE;
 
 /// Hours in a month, as AWS prices them.
@@ -47,6 +47,14 @@ pub struct Plan {
     pub spot: bool,
     /// Each copy's volume (gp3), GiB.
     pub volume_gb: u32,
+    /// The nodes in public subnets with public addresses, as before
+    /// finding E-13, rather than in private subnets that reach out through
+    /// a NAT gateway (the default, which costs the gateway's hours).
+    pub public_nodes: bool,
+    /// The addresses (CIDR blocks) that reach the EKS API's public endpoint
+    /// (empty: any address, with a warning). This server installs the
+    /// cluster through it, so its own address must be among them.
+    pub api_cidrs: Vec<String>,
     /// The StrataCluster's spec, in part: what is left out is filled in
     /// (`shards`, `replicas`, `coordinators`, no demo rows, the image,
     /// the volume's size and class, each copy's share of a node).
@@ -55,7 +63,7 @@ pub struct Plan {
 
 impl Default for Plan {
     fn default() -> Plan {
-        Plan { name: "search".into(), region: "us-east-1".into(), machine: "m8g.large".into(), nodes: 3, spot: false, volume_gb: 10, cluster: json!({}) }
+        Plan { name: "search".into(), region: "us-east-1".into(), machine: "m8g.large".into(), nodes: 3, spot: false, volume_gb: 10, public_nodes: false, api_cidrs: Vec::new(), cluster: json!({}) }
     }
 }
 
@@ -89,11 +97,15 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
     } else {
         cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a machine a cluster runs on in {} (the current generation, on demand, without accelerators)", p.machine, p.region))?
     };
-    if !(1..=1000).contains(&p.nodes) {
-        return Err("nodes is 1 to 1,000".into());
+    // A typo of a zero too many would bill the account for it.
+    if !(1..=MAX_NODES).contains(&p.nodes) {
+        return Err(format!("nodes is 1 to {MAX_NODES}"));
     }
     if !(1..=16_384).contains(&p.volume_gb) {
         return Err("volume_gb is 1 to 16,384 (a gp3 volume's size)".into());
+    }
+    if let Some(c) = p.api_cidrs.iter().find(|c| !is_cidr(c)) {
+        return Err(format!("api_cidrs are IPv4 CIDR blocks, as 203.0.113.7/32, not {c:?}"));
     }
     let alloc = allocatable_gib(m);
     let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc, system_cpu: SYSTEM_CPU }, p.volume_gb, "gp3")?;
@@ -126,6 +138,15 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
     }
     if p.spot {
         warnings.push("spot nodes may be taken back with two minutes' notice: copies fail over, but timed benchmarks should run on on-demand nodes".into());
+        if replicas < 3 {
+            warnings.push(format!("spot nodes with {replicas} cop{} of each shard: two nodes taken back at once can take every copy of a shard, and its data with them; give each shard three copies, or use on-demand nodes", if replicas == 1 { "y" } else { "ies" }));
+        }
+    }
+    if p.api_cidrs.is_empty() {
+        warnings.push("the EKS API's endpoint answers any address (its callers still need AWS credentials): name the addresses that reach it in api_cidrs, this server's among them".into());
+    }
+    if p.public_nodes {
+        warnings.push("the nodes are in public subnets, each with a public address: their security group admits only the cluster's own traffic, but a private subnet behind a NAT gateway (the default) keeps them off the internet".into());
     }
     if m.usd_hour.is_none() {
         warnings.push(format!("{} has no on-demand price in the price list here", m.name));
@@ -185,12 +206,17 @@ pub fn cost(p: &Plan, m: &Machine, cat: &Catalog, copies: u32) -> Json {
     let n = f64::from(p.nodes);
     let node = if p.spot { m.spot_hour } else { m.usd_hour };
     let gb = f64::from(copies) * f64::from(p.volume_gb) + n * ROOT_GB;
-    let lines = [
+    let mut lines = vec![
         (format!("{} × {} ({})", p.nodes, m.name, if p.spot { "spot, latest price" } else { "on demand" }), node.map(|h| h * n)),
         ("the EKS cluster".to_string(), cat.eks_hour),
         (format!("{gb} GiB of gp3 volumes ({copies} copies × {} GiB, {} roots × {ROOT_GB} GiB)", p.volume_gb, p.nodes), cat.gp3_gb_month.map(|g| g * gb / HOURS_A_MONTH)),
-        (format!("{} public IPv4 addresses", p.nodes), cat.ipv4_hour.map(|h| h * n)),
     ];
+    if p.public_nodes {
+        lines.push((format!("{} public IPv4 addresses", p.nodes), cat.ipv4_hour.map(|h| h * n)));
+    } else {
+        lines.push(("a NAT gateway (its data processed is not counted)".to_string(), cat.nat_hour));
+        lines.push(("the NAT gateway's public IPv4 address".to_string(), cat.ipv4_hour));
+    }
     let hour: f64 = lines.iter().filter_map(|(_, h)| *h).sum();
     let unknown: Vec<&str> = lines.iter().filter(|(_, h)| h.is_none()).map(|(w, _)| w.as_str()).collect();
     let on_demand = m.usd_hour.map(|h| h * n);
@@ -205,10 +231,18 @@ pub fn cost(p: &Plan, m: &Machine, cat: &Catalog, copies: u32) -> Json {
     })
 }
 
-/// The CloudFormation template of the AWS side: a VPC over three zones
-/// with public subnets (no NAT gateway to pay for), the EKS cluster with
-/// `principal_arn` as its administrator, a managed node group, and the
-/// EBS CSI driver with its role (EKS Pod Identity).
+/// Whether `c` is an IPv4 CIDR block: `203.0.113.0/24`.
+fn is_cidr(c: &str) -> bool {
+    let Some((ip, bits)) = c.split_once('/') else { return false };
+    ip.parse::<std::net::Ipv4Addr>().is_ok() && bits.parse::<u8>().is_ok_and(|b| b <= 32)
+}
+
+/// The CloudFormation template of the AWS side: a VPC over three zones,
+/// the nodes in private subnets that reach out through a NAT gateway in a
+/// public one (finding E-13; `public_nodes`: in public subnets with public
+/// addresses, as before), the EKS cluster with `principal_arn` as its
+/// administrator and its public endpoint open to `api_cidrs`, a managed
+/// node group, and the EBS CSI driver with its role (EKS Pod Identity).
 pub fn template(p: &Plan, m: &Machine, principal_arn: &str) -> Json {
     let name = p.stack();
     let arm = m.arch == "arm64";
@@ -221,26 +255,49 @@ pub fn template(p: &Plan, m: &Machine, principal_arn: &str) -> Json {
     r.insert("GatewayAttachment".into(), json!({"Type": "AWS::EC2::VPCGatewayAttachment", "Properties": {"VpcId": {"Ref": "Vpc"}, "InternetGatewayId": {"Ref": "Gateway"}}}));
     r.insert("Routes".into(), json!({"Type": "AWS::EC2::RouteTable", "Properties": {"VpcId": {"Ref": "Vpc"}, "Tags": tags("routes")}}));
     r.insert("DefaultRoute".into(), json!({"Type": "AWS::EC2::Route", "DependsOn": "GatewayAttachment", "Properties": {"RouteTableId": {"Ref": "Routes"}, "DestinationCidrBlock": "0.0.0.0/0", "GatewayId": {"Ref": "Gateway"}}}));
+    // The nodes' subnets (`Subnet<z>`): public, or private behind a NAT
+    // gateway in a small public subnet of zone 0's (`Public<z>`, which load
+    // balancers take too).
+    let public = p.public_nodes;
     let mut subnets = Vec::new();
     for z in 0..3 {
         let s = format!("Subnet{z}");
+        let role = if public { "kubernetes.io/role/elb" } else { "kubernetes.io/role/internal-elb" };
         r.insert(s.clone(), json!({"Type": "AWS::EC2::Subnet", "Properties": {
             "VpcId": {"Ref": "Vpc"},
             "CidrBlock": format!("10.42.{}.0/18", z * 64),
             "AvailabilityZone": {"Fn::Select": [z, {"Fn::GetAZs": ""}]},
-            "MapPublicIpOnLaunch": true,
-            "Tags": [{"Key": "Name", "Value": format!("{name}-zone-{z}")}, {"Key": "kubernetes.io/role/elb", "Value": "1"}, {"Key": "strata.chloetech.ai/cluster", "Value": name}],
+            "MapPublicIpOnLaunch": public,
+            "Tags": [{"Key": "Name", "Value": format!("{name}-zone-{z}")}, {"Key": role, "Value": "1"}, {"Key": "strata.chloetech.ai/cluster", "Value": name}],
         }}));
-        r.insert(format!("Subnet{z}Routes"), json!({"Type": "AWS::EC2::SubnetRouteTableAssociation", "Properties": {"SubnetId": {"Ref": s}, "RouteTableId": {"Ref": "Routes"}}}));
+        r.insert(format!("Subnet{z}Routes"), json!({"Type": "AWS::EC2::SubnetRouteTableAssociation", "Properties": {"SubnetId": {"Ref": s}, "RouteTableId": {"Ref": if public { "Routes" } else { "PrivateRoutes" }}}}));
         subnets.push(json!({"Ref": s}));
+        if !public {
+            let s = format!("Public{z}");
+            r.insert(s.clone(), json!({"Type": "AWS::EC2::Subnet", "Properties": {
+                "VpcId": {"Ref": "Vpc"},
+                "CidrBlock": format!("10.42.{}.0/20", 192 + z * 16),
+                "AvailabilityZone": {"Fn::Select": [z, {"Fn::GetAZs": ""}]},
+                "MapPublicIpOnLaunch": false,
+                "Tags": [{"Key": "Name", "Value": format!("{name}-public-{z}")}, {"Key": "kubernetes.io/role/elb", "Value": "1"}, {"Key": "strata.chloetech.ai/cluster", "Value": name}],
+            }}));
+            r.insert(format!("Public{z}Routes"), json!({"Type": "AWS::EC2::SubnetRouteTableAssociation", "Properties": {"SubnetId": {"Ref": s}, "RouteTableId": {"Ref": "Routes"}}}));
+        }
     }
+    if !public {
+        r.insert("NatAddress".into(), json!({"Type": "AWS::EC2::EIP", "DependsOn": "GatewayAttachment", "Properties": {"Domain": "vpc", "Tags": tags("nat")}}));
+        r.insert("Nat".into(), json!({"Type": "AWS::EC2::NatGateway", "Properties": {"AllocationId": {"Fn::GetAtt": ["NatAddress", "AllocationId"]}, "SubnetId": {"Ref": "Public0"}, "Tags": tags("nat")}}));
+        r.insert("PrivateRoutes".into(), json!({"Type": "AWS::EC2::RouteTable", "Properties": {"VpcId": {"Ref": "Vpc"}, "Tags": tags("private-routes")}}));
+        r.insert("PrivateDefaultRoute".into(), json!({"Type": "AWS::EC2::Route", "Properties": {"RouteTableId": {"Ref": "PrivateRoutes"}, "DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": {"Ref": "Nat"}}}));
+    }
+    let cidrs = if p.api_cidrs.is_empty() { vec!["0.0.0.0/0".to_string()] } else { p.api_cidrs.clone() };
     r.insert("ClusterRole".into(), json!({"Type": "AWS::IAM::Role", "Properties": {"AssumeRolePolicyDocument": assume("eks.amazonaws.com", &["sts:AssumeRole", "sts:TagSession"]), "ManagedPolicyArns": [policy("AmazonEKSClusterPolicy")]}}));
     r.insert("NodeRole".into(), json!({"Type": "AWS::IAM::Role", "Properties": {"AssumeRolePolicyDocument": assume("ec2.amazonaws.com", &["sts:AssumeRole"]), "ManagedPolicyArns": [policy("AmazonEKSWorkerNodePolicy"), policy("AmazonEKS_CNI_Policy"), policy("AmazonEC2ContainerRegistryReadOnly")]}}));
     r.insert("VolumeRole".into(), json!({"Type": "AWS::IAM::Role", "Properties": {"AssumeRolePolicyDocument": assume("pods.eks.amazonaws.com", &["sts:AssumeRole", "sts:TagSession"]), "ManagedPolicyArns": [policy("service-role/AmazonEBSCSIDriverPolicy")]}}));
     r.insert("Cluster".into(), json!({"Type": "AWS::EKS::Cluster", "Properties": {
         "Name": name,
         "RoleArn": {"Fn::GetAtt": ["ClusterRole", "Arn"]},
-        "ResourcesVpcConfig": {"SubnetIds": subnets, "EndpointPublicAccess": true, "EndpointPrivateAccess": true},
+        "ResourcesVpcConfig": {"SubnetIds": subnets, "EndpointPublicAccess": true, "EndpointPrivateAccess": true, "PublicAccessCidrs": cidrs},
         "AccessConfig": {"AuthenticationMode": "API", "BootstrapClusterCreatorAdminPermissions": false},
         "Tags": [{"Key": "strata.chloetech.ai/cluster", "Value": name}],
     }}));
@@ -299,6 +356,7 @@ mod tests {
             eks_hour: Some(0.10),
             gp3_gb_month: Some(0.08),
             ipv4_hour: Some(0.005),
+            nat_hour: Some(0.045),
             missing: vec![],
         }
     }
@@ -307,12 +365,14 @@ mod tests {
     fn a_plan_costs_what_its_parts_cost_and_says_what_stops_it() {
         let p = Plan::default();
         let j = plan(&p, &catalog(32.0), "arn:aws:iam::123456789012:user/dev").unwrap();
-        // 3 m8g.large: 0.26928, EKS 0.10, (6 × 10 + 3 × 20) GiB gp3, 3 addresses.
-        let hour = 3.0 * 0.08976 + 0.10 + 120.0 * 0.08 / 730.0 + 3.0 * 0.005;
+        // 3 m8g.large: 0.26928, EKS 0.10, (6 × 10 + 3 × 20) GiB gp3, a NAT
+        // gateway and its address.
+        let hour = 3.0 * 0.08976 + 0.10 + 120.0 * 0.08 / 730.0 + 0.045 + 0.005;
         assert!((j["cost"]["hour"].as_f64().unwrap() - hour).abs() < 1e-9, "{}", j["cost"]);
         assert!((j["cost"]["month"].as_f64().unwrap() - hour * 730.0).abs() < 1e-6);
         assert_eq!(j["cost"]["lines"][0]["what"], "3 × m8g.large (on demand)");
-        assert_eq!(j["warnings"], json!([]), "{}", j["warnings"]);
+        assert_eq!(j["warnings"].as_array().map(Vec::len), Some(1), "{}", j["warnings"]);
+        assert!(j["warnings"][0].as_str().unwrap().contains("answers any address"), "{}", j["warnings"]);
         assert_eq!((j["layout"]["copies_per_node"].as_u64(), j["quota"]["needs"].as_u64()), (Some(2), Some(6)));
         // The StrataCluster: what was left out, filled in.
         let c = &j["cluster"];
@@ -336,7 +396,26 @@ mod tests {
         assert_eq!(t["Nodes"]["Properties"]["ScalingConfig"]["DesiredSize"], 3);
         assert_eq!(t["Administrator"]["Properties"]["PrincipalArn"], "arn:aws:iam::123456789012:user/dev");
         assert_eq!(t["Volumes"]["Properties"]["PodIdentityAssociations"][0]["ServiceAccount"], "ebs-csi-controller-sa");
-        assert_eq!(t.as_object().unwrap().len(), 19);
+        assert_eq!(t.as_object().unwrap().len(), 29);
+        // Finding E-13: the nodes in private subnets, out through a NAT
+        // gateway; the API open to the addresses named, else to any.
+        for z in 0..3 {
+            assert_eq!(t[format!("Subnet{z}")]["Properties"]["MapPublicIpOnLaunch"], false);
+            assert_eq!(t[format!("Subnet{z}Routes")]["Properties"]["RouteTableId"], json!({"Ref": "PrivateRoutes"}));
+            assert_eq!(t[format!("Public{z}Routes")]["Properties"]["RouteTableId"], json!({"Ref": "Routes"}));
+        }
+        assert_eq!(t["PrivateDefaultRoute"]["Properties"]["NatGatewayId"], json!({"Ref": "Nat"}));
+        assert_eq!(t["Cluster"]["Properties"]["ResourcesVpcConfig"]["PublicAccessCidrs"], json!(["0.0.0.0/0"]));
+        let named = plan(&Plan { api_cidrs: vec!["203.0.113.7/32".into()], ..Plan::default() }, &catalog(32.0), "arn").unwrap();
+        assert_eq!(named["template"]["Resources"]["Cluster"]["Properties"]["ResourcesVpcConfig"]["PublicAccessCidrs"], json!(["203.0.113.7/32"]));
+        assert_eq!(named["warnings"], json!([]), "{}", named["warnings"]);
+        // Public nodes, as before: no gateway, an address a node.
+        let open = plan(&Plan { public_nodes: true, ..Plan::default() }, &catalog(32.0), "arn").unwrap();
+        let ot = &open["template"]["Resources"];
+        assert_eq!((ot.as_object().unwrap().len(), &ot["Subnet0"]["Properties"]["MapPublicIpOnLaunch"]), (19, &json!(true)));
+        assert!(ot.get("Nat").is_none() && open["warnings"].to_string().contains("public subnets"));
+        let open_hour = 3.0 * 0.08976 + 0.10 + 120.0 * 0.08 / 730.0 + 3.0 * 0.005;
+        assert!((open["cost"]["hour"].as_f64().unwrap() - open_hour).abs() < 1e-9, "{}", open["cost"]);
         assert!(j["template"].to_string().len() < 51_200, "a template body CloudFormation takes inline");
 
         // A quota of 0, spot, too few nodes, too small a machine.
@@ -346,6 +425,9 @@ mod tests {
         for s in ["may run 0 vCPUs of standard spot instances in us-east-1", "a shard has 3 copies and there are 2 nodes", "spot nodes may be taken back", "EKS lets a m8g.medium run 8"] {
             assert!(w.contains(s), "{s} in {w}");
         }
+        assert!(!w.contains("two nodes taken back at once"), "three copies: {w}");
+        let two = plan(&Plan { spot: true, cluster: json!({"replicas": 2}), ..Plan::default() }, &catalog(32.0), "arn").unwrap();
+        assert!(two["warnings"].to_string().contains("spot nodes with 2 copies of each shard"), "{}", two["warnings"]);
         assert_eq!(j["cost"]["lines"][0]["what"], "2 × m8g.medium (spot, latest price)");
         assert_eq!(j["template"]["Resources"]["Nodes"]["Properties"]["CapacityType"], "SPOT");
 
@@ -367,8 +449,10 @@ mod tests {
         let bad = |p: Plan| plan(&p, &catalog(32.0), "arn").unwrap_err();
         assert!(bad(Plan { name: "Search!".into(), ..Plan::default() }).contains("not a cluster name"));
         assert!(bad(Plan { machine: "p5.48xlarge".into(), ..Plan::default() }).contains("not a machine a cluster runs on"));
-        assert!(bad(Plan { nodes: 0, ..Plan::default() }).contains("nodes is 1 to 1,000"));
+        assert!(bad(Plan { nodes: 0, ..Plan::default() }).contains("nodes is 1 to 100"));
+        assert!(bad(Plan { nodes: 101, ..Plan::default() }).contains("nodes is 1 to 100"));
         assert!(bad(Plan { region: "eu-west-1".into(), ..Plan::default() }).contains("those of us-east-1"));
+        assert!(bad(Plan { api_cidrs: vec!["my laptop".into()], ..Plan::default() }).contains("api_cidrs are IPv4 CIDR blocks"));
         assert!(bad(Plan { cluster: json!({"replicas": 0}), ..Plan::default() }).contains("cluster: shards, replicas and coordinators are 1 or more"));
     }
 }
