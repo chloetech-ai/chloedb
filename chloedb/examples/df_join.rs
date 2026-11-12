@@ -1,5 +1,5 @@
 //! Times compound queries (joins, groups over joined rows, `DISTINCT`,
-//! `WITH`, window functions) on Strata's operators (`chloedb::query::ops`) and on DataFusion
+//! `WITH`, window functions) on ChloeDB's operators (`chloedb::query::ops`) and on DataFusion
 //! (`chloedb::query::df`), over two tables of `n` rows each, and checks
 //! that both give the same rows.
 //!
