@@ -34,3 +34,22 @@ cd chloedb && cargo run --profile ci --example static_sql_eval -- ~/beir/scifact
 
 Each SciFact document embedded by the F32 model and by its copies, and the
 cosine of each document's two vectors (`examples/static_tables.rs`).
+Measured with the machine otherwise idle, one core (`taskset -c 0`):
+
+| model | table | MB | SciFact documents a second | cosine to F32: mean, least |
+|---|---|---|---|---|
+| potion-retrieval-32M | F32 | 123 | 1,370 to 1,407 | |
+| potion-retrieval-32M | I8 | 30 | 1,280 to 1,379 | 0.99936, 0.95122 |
+| potion-retrieval-32M | F16 | 61 | 1,331 to 1,419 | 1.00000, 1.00000 |
+| potion-base-8M | F32 | 28 | 1,346 | |
+| potion-base-8M | I8 | 7 | 1,603 | 0.99979, 0.98736 |
+| potion-base-8M | F16 | 14 | 1,160 | 1.00000, 1.00000 |
+
+The speed is the same within the noise of two runs: tokenizing a document
+takes most of the time, not reading its rows. What the smaller table buys
+is memory and disk, and the first queries after a start, which read less of
+it from disk.
+
+```text
+cd chloedb && cargo run --profile ci --example static_tables -- ~/beir/scifact/corpus.jsonl ~/models/potion-retrieval-32M ~/models/potion-retrieval-32M-int8 ~/models/potion-retrieval-32M-f16
+```
