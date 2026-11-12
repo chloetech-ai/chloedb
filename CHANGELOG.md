@@ -11,6 +11,29 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Static embeddings
+
+- SQL embeds the text it gives where a vector goes. On a field a model
+  embeds, `ORDER BY similarity(emb, 'some words') DESC` (or `:q` bound to
+  a string, `distance`, `maxsim`, `similarity(emb, embed(:q))`) embeds
+  the text as a query by the field's own model when the query is planned:
+  in the database from Rust, Python and JavaScript, and on a server's
+  embedding cores, as `{"embed": "text"}` parameters are. Before, text
+  there was refused. `embed('model', text)` is the query vector of a
+  text by a model named, wherever a vector goes; it takes a model's name
+  (as `llm()` does, never a path), and a model behind an API only when a
+  field uses it. A stored function can no longer be named `embed`.
+- `potion-retrieval-32M-int8` and `potion-base-8M-int8`: the Model2Vec
+  models with their tables in int8, 31 MB and 7 MB instead of 123 MB and
+  29 MB, within 0.004 nDCG@10 of the originals on SciFact, NFCorpus and
+  ArguAna. `chloedb-server fetch-model` fetches the pinned original and
+  writes the copy; `chloedb-server quantize-model` (and
+  `chloedb::embed::quantize_static`) writes any Model2Vec model in int8 or
+  F16, the same bytes on every machine.
+- The static embedder reads tables in F16, BF16 and I8 besides F32, and
+  Model2Vec's `weights` and `mapping` tensors, without which a newer
+  Model2Vec model was embedded wrongly.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

@@ -25,6 +25,7 @@ pub mod arrow;
 pub mod compound;
 pub mod cross_encoder;
 pub mod ddl;
+pub mod embed_sql;
 #[cfg(feature = "datafusion")]
 pub mod df;
 pub mod exec;

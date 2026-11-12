@@ -587,6 +587,9 @@ pub struct Service {
     pub max_concurrent: usize,
     /// Texts embedded at once (one per core): writes' and queries'.
     embedding: Arc<Semaphore>,
+    /// Models queries named in `embed('model', ..)`, opened from the models
+    /// directory at their first query ([`Service::named_model`]).
+    named_models: Mutex<HashMap<String, Arc<dyn Embedder>>>,
     cores: usize,
     /// Queries running, counted until their work ends ([`Running`]).
     running: Arc<AtomicUsize>,
@@ -744,6 +747,7 @@ impl Service {
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
             embedding: Arc::new(Semaphore::new(cores)),
+            named_models: Mutex::new(HashMap::new()),
             cores,
             running: Arc::new(AtomicUsize::new(0)),
             writes,
@@ -2020,6 +2024,12 @@ impl Service {
     /// tables a query may read ([`Self::readable`]), its rank profiles and
     /// its stored functions written out.
     async fn bound_read(&self, sql: &str, params: &Params) -> Result<Plan, ApiError> {
+        // Texts where vectors go, embedded before the query is bound.
+        let embedded = self.embed_texts(sql, params).await?;
+        let (sql, params) = match &embedded {
+            Some((s, p)) => (s.as_str(), p),
+            None => (sql, params),
+        };
         let functions = self.functions();
         let run = || {
             let c = self.readable();
@@ -2030,6 +2040,88 @@ impl Service {
             Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => Ok(run()?),
             r => Ok(r?),
         }
+    }
+
+    /// Query `sql` with the texts it gives where vectors go embedded
+    /// ([`chloedb::query::embed_sql`]: `similarity(emb, 'some words')` by
+    /// the field's model, `embed('model', text)` by a model named), on the
+    /// embedding cores as a parameter's `{"embed": ..}` is, and its
+    /// parameters with their vectors; `None` when it has none.
+    async fn embed_texts(&self, sql: &str, params: &Params) -> Result<Option<(String, Params)>, ApiError> {
+        use chloedb::query::embed_sql::{self, Request};
+        if !embed_sql::may_embed(sql) {
+            return Ok(None);
+        }
+        let catalog = self.readable();
+        let refs: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+        let requests = embed_sql::requests(sql, &refs, params)?;
+        if requests.is_empty() {
+            return Ok(None);
+        }
+        let mut given: HashMap<Request, Value> = HashMap::new();
+        for r in requests {
+            if given.contains_key(&r) {
+                continue;
+            }
+            let (e, tokens, text) = match &r {
+                Request::Field { table, field, text } => {
+                    let (_, _, e) = self.model(Some(table), Some(field))?;
+                    let tokens = refs.iter().find(|s| s.table.eq_ignore_ascii_case(table)).and_then(|s| s.field(field)).is_some_and(|f| f.multi);
+                    (e, tokens, text.clone())
+                }
+                Request::Model { model, text } => (self.named_model(model)?, false, text.clone()),
+            };
+            let t0 = Instant::now();
+            let core = match tokio::time::timeout(self.timeout, self.embedding.clone().acquire_owned()).await {
+                Ok(p) => p.map_err(ApiError::internal)?,
+                Err(_) => return Err(ApiError { status: 429, message: "every core is embedding; try again".into() }),
+            };
+            let v = tokio::task::spawn_blocking(move || {
+                let _core = core;
+                match tokens {
+                    true => e.embed_query_tokens(&text).map(|vs| Value::List(vs.into_iter().map(|v| Value::Vector(v.into())).collect())),
+                    false => e.embed_query(&text).map(|v| Value::Vector(v.into())),
+                }
+            })
+            .await
+            .map_err(ApiError::internal)??;
+            self.metrics.embedded("query", 1, t0.elapsed().as_secs_f64());
+            given.insert(r, v);
+        }
+        Ok(embed_sql::written(sql, &refs, params, &given)?)
+    }
+
+    /// The model a query names in `embed('model', ..)`: one an embedded
+    /// field has open, `hash:N`, or a model directory directly under the
+    /// models directory, opened once and kept. A path, or a model behind
+    /// an API that no field uses, is refused: a query may not make the
+    /// server read other files, or spend its keys.
+    fn named_model(&self, name: &str) -> Result<Arc<dyn Embedder>, ApiError> {
+        if let Some(e) = self.models().iter().filter(|m| m.spec.model.eq_ignore_ascii_case(name)).find_map(|m| m.model.as_ref().ok()) {
+            return Ok(e.clone());
+        }
+        if let Some(e) = self.named_models.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+            return Ok(e.clone());
+        }
+        let refuse = |why: &str| ApiError::bad(format!("query error: embed('{name}', ..): {why}"));
+        let Some(dir) = self.models_dir.clone() else { return Err(refuse("this server has no models directory (--models)")) };
+        if let Some(why) = chloedb::query::embed_sql::refuse_model(name, &dir) {
+            return Err(refuse(why));
+        }
+        let e = chloedb::embed::open(name, &dir).map_err(|e| match chloedb::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(name)) {
+            true => refuse(&format!("{} (chloedb-server fetch-model {name} downloads it)", e.to_string().trim_start_matches("schema error: "))),
+            false => refuse(e.to_string().trim_start_matches("schema error: ")),
+        })?;
+        if !e.single() {
+            return Err(refuse("it embeds a text into a vector a token: embed() needs a model of one vector a text"));
+        }
+        let mut kept = self.named_models.lock().unwrap_or_else(|e| e.into_inner());
+        // A few: each is a model's tokenizer and mapped table.
+        if kept.len() >= 16 {
+            kept.clear();
+        }
+        kept.insert(name.to_string(), e.clone());
+        Ok(e)
     }
 
     /// Runs `bind` over the database's tables; a coordinator whose tables

@@ -107,7 +107,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--no-read-stats` | off | do not count the documents queries return and the keys reads ask for (the [index inspector](#the-index-inspector)'s reads); its statistics of each table still work |
 | `--node-name NAME` | `$CHLOEDB_NODE_NAME`, else `HOST:PORT` (the host name and the HTTP port) | what the log store calls this server, in its `node` column |
 
-`chloedb-server import`, `chloedb-server fetch-model` and `chloedb-server promote` are subcommands: [loading rows](#loading-rows), [embedded vector fields](#embedded-vector-fields) and [promotion](#replication-a-primary-and-its-replicas).
+`chloedb-server import`, `chloedb-server fetch-model`, `chloedb-server quantize-model` and `chloedb-server promote` are subcommands: [loading rows](#loading-rows), [embedded vector fields](#embedded-vector-fields) and [promotion](#replication-a-primary-and-its-replicas).
 
 `CHLOEDB_ENGINE` chooses the engine of [joins, groups and sorts over joined or derived rows](query-language.md#subqueries-with-and-joins), over a database's own tables and on a coordinator above its shards' rows. The default, `auto`, uses DataFusion when a query's single-table parts read more than 4,096 rows and ChloeDB's operators below that. The other values are `operators`, `datafusion` and `datafusion-only`. Build with `--no-default-features` to leave DataFusion out of the server.
 
@@ -250,6 +250,7 @@ The model can be computed here (the table below) or sit behind an API, such as `
 |---|---|---|
 | `potion-retrieval-32M` | Model2Vec (a static token table, averaged), 512 dimensions; the model ChloeCtx uses | tens of microseconds a row on one core |
 | `potion-base-8M` | Model2Vec, 256 dimensions | smallest |
+| `potion-retrieval-32M-int8`, `potion-base-8M-int8` | the same models with their tables in int8: 31 MB and 7 MB instead of 123 MB and 29 MB, ranking BEIR's SciFact, NFCorpus and ArguAna within 0.004 nDCG@10 of the originals ([results](../../chloedb/results/static-int8/README.md)) | fetched as the original, then written in int8 on this machine |
 | `bge-small-en-v1.5` | BERT encoder, 384 dimensions | build with `--features bert`; milliseconds a row |
 | `snowflake-arctic-embed-m-v1.5` | BERT encoder, 768 dimensions | build with `--features bert`; slower, better |
 | `siglip-base-patch16-224` | SigLIP base: images and text in one space, 768 dimensions | build with `--features vision`; about 0.5 s an image and 80 ms a text on a 4-vCPU cloud VM |
@@ -265,6 +266,8 @@ The model can be computed here (the table below) or sit behind an API, such as `
 On a Mac, build with `--features accelerate` instead of `bert`: the BERT models' matrix products then run in Apple's Accelerate framework.
 
 A model of this list (and the captioners and cross-encoders ChloeDB knows) is fetched from the Hugging Face commit it was pinned at, not from `main`, and each file is checked against the SHA-256 pinned for it (`chloedb/src/model_pins.rs`): a file that differs is refused and not kept, so a model changed upstream under the same name cannot slip in. A table created with its model in the models directory records the SHA-256 of the model's weights file in its schema (`embed.fingerprint`), and refuses to embed with a model of the same name whose weights differ; tables from before, and those whose model was not there when they were created, open their model by name, as before. **Changed:** files came from `resolve/main`, unchecked, and a field recorded the model's name only.
+
+**A static model in int8.** `potion-retrieval-32M-int8` and `potion-base-8M-int8` are fetched as their originals are (the pinned files, checked), then written with their tables in int8, Model2Vec's own format of one scale for the whole table, which the vector's unit length cancels. The conversion gives the same file on every machine, so the fingerprint a table records is the same everywhere. A copy is a model of its own name, whose vectors differ from the original's in the third decimal (mean cosine 0.9994 on SciFact's documents): a table embedded by `potion-retrieval-32M` keeps it, and one that should use the int8 copy names it, `emb VECTOR OPTIONS(embed = 'body', model = 'potion-retrieval-32M-int8')`. `chloedb-server quantize-model DIR` writes any Model2Vec model in int8 (`--to-type F16` for half precision), into `DIR-int8` beside it unless `--to` says where; from Rust, `chloedb::embed::quantize_static`. A model with its table in F16, BF16 or I8, and with Model2Vec's `weights` and `mapping` tensors, is read as it is.
 
 `chloedb-server fetch-model NAME` downloads one of these (or any Hugging Face repository `owner/name` with `config.json`, `tokenizer.json` and `model.safetensors`; CLAP's `pytorch_model.bin`; and `artifact.metadata` too for a name with `colbert` in it, such as `colbert-ir/colbertv2.0`) into the models directory; it also downloads the captioner and the speech model of [text from media](#text-from-media).
 

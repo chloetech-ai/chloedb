@@ -185,6 +185,9 @@ pub struct Db {
     pub exec: ExecOptions,
     /// Models of embedded VECTOR fields ([`Db::set_embedder_in`]).
     embedders: RwLock<Vec<Model>>,
+    /// Models queries named in `embed('model', ..)`, by name, opened from
+    /// [`Db::models_dir`] at their first query.
+    named_models: RwLock<HashMap<String, Arc<dyn Embedder>>>,
     /// Writes may store rows without the vector of an embedded field whose
     /// model is not open here ([`Db::set_embed_later`]).
     embed_later: std::sync::atomic::AtomicBool,
@@ -280,6 +283,7 @@ impl Db {
                 ..ExecOptions::default()
             },
             embedders: RwLock::new(Vec::new()),
+            named_models: RwLock::new(HashMap::new()),
             embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
@@ -1230,6 +1234,8 @@ impl Db {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
         let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(snap, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
         if crate::query::llm::may_call(sql, &functions) {
@@ -1247,6 +1253,45 @@ impl Db {
     /// [`Db::open_embedders`] was given, else [`crate::embed::models_dir`].
     pub fn models_dir(&self) -> std::path::PathBuf {
         self.models.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(crate::embed::models_dir)
+    }
+
+    /// Query `q` (of text `sql`) with the texts it gives where vectors go
+    /// embedded, and the parameters that hold their vectors
+    /// ([`crate::query::embed_sql`]); `q` as it is when it has none.
+    fn embed_texts(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params) -> Result<(Arc<qsql::Parsed>, Option<Params>)> {
+        if !crate::query::embed_sql::may_embed(sql) {
+            return Ok((q, None));
+        }
+        let catalog: Vec<&Schema> = snap.schemas().collect();
+        Ok(match crate::query::embed_sql::rewrite(&q.query, &catalog, params, self)? {
+            Some((query, p)) => (Arc::new(qsql::Parsed { query, profiles: q.profiles }), Some(p)),
+            None => (q, None),
+        })
+    }
+
+    /// The model a query names in `embed('model', ..)`: one an embedded
+    /// field has open, else one opened from [`Db::models_dir`] and kept,
+    /// named as [`crate::query::embed_sql::refuse_model`] allows.
+    pub fn named_model(&self, name: &str) -> Result<Arc<dyn Embedder>> {
+        if let Some(m) = self.embedders.read().unwrap_or_else(|e| e.into_inner()).iter().find(|m| m.embed.model.eq_ignore_ascii_case(name)) {
+            return Ok(m.model.clone());
+        }
+        if let Some(m) = self.named_models.read().unwrap_or_else(|e| e.into_inner()).get(name) {
+            return Ok(m.clone());
+        }
+        let dir = self.models_dir();
+        if let Some(why) = crate::query::embed_sql::refuse_model(name, &dir) {
+            return Err(Error::Query(format!("embed('{name}', ..): {why}")));
+        }
+        let m = crate::embed::open(name, &dir).map_err(|e| match crate::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(name)) {
+            true => Error::Schema(format!("{} (chloedb-server fetch-model {name} downloads it into {})", match e { Error::Schema(m) => m, e => e.to_string() }, dir.display())),
+            false => e,
+        })?;
+        if !m.single() {
+            return Err(Error::Schema(format!("model {name} embeds a text into a vector a token, not one vector: embed('{name}', ..) needs a model of one vector a text")));
+        }
+        self.named_models.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), m.clone());
+        Ok(m)
     }
 
     /// Runs a query ([`Db::query`]) and logs what it served to a log table
@@ -1339,6 +1384,8 @@ impl Db {
             return self.json_paths_at(&snap, &call, params, opts).map(|p| Leaf::Rows(p.to_result()));
         }
         let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(&snap, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
         let plan = plan_of_parsed(&snap, &q, params, &*self.functions_at(&snap)?)?;
         self.run_leaf_on(&snap, &plan, opts, Some(0))
     }
@@ -1524,13 +1571,23 @@ impl Db {
             // The plan names the files of its ranking models.
             let snap = self.snapshot();
             let functions = self.functions_at(&snap)?;
+            // Texts embedded where vectors go, as the query runs them.
+            let text = q.to_string();
+            let embedded = match crate::query::embed_sql::may_embed(&text) {
+                true => crate::query::embed_sql::rewrite(q, &snap.schemas().collect::<Vec<_>>(), params, self)?,
+                false => None,
+            };
+            let (q, params) = match &embedded {
+                Some((q, p)) => (q, p),
+                None => (&**q, params),
+            };
             // A query that calls a language model: the plan of the rows it
             // asks about.
             let split = match crate::query::llm::may_call(&q.to_string(), &functions) {
                 true => crate::query::llm::split(q, &functions, params)?,
                 false => None,
             };
-            let mut plan = plan_of(&snap, split.as_ref().map_or(&**q, |s| &s.first), params, &functions)?;
+            let mut plan = plan_of(&snap, split.as_ref().map_or(q, |s| &s.first), params, &functions)?;
             self.open_ranking_models(&mut plan, false)?;
             return Ok(plan);
         }
@@ -2941,6 +2998,16 @@ impl DocumentSource for StoredSource {
 /// The plan of a SELECT over `snap`'s tables: the executor's query of one
 /// table, or a compound one's operators ([`compound::needs`]) over any
 /// ([`compound::plan_read`]).
+/// Texts a query gives where vectors go, by this database's models.
+impl crate::query::embed_sql::Embeds for Db {
+    fn field_query(&self, table: &str, field: &str, text: &str) -> Result<Value> {
+        self.embed_query_in(table, field, text)
+    }
+    fn model_query(&self, model: &str, text: &str) -> Result<Vec<f32>> {
+        self.named_model(model)?.embed_query(text)
+    }
+}
+
 fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
     compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)

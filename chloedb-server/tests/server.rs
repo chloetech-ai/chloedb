@@ -2391,6 +2391,18 @@ async fn sqlite_files_over_http() {
     assert_eq!(q["rows"], json!([[2, "green lamp"]]), "{q}");
     let (_, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id FROM items ORDER BY similarity(emb, :q) DESC LIMIT 1", "params": {"q": {"embed": "blue kettle", "field": "emb"}}})).await;
     assert_eq!(q["rows"][0][0], json!("b"), "{q}");
+    // The text in the SQL, embedded by the field's model, and by a model named.
+    for sql in ["SELECT id FROM items ORDER BY similarity(emb, 'blue kettle') DESC LIMIT 1", "SELECT id FROM items ORDER BY similarity(emb, embed(:t)) DESC LIMIT 1", "SELECT id FROM items ORDER BY similarity(emb, embed('hash:16', :t)) DESC LIMIT 1"] {
+        let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": sql, "params": {"t": "blue kettle"}})).await;
+        assert_eq!((status, &q["rows"][0][0]), (200, &json!("b")), "{sql}: {q}");
+    }
+    // A query may not name a path, or a model behind an API no field uses.
+    for (model, why) in [("/etc", "named by its directory"), ("../models", "named by its directory"), ("openai/text-embedding-3-small", "named by its directory"), ("no-such-model", "no-such-model")] {
+        let sql = format!("SELECT id FROM items ORDER BY similarity(emb, embed('{model}', 'x')) DESC LIMIT 1");
+        let (status, q) = post(&c, &format!("{base}/v1/query"), json!({ "sql": sql })).await;
+        assert_eq!(status, 400, "{sql}: {q}");
+        assert!(q["error"].as_str().unwrap().contains(why), "{sql}: {q}");
+    }
     // Again: the rows are upserted by key, into tables that now exist.
     let r = c.post(format!("{base}/v1/import?format=sqlite&tables=notes")).header("content-type", "application/octet-stream").body(bytes.clone()).send().await.unwrap();
     let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
