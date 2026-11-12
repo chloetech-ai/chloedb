@@ -588,7 +588,7 @@ fn no_parquet<T>() -> R<T> {
 
 fn train_options(a: &mut Args) -> R<TrainOptions> {
     let d = TrainOptions::default();
-    Ok(TrainOptions { levels: a.count("levels", 3)?, k: a.count("k", 256)?, iters: a.count("iterations", 25)?, sample: a.count("sample", d.sample)?, seed: a.count("seed", 0)? as u64 })
+    Ok(TrainOptions { levels: a.count("levels", 3)?, k: a.count("k", 256)?, iters: a.count("iterations", 25)?, sample: a.count("sample", d.sample)?, seed: a.count("seed", 0)? as u64, balance: a.bool("balanced", d.balance)? })
 }
 
 /// A query's answer: columns, rows (lists), keys, scores and stats (JSON

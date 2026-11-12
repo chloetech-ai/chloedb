@@ -3129,7 +3129,6 @@ impl<'a> Executor<'a> {
     /// over the segment's rows): each of a list's, the distinct ones for a
     /// group (`key`), as the operators' aggregate reads them.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn col_values(&self, s: &Seg<'a>, q: &Select, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
         let p = match c {
             Col::Field(f) => return self.agg_values(s, f, d, multi, out),
