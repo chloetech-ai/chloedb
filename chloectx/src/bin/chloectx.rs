@@ -208,6 +208,12 @@ enum Cmd {
         /// The embedder (static, or hash:<dim> for tests; $CHLOECTX_EMBEDDER).
         #[arg(long, env = "CHLOECTX_EMBEDDER", default_value = "static")]
         embedder: String,
+        /// Also show this machine's Claude Code stores in the command
+        /// center (Receipts and Blame pages; $CHLOECTX_APP_LOCAL=1). Their
+        /// records are transcripts: turn it on only where the command
+        /// center's users may read them.
+        #[arg(long, env = "CHLOECTX_APP_LOCAL", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
+        local_stores: bool,
     },
     /// Send one raw JSON request to the daemon and print its JSON response
     /// (the demo inspector's transport).
@@ -442,8 +448,9 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
-        Cmd::App { server, key, host, port, token, embedder } => {
-            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), embedder }) {
+        Cmd::App { server, key, host, port, token, embedder, local_stores } => {
+            let local = local_stores.then(paths::home);
+            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), embedder, local }) {
                 eprintln!("chloectx app: {e}");
                 std::process::exit(1);
             }

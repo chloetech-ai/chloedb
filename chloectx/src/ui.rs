@@ -46,7 +46,7 @@ pub struct StoreInfo {
 }
 
 impl StoreInfo {
-    fn json(&self) -> Json {
+    pub fn json(&self) -> Json {
         let running = std::os::unix::net::UnixStream::connect(paths::StorePaths::new(&self.dir).socket).is_ok();
         json!({
             "id": self.id, "dir": self.dir, "project": self.project, "bytes": self.bytes, "modified": self.modified, "running": running,

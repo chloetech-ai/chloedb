@@ -28,6 +28,10 @@ changes collect under "Unreleased".
   in their own file, `receipts.strata`; the store's file and format are
   unchanged. `memory_forget` and `chloectx redact` scrub receipts and drop
   the automatic snapshots. [Docs](docs/chloectx/receipts.md).
+- ChloeCtx in the command center: Receipts and Blame tabs on its page
+  (receipts with their candidates and replay, kept snapshots, blame of a
+  line), over this machine's Claude Code stores when `chloectx app` runs
+  with `--local-stores` (off by default: the stores are transcripts).
 
 ## 0.2.0
 

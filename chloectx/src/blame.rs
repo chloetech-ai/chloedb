@@ -170,7 +170,7 @@ pub fn blame(store: &Store, book: Option<&Book>, snaps: &Snapshots, project: &st
 
     // The receipts of recalls before the edit, in its session.
     let receipts: Vec<Receipt> = match book {
-        Some(b) => b.of_turns(&edit.session, 0, edit.turn)?.into_iter().filter(|r| r.ts <= edit.ts && !r.shown.is_empty()).collect(),
+        Some(b) => b.of_turns(&edit.session, 0, edit.turn)?.into_iter().filter(|r| r.snapshot.last_seq < edit.seq && !r.shown.is_empty()).collect(),
         None => Vec::new(),
     };
     let this_turn: Vec<&Receipt> = receipts.iter().filter(|r| r.turn == edit.turn).collect();
@@ -225,7 +225,7 @@ pub fn blame(store: &Store, book: Option<&Book>, snaps: &Snapshots, project: &st
                 if flags.is_empty() { String::new() } else { format!("  ← {}", flags.join(", ")) }
             );
         }
-        rec_json.push(json!({"receipt": rc.id, "turn": rc.turn, "source": rc.source, "rows": rc.rows.iter().filter(|r| r.shown()).map(|r| json!({"row": r, "now": status(&r.id)})).collect::<Vec<_>>()}));
+        rec_json.push(json!({"receipt": rc.id, "turn": rc.turn, "source": rc.source, "rows": rc.rows.iter().filter(|r| r.shown()).map(|r| json!({"row": r, "now": status(&r.id), "text": now_recs.iter().find(|x| x.id == r.id).map(|x| one_line(x, 160))})).collect::<Vec<_>>()}));
     };
     if book.is_none() {
         text += "\nreceipts are off for this store, so what memory recalled before the edit is unknown\n";

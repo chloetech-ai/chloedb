@@ -1260,7 +1260,15 @@ impl Daemon {
         if req.get("text").and_then(|v| v.as_bool()).unwrap_or(false) {
             text += &format!("\nwhat the agent was shown:\n{}\n", r.text);
         }
-        Ok(json!({"text": text, "receipt": r, "replays": replays}))
+        // Each candidate's text as it is now (gone if deleted since), for a page.
+        let ids: Vec<String> = r.rows.iter().map(|x| x.id.clone()).collect();
+        let records: serde_json::Map<String, Json> = self
+            .store
+            .get(&ids)?
+            .iter()
+            .map(|x| (x.id.clone(), json!({"text": x.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect::<String>(), "tag": x.tag})))
+            .collect();
+        Ok(json!({"text": text, "receipt": r, "replays": replays, "records": records}))
     }
 
     /// `{"op": "blame", "target": "path[:line]", "replay"?}`.

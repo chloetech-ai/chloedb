@@ -107,6 +107,40 @@ chloectx snapshot keep before-release | list | drop before-release
 Every `memory_search` answer ends with its receipt's id, so an agent (or
 the person reading its transcript) can ask why a record ranked where it did.
 
+## In the command center
+
+ChloeCtx's page in ChloeDB's command center (`chloedb-server --app
+chloectx=URL`, then Apps → ChloeCtx) has two tabs for these, beside Context
+and Seen before:
+
+- **Receipts**: pick a project's store, then the newest receipts (when, the
+  session and turn, which recall, the gate's decision, records and tokens
+  shown, the commit). Open one for its candidates (rank, score with a bar,
+  BM25, cosine, tokens, decision), the query and the gate, the text the
+  agent was shown, and the replay on the kept snapshot and on today's
+  store. Below the list, the kept snapshots: keep one by name, drop a named
+  one.
+- **Blame**: type `path:line`. It shows the line, its commit, the edit, the
+  prompt and the tool calls before it, the notes from the turn, each
+  receipt of what memory had recalled before the edit (with what has become
+  of each record since), the replay, and a "worth a look" list. Each
+  receipt links to its page under Receipts.
+
+They read the Claude Code stores of the machine `chloectx app` runs on, so
+they are off unless it is started with `--local-stores` (or
+`CHLOECTX_APP_LOCAL=1`): a store is a transcript of its sessions, and every
+user of the command center could read it. Without it the tabs say how to
+turn it on. A store whose daemon is stopped is started when read. The API
+behind them, under the app's prefix (`/v1/apps/chloectx`):
+
+| request | answer |
+|---|---|
+| `GET /v1/local` | this machine's stores |
+| `GET /v1/local/:store/receipts?session=&limit=` | the newest receipts |
+| `GET /v1/local/:store/receipts/:id?replay=0` | one receipt, replayed unless `replay=0` |
+| `GET /v1/local/:store/blame?target=path:line` | blame, as `chloectx blame --json` |
+| `GET`, `POST {name}` `/v1/local/:store/snapshots`, `DELETE /v1/local/:store/snapshots/:name` | the kept snapshots; keep one; drop one |
+
 ## How blame finds the edit
 
 Blame reads the line from the file and looks among the stored tool calls
