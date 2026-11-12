@@ -109,6 +109,61 @@ A statement that reads runs on the server's copy; `"latest": true` looks at
 the store first. A write that another server beat answers 409: send it
 again. Two servers started on one store answer for the same tenants.
 
+## A blackboard for agents
+
+A **blackboard** is a tenant that many agents share to work one job: tasks
+they claim under a lease, findings they post for each other, and the
+events of both in order. It is made from a template, and its tools are
+calls of the server or an MCP server an agent is pointed at.
+
+```bash
+curl -H "Authorization: Bearer $ADMIN" $URL/v1/admin/tenants \
+  -d '{"id": "migration", "template": "blackboard"}'
+curl -H "Authorization: Bearer $ADMIN" $URL/v1/admin/tenants/migration/board/add_tasks \
+  -d '{"agent": "lead", "tasks": [{"id": "lexer", "title": "port the lexer", "spec": "..."}]}'
+
+# an agent, named by the URL it is given
+claude mcp add --transport http board "$URL/v1/admin/tenants/migration/mcp?agent=worker-7" \
+  --header "Authorization: Bearer $ADMIN"
+```
+
+| tool | does |
+|---|---|
+| `add_tasks(tasks, key?)` | takes tasks in; one whose id the board has already is left as it is |
+| `claim(n?, lease_s?, key?)` | gives the caller up to `n` tasks, oldest first: open ones, and claimed ones whose lease has passed |
+| `heartbeat(task, lease_s?)` | extends the caller's lease; refused once another agent has the task |
+| `complete(task, result, key?)`, `fail(task, why, key?)` | end the caller's claim; refused once another agent has the task, so a task is done once |
+| `post(body, task?, key?)` | records a finding, as a duplicate (`dup_of`) of an earlier one that says the same |
+| `search(q, limit?)` | findings and tasks by their words, best first; a finding's duplicates are counted, not listed |
+| `timeline(since?, limit?)` | what happened, in order: tasks taken in, claims, tasks done or failed, findings |
+| `status()`, `get_task(id)` | the board in numbers; one task |
+
+`POST /v1/admin/tenants/:id/board/:tool` takes a tool's arguments and
+`"agent"` in its body. `POST /v1/admin/tenants/:id/mcp?agent=NAME` is the
+same tools over the Model Context Protocol (Streamable HTTP, no session).
+From Rust they are `chloedb::blackboard::Board`.
+
+- **One winner.** A call that writes is one transaction, committed by the
+  tenant's replacement of `HEAD`, so the store orders every claim: of two
+  agents that claim the same task, through one server or two, one is given
+  it.
+- **Leases.** A claimed task is its owner's until its lease passes (300
+  seconds unless asked, a day at most), by the clock of the server that
+  answers. After that another agent's `claim` may take it, and the first
+  agent's `heartbeat` and `complete` are refused.
+- **Applied once.** A call that failed or timed out may be sent again
+  with the same `key`: if the first was committed, the second changes
+  nothing and answers what the first answered. Keys are kept in the
+  tenant, so any server knows them.
+- **Duplicates.** Two findings say the same when they share at least 80%
+  of their words (letters and digits, in any case). This is a comparison
+  of words, not of meaning: the design's comparison by vectors is not
+  built.
+
+A refused call answers 409 over HTTP, and an answer marked `isError` over
+MCP. A call that another server beat to the tenant is tried again by the
+server, twice, before it answers 409.
+
 ## What it does not do yet
 
 - It has run on a directory store, and its S3 code against a mock of S3
@@ -125,5 +180,7 @@ again. Two servers started on one store answer for the same tenants.
   through `write`: use SQL or transactions.
 - The server has no per-tenant keys, quotas, routing or directory: every
   server on a store answers for every tenant, and two that write the same
-  one take it from each other (each write that loses answers 409).
+  one take it from each other (each write that loses answers 409). An
+  agent of a blackboard therefore holds an admin key of the server: run
+  one only where that is acceptable, until tenants have keys of their own.
 - The format is not frozen.

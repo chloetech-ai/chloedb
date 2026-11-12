@@ -28,6 +28,7 @@ pub mod aws;
 pub mod cloud;
 pub mod digitalocean;
 pub mod auth;
+pub mod board;
 pub mod coord;
 pub mod copy;
 pub mod contain;

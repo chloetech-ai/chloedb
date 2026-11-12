@@ -12,11 +12,12 @@
 //! | route | does |
 //! |---|---|
 //! | `GET /v1/admin/tenants` | the store's tenants, and which are open here |
-//! | `POST /v1/admin/tenants` | creates one: `{"id": "agent-7", "sql": ["CREATE TABLE ..."]}` |
+//! | `POST /v1/admin/tenants` | creates one: `{"id": "agent-7", "sql": ["CREATE TABLE ..."]}`, or from a template (`"template": "blackboard"`) |
 //! | `GET /v1/admin/tenants/:id` | where it is: its epoch, base, logs and last transaction |
 //! | `POST /v1/admin/tenants/:id/sql` | one statement: `{"sql": "...", "params": {}, "latest": false}` |
 //! | `POST /v1/admin/tenants/:id/base` | makes a new base now (before leaving a tenant alone) |
 //! | `DELETE /v1/admin/tenants/:id` | deletes it |
+//! | `POST /v1/admin/tenants/:id/board/:tool`, `POST /v1/admin/tenants/:id/mcp?agent=NAME` | a blackboard's tools ([`crate::board`]) |
 //!
 //! All need an admin key: the routes are under `/v1/admin/` until
 //! tenants have keys of their own, as the design proposes. A statement
@@ -214,15 +215,29 @@ impl Tenants {
         r
     }
 
-    /// Creates tenant `id` and runs `statements` on it before it is
-    /// first committed.
-    pub fn create(&self, id: &str, statements: &[String]) -> Result<Json, TenantError> {
+    /// The templates a tenant can be made from.
+    pub const TEMPLATES: [&'static str; 1] = [chloedb::blackboard::TEMPLATE];
+
+    /// Tenant `id`, opened unless it is open, for a call of several steps
+    /// ([`crate::board`]).
+    pub fn get(&self, id: &str) -> Result<Arc<Tenant>, TenantError> {
+        let r = self.tenant(id);
+        self.forget_if_missing(id, r)
+    }
+
+    /// Creates tenant `id` with the tables of `template` (one of
+    /// [`Tenants::TEMPLATES`]; any other name makes none) and runs
+    /// `statements` on it, before it is first committed.
+    pub fn create(&self, id: &str, statements: &[String], template: Option<&str>) -> Result<Json, TenantError> {
         let slot = self.slot(id);
         let mut held = slot.tenant.lock().unwrap_or_else(|e| e.into_inner());
         if held.is_some() {
             return Err(TenantError::Exists);
         }
         let t = Tenant::create(self.store.clone(), id, self.options(id), |db| {
+            if template == Some(chloedb::blackboard::TEMPLATE) {
+                chloedb::blackboard::init(db)?;
+            }
             for s in statements {
                 db.sql(s, &Params::new())?;
             }

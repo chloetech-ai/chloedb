@@ -27,6 +27,13 @@ changes collect under "Unreleased".
   closes idle tenants (`--tenant-idle-s`, `--tenant-open-max`), lists
   them (`GET /v1/admin/tenants`), and has `chloedb-server tenants
   check-store URL` and `tenants list URL`.
+- A blackboard for agents, on a tenant: tasks claimed under leases,
+  findings kept once, a timeline, and calls applied once when sent again
+  with their key. `chloedb::blackboard` in the engine; on the server a
+  tenant made with `"template": "blackboard"`, its tools at
+  `POST /v1/admin/tenants/:id/board/:tool` and as an MCP server at
+  `POST /v1/admin/tenants/:id/mcp?agent=NAME`
+  ([docs/chloedb/tenants.md](docs/chloedb/tenants.md#a-blackboard-for-agents)).
 - `chloedb::storage::ObjectStore` has conditional writes, whole-object
   reads and listing (`put_if_absent`, `put_if_version`, `get`, `list`,
   `list_dirs`, `get_file`), on the directory store and on S3. A store written outside

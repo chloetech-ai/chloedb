@@ -317,6 +317,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/tenants/:id", get(tenant_get).delete(tenant_delete))
         .route("/v1/admin/tenants/:id/sql", post(tenant_sql).layer(rows.clone()))
         .route("/v1/admin/tenants/:id/base", post(tenant_base))
+        // A blackboard's tools, for agents (crate::board).
+        .route("/v1/admin/tenants/:id/board/:tool", post(tenant_board))
+        .route("/v1/admin/tenants/:id/mcp", post(tenant_mcp))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
@@ -4061,7 +4064,38 @@ async fn tenant_create(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(Json::Array(a)) => a.iter().map(|s| s.as_str().map(String::from).ok_or_else(not_sql)).collect::<Result<_, _>>()?,
         Some(_) => return Err(not_sql()),
     };
-    Ok(AxJson(tenant_call(move || t.create(&id, &statements)).await?))
+    let template = match b.get("template") {
+        None | Some(Json::Null) => None,
+        Some(Json::String(name)) if crate::tenants::Tenants::TEMPLATES.contains(&name.as_str()) => Some(name.clone()),
+        Some(_) => return Err(ApiError::bad(format!("template is one of: {}", crate::tenants::Tenants::TEMPLATES.join(", ")))),
+    };
+    Ok(AxJson(tenant_call(move || t.create(&id, &statements, template.as_deref())).await?))
+}
+
+/// `POST /v1/admin/tenants/:id/board/:tool`: a tool of the tenant's
+/// blackboard, for the agent the body names ([`crate::board`]).
+async fn tenant_board(State(app): State<App>, axum::extract::Path((id, tool)): axum::extract::Path<(String, String)>, AxJson(mut b): AxJson<Json>) -> Res {
+    let t = tenants(&app)?;
+    let agent = body_str(&b, "agent")?.to_string();
+    if let Some(o) = b.as_object_mut() {
+        o.remove("agent");
+    }
+    let called = tokio::task::spawn_blocking(move || -> Result<Json, ApiError> { Ok(crate::board::call(&*t.get(&id)?, &agent, &tool, &b)?) });
+    Ok(AxJson(called.await.map_err(ApiError::internal)??))
+}
+
+/// `POST /v1/admin/tenants/:id/mcp?agent=NAME`: the blackboard's tools as
+/// an MCP server, for the agent the URL names. A request is answered
+/// with JSON; notifications alone with 202 and no body.
+async fn tenant_mcp(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Query(q): Query<std::collections::HashMap<String, String>>, body: Bytes) -> Result<Response, ApiError> {
+    let t = tenants(&app)?;
+    let agent = q.get("agent").filter(|a| !a.is_empty()).cloned().ok_or_else(|| ApiError::bad("the URL names the agent: ?agent=NAME"))?;
+    let answered = tokio::task::spawn_blocking(move || -> Result<(bool, Option<Json>), ApiError> { Ok(crate::board::mcp(&*t.get(&id)?, &agent, &body)) });
+    Ok(match answered.await.map_err(ApiError::internal)?? {
+        (true, Some(answer)) => AxJson(answer).into_response(),
+        (true, None) => StatusCode::ACCEPTED.into_response(),
+        (false, answer) => (StatusCode::BAD_REQUEST, AxJson(answer.unwrap_or(Json::Null))).into_response(),
+    })
 }
 
 async fn tenant_list(State(app): State<App>) -> Res {
