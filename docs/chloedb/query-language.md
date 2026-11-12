@@ -51,6 +51,7 @@ FROM <table> [JOIN <table> ON ...] | <WITH name> | (SELECT ...) AS t
 [WINDOW name AS (<window>), ...]
 [{UNION | INTERSECT | EXCEPT} [ALL] SELECT ...]
 [ORDER BY <score, column or aggregate> [ASC | DESC] [NULLS FIRST | LAST] [, <more keys> [ASC | DESC]] [MAX k PER <field>]]
+[PACK n TOKENS [OF <columns>] [EXCERPT n] [DEDUPE x [ON <vector field>]] [FOLLOW <edges field> [n HOP]] [WITH RECEIPT]]
 [LIMIT n [OFFSET m]]
 ```
 
@@ -1052,6 +1053,34 @@ On ArguAna (BEIR's 8,674 arguments from 592 debates on 15 topics; a document's d
 Debates and topics are the mean number of each in a query's answer. Each segment keeps the cap as it scores, so a cap costs about 1.5 times the uncapped query whatever the field: BM25 can skip fewer rows, since the 20th row kept scores lower than the 20th of all. One row of each of the 15 topics cannot fill 20 rows, so that query scores every argument that matches, once, and returns 15. Before the scan kept the cap, the same queries read growing slices of the ranking: 6.0 to 6.1 ms by debate, 7.1 and 18.8 ms for three and two per topic, and 549 ms for one per topic, which read every row again at each slice (with the uncapped query at 3.3 ms in that run).
 
 Caps trade relevance for spread. ArguAna's answer to a query is the argument against it, in the query's own debate, so a cap on debates also caps how many of the right debate's arguments the ranking can show: nDCG@10 falls from 0.489 to 0.307 with one per debate, and to 0.419 with three. The run is `chloedb-per-cap-bench` ([`results/text/per_cap.json`](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/text/per_cap.json)).
+
+## As much as fits: `PACK n TOKENS`
+
+A query's answer is often the context a language model is given, and the model has a budget of tokens, not of rows. `PACK n TOKENS` at the end of a SELECT fills that budget: it reads the query's rows in its order and decides each once, so that a long row, a row that repeats one already taken and a row linked to one taken are weighed inside the query rather than by the application after a top k.
+
+```sql
+-- what memory says about the task, in at most 4,000 tokens
+SELECT id, kind, text FROM memory
+WHERE superseded = false
+ORDER BY rrf(bm25(text, :task), similarity(emb, :q)) DESC
+PACK 4000 TOKENS DEDUPE 0.85 FOLLOW links 1 HOP WITH RECEIPT;
+```
+
+Each row, in the query's order, is:
+
+- **taken** whole when its text fits what is left of the budget;
+- **excerpted** when it is longer than one row may be (`EXCERPT n`; a quarter of the budget by default) or than what is left: the stretch of its longest text column with the most words of the query's `bm25` and `MATCH` texts (or its start, when it has none), marked `… ` where it was cut;
+- **skipped as a near-duplicate** of a row taken before it, with `DEDUPE x`: at least the share x of the shorter one's words are in the other, or, with `DEDUPE x ON emb`, the cosine of their vectors is at least x;
+- **skipped as over budget** when not even an excerpt of 32 tokens fits.
+
+With `FOLLOW edges n HOP` (1 to 3 hops, 1 by default), each row taken brings the rows its [`EDGES`](#graphs) field reaches, up to 16, right after it, if they pass the query's `WHERE`, decided the same way (`linked from k`): a decision a file note links to is taken with the note, though it shares no word with the task.
+
+The answer is the rows taken, in that order, with two more columns: `pack_tokens`, the tokens the row spends, and `pack_decision` (`take`, `excerpt`, `linked from k`). `WITH RECEIPT` adds the rows skipped (`skip: near-duplicate of k`, `skip: over budget`) and the columns `pack_score`, the query's score of the row, and `pack_used`, the tokens spent up to and with it. In Rust, `Db::pack` answers the rows and a receipt with every decision and the snapshot read (`txn` and `seq_no`).
+
+- **The text counted** is every text column but the key's, or the columns `OF a, b` names. Tokens are an estimate (`chloedb::query::pack::count_tokens`), as the real count depends on the model's tokenizer: a run of letters is a token per six letters, a run of digits a token per three, a CJK character or a punctuation mark one each.
+- **Reads.** The rows are read in slices, 64 and then four times as many, and reading stops once what is left of the budget is too small for any row: a query whose first rows fill the budget reads one slice. `LIMIT` is the most candidates read (1,000 without one), and `OFFSET` where they start. Every slice, and every row followed, is a query of its own on the same snapshot.
+- **Choosing** is greedy in the query's order. A row that does not fit whole is excerpted rather than skipped, so that one long log cannot spend the budget, and a smaller row after one over the budget is still taken.
+- **Where.** On a file, a server and a coordinator alike: a coordinator merges each slice from its shards, and packs. `PACK` inside a subquery is not the clause (`pack` stays a name there, and anywhere it is not followed by a number and `TOKENS`).
 
 ## Graphs
 

@@ -224,6 +224,15 @@ pub fn bind_write(sql_text: &str, schema: &Schema, params: &Params) -> Result<Op
 /// RANK PROFILE` ([`crate::query::profile`]), or `CREATE FUNCTION` or
 /// `DROP FUNCTION` ([`crate::query::function`]).
 pub fn bind_command(sql_text: &str, tables: &[&Schema], params: &Params) -> Result<Command> {
+    // `SELECT ... PACK n TOKENS` is a query: the SELECT without the clause.
+    if super::pack::may_pack(sql_text) {
+        if let Some((rest, _)) = super::pack::split(sql_text)? {
+            return match bind_command(&rest, tables, params)? {
+                Command::Query => Ok(Command::Query),
+                _ => Err(err("PACK n TOKENS ends a SELECT")),
+            };
+        }
+    }
     if let Some(f) = super::function::parse_statement(sql_text)? {
         return Ok(Command::Function(f));
     }
