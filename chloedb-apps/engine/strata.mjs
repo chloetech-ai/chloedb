@@ -34,6 +34,9 @@ export class Strata {
     return out.rows || [];
   }
 
+  // The plan of a query (and its run's statistics, not its rows).
+  explain(sql, params) { return this.req('POST', '/v1/explain', { sql, params: params || {} }); }
+
   write(ops) { return this.req('POST', '/v1/write', { ops }); }
 
   async get(table, keys) {

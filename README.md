@@ -39,7 +39,7 @@ Open http://127.0.0.1:7700 for the command center: a query console, the cluster'
 Or run the container image, which serves `/data/chloedb.chloedb`:
 
 ```sh
-docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
+docker run --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
   ghcr.io/chloetech-ai/chloedb-server:latest
 ```
 

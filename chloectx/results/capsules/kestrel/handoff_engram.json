@@ -1,0 +1,91 @@
+{
+ "capsule": {
+  "backup_ms": 73.705777,
+  "by_kind": {
+   "answer": 242,
+   "decision": 27,
+   "entity": 178,
+   "episode": 30,
+   "error": 28,
+   "fact": 32,
+   "note": 2,
+   "preference": 12,
+   "prompt": 33,
+   "todo": 8
+  },
+  "bytes": 1929216,
+  "created_ts": 1794478212,
+  "dim": 512,
+  "dir": "/home/user/bench/work/kestrel/engram/capsule",
+  "embedder": "static",
+  "embedder_name": "static:potion-retrieval-32M",
+  "format": "chloectx-capsule/1",
+  "kinds": [
+   "decision",
+   "preference",
+   "fact",
+   "todo",
+   "note",
+   "entity",
+   "prompt",
+   "answer",
+   "episode",
+   "summary",
+   "error"
+  ],
+  "pack_ms": 60.684394000000005,
+  "project": "/home/user/bench/work/kestrel/engram/kestrel",
+  "records": 592,
+  "redacted": 0,
+  "sha256": "33b2bfcb8eb486e385a4eefa68d522ab9e48e9dd4c7703fbe06230d16467f7f6",
+  "since_ts": null,
+  "source_last_seq": 1007,
+  "title": "kestrel",
+  "topics": [
+   "Appointment",
+   "src/kestrel/invoices.py",
+   "Calendar",
+   "calendar.py",
+   "Calendar.cancel",
+   "data/legacy_appointments.csv",
+   "kestrel",
+   "legacy import",
+   "storage.py",
+   "src/kestrel/cli.py",
+   "tests/test_cli.py",
+   "tests/test_invoices.py",
+   "cancelled_at",
+   "data/does-not-exist.json",
+   "normalize_patient_id",
+   "session price",
+   "src/kestrel/calendar.py",
+   "waitlist.py",
+   "CHANGELOG.md",
+   "Harbour"
+  ],
+  "total_ms": 209.782085,
+  "wall_s": 0.21
+ },
+ "note": {
+  "chars": 10758,
+  "transcript_chars": 159078,
+  "cost_usd": 0.01938177,
+  "wall_s": 53.1,
+  "input_tokens": 69589,
+  "output_tokens": 11824,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ },
+ "note_short": {
+  "chars": 2315,
+  "transcript_chars": 159078,
+  "cost_usd": 0.01478417,
+  "wall_s": 12.6,
+  "input_tokens": 69626,
+  "output_tokens": 2614,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ }
+}

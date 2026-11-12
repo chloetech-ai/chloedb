@@ -118,6 +118,8 @@ async fn serve_site() -> (Site, String) {
             }),
         )
         .with_state(site.clone());
+    // The sites served here are on this machine: reachable only when said.
+    chloedb_crawl::reach::set(chloedb_crawl::reach::Reach::any());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
     *site.base.lock().unwrap() = base.clone();
@@ -159,6 +161,8 @@ async fn the_api_takes_no_browsers_and_needs_its_token() {
     let strata = Strata::new("http://127.0.0.1:9", None);
     let grower = Grower::new(Policy { how: How::Off, split_rows: 0, max_shards: 1 }, strata.clone(), None);
     let svc = Service::new(strata, grower, Some("crawl-secret".into()), false);
+    // The sites served here are on this machine: reachable only when said.
+    chloedb_crawl::reach::set(chloedb_crawl::reach::Reach::any());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
     tokio::spawn(async move { axum::serve(l, api::router(svc)).await.unwrap() });
@@ -380,6 +384,8 @@ async fn a_crawl_waits_for_busy_pages_and_every_sites_crawl_delay() {
                     }
                 }),
             );
+        // The sites served here are on this machine: reachable only when said.
+        chloedb_crawl::reach::set(chloedb_crawl::reach::Reach::any());
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = l.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
@@ -402,6 +408,8 @@ async fn a_crawl_waits_for_busy_pages_and_every_sites_crawl_delay() {
             }),
         )
         .with_state(site.clone());
+    // The sites served here are on this machine: reachable only when said.
+    chloedb_crawl::reach::set(chloedb_crawl::reach::Reach::any());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
     tokio::spawn(async move { axum::serve(l, app).await.unwrap() });

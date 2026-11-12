@@ -132,3 +132,71 @@ async fn apps_are_listed_and_forwarded_with_the_servers_token() {
     let (s, body) = call(&base, "GET", "/v1/apps/gone/x", read, None).await;
     assert_eq!(s, 502, "{body}");
 }
+
+/// A server on `addr` that takes connections and never answers.
+async fn silent() -> String {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((c, _)) = l.accept().await {
+            held.push(c);
+        }
+    });
+    url
+}
+
+async fn serve_apps(apps: Apps) -> (String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("a.strata"), demo::schema(10), DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent, 16, Duration::from_secs(10));
+    svc.apps = apps;
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    tokio::spawn(server::serve_http(Arc::new(svc), l, Access { token: Some(Secret::new("root-token")), ..Default::default() }));
+    (base, dir)
+}
+
+// Audit D-B9, G-B17: a path the router decoded once still climbed out of an
+// app mounted under a path, and a decoded ? started a query.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apps_path_cannot_climb_out_of_its_url_or_add_a_query() {
+    let (app_url, seen) = fake_app().await;
+    let (base, _dir) = serve_apps(Apps::new(parse(&[format!("tools={app_url}/tools/x")]).unwrap(), Some("app-secret".into()))).await;
+    let root = Some("root-token");
+    let (s, body) = call(&base, "GET", "/v1/apps/tools/a/%252e%252e/%252e%252e/admin", root, None).await;
+    assert_eq!(s, 400, "{body}");
+    let (s, body) = call(&base, "GET", "/v1/apps/tools/a/%252E%252e/admin", root, None).await;
+    assert_eq!(s, 400, "{body}");
+    let (s, body) = call(&base, "GET", "/v1/apps/tools/a%3Fadmin=1", root, None).await;
+    assert_eq!(s, 200, "{body}");
+    let (s, body) = call(&base, "GET", "/v1/apps/tools/v1/crawls?x=1", root, None).await;
+    assert_eq!(s, 200, "{body}");
+    let seen = seen.lock().unwrap();
+    let paths: Vec<&str> = seen.iter().map(|(_, p, ..)| p.as_str()).collect();
+    assert_eq!(paths, ["/tools/x/a%3Fadmin=1", "/tools/x/v1/crawls?x=1"], "only the app's own paths, the ? kept in its segment");
+}
+
+// Audit G-B10: apps that do not answer made every listing wait 5 s each, one
+// after another, and the command center gave up on all of them.
+#[tokio::test(flavor = "multi_thread")]
+async fn apps_that_do_not_answer_do_not_hold_up_the_listing() {
+    let (app_url, _seen) = fake_app().await;
+    let (dead1, dead2) = (silent().await, silent().await);
+    let (base, _dir) = serve_apps(Apps::new(parse(&[format!("crawler={app_url}"), format!("a={dead1}"), format!("b={dead2}")]).unwrap(), None)).await;
+    let t0 = std::time::Instant::now();
+    let (s, j) = call(&base, "GET", "/v1/apps", Some("root-token"), None).await;
+    let first = t0.elapsed();
+    assert_eq!(s, 200, "{j}");
+    let j: Json = serde_json::from_str(&j).unwrap();
+    let up: Vec<bool> = j["apps"].as_array().unwrap().iter().map(|a| a["up"].as_bool().unwrap()).collect();
+    assert_eq!(up, [true, false, false]);
+    assert!(first < Duration::from_millis(7500), "the apps are asked at once: {first:?}");
+    // Their failures are kept: the next listing does not wait for them.
+    let t0 = std::time::Instant::now();
+    let (s, _) = call(&base, "GET", "/v1/apps", Some("root-token"), None).await;
+    assert_eq!(s, 200);
+    assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
+}

@@ -271,6 +271,10 @@ message RestoreChunk {
   uint64 size = 3;
   // The copy's next bytes: a checkpoint of the primary in one file.
   bytes data = 4;
+  // In the first chunk: the version of the shard's membership, as
+  // ReplicateRequest.config, which the replica checks as it checks a
+  // ReplicateRequest's (0: a primary that does not send it).
+  uint64 config = 5;
 }
 
 message ReplicateRequest {
@@ -328,6 +332,8 @@ message VerifyRequest {
   string primary = 2;
   // The transaction the version was pinned at.
   uint64 seq_no = 3;
+  // The version of the shard's membership, as ReplicateRequest.config.
+  uint64 config = 4;
 }
 
 message VerifyResponse {

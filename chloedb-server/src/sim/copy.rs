@@ -337,7 +337,7 @@ impl Sim {
                         }
                     },
                     Role::Primary(run) => {
-                        let (a, kept) = run.core.shipped_to(&r.primary, r.term, &n);
+                        let (a, kept) = run.core.shipped_to(&r.primary, r.term, r.config, &n);
                         if let Some(k) = kept {
                             self.copies[i].kept = Some(k);
                             self.settle_writes(i);
@@ -348,9 +348,9 @@ impl Sim {
                 };
                 self.answer(i, from, call, Resp::Replicate(a));
             }
-            Req::Restore { term, primary, copy } => {
+            Req::Restore { term, primary, config, copy } => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(term, &primary, false, (0, 0), &n) {
+                    Role::Replica(rep) => match rep.take(term, &primary, false, (config, 0), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {
@@ -378,7 +378,7 @@ impl Sim {
                         }
                     },
                     Role::Primary(run) => {
-                        let (a, kept) = run.core.shipped_to(&primary, term, &n);
+                        let (a, kept) = run.core.shipped_to(&primary, term, config, &n);
                         if let Some(k) = kept {
                             self.copies[i].kept = Some(k);
                             self.settle_writes(i);
@@ -707,9 +707,10 @@ impl Sim {
                     task.calling = true;
                     let gen = task.s.gen;
                     let copy = c.db.checkpoint();
+                    let config = run.core.kept.config_version();
                     let to = k_to_copy(&self.copies, &self.copies[i], k);
                     let timeout = self.cfg.call_timeout;
-                    self.call(i, to, Req::Restore { term, primary: id.clone(), copy }, timeout, Purpose::Ship { k, gen });
+                    self.call(i, to, Req::Restore { term, primary: id.clone(), config, copy }, timeout, Purpose::Ship { k, gen });
                     return;
                 }
                 Ship::Sleep(d) => {

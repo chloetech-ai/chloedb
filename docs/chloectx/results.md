@@ -43,6 +43,10 @@ The 6,000-character briefing did most of the work: it reached every ChloeCtx run
 
 A longer A/B on multi-day scenarios was run twice. The first run (`chloectx/results/long/*_v1_leaky`) is kept for the record only: Claude Code's own auto-memory, which lives outside the repository, was not reset between runs, so the runs within a lane were not independent. The rerun with the isolated harness (`chloectx/results/long/stockroom` and `slotwise`, 240 runs) does not show ChloeCtx recovering what compaction dropped. After a hand review of the regex-graded advice answers, stockroom was solved 26/30 with compaction alone, 27/30 with ChloeCtx, 30/30 with ChloeCtx and graph recall, and 30/30 with the full history; slotwise was 30/30 in every lane. Each compacted lane missed the one conversation-only fact its own last compaction summary dropped. In both ChloeCtx lanes the recall gate skipped those prompts and no run called a memory tool, so the differences between lanes come from their summaries. `stockroom/NOTE.md` has the review.
 
+## Handing work to the next agent
+
+A capsule (a slice of memory one agent hands another as a file it queries) was measured on the same four projects against handoff notes, ChloeCtx itself and the whole history: [capsules](capsules.md#results). With a short note of about 2,000 characters, adding a capsule raised the tasks solved from 72% to 89% (p < 0.0001); with a long, complete note it added nothing.
+
 ## Memory systems compared
 
 The A/B above compares ChloeCtx with nothing. This one puts Claude Code next to the memory systems a user could pick instead, on four projects, and compares ChloeCtx's `main` with the October changes (notes kept current, request-aware recall, code anchors and the query engine).

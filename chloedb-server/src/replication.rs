@@ -692,9 +692,9 @@ impl Primary {
     /// does not know this one replaced it: answered with this primary's
     /// term, which fences it, when `term` is older. A newer term fences
     /// this primary, and the call is refused (409).
-    pub fn shipped_to(&self, primary: &str, term: u64) -> Result<pb::ReplicateResponse, ApiError> {
+    pub fn shipped_to(&self, primary: &str, term: u64, config: u64) -> Result<pb::ReplicateResponse, ApiError> {
         let n = self.numbering();
-        let (a, kept) = self.core(|c| c.shipped_to(primary, term, &n));
+        let (a, kept) = self.core(|c| c.shipped_to(primary, term, config, &n));
         self.keep_fenced(kept);
         a
     }
@@ -722,7 +722,7 @@ impl Primary {
     /// [`Primary::shipped_to`] answers a call.
     pub async fn copied_to(&self, mut chunks: tonic::Streaming<pb::RestoreChunk>) -> Result<pb::ReplicateResponse, ApiError> {
         let first = chunks.message().await.map_err(|s| ApiError::bad(format!("the copy was cut off: {}", s.message())))?.ok_or_else(|| ApiError::bad("the copy is empty"))?;
-        self.shipped_to(&first.primary, first.term)
+        self.shipped_to(&first.primary, first.term, first.config)
     }
 
     /// Whether a write may be applied: not on a primary another replaced
@@ -1046,7 +1046,7 @@ async fn ship(p: Weak<Primary>, k: usize, mut s: Shipper) {
 async fn verify(p: Weak<Primary>, k: usize, r: Round) {
     let Some(pr) = p.upgrade() else { return };
     let f = pr.followers[k].clone();
-    let req = pb::VerifyRequest { term: pr.term(), primary: pr.id.clone(), seq_no: r.seq };
+    let req = pb::VerifyRequest { term: pr.term(), primary: pr.id.clone(), seq_no: r.seq, config: pr.core(|c| c.kept.config_version()) };
     // A second more for each 100,000 rows to hash.
     let rows: u64 = r.snap.schemas().filter_map(|s| r.snap.table(&s.table)).map(|t| t.n_live_docs()).sum();
     let timeout = pr.opts.call_timeout + Duration::from_secs(rows / 100_000);
@@ -1104,10 +1104,11 @@ async fn send_copy(p: &Primary, f: &Follower, term: u64) -> Result<pb::Replicate
     // A thread reads the file a chunk ahead of the call.
     let (tx, rx) = tokio::sync::mpsc::channel(2);
     let (chunk, primary) = (p.opts.copy_chunk_bytes.max(1), p.id.clone());
+    let config = p.core(|c| c.kept.config_version());
     let at = path.clone();
     tokio::task::spawn_blocking(move || {
         use std::io::Read;
-        let mut first = Some((term, primary, size));
+        let mut first = Some((term, primary, size, config));
         let mut sent = 0;
         loop {
             let mut data = Vec::with_capacity(chunk);
@@ -1120,8 +1121,8 @@ async fn send_copy(p: &Primary, f: &Follower, term: u64) -> Result<pb::Replicate
                 return;
             }
             sent += data.len() as u64;
-            let (term, primary, said) = first.take().unwrap_or_default();
-            if tx.blocking_send(pb::RestoreChunk { term, primary, size: said, data }).is_err() || sent >= size {
+            let (term, primary, said, config) = first.take().unwrap_or_default();
+            if tx.blocking_send(pb::RestoreChunk { term, primary, size: said, data, config }).is_err() || sent >= size {
                 return;
             }
         }
@@ -1624,7 +1625,7 @@ impl Follow {
         let first = chunks.message().await.map_err(cut)?.ok_or_else(|| ApiError::bad("the copy is empty"))?;
         let _one = self.one.lock().await;
         let n = self.numbering()?;
-        if let Some(a) = self.take(first.term, &first.primary, false, (0, 0), &n)? {
+        if let Some(a) = self.take(first.term, &first.primary, false, (first.config, 0), &n)? {
             return Ok(a);
         }
         // Its rows are behind its primary's log, or differ: no reads
