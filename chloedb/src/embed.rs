@@ -18,6 +18,8 @@
 //! * [`SiglipEmbedder`] (feature `vision`): SigLIP's image and text
 //!   towers through candle, `siglip-base-patch16-224`. A tenth of a second
 //!   an image on a few cores.
+//! * [`SparseEncoder`] (feature `onnx`): term weights for SPARSE fields,
+//!   a transformer's for documents and an IDF lookup for queries.
 //! * [`OnnxEmbedder`] (feature `onnx`): any encoder exported to ONNX
 //!   (`model.onnx`), run by ONNX Runtime, such as a ModernBERT embedder
 //!   (`granite-embedding-small-english-r2`) quantised to int8: CLS or mean
@@ -1121,6 +1123,177 @@ impl Embedder for OnnxEmbedder {
     }
     fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
         Ok(self.embed(&[&format!("{}{text}", self.query_prefix)])?.pop().unwrap_or_default())
+    }
+}
+
+// ---------------------------------------------------------------- learned sparse
+
+/// A learned sparse encoder for SPARSE fields, "inference-free" on the
+/// query side (OpenSearch's neural sparse doc-v3-distill and its kind): a
+/// document's term weights come from a transformer with its masked-language
+/// head, exported to ONNX with the pooling in the graph (its one output is
+/// `[batch, vocabulary]`, the max over tokens of `log(1 + relu(logits))`;
+/// `research/cpu-encoders/sparse_onnx_export.py` writes it), and a query's
+/// are its tokens weighted by the model's IDF table (`idf.json`), a lookup
+/// that runs no model. Terms are the tokenizer's vocabulary entries, so a
+/// document's and a query's weights meet in a SPARSE field's index, which
+/// ranks their dot product with the text index's top-k code.
+///
+/// On BEIR (SciFact, NFCorpus, ArguAna) its documents with BM25 under
+/// `rrf` come within two points of nDCG@10 of granite-small-r2 dense
+/// vectors, and a query takes well under a millisecond.
+#[cfg(feature = "onnx")]
+pub struct SparseEncoder {
+    tokenizer: tokenizers::Tokenizer,
+    session: std::sync::Mutex<ort::session::Session>,
+    /// The vocabulary entry of each token id.
+    terms: Vec<String>,
+    /// The query side's weight of each token id (1 where `idf.json` has none).
+    idf: Vec<f32>,
+    /// Token ids that are never terms: the tokenizer's special tokens.
+    special: Vec<bool>,
+    pad: u32,
+    name: String,
+}
+
+#[cfg(feature = "onnx")]
+impl SparseEncoder {
+    /// Tokens in one run, padding included: the head's logits are
+    /// `[batch, tokens, vocabulary]` floats, 2 GB for 32 documents of 512
+    /// tokens, so a run is sized by tokens (4,096: 0.5 GB), not documents.
+    const TOKENS: usize = 4096;
+
+    pub fn open(dir: &Path) -> Result<SparseEncoder> {
+        use ort::session::builder::GraphOptimizationLevel;
+        use ort::session::Session;
+        let e = |x: String| model_err(format!("{}: {x}", dir.display()));
+        let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        // sentence-transformers' max_seq_length, if set, else the model's
+        // positions, at most 512, as OnnxEmbedder reads it
+        let max_tokens = std::fs::read_to_string(dir.join("sentence_bert_config.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|c| c["max_seq_length"].as_u64())
+            .or_else(|| config["max_position_embeddings"].as_u64())
+            .map_or(512, |n| n as usize)
+            .min(512);
+        let mut tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|x| e(x.to_string()))?;
+        tokenizer.with_truncation(Some(tokenizers::TruncationParams { max_length: max_tokens, ..Default::default() })).map_err(|x| e(x.to_string()))?;
+        // tokenizer.json may pad a batch to its longest, and the mask would
+        // then cover the padding: a run pads itself
+        tokenizer.with_padding(None);
+        let vocab = tokenizer.get_vocab_size(true);
+        let terms: Vec<String> = (0..vocab as u32).map(|i| tokenizer.id_to_token(i).unwrap_or_default()).collect();
+        let mut special = vec![false; vocab];
+        for (&id, t) in tokenizer.get_added_tokens_decoder().iter() {
+            if t.special && (id as usize) < vocab {
+                special[id as usize] = true;
+            }
+        }
+        let idf_text = std::fs::read_to_string(dir.join("idf.json")).map_err(|x| e(format!("idf.json: {x}")))?;
+        let idf_map: std::collections::HashMap<String, f64> = serde_json::from_str(&idf_text).map_err(|x| e(format!("idf.json: {x}")))?;
+        let mut idf = vec![1f32; vocab];
+        for (t, w) in idf_map {
+            if let Some(id) = tokenizer.token_to_id(&t) {
+                if let Some(slot) = idf.get_mut(id as usize) {
+                    *slot = w as f32;
+                }
+            }
+        }
+        let pad = config["pad_token_id"].as_u64().unwrap_or(0) as u32;
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let session = Session::builder(crate::query::cross_encoder::onnx_environment().map_err(|x| e(x.to_string()))?)
+            .map_err(|x| e(x.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|x| e(x.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|x| e(x.to_string()))?
+            .commit_from_file(dir.join(crate::query::cross_encoder::ONNX))
+            .map_err(|x| e(format!("model.onnx: {x}")))?;
+        let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
+        if !names.iter().any(|n| n == "input_ids") || !names.iter().any(|n| n == "attention_mask") {
+            return Err(e("model.onnx does not take input_ids and attention_mask".into()));
+        }
+        let name = format!("sparse:{}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        Ok(SparseEncoder { tokenizer, session: std::sync::Mutex::new(session), terms, idf, special, pad, name })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The documents' term weights, the zero weights left out.
+    pub fn encode_documents(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
+        let enc = self.tokenizer.encode_batch(texts.to_vec(), true).map_err(|e| model_err(format!("{}: {e}", self.name)))?;
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&i| enc[i].len());
+        let mut out = vec![Vec::new(); texts.len()];
+        // runs of documents sorted by length, so that little is padding,
+        // each of at most TOKENS tokens padded
+        let mut start = 0;
+        while start < order.len() {
+            let mut end = start + 1;
+            while end < order.len() && (end - start + 1) * enc[order[end]].len().max(1) <= Self::TOKENS {
+                end += 1;
+            }
+            let chunk = &order[start..end];
+            let batch: Vec<&tokenizers::Encoding> = chunk.iter().map(|&i| &enc[i]).collect();
+            for (&i, v) in chunk.iter().zip(self.run(&batch)?) {
+                out[i] = v;
+            }
+            start = end;
+        }
+        Ok(out)
+    }
+
+    /// A query's term weights: its distinct tokens, each weighted by the
+    /// IDF table. No model runs.
+    pub fn encode_query(&self, text: &str) -> Result<Vec<(String, f32)>> {
+        let enc = self.tokenizer.encode(text, false).map_err(|e| model_err(format!("{}: {e}", self.name)))?;
+        let mut ids: Vec<u32> = enc.get_ids().iter().copied().filter(|&i| !self.special.get(i as usize).copied().unwrap_or(true)).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(ids.into_iter().map(|i| (self.terms[i as usize].clone(), self.idf[i as usize])).collect())
+    }
+
+    /// Term weights as a SPARSE value: a JSON object of term to weight.
+    pub fn to_json(terms: &[(String, f32)]) -> String {
+        let m: serde_json::Map<String, serde_json::Value> = terms.iter().map(|(t, w)| (t.clone(), serde_json::Value::from(*w as f64))).collect();
+        serde_json::Value::Object(m).to_string()
+    }
+
+    fn run(&self, enc: &[&tokenizers::Encoding]) -> Result<Vec<Vec<(String, f32)>>> {
+        use ort::value::Tensor;
+        let attempt = || -> std::result::Result<Vec<Vec<(String, f32)>>, Box<dyn std::error::Error>> {
+            let (n, len) = (enc.len(), enc.iter().map(|e| e.len()).max().unwrap_or(0).max(1));
+            let (mut ids, mut mask) = (vec![self.pad as i64; n * len], vec![0i64; n * len]);
+            for (k, e) in enc.iter().enumerate() {
+                for (j, &id) in e.get_ids().iter().enumerate() {
+                    ids[k * len + j] = id as i64;
+                    mask[k * len + j] = 1;
+                }
+            }
+            let shape = vec![n as i64, len as i64];
+            let tensor = |v: Vec<i64>| Tensor::from_array((shape.clone(), v));
+            let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+            let outputs = session.run(ort::inputs!["input_ids" => tensor(ids)?, "attention_mask" => tensor(mask)?])?;
+            let (shape, w) = outputs[0].try_extract_tensor::<f32>()?;
+            let v = self.terms.len();
+            if shape.len() != 2 || w.len() != n * v {
+                return Err(format!("the model's output is {shape:?}, not [{n}, {v}]: export it with its pooling (sparse_onnx_export.py)").into());
+            }
+            Ok((0..n)
+                .map(|k| {
+                    w[k * v..(k + 1) * v]
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, &x)| x > 0.0 && !self.special[i])
+                        .map(|(i, &x)| (self.terms[i].clone(), x))
+                        .collect()
+                })
+                .collect())
+        };
+        attempt().map_err(|e| model_err(format!("{}: {e}", self.name)))
     }
 }
 
