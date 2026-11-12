@@ -283,11 +283,12 @@ impl Daemon {
         let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
         let key = crate::sync::project_key(&crate::paths::home(), &self.project);
         let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
+        // What a pull stores keeps the server's sequence numbers, and the
+        // next push sends again those past what was pushed: the same rows,
+        // replaced by themselves. Taking them as pushed (pushed_seq set to
+        // the store's last) also took as pushed whatever the hooks recorded
+        // while the pull ran, which then never reached the server.
         let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st)) } else { None };
-        // What was pulled was the server's already.
-        if matches!(pulled, Some(Ok(_))) {
-            st.pushed_seq = st.pushed_seq.max(self.store.last_seq());
-        }
         st.last_error = match (&pushed, &pulled) {
             (Err(e), _) | (_, Some(Err(e))) => e.to_string(),
             _ => String::new(),

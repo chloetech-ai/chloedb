@@ -310,7 +310,13 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
         let Some(top) = rs.rows.iter().filter_map(|r| r.get(5).and_then(|v| v.as_i64())).max() else { break };
         if !recs.is_empty() {
             let ops: Vec<Json> = recs.iter().map(|r| json!({"op": "upsert", "table": TABLE, "doc": remote_doc(project, r)})).collect();
-            remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-{:016x}-{}-{top}", fnv(project), st.pushed_seq) }))?;
+            // Named by the records it holds: a retry of this batch is the
+            // same request, and another machine's batch of the same
+            // project and sequence numbers (each store numbers its own) is
+            // not, which a key of the numbers alone said it was, so the
+            // server refused it as a reused key for an hour.
+            let ids = recs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(",");
+            remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-{:016x}-{:016x}-{top}", fnv(project), fnv(&ids)) }))?;
             sent += recs.len();
         }
         st.pushed_seq = top;
@@ -343,36 +349,50 @@ pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -
 }
 
 /// Stores the records of `project` the server holds and `store` lacks,
-/// embedded here; how many.
+/// embedded here; how many. Paged by sequence number: each machine numbers
+/// its own records, so the server holds several of one number, and a full
+/// page may end inside them, so its last number's records are read whole
+/// before the next page starts after it.
 fn pull_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
     let mut got = 0;
     let mut after = i64::MIN;
     loop {
-        let rows = remote.rows(&format!("SELECT {REMOTE_COLUMNS} FROM {TABLE} WHERE project = :p AND seq > :s ORDER BY seq ASC LIMIT {BATCH}"), json!({ "p": project, "s": after }))?;
-        let n = rows.len();
-        let mut recs: Vec<Record> = rows.iter().filter_map(|r| remote_record(r)).collect();
-        for r in &mut recs {
-            crate::redact::redact_record(r);
-        }
+        let mut rows = remote.rows(&format!("SELECT {REMOTE_COLUMNS} FROM {TABLE} WHERE project = :p AND seq > :s ORDER BY seq ASC LIMIT {BATCH}"), json!({ "p": project, "s": after }))?;
+        let full = rows.len() >= BATCH;
         let Some(top) = rows.iter().filter_map(|r| r.get(5).and_then(|v| v.as_i64())).max() else { break };
-        let ids: Vec<String> = recs.iter().map(|r| r.id.clone()).collect();
-        let have: std::collections::HashSet<String> = store.get(&ids)?.into_iter().map(|r| r.id).collect();
-        let new: Vec<Record> = recs.into_iter().filter(|r| !have.contains(&r.id)).collect();
-        if !new.is_empty() {
-            let texts: Vec<String> = new.iter().map(|r| r.embed_text()).collect();
-            let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            let embs = store.embedder.embed(&refs)?;
-            store.bulk_insert(&new, embs)?;
-            got += new.len();
+        if full {
+            rows.retain(|r| r.get(5).and_then(|v| v.as_i64()) != Some(top));
+            rows.extend(remote.rows(&format!("SELECT {REMOTE_COLUMNS} FROM {TABLE} WHERE project = :p AND seq = :s LIMIT 10000"), json!({ "p": project, "s": top }))?);
         }
+        got += store_new(store, &rows)?;
         after = top;
-        if n < BATCH {
+        if !full {
             break;
         }
     }
     st.pulled += got as u64;
     st.last_pull = crate::now();
     Ok(got)
+}
+
+/// Stores the server's `rows` that `store` lacks, redacted and embedded
+/// here; how many.
+fn store_new(store: &Store, rows: &[Vec<Json>]) -> Result<usize> {
+    let mut recs: Vec<Record> = rows.iter().filter_map(|r| remote_record(r)).collect();
+    for r in &mut recs {
+        crate::redact::redact_record(r);
+    }
+    let ids: Vec<String> = recs.iter().map(|r| r.id.clone()).collect();
+    let have: std::collections::HashSet<String> = store.get(&ids)?.into_iter().map(|r| r.id).collect();
+    let new: Vec<Record> = recs.into_iter().filter(|r| !have.contains(&r.id)).collect();
+    if new.is_empty() {
+        return Ok(0);
+    }
+    let texts: Vec<String> = new.iter().map(|r| r.embed_text()).collect();
+    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let embs = store.embedder.embed(&refs)?;
+    store.bulk_insert(&new, embs)?;
+    Ok(new.len())
 }
 
 /// Whether `t` is an Anthropic API key, which a ChloeDB server never takes:
