@@ -10,7 +10,7 @@ Around the library:
 
 - **[chloedb-server](docs/chloedb/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
 - **[chloedb-py](docs/chloedb/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods. Its [frames](docs/chloedb/frames.md) are lazy dataframes written as Polars writes them (filters, groups, joins, windows, and search as verbs), run as one SQL query where the data is, with the answer as Arrow for pandas, Polars and NumPy.
-- **[chloedb-java](docs/chloedb/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:chloedb:books.strata`.
+- **[chloedb-java](docs/chloedb/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:chloedb:books.chloedb`.
 - **[chloedb-js](docs/chloedb/javascript.md)** does the same from JavaScript: a ChloeDB file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
 - **[Parquet and S3](docs/chloedb/parquet.md)**: `chloedb-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
 - **[Following Postgres](docs/chloedb/postgres.md)**: `chloedb-server follow-postgres` copies a Postgres publication's tables into ChloeDB and then applies their inserts, updates, deletes, truncates and new columns by logical replication (pgoutput), a moment behind, each change once across restarts: search over Postgres's rows without a Debezium or PGSync pipeline.
@@ -94,33 +94,33 @@ git clone https://github.com/chloetech-ai/chloedb && cd chloedb
 ChloeDB as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/chloedb/server.md#run-it)):
 
 ```sh
-v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
-curl -LO https://github.com/chloetech-ai/chloedb/releases/download/strata-server-v$v/strata-server-$p.tar.gz
-tar xzf strata-server-$p.tar.gz
-strata-server-$p/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+v=0.2.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
+tar xzf chloedb-server-$p.tar.gz
+chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # http://127.0.0.1:7700
 ```
 
-Release 0.1.0 predates the rename, so its archive holds the program as `strata-server`. Later releases are tagged `chloedb-server-v<version>`, with archives `chloedb-server-$p.tar.gz` that hold `chloedb-server` and `strata-server` beside it.
+Release 0.1.0, from before the rename, was published as `strata-server-v0.1.0`.
 
 Or built from source:
 
 ```sh
 cd chloedb-server && cargo build --release
-target/release/chloedb-server --demo 20000 --db products.strata
+target/release/chloedb-server --demo 20000 --db products.chloedb
 ```
 
 Or from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
 
 ```sh
-docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v strata:/data \
-  ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.strata --listen 0.0.0.0:7700
+docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
+  ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.chloedb --listen 0.0.0.0:7700
 ```
 
-ChloeDB from its shell, which prints the plan it chose. The shell opens a database that exists and does not create one; here it reads the `products.strata` a server above made with `--demo` (`../products.strata` after the prebuilt server, `../chloedb-server/products.strata` after the source build; beside a running server it opens the file read-only):
+ChloeDB from its shell, which prints the plan it chose. The shell opens a database that exists and does not create one; here it reads the `products.chloedb` a server above made with `--demo` (`../products.chloedb` after the prebuilt server, `../chloedb-server/products.chloedb` after the source build; beside a running server it opens the file read-only):
 
 ```sh
 cd chloedb && cargo build --release
-target/release/chloedb ../products.strata "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+target/release/chloedb ../products.chloedb "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
 ```
 
 ChloeDB from Python ([more](docs/chloedb/python.md)):
@@ -136,7 +136,7 @@ cd chloedb-java && mvn install    # ai.chloetech:chloedb:0.1.0, the native libra
 ```
 
 ```java
-try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
+try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.chloedb");
      ResultSet rs = c.createStatement().executeQuery("SELECT id, title FROM books ORDER BY bm25(title, 'dragon') DESC LIMIT 5")) {
     while (rs.next()) System.out.println(rs.getString("id") + " " + rs.getString("title"));
 }

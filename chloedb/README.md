@@ -32,16 +32,16 @@ diagrams and results, is built into `report/strata.html` by
 | `src/postings/` | compressed posting-list formats (Loom, Pyramid, Entropic, BP128 and the formats they were compared with), intersection and union algorithms, and their testbed; see [`notes/posting-lists.md`](notes/posting-lists.md) |
 | `src/db.rs` | `Db`: open, load, query |
 | `src/baselines/` | SQLite + FTS5 and Tantivy baselines (feature `baselines`) |
-| `src/bin/` | `strata` shell, `chloedb-eval`, component benchmarks, `chloedb-baselines`, `chloedb-graph-bench`, `chloedb-posting-bench` |
+| `src/bin/` | `chloedb` shell, `chloedb-eval`, component benchmarks, `chloedb-baselines`, `chloedb-graph-bench`, `chloedb-posting-bench` |
 
 ## Using it
 
-The shell opens a database that exists and does not create one. `chloedb-server --demo 20000 --db products.strata` makes the one these lines read (any database of yours works the same way):
+The shell opens a database that exists and does not create one. `chloedb-server --demo 20000 --db products.chloedb` makes the one these lines read (any database of yours works the same way):
 
 ```sh
 cargo build --release
-target/release/chloedb products.strata "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-target/release/chloedb products.strata --param t='waterproof tent' < queries.sql
+target/release/chloedb products.chloedb "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+target/release/chloedb products.chloedb --param t='waterproof tent' < queries.sql
 ```
 
 SQL covers single-table `SELECT`: `MATCH` with phrases, prefixes, `AND`,

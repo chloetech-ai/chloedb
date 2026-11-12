@@ -8,21 +8,21 @@ New to it? [Build an app](build-an-app.md) is one page from an empty server to s
 
 ## Run it
 
-A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server [release](https://github.com/chloetech-ai/chloedb/releases) (so far one, [0.1.0](https://github.com/chloetech-ai/chloedb/releases/tag/strata-server-v0.1.0)) has one archive a platform: `linux-x86_64` and `linux-aarch64` (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), `macos-arm64` and `macos-x86_64` (macOS 11 or later), each with its `.sha256` beside it.
+A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server [release](https://github.com/chloetech-ai/chloedb/releases) (tagged `chloedb-server-v<version>`) has one archive a platform: `linux-x86_64` and `linux-aarch64` (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), `macos-arm64` and `macos-x86_64` (macOS 11 or later), each with its `.sha256` beside it.
 
 ```sh
-v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
-curl -LO https://github.com/chloetech-ai/chloedb/releases/download/strata-server-v$v/strata-server-$p.tar.gz
-tar xzf strata-server-$p.tar.gz
-strata-server-$p/strata-server --demo 20000 --db products.strata   # a demo catalogue
+v=0.2.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
+tar xzf chloedb-server-$p.tar.gz
+chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # a demo catalogue
 # open http://127.0.0.1:7700
 ```
 
-Release 0.1.0 predates the rename: its archive holds the program as `strata-server` only. Later releases are tagged `chloedb-server-v<version>`, with archives `chloedb-server-$p.tar.gz` that hold `chloedb-server` and `strata-server` beside it. macOS keeps an archive a browser downloaded from running until `xattr -d com.apple.quarantine strata-server-$p/strata-server`; `curl` sets no such mark. From source (Rust stable and a C compiler; the first build takes several minutes):
+The archive holds `chloedb-server`, and `strata-server`, its old name, beside it; release 0.1.0, from before the rename, was published as `strata-server-v0.1.0`. macOS keeps an archive a browser downloaded from running until `xattr -d com.apple.quarantine chloedb-server-$p/chloedb-server`; `curl` sets no such mark. From source (Rust stable and a C compiler; the first build takes several minutes):
 
 ```sh
 cd chloedb-server && cargo build --release
-target/release/chloedb-server --demo 20000 --db products.strata
+target/release/chloedb-server --demo 20000 --db products.chloedb
 ```
 
 `cargo build --release --no-default-features` builds a server without DataFusion, Parquet and `s3://` paths, from 321 crates rather than 412: joins, groups and sorts then run on ChloeDB's own operators (`CHLOEDB_ENGINE`, below), and `import` and `export` take no Parquet files or `s3://` paths.
@@ -30,8 +30,8 @@ target/release/chloedb-server --demo 20000 --db products.strata
 Or from the image every merge to main publishes (`linux/amd64` and `linux/arm64`). Beyond the container's own loopback the server needs a token, which the command center then asks for:
 
 ```sh
-docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v strata:/data \
-  ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.strata --listen 0.0.0.0:7700
+docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
+  ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.chloedb --listen 0.0.0.0:7700
 # open http://127.0.0.1:7700; add --demo 20000 for the demo catalogue
 ```
 
@@ -115,7 +115,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 
 ## Schemas
 
-A database starts with one table, whose schema is set when the database is created (`--schema FILE`, `chloedb-server import --schema FILE`, the query console's schema designer, or `strata.Database.create` in [Python](python.md)). [`CREATE TABLE`](query-language.md#tables) and `DROP TABLE` over `POST /v1/sql` add and drop more, [`ALTER TABLE`](query-language.md#changing-a-tables-columns) adds, drops and renames the columns of any table while it serves, and the server serves every table: SQL names its tables, write operations and imports name theirs (`"table"`, `?table=`; the first table when they name none), `GET /v1/tables` lists the schemas and `GET /v1/schema?table=` gives one. [`CREATE RANK PROFILE`](query-language.md#rank-profiles-a-ranking-kept-with-its-table) and `DROP RANK PROFILE` keep rankings with a table the same way. A [primary](#replication-a-primary-and-its-replicas) takes all five and ships them to its replicas as it ships writes, and answers once the copies its acks name hold them. A schema is JSON: the table's name, its key, and its fields by type, with options only where they differ from the defaults.
+A database starts with one table, whose schema is set when the database is created (`--schema FILE`, `chloedb-server import --schema FILE`, the query console's schema designer, or `chloedb.Database.create` in [Python](python.md)). [`CREATE TABLE`](query-language.md#tables) and `DROP TABLE` over `POST /v1/sql` add and drop more, [`ALTER TABLE`](query-language.md#changing-a-tables-columns) adds, drops and renames the columns of any table while it serves, and the server serves every table: SQL names its tables, write operations and imports name theirs (`"table"`, `?table=`; the first table when they name none), `GET /v1/tables` lists the schemas and `GET /v1/schema?table=` gives one. [`CREATE RANK PROFILE`](query-language.md#rank-profiles-a-ranking-kept-with-its-table) and `DROP RANK PROFILE` keep rankings with a table the same way. A [primary](#replication-a-primary-and-its-replicas) takes all five and ships them to its replicas as it ships writes, and answers once the copies its acks name hold them. A schema is JSON: the table's name, its key, and its fields by type, with options only where they differ from the defaults.
 
 ```json
 {
@@ -174,8 +174,8 @@ Rows come as JSON Lines (an object per line), a JSON array of objects, or CSV or
 From the command line, into a database no server has open (an open database is locked):
 
 ```sh
-chloedb-server import --db books.strata --schema books.json books.jsonl more.csv   # --schema only creates
-chloedb-server import --db books.strata --table reviews reviews.csv                  # another table
+chloedb-server import --db books.chloedb --schema books.json books.jsonl more.csv  # --schema only creates
+chloedb-server import --db books.chloedb --table reviews reviews.csv                 # another table
 ```
 
 Into an empty table the rows are bulk-loaded straight into segments, in one commit: a bad row is reported with its line or row number, and nothing is written. Into a table that has rows they are upserted, 10,000 rows a transaction. The format comes from each file's extension (`.jsonl`, `.ndjson`, `.json`, `.csv`, `.tsv`) or `--format`.
@@ -183,15 +183,15 @@ Into an empty table the rows are bulk-loaded straight into segments, in one comm
 A SQLite database's tables import the same way, each into the table of its name, created from SQLite's declarations when missing, and `chloedb-server export` writes a database to a new SQLite file ([SQLite in and out](sqlite.md)):
 
 ```sh
-chloedb-server import --db shop.strata shop.sqlite
-chloedb-server export --db shop.strata copy.sqlite
+chloedb-server import --db shop.chloedb shop.sqlite
+chloedb-server export --db shop.chloedb copy.sqlite
 ```
 
 Parquet files and directories of them (what Spark, DuckDB, polars and pandas write) import into one table each, created from the columns' types when missing, and `export` writes Parquet when the name ends in `.parquet` or `/`; any file may be an `s3://` URL ([Parquet and S3](parquet.md)):
 
 ```sh
-chloedb-server import --db lake.strata s3://lake/raw/events/
-chloedb-server export --db lake.strata --tables events events.parquet
+chloedb-server import --db lake.chloedb s3://lake/raw/events/
+chloedb-server export --db lake.chloedb --tables events events.parquet
 ```
 
 To a running server, `POST /v1/import` with the rows as the body, the format as `?format=` (or the content type) and the table as `?table=` (the first table without it):
@@ -310,7 +310,7 @@ What ChloeDB does for each request:
 **Changing your mind.** Vectors are stored, so changing a field's sources or model means re-embedding. Create a database with the new schema and fill it from the old one:
 
 ```sh
-chloedb-server --db products-v2.strata --schema v2.json --copy-from products.strata
+chloedb-server --db products-v2.chloedb --schema v2.json --copy-from products.chloedb
 ```
 
 Rows are copied field by field by name; a vector field is copied when the old one has the same dimensions, sources and model, and embedded anew otherwise; fields the new schema drops are left out. The old database may be one from before [field ids](index.md#wal-memtable-and-snapshots), which opens only to be copied. `Db::load_from` does the same from Rust.
@@ -474,7 +474,7 @@ A `KEYWORD[]` field declares that it holds the semantic ID of a `VECTOR` field, 
 - **The code.** The codebook is residual k-means: up to 4 levels of up to 256 centroids (3 of 256 by default). The first number is the vector's nearest first-level centroid, the next the nearest second-level centroid to what is left, and so on. The last number is a tie that tells apart rows with the same levels: the first such row gets 0, the next 1. A tie is never given twice under the same levels, also after its row is deleted and merged away.
 - **The value.** The field holds every prefix of the code, shortest first (`["12", "12.7", "12.7.201", "12.7.201.0"]`), so `WHERE sid = '12.7'` finds every row under `12.7`, through the keyword index, and combines with any other condition. `sid_at(sid, n)` is the first `n` numbers of a code, as text (`sid_at(sid, 2)` is `'12.7'`; NULL past its length), for grouping and for columns: `SELECT sid_at(sid, 1), COUNT(*) FROM items GROUP BY sid_at(sid, 1)`. A query with `sid_at` computes it over the rows its scan returns, as a join does, so the scan holds at most 1,000,000 rows.
 - **Writes.** The writer fills the field in from the vector, after an embedded vector is computed: a row's code is its own from then on. An upsert keeps the code while the vector's levels stay the same, and gets a new tie when they change. `UPDATE` cannot set the field (set the vector instead), and a write that brings a whole code keeps it, so a copy or a replica holds the same codes.
-- **The codebook** is a model, kept in the models directory as `<name>/codebook.safetensors`. The field records its name and the SHA-256 of its file when the table is created, which fails if the codebook is not there; opening the database later checks the file against it. A database whose codebook did not open still reads, but writes that need a new code fail. A name holds one codebook, and a new codebook means a new field (or table). Train one in Python with [`strata.train.codebook`](python.md#semantic-id-codebooks), on a table's vectors or on your own; from Rust, `Codebook::train` and `Db::train_codebook`.
+- **The codebook** is a model, kept in the models directory as `<name>/codebook.safetensors`. The field records its name and the SHA-256 of its file when the table is created, which fails if the codebook is not there; opening the database later checks the file against it. A database whose codebook did not open still reads, but writes that need a new code fail. A name holds one codebook, and a new codebook means a new field (or table). Train one in Python with [`chloedb.train.codebook`](python.md#semantic-id-codebooks), on a table's vectors or on your own; from Rust, `Codebook::train` and `Db::train_codebook`.
 
 **The next codes.** A decoder that writes a semantic ID a number at a time, by beam search, asks which numbers can come next and still lead to a row that passes a filter. `POST /v1/sid/next` answers it for up to 64 prefixes at once, `""` asking for the first number:
 
@@ -650,16 +650,16 @@ A server takes logs as [OpenTelemetry](https://opentelemetry.io/docs/specs/otlp/
 
 ```yaml
 exporters:
-  otlphttp/strata:
-    logs_endpoint: http://strata.example:7700/v1/logs
+  otlphttp/chloedb:
+    logs_endpoint: http://chloedb.example:7700/v1/logs
     headers: {authorization: "Bearer sk_..."}
-  otlp/strata:                        # or over gRPC
-    endpoint: strata.example:7701
+  otlp/chloedb:                       # or over gRPC
+    endpoint: chloedb.example:7701
     tls: {insecure: true}
     headers: {authorization: "Bearer sk_..."}
 service:
   pipelines:
-    logs: {receivers: [otlp], exporters: [otlphttp/strata]}
+    logs: {receivers: [otlp], exporters: [otlphttp/chloedb]}
 ```
 
 The records become rows of table `otel_logs` (or another, named by `?table=` or the header `x-chloedb-table`, over gRPC its metadata), which the first request creates if it is not there:
@@ -695,8 +695,8 @@ The answer is OTLP's: an empty `ExportLogsServiceResponse` when every record was
 Copying the database's files while the server runs is not a backup: a commit reuses pages an older version freed, and the directory layout deletes files a version stops naming, so a copy (`cp`, rsync, a disk snapshot, Time Machine) can pair one version's manifest with another's pages. A checkpoint is the safe copy. `POST /v1/admin/checkpoint` flushes the memtable, pins the version that holds every committed write and copies it into `--backup-dir/<name>` while queries and writes go on (they wait only for the flush). The checkpoint is itself a database, checked against its checksums before it gets its name: restore by stopping the server and serving the checkpoint (`--db`), or by moving it into place.
 
 ```sh
-chloedb-server --db shop.strata --backup-dir /backups
-curl -s localhost:7700/v1/admin/checkpoint -H 'content-type: application/json' -d '{"name": "shop-2026-10-28.strata"}'
+chloedb-server --db shop.chloedb --backup-dir /backups
+curl -s localhost:7700/v1/admin/checkpoint -H 'content-type: application/json' -d '{"name": "shop-2026-10-28.chloedb"}'
 # Directory checkpoints; the second hard-links the segments it shares with the first:
 curl -s localhost:7700/v1/admin/checkpoint -H 'content-type: application/json' -d '{"name": "shop-2026-10-28", "layout": "dir"}'
 curl -s localhost:7700/v1/admin/checkpoint -H 'content-type: application/json' \
@@ -712,7 +712,7 @@ aws s3 sync --size-only --exclude CURRENT /backups/shop-2026-10-29 s3://bucket/s
 aws s3 cp /backups/shop-2026-10-29/CURRENT s3://bucket/shop/CURRENT
 ```
 
-A database opened from a copy of that place deletes the files its version does not name. A database restored from a checkpoint numbers its next commits as the original did after that checkpoint, so sync its own checkpoints into a new place. A name is letters, digits, `.`, `_` and `-`; an existing name is not overwritten. A coordinator has no database of its own: ask each shard server. The `strata` shell does the same offline with `.checkpoint DEST [file|dir] [EARLIER]`, `.check` and `.vacuum`.
+A database opened from a copy of that place deletes the files its version does not name. A database restored from a checkpoint numbers its next commits as the original did after that checkpoint, so sync its own checkpoints into a new place. A name is letters, digits, `.`, `_` and `-`; an existing name is not overwritten. A coordinator has no database of its own: ask each shard server. The `chloedb` shell does the same offline with `.checkpoint DEST [file|dir] [EARLIER]`, `.check` and `.vacuum`.
 
 Not yet: point-in-time recovery between checkpoints, which needs the write-ahead log archived instead of truncated at each flush.
 
@@ -721,7 +721,7 @@ Not yet: point-in-time recovery between checkpoints, which needs the write-ahead
 With `--cold-store`, a database in the directory layout keeps its older segments on object storage and reads them through a local cache ([how](index.md#cold-segments-on-object-storage)). `--cold-keep-local-gb` says how much stays local: the newest segments up to that size; every 30 s, the older ones of at least `--cold-min-segment-mb` are uploaded, oldest first, and their local files go. Their headers and keys stay in the cache, so writes and deletes by key never wait on the store; a query fetches the parts it reads, checks each against its checksum and keeps it in the cache, up to `--cold-cache-gb`, past which the least recently read segments lose theirs.
 
 ```sh
-AWS_REGION=us-east-1 chloedb-server --db logs.db --directory --cold-store s3://my-bucket/strata/ --cold-keep-local-gb 50
+AWS_REGION=us-east-1 chloedb-server --db logs.db --directory --cold-store s3://my-bucket/chloedb/ --cold-keep-local-gb 50
 ```
 
 The store is configured as [imports from S3](parquet.md#s3-and-s3-compatible-stores) are, by environment (`AWS_ACCESS_KEY_ID`, `AWS_ENDPOINT_URL` for another S3-compatible store, ...). Once a segment is cold, the database opens only with its store. `/metrics` counts the cold segments and their bytes, the cache's bytes and limit, fetches, fetched bytes, evictions and offloads (`chloedb_cold_*`). A [checkpoint](#backups) fetches the cold segments whole: it is a database of local files that opens without the store.
@@ -749,8 +749,8 @@ A query travels as SQL with its parameters or, from protocol 2, as a typed plan 
 ## Sharding: one coordinator, many shards
 
 ```sh
-chloedb-server --demo 20000 --demo-shard 0/2 --db a.strata --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711
-chloedb-server --demo 20000 --demo-shard 1/2 --db b.strata --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721
+chloedb-server --demo 20000 --demo-shard 0/2 --db a.chloedb --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711
+chloedb-server --demo 20000 --demo-shard 1/2 --db b.chloedb --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721
 chloedb-server --shards http://127.0.0.1:7711,http://127.0.0.1:7721 --listen 127.0.0.1:7700 --grpc off
 ```
 
@@ -761,9 +761,9 @@ With tokens, give every server of the cluster the same `--cluster-token` (`CHLOE
 A shard server can serve a coordinator too, in its own process, as Elasticsearch's data nodes answer queries: each machine then runs one server, and clients may ask any of them.
 
 ```sh
-chloedb-server --demo 20000 --demo-shard 0/2 --db a.strata --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711 \
+chloedb-server --demo 20000 --demo-shard 0/2 --db a.chloedb --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711 \
   --shards http://127.0.0.1:7711,http://127.0.0.1:7721 --coordinator-listen 127.0.0.1:7700 --local-shard http://127.0.0.1:7711
-chloedb-server --demo 20000 --demo-shard 1/2 --db b.strata --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721 \
+chloedb-server --demo 20000 --demo-shard 1/2 --db b.chloedb --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721 \
   --shards http://127.0.0.1:7711,http://127.0.0.1:7721 --coordinator-listen 127.0.0.1:7730 --local-shard http://127.0.0.1:7721
 ```
 
@@ -867,9 +867,9 @@ Each read sees each row once: a server takes the version it reads, and the rows 
 ## Replication: a primary and its replicas
 
 ```sh
-chloedb-server --demo 20000 --seq-no --db a0.strata --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711 --replicas http://127.0.0.1:7721,http://127.0.0.1:7731
-chloedb-server --demo 20000 --seq-no --db a1.strata --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721 --replica
-chloedb-server --demo 20000 --seq-no --db a2.strata --listen 127.0.0.1:7730 --grpc 127.0.0.1:7731 --replica
+chloedb-server --demo 20000 --seq-no --db a0.chloedb --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711 --replicas http://127.0.0.1:7721,http://127.0.0.1:7731
+chloedb-server --demo 20000 --seq-no --db a1.chloedb --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721 --replica
+chloedb-server --demo 20000 --seq-no --db a2.chloedb --listen 127.0.0.1:7730 --grpc 127.0.0.1:7731 --replica
 ```
 
 A shard's copies can hold the same rows under the same [sequence numbers](#conditional-writes). One server is the primary, started with `--replicas` naming the others' gRPC addresses; each of the others is a replica, started with `--replica`. Both need `--seq-no`. The primary takes the writes and ships its numbered transactions, as its write-ahead log holds them, to each replica's `Replicate` call, in order and in batches of up to 4 MiB. A replica applies a batch only if it follows the replica's last transaction (`Database::apply_shipped`), under the primary's numbers and term, and refuses writes from clients (409). So every copy starts from the same rows: an empty database of the same schema, the same `--demo`, or a [checkpoint](#backups) of the primary. `--demo` and `--copy-from` load each copy on its own, and are not shipped. A replica that starts too far behind is sent a copy of the primary (below), so it needs only the primary's first table. `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE` and the rank profiles' statements are numbered transactions as writes are: the primary ships each in its place among the writes, and a replica makes the same change, with the primary's table ids and, for `ALTER TABLE`, field ids. A replica that has a table the primary creates, lacks one it drops or alters, or holds a table it alters with another schema than the primary's before the change (other columns, or the same ones under other field ids, as in a database whose table was made by other statements) holds other rows than the primary, and refuses the batch. The primary flushes its memtables first, so that its write-ahead log, from which it refills its ship log on a restart, starts after the change.
@@ -912,7 +912,7 @@ A shard's copies elect its primary among themselves, as Raft does: each copy kee
 **Automatically** (`--failover-after-ms`, in a cluster; 0, the default, leaves failover to an operator). A replica that has heard nothing from its primary for the delay, and a random part of it more (so that two replicas seldom ask at once), asks its shard's copies to elect it; one that loses waits about the delay before it asks again. The winner begins the term it won, ships to the shard's other copies from its last transaction under `--write-acks`, and takes writes; coordinators send the shard's writes to it once a write finds the old primary down. With the delay set, a primary calls each replica at least four times within it, and serves reads only while a majority of its copies answered a call started within three quarters of it (503 otherwise): past that, the others may have elected another primary, and it would serve what that one replaced. A primary that a newer one replaced becomes a replica of it, which ships to it, and a primary that starts again starts as a replica until its shard elects one (a primary of a shard of one copy starts as before). A shard elects only while a majority of its copies is up: with one copy of three up, it has no primary and refuses writes (503) until a second copy is back. A primary that cannot write until it restarts (`failing` in [health](#health): a write failed partway, as on a full disk) hands its shard over by itself: once a delay at most, it asks its replica in sync that holds the latest transaction to be promoted, as an operator's [promotion](#failover) would, grants that replica its vote and becomes its replica, so that writes go on at once; it serves again once the cause is fixed and it restarts.
 
 ```sh
-chloedb-server --db s0.strata --seq-no --grpc 10.0.0.1:7701 --failover-after-ms 2000   # and the same on each copy
+chloedb-server --db s0.chloedb --seq-no --grpc 10.0.0.1:7701 --failover-after-ms 2000  # and the same on each copy
 ```
 
 **By hand.** Make a replica its shard's primary through a coordinator, which asks the shard's copies again so that writes go to it at once:
@@ -1467,7 +1467,7 @@ SELECT ts, route, status, ms FROM logs WHERE request_id = '9f2c41d07a3e88b1';
 
 A coordinator answers for the whole cluster: it asks every replica of every shard (the `Logs` call, as a shard's part), the other coordinators' stores (`POST /v1/logs/query` with `"scope": "local", "partial": true`, so the queries their clients sent and their own lines are in it too) and its own store, and merges their answers as it merges its shards', so `COUNT(*)` and `GROUP BY` count every server and `ORDER BY ts` interleaves their lines. The answer's `nodes` gives each server's rows and time, or its error: a server that does not answer is named there, and the answer goes on without it (an older server, without a store, answers 501). Such a search reads one table; a join or a subquery runs on one server's store (`"scope": "local"`, the coordinator's own). `GET /v1/logs/store` gives the store (its path, rows, size, retention, what it wrote, dropped and deleted), its tables, and on a coordinator every server's store; `/v1/cluster` shows each replica's under `detail.log_store`.
 
-A writer thread writes what waits every second, or as soon as 4,096 lines wait, in one transaction it does not sync: a crash of the process loses nothing written, a power cut the latest lines. Up to 100,000 lines wait in memory; past that the newest are dropped and counted. Every 30 seconds the store deletes the rows older than `--log-retain` and, while it takes more than `--log-store-mb`, the oldest quarter of what is left, then merges, which frees their pages. Reading the logs writes none: what the store's own threads log (its writes, flushes and merges) stays out of it, its searches are not queries of the server's, and the log viewer's requests are not logged as answered. The store is a database like any other, so it can be opened on its own, by a server (`--db app.strata.logs --log-store off`), from Python or with `chloedb-server export` while no server holds it.
+A writer thread writes what waits every second, or as soon as 4,096 lines wait, in one transaction it does not sync: a crash of the process loses nothing written, a power cut the latest lines. Up to 100,000 lines wait in memory; past that the newest are dropped and counted. Every 30 seconds the store deletes the rows older than `--log-retain` and, while it takes more than `--log-store-mb`, the oldest quarter of what is left, then merges, which frees their pages. Reading the logs writes none: what the store's own threads log (its writes, flushes and merges) stays out of it, its searches are not queries of the server's, and the log viewer's requests are not logged as answered. The store is a database like any other, so it can be opened on its own, by a server (`--db app.chloedb.logs --log-store off`), from Python or with `chloedb-server export` while no server holds it.
 
 The metrics name it `chloedb_log_store_*`: `rows{table}`, `written_total{table}`, `bytes`, `waiting_lines`, `dropped_total{reason}` (`lines` past the waiting limit, `queries` past it, `failed` writes, `sampled` queries over `--log-queries`) and `deleted_total{reason}` (`expired`, `size`).
 

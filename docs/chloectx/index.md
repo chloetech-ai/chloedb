@@ -298,7 +298,7 @@ chloectx remember decision "Prices are integer cents"
 chloectx ingest-transcript ~/.claude/projects/<project>/<session>.jsonl   # back-fill old sessions
 chloectx distill                                                          # distill turns stored before distillation existed
 chloectx consolidate                                                      # merge overlapping notes now
-chloectx backup ~/backups/engram-2026-10-28                               # a consistent copy of this project's store
+chloectx backup ~/backups/chloectx-2026-10-28                             # a consistent copy of this project's store
 chloectx redact [--all] [--dry-run]                                       # redact secrets a store recorded before redaction caught them
 chloectx stats | briefing | stop
 ```

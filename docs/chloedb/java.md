@@ -1,6 +1,6 @@
 # ChloeDB from Java
 
-The `ai.chloetech.chloedb` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:chloedb:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
+The `ai.chloetech.chloedb` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:chloedb:books.chloedb`), for code and tools that speak JDBC. It works on Java 11 and later.
 
 Before ChloeDB was renamed, the package was `ai.chloetech.strata`, its jar `ai.chloetech:strata`, its errors `StrataException` and its driver's classes `Strata*` (`StrataDriver`, `StrataConnection`, ...). They are `ai.chloetech.chloedb`, `ai.chloetech:chloedb`, `ChloeDBException` and `ChloeDB*` now: change the imports and the dependency when you rebuild. URLs that begin `jdbc:strata:` still open a database.
 
@@ -42,7 +42,7 @@ Map<String, Object> schema = Map.of("table", "books", "key", "id", "fields", Lis
     Map.of("name", "year", "type", "int"),
     Map.of("name", "emb", "type", "vector", "embed", Map.of("from", "title", "model", "hash:32"))));
 
-try (Database db = Database.create("books.strata", schema)) {
+try (Database db = Database.create("books.chloedb", schema)) {
     db.insert(List.of(
         Map.of("id", "b1", "title", "The river and the dragon", "year", 1999),
         Map.of("id", "b2", "title", "A mountain in winter", "year", 2004)));
@@ -54,7 +54,7 @@ try (Database db = Database.create("books.strata", schema)) {
     db.execute("UPDATE books SET year = 2000 WHERE id = :k", Map.of("k", "b1"));   // 1
 }
 
-try (Database db = Database.open("books.strata")) {
+try (Database db = Database.open("books.chloedb")) {
     db.get("b1");                              // {id=b1, title=The river and the dragon, year=2000}
 }
 ```
@@ -112,7 +112,7 @@ A query runs in your process, so what it builds up (its groups, the rows it orde
 A query has no deadline unless it is given one. `query(sql, params, options)`, `execute(sql, params, options)` and `SearchOptions.limits(options)` take a `QueryOptions`: `timeoutMs` (past it the query stops and throws a `ChloeDBException` whose message starts `timeout:`, naming it) and `memory` (a budget of its own in bytes; `0`: none). A database's own limits, for every query that does not give its own, come with `Database.Options` or `setLimits`; `interrupt()`, from any thread, stops the queries of the database running now and returns how many there were:
 
 ```java
-Database db = Database.open("books.strata", new Database.Options().timeoutMs(5_000).memory(512L << 20));
+Database db = Database.open("books.chloedb", new Database.Options().timeoutMs(5_000).memory(512L << 20));
 db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", null, new QueryOptions().timeoutMs(200));
 db.query("SELECT * FROM books", null, new QueryOptions().memory(0));   // counts nothing
 db.setLimits(null, null);                                              // back to the defaults
@@ -141,7 +141,7 @@ db.importSqlite("notes.sqlite");                       // a SQLite file's tables
 db.exportSqlite("out.sqlite", Map.of("fts", false));   // and the database out to one
 db.importParquet("s3://bucket/events/");               // Parquet files, from S3 too
 db.exportParquet("out/");
-Database copy = Database.fromSqlite("notes.sqlite", "notes.strata");   // a new database from a SQLite file
+Database copy = Database.fromSqlite("notes.sqlite", "notes.chloedb");  // a new database from a SQLite file
 ```
 
 Their options are maps, with the names the [SQLite](sqlite.md) and [Parquet](parquet.md) pages give (`tables`, `schemas`, `blobsBase64`, `fts`, `indexes`, `table`, `schema`, `key`). An option a method does not take throws `IllegalArgumentException` naming those it takes, before anything is read or written. `Database.planSqlite` and `Database.planParquet` say what an import would do without doing it, and `lastImport()` what the import that made a database did.
@@ -153,7 +153,7 @@ The jar is also a JDBC driver: `jdbc:chloedb:PATH` (or `jdbc:strata:PATH`, by th
 ```java
 import java.sql.*;
 
-try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
+try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.chloedb");
      PreparedStatement ps = c.prepareStatement("SELECT id, title, year FROM books WHERE year >= ? ORDER BY year LIMIT ?")) {
     ps.setInt(1, 2000);
     ps.setInt(2, 10);
@@ -165,7 +165,7 @@ try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
 }
 ```
 
-Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:chloedb:books.strata?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:strata:file:books.strata`.
+Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:chloedb:books.chloedb?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:chloedb:file:books.chloedb`.
 
 - **Statements** are ChloeDB's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
 - **Results** come back whole, so a result set can scroll if the statement is made with `ResultSet.TYPE_SCROLL_INSENSITIVE`; result sets are read-only. `getObject` gives an INT as `Long`, a FLOAT as `Double`, a TIMESTAMP as `java.sql.Timestamp`, a vector as `float[]` and a list as `List`; the getters convert (`getInt`, `getString`, `getObject(i, Instant.class)`, `getArray` for vectors). Times are in UTC.

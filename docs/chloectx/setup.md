@@ -175,8 +175,8 @@ Run the installer when the container is created, for example in `.devcontainer/d
 
 ```json
 {
-  "postCreateCommand": "git clone https://github.com/chloetech-ai/chloedb /tmp/strata && /tmp/strata/install.sh",
-  "containerEnv": { "CHLOECTX_HOME": "/workspaces/.engram" },
+  "postCreateCommand": "git clone https://github.com/chloetech-ai/chloedb /tmp/chloedb && /tmp/chloedb/install.sh",
+  "containerEnv": { "CHLOECTX_HOME": "/workspaces/.chloectx" },
   "forwardPorts": [8765]
 }
 ```
