@@ -26,6 +26,8 @@
 //   the row a trigger fires on), or a literal. In SQL, :row.col is a
 //   parameter like :name.
 
+import { parseFeed, jsonItems, at as pathAt } from './feeds.mjs';
+
 const SELECT_RE = /^\s*(select|with)\b/i;
 
 // The input and lets as SQL parameters: {row: {feature: 'f1'}, qty: 2} ->
@@ -74,6 +76,39 @@ export async function runRule(rule, input, host) {
   const fields = async (o) => { const out = {}; for (const [k, v] of Object.entries(o || {})) out[k] = await value(v); return out; };
   // ":name" in a message: the value it names.
   const say = (text) => String(text).replace(/:([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)/g, (m, n) => { const v = paramsOf(input, lets)[n.replace('.', '_')]; return v == null ? m : String(v); });
+  // PULL: a feed's or a JSON list's items, each added once (by its key) to
+  // a table. The fetch goes through app.fetch, so the owner's switches, the
+  // hosts they allowed and the daily limits hold.
+  const pulled = new Map(); // table -> keys added by this run
+  const pull = async (p) => {
+    const url = typeof p.url === 'string' && p.url.startsWith(':') ? await value(p.url) : p.url;
+    if (!url) return { added: 0, items: 0 };
+    const page = await host('fetch', [String(url), p.secret ? { secret: p.secret } : {}]);
+    if (page && page.status === 0) return { added: 0, items: 0 }; // a build's tests reach nothing
+    if (!page || !page.ok) throw new Error(`PULL ${String(url).slice(0, 100)}: it answered ${page?.status ?? 'nothing'}`);
+    let raw;
+    try {
+      raw = p.from === 'json'
+        ? jsonItems(page.json !== undefined ? page.json : JSON.parse(page.text || ''), p.at || '')
+        : parseFeed(page.body || page.text || '', page.url || String(url));
+    } catch (e) { throw new Error(`PULL ${String(url).slice(0, 100)}: ${e.message}`); }
+    const items = raw.slice(0, p.limit || 50).map((it) => Object.fromEntries(Object.entries(p.cols || {}).map(([c, f]) => [c, p.from === 'json' ? pathAt(it, f) : it[f]])));
+    if (!pulled.has(p.into)) pulled.set(p.into, new Set());
+    const seen = pulled.get(p.into);
+    let added = 0;
+    for (const row of items) {
+      const k = row[p.key];
+      if (k === undefined || k === null || k === '' || seen.has(String(k))) continue;
+      seen.add(String(k));
+      lets._pullkey = typeof k === 'object' ? JSON.stringify(k) : k;
+      const have = await query(`SELECT id FROM ${p.into} WHERE ${p.key} = :_pullkey LIMIT 1`);
+      delete lets._pullkey;
+      if (have.length) continue;
+      await host('insert', [p.into, row]);
+      added++;
+    }
+    return { added, items: items.length };
+  };
   const RETURN = Symbol('return');
   let result;
   const steps = async (list, path) => {
@@ -131,6 +166,10 @@ export async function runRule(rule, input, host) {
         }
         await host('email', [{ to: list, subject: say(m.subject || ''), text }]);
         done.push(`emailed ${list.join(', ')}`);
+      } else if (s.pull) {
+        const got = await pull(s.pull);
+        if (s.as) lets[s.as] = got;
+        done.push(`pulled ${got.added} new into ${s.pull.into}`);
       } else if (s.remove) {
         const id = await value(s.id);
         if (id == null) continue;
@@ -145,8 +184,8 @@ export async function runRule(rule, input, host) {
   return { done, lets: Object.fromEntries(Object.entries(lets).filter(([k]) => !k.startsWith('_'))) };
 }
 
-const KINDS = ['update', 'insert', 'upsert', 'remove', 'call', 'email', 'let', 'each', 'require', 'return'];
-const KINDS_TEXT = 'update, insert, upsert, remove, call, email, let, each, require or return';
+const KINDS = ['update', 'insert', 'upsert', 'remove', 'call', 'email', 'pull', 'let', 'each', 'require', 'return'];
+const KINDS_TEXT = 'update, insert, upsert, remove, call, email, pull, let, each, require or return';
 
 // Checks a rule: its shape, that its SQL is a SELECT, and that the tables and
 // columns it writes exist (columnsOf(table) -> Set | null).
@@ -189,6 +228,18 @@ export function checkRule(rule, columnsOf = () => null) {
       sql(m.to, `${where}.email.to`);
       if (!m.subject && !m.text) problems.push(`${where}.email: give it a subject or a text`);
       if (m.rows !== undefined && (typeof m.rows !== 'string' || !SELECT_RE.test(m.rows))) problems.push(`${where}.email.rows: give a SELECT, one line of the email per row`);
+      return;
+    }
+    if (kind === 'pull') {
+      const p = s.pull;
+      if (!p || typeof p !== 'object') { problems.push(`${where}.pull: {"from": "feed" | "json", "url", "into", "cols", "key"}`); return; }
+      if (!['feed', 'json'].includes(p.from)) problems.push(`${where}.pull.from: "feed" or "json"`);
+      if (typeof p.url !== 'string' || !(/^https?:\/\//i.test(p.url) || /^:[A-Za-z_][A-Za-z0-9_.]*$/.test(p.url))) problems.push(`${where}.pull.url: an http or https address, or :name`);
+      const cols = columnsOf(p.into);
+      if (!cols) { problems.push(`${where}.pull: no table ${JSON.stringify(p.into)} in the app`); return; }
+      if (!p.cols || typeof p.cols !== 'object' || !Object.keys(p.cols).length) problems.push(`${where}.pull.cols: {column: field}`);
+      for (const c of Object.keys(p.cols || {})) if (!cols.has(c)) problems.push(`${where}.pull: ${c} is not a column of ${p.into}`);
+      if (!p.key || !(p.key in (p.cols || {}))) problems.push(`${where}.pull.key: the column among cols that tells items apart`);
       return;
     }
     const cols = columnsOf(s[kind]);

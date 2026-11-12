@@ -19,6 +19,21 @@ import { checkRule, RULES_DOC } from './rules.mjs';
 import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
 import { LOOK, checkDrawn } from './look.mjs';
 import { ABILITIES, usesOf } from './reach.mjs';
+import { parseEvery, everyWords, ScheduleError } from './schedule.mjs';
+
+// A key, token or password written into code would be stored as a row of
+// sa_capabilities, shown to the model and in every export: code names a
+// secret instead (app.fetch(url, {secret: 'name'})), kept by the engine.
+const KEY_PATTERNS = [
+  [/[?&](?:api_?key|apikey|key|token|access_token|appid|app_id|client_secret|password)=(?!\$\{)[A-Za-z0-9_\-.]{16,}/i, 'an API key in an address'],
+  [/['"`]Bearer\s+[A-Za-z0-9_\-.=]{20,}['"`]/, 'a bearer token'],
+  [/\b(?:sk-[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})\b/, 'a key'],
+];
+export function keysIn(code) {
+  const out = [];
+  for (const [re, what] of KEY_PATTERNS) if (re.test(String(code || ''))) out.push(`${what} is written in the code; never put keys or tokens in code: pass app.fetch(url, {secret: 'name'}) and the owner keeps the key under that name`);
+  return out;
+}
 import { madeUp, tidyTitle } from './taste.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
@@ -139,8 +154,9 @@ Every app gets these from the runtime. In views and components each call returns
 - Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
 - Places. app.geocode(address) -> up to 5 matches [{label, lat, lng}] (functions too). app.tiles is the URL template of map tiles; ui.map and ui.locationPicker use it, with lib.geo for distances.
 - A model. app.ask(prompt, {json, system, web}) -> the model's answer as text, or as a JSON value with json: true (functions too). A small, quick model answers in a few seconds; the same question gets the same kept answer at no cost, and each app has a daily number of questions. Use it for what needs judgement over words and no query or code can do: summarize notes, sort a message into one of the app's categories, pull fields out of pasted text, draft a reply, suggest tags or a next step. Never for what SQL, an "=expression" or a helper computes (totals, dates, sorting, search). Put the data it needs in the prompt (the rows, as short text or JSON), say exactly what to answer, and keep the answer in a column when it is worth keeping, so it is asked once. Call it on a person's tap (a button, or a function a button calls) or in a trigger on insert, never on every load, and show "Thinking..." while it answers. {web: true} lets the model search the web for current facts (prices, opening hours, news, a product's details): slower, 10 to 40 seconds, and its sources come in the last line.
-- The web. app.fetch(url, {method, json, headers}) -> {ok, status, url, type, json, text, title, body} (functions too): public pages and APIs over http and https (JSON comes parsed in json; an HTML page's readable words in text and its title in title). Addresses on this machine or its network are refused; at most 2 MB and 10 seconds; GET answers are kept for 10 minutes. Prefer an API that answers JSON over reading a page.
-- The owner switches a model, web search and the web on for each app; until then app.ask and app.fetch throw an error that says so (an error with refused set). Catch it where you call them and show the screen without the answer, saying in one line that it is off. In a build's tests they answer "" (null with json; {ok: false} from app.fetch) and call nothing: test what the app does with rows, not the model's words.
+- The web. app.fetch(url, {method, json, headers, secret}) -> {ok, status, url, type, json, text, title, body} (functions too): public pages and APIs over http and https (JSON comes parsed in json; an HTML page's readable words in text and its title in title). Addresses on this machine or its network are refused; at most 2 MB and 10 seconds; GET answers are kept for 10 minutes. Prefer an API that answers JSON over reading a page. Write each address in full in the code ('https://api.example.com/v1/...'): the owner allows each host the app reads from, and separately each one it sends to (method 'POST'), and sees them listed from the code. An API that needs a key: never write the key, a token or a password in the code or ask the person to type one into a form; pass {secret: 'weather'} (a short name for it) and the engine adds the key the owner keeps under that name to the request. Say in the view, in one line, where the owner sets it when the call answers that the secret is missing.
+- A feed or a JSON list that fills a table on a clock is a CREATE SOURCE rule, not code (see Rules); a rule or function that runs on its own each hour, day or week has a schedule (EVERY ...).
+- The owner switches a model, web search, the web and schedules on for each app, and allows each host; until then app.ask and app.fetch throw an error that says so (an error with refused set). Catch it where you call them and show the screen without the answer, saying in one line that it is off. In a build's tests they answer "" (null with json; {ok: false} from app.fetch) and call nothing: test what the app does with rows, not the model's words.
 Components may call these services (ui.signIn, ui.uploader and ui.map do), but still never the app's tables. Helpers call none of them.
 
 # Functions
@@ -156,6 +172,8 @@ a plain synchronous function: app calls return their results directly (no async,
 It returns any JSON value. It runs in QuickJS with a 10 s limit (time spent waiting for app.ask and app.fetch does not count), no network but app.fetch, no files, no require or import. Date, Math, JSON, RegExp, Array and the rest of standard JavaScript work.
 
 A function may declare a trigger, "on": {"table": "tasks", "event": "insert"} (or "update" or "delete"): it then runs after each such write with input {row, table, event}, where row is the row as stored (the old row for delete). Writes a trigger makes run their own triggers, at most 3 deep. Use a trigger when something must happen whenever rows change (keep a counter, log history, fill a derived column); use a plain function that views call for work on demand.
+
+A function may instead run on a clock, "every": "1 hour" (or "30 minutes", "day at 07:00", "monday at 09:00", "weekday at 08:00", with " tz Europe/Madrid" for a time zone; UTC otherwise; at most every 15 minutes): it then runs with input {today} (the day in its time zone, 'YYYY-MM-DD') and app.user null, once its owner has switched schedules on. Give a time zone whenever the request names a time of day.
 
 Keep logic in views when it is simple and only one view needs it.
 
@@ -174,7 +192,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "summary": "what this version changed, in one or two plain sentences, written to the person",
   "tables": [{"name": "tasks", "description": "what a row is", "columns": [{"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}]}],
   "views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],
-  "functions": [{"slug": "weekly-summary", "description": "what it does, its input and output", "on": null}],
+  "functions": [{"slug": "weekly-summary", "description": "what it does, its input and output", "on": null, "every": null}],
   "components": [{"name": "calendar", "title": "Month calendar", "description": "what it shows and lets the person do", "props": "month: 'YYYY-MM', default this month; onMonth(month): the person moved to another month; items: [{date: 'YYYY-MM-DD', label, color}], ...", "change": "for a new version of an existing component: what it adds"}],
   "helpers": [{"name": "recurrence", "title": "Repeating schedules", "description": "what it computes", "api": "next(rule, after) -> 'YYYY-MM-DD': ...; each function with its arguments, defaults and what it returns", "change": "for a new version: what it adds"}],
   "upgrade": [],
@@ -520,6 +538,7 @@ export function editCode(plan, code, view) {
           for (const k of ['title', 'description']) if (item[k] === undefined) item[k] = cur[k];
           if (kind === 'view' && item.order === undefined) item.order = cur.spec.order;
           if (kind === 'function' && item.on === undefined) item.on = cur.spec.on || undefined;
+          if (kind === 'function' && item.every === undefined && !cur.spec.rule) item.every = cur.spec.every || undefined;
         }
       }
       delete item.edits;
@@ -848,7 +867,7 @@ export async function buildContext(engine, appId, request) {
     const views = view.views.slice().sort((a, b) => (a.spec.order ?? 99) - (b.spec.order ?? 99))
       .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.statement ? ' format="statement"' : v.spec.screen ? ' format="screen"' : ''}>\n${v.spec.statement || (v.spec.screen ? screenLines(v.code) : v.code)}\n</view>`);
     parts.push(`## Views\n${views.some((v) => v.includes('format="statement"')) ? 'A view with format="statement" is a screen written as a CREATE SCREEN statement, its source. To change it, give "edits" in its plan entry ([{"old": "text copied exactly from the statement, occurring once", "new": "..."}]), or a new statement in its code block when most of it changes.\n\n' : ''}${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${SCREENS && view.views.some((v) => !v.spec.screen) ? 'To change a view or function written in JavaScript a little (a color, a label, a line of logic), give "edits" in its plan entry instead of a code block: [{"old": "text copied exactly from its code, occurring once", "new": "its replacement"}]. Give a whole code block only when most of it changes.\n\n' : ''}${views.join('\n\n') || '(none)'}`);
-    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}"${f.spec.statement ? ' format="rule-statement"' : f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.spec.statement || f.code}\n</function>`);
+    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}'${f.spec.every && !f.spec.rule ? ` every="${everyWords(f.spec.every).replace(/^every /, '')}"` : ''} id="${f.id}"${f.spec.statement ? ' format="rule-statement"' : f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.spec.statement || f.code}\n</function>`);
     parts.push(`## Functions\n${view.functions.some((f) => f.spec.statement) ? 'A function with format="rule-statement" is a rule written as a CREATE RULE statement, its source. To change it, give "edits" in its plan entry ([{"old": "text copied exactly from the statement, occurring once", "new": "..."}]), or a new statement in its code block.\n\n' : ''}${view.functions.some((f) => f.spec.rule && !f.spec.statement) ? `A function with format="rule" is a rule (JSON). To change it, ${RULE_SQL ? 'give a CREATE RULE statement in its code block' : 'give its whole "rule" in its plan entry'}; to turn it into JavaScript, give a code block and no "rule".\n\n` : ''}${fns.join('\n\n') || '(none)'}`);
     // Code only for the pieces this app wrote: the others (built-in, or from
     // another app) are used by their props, and their code is long.
@@ -1102,10 +1121,22 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       if (!src || !src.trim()) { problems.push(`${kind} ${item.slug} has no <code slug="${item.slug}"> block`); continue; }
       if (kind === 'view' && /^\s*CREATE\s+SCREEN\b/i.test(src)) continue; // its problems came from compiling it
       if (kind === 'function' && !item.rule && isRuleStatement(src)) continue; // likewise
+      if (kind === 'view') for (const x of keysIn(src)) problems.push(`view ${item.slug}: ${x}`);
       const p = kind === 'view' ? checkView(src) : item.rule ? checkRule(item.rule, columnsFor(view, plan)) : await checkFunction(src);
       for (const x of p) problems.push(`${kind} ${item.slug}: ${x}`);
       // "on": "none" (or {"table": "none"}) is no trigger.
       if (kind === 'function' && item.on && (typeof item.on !== 'object' || !item.on.table || /^(none|null|no|-)$/i.test(String(item.on.table)))) item.on = null;
+      // "every": a schedule, as words ("day at 07:00") or as parsed already.
+      if (kind === 'function' && item.every && typeof item.every === 'string') {
+        if (/^(none|null|no|-)$/i.test(item.every.trim())) item.every = null;
+        else try { item.every = parseEvery(item.every.replace(/\btz\s+([A-Za-z_]+\/[A-Za-z_\/+-]+)\s*$/i, "TZ '$1'").replace(/\bat\s+(\d{1,2}(?::\d{2})?)\b/i, "AT '$1'")); } catch (e) {
+          if (!(e instanceof ScheduleError)) throw e;
+          problems.push(`function ${item.slug}: every: ${e.message}`);
+          item.every = null;
+        }
+      }
+      if (kind === 'function' && item.every && item.on) problems.push(`function ${item.slug}: it runs on a schedule ("every") or after writes ("on"), not both`);
+      if (kind === 'function') for (const x of keysIn(src)) problems.push(`function ${item.slug}: ${x}`);
       if (kind === 'function' && item.on) {
         const on = item.on;
         const known = tables.has(on.table) || (plan.tables || []).some((t) => t.name === on.table);
@@ -1634,7 +1665,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       // The patterns a screen was expanded from, for the graph: this
       // version's, and a patched screen keeps its earlier ones.
       const patterns = kind === 'view' && item.screen ? [...new Set([...(item.patched !== undefined ? view.views.find((x) => x.slug === item.slug)?.spec?.patterns || [] : []), ...(item.patterns || [])])] : [];
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
@@ -1713,6 +1744,9 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     if (used.length) {
       const off = used.filter((k) => !on[k]);
       progress(`It uses ${used.map((k) => ABILITIES[k].title.toLowerCase()).join(', ')}${off.length ? `; switch on ${off.map((k) => `"${ABILITIES[k].title}"`).join(' and ')} for it in the studio, under "Model and web"; until then ${off.length === 1 ? 'it answers' : 'they answer'} that ${off.length === 1 ? 'it is' : 'they are'} off` : ''}`);
+      const wants = now ? await engine.reach.wants(appId, now).catch(() => null) : null;
+      if (wants?.hosts.length) progress(`It reaches ${wants.hosts.join(', ')}, which its owner has not allowed yet: allow ${wants.hosts.length === 1 ? 'it' : 'them'} under "Model and web"`);
+      if (wants?.secrets.length) progress(`It needs ${wants.secrets.length === 1 ? 'the secret' : 'the secrets'} ${wants.secrets.map((x) => `"${x}"`).join(', ')}: its owner adds ${wants.secrets.length === 1 ? 'it' : 'them'} under "Model and web"`);
     }
   }
   const problemsLeft = [];
@@ -1909,7 +1943,7 @@ export async function suggestFromUse(engine, appId, { signals = [], fresh = [] }
     `# The app: ${view.app.name}\n${view.app.description || ''}`,
     `## Tables\n${tables.join('\n')}`,
     `## Views\n${view.views.map((v) => `- ${v.slug}: ${v.title}. ${v.description}`).join('\n')}`,
-    `## Functions\n${view.functions.map((f) => `- ${f.slug}: ${f.description}${f.spec.on ? ` (runs on ${f.spec.on.event} ${f.spec.on.table})` : ''}`).join('\n') || '(none)'}`,
+    `## Functions\n${view.functions.map((f) => `- ${f.slug}: ${f.description}${f.spec.on ? ` (runs on ${f.spec.on.event} ${f.spec.on.table})` : ''}${f.spec.every ? ` (runs ${everyWords(f.spec.every)})` : ''}`).join('\n') || '(none)'}`,
     `## Versions, oldest first (what each change added)\n${versions.slice().reverse().map((c) => `- v${c.n}: ${c.summary || c.request}`).join('\n')}`,
     `## Suggestions made before\n${history.map((h) => `- [${h.status}] ${h.text}`).join('\n') || '(none)'}`,
     `## Patterns (counted by the engine)\n${signals.map((s) => `- [${s.key}]${fresh.some((f) => f.key === s.key) ? ' NEW' : ''} ${s.text}`).join('\n') || '(none yet)'}`,
