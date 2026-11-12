@@ -9,7 +9,7 @@ The [Python package](python.md) plugs ChloeDB into the frameworks agents and ret
 | `chloedb.llama_index` | `ChloeDBVectorStore`, a LlamaIndex vector store, and `ChloeDBEmbedding` | `pip install "chloedb[llama-index]"` |
 | `chloedb.dbapi` | a [PEP 249](https://peps.python.org/pep-0249/) driver: `connect()`, cursors, `pandas.read_sql` | nothing more |
 
-Each of them takes where the data is in the same way: a database's path (opened in the process, and made at the first write when it does not exist), the `http://` or `https://` URL of a [chloedb-server](server.md) or a coordinator (with `token=`, or `$CHLOEDB_TOKEN`), or a `chloedb.Database` or `chloedb.Client` already open. The same code runs on a file on a laptop and on a cluster, and one database can hold an agent's vectors, checkpoints, memories and its other tables side by side, each in a table of its own.
+Each of them takes where the data is in the same way: a database's path (opened in the process, and made at the first write when it does not exist), the `http://` or `https://` URL of a [chloedb-server](server.md) or a coordinator (with `token=`, or `$CHLOEDB_TOKEN`), or a `chloedb.Database` or `chloedb.Client` already open. Adapters given the same path in one process share one open database (a process opens a database once to write it), so a checkpointer and a store can both name `"agent.chloedb"`; a database opened by `chloedb.open` is passed as itself. The same code runs on a file on a laptop and on a cluster, and one database can hold an agent's vectors, checkpoints, memories and its other tables side by side, each in a table of its own.
 
 ## LangChain
 

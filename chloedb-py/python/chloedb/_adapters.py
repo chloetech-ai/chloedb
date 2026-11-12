@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
+import weakref
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from ._native import ChloeDBError
@@ -18,6 +20,10 @@ from ._search import quote
 _JSON_DEPTH = 16
 _JSON_VALUES = 1000
 _JSON_PATH_BYTES = 256
+
+# The databases adapters opened by path, while something holds them.
+_opened: "weakref.WeakValueDictionary[str, Any]" = weakref.WeakValueDictionary()
+_opened_lock = threading.Lock()
 
 # Rows a write sends at once.
 BATCH = 1000
@@ -34,7 +40,15 @@ def open_store(db: Any, *, models: str | os.PathLike | None = None, token: str |
         target = os.fspath(db)
         if target.startswith(("http://", "https://")):
             return connect(target, token=token)
-        return connect(target, models=models)
+        # One process opens a database once to write it: adapters given the
+        # same path (a checkpointer and a store, say) share one Database.
+        key = os.path.realpath(target[len("file:"):] if target.startswith("file:") else target)
+        with _opened_lock:
+            store = _opened.get(key)
+            if store is None or store.closed:
+                store = connect(target, models=models)
+                _opened[key] = store
+            return store
     if not (hasattr(db, "query") and hasattr(db, "tables") and hasattr(db, "upsert")):
         raise TypeError(f"expected a chloedb.Database, a chloedb.Client, a path or an http(s):// URL, not {type(db).__name__}")
     return db

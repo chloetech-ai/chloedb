@@ -307,3 +307,12 @@ def test_messages_and_subgraphs(target):
     # The subgraph's checkpoints are in a namespace of their own.
     namespaces = {c.config["configurable"]["checkpoint_ns"] for c in saver.list(None)}
     assert "" in namespaces and any(n.startswith("inner:") for n in namespaces)
+
+
+def test_saver_and_store_share_a_path(tmp_path):
+    path = str(tmp_path / "one.chloedb")
+    saver, store = ChloeDBSaver(path), ChloeDBStore(path)
+    assert saver.store is store.store
+    store.put(("n",), "k", {"v": 1})
+    graph(saver).invoke({"log": ["in"]}, cfg("t1"))
+    assert store.get(("n",), "k").value == {"v": 1}
