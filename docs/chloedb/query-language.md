@@ -97,6 +97,16 @@ A `TIMESTAMP` is a moment, kept to the microsecond in UTC and written as ISO 860
 
 `KEYWORD` and `INT` fields may be multi-valued (`"multi": true` in the schema): a row holds a list, such as `ARRAY['red', 'blue']`, and a filter matches a row if any of its values matches. A facet counts each distinct value once per row.
 
+A multi-valued field also compares with a list of values as a set, by PostgreSQL's array operators. The list is `ARRAY[...]` of values or a list parameter (`:groups`), and its values are written as the field's are:
+
+| condition | holds where | read from the index as |
+|---|---|---|
+| `tags @> ARRAY['red', 'sale']` | the row has every value of the list (contains all) | an `AND` of equalities; every row for an empty list |
+| `tags && ARRAY['red', 'sale']` | the row has a value of the list (overlaps) | `IN` the values; no row for an empty list |
+| `groups <@ :allowed` | each value of the row is in the list (contained by), on an `INT[]` field | `NOT` of the ranges between the list's values |
+
+The list may come first: `ARRAY['red'] <@ tags` is `tags @> ARRAY['red']`. A row without values is the empty set, so `@>` an empty list and `<@` any list hold for it, and `NOT` of a set operator holds where the set operator does not, as for other conditions on a multi-valued field. `<@` is how a row lists what it needs and a query what it has: with `required INT[]` holding the groups a reader must belong to, `WHERE required <@ :user_groups` keeps the documents whose every required group is one of the user's (and those that require none), and it filters a vector or text search as any condition does. A `KEYWORD[]` field does not take `<@` yet, since its index cannot list the values outside a list; an `INT[]` of ids does. Over rows in memory (a `WITH` result), `&&` compares any two lists, and `@>` a list column with a list written out.
+
 A `KEYWORD[]` field may hold the [semantic ID](server.md#semantic-ids) of a vector field: every prefix of a code such as `12.7.201.0`, filled in by the writer, so `sid = '12.7'` finds the rows under a prefix. `sid_at(sid, n)` is the first `n` numbers of a code (`sid_at(sid, 2)` is `'12.7'`), in `SELECT`, `WHERE` and `GROUP BY`.
 
 A `SPARSE` value is a JSON object of terms and non-negative weights, `{"tok": 1.25, "##en": 0.4}`, as a learned sparse model (SPLADE, BGE-M3's sparse output, OpenSearch's neural sparse models) writes it. Terms are taken as given, not analysed, and weights are stored in steps of 1/1024.
