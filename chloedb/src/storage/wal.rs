@@ -662,6 +662,37 @@ pub fn decode_shipped(buf: &[u8], fits: &dyn Fn(u32, &Op) -> bool) -> Result<Wal
     }
 }
 
+/// The parts of the one transaction `buf` holds that every copy of a
+/// database logs alike, in order: each record's body, and its commit's
+/// without the transaction count there (each database counts its own
+/// transactions; the term and sequence number stay). A primary and its
+/// replica, which logs what it applies with the same records
+/// ([`crate::storage::Database::apply_shipped`]), give the same parts for
+/// one transaction, and different parts for two different ones of the
+/// same number: what a digest of a shipped transaction is taken of. `None`
+/// when `buf` is not records ending with a commit.
+pub fn shipped_parts(buf: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut parts = Vec::new();
+    let mut pos = 0;
+    while pos < buf.len() {
+        let len = u32::from_le_bytes(buf.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        let end = pos.checked_add(8)?.checked_add(len)?;
+        let body = buf.get(pos + 8..end)?;
+        if body.first() == Some(&COMMIT) {
+            // Kind, txn (8 bytes), operations, term and number.
+            if end != buf.len() || body.len() < 9 {
+                return None;
+            }
+            parts.push(&body[..1]);
+            parts.push(&body[9..]);
+            return Some(parts);
+        }
+        parts.push(body);
+        pos = end;
+    }
+    None
+}
+
 /// Whether the one transaction `buf` holds, as [`decode_shipped`] reads
 /// it, changes tables ([`Op::changes_tables`]): read from its records'
 /// kinds alone, without decoding its rows.

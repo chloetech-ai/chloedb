@@ -3997,6 +3997,17 @@ impl Service {
                     // it serves what was left, which is not all it held.
                     h["status"] = json!("degraded");
                     h["error"] = json!(format!("opened past damage: {what}"));
+                } else if let Some(at) = match &self.replication() {
+                    Replication::Replica(f) => f.differs(),
+                    _ => None,
+                } {
+                    // It serves no reads, and waits for a copy of its
+                    // primary.
+                    h["status"] = json!("degraded");
+                    h["error"] = json!(format!(
+                        "this replica holds another transaction than its primary's as transaction {} of term {}: it applies nothing and waits for a copy of the primary",
+                        at.seq, at.term
+                    ));
                 }
                 if let Some(what) = db.storage().damaged() {
                     h["opened_past_damage"] = json!(what);

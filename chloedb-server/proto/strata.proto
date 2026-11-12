@@ -33,7 +33,11 @@
 // longer reaches or whose rows differ with `Restore`, and compares a
 // replica's rows with its own with `Verify`, which a server from before
 // them answers Unimplemented; `Hello` names a server's role, which an
-// older one leaves out (STANDALONE).
+// older one leaves out (STANDALONE). From protocol 20 a `Replicate`
+// carries a digest of the transaction it follows (prev_digest), which a
+// replica of an older protocol ignores and a primary of an older one
+// leaves out (0): the replica then applies as before, comparing terms and
+// numbers only.
 //
 // Logs take no protocol version: a server keeps the lines it logs and the
 // queries it answers in a Strata database of its own (its log store, tables
@@ -306,6 +310,16 @@ message ReplicateRequest {
   uint64 config = 10;
   // The copies that membership counts, the primary among them.
   uint32 copies = 11;
+  // Protocol 20: a digest (xxh3) of the transaction before the first of
+  // `txns`, prev_term and prev_seq, as the primary logged it, but for the
+  // count of transactions each database keeps of its own (0: none, from a
+  // primary of an older protocol or whose log no longer holds it). A
+  // replica that holds a transaction of that term and number compares its
+  // own digest of it, and applies nothing when they differ
+  // (ReplicateResponse.differs): the two hold different transactions
+  // under one term and number, and a batch that follows the primary's
+  // would build on the other.
+  fixed64 prev_digest = 12;
 }
 
 message VerifyRequest {
@@ -334,6 +348,11 @@ message ReplicateResponse {
   uint64 term = 3;
   // The term the replica is at.
   uint64 replica_term = 4;
+  // Protocol 20: the replica holds another transaction than the primary's
+  // under ReplicateRequest.prev_term and prev_seq (prev_digest differs from
+  // its own): it applied nothing, serves no reads, and is to be sent a copy
+  // of the primary (Restore), which drops it.
+  bool differs = 5;
 }
 
 message SlotsRequest {
