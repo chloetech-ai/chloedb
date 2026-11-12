@@ -168,6 +168,12 @@ impl From<ApiError> for tonic::Status {
             504 => Code::DeadlineExceeded,
             _ => Code::Internal,
         };
-        tonic::Status::new(code, e.message)
+        // Whether a refused write was applied, as a code (protocol 19).
+        let outcome = crate::cores::shard::Primary::write_outcome(&e);
+        let mut s = tonic::Status::new(code, e.message);
+        if let Some(v) = outcome.and_then(|o| o.parse().ok()) {
+            s.metadata_mut().insert(crate::cores::shard::WRITE_OUTCOME, v);
+        }
+        s
     }
 }

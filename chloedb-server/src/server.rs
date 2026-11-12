@@ -38,6 +38,10 @@ pub struct Options {
     /// Open a database whose WAL was damaged after it was durable
     /// ([`DbOptions::wal_drop_damaged`]).
     pub wal_drop_damaged: bool,
+    /// Open a database that opening would otherwise refuse because it
+    /// loses acknowledged writes, accepting the loss
+    /// ([`DbOptions::recover`]).
+    pub recover: bool,
     /// Check every segment's checksum on opening
     /// ([`DbOptions::verify_checksums`]).
     pub verify_checksums: bool,
@@ -350,10 +354,12 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         };
         let db_options = |directory: bool| DbOptions { cold: cold.clone(), ..db_options(directory) };
         let db = if path.exists() {
-            let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
+            let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, recover: o.recover, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
                 .map_err(|e| format!("open {}: {e}", path.display()))?;
             if let Some(what) = db.storage().damaged() {
-                tracing::warn!(db = %path.display(), damage = %what, "opened the database past damage");
+                // Also in /v1/health ("degraded") and /v1/admin/check (an
+                // error) until the database is opened clean again.
+                tracing::error!(db = %path.display(), damage = %what, "opened the database past damage");
             }
             db
         } else if let Some(n) = o.demo {
@@ -373,6 +379,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");
         }
+        // A server stores rows whose field's model is not open yet without
+        // their vectors, and fills them in once it opens (the backfill).
+        db.set_embed_later(true);
         if o.seq_no {
             db.storage().start_seq_no().map_err(|e| format!("--seq-no on {}: {e}", path.display()))?;
         }
@@ -380,6 +389,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             return Err(format!("{} does not number its writes, which replication ships by: pass --seq-no", path.display()));
         }
         let mut db = db;
+        // Each query is given the server's own budget (--query-memory-mb)
+        // where it runs, not the one a program's database counts against.
+        db.exec.memory = None;
         if let Some(mb) = o.filter_cache_mb {
             db.exec.filter_cache = Some(Arc::new(chloedb::query::exec::FilterCache::new(mb << 20)));
         }
@@ -444,7 +456,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(b) = query_memory {
         tracing::info!(memory_mib = b >> 20, "queries share a memory budget");
     }
-    svc.query_memory = query_memory.map(chloedb::query::memory::MemoryBudget::new);
+    svc.query_memory = query_memory.map(crate::service::query_budget);
     svc.max_queued_writes = if o.max_queued_writes > 0 { o.max_queued_writes } else { usize::MAX };
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);
@@ -693,10 +705,22 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
         (false, Some(f)) => f,
         (false, None) => chloedb::embed::model_files(&local).iter().map(|&f| (f, f)).collect(),
     };
+    // A model ChloeDB knows comes from the commit it was pinned at, each
+    // file checked against its SHA-256 ([`chloedb::model_pins`]); another
+    // repository from its main branch, as it is.
+    let pin = chloedb::model_pins::pin(&repo);
+    let revision = pin.map_or("main", |p| p.revision);
     for (from, file) in files {
-        let url = format!("https://huggingface.co/{repo}/resolve/main/{from}");
+        let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{from}");
         let r = client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("{url}: {e}"))?;
         let bytes = r.bytes().await.map_err(|e| format!("{url}: {e}"))?;
+        if let Some(p) = pin {
+            let want = p.sha256(from).ok_or_else(|| format!("{url}: no checksum is pinned for this file of {repo}"))?;
+            let got = chloedb::model_pins::sha256_hex(&bytes);
+            if got != want {
+                return Err(format!("{url}: SHA-256 {got}, where {want} is pinned for {repo} at {revision}: the file is not the one ChloeDB was built for, and is not kept"));
+            }
+        }
         // Written aside and renamed, so that an open model is never
         // overwritten in place.
         let tmp = out.join(format!("{file}.part"));
@@ -864,6 +888,9 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         for (field, why) in db.open_embedders(models) {
             tracing::warn!(field = %field, error = %why, "cannot embed this field: its vectors must be in the files");
         }
+        // As before: rows without the vectors are imported without them,
+        // which a server fills in once the model opens.
+        db.set_embed_later(true);
         db
     };
     let mut db = if path.exists() {

@@ -461,9 +461,16 @@ impl Source {
             }
             s @ ("https" | "http") => {
                 let scheme = if s == "https" { "https" } else { "http" };
+                // URL parsers differ on these (a backslash ends the host
+                // for some, tabs and newlines are dropped by others): a
+                // URL that has one is refused, so that the host the
+                // allowlist checks is the host a fetch connects to.
+                if let Some(c) = uri.chars().find(|c| *c == '\\' || c.is_ascii_control()) {
+                    return Err(format!("{uri:?}: a URL with {c:?} in it is not fetched (percent-encode it in the path)"));
+                }
                 let rest = rest.strip_prefix("//").ok_or_else(|| format!("{uri}: an {scheme}: URL is {scheme}://host/path"))?;
                 let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-                let (host, port) = host_port(authority, scheme).map_err(|e| format!("{uri}: {e}"))?;
+                let (host, port) = host_port(authority, scheme, false).map_err(|e| format!("{uri}: {e}"))?;
                 Ok(Source::Http { scheme, host, port })
             }
             "media" => {
@@ -486,30 +493,64 @@ fn default_port(scheme: &str) -> u16 {
     }
 }
 
-/// An authority's host (lowercase, without a trailing dot) and port.
-fn host_port(authority: &str, scheme: &str) -> std::result::Result<(String, u16), String> {
+/// An authority's host ([`normal_host`]) and port. `wildcard` takes a
+/// host `*.domain` (an allowlist's entry).
+fn host_port(authority: &str, scheme: &str, wildcard: bool) -> std::result::Result<(String, u16), String> {
     if authority.contains('@') {
         return Err("a URL with a user name or password is not fetched".into());
     }
     let (host, port) = match authority.strip_prefix('[') {
         Some(v6) => {
             let (h, rest) = v6.split_once(']').ok_or("an IPv6 host is [address]")?;
-            (format!("[{}]", h.to_ascii_lowercase()), rest.strip_prefix(':'))
+            let port = match rest {
+                "" => None,
+                r => Some(r.strip_prefix(':').ok_or("an IPv6 host's port follows it after :")?),
+            };
+            (format!("[{h}]"), port)
         }
         None => match authority.rsplit_once(':') {
-            Some((h, p)) => (h.to_ascii_lowercase(), Some(p)),
-            None => (authority.to_ascii_lowercase(), None),
+            Some((h, p)) => (h.to_string(), Some(p)),
+            None => (authority.to_string(), None),
         },
     };
-    let host = host.trim_end_matches('.').to_string();
+    let host = match host.strip_prefix("*.") {
+        Some(domain) if wildcard => format!("*.{}", normal_host(domain)?),
+        _ => normal_host(&host)?,
+    };
+    let port = match port {
+        None | Some("") => default_port(scheme),
+        Some(p) if p.bytes().all(|b| b.is_ascii_digit()) => p.parse().map_err(|_| format!("port {p:?} is not a port"))?,
+        Some(p) => return Err(format!("port {p:?} is not a number")),
+    };
+    Ok((host, port))
+}
+
+/// A host as it is compared: a name in lowercase without a trailing dot,
+/// an IPv4 address in its four decimal numbers, an IPv6 address in its
+/// shortest form in brackets. What a URL parser could read as another
+/// host is refused: characters other than letters, digits, `-`, `_` and
+/// `.` (an internationalised name is written in its `xn--` form), empty
+/// labels, and a name ending in a number that is not a plain IPv4 address
+/// (`0x7f.1`, `2130706433`, `127.000.0.1`).
+pub fn normal_host(host: &str) -> std::result::Result<String, String> {
+    if let Some(v6) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        let ip: std::net::Ipv6Addr = v6.parse().map_err(|_| format!("[{v6}] is not an IPv6 address"))?;
+        return Ok(format!("[{ip}]"));
+    }
+    let host = host.to_ascii_lowercase();
+    let host = host.strip_suffix('.').unwrap_or(&host);
     if host.is_empty() {
         return Err("no host".into());
     }
-    let port = match port {
-        None | Some("") => default_port(scheme),
-        Some(p) => p.parse().map_err(|_| format!("port {p:?} is not a number"))?,
-    };
-    Ok((host, port))
+    if !host.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)) || host.split('.').any(str::is_empty) {
+        return Err(format!("{host:?} is not a host name: letters, digits, -, _ and . (an internationalised name in its xn-- form), or an IP address"));
+    }
+    let last = host.rsplit('.').next().unwrap_or_default();
+    let numeric = last.bytes().all(|b| b.is_ascii_digit()) || last.strip_prefix("0x").is_some_and(|h| h.bytes().all(|b| b.is_ascii_hexdigit()));
+    if numeric && host.parse::<std::net::Ipv4Addr>().map_or(true, |ip| ip.to_string() != host) {
+        return Err(format!("{host:?} is not a host name, and an IPv4 address is four numbers from 0 to 255 apart by dots"));
+    }
+    Ok(host.to_string())
 }
 
 fn percent_decode(s: &str) -> std::result::Result<String, String> {
@@ -578,7 +619,7 @@ impl Allowlist {
         if authority.contains(['/', '?', '#']) {
             return Err(bad("an entry names a host, not a path on it".into()));
         }
-        let (host, port) = host_port(authority, scheme).map_err(bad)?;
+        let (host, port) = host_port(authority, scheme, true).map_err(bad)?;
         self.hosts.push((scheme, host, port));
         Ok(())
     }
@@ -597,15 +638,23 @@ impl Allowlist {
     /// Whether an HTTP URL's scheme, host and port are on the list.
     pub fn allows_http(&self, url: &str) -> bool {
         match Source::parse(url) {
-            Ok(Source::Http { scheme, host, port }) => self.hosts.iter().any(|(s, h, p)| {
-                let host_ok = match h.strip_prefix("*.") {
-                    Some(domain) => host.len() > domain.len() + 1 && host.ends_with(domain) && host.as_bytes()[host.len() - domain.len() - 1] == b'.',
-                    None => *h == host,
-                };
-                *s == scheme && *p == port && host_ok
-            }),
+            Ok(Source::Http { scheme, host, port }) => self.allows_host(scheme, &host, port),
             _ => false,
         }
+    }
+
+    /// Whether a scheme, host and port are on the list, the host compared
+    /// as [`normal_host`] writes it: what a fetcher checks of the URL it
+    /// parsed, before it connects and at each redirect.
+    pub fn allows_host(&self, scheme: &str, host: &str, port: u16) -> bool {
+        let Ok(host) = normal_host(host) else { return false };
+        self.hosts.iter().any(|(s, h, p)| {
+            let host_ok = match h.strip_prefix("*.") {
+                Some(domain) => host.len() > domain.len() + 1 && host.ends_with(domain) && host.as_bytes()[host.len() - domain.len() - 1] == b'.',
+                None => *h == host,
+            };
+            s.eq_ignore_ascii_case(scheme) && *p == port && host_ok
+        })
     }
 
     /// The canonical path of a file a `file:` URI names, if it lies inside
@@ -1009,6 +1058,11 @@ mod tests {
         for bad in ["file://elsewhere/a", "file:a.jpg", "s3://bucket/a", "https://user:pw@host/a", "https:///a", "nope", "media:abc", "https://host:http/"] {
             assert!(Source::parse(bad).is_err(), "{bad}");
         }
+        // Forms URL parsers read differently, refused rather than guessed.
+        assert_eq!(Source::parse("https://[0:0::1]/x").unwrap(), Source::Http { scheme: "https", host: "[::1]".into(), port: 443 });
+        for bad in ["https://a.example.org\\b.example.org/x", "https://a.example.org/x\\y", "https://exa\tmple.org/", "https://exa\nmple.org/", "https://a.example.org /x", "https://a%2eexample.org/", "https://a..example.org/", "https://0x7f.1/", "https://2130706433/", "https://127.000.0.1/", "https://a.example.org:+443/", "https://bücher.example/", "https://[::1]x/", "https://a.b.c.1/"] {
+            assert!(Source::parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -1032,6 +1086,9 @@ mod tests {
         for url in ["http://cdn.example.com/a.jpg", "https://cdn.example.com:8443/a", "https://images.org/a", "https://evilimages.org/a", "https://cdn.example.com.evil.net/a", "https://127.0.0.1:8080/a", "http://127.0.0.1:8081/a", "file:///etc/passwd"] {
             assert!(!a.allows_http(url), "{url}");
         }
+        // A host that only looks like it is under a wildcard's domain.
+        assert!(!a.allows_http("https://evil.net\\.images.org/a") && !a.allows_http("https://evil.net%5c.images.org/a"));
+        assert!(a.allows_host("https", "X.Images.org.", 443) && !a.allows_host("https", "evil.net\\.images.org", 443));
         assert_eq!(a.entries().len(), 4);
         for bad in ["ftp://host", "https://host/path", "/no/such/dir"] {
             assert!(Allowlist::parse(&[bad]).is_err(), "{bad}");

@@ -580,9 +580,23 @@ pub struct Models {
     sequences: crate::query::sequence::SequenceModels,
 }
 
+/// Whether `name` is a directory's own name: letters, digits, `_`, `-`
+/// and `.`, not starting with `.` (so never `..`, a path or a separator).
+pub(crate) fn is_model_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
+}
+
+/// Whether `name` is a model directory's name or two of them joined by
+/// `/` (`cohere/rerank-v3.5`, a provider's model): a name a query may
+/// give, which stays inside the models directory.
+pub(crate) fn is_model_path(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('/').collect();
+    parts.len() <= 2 && parts.iter().all(|p| is_model_name(p))
+}
+
 /// Refuses a model name that is not a directory's own name.
 fn check_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.starts_with('.') || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)) {
+    if !is_model_name(name) {
         return Err(Error::Query(format!("a ranking model's name is letters, digits, _, - and ., not {name:?}")));
     }
     Ok(())
@@ -591,8 +605,7 @@ fn check_name(name: &str) -> Result<()> {
 /// Refuses a cross-encoder's name that is not a directory's name, or two
 /// of them (`cohere/rerank-v3.5`, a provider's model).
 fn check_path(name: &str) -> Result<()> {
-    let parts: Vec<&str> = name.split('/').collect();
-    if parts.len() > 2 || parts.iter().any(|p| check_name(p).is_err()) {
+    if !is_model_path(name) {
         return Err(Error::Query(format!("a ranking model's name is letters, digits, _, - and . (a cross-encoder's may be two such names joined by /, as a provider's model is), not {name:?}")));
     }
     Ok(())

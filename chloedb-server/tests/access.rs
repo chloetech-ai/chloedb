@@ -250,6 +250,8 @@ async fn a_request_s_statements_and_options_need_their_scope_over_http_and_grpc(
     // BUG-N3: a write key's SQLite import that creates a table is refused
     // before anything is written; into tables that exist, it imports.
     let src = Db::create(&dir.path().join("src.strata"), demo::schema(N), DbOptions::default()).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    src.set_embed_later(true);
     src.load((0..3).map(|i| demo::product(i, 7))).unwrap();
     src.sql("CREATE TABLE extra (id INT PRIMARY KEY, body TEXT)", &chloedb::query::Params::new()).unwrap();
     src.sql("INSERT INTO extra (id, body) VALUES (1, 'one')", &chloedb::query::Params::new()).unwrap();

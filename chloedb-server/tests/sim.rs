@@ -38,6 +38,20 @@ fn seeded_runs_keep_the_protocols_promises() {
     assert!(failed.is_empty(), "{} of seeds {seeds:?} broke a promise:{}", failed.len(), explain(&failed));
 }
 
+/// Seeds the nightly run found breaking a promise on `main`, kept here
+/// once fixed. 624036738 (the night of 10 November 2026, main at
+/// 768197e0): the primary elected for term 2 lacked 34 writes that the
+/// primary of term 1 had acknowledged. It fails so on 768197e0 and keeps
+/// its promises since release 0.2.0's replication fixes (which change of
+/// them fixed it was not bisected).
+const FOUND: &[u64] = &[624036738];
+
+#[test]
+fn seeds_the_nightly_run_found_keep_the_protocols_promises() {
+    let failed: Vec<sim::Report> = FOUND.iter().flat_map(|&s| sim::run_seeds(s..s + 1, &Config::of, 1)).collect();
+    assert!(failed.is_empty(), "{} of the seeds found before broke a promise again:{}", failed.len(), explain(&failed));
+}
+
 #[test]
 fn a_seed_replays_exactly() {
     for seed in 0..4 {
@@ -51,12 +65,8 @@ fn a_seed_replays_exactly() {
 }
 
 /// The first seed below `within` that breaks a promise with `bug` put
-/// back, looking a hundred seeds at a time.
-fn finds(bug: Bug, within: u64) -> Option<sim::Report> {
-    finds_with(bug, within, Config::of)
-}
-
-/// [`finds`], with each seed's configuration from `of`.
+/// back, looking a hundred seeds at a time, each seed's configuration
+/// from `of`.
 fn finds_with(bug: Bug, within: u64, of: impl Fn(u64) -> Config + Sync) -> Option<sim::Report> {
     let config = |s| {
         let mut c = of(s);
@@ -85,8 +95,14 @@ fn a_stalled_election_is_found_again() {
 
 #[test]
 fn a_replica_refusing_an_older_term_is_found_again() {
-    let r = finds(Bug::RefusesOlderTerms, 3000).expect("a seed whose replicas never catch up");
-    assert!(r.violations.iter().any(|v| v.contains("did not settle")), "{:?}", r.violations);
+    // The bug bites a copy that began a term in which its primary wrote
+    // nothing: since each new primary commits a transaction of its term as
+    // it begins it (finding DS-5), only with that put back too
+    // (`Bug::AcksAnOlderTerm`), which loses writes of its own; the seed
+    // looked for is one that does not settle.
+    let of = |s| Config { bugs: vec![Bug::RefusesOlderTerms, Bug::AcksAnOlderTerm], ..Config::of(s) };
+    let unsettled = (0..3000).step_by(100).find_map(|a| sim::run_seeds(a..a + 100, &of, jobs()).into_iter().find(|r| r.violations.iter().any(|v| v.contains("did not settle"))));
+    assert!(unsettled.is_some(), "a seed whose replicas never catch up");
 }
 
 /// Calls dropped 15% of the time (`--drop-ppm 150000`), where a first
@@ -153,4 +169,83 @@ fn a_primary_cut_off_is_replaced_once() {
 fn replicas_replacing_each_other_are_found_again() {
     let (terms, seed) = most_elections(0..300, &[Bug::ReplacesTheCopyItElected]);
     assert!(terms > 5, "seed {seed} began only {terms} terms while its primary was cut off");
+}
+
+/// Crashes every 2 s on average, whose clients retry each write that
+/// failed (as a client with an idempotency key does).
+fn crashy(s: u64) -> Config {
+    Config { crash_every: std::time::Duration::from_secs(2), ..Config::of(s) }
+}
+
+/// Finding DS-5 (Raft's figure 8): a primary elected that commits
+/// nothing of its own term answers a client's retry of a write it holds
+/// from an older term once a majority holds it, dies, and a copy holding
+/// a newer term's transaction at the same number is elected and drops
+/// the acknowledged write.
+#[test]
+fn an_older_terms_write_acknowledged_by_count_is_found_again() {
+    let r = finds_with(Bug::AcksAnOlderTerm, 3000, crashy).expect("a seed that loses an acknowledged write");
+    assert!(r.violations.iter().any(|v| v.contains("is not held by")), "{:?}", r.violations);
+}
+
+/// Whether violation `v` is a copy left ahead of its primary under the
+/// primary's own term, by transactions the primary does not hold: the
+/// shard does not settle, as the server leaves such a copy to an operator
+/// ("start it again from a checkpoint of the primary"), which a copy of
+/// the primary would drop transactions of the primary's term from.
+fn ahead_in_the_primarys_term(v: &str) -> bool {
+    let num = |s: &str, after: &str| s.split_once(after).and_then(|(_, r)| r.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok());
+    let Some((copy, primary)) = v.strip_prefix("the shard did not settle: ").and_then(|r| r.split_once(", its primary, ")) else { return false };
+    match (num(copy, "up to "), num(copy, " of term "), num(primary, "up to "), num(primary, " of term ")) {
+        (Some(a), Some(t), Some(b), Some(u)) => t == u && a > b,
+        _ => false,
+    }
+}
+
+/// A primary's writer that commits a client's write after the primary
+/// stepped down and applied its new primary's first batch
+/// (`Bug::CommitsAfterSteppingDown`; the server refuses the write since,
+/// as its term is over) leaves a copy holding another transaction than
+/// the new primary's under one term and number. The copy refuses the
+/// call that follows the primary's, by its digest (protocol 20), keeps
+/// that it differs, and is sent a copy of the primary: no acknowledged
+/// write is lost and no two copies hold different histories under one
+/// term and number, and in many seeds the copy was found so. A copy whose
+/// write was the last before the clients stopped stays ahead of its
+/// primary, under the primary's term: left to an operator, as the server
+/// leaves it, and not counted here.
+#[test]
+fn a_write_committed_after_stepping_down_is_found_on_the_call_that_follows() {
+    let found = std::sync::Mutex::new((0, 0, 0, Vec::new()));
+    sim::on_seeds(0..300, jobs(), &|seed| {
+        let mut r = sim::run(Config { bugs: vec![Bug::CommitsAfterSteppingDown], ..Config::of(seed) }, false);
+        let mut f = found.lock().unwrap();
+        f.0 += r.stats.stale_commits;
+        f.1 += r.stats.mismatches;
+        let all = r.violations.len();
+        r.violations.retain(|v| !ahead_in_the_primarys_term(v));
+        f.2 += all - r.violations.len();
+        if !r.ok() {
+            f.3.push(r);
+        }
+    });
+    let (stale, mismatches, ahead, failed) = found.into_inner().unwrap();
+    assert!(failed.is_empty(), "{} of 300 seeds broke a promise:{}", failed.len(), explain(&failed));
+    assert!(stale > 100 && mismatches > 100, "{stale} writes committed after stepping down, {mismatches} calls refused for them");
+    assert!(ahead <= 5, "{ahead} seeds left a copy ahead of its primary");
+}
+
+/// The same with replicas that apply by term and number alone, as before
+/// protocol 20: the copies' histories stay apart.
+#[test]
+fn a_replica_trusting_the_same_term_and_number_is_found_again() {
+    let of = |s| Config { bugs: vec![Bug::CommitsAfterSteppingDown], ..Config::of(s) };
+    let r = finds_with(Bug::TrustsTheSameTerm, 1000, of).expect("a seed whose copies hold different histories");
+    assert!(r.violations.iter().any(|v| v.contains("their histories differ")), "{:?}", r.violations);
+}
+
+#[test]
+fn crash_heavy_runs_with_retries_keep_the_protocols_promises() {
+    let failed = sim::run_seeds(0..300, &crashy, jobs());
+    assert!(failed.is_empty(), "{} of 300 crash-heavy seeds broke a promise:{}", failed.len(), explain(&failed));
 }

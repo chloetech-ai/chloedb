@@ -1,5 +1,6 @@
 package ai.chloetech.chloedb.jdbc;
 
+import ai.chloetech.chloedb.QueryOptions;
 import ai.chloetech.chloedb.Result;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -10,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** A statement run on a ChloeDB database: SQL as ChloeDB speaks it, and {@code :name} parameters through {@link ChloeDBPreparedStatement}. */
 public class ChloeDBStatement implements Statement {
@@ -24,6 +26,9 @@ public class ChloeDBStatement implements Statement {
     private int fetchSize;
     private int queryTimeout;
     private final List<String> batch = new ArrayList<>();
+    /** What {@link #cancel()} stops this statement's queries by. */
+    private final long tag = TAGS.incrementAndGet();
+    private static final AtomicLong TAGS = new AtomicLong();
 
     ChloeDBStatement(ChloeDBConnection conn) {
         this.conn = conn;
@@ -55,7 +60,7 @@ public class ChloeDBStatement implements Statement {
         clear();
         Result r;
         try {
-            r = conn.db().query(sql, params);
+            r = conn.db().query(sql, params, limits());
         } catch (RuntimeException e) {
             throw Sql.error(e);
         }
@@ -74,11 +79,17 @@ public class ChloeDBStatement implements Statement {
             throw new SQLException("the connection is read-only: it runs no statement that writes", "25006");
         }
         try {
-            updateCount = conn.db().execute(sql, params);
+            updateCount = conn.db().execute(sql, params, limits());
         } catch (RuntimeException e) {
             throw Sql.error(e);
         }
         return updateCount;
+    }
+
+    /** Its queries' deadline ({@link #setQueryTimeout}) and tag ({@link #cancel}). */
+    private QueryOptions limits() {
+        QueryOptions o = new QueryOptions().tag(tag);
+        return queryTimeout > 0 ? o.timeoutMs(queryTimeout * 1000L) : o;
     }
 
     /** Closes the results of the last statement run. */
@@ -183,7 +194,11 @@ public class ChloeDBStatement implements Statement {
         return queryTimeout;
     }
 
-    /** Taken and kept, but statements run to the end: ChloeDB's queries take no deadline yet. */
+    /**
+     * The deadline of each query it runs (0: none): past it the query stops
+     * and throws {@link java.sql.SQLTimeoutException}. A write is not cut
+     * short.
+     */
     @Override
     public void setQueryTimeout(int seconds) throws SQLException {
         if (seconds < 0) {
@@ -192,9 +207,16 @@ public class ChloeDBStatement implements Statement {
         queryTimeout = seconds;
     }
 
+    /**
+     * Stops the query this statement is running, from another thread: it
+     * throws an {@link SQLException} of state {@code HY008} within a few
+     * thousand rows. A write is not cut short.
+     */
     @Override
     public void cancel() throws SQLException {
-        throw Sql.unsupported("cancelling a statement");
+        if (!closed && !conn.isClosed()) {
+            conn.db().interrupt(tag);
+        }
     }
 
     @Override

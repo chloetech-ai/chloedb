@@ -8,17 +8,102 @@
  * error a server answered (`status`, the HTTP status, and `answer`, its
  * JSON, are set then). */
 export class ChloeDBError extends Error {
-  constructor(message, { status, answer, cause } = {}) {
+  constructor(message, { status, answer, cause, code } = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "ChloeDBError";
     if (status !== undefined) this.status = status;
     if (answer !== undefined) this.answer = answer;
+    /** The error's stable code (see `errorCode`). */
+    this.code = code ?? errorCode(String(message ?? ""), status, answer);
   }
 }
 
 /** `ChloeDBError` by its name when ChloeDB was called Strata: the same
  * class, so `instanceof` either one holds for every error. */
 export const StrataError = ChloeDBError;
+
+// The engine's message prefixes (chloedb::Error's Display), and their codes.
+const PREFIXES = [
+  ["busy:", "busy"],
+  ["timeout:", "timeout"],
+  ["memory:", "memory"],
+  ["unavailable:", "unavailable"],
+  ["corrupt database:", "corrupt"],
+  ["I/O error:", "io"],
+  ["schema error:", "bad_request"],
+  ["query error:", "bad_request"],
+];
+const STATUSES = { 400: "bad_request", 401: "unauthorized", 403: "unauthorized", 404: "not_found", 408: "timeout", 409: "conflict", 413: "bad_request", 422: "bad_request", 429: "overloaded", 503: "unavailable", 504: "timeout" };
+
+/**
+ * The stable code of an error, the same in this process and from a server
+ * (and in chloedb-py): the server's JSON `code` when it gives one, else
+ * "partial_write" for a coordinator's partial write, else the kind the
+ * message starts with ("busy: ...", as the engine words its errors), else
+ * the HTTP status. One of "bad_request", "unauthorized", "not_found",
+ * "conflict", "partial_write", "busy", "overloaded", "timeout", "memory",
+ * "unavailable", "corrupt", "io", "internal" (another 5xx) and "error".
+ */
+export function errorCode(message, status, answer) {
+  if (answer && typeof answer === "object") {
+    if (typeof answer.code === "string" && answer.code) return answer.code;
+    if (answer.partial === true) return "partial_write";
+  }
+  const text = String(message).trimStart();
+  for (const [prefix, code] of PREFIXES) if (text.startsWith(prefix)) return code;
+  if (status != null) return STATUSES[status] ?? (status >= 500 ? "internal" : "error");
+  return "error";
+}
+
+function subclass(name) {
+  const C = class extends ChloeDBError {
+    constructor(message, options) {
+      super(message, options);
+      this.name = name;
+    }
+  };
+  Object.defineProperty(C, "name", { value: name });
+  return C;
+}
+
+/** A bad schema, query, value or request (400, 413, 422). */
+export const BadRequestError = subclass("BadRequestError");
+/** No token, or one without the rights the request needs (401, 403). */
+export const UnauthorizedError = subclass("UnauthorizedError");
+/** No such row, table, route or cursor (404). */
+export const NotFoundError = subclass("NotFoundError");
+/** Refused by the state it met (409): a conditional write's `ifSeqNo`, an
+ * idempotency key still running, a read past the server's last write. */
+export const ConflictError = subclass("ConflictError");
+/** A coordinator wrote some shards and not others: send it again with the
+ * same idempotency key. */
+export const PartialWriteError = subclass("PartialWriteError");
+/** The database is open elsewhere, or another writer holds it. */
+export const BusyError = subclass("BusyError");
+/** Refused for the server's load before any work (429). */
+export const OverloadedError = subclass("OverloadedError");
+/** A deadline passed: a query's `timeoutMs`, a coordinator's wait (504). */
+export const DeadlineError = subclass("DeadlineError");
+/** No copy can serve it now (503). */
+export const UnavailableError = subclass("UnavailableError");
+
+const ERRORS = {
+  bad_request: BadRequestError,
+  unauthorized: UnauthorizedError,
+  not_found: NotFoundError,
+  conflict: ConflictError,
+  partial_write: PartialWriteError,
+  busy: BusyError,
+  overloaded: OverloadedError,
+  timeout: DeadlineError,
+  unavailable: UnavailableError,
+};
+
+/** A ChloeDBError of the class its code names. */
+export function makeError(message, options = {}) {
+  const code = options.code ?? errorCode(String(message), options.status, options.answer);
+  return new (ERRORS[code] ?? ChloeDBError)(message, { ...options, code });
+}
 
 // ---------------------------------------------------------------- JSON
 
@@ -97,6 +182,19 @@ export class Result {
 
   get length() {
     return this.rows.length;
+  }
+
+  /** More rows matched than this answer holds, by a cut the query did not
+   * write: a ranked query without LIMIT (`implicitLimit`), or a page of a
+   * fused ranking past its candidates. */
+  get truncated() {
+    return this.stats?.truncated === true;
+  }
+
+  /** The row count a ranked query without LIMIT was cut to (100), or
+   * undefined when the query gave its own LIMIT. */
+  get implicitLimit() {
+    return this.stats?.implicit_limit ?? undefined;
   }
 
   #object(r) {
@@ -208,9 +306,13 @@ export class Searchable {
    * "hybrid" fuses both by reciprocal rank (RRF). "auto" is hybrid when the
    * table has an embedded field whose model is open here, and text
    * otherwise. `where` is an SQL condition, with `params` for its
-   * placeholders.
+   * placeholders. `timeoutMs` bounds it as `query` takes it; a `Database`
+   * also takes `memory` and `signal`, as its `query` does.
    */
-  async search(text, { limit = 10, where, columns = "*", mode = "auto", textFields, vectorField, params, table } = {}) {
+  async search(text, { limit = 10, where, columns = "*", mode = "auto", textFields, vectorField, params, table, minSeqNo, minSeqNos, timeoutMs, memory, signal } = {}) {
+    // A client's query takes timeoutMs alone: a server's queries share its
+    // memory budget.
+    if ((memory != null || signal != null) && !this._local) throw new TypeError(`${this.constructor.name}.search() takes no ${memory != null ? "memory" : "signal"}`);
     const s = await this.schema(table);
     if (textFields == null) {
       const texts = s.fields.filter((f) => f.type === "text" && (f.indexed ?? true));
@@ -243,7 +345,8 @@ export class Searchable {
     const p = { ...(params ?? {}) };
     if (order.includes("bm25")) p._q = text;
     if (order.includes("similarity")) p._v = { embed: text, field: vectorField, ...(table == null ? {} : { table: s.table }) };
-    return this.query(sql, p);
+    const opts = Object.fromEntries(Object.entries({ minSeqNo, minSeqNos, timeoutMs, memory, signal }).filter(([, v]) => v != null));
+    return Object.keys(opts).length ? this.query(sql, p, opts) : this.query(sql, p);
   }
 }
 

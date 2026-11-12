@@ -292,7 +292,7 @@ check the array lengths and the last partition's rank and view them in
 place. `LoomCursor` became generic over how it holds the list
 (`L: Borrow<Loom>`: `&Loom` for `CursorList::cursor`, `Loom` for
 `into_cursor`), so a cursor can own a view (no self-referential structs in
-strata). `LoomCursor::rank` is O(1) in run and Elias-Fano partitions (the
+ChloeDB). `LoomCursor::rank` is O(1) in run and Elias-Fano partitions (the
 EF cursor's index) and incremental in bitvector partitions (popcounts of
 the words passed since the last call in the same partition), and costs
 nothing unless called. `size_bits` excludes the ranks (32 bits per

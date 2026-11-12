@@ -35,7 +35,7 @@
 //! | `POST /v1/explain` | `{sql, params?, hits?}` | the bound query, its plan IR and the executor's plan; with `hits`, the top rows with their `score()` and `features()` |
 //! | `POST /v1/embed` | `{text, field?, table?}` | `{table, field, vector}`: the text's vector by an embedded field's model; `vectors`, a vector a token, for a multi-vector field's (ColBERT) |
 //! | `GET /v1/models` | | `{dir, models: [{name, dim, hosted, what, ready, error}]}`: the embedding models a schema can name, and whether each would open here |
-//! | `GET /v1/media/<sha256>` | | the bytes of the file a row's MEDIA value names, by its hash, read as writes read files (`--media-store`, `--media-fetch`); 404 when no row names it, 400 from a coordinator |
+//! | `GET /v1/media/<sha256>` | | the bytes of the file a row's MEDIA value names, by its hash, read as writes read files (`--media-store`, `--media-fetch`), served inert ([`media_headers`]); 404 when no row names it, 400 from a coordinator |
 //! | `GET /v1/synonyms`, `PUT /v1/synonyms` | `{text}` (Solr format) | the synonym list |
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
@@ -2573,10 +2573,38 @@ async fn embed(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 /// The file a MEDIA value names, by its SHA-256, for showing it: only a
 /// file some row names, read from where the row says and checked against
 /// the hash ([`Service::media_file`]). Its bytes never change, so clients
-/// may keep it.
+/// may keep it. The bytes are the writer's and so is the type a row
+/// gives them: they are served so that a browser never runs them on the
+/// server's origin ([`media_headers`]).
 async fn media_file(State(app): State<App>, axum::extract::Path(sha256): axum::extract::Path<String>) -> Result<Response, ApiError> {
     let (mime, bytes) = app.svc.media_file(&sha256).await?;
-    Ok(([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string())], bytes).into_response())
+    Ok((media_headers(&mime, &sha256), bytes).into_response())
+}
+
+/// The headers of a stored file: its type only when it is one a browser
+/// shows without running anything (a raster image, a sound, a video),
+/// else `application/octet-stream`; any other file, a PDF too, as a
+/// download (`Content-Disposition: attachment`); never sniffed for
+/// another type (`nosniff`); and, should it be opened as a page, in a
+/// sandbox with nothing it may load or run.
+pub fn media_headers(mime: &str, sha256: &str) -> HeaderMap {
+    const SHOWN: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/avif"];
+    let essence = mime.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    let token = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b));
+    let well_formed = essence.split_once('/').is_some_and(|(t, s)| token(t) && token(s));
+    let shown = well_formed && (SHOWN.contains(&essence.as_str()) || essence.starts_with("audio/") || essence.starts_with("video/"));
+    let kept = well_formed && (shown || essence == "application/pdf");
+    let mut h = HeaderMap::new();
+    let ty = if kept { essence } else { "application/octet-stream".to_string() };
+    h.insert(header::CONTENT_TYPE, header::HeaderValue::from_str(&ty).unwrap_or(header::HeaderValue::from_static("application/octet-stream")));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+    h.insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"));
+    h.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("private, max-age=31536000, immutable"));
+    if !shown {
+        let name = if chloedb::media::is_sha256(sha256) { sha256 } else { "file" };
+        h.insert(header::CONTENT_DISPOSITION, header::HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")).unwrap_or(header::HeaderValue::from_static("attachment")));
+    }
+    h
 }
 
 async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
@@ -2788,12 +2816,12 @@ async fn remove_shard(State(app): State<App>, axum::extract::Path(i): axum::extr
     Ok(audited(j, format!("removed shard {i}")))
 }
 
-/// `POST /v1/admin/shards/:i/replicas {"url", "force"?}`: one more
+/// `POST /v1/admin/shards/:i/replicas {"url", "force"?, "accept_data_loss"?}`: one more
 /// server for shard `i`, a replica of its primary.
 async fn add_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let url = body_str(&b, "url")?.to_string();
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
-    let j = match app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?).await {
+    let j = match app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?, body_bool(&b, "accept_data_loss")?).await {
         Ok(j) => j,
         Err(e) => return Ok(tried(format!("add {url} to shard {i}"))(e)),
     };
@@ -2819,12 +2847,13 @@ async fn promote_in_shard(State(app): State<App>, axum::extract::Path(i): axum::
     Ok(audited(j, format!("made {name} the primary of shard {i}{}", if force { " (forced, asking no votes)" } else { "" })))
 }
 
-/// `DELETE /v1/admin/shards/:i/replicas?url=`: one server fewer for shard
+/// `DELETE /v1/admin/shards/:i/replicas?url=&accept_data_loss=`: one server fewer for shard
 /// `i`.
 async fn remove_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, Query(q): Params) -> Result<Response, ApiError> {
     let url = q.get("url").filter(|u| !u.is_empty()).ok_or_else(|| ApiError::bad("url is the gRPC URL of the server to remove (?url=http://host:port)"))?;
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
-    let j = match app.svc.coordinator()?.remove_replica(i, url).await {
+    let accept = q.get("accept_data_loss").is_some_and(|v| v == "true");
+    let j = match app.svc.coordinator()?.remove_replica(i, url, accept).await {
         Ok(j) => j,
         Err(e) => return Ok(tried(format!("remove {url} from shard {i}"))(e)),
     };

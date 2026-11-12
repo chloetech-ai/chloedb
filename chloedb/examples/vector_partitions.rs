@@ -1,7 +1,7 @@
 //! The engine comparison's "vector + filter" query (`WHERE rating >= 4
 //! ORDER BY similarity(emb, :v) DESC LIMIT 10`) on a VECTOR field
 //! partitioned by `rating` ([`chloedb::schema::VectorPartition`]), against
-//! the plans Strata makes without partitions, by recall@10 against the
+//! the plans ChloeDB makes without partitions, by recall@10 against the
 //! exact answers and time.
 //!
 //! The data file holds five arrays, each a little-endian u64 count and then
@@ -10,15 +10,15 @@
 //! queries' topics (nq u8, unused).
 //!
 //! `build` loads it into one segment as `engine-compare build` builds
-//! Strata's (HNSW m 16, ef_construction 200, SQ8 codes, the vector not
+//! ChloeDB's (HNSW m 16, ef_construction 200, SQ8 codes, the vector not
 //! stored), with the field partitioned by `rating` at 1, 2, 3 and 4 or,
 //! with `--plain`, not partitioned. `truth` writes each query's exact top
 //! 10 by dot product for each filter. `run` times every plan.
 //!
 //! ```text
-//! cargo run --release --example vector_partitions -- build data.bin parts.strata [--plain] [threads]
+//! cargo run --release --example vector_partitions -- build data.bin parts.chloedb [--plain] [threads]
 //! cargo run --release --example vector_partitions -- truth data.bin truth.json
-//! cargo run --release --example vector_partitions -- run parts.strata truth.json data.bin [plain.strata]
+//! cargo run --release --example vector_partitions -- run parts.chloedb truth.json data.bin [plain.chloedb]
 //! ```
 
 use std::collections::BinaryHeap;

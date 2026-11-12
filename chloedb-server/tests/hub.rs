@@ -163,6 +163,8 @@ async fn tables_are_copied_between_this_server_and_a_connection() {
         *f = f.clone().not_null();
     }
     let db = Db::create(&dir.path().join("hub.strata"), products.with_shard_by("brand").unwrap(), DbOptions::default()).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    db.set_embed_later(true);
     db.load((0..30).map(|i| demo::product(i, 7))).unwrap();
     let schema = (*db.schema()).clone();
     let hub = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent(), 16, Duration::from_secs(20)));

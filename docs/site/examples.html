@@ -310,10 +310,10 @@ ORDER BY rrf(bm25(title, :q), similarity(emb, :v)) DESC LIMIT 10;</pre>
 <pre data-lang="sql">CREATE TABLE carts (
   id KEYWORD PRIMARY KEY, usr KEYWORD, items KEYWORD[], until TIMESTAMP
 ) OPTIONS(expire_by = 'until');</pre>
-<pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/carts/c-u7 \
+<pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/carts/c-u7 -H 'content-type: application/json' \
   -d '{"usr": "u7", "items": ["B0C1"], "until": "2026-11-09T00:00:00Z"}'
 curl -s localhost:7700/v1/kv/carts/c-u7                  # one row, no SQL
-curl -s localhost:7700/v1/kv/get -d '{"table": "products", "keys": ["B0C1", "B0C2"]}'</pre>
+curl -s localhost:7700/v1/kv/get -H 'content-type: application/json' -d '{"table": "products", "keys": ["B0C1", "B0C2"]}'</pre>
           <div class="ex-meta"><span class="small muted">Through a coordinator each key goes to its own shard, all of a shard's keys in one call.</span><a class="small" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md#rows-by-key">Rows by key</a></div>
         </div>
         <div class="ex">
@@ -331,7 +331,7 @@ db.expire()        # in your process; a server deletes expired rows every few se
           <p>SQLite files in as tables, and any table back out.</p></div>
         <div class="ex">
           <h3>From SQLite</h3>
-<pre data-lang="sh">chloedb-server import --db shop.strata shop.sqlite        # a new file from SQLite's tables
+<pre data-lang="sh">chloedb-server import --db shop.chloedb shop.sqlite       # a new file from SQLite's tables
 curl -s -X POST 'localhost:7700/v1/import?format=sqlite&amp;plan=true' \
   -H 'content-type: application/vnd.sqlite3' --data-binary @shop.sqlite   # what it would make
 curl -s 'localhost:7700/v1/export' -o copy.sqlite            # and back out</pre>
@@ -339,10 +339,10 @@ curl -s 'localhost:7700/v1/export' -o copy.sqlite            # and back out</pre
         </div>
         <div class="ex">
           <h3>From Python</h3>
-<pre data-lang="python">import strata
+<pre data-lang="python">import chloedb
 
-strata.from_sqlite("shop.sqlite", "shop.strata")
-db = strata.open("shop.strata")
+chloedb.from_sqlite("shop.sqlite", "shop.chloedb")
+db = chloedb.open("shop.chloedb")
 db.insert([{"id": "B0C1", "title": "Cooling stand", "brand": "Kiwi", "price": 29.0}], table="products")
 db.import_file("reviews.jsonl", table="reviews")</pre>
           <div class="ex-meta"></div>
@@ -358,7 +358,7 @@ duckdb.sql("SELECT brand, avg(rating) FROM r GROUP BY brand")</pre>
         <div class="ex">
           <h3>A consistent copy while it serves</h3>
 <pre data-lang="sh">curl -s localhost:7700/v1/admin/checkpoint -H 'content-type: application/json' \
-  -d '{"name": "shop-2026-11-01.strata"}'</pre>
+  -d '{"name": "shop-2026-11-01.chloedb"}'</pre>
           <div class="ex-meta"></div>
         </div>
       </div>
@@ -376,18 +376,18 @@ duckdb.sql("SELECT brand, avg(rating) FROM r GROUP BY brand")</pre>
             <button type="button" role="tab" data-tab="sh">Shell</button>
           </div>
           <div data-panel="py">
-<pre data-lang="python">import strata
+<pre data-lang="python">import chloedb
 
-db = strata.open("shop.strata")
+db = chloedb.open("shop.chloedb")
 rows = db.query(
     "SELECT id, title FROM products WHERE in_stock "
     "ORDER BY rrf(bm25(title, :q), similarity(emb, :v)) DESC LIMIT 10",
     q="wireless controller", v={"embed": "wireless controller"}).rows</pre>
           </div>
           <div data-panel="pyc" hidden>
-<pre data-lang="python">import strata
+<pre data-lang="python">import chloedb
 
-db = strata.connect("http://127.0.0.1:7700")   # one server, or a cluster's coordinator
+db = chloedb.connect("http://127.0.0.1:7700")  # one server, or a cluster's coordinator
 rows = db.query(
     "SELECT id, title FROM products WHERE in_stock "
     "ORDER BY rrf(bm25(title, :q), similarity(emb, :v)) DESC LIMIT 10",
@@ -403,7 +403,7 @@ rows = db.query(
 <pre data-lang="rust">use std::path::Path;
 use chloedb::{db::Db, query::Params, storage::DbOptions, value::Value};
 
-let db = Db::open(Path::new("shop.strata"), DbOptions::default())?;
+let db = Db::open(Path::new("shop.chloedb"), DbOptions::default())?;
 let q = Value::Str("wireless controller".into());
 let rs = db.query(
     "SELECT id, title FROM products WHERE MATCH(title, :q) ORDER BY bm25(title, :q) DESC LIMIT 10",
@@ -412,8 +412,8 @@ let rs = db.query(
 for row in &amp;rs.rows { println!("{row:?}"); }</pre>
           </div>
           <div data-panel="sh" hidden>
-<pre data-lang="sh">strata shop.strata "SELECT id, title FROM products WHERE MATCH(title, 'wireless controller') LIMIT 10"
-strata shop.strata "SELECT id FROM products WHERE price &lt; 40 ORDER BY rating DESC LIMIT 5" --plan</pre>
+<pre data-lang="sh">chloedb shop.chloedb "SELECT id, title FROM products WHERE MATCH(title, 'wireless controller') LIMIT 10"
+chloedb shop.chloedb "SELECT id FROM products WHERE price &lt; 40 ORDER BY rating DESC LIMIT 5" --plan</pre>
           </div>
         </div>
       </div>

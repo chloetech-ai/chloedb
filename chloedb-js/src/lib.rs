@@ -17,6 +17,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use napi::bindgen_prelude::{AsyncTask, Float32Array};
 use napi::{Env, Task};
@@ -24,7 +25,8 @@ use napi_derive::napi;
 use serde_json::{json, Map, Value as Json};
 use chloedb::db::{Db, SqlResult, WriteOp};
 use chloedb::ingest::{self, Format};
-use chloedb::query::exec::ResultSet;
+use chloedb::query::exec::{ExecOptions, Interrupts, ResultSet};
+use chloedb::query::memory::{self as qmemory, MemoryBudget};
 use chloedb::query::ir::Plan;
 use chloedb::query::sql::{ident, quoted};
 use chloedb::query::Params;
@@ -652,12 +654,72 @@ fn train_options(a: &Args) -> Result<TrainOptions> {
     })
 }
 
-/// Runs operation `op` of a database with its arguments.
-fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>) -> Result<Json> {
+// ---------------------------------------------------------------- limits
+
+/// A database's limits on its queries (`setLimits`): the deadline each
+/// gets, and the memory budget they share.
+#[derive(Clone, Default)]
+struct Limits {
+    timeout: Option<Duration>,
+    /// `None`: the database's own options', the process's budget
+    /// ([`qmemory::process_budget`]); `Some(None)`: no budget.
+    memory: Option<Option<Arc<MemoryBudget>>>,
+}
+
+/// The operations that run a query, and take `timeout_ms`, `memory` and
+/// `tag` (the AbortSignal's, for [`Interrupts::interrupt`]).
+fn limits_query(op: &str) -> bool {
+    matches!(op, "query" | "sql" | "run")
+}
+
+/// The options a query runs with, made of the database's limits and its
+/// call's, and its deadline, for its error.
+struct Limited {
+    opts: ExecOptions,
+    timeout: Option<Duration>,
+}
+
+impl Limited {
+    /// The options of a call `a` of a query (`timeout_ms`: 0 or none, the
+    /// database's; `memory`: bytes of a budget of its own, 0 for none, or
+    /// none for the database's), with a cancel flag for `tag`, registered
+    /// now so that an abort before the call starts on its thread stops it.
+    fn of(db: &Db, limits: &RwLock<Limits>, running: &Interrupts, a: &Args) -> Result<Limited> {
+        let limits = limits.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let timeout = a.uint("timeout_ms")?.filter(|&ms| ms > 0).map(Duration::from_millis).or(limits.timeout);
+        let memory = a.uint("memory")?;
+        let base = match limits.memory {
+            Some(budget) => ExecOptions { memory: budget, ..db.exec.clone() },
+            None => db.exec.clone(),
+        };
+        Ok(Limited { opts: base.limited(timeout, memory, Some(running.start(a.uint("tag")?.unwrap_or(0)))), timeout })
+    }
+
+    /// `e`, saying which limit stopped the query and how to change it.
+    fn err(&self, e: Error) -> Error {
+        match e {
+            Error::Timeout(m) if m.contains("deadline") => match self.timeout {
+                Some(t) => Error::Timeout(format!("{m}, timeoutMs={} (pass a larger timeoutMs to the query, or to the database)", t.as_millis())),
+                None => Error::Timeout(m),
+            },
+            Error::Timeout(m) if m.contains("cancelled") => Error::Timeout(format!("{m} by its AbortSignal or Database.interrupt()")),
+            e => e,
+        }
+    }
+}
+
+/// Runs operation `op` of a database with its arguments; a query with
+/// the options `q` gives it (else the database's).
+fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Limited>) -> Result<Json> {
     if !vectors.is_empty() && !matches!(op, "insert" | "upsert") {
         return Err(bad(format!("{op} takes no vectors apart from its arguments")));
     }
     let a = &mut a;
+    let opts = q.as_ref().map_or(&db.exec, |q| &q.opts);
+    let stopped = |e: Error| match &q {
+        Some(q) => q.err(e),
+        None => e,
+    };
     match op {
         "schema" => Ok(table_of(db, a.str("table")?)?.to_short_json()),
         "tables" => Ok(Json::Array(db.catalog().iter().map(|s| s.to_short_json()).collect())),
@@ -670,11 +732,11 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>) -> Result<Js
         }
         "query" => {
             let p = params(db, a.get("params"))?;
-            Ok(result_json(&db.query(a.need_str("sql")?, &p)?))
+            Ok(result_json(&db.query_with(a.need_str("sql")?, &p, opts).map_err(stopped)?))
         }
         "sql" => {
             let p = params(db, a.get("params"))?;
-            Ok(sql_json(db.sql(a.need_str("sql")?, &p)?))
+            Ok(sql_json(db.sql_with(a.need_str("sql")?, &p, opts).map_err(stopped)?))
         }
         "query_logged" => {
             let p = params(db, a.get("params"))?;
@@ -703,7 +765,7 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>) -> Result<Js
         }
         "run" => {
             let plan = Plan::from_json(a.get("plan").ok_or_else(|| bad("plan is missing"))?)?;
-            Ok(sql_json(db.run(&plan)?))
+            Ok(sql_json(db.run_with(&plan, opts).map_err(stopped)?))
         }
         "insert" => insert(db, a, vectors),
         "upsert" => upsert(db, a, vectors),
@@ -844,7 +906,7 @@ fn dispatch_static(op: &str, a: Args) -> Result<Json> {
 fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|p| {
         let what = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
-        Err(Error::Query(format!("strata panicked: {what}")))
+        Err(Error::Query(format!("chloedb panicked: {what}")))
     })
 }
 
@@ -888,7 +950,7 @@ impl Task for OpenJob {
     }
 
     fn resolve(&mut self, _: Env, o: Opened) -> napi::Result<NativeDatabase> {
-        Ok(NativeDatabase { db: Arc::new(RwLock::new(Some(Arc::new(o.db)))), embed_errors: o.embed_errors, last_import: o.last_import })
+        Ok(NativeDatabase { db: Arc::new(RwLock::new(Some(Arc::new(o.db)))), embed_errors: o.embed_errors, last_import: o.last_import, limits: Arc::new(RwLock::new(Limits::default())), running: Arc::new(Interrupts::default()) })
     }
 }
 
@@ -906,11 +968,33 @@ pub struct NativeDatabase {
     db: Arc<RwLock<Option<Arc<Db>>>>,
     embed_errors: Vec<(String, String)>,
     last_import: Option<String>,
+    /// What every query is limited to unless it says otherwise
+    /// (`setLimits`).
+    limits: Arc<RwLock<Limits>>,
+    /// The queries running now, which `interrupt` cancels.
+    running: Arc<Interrupts>,
 }
 
 impl NativeDatabase {
     fn get(&self) -> napi::Result<Arc<Db>> {
         self.db.read().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| napi::Error::from_reason("the database is closed"))
+    }
+
+    /// The options of a call of `op`, if it runs a query.
+    fn limited(&self, db: &Db, op: &str, a: &Args) -> napi::Result<Option<Limited>> {
+        if !limits_query(op) {
+            return Ok(None);
+        }
+        Limited::of(db, &self.limits, &self.running, a).map(Some).map_err(napi_err)
+    }
+}
+
+/// A whole number of milliseconds or bytes from JavaScript.
+fn whole(v: Option<f64>, what: &str) -> napi::Result<Option<u64>> {
+    match v {
+        None => Ok(None),
+        Some(x) if x >= 0.0 && x.fract() == 0.0 && x <= 9.007_199_254_740_991e15 => Ok(Some(x as u64)),
+        Some(x) => Err(napi::Error::from_reason(format!("{what} is a whole number, at least 0, not {x}"))),
     }
 }
 
@@ -944,7 +1028,40 @@ impl NativeDatabase {
             }));
         }
         let db = self.get()?;
-        Ok(job(move || dispatch(&db, &op, Args::parse(&args)?, vectors)))
+        let a = Args::parse(&args).map_err(napi_err)?;
+        let q = self.limited(&db, &op, &a)?;
+        Ok(job(move || dispatch(&db, &op, a, vectors, q)))
+    }
+
+    /// Limits every query of this database from now on: a deadline of
+    /// `timeout_ms` (none or 0: none), and a memory budget of `memory`
+    /// bytes its queries share (0: none; none: the process's).
+    #[napi]
+    pub fn set_limits(&self, timeout_ms: Option<f64>, memory: Option<f64>) -> napi::Result<()> {
+        let timeout = whole(timeout_ms, "timeoutMs")?.filter(|&ms| ms > 0).map(Duration::from_millis);
+        let memory = whole(memory, "memory")?.map(|b| qmemory::budget_of(b, "this database's queries may hold at once (its memory option)"));
+        *self.limits.write().unwrap_or_else(|e| e.into_inner()) = Limits { timeout, memory };
+        Ok(())
+    }
+
+    /// The deadline every query gets unless it gives its own, in ms.
+    #[napi(getter)]
+    pub fn timeout_ms(&self) -> Option<f64> {
+        self.limits.read().unwrap_or_else(|e| e.into_inner()).timeout.map(|t| t.as_millis() as f64)
+    }
+
+    /// The memory budget its queries share, in bytes (none: no budget).
+    #[napi(getter)]
+    pub fn memory(&self) -> Option<f64> {
+        let given = self.limits.read().unwrap_or_else(|e| e.into_inner()).memory.clone();
+        given.unwrap_or_else(|| self.get().ok().and_then(|db| db.exec.memory.clone())).map(|b| b.limit() as f64)
+    }
+
+    /// Cancels the queries running now (those of the call tagged `tag`, or
+    /// all); returns how many. Each stops within a few thousand rows.
+    #[napi]
+    pub fn interrupt(&self, tag: Option<f64>) -> napi::Result<u32> {
+        Ok(self.running.interrupt(whole(tag, "tag")?) as u32)
     }
 
     /// [`NativeDatabase::call`] on the calling thread.
@@ -952,7 +1069,9 @@ impl NativeDatabase {
     pub fn call_sync(&self, op: String, args: String, vectors: Option<Vec<Float32Array>>) -> napi::Result<String> {
         let db = self.get()?;
         let vectors = copied(vectors);
-        guarded(|| dispatch(&db, &op, Args::parse(&args)?, vectors)).map(|j| j.to_string()).map_err(napi_err)
+        let a = Args::parse(&args).map_err(napi_err)?;
+        let q = self.limited(&db, &op, &a)?;
+        guarded(|| dispatch(&db, &op, a, vectors, q)).map(|j| j.to_string()).map_err(napi_err)
     }
 
     /// Embedded fields whose model did not open, with the reason, as JSON

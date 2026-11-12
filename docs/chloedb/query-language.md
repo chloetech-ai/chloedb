@@ -63,9 +63,10 @@ FROM <table> [JOIN <table> ON ...] | <WITH name> | (SELECT ...) AS t
 - **`CAST(x AS type)`** (or `x::type`) makes an `INT` (rounded to the nearest whole number, as PostgreSQL rounds), a `FLOAT`, `TEXT`, and of a value a `BOOL` (`'true'`, `'yes'`, `1`) or a `TIMESTAMP` (`CAST('2026-11-02' AS TIMESTAMP)`); text that is not a number is an error.
 - **`SELECT *`** returns every stored, non-vector column.
 - **`score()`** is the value of the `ORDER BY` score for each row (over a `WITH` result read without an `ORDER BY`, the score the `WITH` ranked its rows by); **`hops()`** is a row's distance in a graph traversal ([below](#graphs)); **`seq_no()`** is the sequence number of the write that last changed the row, in a database that numbers its writes, for [conditional writes](server.md#conditional-writes). It is a column of a query on one table, and cannot be aggregated or ordered by. A [ranking expression](#features-the-values-a-ranking-read) that scores each row by itself is a column too (`bm25(title, :q) AS t`), and **`features()`** stands for the inputs of the query's ranking.
-- **`ORDER BY`** takes one key, or several. The scan orders by the first and breaks its ties by a second that is the primary key (or, in a facet query, the group column); other keys sort the rows the `WHERE` keeps in memory, as over joined rows (`ORDER BY rating DESC, price`). Ranking by a score is always best first; a `KEYWORD` or stored `TEXT` column first sorts the rows by its text, `NULL` last either way, which the row evaluator does after reading every row the `WHERE` keeps; so does a function of a row's values without a score (`ORDER BY lower(brand)`, `ORDER BY date_trunc('day', at)`, `ORDER BY hash(id, 7)`); `ORDER BY distance(…) ASC` ranks like `similarity(…) DESC`. `MAX k PER field` at its end keeps at most k rows of each value ([below](#at-most-k-rows-of-a-value-max-k-per)).
+- **`ORDER BY`** takes one key, or several. The scan orders by the first and breaks its ties by a second that is the primary key (or, in a facet query, the group column); other keys sort the rows the `WHERE` keeps in memory, as over joined rows (`ORDER BY rating DESC, price`). Ranking by a score is always best first; a `KEYWORD` or stored `TEXT` column first sorts the rows by its text, `NULL` last either way, which the row evaluator does after reading every row the `WHERE` keeps; so does a function of a row's values without a score (`ORDER BY lower(brand)`, `ORDER BY date_trunc('day', at)`, `ORDER BY hash(id, 7)`); `ORDER BY distance(…) ASC` ranks by Euclidean distance, nearest first ([below](#similarityfield-vector-and-distancefield-vector)). `MAX k PER field` at its end keeps at most k rows of each value ([below](#at-most-k-rows-of-a-value-max-k-per)).
 - **Parameters** are `:name` placeholders, bound from the API or from the shell's `--param name=value`. A vector parameter is a JSON array.
-- **Limits.** An expression nests at most 1,000 levels, counting parentheses and the operators of a chain such as `a OR b OR …` (SQLite has the same default); a long list of values belongs in `IN (…)`, which has no such limit. A `LIMIT` larger than the table returns every row that qualifies. A query ranked by a score without a `LIMIT` returns 100 rows, counted after its `OFFSET`, on one database and through a coordinator alike.
+- **Limits.** An expression nests at most 1,000 levels, counting parentheses and the operators of a chain such as `a OR b OR …` (SQLite has the same default); a long list of values belongs in `IN (…)`, which has no such limit. A `LIMIT` larger than the table returns every row that qualifies. A query ranked by a score without a `LIMIT` returns 100 rows, counted after its `OFFSET`, on one database and through a coordinator alike, and says so: its stats hold `implicit_limit: 100`, and `truncated: true` with a plan line (`no LIMIT: ...`) when more rows matched (`result.truncated` and `result.implicit_limit` in Python, `result.truncated` and `result.implicitLimit` in JavaScript). A `DELETE` is never cut by that default: `DELETE ... ORDER BY <score>` without a `LIMIT` is refused, since its order would only choose which rows a `LIMIT` keeps; write the match in `WHERE` (`DELETE FROM t WHERE MATCH(body, 'x')`) to delete every row that matches. (Before, it deleted the top 100.)
+- **Memory and time.** What a query builds up (its groups, `COUNT(DISTINCT)` and percentile values, the rows it orders before its `LIMIT` and the rows it returns, a graph walk's nodes, a compound query's parts and join tables) is counted against a memory budget as it grows, and a query that would go past it fails with a `memory:` error naming the budget, giving back what it held, instead of the process running out of memory. chloedb-server's queries share `--query-memory-mb` ([limits](server.md#limits)). A database opened in a program (Rust's `Db`, Python's `Database`, JavaScript's and Java's) counts its queries against one budget its whole process shares: a quarter of the machine's memory (the cgroup's limit, else RAM), or `CHLOEDB_QUERY_MEMORY_MB` MiB (`0`: none), read when the first database opens; a database or a query may be given a budget of its own (`memory` in [Python](python.md#limits-memory-deadlines-interrupting) and [JavaScript](javascript.md#limits-memory-deadlines-aborting), `ExecOptions::memory` in Rust). Such a database sets no deadline, no row window and no group cap of its own, unlike a server (`--timeout-ms`, `--max-result-window`, `--max-groups`): a query given a deadline (`timeout_ms`), or cancelled from another thread (`interrupt()`, an `AbortSignal`, `ExecOptions::cancel`), stops within a few thousand rows of it, checking between segments and every 1,024 rows it groups, orders, walks or joins.
 
 ## Columns and types
 
@@ -139,7 +140,7 @@ SELECT * FROM events ORDER BY hash(id, 7) LIMIT 1000;
 It is the 64-bit FNV-1a of the seed's 8 bytes (little-endian) and then the value's, through SplitMix64's finalizer, shifted right by one. A text's bytes are its UTF-8; an `INT`, a `BOOL` (1 or 0) and a `TIMESTAMP` (microseconds since 1970) are their integer's 8 bytes, little-endian; a `FLOAT` is its IEEE 754 bits, little-endian (-0 as 0). So it is the same value elsewhere, in Python for instance:
 
 ```python
-def strata_hash(data: bytes, seed: int = 0) -> int:      # data: "u42".encode(), (42).to_bytes(8, "little", signed=True)
+def chloedb_hash(data: bytes, seed: int = 0) -> int:     # data: "u42".encode(), (42).to_bytes(8, "little", signed=True)
     m, h = (1 << 64) - 1, 0xcbf29ce484222325
     for b in seed.to_bytes(8, "little", signed=True) + data:
         h = ((h ^ b) * 0x100000001b3) & m
@@ -364,12 +365,14 @@ The text may weigh a word, require it or exclude it, as a search box does:
 
 ### `similarity(field, vector)` and `distance(field, vector)`
 
-The dot product (cosine for unit vectors) and the distance between a row's vector and the query vector, which is a bound parameter or a JSON array of the field's dimension.
+The dot product (cosine for unit vectors) and the Euclidean (L2) distance between a row's vector and the query vector, which is a bound parameter or a JSON array of the field's dimension.
+
+`similarity` is the raw dot product of the vectors as written: ChloeDB does not normalise the vectors a write supplies (the models it runs itself write unit vectors), so on vectors of other lengths long vectors rank first. For cosine similarity, write unit vectors. `ORDER BY distance(emb, :v) ASC` ranks by $\lVert v - q \rVert$, nearest first, and `score()` is minus the distance (ranking is always best first). On a field a model embeds the vectors are unit length, where distance orders rows as the dot product does, so the index searches them (`strategy => 'flat'` measures every row); on any other field every row `WHERE` keeps is measured exactly, a scan of the field's float32 vectors, since its index ranks by the dot product. **Changed:** `distance()` ranked like `similarity(...) DESC` before, which is the nearest row only for unit vectors, and its `score()` was the similarity; a shard from before this change still ranks it so. In an expression, `distance()` stays refused: use `similarity()`.
 
 | option | effect |
 |---|---|
-| `strategy` | `'auto'` (default: the planner decides), `'prefilter'` (evaluate the filter, scan its members exactly), `'index'` (search HNSW or IVF with the filter inside), `'postfilter'` (search with a larger *k* and drop non-matching rows), `'flat'` (exact scan), `'partition'` (walk the graphs of the [partitions](#vector-partitions) the filter can match) |
-| `ef` | HNSW search breadth (default 64) |
+| `strategy` | `'auto'` (default: the planner decides, by its cost model, which sizes the work by the vectors' dimensions: an unfiltered search scans every vector exactly where that costs no more than the index, as in a segment of 20,000 vectors of 64 dimensions), `'prefilter'` (evaluate the filter, scan its members exactly), `'index'` (search HNSW or IVF with the filter inside), `'postfilter'` (search with a larger *k* and drop non-matching rows), `'flat'` (exact scan), `'partition'` (walk the graphs of the [partitions](#vector-partitions) the filter can match) |
+| `ef` | HNSW search breadth (default 200; 64 before). On random unit vectors of 64 dimensions, the hard case for a graph (real embeddings cluster, and need less), the index found 0.73 of the true top 10 at ef 64 and 0.96 at 200 over 20,000 rows (0.13 and 0.24 ms at the median), and 0.40 and 0.71 over 200,000 (0.24 and 0.35 ms); the default search of the 20,000, now an exact scan, finds all of them in 0.15 ms (200 queries, `cargo test --test vector_defaults -- --ignored`, one run on a 4-core Intel Xeon @ 2.10GHz shared with other builds) |
 | `nprobe` | IVF clusters probed |
 | `rerank` | how many candidates are re-scored in float32 |
 
@@ -447,7 +450,7 @@ $$
 \mathrm{rrf}(d) = \sum_{i} \frac{1}{k + \mathrm{rank}_i(d)}, \qquad k = 60
 $$
 
-Options: `k => 60`, `depth => 100`. The depth is raised to `LIMIT + OFFSET` when the page asks for more rows, as in weighted sums and products.
+Options: `k => 60`, `depth => 100`. The depth is raised to the page's `LIMIT` when it asks for more rows, as in weighted sums and products, but not by its `OFFSET`: pages of one size (`LIMIT 20 OFFSET 0, 20, 40 ...`) rank the same candidates, so they are the pages of one ranking, with no row on two pages and none skipped. A page past the candidates comes back short, with `truncated: true` and a plan line that says so; to page deeper, give the ranking a larger `depth =>`, the same on every page. **Changed:** the depth was raised to `LIMIT + OFFSET` before, so each page ranked other candidates, and paging repeated and skipped rows.
 
 ### `ranked(keys)`: a ranking from elsewhere
 
@@ -696,7 +699,7 @@ UPDATE rank_log SET label = 3 WHERE request = :r AND row_key = :k;
 ```
 
 ```sh
-curl -s localhost:7700/v1/query -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10",
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10",
   "params": {"t": "mrna vaccine"}, "log": {"context": "u42", "variant": "b", "candidates": 50}}'
 # {"columns": ["id", "title"], "rows": [...], ..., "request": "9f0c...", "logged": {"rows": 50, "seq_no": 812}}
 ```
@@ -712,7 +715,7 @@ curl -s localhost:7700/v1/query -d '{"sql": "SELECT id, title FROM docs ORDER BY
 The export reads a log table back from one snapshot, one record per logged row, with what happened around it as of its time, from a table of events (a user's views, clicks, purchases): the context's last events before the row (its history, for a sequence model), and a label from the events on the row's key after it, within a window.
 
 ```sh
-curl -s localhost:7700/v1/rank_log/export -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"},
+curl -s localhost:7700/v1/rank_log/export -H 'content-type: application/json' -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"},
   "history": 20, "window": "30 minutes", "grades": {"click": 1, "buy": 3}, "since": "2026-10-01"}'
 # {"id": "9f0c...#0", "request": "9f0c...", "ts": 1793338200000000, "context": "u42", "row_key": "d17", "position": 0, "shown": true,
 #  "score": 7.31, "variant": "b", "label": 3.0,
@@ -731,11 +734,11 @@ curl -s localhost:7700/v1/rank_log/export -d '{"events": {"table": "events", "us
 An A/B test shows each user one ranking and compares the users; interleaving shows each user both, in one list, and asks which ranking's rows the user acted on. Each request sets the two side by side for the same user and the same query, so it tells two rankings apart with ten to a hundred times fewer requests than an A/B test of the same two (Chapelle et al., "Large-scale validation and analysis of interleaved search evaluation", TOIS 2012).
 
 ```sh
-curl -s localhost:7700/v1/query -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) DESC LIMIT 10", "params": {"t": "mrna vaccine"},
+curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) DESC LIMIT 10", "params": {"t": "mrna vaccine"},
   "log": {"context": "u42", "interleave": {"sql": "SELECT id, title FROM docs ORDER BY bm25(body, :t) * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10", "variants": ["bm25", "rated"]}}}'
 # {"columns": ["id", "title"], "rows": [...], "request": "9f0c...", "teams": ["rated", "bm25", "bm25", "rated", ...], "logged": {"rows": 10, ...}}
 
-curl -s localhost:7700/v1/rank_log/interleaving -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"}, "window": "30 minutes"}'
+curl -s localhost:7700/v1/rank_log/interleaving -H 'content-type: application/json' -d '{"events": {"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"}, "window": "30 minutes"}'
 # {"pairs": [{"variants": ["bm25", "rated"], "requests": 4120, "acted": 1630, "wins": [690, 820], "ties": 120, "delta": -0.040, "p": 0.00089}], "took_ms": 61.3}
 ```
 
@@ -767,8 +770,8 @@ LIMIT 10;
 - **Training** is `chloedb.train.sequence` in Python, with PyTorch (`pip install torch`), from a table of events, the rank log's export, or lists of `(item, action, time)`:
 
   ```python
-  import strata, chloedb.train
-  db = chloedb.Database.open("shop.strata")
+  import chloedb, chloedb.train
+  db = chloedb.Database.open("shop.chloedb")
   out = chloedb.train.sequence(db, "next", table="items", field="emb",
                               events={"table": "events", "user": "usr", "item": "item", "action": "action", "time": "ts"},
                               learn_items=True)
@@ -1077,7 +1080,7 @@ ORDER BY rrf(bm25(body, :t), ppr(cites, (SELECT id FROM papers ORDER BY similari
 | `REACHABLE(f, seeds, …)` | rows *v* with `min_hops` ≤ *d*(seeds, *v*) ≤ `hops` | `hops 1`, `min_hops 1`, `dir 'out'` (or `'in'`, `'both'`), `label 'a,b'`, `through <predicate>`, `max_nodes 100000` |
 | `PATH(f, from, to, …)` | the rows of one shortest (unweighted) path | `max_hops 6`, `dir`, `label`, `through`, `max_nodes` |
 | `hops()` | a row's distance from the seeds, or its position on the path; `ORDER BY hops()` is nearest first | |
-| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps 1e-4`, `dir 'both'`, `label`, `max_pushes`, `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
+| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps 1e-4` (a row is pushed while its residual is at least `eps` times its number of edges, so scaling every weight alike changes nothing), `dir 'both'`, `label`, `max_pushes` (a walk cut there says so: `max_pushes_reached` in the stats), `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
 | a `VECTOR` field as `f` | `REACHABLE` and `PATH` follow similarity edges: a row's neighbours are its `k` most similar rows | `k 10`, `min_sim` |
 
 Graph queries run on one database: a [coordinator](server.md#sharding-one-coordinator-many-shards) refuses them, since a row's edges point at rows other shards hold ([graphs on a cluster](graphs.md#on-a-cluster)).
@@ -1174,7 +1177,7 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 
 - **Where it runs.** A query that calls `llm()` runs in two steps: the query without the calls finds its rows (its `WHERE`, `ORDER BY` and `LIMIT` as written), computing what the calls read of each row, and then the model is asked about those rows, eight at once, and the columns are computed of the answers. A call may be part of a column, in arithmetic, `||`, comparisons, `CASE` and functions of values; a `CASE` asks only for the branch it takes, and `coalesce` only where the values before the call are `NULL`. `llm()` is a column of `SELECT` or part of `ORDER BY`; anywhere else (`WHERE`, `GROUP BY`, `HAVING`, a join, a `WITH`, a subquery, `UNION`) it is refused, as it would run for rows the query reads rather than returns.
 - **In `ORDER BY`** the calls rank the rows the query finds without that `ORDER BY` and its `LIMIT`: the top rows of a first ranking, as a [rerank phase](#rerank-phases) ranks them. Rows that tie keep the first ranking's order, a `NULL` ranks last, `LIMIT` and `OFFSET` cut the ranked rows, and `score()` is the first key's value.
-- **Arguments.** `model` is a string: `anthropic/<model>` (a Claude model, its key in `ANTHROPIC_API_KEY`), `openai/<chat model>`, or the name of a model directory whose `endpoint.json` names a chat server (`"api": "chat"` for OpenAI's `/chat/completions`, as vLLM, Ollama and LiteLLM serve it, or `"api": "anthropic"`), as for [text made of text](server.md#text-from-text). A query or a row cannot choose the model. The instructions are the system prompt, a string or a parameter; each input is a part of the user's message, apart by a blank line, and a `NULL` input is left out. A call with no input is `NULL`, and asks nothing.
+- **Arguments.** `model` is a string: `anthropic/<model>` (a Claude model, its key in `ANTHROPIC_API_KEY`), `openai/<chat model>`, or the name of a model directory whose `endpoint.json` names a chat server (`"api": "chat"` for OpenAI's `/chat/completions`, as vLLM, Ollama and LiteLLM serve it, or `"api": "anthropic"`), as for [text made of text](server.md#text-from-text). A directory's name is letters, digits, `_`, `-` and `.` (two such names joined by `/` at most): an absolute path, `..` or a backslash is refused, so a query reads no `endpoint.json` outside the models directory, and an `endpoint.json`'s `key_env` names a provider's key variable or a `CHLOEDB_MODEL_KEY_*` one. A query or a row cannot choose the model. The instructions are the system prompt, a string or a parameter; each input is a part of the user's message, apart by a blank line, and a `NULL` input is left out. A call with no input is `NULL`, and asks nothing.
 - **Answers** are text, trimmed. `choices => 'a,b,c'` asks for one of them and gives it as written there (the answer in any case, or the one choice an answer that says more names), else `NULL`. `returns => 'number'` gives the first number of the answer as a `FLOAT`, and `returns => 'bool'` its yes or no as a `BOOL`, else `NULL`. `max_tokens => n` bounds the answer (1024 for text, 64 otherwise). The model answers at temperature 0 (a chat server at its own default).
 - **Cost.** Each distinct question (model, prompt and input) is asked once, and its answer kept in memory (10,000 of them), so the same query again asks nothing. A query asks about 100 rows at most, and a process makes 600 requests a minute at most for `llm()`: past either, the query fails before asking (chloedb-server's `--llm-rows` and `--llm-per-minute`, `chloedb::query::llm::set_limits` from Rust). A failed request fails the query (503), after the endpoint's retries. The answer's plan lines end with one that says how many rows were asked about, how many requests were made, and how many answers came from memory; `EXPLAIN` shows the plan of the rows.
 - **Inputs are data.** A row's text is the user's message and the instructions the system prompt, and the model has no tools, so a row's text can change that row's answer and nothing else.
@@ -1182,12 +1185,12 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 
 ## Running SQL
 
-The `strata` shell runs one statement, or reads statements from standard input:
+The `chloedb` shell runs one statement, or reads statements from standard input. It opens a database that exists and does not create one; these lines read the demo catalogue that `chloedb-server --demo 20000 --db products.chloedb` makes:
 
 ```sh
 cd chloedb && cargo build --release
-target/release/chloedb db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-target/release/chloedb db.strata --param t='rapid covid tests' < queries.sql
+target/release/chloedb products.chloedb "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+target/release/chloedb products.chloedb --param t='waterproof tent' < queries.sql
 ```
 
 | flag | effect |

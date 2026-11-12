@@ -9,7 +9,7 @@ use crate::replication::PrimaryOptions;
 use crate::service::failover_tuned;
 use crate::{pb, ApiError};
 
-use super::db::ModelDb;
+use super::db::{ModelDb, Txn};
 use super::rng::Rng;
 use super::{Bug, Config, Purpose, Req, Resp, Sim, Timer};
 
@@ -31,6 +31,10 @@ pub(crate) struct Copy {
     failover: Option<Failover>,
     election: Option<Election>,
     rounds: u64,
+    /// A client's write its writer still holds as it steps down, which
+    /// it commits once it applied its new primary's first batch
+    /// ([`Bug::CommitsAfterSteppingDown`]).
+    stalled: Option<u64>,
 }
 
 pub(crate) enum Role {
@@ -93,6 +97,7 @@ impl Copy {
             failover: None,
             election: None,
             rounds: 0,
+            stalled: None,
         }
     }
 }
@@ -172,6 +177,7 @@ impl Sim {
         c.role = Role::Down;
         c.election = None;
         c.failover = None;
+        c.stalled = None;
         c.db.crash(replayed);
         self.history.lost_memory(i);
     }
@@ -186,6 +192,15 @@ impl Sim {
         }
         let term = run.core.replaced_by();
         self.note(|| format!("s{i} steps down: a primary of term {term} replaced it"));
+        // A write its writer holds, numbered once it is a replica: the
+        // server refuses it unapplied, as the term it was taken in is over.
+        // Only while clients write: the new primary's next write meets it
+        // (a copy ahead of its primary under the primary's own term alone
+        // is left to an operator, as the server leaves it).
+        if self.cfg.bugs.contains(&Bug::CommitsAfterSteppingDown) && !self.quiet {
+            let w = self.write_id();
+            self.copies[i].stalled = Some(w);
+        }
         // Its waiting writes were answered when it was fenced.
         let kept = self.copies[i].kept.clone().expect("a primary keeps its part");
         self.become_replica(i, kept, false);
@@ -209,8 +224,12 @@ impl Sim {
 
     fn answer_write(&mut self, i: usize, seq: u64, write: u64, call: u64, caller: usize, a: Result<(), ApiError>) {
         if a.is_ok() {
-            let at = self.copies[i].db.txns[seq as usize - 1];
-            debug_assert_eq!(at.write, write);
+            // A retry is answered by the transaction that holds the write.
+            let txns = &self.copies[i].db.txns;
+            let at = match txns.get(seq as usize - 1) {
+                Some(t) if t.write == write => *t,
+                _ => *txns.iter().find(|t| t.write == write).expect("the primary holds the write it answers"),
+            };
             self.history.acknowledged(write, at.seq, i, self.now);
         }
         self.answer(i, caller, call, Resp::Write(a.map(|_| seq)));
@@ -273,7 +292,7 @@ impl Sim {
             }
             Req::Replicate(r) => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(r.term, &r.primary, r.member, &n) {
+                    Role::Replica(rep) => match rep.take(r.term, &r.primary, r.member, (r.config, r.copies), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {
@@ -282,10 +301,39 @@ impl Sim {
                             }
                             let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };
                             rep.took(kept, now);
-                            let applied = self.copies[i].db.apply_shipped(pb_prev(&r), &r.txns);
-                            let db_term = self.copies[i].db.numbering.term;
-                            let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };
-                            rep.applied(r.term, r.behind, r.global_checkpoint, applied, db_term)
+                            let trusts = self.cfg.bugs.contains(&Bug::TrustsTheSameTerm);
+                            let c = &mut self.copies[i];
+                            let Role::Replica(rep) = &mut c.role else { unreachable!() };
+                            let db = &c.db;
+                            let refused = match trusts {
+                                true => None,
+                                false => rep.follows(&r, &n, || db.log_from(r.prev_seq, 1), &Txn::digest),
+                            };
+                            match refused {
+                                Some((a, kept)) => {
+                                    if let Some(k) = kept {
+                                        self.copies[i].kept = Some(k.clone());
+                                        let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };
+                                        rep.took(Some(k), now);
+                                    }
+                                    self.history.stats.mismatches += 1;
+                                    let (s, t) = (r.prev_seq, r.prev_term);
+                                    self.note(|| format!("s{i} holds another transaction than its primary's as {s} of term {t}: it applies nothing"));
+                                    Ok(a)
+                                }
+                                None => {
+                                    let applied = self.copies[i].db.apply_shipped(pb_prev(&r), &r.txns);
+                                    let took = matches!(applied, Ok(chloedb::storage::Applied::At(_))) && !r.txns.is_empty();
+                                    if let Some(w) = self.copies[i].stalled.take_if(|_| took) {
+                                        let at = self.copies[i].db.commit(w);
+                                        self.history.stats.stale_commits += 1;
+                                        self.note(|| format!("s{i} commits write {w}, stalled as it stepped down, as {} of term {}", at.seq, at.term));
+                                    }
+                                    let db_term = self.copies[i].db.numbering.term;
+                                    let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };
+                                    rep.applied(r.term, r.behind, r.global_checkpoint, applied, db_term)
+                                }
+                            }
                         }
                     },
                     Role::Primary(run) => {
@@ -302,7 +350,7 @@ impl Sim {
             }
             Req::Restore { term, primary, copy } => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(term, &primary, false, &n) {
+                    Role::Replica(rep) => match rep.take(term, &primary, false, (0, 0), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {
@@ -316,7 +364,17 @@ impl Sim {
                             self.history.lost_memory(i);
                             let db_term = self.copies[i].db.numbering.term;
                             let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };
-                            installed.map(|at| rep.installed(at, term, db_term))
+                            match installed {
+                                Err(e) => Err(e),
+                                Ok(at) => {
+                                    let (a, kept) = rep.installed(at, term, db_term);
+                                    if let Some(k) = kept {
+                                        rep.took(Some(k.clone()), now);
+                                        self.copies[i].kept = Some(k);
+                                    }
+                                    Ok(a)
+                                }
+                            }
                         }
                     },
                     Role::Primary(run) => {
@@ -342,7 +400,14 @@ impl Sim {
                 if let Err(e) = admitted {
                     return self.answer(i, from, call, Resp::Write(Err(e)));
                 }
-                let seq = self.copies[i].db.commit(id).seq;
+                // A retry of a write the database holds (its idempotency
+                // key found, `idem::recorded`) is answered as done, by the
+                // database's last number, once enough copies hold that.
+                let held = self.copies[i].db.txns.iter().any(|t| t.write == id);
+                let seq = match held {
+                    true => self.copies[i].db.numbering.seq,
+                    false => self.copies[i].db.commit(id).seq,
+                };
                 let timeout = self.cfg.write_timeout;
                 let Role::Primary(run) = &mut self.copies[i].role else { unreachable!() };
                 run.pending.push((seq, id, call, from));
@@ -562,6 +627,11 @@ impl Sim {
                 if let Err(err) = self.copies[i].db.begin_term(term) {
                     return self.end_election(i, Err(err));
                 }
+                // The term's first transaction, which writes nothing.
+                let first = match self.cfg.bugs.contains(&Bug::AcksAnOlderTerm) {
+                    true => 0,
+                    false => self.copies[i].db.commit(0).seq,
+                };
                 self.keep(i, &kept);
                 let others = elected.others.clone();
                 let by_hand = self.copies[i].election.as_ref().is_some_and(|e| e.reply.is_some());
@@ -569,6 +639,7 @@ impl Sim {
                 self.history.began(i, term, &self.copies[i].db, self.now);
                 let opts = Opts::of(&self.opts());
                 let (mut core, save) = Primary::new(kept, &others, opts.clone(), false);
+                core.term_start = first;
                 if let Some(k) = save {
                     self.keep(i, &k);
                 }
@@ -613,7 +684,11 @@ impl Sim {
                     let log = c.db.log_from(from, self.cfg.batch);
                     run.core.read(k, &mut task.s, &n, log, now)
                 }
-                Ship::Call(req) => {
+                Ship::Call(mut req) => {
+                    if req.prev_seq > 0 && !self.cfg.bugs.contains(&Bug::TrustsTheSameTerm) {
+                        let log = c.db.log_from(req.prev_seq, 1);
+                        shard::sign(&mut req, log, &Txn::digest);
+                    }
                     task.calling = true;
                     let gen = task.s.gen;
                     let to = k_to_copy(&self.copies, &self.copies[i], k);

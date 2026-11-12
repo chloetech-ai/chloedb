@@ -206,21 +206,28 @@ impl FreeList {
     pub fn decode(b: &[u8], page_count: u64) -> Result<FreeList> {
         let words: Vec<u64> = b.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
         let bad = || corrupt("malformed freelist");
-        let (nr, np) = (*words.first().ok_or_else(bad)? as usize, *words.get(1).ok_or_else(bad)? as usize);
-        if words.len() < 2 + 2 * nr + 3 * np {
+        let (nr, np) = (*words.first().ok_or_else(bad)?, *words.get(1).ok_or_else(bad)?);
+        // Counts as damaged bytes may hold them: no sum of them may wrap.
+        let (runs_end, pending_end) = match (nr.checked_mul(2).and_then(|r| r.checked_add(2)), np.checked_mul(3)) {
+            (Some(r), Some(p)) => (r, r.checked_add(p).ok_or_else(bad)?),
+            _ => return Err(bad()),
+        };
+        if (words.len() as u64) < pending_end {
             return Err(bad());
         }
+        let (runs_end, pending_end) = (runs_end as usize, pending_end as usize);
         let mut fl = FreeList::new(page_count);
         let mut end = META_PAGES;
-        for r in words[2..2 + 2 * nr].chunks_exact(2) {
-            if r[0] < end || r[1] == 0 || r[0] + r[1] > page_count {
+        for r in words[2..runs_end].chunks_exact(2) {
+            let last = r[0].checked_add(r[1]).ok_or_else(bad)?;
+            if r[0] < end || r[1] == 0 || last > page_count {
                 return Err(bad());
             }
-            end = r[0] + r[1];
+            end = last;
             fl.insert_run(r[0], r[1]);
         }
-        for p in words[2 + 2 * nr..2 + 2 * nr + 3 * np].chunks_exact(3) {
-            if p[1] < META_PAGES || p[1] + p[2] > page_count {
+        for p in words[runs_end..pending_end].chunks_exact(3) {
+            if p[1] < META_PAGES || p[1].checked_add(p[2]).is_none_or(|e| e > page_count) {
                 return Err(bad());
             }
             fl.pending.push(Pending { freed_at: p[0], page: p[1], pages: p[2] });
@@ -243,6 +250,21 @@ impl FreeList {
 mod tests {
     use super::*;
     use rand::{Rng, SeedableRng};
+
+    #[test]
+    fn counts_and_runs_that_overflow_are_malformed() {
+        let words = |w: &[u64]| w.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        // Counts whose sum wraps around.
+        for (nr, np) in [(u64::MAX, 0), (0, u64::MAX), (u64::MAX / 2, u64::MAX / 3), (1 << 62, 1 << 62)] {
+            assert!(FreeList::decode(&words(&[nr, np, 2, 1, 2, 1, 2]), 100).is_err(), "{nr} {np}");
+        }
+        // A run or a pending extent whose end wraps around.
+        assert!(FreeList::decode(&words(&[1, 0, 2, u64::MAX]), 100).is_err());
+        assert!(FreeList::decode(&words(&[0, 1, 7, 2, u64::MAX]), 100).is_err());
+        // And an intact one still decodes.
+        let fl = FreeList::decode(&words(&[1, 1, 2, 3, 7, 10, 2]), 100).unwrap();
+        assert_eq!(fl.runs().collect::<Vec<_>>(), vec![(2, 3)]);
+    }
 
     #[test]
     fn best_fit_split_coalesce_trim() {

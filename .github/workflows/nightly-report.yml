@@ -1,0 +1,54 @@
+name: Nightly report
+
+# A scheduled run on main that fails opens an issue, so that a red night is
+# seen: from 2 to 11 November 2026 the nightly CI run failed 7 nights in 11
+# and nothing followed from it. One open issue per workflow ("Nightly CI is
+# failing on main", label `nightly-failure`) lists the failed jobs and the
+# tests that failed in each; each further failed night comments on it, and
+# the first nightly run that passes closes it
+# (.github/scripts/nightly_report.py).
+#
+# Only the schedule's runs on this repository's main are reported: a pull
+# request's red run is its author's to see, and a cancelled run says
+# nothing.
+on:
+  workflow_run:
+    workflows: [CI, Chaos, Fuzz, Supply chain]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-report-${{ github.event.workflow_run.name }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: report ${{ github.event.workflow_run.name }}
+    if: >-
+      github.event.workflow_run.event == 'schedule' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      # The script from main, not from the run's commit: what it reads is
+      # the run's logs, through the API.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/scripts
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: python3 -I .github/scripts/nightly_report.py

@@ -1302,10 +1302,11 @@ async fn bm25_statistics_kept_by_the_coordinator() {
 
     // Values set in place and deletes leave a shard's statistics, which
     // count deleted rows: the kept ones still hold, on shard 0's new row
-    // in its memtable and on a loaded row on disk. The first write through
-    // the coordinator to every shard, with an idempotency key, makes each
-    // shard's `_sources`: a change of tables, which moves every table's
-    // version once.
+    // in its memtable and on a loaded row on disk. A shard's first write
+    // through the coordinator, which keys every write from its first send,
+    // makes its `_sources`: a change of tables, which moves every table's
+    // version once. Shard 0's came with the INSERT above; shard 1's comes
+    // with this UPDATE, which every shard is sent.
     let write = |sql: String| {
         let (coord, whole) = (coord.clone(), whole.clone());
         async move {
@@ -1316,7 +1317,7 @@ async fn bm25_statistics_kept_by_the_coordinator() {
     };
     write(format!("UPDATE products SET sold = 98 WHERE id = '{id}'")).await;
     check(coord.clone(), sql).await;
-    assert_eq!((rounds(), stale()), (vec![4, 4], vec![2, 1]), "the shards' _sources made");
+    assert_eq!((rounds(), stale()), (vec![4, 4], vec![1, 1]), "shard 1's _sources made");
     tokio::time::sleep(Duration::from_millis(50)).await;
     let on_disk = (0..N).map(key).find(|k| shard_of(k, 2) == 0).unwrap();
     let on_disk = on_disk.as_str().unwrap();
@@ -1327,13 +1328,13 @@ async fn bm25_statistics_kept_by_the_coordinator() {
     ] {
         write(sql_write.clone()).await;
         check(coord.clone(), sql).await;
-        assert_eq!((rounds(), stale()), (vec![4, 4], vec![2, 1]), "after {sql_write}");
+        assert_eq!((rounds(), stale()), (vec![4, 4], vec![1, 1]), "after {sql_write}");
     }
     // Deleting the new row empties shard 0's memtable chunk, which its
     // snapshots leave out: its statistics move.
     write(format!("DELETE FROM products WHERE id = '{id}'")).await;
     check(coord.clone(), sql).await;
-    assert_eq!((rounds(), stale()), (vec![5, 5], vec![3, 1]));
+    assert_eq!((rounds(), stale()), (vec![5, 5], vec![2, 1]));
 
     // Typos: only a shard finds the terms, so every such query has a round.
     for _ in 0..2 {
@@ -2353,6 +2354,8 @@ async fn sqlite_files_over_http() {
     // made by an export without the Strata schemas, so that the server
     // makes the new table's from SQLite's declarations.
     let src = Db::create(&dir.path().join("src.strata"), schema, DbOptions::default()).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    src.set_embed_later(true);
     src.sql("INSERT INTO items (id, title, tags, price) VALUES ('a', 'red umbrella', ['rain'], 12.5), ('b', 'blue kettle', [], 30), ('c', 'green lamp', ['home', 'light'], 18)", &Params::new()).unwrap();
     src.sql("CREATE TABLE notes (id INT PRIMARY KEY, item KEYWORD REFERENCES items, body TEXT, at TIMESTAMP)", &Params::new()).unwrap();
     src.sql("INSERT INTO notes (id, item, body, at) VALUES (1, 'a', 'keeps the rain off on the walk to the station', '2026-10-01T12:00:00Z'), (2, 'c', 'a warm light for reading in the evening', '2026-10-02T08:30:00Z')", &Params::new()).unwrap();
@@ -2535,6 +2538,8 @@ async fn parquet_files_over_http() {
     // Files exported from another database: its items (kept schema), and
     // its notes without the schema, so that the server makes one.
     let src = Db::create(&dir.path().join("src.strata"), schema, DbOptions::default()).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    src.set_embed_later(true);
     src.sql("INSERT INTO items (id, title, tags, price) VALUES ('a', 'red umbrella', ['rain'], 12.5), ('b', 'blue kettle', [], 30), ('c', 'green lamp', ['home', 'light'], 18)", &Params::new()).unwrap();
     src.sql("CREATE TABLE notes (id INT PRIMARY KEY, item KEYWORD, body TEXT, at TIMESTAMP)", &Params::new()).unwrap();
     src.sql("INSERT INTO notes (id, item, body, at) VALUES (1, 'a', 'keeps the rain off on the walk to the station', '2026-10-01T12:00:00Z'), (2, 'c', 'a warm light for reading in the evening', '2026-10-02T08:30:00Z')", &Params::new()).unwrap();
@@ -2682,6 +2687,7 @@ async fn health_reports_a_database_that_cannot_write() {
     let path = dir.path().join("d.strata");
     let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
     let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    db.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: demo::DIM })).unwrap();
     db.load((0..10).map(|i| demo::product(i, 7))).unwrap();
     let svc = service(db, "http://unused");
     let db = svc.local_db().unwrap().clone();
@@ -2742,6 +2748,8 @@ async fn a_scrub_finds_data_damaged_on_disk() {
     let path = dir.path().join("d.strata");
     let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
     let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    // Rows without their vectors, as a server writes them before its model opens.
+    db.set_embed_later(true);
     db.load((0..10).map(|i| demo::product(i, 7))).unwrap();
     let svc = service(db, "http://unused");
     let url = http(svc.clone(), None).await;
@@ -3592,20 +3600,22 @@ async fn a_coordinator_writes_to_the_promoted_primary() {
     // A conditional write the new primary refuses is refused once.
     let e = coord.write_ops(vec![json!({"op": "set", "key": "p0000003", "field": "sold", "value": 9, "if_seq_no": 7})], None).await.err().unwrap();
     assert_eq!(e.status, 409, "{}", e.message);
+    // The new primary's first transaction is its term's no-op (2), so the
+    // write is 3.
     let w = coord.write_ops(set(2), None).await.unwrap();
-    assert_eq!(w.seq_nos, vec![2]);
-    assert_eq!(sold(&rdb), vec![Value::Int(2), Value::Int(2)]);
-    assert_eq!(rdb.storage().numbering().unwrap().term_at(2), 2);
+    assert_eq!(w.seq_nos, vec![3]);
+    assert_eq!(sold(&rdb), vec![Value::Int(2), Value::Int(3)]);
+    assert_eq!((rdb.storage().numbering().unwrap().term_at(2), rdb.storage().numbering().unwrap().term_at(3)), (2, 2));
     let h = coord.health().await;
     assert_eq!((&h["shards"][0]["replicas"][0]["role"], &h["shards"][0]["replicas"][1]["role"]), (&json!("replica"), &json!("primary")), "{h}");
     // And the next write goes there at once; a conditional write the new
     // primary refuses asks it again, and no other copy.
     let (hellos, writes) = (old.hellos.load(Ordering::Relaxed), old.writes.load(Ordering::Relaxed));
-    assert_eq!(coord.write_ops(set(3), None).await.unwrap().seq_nos, vec![3]);
+    assert_eq!(coord.write_ops(set(3), None).await.unwrap().seq_nos, vec![4]);
     let e = coord.write_ops(vec![json!({"op": "set", "key": "p0000003", "field": "sold", "value": 9, "if_seq_no": 1})], None).await.err().unwrap();
     assert_eq!(e.status, 409, "{}", e.message);
     assert_eq!((old.hellos.load(Ordering::Relaxed), old.writes.load(Ordering::Relaxed)), (hellos, writes), "the old primary was not asked");
-    assert_eq!(last_of(&pdb), 3, "the old primary holds the new one's writes, which ships to it");
+    assert_eq!(last_of(&pdb), 4, "the old primary holds the new one's writes, which ships to it");
 
     // The old primary is down, listed before the replica or after it.
     for old_first in [true, false] {
@@ -3625,9 +3635,10 @@ async fn a_coordinator_writes_to_the_promoted_primary() {
         let e = r.promote(&Principal::open(), Vec::new(), Acks::All, false).await.unwrap_err();
         assert!(e.status == 409 && e.message.contains("knows no other copy"), "{}", e.message);
         r.promote(&Principal::open(), Vec::new(), Acks::All, true).await.unwrap();
+        // After its term's no-op (2).
         let w = coord.write_ops(set(2), None).await.unwrap();
-        assert_eq!(w.seq_nos, vec![2]);
-        assert_eq!(sold(&rdb), vec![Value::Int(2), Value::Int(2)]);
+        assert_eq!(w.seq_nos, vec![3]);
+        assert_eq!(sold(&rdb), vec![Value::Int(2), Value::Int(3)]);
         // The coordinator flags the two copies that last said they were
         // primaries: the old one has not heard of the new one.
         let h = coord.health().await;
@@ -3636,7 +3647,7 @@ async fn a_coordinator_writes_to_the_promoted_primary() {
         // The next goes to the new primary, of the newer term, at once:
         // both say they are primaries, and the old one is not asked.
         let (hellos, writes) = (old.hellos.load(Ordering::Relaxed), old.writes.load(Ordering::Relaxed));
-        assert_eq!(coord.write_ops(set(3), None).await.unwrap().seq_nos, vec![3]);
+        assert_eq!(coord.write_ops(set(3), None).await.unwrap().seq_nos, vec![4]);
         assert_eq!((old.hellos.load(Ordering::Relaxed), old.writes.load(Ordering::Relaxed)), (hellos, writes), "the old primary was not asked");
         assert_eq!(last_of(&pdb), 1);
     }

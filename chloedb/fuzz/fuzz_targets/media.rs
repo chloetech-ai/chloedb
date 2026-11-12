@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| strata_fuzz::media(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| chloedb_fuzz::media(data));

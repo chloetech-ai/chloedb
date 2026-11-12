@@ -530,17 +530,21 @@ impl Primary {
     pub fn start(db: Arc<Db>, file: Option<&Path>, opts: PrimaryOptions) -> Result<Arc<Primary>, String> {
         let numbering = db.storage().numbering().ok_or("a primary numbers its writes: start it with --seq-no")?;
         let mut kept = open_kept(file)?;
+        let mut first = 0;
         if opts.promote {
             let term = kept.newest(numbering.term) + 1;
             db.storage().begin_term(term).map_err(|e| format!("begin term {term}: {e}"))?;
-            kept = Kept::new(kept.id);
+            first = term_opened(&db, term).map_err(|e| e.message)?;
+            kept = Kept { config: kept.config, ..Kept::new(kept.id) };
             tracing::info!(term, "promoted: the primary of a new term");
         } else if let Some((primary, term)) = &kept.follows {
             return Err(format!("this database is a replica of primary {primary} in term {term}: start it with --replica, or make it the primary of a new term with --promote"));
         } else if let Some(term) = kept.replaced_by {
             return Err(format!("a primary of term {term} replaced this one: start it with --replica, as a replica of that primary, or make it the primary of a newer term with --promote"));
         }
-        Primary::run(db, file, kept, opts)
+        let p = Primary::run(db, file, kept, opts)?;
+        p.core(|c| c.term_start = first);
+        Ok(p)
     }
 
     /// Starts shipping as [`Primary::start`] does, under id `kept.id`.
@@ -613,6 +617,12 @@ impl Primary {
     /// The replicas it ships to.
     pub fn replicas(&self) -> &[String] {
         &self.opts.replicas
+    }
+
+    /// Whether it may ship to `replicas` now
+    /// ([`shard::Primary::may_reconfigure`]).
+    pub fn may_reconfigure(&self, replicas: &[String], accept_data_loss: bool) -> Result<(), ApiError> {
+        self.core(|c| c.may_reconfigure(replicas, Instant::now(), accept_data_loss))
     }
 
     /// A primary of the same database, id and term shipping to `replicas`
@@ -818,7 +828,7 @@ impl Primary {
                     "url": p.url, "seq_no": p.acked, "behind": last.saturating_sub(p.acked), "in_sync": p.in_sync,
                     "copying": p.copying, "copies": p.copies,
                     "verifications": count(f.map(|f| &f.verifications)), "divergences": count(f.map(|f| &f.divergences)),
-                    "verify_failures": count(f.map(|f| &f.verify_failures)), "member": p.member,
+                    "verify_failures": count(f.map(|f| &f.verify_failures)), "member": p.member, "txn_mismatches": p.mismatches,
                 });
                 if let Some(e) = &p.error {
                     j["error"] = json!(e);
@@ -856,12 +866,37 @@ impl Primary {
             Family { name: "chloedb_replica_verifications_total", ty: "counter", help: "Times a replica's rows were compared with the primary's.", values: by(&|f| f.verifications.load(Ordering::Relaxed) as f64) },
             Family { name: "chloedb_replica_divergences_total", ty: "counter", help: "Times a replica's rows differed from the primary's.", values: by(&|f| f.divergences.load(Ordering::Relaxed) as f64) },
             Family { name: "chloedb_replica_verify_failures_total", ty: "counter", help: "Rounds that could not compare a replica's rows with the primary's.", values: by(&|f| f.verify_failures.load(Ordering::Relaxed) as f64) },
+            Family { name: "chloedb_replica_txn_mismatches_total", ty: "counter", help: "Calls a replica refused for holding another transaction than the primary's under the term and number they follow (it is then sent a copy of the primary).", values: by_peer(&|p| p.mismatches as f64) },
         ]
     }
 }
 
 /// The database's numbering, as a primary ships it: refused when it does
 /// not number its writes, or keeps no log of them.
+/// The mark a new primary's first transaction sets and clears
+/// ([`term_opened`]).
+pub const TERM_MARK: &str = "_chloedb/term";
+
+/// Commits the first transaction of `term`, which `db` began: one that
+/// changes no row (it sets and clears [`TERM_MARK`] among the stream
+/// sources), and returns its number. As Raft's leader does at the start
+/// of its term, a new primary counts no transaction of an older term as
+/// held by a majority until a majority holds this one
+/// ([`shard::Primary::term_start`]). Finding DS-5 (Raft's figure 8): a
+/// primary elected in term 3 answered the retry of a term-1 transaction
+/// as acknowledged once a majority held it, then died; the copy holding a
+/// term-2 transaction at the same number was elected, as its last term
+/// was newer, and the acknowledged transaction was dropped from every
+/// copy. Once a majority holds a transaction of term 3, no copy without
+/// it can be elected.
+pub fn term_opened(db: &Db, term: u64) -> Result<u64, ApiError> {
+    let s = db.storage();
+    s.ensure_sources()?;
+    let mut t = s.begin()?;
+    t.mark_source(TERM_MARK, term as i64, chloedb::timestamp::now())?;
+    t.commit_seq()?.ok_or_else(|| ApiError::internal(format!("the first transaction of term {term} has no number")))
+}
+
 fn ships(db: &Db) -> Result<Numbering, String> {
     let numbering = db.storage().numbering().ok_or("a primary numbers its writes: start it with --seq-no")?;
     if !db.storage().keeps_ship_log() {
@@ -895,8 +930,22 @@ async fn ship(p: Weak<Primary>, k: usize, mut s: Shipper) {
     let mut round: Option<Round> = None;
     let mut due = Instant::now() + p.upgrade().map_or(Duration::ZERO, |p| p.opts.verify_every);
     let mut step = Ship::Again;
+    // The primary that decided a copy, kept until the copy is sent and
+    // its answer given to the core: the core marks the replica as being
+    // sent one (`Peer::copying`), and the shipper of a primary given other
+    // replicas meanwhile waits for that copy's answer before it ships to
+    // the replica. A task that let go of its primary between the decision
+    // and the copy (it was replaced, and dropped) would leave it waiting
+    // for ever.
+    let mut copying: Option<Arc<Primary>> = None;
     loop {
-        let Some(pr) = p.upgrade() else { return };
+        let pr = match copying.take() {
+            Some(pr) => pr,
+            None => match p.upgrade() {
+                Some(pr) => pr,
+                None => return,
+            },
+        };
         let f = pr.followers[k].clone();
         let Some(n) = pr.db.storage().numbering() else { return };
         step = match step {
@@ -914,13 +963,27 @@ async fn ship(p: Weak<Primary>, k: usize, mut s: Shipper) {
                         due = Instant::now() + every;
                     }
                 }
-                pr.core(|c| c.poll(k, &mut s, &n, Instant::now()))
+                let next = pr.core(|c| c.poll(k, &mut s, &n, Instant::now()));
+                if matches!(next, Ship::Copy { .. }) {
+                    copying = Some(pr.clone());
+                }
+                next
             }
             Ship::Read { from } => {
                 let log = pr.db.storage().log_from(from, pr.opts.batch_bytes);
-                pr.core(|c| c.read(k, &mut s, &n, log, Instant::now()))
+                let next = pr.core(|c| c.read(k, &mut s, &n, log, Instant::now()));
+                if matches!(next, Ship::Copy { .. }) {
+                    copying = Some(pr.clone());
+                }
+                next
             }
-            Ship::Call(req) => {
+            Ship::Call(mut req) => {
+                // The digest of the transaction the call follows, for the
+                // replica to compare with its own.
+                if req.prev_seq > 0 {
+                    let log = pr.db.storage().log_from(req.prev_seq, 1);
+                    shard::sign(&mut req, log, &shard::digest);
+                }
                 let mut client = f.client.clone();
                 let answer = match tokio::time::timeout(pr.opts.call_timeout, client.replicate(req)).await {
                     Ok(Ok(r)) => Ok(r.into_inner()),
@@ -1443,21 +1506,26 @@ impl Follow {
         let _one = self.one.lock().await;
         let (term, next) = self.core().take_over(won, &self.numbering()?, &opts.replicas, opts.acks)?;
         let db = self.db.clone();
-        tokio::task::spawn_blocking(move || crate::service::wait_for_writer(Instant::now() + WRITER_WAIT, || db.storage().begin_term(term).map_err(ApiError::from)))
-            .await
-            .map_err(ApiError::internal)??;
+        let first = tokio::task::spawn_blocking(move || {
+            let until = Instant::now() + WRITER_WAIT;
+            crate::service::wait_for_writer(until, || db.storage().begin_term(term).map_err(ApiError::from))?;
+            crate::service::wait_for_writer(until, || term_opened(&db, term))
+        })
+        .await
+        .map_err(ApiError::internal)??;
         self.keep(next.clone(), "the replication id")?;
         let at = self.db.storage().numbering().unwrap_or_default();
         tracing::info!(term, seq_no = at.seq, replicas = %opts.replicas.join(", "), write_acks = opts.acks.name(), elected = won.is_some(), "promoted: the primary of a new term");
         let p = Primary::run(self.db.clone(), self.file.as_deref(), next, opts).map_err(ApiError::internal)?;
+        p.core(|c| c.term_start = first);
         Ok((p, json!({"term": at.term, "seq_no": at.seq})))
     }
 
     /// What it does with a call from `primary` of `term` before it applies
     /// anything ([`shard::Replica::take`]): `Some` answer to give at once,
     /// or `None` once it follows that primary (kept beside the database).
-    fn take(&self, term: u64, primary: &str, member: bool, n: &Numbering) -> Result<Option<pb::ReplicateResponse>, ApiError> {
-        let take = self.core().take(term, primary, member, n)?;
+    fn take(&self, term: u64, primary: &str, member: bool, config: (u64, u32), n: &Numbering) -> Result<Option<pb::ReplicateResponse>, ApiError> {
+        let take = self.core().take(term, primary, member, config, n)?;
         match take {
             Take::Answer(a) => Ok(Some(a)),
             Take::Apply { kept } => {
@@ -1474,7 +1542,18 @@ impl Follow {
     pub async fn replicate(&self, r: pb::ReplicateRequest) -> Result<pb::ReplicateResponse, ApiError> {
         let _one = self.one.lock().await;
         let n = self.numbering()?;
-        if let Some(a) = self.take(r.term, &r.primary, r.member, &n)? {
+        if let Some(a) = self.take(r.term, &r.primary, r.member, (r.config, r.copies), &n)? {
+            return Ok(a);
+        }
+        // Nothing else writes here: the transaction the call follows, when
+        // this replica holds one of its term and number, stays as compared.
+        let storage = self.db.storage();
+        let refused = self.core().follows(&r, &n, || storage.log_from(r.prev_seq, 1), &shard::digest);
+        if let Some((a, kept)) = refused {
+            if let Some(k) = &kept {
+                save_kept(k, self.file.as_deref()).map_err(|e| ApiError::internal(format!("keep that this replica differs from its primary: {e}")))?;
+            }
+            self.core().took(kept, Instant::now());
             return Ok(a);
         }
         let (db, prev, txns) = (self.db.clone(), SeqNo { term: r.prev_term, seq: r.prev_seq }, r.txns);
@@ -1545,7 +1624,7 @@ impl Follow {
         let first = chunks.message().await.map_err(cut)?.ok_or_else(|| ApiError::bad("the copy is empty"))?;
         let _one = self.one.lock().await;
         let n = self.numbering()?;
-        if let Some(a) = self.take(first.term, &first.primary, false, &n)? {
+        if let Some(a) = self.take(first.term, &first.primary, false, (0, 0), &n)? {
             return Ok(a);
         }
         // Its rows are behind its primary's log, or differ: no reads
@@ -1597,13 +1676,26 @@ impl Follow {
         self.restores.fetch_add(1, Ordering::Relaxed);
         tracing::info!(primary = %first.primary, seq_no = at.seq, "installed a copy of the primary");
         let db_term = self.db.storage().numbering().map_or(0, |n| n.term);
-        Ok(self.core().installed(at, first.term, db_term))
+        let (a, kept) = self.core().installed(at, first.term, db_term);
+        if let Some(k) = &kept {
+            save_kept(k, self.file.as_deref()).map_err(|e| ApiError::internal(format!("keep that this replica holds a copy of its primary: {e}")))?;
+        }
+        self.core().took(kept, Instant::now());
+        Ok(a)
     }
 
     /// Whether it serves reads now: its primary's last call reached the
     /// primary's last transaction.
     pub fn serves_reads(&self) -> bool {
         self.core().serves_reads
+    }
+
+    /// The transaction it holds under a term and number as another than
+    /// its primary's, as the primary's last call found
+    /// ([`shard::Replica::follows`]), until it applies a call or installs
+    /// a copy of the primary.
+    pub fn differs(&self) -> Option<SeqNo> {
+        self.core().kept.differs
     }
 
     /// What `/v1/health` shows of replication.
@@ -1615,8 +1707,11 @@ impl Follow {
             "role": "replica", "id": kept.id, "term": n.term, "seq_no": n.seq, "global_checkpoint": core.global_checkpoint,
             "restores": self.restores.load(Ordering::Relaxed), "serves_reads": core.serves_reads,
             "read_waits": self.read_waits.load(Ordering::Relaxed), "reads_refused": self.reads_refused.load(Ordering::Relaxed),
-            "digests": self.digests.load(Ordering::Relaxed),
+            "digests": self.digests.load(Ordering::Relaxed), "txn_mismatches": core.mismatches,
         });
+        if let Some(at) = kept.differs {
+            h["differs"] = json!({"seq_no": at.seq, "term": at.term});
+        }
         if let Some((primary, term)) = kept.follows {
             h["follows"] = json!({"primary": primary, "term": term});
         }
@@ -1631,9 +1726,9 @@ impl Follow {
     }
 
     pub fn metrics(&self) -> Vec<Family> {
-        let (gc, serves) = {
+        let (gc, serves, mismatches) = {
             let c = self.core();
-            (c.global_checkpoint, c.serves_reads)
+            (c.global_checkpoint, c.serves_reads, c.mismatches)
         };
         vec![
             Family::one("chloedb_replication_role", "gauge", "1 on a primary (--replicas), 2 on a replica (--replica).", 2.0),
@@ -1644,6 +1739,7 @@ impl Follow {
             Family::one("chloedb_replica_read_waits_total", "counter", "Reads that waited for this replica to apply a write they must see (min_seq_no).", self.read_waits.load(Ordering::Relaxed) as f64),
             Family::one("chloedb_replica_reads_refused_total", "counter", "Reads refused while this replica caught up, or because it had not applied a write they must see in time.", self.reads_refused.load(Ordering::Relaxed) as f64),
             Family::one("chloedb_replica_digests_total", "counter", "Digests of its rows this replica computed for its primary to compare (Verify).", self.digests.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replica_txn_mismatches_total", "counter", "Calls of its primary this replica refused for holding another transaction under the term and number they follow (it is then sent a copy of the primary).", mismatches as f64),
         ]
     }
 }

@@ -52,6 +52,7 @@ pub mod iostat;
 pub mod json;
 pub mod media;
 pub mod metrics;
+pub mod model_pins;
 #[cfg(feature = "s3")]
 pub mod objects;
 #[cfg(feature = "parquet")]

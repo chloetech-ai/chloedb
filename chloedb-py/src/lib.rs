@@ -13,6 +13,7 @@ mod arrow;
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -25,7 +26,8 @@ use chloedb::ingest::{self, Format};
 use chloedb::query::ir::Plan;
 use chloedb::query::sql::{ident, quoted};
 use chloedb::query::Params;
-use chloedb::query::exec::ResultSet;
+use chloedb::query::exec::{ExecOptions, Interrupts, ResultSet};
+use chloedb::query::memory::{self as qmemory, MemoryBudget};
 use chloedb::rank_log::{Export, Log};
 use chloedb::schema::Schema;
 use chloedb::sid::{Codebook, TrainOptions};
@@ -36,8 +38,28 @@ use chloedb::{FieldType, Value};
 
 create_exception!(_chloedb, ChloeDBError, PyException, "An error from the database: a bad schema, query, value or file.");
 
+/// An engine error as Python's: the subclass of `ChloeDBError` for its
+/// kind, with its `code` (`chloedb._native._error` makes it, so the codes
+/// and classes are the client's too), or `ChloeDBError` itself when that
+/// cannot be had.
 fn err(e: chloedb::Error) -> PyErr {
-    ChloeDBError::new_err(e.to_string())
+    let code = match &e {
+        chloedb::Error::Io(_) => "io",
+        chloedb::Error::Corrupt(_) => "corrupt",
+        chloedb::Error::Schema(_) | chloedb::Error::Query(_) => "bad_request",
+        chloedb::Error::Busy(_) => "busy",
+        chloedb::Error::Timeout(_) => "timeout",
+        chloedb::Error::Memory(_) => "memory",
+        chloedb::Error::Unavailable(_) => "unavailable",
+    };
+    let message = e.to_string();
+    Python::attach(|py| {
+        let made = py.import("chloedb._native").and_then(|m| m.getattr("_error")).and_then(|f| f.call1((code, message.as_str())));
+        match made {
+            Ok(v) => PyErr::from_value(v),
+            Err(_) => ChloeDBError::new_err(message.clone()),
+        }
+    })
 }
 
 /// Rows a write transaction carries (as `chloedb-server import` does).
@@ -316,6 +338,42 @@ struct Database {
     /// Embedded fields whose model did not open, with the reason.
     #[pyo3(get)]
     embed_errors: Vec<(String, String)>,
+    /// What every query is limited to unless it says otherwise
+    /// (`set_limits`).
+    limits: RwLock<Limits>,
+    /// The queries running now, which `interrupt` cancels.
+    running: Interrupts,
+}
+
+/// A database's limits on its queries: the deadline each gets, and the
+/// memory budget they share.
+#[derive(Clone, Default)]
+struct Limits {
+    timeout: Option<Duration>,
+    /// `None`: the database's own options', the process's budget
+    /// ([`qmemory::process_budget`]); `Some(None)`: no budget.
+    memory: Option<Option<Arc<MemoryBudget>>>,
+}
+
+/// A query's limits as its call gives them, made of the database's: its
+/// options and its deadline, for the error to raise when they stop it.
+struct Limited {
+    opts: ExecOptions,
+    timeout: Option<Duration>,
+}
+
+impl Limited {
+    /// `e`, saying which limit stopped the query and how to change it.
+    fn err(&self, e: chloedb::Error) -> PyErr {
+        err(match e {
+            chloedb::Error::Timeout(m) if m.contains("deadline") => match self.timeout {
+                Some(t) => chloedb::Error::Timeout(format!("{m}, timeout_ms={} (pass a larger timeout_ms to the query, or to the database)", t.as_millis())),
+                None => chloedb::Error::Timeout(m),
+            },
+            chloedb::Error::Timeout(m) if m.contains("cancelled") => chloedb::Error::Timeout(format!("{m} by Database.interrupt()")),
+            e => e,
+        })
+    }
 }
 
 impl Database {
@@ -331,7 +389,20 @@ impl Database {
     /// query visits, and the rows its updates and deletes replaced.
     fn of(db: Db, embed_errors: Vec<(String, String)>) -> Self {
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
-        Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }
+        Database { db: RwLock::new(Some(Arc::new(db))), embed_errors, limits: RwLock::new(Limits::default()), running: Interrupts::default() }
+    }
+
+    /// The options of a query given `timeout_ms` (`None` or 0: the
+    /// database's) and `memory` (bytes of a budget of its own; 0: none;
+    /// `None`: the database's), with a cancel flag `interrupt` sets.
+    fn limited(&self, db: &Db, timeout_ms: Option<u64>, memory: Option<u64>) -> Limited {
+        let limits = self.limits.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let timeout = timeout_ms.filter(|&ms| ms > 0).map(Duration::from_millis).or(limits.timeout);
+        let base = match limits.memory {
+            Some(budget) => ExecOptions { memory: budget, ..db.exec.clone() },
+            None => db.exec.clone(),
+        };
+        Limited { opts: base.limited(timeout, memory, Some(self.running.start(0))), timeout }
     }
 
     fn get(&self) -> PyResult<Arc<Db>> {
@@ -455,13 +526,48 @@ impl Database {
     /// Opens the database at `path`; `read_only` to read it while another
     /// process writes it.
     #[staticmethod]
-    #[pyo3(signature = (path, models = None, threads = None, read_only = false))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool) -> PyResult<Self> {
+    #[pyo3(signature = (path, models = None, threads = None, read_only = false, recover = false))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool, recover: bool) -> PyResult<Self> {
         let threads = threads_or_cores(threads)?;
         // The layout comes from the file; the option only matters to a create.
-        let opts = DbOptions { read_only, ..db_options(false, threads) };
+        let opts = DbOptions { read_only, recover, ..db_options(false, threads) };
         let db = py.detach(|| Db::open(&path, opts)).map_err(err)?;
         Ok(Database::new(with_threads(db, threads), models))
+    }
+
+    /// What opening found damaged and skipped or dropped (the newest
+    /// version on disk, a log's transactions after damage), in words, and
+    /// where it kept copies; `None` when it opened undamaged.
+    #[getter]
+    fn damaged(&self) -> PyResult<Option<String>> {
+        Ok(self.get()?.storage().damaged().map(str::to_string))
+    }
+
+    /// Writes the rows still in memory into the file and empties the
+    /// write-ahead log: the file alone then holds every committed row.
+    fn flush(&self, py: Python<'_>) -> PyResult<()> {
+        let db = self.get()?;
+        py.detach(|| db.storage().flush()).map_err(err)
+    }
+
+    /// Writes a consistent copy of the database to `dest` (which must not
+    /// exist) while it stays in use: every segment checked against its
+    /// checksum, the copy checked, then given its name. Returns what it
+    /// copied, as JSON text.
+    #[pyo3(signature = (dest, directory = false))]
+    fn checkpoint(&self, py: Python<'_>, dest: PathBuf, directory: bool) -> PyResult<String> {
+        let db = self.get()?;
+        let layout = if directory { chloedb::storage::Layout::Directory } else { chloedb::storage::Layout::SingleFile };
+        let opts = chloedb::storage::CheckpointOptions { layout, ..Default::default() };
+        let stats = py.detach(|| db.storage().checkpoint(&dest, &opts)).map_err(err)?;
+        serde_json::to_string(&stats).map_err(|e| err(chloedb::Error::Schema(e.to_string())))
+    }
+
+    /// Lets writes store rows without the vectors of embedded fields whose
+    /// model is not open (they fail by default).
+    fn set_embed_later(&self, on: bool) -> PyResult<()> {
+        self.get()?.set_embed_later(on);
+        Ok(())
     }
 
     /// Whether it was opened read-only.
@@ -506,31 +612,61 @@ impl Database {
     }
 
     /// Runs a SELECT; returns {columns, rows, keys, scores, stats}.
-    #[pyo3(signature = (sql, params = None))]
-    fn query<'py>(&self, py: Python<'py>, sql: &str, params: Option<&Bound<'py, PyDict>>) -> PyResult<Bound<'py, PyDict>> {
+    #[pyo3(signature = (sql, params = None, timeout_ms = None, memory = None))]
+    fn query<'py>(&self, py: Python<'py>, sql: &str, params: Option<&Bound<'py, PyDict>>, timeout_ms: Option<u64>, memory: Option<u64>) -> PyResult<Bound<'py, PyDict>> {
         let db = self.get()?;
         let p = params_json(params)?;
-        let rs = py.detach(|| self::params(&db, &p).and_then(|p| db.query(sql, &p))).map_err(err)?;
+        let l = self.limited(&db, timeout_ms, memory);
+        let rs = py.detach(|| self::params(&db, &p).and_then(|p| db.query_with(sql, &p, &l.opts))).map_err(|e| l.err(e))?;
         result_py(py, &rs)
+    }
+
+    /// Limits every query of this database from now on: a deadline of
+    /// `timeout_ms` (`None` or 0: none), and a memory budget of `memory`
+    /// bytes that its queries share (0: none; `None`: the process's).
+    #[pyo3(signature = (timeout_ms = None, memory = None))]
+    fn set_limits(&self, timeout_ms: Option<u64>, memory: Option<u64>) {
+        let memory = memory.map(|b| qmemory::budget_of(b, "this database's queries may hold at once (its memory option)"));
+        *self.limits.write().unwrap_or_else(|e| e.into_inner()) = Limits { timeout: timeout_ms.filter(|&ms| ms > 0).map(Duration::from_millis), memory };
+    }
+
+    /// The deadline every query gets unless it gives its own, in ms.
+    fn timeout_ms(&self) -> Option<u64> {
+        self.limits.read().unwrap_or_else(|e| e.into_inner()).timeout.map(|t| t.as_millis() as u64)
+    }
+
+    /// The memory budget its queries share, in bytes (`None`: no budget).
+    fn memory(&self) -> Option<u64> {
+        let given = self.limits.read().unwrap_or_else(|e| e.into_inner()).memory.clone();
+        given.unwrap_or_else(|| self.get().ok().and_then(|db| db.exec.memory.clone())).map(|b| b.limit())
+    }
+
+    /// Cancels the queries of this database running now, on any thread;
+    /// returns how many. Each stops within a few thousand rows and raises
+    /// DeadlineError; queries that start later run.
+    fn interrupt(&self) -> usize {
+        self.running.interrupt(None)
     }
 
     /// Runs a SELECT; returns its answer as Arrow columns, which Python
     /// libraries take without copying them (feature `datafusion`).
     #[cfg(feature = "datafusion")]
-    #[pyo3(signature = (sql, params = None))]
-    fn query_arrow(&self, py: Python<'_>, sql: &str, params: Option<&Bound<'_, PyDict>>) -> PyResult<arrow::Arrow> {
+    #[pyo3(signature = (sql, params = None, timeout_ms = None, memory = None))]
+    fn query_arrow(&self, py: Python<'_>, sql: &str, params: Option<&Bound<'_, PyDict>>, timeout_ms: Option<u64>, memory: Option<u64>) -> PyResult<arrow::Arrow> {
         let db = self.get()?;
         let p = params_json(params)?;
-        py.detach(|| self::params(&db, &p).and_then(|p| db.query_leaf(sql, &p)).and_then(arrow::Arrow::of)).map_err(err)
+        let l = self.limited(&db, timeout_ms, memory);
+        py.detach(|| self::params(&db, &p).and_then(|p| db.query_leaf_with(sql, &p, &l.opts)).and_then(arrow::Arrow::of)).map_err(|e| l.err(e))
     }
 
     /// Runs any statement: a SELECT's answer as `query` gives it, or the
     /// number of rows an INSERT, UPDATE or DELETE wrote.
-    #[pyo3(signature = (sql, params = None))]
-    fn sql<'py>(&self, py: Python<'py>, sql: &str, params: Option<&Bound<'py, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (sql, params = None, timeout_ms = None, memory = None))]
+    fn sql<'py>(&self, py: Python<'py>, sql: &str, params: Option<&Bound<'py, PyDict>>, timeout_ms: Option<u64>, memory: Option<u64>) -> PyResult<Bound<'py, PyAny>> {
         let db = self.get()?;
         let p = params_json(params)?;
-        match py.detach(|| self::params(&db, &p).and_then(|p| db.sql(sql, &p))).map_err(err)? {
+        let l = self.limited(&db, timeout_ms, memory);
+        match py.detach(|| self::params(&db, &p).and_then(|p| db.sql_with(sql, &p, &l.opts))).map_err(|e| l.err(e))? {
             SqlResult::Rows(rs) => Ok(result_py(py, &rs)?.into_any()),
             SqlResult::Written(n) => Ok(n.into_pyobject(py)?.into_any()),
         }
@@ -578,10 +714,12 @@ impl Database {
     }
 
     /// Runs a plan given as JSON text, as `sql` runs a statement.
-    fn run<'py>(&self, py: Python<'py>, plan: &str) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (plan, timeout_ms = None, memory = None))]
+    fn run<'py>(&self, py: Python<'py>, plan: &str, timeout_ms: Option<u64>, memory: Option<u64>) -> PyResult<Bound<'py, PyAny>> {
         let db = self.get()?;
         let plan: Json = serde_json::from_str(plan).map_err(|e| ChloeDBError::new_err(format!("a plan is JSON: {e}")))?;
-        match py.detach(|| Plan::from_json(&plan).and_then(|plan| db.run(&plan))).map_err(err)? {
+        let l = self.limited(&db, timeout_ms, memory);
+        match py.detach(|| Plan::from_json(&plan).and_then(|plan| db.run_with(&plan, &l.opts))).map_err(|e| l.err(e))? {
             SqlResult::Rows(rs) => Ok(result_py(py, &rs)?.into_any()),
             SqlResult::Written(n) => Ok(n.into_pyobject(py)?.into_any()),
         }

@@ -109,10 +109,12 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// only rows changed since a transaction and compares keys
 /// ([`FEED_KEYS_PROTOCOL`]), 16 keeps the stream offsets of slots that
 /// move ([`MOVE_OFFSETS_PROTOCOL`]), 17 holds clients' writes on a mark
-/// and keeps promotions ([`HOLD_PROTOCOL`]), and 18 scrolls a shard's rows
-/// for a coordinator ([`SCROLL_PROTOCOL`]).
+/// and keeps promotions ([`HOLD_PROTOCOL`]), 18 scrolls a shard's rows
+/// for a coordinator ([`SCROLL_PROTOCOL`]), 19 checks a write without
+/// applying it ([`VALIDATE_PROTOCOL`]), and 20 compares the transaction a
+/// `Replicate` follows by its digest ([`SAME_TERM_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 18;
+pub const PROTOCOL: u32 = 20;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -174,6 +176,27 @@ pub const HOLD_PROTOCOL: u32 = 17;
 /// `QueryResponse.cursor`, `ReleaseRequest.cursors`): what a scroll over
 /// shards reads past the window by ([`crate::coord::ShardScroll`]).
 pub const SCROLL_PROTOCOL: u32 = 18;
+
+/// The protocol whose shards check a write's operations without applying
+/// them (`WriteRequest.validate`, [`crate::service::Service::validate_ops`]),
+/// which a coordinator asks of every shard of a write that spans several
+/// before it sends the write ([`crate::coord::Coordinator::write_ops`]). A
+/// shard of an older protocol is not asked: its part may still be
+/// refused after others applied theirs, as before.
+pub const VALIDATE_PROTOCOL: u32 = 19;
+
+/// The protocol whose `Replicate` carries a digest of the transaction it
+/// follows (`ReplicateRequest.prev_digest`, [`crate::cores::shard::digest`]),
+/// which a replica holding a transaction of that term and number compares
+/// with its own, refusing the call when they differ
+/// (`ReplicateResponse.differs`, [`crate::cores::shard::Replica::follows`]):
+/// a copy that holds another transaction than its primary's under one term
+/// and number is found on the call that would build on it, and sent a copy
+/// of the primary. Replication takes no protocol version, as before: a
+/// replica of an older protocol ignores the digest, and a primary of an
+/// older one sends none (0), so that either applies by term and number
+/// alone, as before. Nothing gates on the number; it names the change.
+pub const SAME_TERM_PROTOCOL: u32 = 20;
 
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
@@ -519,6 +542,11 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("Write", req, |svc, who, r| async move {
             svc.check_epoch(r.epoch)?;
             let key = Some(r.idempotency_key).filter(|k| !k.is_empty());
+            if r.validate {
+                let ops: Vec<serde_json::Value> = from_json(&r.ops_json, "write operations")?;
+                svc.validate_ops(ops, key, r.epoch).await?;
+                return Ok(pb::WriteResponse::default());
+            }
             let w = if !r.ops_json.is_empty() {
                 let ops: Vec<serde_json::Value> = from_json(&r.ops_json, "write operations")?;
                 match r.moved {
@@ -676,7 +704,7 @@ impl pb::strata_server::Strata for Grpc {
                 svc.promote(&who, r.replicas, acks, r.force).await?;
                 return Ok(svc.configured());
             }
-            svc.configure(r.role(), r.replicas, acks, r.force).await
+            svc.configure_as(r.role(), r.replicas, acks, r.force, r.accept_data_loss).await
         })
         .await
     }

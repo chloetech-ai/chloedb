@@ -46,24 +46,24 @@
         <button type="button" data-tab="s5">5 · Kubernetes<small>An operator that grows, heals and upgrades the cluster.</small></button>
       </div>
       <div>
-        <div data-panel="s1" class="steps-panel"><pre data-lang="python" data-title="app.py">import strata
-db = strata.open("shop.strata")
+        <div data-panel="s1" class="steps-panel"><pre data-lang="python" data-title="app.py">import chloedb
+db = chloedb.open("shop.chloedb")
 db.query("SELECT id, title FROM products WHERE MATCH(title, :q) LIMIT 10",
          q="racing wheel")</pre></div>
-        <div data-panel="s2" class="steps-panel"><pre data-lang="sh" data-title="run">chloedb-server --db shop.strata --listen 127.0.0.1:7700</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = strata.connect("http://127.0.0.1:7700")   # was strata.open(...)
+        <div data-panel="s2" class="steps-panel"><pre data-lang="sh" data-title="run">chloedb-server --db shop.chloedb --listen 127.0.0.1:7700</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = chloedb.connect("http://127.0.0.1:7700")  # was chloedb.open(...)
 db.query("SELECT id, title FROM products WHERE MATCH(title, :q) LIMIT 10",
          q="racing wheel")</pre></div>
-        <div data-panel="s3" class="steps-panel"><pre data-lang="sh" data-title="run">chloedb-server --db shop.strata --seq-no \
-  --replicas http://b:7701,http://c:7701 --failover-after-ms 3000</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = strata.connect("http://a:7700")            # the primary
+        <div data-panel="s3" class="steps-panel"><pre data-lang="sh" data-title="run">chloedb-server --db shop.chloedb --seq-no \
+  --replicas http://b:7701,http://c:7701 --failover-after-ms 3000</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = chloedb.connect("http://a:7700")           # the primary
 db.insert({"id": "r9", "usr": "u7", "item": "B0C1", "stars": 5}, table="reviews")</pre></div>
         <div data-panel="s4" class="steps-panel"><pre data-lang="sh" data-title="run">chloedb-server --shards http://s0:7701,http://s1:7701 \
-  --listen 127.0.0.1:7700 --grpc off</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = strata.connect("http://127.0.0.1:7700")   # the coordinator
+  --listen 127.0.0.1:7700 --grpc off</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = chloedb.connect("http://127.0.0.1:7700")  # the coordinator
 db.query("SELECT id, title FROM products WHERE MATCH(title, :q) LIMIT 10",
          q="racing wheel")                      # asks every shard
 db.get("B0C1", table="products")                # asks only the key's shard</pre></div>
         <div data-panel="s5" class="steps-panel"><pre data-lang="sh" data-title="run">kubectl apply -f operator.yaml -f cluster.yaml
 kubectl -n strata patch strata demo --type merge \
-  -p '{"spec": {"shards": 3}}'                  # slots move while it serves</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = strata.connect("http://demo.strata:7700")  # the cluster's Service</pre></div>
+  -p '{"spec": {"shards": 3}}'                  # slots move while it serves</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = chloedb.connect("http://demo.strata:7700")  # the cluster's Service</pre></div>
       </div>
     </div>
   </div></section>
@@ -86,7 +86,7 @@ kubectl -n strata patch strata demo --type merge \
       <div><b>The SQL</b><p>Over shards, the coordinator's merge gives what one database gives, scores and limits included.</p></div>
       <div><b>The schema</b><p>Tables, models, rank profiles and synonyms travel with the data.</p></div>
       <div><b>The file format</b><p>A shard is a ChloeDB file. A checkpoint of one opens on a laptop.</p></div>
-      <div><b>The clients</b><p><code>strata.open</code> and <code>strata.connect</code> have the same methods.</p></div>
+      <div><b>The clients</b><p><code>chloedb.open</code> and <code>chloedb.connect</code> have the same methods.</p></div>
       <div><b>The command center</b><p>The same console for one server and for a cluster.</p></div>
       <div><b>The tests</b><p>A deterministic simulator replays failovers and slot moves from a seed.</p></div>
     </div>
@@ -129,7 +129,7 @@ $deploy/kind-test.sh scale 3 3   # a third shard; slots move live</pre></div>
         <h2>Move a file to a cluster</h2>
         <p class="lede">Export the file's tables and import them through the coordinator, which places every row on its shard. Then point the app at the coordinator.</p>
       </div>
-      <div><pre data-lang="sh" data-title="file to cluster">chloedb-server export --db shop.strata shop.sqlite
+      <div><pre data-lang="sh" data-title="file to cluster">chloedb-server export --db shop.chloedb shop.sqlite
 curl -s -X POST 'localhost:7700/v1/import?format=sqlite' \
   -H 'content-type: application/vnd.sqlite3' --data-binary @shop.sqlite</pre></div>
     </div>
@@ -141,7 +141,7 @@ curl -s -X POST 'localhost:7700/v1/import?format=sqlite' \
       <p>The same engine inside an app and as a cluster, each against what people use there today.</p>
     </div>
     <div class="proofstrip">
-      <a href="bench-embedded.html"><span class="eyebrow">In your app · hybrid search</span><span class="v">4.8× to 33×</span><p>Faster than SQLite, DuckDB or LanceDB on five BEIR collections.</p></a>
+      <a href="bench-embedded.html"><span class="eyebrow">In your app · hybrid search</span><span class="v">1.9× to 17×</span><p>Faster than SQLite, DuckDB or LanceDB with every system on one thread (four BEIR collections); 4.8× to 33× with ChloeDB on up to eight threads.</p></a>
       <a href="bench-embedded.html#writes"><span class="eyebrow">In your app · reads beside a stream</span><span class="v">8,781 reads/s</span><p>While 10,000 rows a second stream in: 9 to 16 times DuckDB's and SQLite's.</p></a>
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
     </div>

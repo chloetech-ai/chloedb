@@ -2,12 +2,18 @@
 //! by distillation, consolidation and the query engine.
 //!
 //! The call runs without tools, from a scratch directory and with ChloeCtx
-//! disabled, so it records nothing itself. With `isolated` it also skips the
+//! disabled, so it records nothing itself. The scratch directory is
+//! `<home>/distill` ([`scratch_dir`]), which only this user may open: the
+//! CLI loads project settings (hooks among them) and `CLAUDE.md` from the
+//! directory it runs in, so a shared one such as `/tmp/chloectx-distill`
+//! would let another local user run commands as this one, or steer every
+//! note the distiller writes. With `isolated` it also skips the
 //! user's settings and MCP servers: their plugins, hooks and tool definitions
 //! would add tens of thousands of tokens to every call (and another memory
 //! plugin would record it).
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -63,11 +69,22 @@ pub struct Reply {
     pub ms: u64,
 }
 
+/// The directory model calls run in: `distill` in ChloeCtx's home, made
+/// private to this user ([`crate::paths::ensure_private_dir`]); an error
+/// when it cannot be, rather than a call from a directory someone else can
+/// write to.
+pub fn scratch_dir() -> Result<PathBuf> {
+    let home = crate::paths::home();
+    crate::paths::create_private_dir(&home)?;
+    let dir = home.join("distill");
+    crate::paths::ensure_private_dir(&dir).map_err(|e| err(format!("the model's scratch directory: {e}")))?;
+    Ok(dir)
+}
+
 /// Runs the model once on `prompt` with `system` as its system prompt.
 pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
     let t0 = Instant::now();
-    let scratch = std::env::temp_dir().join("chloectx-distill");
-    std::fs::create_dir_all(&scratch)?;
+    let scratch = scratch_dir()?;
     let mut cmd = Command::new(cli.command);
     cmd.args(["-p", "--system-prompt", system, "--tools", "", "--no-session-persistence", "--output-format", "json"]);
     if cli.isolated {
@@ -94,7 +111,20 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| err(format!("{}: {e}", cli.command)))?;
-    child.stdin.take().unwrap().write_all(prompt.as_bytes())?;
+    // The prompt is written, and the answer read, on threads of their own
+    // while this one watches the clock: a reply larger than the pipe's
+    // buffer (64 KB on Linux) would otherwise block the child on its write
+    // until the timeout killed it.
+    let mut stdin = child.stdin.take().unwrap();
+    let input = prompt.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        stdout.read_to_end(&mut buf).map(|_| buf)
+    });
     let deadline = Instant::now() + cli.timeout;
     loop {
         if child.try_wait()?.is_some() {
@@ -107,8 +137,17 @@ pub fn complete(cli: &Cli, system: &str, prompt: &str) -> Result<Reply> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let out = child.wait_with_output()?;
-    let v: Json = serde_json::from_slice(&out.stdout).map_err(|e| err(format!("model output: {e}")))?;
+    let _ = writer.join();
+    // The child has exited; its stdout closes unless a process it started
+    // still holds it, which the deadline bounds as well.
+    while !reader.is_finished() && Instant::now() <= deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !reader.is_finished() {
+        return Err(err("model call timed out"));
+    }
+    let stdout = reader.join().map_err(|_| err("model output: the reader failed"))??;
+    let v: Json = serde_json::from_slice(&stdout).map_err(|e| err(format!("model output: {e}")))?;
     if v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false) {
         return Err(err(format!("model call failed: {}", v.get("result").and_then(|r| r.as_str()).unwrap_or(""))));
     }

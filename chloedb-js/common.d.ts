@@ -34,12 +34,33 @@ export interface Schema {
 export type Plan = Record<string, unknown>;
 
 export declare class ChloeDBError extends Error {
-  constructor(message: string, options?: { status?: number; answer?: unknown; cause?: unknown });
+  constructor(message: string, options?: { status?: number; answer?: unknown; cause?: unknown; code?: ErrorCode });
   /** The HTTP status, for an error a server answered. */
   status?: number;
   /** The server's answer, its JSON. */
   answer?: unknown;
+  /** The error's stable code (see `errorCode`). */
+  code: ErrorCode;
 }
+
+/** A bad schema, query, value or request (400, 413, 422). Code "bad_request". */
+export declare class BadRequestError extends ChloeDBError {}
+/** No token, or one without the rights needed (401, 403). Code "unauthorized". */
+export declare class UnauthorizedError extends ChloeDBError {}
+/** No such row, table, route or cursor (404). Code "not_found". */
+export declare class NotFoundError extends ChloeDBError {}
+/** Refused by the state it met (409). Code "conflict". */
+export declare class ConflictError extends ChloeDBError {}
+/** A coordinator wrote some shards and not others. Code "partial_write". */
+export declare class PartialWriteError extends ChloeDBError {}
+/** The database is open elsewhere, or another writer holds it. Code "busy". */
+export declare class BusyError extends ChloeDBError {}
+/** Refused for the server's load before any work (429). Code "overloaded". */
+export declare class OverloadedError extends ChloeDBError {}
+/** A deadline passed (504, a query's timeoutMs). Code "timeout". */
+export declare class DeadlineError extends ChloeDBError {}
+/** No copy can serve it now (503). Code "unavailable". */
+export declare class UnavailableError extends ChloeDBError {}
 
 /** `ChloeDBError` by its name when ChloeDB was called Strata: the same class. */
 export { ChloeDBError as StrataError };
@@ -61,6 +82,11 @@ export declare class Result<T extends Record<string, Value> = Record<string, Val
   /** An interleaved query's: per row, the ranking that placed it. */
   teams?: (string | null)[];
   readonly length: number;
+  /** More rows matched than this answer holds, by a cut the query did not
+   * write: a ranked query without LIMIT, or a fused page past its candidates. */
+  readonly truncated: boolean;
+  /** The row count a ranked query without LIMIT was cut to (100). */
+  readonly implicitLimit: number | undefined;
   /** Row `i` (negative counts from the end) as an object. */
   at(i: number): T | undefined;
   /** Every row as an object. */
@@ -82,7 +108,32 @@ export interface SearchOptions {
   vectorField?: string;
   params?: Params;
   table?: string;
+  /** Through a `Client`: a write the answer must see ({@link ReadAfter}). */
+  minSeqNo?: number;
+  minSeqNos?: number[];
+  /** Its deadline in ms, as `query` takes it. */
+  timeoutMs?: number;
+  /** A `Database`'s only: a memory budget of its own, in bytes. */
+  memory?: number;
+  /** A `Database`'s only: stops it when it aborts. */
+  signal?: AbortSignal;
 }
+
+/** The writes a read must see: `minSeqNo`, the `seqNo` a server's write
+ * answered, or `minSeqNos`, the `seqNos` a coordinator's did (one per
+ * shard). The copy that answers holds them; a replica waits up to a second.
+ * A Database in this process ignores them: it reads every write. */
+export interface ReadAfter {
+  minSeqNo?: number;
+  minSeqNos?: number[];
+}
+
+/** The stable code of an error, the same in this process, from a server
+ * and in chloedb-py: the server's JSON `code` when it gives one, else the
+ * kind the message starts with ("busy: ..."), else the HTTP status. */
+export type ErrorCode = "bad_request" | "unauthorized" | "not_found" | "conflict" | "partial_write" | "busy" | "overloaded" | "timeout" | "memory" | "unavailable" | "corrupt" | "io" | "internal" | "error" | (string & {});
+
+export declare function errorCode(message: string, status?: number, answer?: unknown): ErrorCode;
 
 export interface LogOptions {
   /** Whom it served: a user, a session. */

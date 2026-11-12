@@ -523,13 +523,21 @@ async fn a_replica_the_log_does_not_reach_is_sent_a_copy() {
     until("the restored replica is in sync", || async { follower(&p, 3).await["in_sync"] == true }).await;
     assert_eq!(rows(&rdb), rows(&pdb));
     assert_eq!(follower(&p, 3).await["copies"], 0);
-    // One that took writes of its own past the primary's is not a copy,
-    // and is not sent one.
-    let adb = create(dir.path(), "ahead.strata");
+    // One that took writes of its own past the primary's last is not a
+    // copy, and is not sent one. (Started from a checkpoint, it holds the
+    // primary's history up to there; one whose own writes hold another
+    // transaction under the primary's last number is found by the digest
+    // of that one and sent a copy, which the tests of same-number
+    // transactions below check.)
+    let ahead_copy = dir.path().join("ahead.strata");
+    pdb.storage().checkpoint(&ahead_copy, &CheckpointOptions::default()).unwrap();
+    let adb = Arc::new(Db::open(&ahead_copy, options(1 << 20)).unwrap());
+    adb.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: demo::DIM })).unwrap();
     let far = last(&pdb) + 20;
-    for i in 0..far {
+    while last(&adb) < far {
+        let i = last(&adb) as usize;
         let mut t = adb.storage().begin().unwrap();
-        t.set(&Value::Str(format!("p{:07}", i as usize % N)), "sold", Value::Int(1)).unwrap();
+        t.set(&Value::Str(format!("p{:07}", i % N)), "sold", Value::Int(1)).unwrap();
         t.commit().unwrap();
     }
     replica_on(adb.clone(), None, Some(TcpListener::bind(ahead_at).await.unwrap())).await;
@@ -698,6 +706,95 @@ async fn a_replica_whose_last_transaction_is_not_the_primarys() {
     assert_eq!(follower(&p, 1).await["copies"], 0, "and was sent no copy");
 }
 
+/// A replica holding another transaction than its primary's under the
+/// same term and number, as a writer that committed after its primary
+/// stepped down once made one, is found on the call that follows it, by
+/// the primary's digest of the transaction (protocol 20): it applies
+/// nothing, serves no reads, says so, and is sent a copy of the primary,
+/// which drops its own. Before, the call matched by term and number, the
+/// replica counted as in sync, and took the primary's next transactions
+/// on top of its own: only the digest round (`--verify-every-s`, off
+/// here) found it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replica_holding_another_transaction_of_the_same_number_is_sent_a_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let pdb = create(dir.path(), "p.strata");
+    let (url, at) = nobody().await;
+    let opts = PrimaryOptions { verify_every: Duration::ZERO, ..ships_to(&[&url], Acks::Primary) };
+    let p = primary(pdb.clone(), None, opts, Duration::from_secs(5));
+    p.write_ops(vec![set("p0000001", "sold", json!(6))], None).await.unwrap();
+    // Transaction 1 of term 1 here too, another one.
+    let rdb = create(dir.path(), "r.strata");
+    set_on(&rdb, "p0000001", "sold", 7);
+    let numbered = |db: &Db| db.storage().numbering().unwrap().last();
+    assert_eq!(numbered(&rdb), numbered(&pdb), "one term and number");
+    assert_ne!(rows(&rdb), rows(&pdb));
+    let (r, _) = replica_on(rdb.clone(), None, Some(TcpListener::bind(at).await.unwrap())).await;
+    until("the replica is sent a copy, and is in sync", || async {
+        let f = follower(&p, 0).await;
+        f["copies"] == 1 && f["in_sync"] == true
+    })
+    .await;
+    assert_eq!(rows(&rdb), rows(&pdb));
+    assert_eq!(follower(&p, 0).await["txn_mismatches"], 1);
+    assert_eq!(counted(&p, "chloedb_replica_txn_mismatches_total", &url).await, "1");
+    let h = r.health().await;
+    assert_eq!((&h["status"], &h["replication"]["txn_mismatches"], h["replication"].get("differs")), (&json!("ok"), &json!(1), None), "{h}");
+    assert!(r.prometheus().await.contains("chloedb_replica_txn_mismatches_total 1"));
+    // Shipped to as before since: each call follows a transaction that
+    // both logged, which reads alike.
+    for i in 10..30 {
+        p.write_ops(vec![set(&format!("p{i:07}"), "sold", json!(i))], None).await.unwrap();
+    }
+    until("the replica holds the primary's last", || async { last(&rdb) == last(&pdb) }).await;
+    assert_eq!(rows(&rdb), rows(&pdb));
+    let f = follower(&p, 0).await;
+    assert_eq!((&f["txn_mismatches"], &f["copies"], &f["in_sync"]), (&json!(1), &json!(1), &json!(true)), "{f}");
+}
+
+/// What a replica answers a call that follows its last transaction, by
+/// the digest it carries: its own is applied, and so is none (a primary
+/// of an older protocol); another transaction's is refused, and the
+/// replica keeps that it differs beside its database, refusing every call
+/// with a digest, started again too, and saying so in its health, until
+/// it installs a copy of a primary.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replica_refuses_a_call_that_follows_another_transaction_of_its_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let rdb = create(dir.path(), "r.strata");
+    set_on(&rdb, "p0000001", "sold", 7);
+    let file = replication::file_of(&dir.path().join("r.strata"));
+    let (r, url) = replica(rdb.clone(), Some(&file)).await;
+    let mine = match rdb.storage().log_from(1, 1) {
+        LogRead::Txns(t) => chloedb_server::cores::shard::digest(&t[0].bytes),
+        LogRead::Gone { .. } => panic!("the log holds transaction 1"),
+    };
+    let mut c = pb::strata_client::StrataClient::connect(url).await.unwrap();
+    let call = |prev_digest: u64| pb::ReplicateRequest { term: 1, prev_term: 1, prev_seq: 1, primary: "p".into(), prev_digest, ..Default::default() };
+    // Its own digest, and none: applied by term and number.
+    assert!(c.replicate(call(mine)).await.unwrap().into_inner().matched);
+    assert!(c.replicate(call(0)).await.unwrap().into_inner().matched);
+    // One it does not hold under that term: refused by number, as before.
+    let a = c.replicate(pb::ReplicateRequest { prev_term: 2, ..call(mine ^ 1) }).await.unwrap().into_inner();
+    assert!(!a.matched && !a.differs, "{a:?}");
+    // Another transaction's digest.
+    let a = c.replicate(call(mine ^ 1)).await.unwrap().into_inner();
+    assert!(!a.matched && a.differs && (a.seq, a.term) == (1, 1), "{a:?}");
+    let h = r.health().await;
+    assert_eq!(h["status"], "degraded", "{h}");
+    assert!(h["error"].as_str().unwrap().contains("another transaction than its primary's as transaction 1 of term 1"), "{h}");
+    let rep = &h["replication"];
+    assert_eq!((&rep["differs"], &rep["txn_mismatches"], &rep["serves_reads"]), (&json!({"seq_no": 1, "term": 1}), &json!(1), &json!(false)), "{h}");
+    assert_eq!(kept(dir.path(), "r.strata")["differs"], json!({"term": 1, "seq_no": 1}), "kept beside the database");
+    // Refused from then, its own digest too, and once opened again.
+    assert!(c.replicate(call(mine)).await.unwrap().into_inner().differs);
+    let again = Follow::open(rdb.clone(), Some(&file)).unwrap();
+    assert!(again.replicate(call(mine)).await.unwrap().differs);
+    assert_eq!(again.differs(), Some(chloedb::storage::SeqNo { term: 1, seq: 1 }));
+    assert!(again.replicate(call(0)).await.unwrap().matched, "a primary of an older protocol is followed as before");
+    assert_eq!(last(&rdb), 1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_coordinator_writes_to_each_shards_primary() {
     let dir = tempfile::tempdir().unwrap();
@@ -856,6 +953,7 @@ async fn a_replica_serves_reads_once_caught_up_and_waits_for_a_write() {
     assert!(e.status == 400 && e.message.contains("min_seq_nos is a coordinator's"), "{}", e.message);
     assert!(After::of(k, vec![k]).unwrap_err().message.contains("not both"));
     let plain = Db::create(&dir.path().join("plain.strata"), demo::schema(N), options(0)).unwrap();
+    plain.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: demo::DIM })).unwrap();
     plain.load((0..N).map(|i| demo::product(i, 7))).unwrap();
     let e = sold_3(&Arc::new(service(Arc::new(plain), Duration::from_secs(5))), After::Seq(1), 0).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("start the server with --seq-no"), "{}", e.message);
@@ -1297,13 +1395,14 @@ async fn the_server_starts_as_a_primary_or_a_replica() {
     let e = server::promote(&format!("{ru}/"), &[], "majority", false, None).await.unwrap_err();
     assert!(e.contains("409 Conflict") && e.contains("knows no other copy of its shard"), "{e}");
     let a = server::promote(&format!("{ru}/"), &[], "majority", true, None).await.unwrap();
-    assert_eq!((&a["term"], &a["seq_no"], &a["replicas"]), (&json!(2), &json!(1), &json!([])), "{a}");
+    // The term's first transaction, which writes no row, is number 2.
+    assert_eq!((&a["term"], &a["seq_no"], &a["replicas"]), (&json!(2), &json!(2), &json!([])), "{a}");
     assert_eq!(r.role(), pb::Role::Primary);
     assert_eq!(r.health().await["replication"]["write_acks"], "majority");
     assert_eq!(r.health().await["replication"]["verify_every_s"], 1800, "it ships as its flags say");
     until("the old primary is fenced", || async { p.replaced_by() == 2 }).await;
     let w = r.write_ops(vec![set("p0000001", "sold", json!(8))], None).await.unwrap();
-    assert_eq!(w.seq_no, Some(2));
+    assert_eq!(w.seq_no, Some(3));
     // Started as the primary of a new term, with no replica.
     let q = server::service(&server::Options { promote: true, ..opts("q.strata") }).await.unwrap();
     assert_eq!(q.role(), pb::Role::Primary);
@@ -1472,7 +1571,8 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
         (a, b) => panic!("one promotion: {a:?} {b:?}"),
     };
     assert!(e.status == 409 && e.message.contains("only a replica is promoted"), "{}", e.message);
-    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(5)), "{a}");
+    // Its five, and the new term's first transaction.
+    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(6)), "{a}");
     assert_eq!(a["replicas"][0], json!({"url": u2, "role": "replica", "term": 1, "seq_no": 5}));
     assert!(a["replicas"][1]["error"].is_string(), "{a}");
     assert_eq!(r1.role(), pb::Role::Primary);
@@ -1481,15 +1581,15 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     assert_eq!(r1.promote(&Principal::open(), Vec::new(), Acks::All, false).await.unwrap_err().status, 409, "promoted once");
     // It takes writes, numbered in term 2, which the other replica follows.
     let w = r1.write_ops(vec![set("p0000003", "sold", json!(7))], None).await.unwrap();
-    assert_eq!(w.seq_no, Some(6));
-    assert_eq!(r1db.storage().numbering().unwrap().term_at(6), 2);
-    until("the other replica follows the new primary", || async { last(&r2db) == 6 }).await;
+    assert_eq!(w.seq_no, Some(7));
+    assert_eq!(r1db.storage().numbering().unwrap().term_at(7), 2);
+    until("the other replica follows the new primary", || async { last(&r2db) == 7 }).await;
     assert_eq!(r2.health().await["replication"]["follows"], json!({"primary": new_id, "term": 2}));
     assert_eq!(rows(&r2db), rows(&r1db));
     // A call of the old primary's term is answered with the new term,
     // which fences it, and changes nothing.
     let a = r1.replicate(pb::ReplicateRequest { term: 1, prev_term: 1, prev_seq: 5, primary: old_id.clone(), ..Default::default() }).await.unwrap();
-    assert_eq!((a.matched, a.seq, a.replica_term), (false, 6, 2));
+    assert_eq!((a.matched, a.seq, a.replica_term), (false, 7, 2));
     let image = {
         let to = dir.path().join("image.strata");
         r2db.storage().checkpoint(&to, &CheckpointOptions::default()).unwrap();
@@ -1501,7 +1601,7 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     let e = c.verify(pb::VerifyRequest { term: 1, primary: old_id.clone(), seq_no: 5 }).await.unwrap_err();
     assert!(e.message().contains("this server is a primary"), "{e}");
     assert_eq!(r1.replaced_by(), 0, "an older term replaces nothing");
-    assert_eq!(last(&r1db), 6);
+    assert_eq!(last(&r1db), 7);
 
     // The old primary starts again as a replica: it holds a transaction of
     // term 1 the new primary does not, and is sent a copy of it.
@@ -1510,9 +1610,9 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     assert_eq!(old.health().await["replication"]["restores"], 1);
     assert_eq!(rows(&pdb), rows(&r1db), "the transaction no copy got is dropped");
     let n = pdb.storage().numbering().unwrap();
-    assert_eq!((n.term, n.seq, n.term_at(6)), (2, 6, 2));
+    assert_eq!((n.term, n.seq, n.term_at(6)), (2, 7, 2));
     // (A copy that was a primary votes: it held every transaction.)
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": old_id, "follows": {"primary": new_id, "term": 2}, "member": true, "role": "replica"}));
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": old_id, "follows": {"primary": new_id, "term": 2}, "member": true, "role": "replica", "config": {"version": 1, "copies": 3}}));
     // And follows it from there.
     let w = r1.write_ops(vec![set("p0000004", "sold", json!(8))], None).await.unwrap();
     until("the old primary applies the new one's writes", || async { last(&pdb) == w.seq_no.unwrap() }).await;
@@ -1547,17 +1647,31 @@ async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
     // ...while it hands over to r1, which holds every transaction it
     // applied: it votes for r1 and steps down.
     let a = r1.promote(&Principal::open(), vec![up.clone()], Acks::All, false).await.unwrap();
-    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(1)), "{a}");
+    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(2)), "{a}");
     assert_eq!(p.role(), pb::Role::Replica);
     drop(stalled);
     let e = w.await.unwrap().unwrap_err();
-    assert!(e.status == 409 && e.message.contains("sequence number 2") && e.message.contains("before it was acknowledged"), "{}", e.message);
+    // Applied before it took the new primary's first transaction, it is
+    // durable here and in doubt; after, it is refused unapplied, as it
+    // would be numbered in the new term beside the new primary's own.
+    assert!(e.status == 409 && e.message.contains("before it was acknowledged"), "{}", e.message);
 
     // The new primary does not hold it; its writes go on from its own last,
-    // and the old primary drops the write it applied for the copy.
+    // and the old primary drops the write it applied for the copy, or holds
+    // the new primary's history as it never applied it. (Applied, it is
+    // sent a copy first, out of sync meanwhile: a write under `all` would
+    // be refused, 503, with one copy of two in sync. A copy counts as in
+    // sync from its promotion until a call finds otherwise, so it waits for
+    // the copy to acknowledge the term's first transaction too.)
+    until("the old primary is in sync with the new one", || async {
+        let f = follower(&r1, 0).await;
+        f["in_sync"] == true && f["seq_no"] == 2
+    })
+    .await;
     let w = r1.write_ops(vec![set("p0000003", "sold", json!(3))], None).await.unwrap();
-    assert_eq!(w.seq_no, Some(2));
-    until("the old primary is sent a copy of the new one", || async { follower(&r1, 0).await["copies"] == 1 && follower(&r1, 0).await["in_sync"] == true }).await;
+    // After the term's first transaction.
+    assert_eq!(w.seq_no, Some(3));
+    until("the old primary holds the new one's history", || async { follower(&r1, 0).await["in_sync"] == true && last(&pdb) == last(&r1db) }).await;
     assert_eq!(rows(&pdb), rows(&r1db), "the write answered in doubt is dropped");
     let sold = |db: &Db| db.query("SELECT sold FROM products WHERE id = 'p0000002'", &Params::new()).unwrap().rows[0][0].clone();
     assert_ne!(sold(&r1db), Value::Int(2));
@@ -1685,7 +1799,8 @@ async fn a_handover_is_granted_while_its_primary_calls_the_candidate() {
         assert_eq!(a["term"], json!(round + 2), "{a}");
         assert_eq!(from.role(), pb::Role::Replica, "handover {round}: the old primary voted, and stepped down: {a}");
         let w = to.write_ops(vec![set("p0000001", "sold", json!(round))], None).await.unwrap();
-        assert_eq!(w.seq_no, Some(round + 2));
+        // Each term begins with a transaction of its own.
+        assert_eq!(w.seq_no, Some(2 * round + 3));
     }
 }
 
@@ -1743,16 +1858,17 @@ async fn a_replaced_primary_is_fenced_and_starts_again_only_when_promoted() {
     assert!(e.contains("a primary of term 3 replaced this one: start it with --replica"), "{e}");
     let p = Primary::start(pdb.clone(), Some(&file("p.strata")), PrimaryOptions { promote: true, ..Default::default() }).unwrap();
     assert_eq!(pdb.storage().numbering().unwrap().term, 4);
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "role": "primary", "replicas": [], "write_acks": "all"}));
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "role": "primary", "replicas": [], "write_acks": "all", "config": {"version": 1, "copies": 3}}));
     // Replaced again, and started as a replica: it no longer counts as
     // replaced once it follows.
     assert_eq!(p.shipped_to("q", 5).unwrap_err().status, 409);
     // It keeps the part it has to take up: a replica of the new primary.
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "replaced_by": 5, "role": "replica"}));
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "replaced_by": 5, "role": "replica", "config": {"version": 1, "copies": 3}}));
     drop(p);
     let f = Follow::open(pdb.clone(), Some(&file("p.strata"))).unwrap();
-    assert!(f.replicate(pb::ReplicateRequest { term: 5, prev_term: 1, prev_seq: 2, primary: "q".into(), ..Default::default() }).await.unwrap().matched);
-    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "follows": {"primary": "q", "term": 5}, "member": true, "role": "replica"}));
+    // Its last is the first transaction of term 4, which it began.
+    assert!(f.replicate(pb::ReplicateRequest { term: 5, prev_term: 4, prev_seq: 3, primary: "q".into(), ..Default::default() }).await.unwrap().matched);
+    assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "follows": {"primary": "q", "term": 5}, "member": true, "role": "replica", "config": {"version": 1, "copies": 3}}));
 
     // So does a database that followed a primary as a replica.
     // Its primary's term is 3, though no transaction of that term reached
@@ -1780,7 +1896,7 @@ async fn a_replaced_primary_is_fenced_and_starts_again_only_when_promoted() {
 }
 
 fn ask(term: u64, candidate: &str, last: (u64, u64), pre: bool) -> pb::VoteRequest {
-    pb::VoteRequest { term, candidate: candidate.into(), last_term: last.0, last_seq: last.1, pre, handover: false }
+    pb::VoteRequest { term, candidate: candidate.into(), last_term: last.0, last_seq: last.1, pre, handover: false, ..Default::default() }
 }
 
 /// A copy grants one vote a term, kept beside its database, to a copy

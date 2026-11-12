@@ -106,6 +106,8 @@ machine and a re-run gives the same to every digit.
 | `strata.next_items`, counts after the last two items | 0.2108 | 0.3959 | 0.4788 | 0.1211 | **0.757** | 4.8 ms |
 | `maxsim()` to the last 20 items' vectors | 0.0641 | 0.2070 | 0.3222 | 0.0317 | 0.481 | 2.4 ms |
 
+The `ppr()` row predates release 0.2.0, whose push test counts a row's edges instead of summing their weights. On CI's runner (ubuntu-latest, 12 November 2026) `ppr()` measured Recall@10 0.2414, @50 0.4627, @100 0.5772, NDCG@10 0.1378 and coverage@10 0.475 here, the numbers in `chloedb/tests/fixtures/recsys_gate.json`. The other rows did not move beyond the gate's tolerance.
+
 On this collection the sequence model ranks best, then PageRank over the
 transitions and the counts, all three far above the baselines; `maxsim`
 over the learned item vectors is below item-kNN (those vectors are trained
@@ -147,6 +149,8 @@ second run gave the same to every digit:
 | `ppr()` over what came after what, seeded by the last 5 items | 0.0594 | 0.1511 | 0.2148 | 0.0293 | 0.362 | 59 ms |
 | `strata.next_items`, counts after the last two items | 0.0390 | 0.1231 | 0.1834 | 0.0198 | **0.550** | 3.9 ms |
 | `maxsim()` to the last 20 items' vectors | 0.0238 | 0.1095 | 0.1672 | 0.0100 | 0.355 | 2.7 ms |
+
+As above, the `ppr()` row predates 0.2.0's push test. On CI's runner (12 November 2026) it measured Recall@10 0.0620, @50 0.1689, @100 0.2623, NDCG@10 0.0335 and coverage@10 0.311 (`recsys_gate_time.json`), which beats both baselines.
 
 Every number is lower than under leave-one-out, as the leak predicts, and
 the order changes: the sequence model still ranks first, at 2.7 times

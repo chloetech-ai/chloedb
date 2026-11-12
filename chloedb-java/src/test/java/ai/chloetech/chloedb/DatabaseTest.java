@@ -270,10 +270,16 @@ class DatabaseTest {
         Map<String, Object> schema = map("table", "t", "key", "id", "fields", Arrays.asList(field("id", "keyword"), field("body", "text"), field("v", "vector", "embed", map("from", "body", "model", "potion-base-8M"))));
         try (Database d = Database.create(dir.resolve("m.strata"), schema, new Database.Options().models(dir))) {
             assertTrue(d.embedErrors().containsKey("v"));
-            d.insert(map("id", "a", "body", "no vector"));
+            // A row that needs the vector the model would make is refused...
+            ChloeDBException refused = assertThrows(ChloeDBException.class, () -> d.insert(map("id", "a", "body", "no vector")));
+            assertTrue(refused.getMessage().contains("not open"), refused.getMessage());
             float[] v = new float[256];
             Arrays.fill(v, 0.1f);
             d.insert(map("id", "b", "body", "a vector", "v", v));
+            assertEquals(1, d.count());
+            // ...unless the caller writes it without on purpose.
+            d.setEmbedLater(true);
+            d.insert(map("id", "a", "body", "no vector"));
             assertEquals(2, d.count());
             // Text only: the model is not open.
             assertFalse(d.search("vector").keys().isEmpty());

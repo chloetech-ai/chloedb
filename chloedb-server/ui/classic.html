@@ -1719,14 +1719,14 @@ $("sDownload").onclick = () => {
   document.body.append(a); a.click(); a.remove();
 };
 function renderCmds() {
-  const file = (D.table || "schema") + ".json", db = (D.table || "new") + ".strata";
+  const file = (D.table || "schema") + ".json", db = (D.table || "new") + ".chloedb";
   const models = [...new Set(D.fields.map((f) => f.embed && f.embed.model).filter((m) => m && MODELS[m]))];
   const lines = [];
   if (models.length) lines.push("# the embedding models, once", ...models.map((m) => `chloedb-server fetch-model ${m}`));
   const keys = [...new Set(D.fields.map((f) => f.embed && HOSTED[f.embed.model] && HOSTED[f.embed.model][1]).filter(Boolean))];
   if (keys.length) lines.push("# the hosted models' API keys, in the server's environment", ...keys.map((k) => `export ${k}=...`));
   lines.push("# a new database filled from files (JSON Lines, JSON, CSV or TSV)", `chloedb-server import --db ${db} --schema ${file} rows.jsonl`,
-    "# or filled with an existing database's rows (not open in a running server)", `chloedb-server --db ${db} --schema ${file} --copy-from old.strata`,
+    "# or filled with an existing database's rows (not open in a running server)", `chloedb-server --db ${db} --schema ${file} --copy-from old.chloedb`,
     "# then serve it", `chloedb-server --db ${db}`);
   $("sCmds").replaceChildren(el("label", { class: "lbl", text: "With the schema downloaded, in a terminal:" }), el("pre", { class: "sql", text: lines.join("\n") }));
 }

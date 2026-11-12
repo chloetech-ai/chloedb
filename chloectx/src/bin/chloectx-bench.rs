@@ -1715,6 +1715,19 @@ fn scale_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_queries
 
 // ---------------------------------------------------------------- latency
 
+/// Throws away what a store logged since its file was last written, which
+/// no process may have open: its write-ahead log, and the writer's record
+/// in `<db>-readers` that the log held transactions after the version on
+/// disk. Without the record's removal, ChloeDB refuses to open a store
+/// whose log is missing while the record names its version (writes would
+/// be lost); here losing them is the point.
+fn discard_log(db: &Path) {
+    let mut wal = db.as_os_str().to_owned();
+    wal.push("-wal");
+    let _ = std::fs::remove_file(PathBuf::from(wal));
+    chloedb::storage::share::remove(db, false);
+}
+
 fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }
@@ -1868,12 +1881,11 @@ fn latency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_queri
         // 2. A write, then a query right away (a tool call followed by the
         //    next hook), under memtable settings. Each configuration starts
         //    from the bulk-loaded file: its appends stay in the memtable and
-        //    the WAL (fewer than a flush's worth), and the WAL is deleted
-        //    afterwards, which leaves the file as it was.
-        let wal = { let mut w = db.as_os_str().to_owned(); w.push("-wal"); PathBuf::from(w) };
+        //    the WAL (fewer than a flush's worth), and the WAL is discarded
+        //    afterwards ([`discard_log`]), which leaves the file as it was.
         let mut stall = serde_json::Map::new();
         for (name, chunk, flat) in [("chunk1024_hnsw", 1024usize, false), ("chunk1024_flat", 1024, true), ("chunk256_flat", 256, true), ("chunk64_flat", 64, true)] {
-            let _ = std::fs::remove_file(&wal);
+            discard_log(&db);
             assert!(rounds * 2 < StoreOptions::default().flush_docs, "the appends must stay below a flush");
             let store = Store::open(&db, e.clone(), StoreOptions { sync: true, mem_chunk_docs: chunk, mem_flat: flat, ..Default::default() }).unwrap();
             store.warm();
@@ -1907,7 +1919,7 @@ fn latency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_queri
                 }
             }
             drop(store);
-            let _ = std::fs::remove_file(&wal);
+            discard_log(&db);
             eprintln!(
                 "  {name}: append {:.2}, rebuild {:.2}, query after write {:.2} (p99 {:.2}), query after rebuild {:.2}",
                 pct(&mut app.clone(), 0.5),
@@ -2201,8 +2213,7 @@ fn concurrency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_q
         }
         let n = recs.len();
         drop(recs);
-        let wal = { let mut w = db.as_os_str().to_owned(); w.push("-wal"); PathBuf::from(w) };
-        let _ = std::fs::remove_file(&wal);
+        discard_log(&db);
         let mut row = serde_json::Map::new();
         row.insert("records".into(), json!(n));
         row.insert("secs".into(), json!(secs));
@@ -2210,11 +2221,11 @@ fn concurrency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_q
 
         // 1. In this process: reader threads on one store, with and without
         //    a writer. Each configuration starts from the bulk-loaded file
-        //    (its appends stay in the memtable and the WAL, deleted after).
+        //    (its appends stay in the memtable and the WAL, discarded after).
         let mut runs = Vec::new();
         for &k in readers {
             for writer in [false, true] {
-                let _ = std::fs::remove_file(&wal);
+                discard_log(&db);
                 let store = Store::open(&db, e.clone(), StoreOptions::default()).unwrap();
                 store.warm();
                 let filter = Filter { exclude_window: Some(("bench-live".into(), i64::MAX)), ..Default::default() };
@@ -2257,7 +2268,7 @@ fn concurrency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_q
                     let lat: Vec<f64> = rs.into_iter().flat_map(|h| h.join().unwrap()).collect();
                     (lat, w.map(|h| h.join().unwrap()).unwrap_or_default())
                 });
-                let _ = std::fs::remove_file(&wal);
+                discard_log(&db);
                 eprintln!(
                     "  store: {k} readers{}: read p50 {:.2} p99 {:.2} ms, {:.0} reads/s; {} appends, p50 {:.2} p99 {:.2} ms",
                     if writer { " + writer" } else { "" },
@@ -2284,9 +2295,8 @@ fn concurrency_cmd(data: &Path, sizes: &[usize], embedder: &str, out: &Path, n_q
         let mut runs = Vec::new();
         for &k in readers {
             for writer in [false, true] {
-                for f in [&wal, &dir.join("state.json")] {
-                    let _ = std::fs::remove_file(f);
-                }
+                discard_log(&db);
+                let _ = std::fs::remove_file(dir.join("state.json"));
                 std::fs::copy(&backup, &db).unwrap();
                 let first = json!({"session_id": "bench-start", "hook_event_name": "Notification", "cwd": project});
                 run_hook(&exe, &home, &project, "Notification", &first);

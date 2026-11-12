@@ -548,6 +548,11 @@ impl Generator {
     /// (30 s unless the endpoint says) and are tried again twice.
     pub fn open_for_queries(name: &str, models: &std::path::Path) -> Result<Generator> {
         let bad = |m: String| Error::Query(format!("model {name}: {m}"));
+        // A query names a model; it never gives a path out of the models
+        // directory (`Path::join` of an absolute name would replace it).
+        if !crate::query::model::is_model_path(name) {
+            return Err(Error::Query(format!("model {name:?}: a query's model is a name in the models directory (letters, digits, _, - and ., two such names joined by / at most), not a path")));
+        }
         let path = models.join(name).join("endpoint.json");
         let config = match path.exists() {
             true => {

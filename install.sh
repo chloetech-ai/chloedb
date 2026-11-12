@@ -82,12 +82,15 @@ if [ -d "$DATA/engram" ] && [ ! -e "$DATA/chloectx" ]; then HOMEDIR="$DATA/engra
 # ENGRAM_* are the settings' names before the rename, which chloectx reads too.
 HOMEDIR="${CHLOECTX_HOME:-${ENGRAM_HOME:-$HOMEDIR}}" # before the rename: ENGRAM_HOME
 MODELS="${CHLOECTX_MODELS:-${ENGRAM_MODELS:-$HOMEDIR/models}}" # before the rename: ENGRAM_MODELS
+# fetch-model keeps the files already there with the pinned bytes and
+# downloads the others (a download cut short among them), each checked
+# against its SHA-256 before it is moved into place.
 if [ -f "$MODELS/potion-retrieval-32M/model.safetensors" ]; then
-  say "embedding model already downloaded"
+  say "checking the embedding model (potion-retrieval-32M)"
 else
   say "downloading the embedding model (potion-retrieval-32M, 129 MB)"
-  "$BIN" fetch-model
 fi
+"$BIN" fetch-model || die "the embedding model did not download or did not match its pinned SHA-256; run ./install.sh again"
 
 [ "$WIRE" = 1 ] || { say "done (Claude Code not changed: --no-wire)"; exit 0; }
 

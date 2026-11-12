@@ -30,6 +30,10 @@ on:
 # 5 macOS jobs each against a limit of 5 at once, and the queue grew by
 # hours.) The merge queue, the nightly run and a run by hand keep a group
 # per event and commit, so none of them is dropped.
+# The jobs only read the repository: the token gets no write rights.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}', github.event_name, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -79,7 +83,7 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Changed files
         id: diff
         env:
@@ -130,8 +134,8 @@ jobs:
     env: &test-env
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'chloedb' && '-C target-cpu=x86-64-v3' || '' }}
     steps: &test-steps
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
       # On macOS the chloedb crate builds with -C target-cpu=native
@@ -146,7 +150,7 @@ jobs:
       # The key names this job (`test`) rather than leaving the job's id to
       # rust-cache, so that the pull request's macOS job (`macos`, the same
       # steps) restores the cache main's macOS job saves.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: ${{ matrix.crate }}
@@ -162,7 +166,7 @@ jobs:
       # tests from running on macOS at all.
       - name: Tests
         working-directory: ${{ matrix.crate }}
-        run: cargo test --profile ci --no-fail-fast ${{ matrix.crate == 'chloedb' && '--features sqlite' || '' }}
+        run: cargo test --locked --profile ci --no-fail-fast ${{ matrix.crate == 'chloedb' && '--features sqlite' || '' }}
       # The cluster simulator over more seeds than its tests run (`cargo
       # test` built chloedb-sim): the first 3,000 of each world on every
       # change, and in the nightly run and a run started by hand 30,000 of
@@ -198,7 +202,7 @@ jobs:
       # the build; style, complexity and performance lints are advice.
       - name: Clippy
         working-directory: ${{ matrix.crate }}
-        run: cargo clippy --release --all-targets ${{ matrix.crate == 'chloedb' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+        run: cargo clippy --locked --release --all-targets ${{ matrix.crate == 'chloedb' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # ChloeDB's tests on macOS for a pull request, the merge queue and a push
   # to main: the `test` job's steps, in a job of its own that CI result does
@@ -231,10 +235,10 @@ jobs:
     env:
       RUSTFLAGS: -C target-cpu=x86-64
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       # A generic build runs on any x86-64 runner: no CPU model in the key.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
@@ -242,8 +246,8 @@ jobs:
       - name: Kernels
         working-directory: chloedb
         run: |
-          cargo test --profile ci --lib -- vector:: postings:: forward:: simd
-          CHLOEDB_SIMD=portable cargo test --profile ci --lib -- vector:: postings:: forward::
+          cargo test --locked --profile ci --lib -- vector:: postings:: forward:: simd
+          CHLOEDB_SIMD=portable cargo test --locked --profile ci --lib -- vector:: postings:: forward::
 
   # Images (feature `vision`: the image crate and SigLIP through candle),
   # which the default build leaves out: the tests of vectors of images in
@@ -258,11 +262,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
@@ -274,11 +278,11 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
-          cargo test --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
-          cargo clippy --profile ci --features vision --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+          cargo test --locked --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
+          cargo clippy --locked --profile ci --features vision --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
       - name: chloedb-server
         working-directory: chloedb-server
-        run: cargo test --profile ci --features vision --test media_vectors --test media
+        run: cargo test --locked --profile ci --features vision --test media_vectors --test media
 
   # Sound (feature `audio`: symphonia's decoders, and Whisper and CLAP
   # through candle): decoding, resampling and mel features, text derived
@@ -292,11 +296,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
@@ -308,12 +312,12 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
-          cargo test --profile ci --features audio --test derived_audio --test audio_vectors
-          cargo test --profile ci --features audio --lib -- audio:: clap::
-          cargo clippy --profile ci --features audio --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+          cargo test --locked --profile ci --features audio --test derived_audio --test audio_vectors
+          cargo test --locked --profile ci --features audio --lib -- audio:: clap::
+          cargo clippy --locked --profile ci --features audio --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
       - name: chloedb-server
         working-directory: chloedb-server
-        run: cargo clippy --profile ci --features audio -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+        run: cargo clippy --locked --profile ci --features audio -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # DataFusion as the engine of plans' operators (feature `datafusion`,
   # chloedb::query::df): the differential test against ChloeDB's own
@@ -331,11 +335,11 @@ jobs:
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
@@ -343,13 +347,13 @@ jobs:
       - name: ChloeDB
         working-directory: chloedb
         run: |
-          cargo test --profile ci --features datafusion --test datafusion_engine --test hash_function
-          cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
-          CHLOEDB_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
+          cargo test --locked --profile ci --features datafusion --test datafusion_engine --test hash_function
+          cargo test --locked --profile ci --features datafusion,sqlite --test window_functions --test set_operations
+          CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
-          cargo test --profile ci --features datafusion,parquet,s3 --test parquet
-          cargo test --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
-          cargo clippy --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+          cargo test --locked --profile ci --features datafusion,parquet,s3 --test parquet
+          cargo test --locked --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
+          cargo clippy --locked --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # Power losses, full disks and failing syncs at every write of a storage
   # workload (storage::io, tests/storage_faults.rs). A job of its own: after
@@ -367,20 +371,20 @@ jobs:
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: CPU model
         id: cpu
         shell: bash
         run: echo "model=$( (if [ -r /proc/cpuinfo ]; then grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u; else sysctl -n machdep.cpu.brand_string; fi) | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
           key: chloedb-faults${{ runner.os == 'macOS' && format('-{0}', steps.cpu.outputs.model) || '' }}
       - name: Fault injection
         working-directory: chloedb
-        run: cargo test --profile ci --features fault-injection --test storage_faults
+        run: cargo test --locked --profile ci --features fault-injection --test storage_faults
 
   # BM25 through SQL on three BEIR collections against the committed
   # baseline (chloedb/tests/relevance_gate.rs): a ranking change must come
@@ -394,14 +398,14 @@ jobs:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
           key: relevance
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/beir
           key: beir-${{ hashFiles('chloedb/tests/fixtures/beir/fetch.sh') }}
@@ -409,7 +413,7 @@ jobs:
         run: chloedb/tests/fixtures/beir/fetch.sh "$HOME/beir"
       - name: Gate
         working-directory: chloedb
-        run: CHLOEDB_BEIR_DIR="$HOME/beir" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
+        run: CHLOEDB_BEIR_DIR="$HOME/beir" CHLOEDB_RELEVANCE_GATE=required cargo test --locked --profile ci --test relevance_gate -- --nocapture
 
   # BM25's top 20 reranked by the cross-encoder ms-marco-MiniLM-L-6-v2 on
   # SciFact and NFCorpus, against its own baseline
@@ -424,18 +428,18 @@ jobs:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
           key: relevance-bert
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/beir
           key: beir-${{ hashFiles('chloedb/tests/fixtures/beir/fetch.sh') }}
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/models
           key: cross-encoder-${{ hashFiles('chloedb/tests/models/fetch_cross_encoder.sh') }}
@@ -445,7 +449,7 @@ jobs:
           chloedb/tests/models/fetch_cross_encoder.sh "$HOME/models"
       - name: Gate
         working-directory: chloedb
-        run: CHLOEDB_BEIR_DIR="$HOME/beir" CHLOEDB_MODELS="$HOME/models" CHLOEDB_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
+        run: CHLOEDB_BEIR_DIR="$HOME/beir" CHLOEDB_MODELS="$HOME/models" CHLOEDB_RELEVANCE_GATE=required cargo test --locked --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
 
   # Miri runs the tests of ChloeDB's zero-copy byte views (postings::bytes)
   # and of the structures read through them, checking every access for
@@ -477,12 +481,12 @@ jobs:
           - part: columns, graph, keys, text codec
             tests: "forward:: graph:: storage::pk::tests::collisions storage::pk::tests::section_written storage::live storage::updates::tests::round_trip text::codec --skip many_int_keys"
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: nightly-2026-10-27
           components: miri, rust-src
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
@@ -501,9 +505,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
@@ -514,7 +518,7 @@ jobs:
           key: chloedb-server-smoke
       - name: Build
         working-directory: chloedb-server
-        run: cargo build --release
+        run: cargo build --locked --release
       - name: Serve a demo catalogue and query it
         working-directory: chloedb-server
         run: |
@@ -556,7 +560,7 @@ jobs:
         env:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOEDB_CRAWL_NEED_SERVER: "1"
-        run: cargo test --profile ci --test site
+        run: cargo test --locked --profile ci --test site
       # Spreadsheets kept in a server of this build: made, changed,
       # imported (CSV, SQLite), filled by a query, saved as a table,
       # searched, exported, and read back after a restart.
@@ -565,7 +569,7 @@ jobs:
         env:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOEDB_SHEETS_NEED_SERVER: "1"
-        run: cargo test --profile ci --test cluster
+        run: cargo test --locked --profile ci --test cluster
       # ChloeCtx as an app of a cluster of this build's servers (two shards
       # and a coordinator): spaces, notes, contexts within a budget, an
       # exchange distilled by a stub model, incidents matched to an alert
@@ -575,11 +579,11 @@ jobs:
         env:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOECTX_NEED_SERVER: "1"
-        run: cargo test --profile ci --test app_cluster
+        run: cargo test --locked --profile ci --test app_cluster
       # The app engine (chloedb-apps, a prototype in Node): apps built from
       # plans, stored as SQL rows in a server of this build, run, tested and
       # searched; no model is called.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
       - name: App engine against a server
@@ -616,16 +620,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       # chloedb-py and chloedb-server build for a generic CPU: one cache on
       # every runner.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
@@ -635,7 +639,7 @@ jobs:
       # The client tests run against a real server.
       - name: Build chloedb-server
         working-directory: chloedb-server
-        run: cargo build --release
+        run: cargo build --locked --release
       # The Kafka consumer's exactly-once test runs against Redpanda, on
       # Linux only (macOS runners have no Docker); elsewhere it is skipped.
       - name: Start Redpanda
@@ -662,7 +666,7 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then pip install torch --index-url https://download.pytorch.org/whl/cpu; else pip install torch; fi
           # The ci profile, as the crates' tests have: release's link-time
           # optimisation and single codegen unit took most of this step.
-          maturin develop --profile ci
+          maturin develop --profile ci --locked
           pytest tests -v
       # The recommender gate (chloedb/results/sequence/gate.py): every
       # candidate source and two baselines on MovieLens-1M, checked against
@@ -690,7 +694,7 @@ jobs:
           exit $status
       - name: Clippy
         working-directory: chloedb-py
-        run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+        run: cargo clippy --locked --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   javascript:
     name: JavaScript package on ${{ matrix.os }}
@@ -703,22 +707,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
       # setup-bun and setup-deno download from GitHub's releases, which
       # answered the runners 504 for an hour on 8 November; npm's registry
       # has the same Bun and Deno.
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         id: bun
         continue-on-error: true
       - if: steps.bun.outcome == 'failure'
         run: npm install -g bun && bun --version
-      - uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         id: deno
         continue-on-error: true
         with:
@@ -727,7 +731,7 @@ jobs:
         run: npm install -g deno && deno --version
       # chloedb-js and chloedb-server build for a generic CPU: one cache on
       # every runner.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
@@ -737,11 +741,11 @@ jobs:
       # The client tests run against a real server.
       - name: Build chloedb-server
         working-directory: chloedb-server
-        run: cargo build --release
+        run: cargo build --locked --release
       - name: Build and test
         working-directory: chloedb-js
         run: |
-          node scripts/build.mjs --profile ci
+          node scripts/build.mjs --profile ci --locked
           node --test test/*.test.mjs
       # The same addon from Bun and Deno: a file opened, written and
       # searched in each runtime, and the client against a server.
@@ -752,7 +756,7 @@ jobs:
           deno run --allow-ffi --allow-read --allow-write --allow-env --allow-net --allow-run --allow-sys test/runtimes.mjs
       - name: Clippy
         working-directory: chloedb-js
-        run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+        run: cargo clippy --locked --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # The Java package (chloedb-java): its native library, built by cargo
   # inside mvn package, and the Java classes' tests against it on the
@@ -770,17 +774,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
       # chloedb-java builds for a generic CPU: one cache on every runner.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb-java
           key: java
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
         with:
           distribution: temurin
           java-version: "11"
@@ -789,7 +793,7 @@ jobs:
       - name: Build and test on Java 11
         working-directory: chloedb-java
         run: mvn -B -ntp -Dcargo.profile=ci package
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
         with:
           distribution: temurin
           java-version: "25"
@@ -798,10 +802,10 @@ jobs:
         run: mvn -B -ntp -Dcargo.profile=ci -Dcargo.skip=true test
       - name: Native library's own tests
         working-directory: chloedb-java
-        run: cargo test --profile ci
+        run: cargo test --locked --profile ci
       - name: Clippy
         working-directory: chloedb-java
-        run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+        run: cargo clippy --locked --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # The one check main requires: every job above passed, or was skipped
   # because the change touches only the documentation. A failed or

@@ -1,6 +1,6 @@
 # ChloeDB from Java
 
-The `ai.chloetech.chloedb` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:chloedb:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
+The `ai.chloetech.chloedb` package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:chloedb:books.chloedb`), for code and tools that speak JDBC. It works on Java 11 and later.
 
 Before ChloeDB was renamed, the package was `ai.chloetech.strata`, its jar `ai.chloetech:strata`, its errors `StrataException` and its driver's classes `Strata*` (`StrataDriver`, `StrataConnection`, ...). They are `ai.chloetech.chloedb`, `ai.chloetech:chloedb`, `ChloeDBException` and `ChloeDB*` now: change the imports and the dependency when you rebuild. URLs that begin `jdbc:strata:` still open a database.
 
@@ -42,7 +42,7 @@ Map<String, Object> schema = Map.of("table", "books", "key", "id", "fields", Lis
     Map.of("name", "year", "type", "int"),
     Map.of("name", "emb", "type", "vector", "embed", Map.of("from", "title", "model", "hash:32"))));
 
-try (Database db = Database.create("books.strata", schema)) {
+try (Database db = Database.create("books.chloedb", schema)) {
     db.insert(List.of(
         Map.of("id", "b1", "title", "The river and the dragon", "year", 1999),
         Map.of("id", "b2", "title", "A mountain in winter", "year", 2004)));
@@ -54,7 +54,7 @@ try (Database db = Database.create("books.strata", schema)) {
     db.execute("UPDATE books SET year = 2000 WHERE id = :k", Map.of("k", "b1"));   // 1
 }
 
-try (Database db = Database.open("books.strata")) {
+try (Database db = Database.open("books.chloedb")) {
     db.get("b1");                              // {id=b1, title=The river and the dragon, year=2000}
 }
 ```
@@ -105,6 +105,21 @@ db.search("dragon", new SearchOptions().mode("text").textFields("title"));
 
 `queryLogged` and `exportRankLog` keep and export a [rank log](query-language.md#the-rank-log-what-each-query-served) for training a ranking, with the options chloedb-server takes for them.
 
+### Limits: memory, deadlines, interrupting
+
+A query runs in your process, so what it builds up (its groups, the rows it orders and returns, a join's tables) is held by the JVM's process, outside its heap. The queries of every database a process opens share a memory budget, by default a quarter of the machine's memory (the cgroup's limit in a container, else RAM), or `CHLOEDB_QUERY_MEMORY_MB` MiB when that is set when the first database opens (`0`: no budget). A query that would hold more throws a `ChloeDBException` whose message starts `memory:`, naming the budget and how to raise it, instead of the process running out of memory.
+
+A query has no deadline unless it is given one. `query(sql, params, options)`, `execute(sql, params, options)` and `SearchOptions.limits(options)` take a `QueryOptions`: `timeoutMs` (past it the query stops and throws a `ChloeDBException` whose message starts `timeout:`, naming it) and `memory` (a budget of its own in bytes; `0`: none). A database's own limits, for every query that does not give its own, come with `Database.Options` or `setLimits`; `interrupt()`, from any thread, stops the queries of the database running now and returns how many there were:
+
+```java
+Database db = Database.open("books.chloedb", new Database.Options().timeoutMs(5_000).memory(512L << 20));
+db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", null, new QueryOptions().timeoutMs(200));
+db.query("SELECT * FROM books", null, new QueryOptions().memory(0));   // counts nothing
+db.setLimits(null, null);                                              // back to the defaults
+```
+
+A query checks its deadline and `interrupt` between segments and every 1,024 rows it groups, orders, walks or joins, so it stops within milliseconds. A write is not cut short. Through JDBC, `Statement.setQueryTimeout(seconds)` is each query's deadline (past it, a `SQLTimeoutException`, state `HYT00`) and `Statement.cancel()`, from another thread, stops the statement's query (a `SQLException`, state `HY008`).
+
 ## Tables
 
 The methods that act on a table (`insert`, `upsert`, `delete`, `get`, `getMany`, `search`, `schema`, `importFile`, `addColumn`, `dropColumn`, `renameColumn`, `embed`) act on the database's first table. `db.table("events")` gives another, with the same methods:
@@ -126,7 +141,7 @@ db.importSqlite("notes.sqlite");                       // a SQLite file's tables
 db.exportSqlite("out.sqlite", Map.of("fts", false));   // and the database out to one
 db.importParquet("s3://bucket/events/");               // Parquet files, from S3 too
 db.exportParquet("out/");
-Database copy = Database.fromSqlite("notes.sqlite", "notes.strata");   // a new database from a SQLite file
+Database copy = Database.fromSqlite("notes.sqlite", "notes.chloedb");  // a new database from a SQLite file
 ```
 
 Their options are maps, with the names the [SQLite](sqlite.md) and [Parquet](parquet.md) pages give (`tables`, `schemas`, `blobsBase64`, `fts`, `indexes`, `table`, `schema`, `key`). An option a method does not take throws `IllegalArgumentException` naming those it takes, before anything is read or written. `Database.planSqlite` and `Database.planParquet` say what an import would do without doing it, and `lastImport()` what the import that made a database did.
@@ -138,7 +153,7 @@ The jar is also a JDBC driver: `jdbc:chloedb:PATH` (or `jdbc:strata:PATH`, by th
 ```java
 import java.sql.*;
 
-try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
+try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.chloedb");
      PreparedStatement ps = c.prepareStatement("SELECT id, title, year FROM books WHERE year >= ? ORDER BY year LIMIT ?")) {
     ps.setInt(1, 2000);
     ps.setInt(2, 10);
@@ -150,14 +165,14 @@ try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
 }
 ```
 
-Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:chloedb:books.strata?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:strata:file:books.strata`.
+Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:chloedb:books.chloedb?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:chloedb:file:books.chloedb`.
 
 - **Statements** are ChloeDB's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
 - **Results** come back whole, so a result set can scroll if the statement is made with `ResultSet.TYPE_SCROLL_INSENSITIVE`; result sets are read-only. `getObject` gives an INT as `Long`, a FLOAT as `Double`, a TIMESTAMP as `java.sql.Timestamp`, a vector as `float[]` and a list as `List`; the getters convert (`getInt`, `getString`, `getObject(i, Instant.class)`, `getArray` for vectors). Times are in UTC.
 - **Transactions**: each statement commits as it runs, as it does through the rest of the package. Auto-commit is always on: `setAutoCommit(false)` throws `SQLFeatureNotSupportedException` rather than pretending a rollback could undo anything, and `commit()` and `rollback()` throw too. A tool or framework that needs transactions across statements cannot use ChloeDB through JDBC yet.
 - **Connections share the database.** A process may have a database open once, so the connections to one file (a pool's, say) share one `Database`, which the last of them to close closes. `connection.unwrap(Database.class)` gives it, for what SQL does not do: `search`, `importParquet`, `embed`.
 - **Metadata** (`getMetaData()`) lists tables, columns with their types (KEYWORD and TEXT as `VARCHAR`, INT as `BIGINT`, FLOAT as `DOUBLE`, BOOL, TIMESTAMP, vectors and lists as `ARRAY`), keys, references and the SQL types: what database browsers ask a driver. Tables have no catalog or schema, and table and column patterns match regardless of case, as ChloeDB's SQL names do.
-- **Errors** are `SQLException`s: a statement ChloeDB cannot parse or plan a `SQLSyntaxErrorException`, what the driver does not do a `SQLFeatureNotSupportedException`.
+- **Errors** are `SQLException`s: a statement ChloeDB cannot parse or plan a `SQLSyntaxErrorException`, a query past `setQueryTimeout` a `SQLTimeoutException` and one stopped by `cancel()` state `HY008` ([limits](#limits-memory-deadlines-interrupting)), what the driver does not do a `SQLFeatureNotSupportedException`.
 
 ## Errors
 

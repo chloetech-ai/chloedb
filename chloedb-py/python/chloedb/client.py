@@ -7,15 +7,17 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from ._search import Search, ordered_schema, params as _params
-from ._native import ChloeDBError
+from ._native import ChloeDBError, make_error
 from .build import Query
 from .frame import FrameStore, _UPLOAD_ROWS, _arrow_table, _client_arrow
 from .result import Result
@@ -50,6 +52,65 @@ def _retry_after(headers: Any) -> float:
         return min(max(float(headers.get("retry-after") or 1), 0.0), 10.0)
     except (TypeError, ValueError):
         return 1.0
+
+
+class Written(int):
+    """The rows a write wrote: an `int`, which compares, adds and prints as
+    one, with the write's sequence numbers as the server answered them.
+    `seq_no` is a server's (started with --seq-no), `seq_nos` a
+    coordinator's, one per shard (0 where it wrote nothing); either is None
+    when the answer had none. Pass them to a read as `min_seq_no=` /
+    `min_seq_nos=` to read the write from any copy, or read through a
+    `Session`, which does."""
+
+    seq_no: int | None
+    seq_nos: list[int] | None
+
+    def __new__(cls, written: int = 0, seq_no: int | None = None, seq_nos: Sequence[int] | None = None) -> "Written":
+        w = super().__new__(cls, written)
+        w.seq_no = None if seq_no is None else int(seq_no)
+        w.seq_nos = None if seq_nos is None else [int(n) for n in seq_nos]
+        return w
+
+    @classmethod
+    def _of(cls, answer: Mapping[str, Any]) -> "Written":
+        return cls(int(answer.get("written") or 0), answer.get("seq_no"), answer.get("seq_nos"))
+
+    def _then(self, later: Any) -> "Written":
+        """This write's rows and a later one's, with the later numbers."""
+        return Written(int(self) + int(later), _later(self.seq_no, getattr(later, "seq_no", None)), _later_each(self.seq_nos, getattr(later, "seq_nos", None)))
+
+    def __reduce__(self) -> Any:
+        return (Written, (int(self), self.seq_no, self.seq_nos))
+
+
+def _later(a: int | None, b: int | None) -> int | None:
+    return b if a is None else a if b is None else max(a, b)
+
+
+def _later_each(a: Sequence[int] | None, b: Sequence[int] | None) -> list[int] | None:
+    """Per shard, the later of two lists of numbers."""
+    if a is None or b is None:
+        return None if a is None and b is None else list(a if b is None else b)  # type: ignore[arg-type]
+    return [max(a[i] if i < len(a) else 0, b[i] if i < len(b) else 0) for i in range(max(len(a), len(b)))]
+
+
+def _after_body(min_seq_no: int | None, min_seq_nos: Sequence[int] | None) -> dict:
+    """A read's `min_seq_no` and `min_seq_nos` as the server takes them;
+    0s ask for nothing and are left out."""
+    out: dict[str, Any] = {}
+    if min_seq_no:
+        out["min_seq_no"] = int(min_seq_no)
+    if min_seq_nos and any(min_seq_nos):
+        out["min_seq_nos"] = [int(n) for n in min_seq_nos]
+    return out
+
+
+def _reads(sql: str) -> bool:
+    """Whether a statement is a read (SELECT, WITH, EXPLAIN, ...), by its
+    first word."""
+    m = re.match(r"(?:\s|\(|--[^\n]*|/\*.*?\*/)*([A-Za-z]+)", sql, re.S)
+    return bool(m) and m.group(1).lower() in ("select", "with", "explain", "values", "show", "describe")
 
 
 # The rows a frame asks of each page of a server's answer: the server cuts
@@ -110,10 +171,7 @@ class Client(Search, FrameStore):
                 if e.code == 429 and self.retry_for > 0 and again and (keyed or not partial) and time.monotonic() + wait <= give_up:
                     time.sleep(wait)
                     continue
-                err = ChloeDBError(f"{msg} (HTTP {e.code})")
-                err.status = e.code
-                err.answer = answer
-                raise err from None
+                raise make_error(f"{msg} (HTTP {e.code})", status=e.code, answer=answer) from None
 
     def _schema_answer(self) -> dict:
         if self._schema is None:
@@ -148,22 +206,42 @@ class Client(Search, FrameStore):
     def __len__(self) -> int:
         return int(self.health()["docs"])
 
-    def query(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, **kw: Any) -> Result:
-        """Runs a SELECT."""
-        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw)}
+    # Reads that see a write. A read takes `min_seq_no` (a server's write
+    # answered it) and `min_seq_nos` (a coordinator's, one per shard): the
+    # copy that answers holds those writes. A `Session` adds its own
+    # writes' numbers to every read (`_after`) and keeps them from every
+    # write's answer (`_note`); a plain Client sends only what it is given.
+
+    def _after(self, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None) -> dict:
+        return _after_body(min_seq_no, min_seq_nos)
+
+    def _note(self, written: "Written") -> "Written":
+        return written
+
+    def session(self) -> "Session":
+        """A `Session` on this client's server, with its token, timeout and
+        retries: its reads see its own writes, through a coordinator or
+        from a replica too."""
+        return Session(self.url, token=self.token, timeout=self.timeout, retry_for=self.retry_for)
+
+    def query(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None, **kw: Any) -> Result:
+        """Runs a SELECT. With `min_seq_no` (a server's `Written.seq_no`) or
+        `min_seq_nos` (a coordinator's `Written.seq_nos`), the copy that
+        answers holds those writes: a replica waits for them up to a second."""
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw), **self._after(min_seq_no, min_seq_nos)}
         if timeout_ms:
             body["timeout_ms"] = timeout_ms
         return Result._of(self._call("POST", "/v1/query", body))
 
-    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, **kw: Any):
+    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None, **kw: Any):
         """Runs a SELECT and returns its answer as a pyarrow Table, sent by
         the server as an Arrow IPC stream (no JSON either way), its columns
         typed as `Database.query_arrow` types them. Needs pyarrow. A server
         too old for Arrow answers JSON, which this types from the values."""
-        return self._arrow_answer(sql, _params(params, kw), timeout_ms, {})
+        return self._arrow_answer(sql, _params(params, kw), timeout_ms, {}, self._after(min_seq_no, min_seq_nos))
 
-    def _arrow_answer(self, sql: str, params: Mapping[str, Any], timeout_ms: int | None, types: Mapping[str, dict]):
-        body: dict[str, Any] = {"sql": sql, "params": params}
+    def _arrow_answer(self, sql: str, params: Mapping[str, Any], timeout_ms: int | None, types: Mapping[str, dict], after: Mapping[str, Any] | None = None):
+        body: dict[str, Any] = {"sql": sql, "params": params, **(self._after() if after is None else after)}
         if timeout_ms:
             body["timeout_ms"] = timeout_ms
         return self._arrow_page(body, types)[0]
@@ -190,7 +268,7 @@ class Client(Search, FrameStore):
 
         return pyarrow.ipc.open_stream(buf.getvalue()).read_all(), headers.get("x-chloedb-cursor") or headers.get("x-strata-cursor")
 
-    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, keep_alive_ms: int | None = None, timeout_ms: int | None = None, **kw: Any) -> Iterator[Any]:
+    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, keep_alive_ms: int | None = None, timeout_ms: int | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None, **kw: Any) -> Iterator[Any]:
         """Runs a SELECT and yields its answer a page at a time: `Result`s,
         or with `arrow=True` pyarrow Tables, of at most `page_size` rows
         (and at most the server's --max-result-window, which caps each page
@@ -198,8 +276,9 @@ class Client(Search, FrameStore):
         database the first read. The server keeps the rest for
         `keep_alive_ms` after each page (default its lease TTL, 60 s);
         leaving the loop early ends it. A server from before scrolls
-        answers in one page."""
-        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw), "page_size": int(page_size)}
+        answers in one page. `min_seq_no(s)` apply to the version the first
+        page reads, which every page then reads."""
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw), "page_size": int(page_size), **self._after(min_seq_no, min_seq_nos)}
         more: dict[str, Any] = {}
         if keep_alive_ms:
             more["keep_alive_ms"] = int(keep_alive_ms)
@@ -228,15 +307,19 @@ class Client(Search, FrameStore):
         except (ChloeDBError, OSError):
             pass  # it ends when its keep-alive does
 
-    def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, idempotency_key: str | None = None, **kw: Any) -> Result | int:
+    def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, idempotency_key: str | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None, **kw: Any) -> Result | Written:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
-        INSERT, UPDATE or DELETE wrote. With `idempotency_key`, a write sent
-        again is not applied twice (see `write`)."""
+        INSERT, UPDATE or DELETE wrote (a `Written`, an int with the write's
+        sequence numbers). With `idempotency_key`, a write sent again is not
+        applied twice (see `write`); `min_seq_no(s)` as for `query`."""
         body: dict[str, Any] = {"sql": sql, "params": _params(params, kw)}
         if idempotency_key is not None:
             body["idempotency_key"] = idempotency_key
+        # A session's numbers go with a read only: a server refuses them on
+        # a write, which sees every write before it anyway.
+        body.update(self._after(min_seq_no, min_seq_nos) if _reads(sql) else _after_body(min_seq_no, min_seq_nos))
         r = self._call("POST", "/v1/sql", body)
-        return Result._of(r) if "rows" in r else int(r["written"])
+        return Result._of(r) if "rows" in r else self._note(Written._of(r))
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:
         return Result._of(self._call("POST", "/v1/query", {"sql": sql, "params": _params(params, {}), "log": log}))
@@ -245,9 +328,7 @@ class Client(Search, FrameStore):
         # NDJSON, a record a line; a failure partway is the last line.
         out = [json.loads(line) for line in self._call("POST", "/v1/rank_log/export", opts, text=True).splitlines() if line.strip()]
         if out and "error" in out[-1] and "request" not in out[-1]:
-            err = ChloeDBError(f"{out[-1]['error']} (HTTP {out[-1].get('status', 500)})")
-            err.status, err.answer = out[-1].get("status", 500), out[-1]
-            raise err
+            raise make_error(f"{out[-1]['error']} (HTTP {out[-1].get('status', 500)})", status=out[-1].get("status", 500), answer=out[-1])
         return out
 
     def explain(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict:
@@ -256,13 +337,16 @@ class Client(Search, FrameStore):
         bound query ("logical")."""
         return self._call("POST", "/v1/explain", {"sql": sql, "params": _params(params, kw)})
 
-    def run(self, plan: Mapping[str, Any] | Query) -> Result | int:
+    def run(self, plan: Mapping[str, Any] | Query, *, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None) -> Result | Written:
         """Runs a plan (the "ir" of `explain`, or a `Query`): a read's
-        `Result`, or the number of rows a write wrote."""
+        `Result`, or the number of rows a write wrote. `min_seq_no(s)` as
+        for `query` (a read's plan only)."""
         if isinstance(plan, Query):
             plan = plan.plan()
-        r = self._call("POST", "/v1/plan", {"plan": plan})
-        return Result._of(r) if "rows" in r else int(r["written"])
+        root = plan.get("root") if isinstance(plan, Mapping) else None
+        write = isinstance(root, Mapping) and root.get("node") in ("insert", "update", "delete")
+        r = self._call("POST", "/v1/plan", {"plan": plan, **(_after_body(min_seq_no, min_seq_nos) if write else self._after(min_seq_no, min_seq_nos))})
+        return Result._of(r) if "rows" in r else self._note(Written._of(r))
 
     def embed(self, text: str | None = None, field: str | None = None, *, table: str | None = None, image: bytes | None = None, audio: bytes | None = None) -> list[float]:
         """The query vector of `text` by an embedded field's model (of the
@@ -278,63 +362,69 @@ class Client(Search, FrameStore):
         body = {k: v for k, v in {"text": text, "field": field, "table": table}.items() if v is not None}
         return self._call("POST", "/v1/embed", body)["vectors"]
 
-    def sid_next(self, prefixes: Iterable[str], *, field: str, where: str | None = None, params: Mapping[str, Any] | None = None, table: str | None = None, **kw: Any) -> dict[str, dict[str, int]]:
+    def sid_next(self, prefixes: Iterable[str], *, field: str, where: str | None = None, params: Mapping[str, Any] | None = None, table: str | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None, **kw: Any) -> dict[str, dict[str, int]]:
         """The codes that can follow each prefix of semantic-ID field
         `field` among the rows `where` matches (POST /v1/sid/next), summed
         over the shards on a coordinator: {prefix: {code: rows}}."""
-        body = {"field": field, "prefixes": list(prefixes), "where": where, "params": _params(params, kw), "table": table}
+        body = {"field": field, "prefixes": list(prefixes), "where": where, "params": _params(params, kw), "table": table, **self._after(min_seq_no, min_seq_nos)}
         got = self._call("POST", "/v1/sid/next", {k: v for k, v in body.items() if v is not None})
         return {n["prefix"]: {c["code"]: c["count"] for c in n["next"]} for n in got["next"]}
 
-    def write(self, ops: list[dict], *, idempotency_key: str | None = None) -> int:
+    def write(self, ops: list[dict], *, idempotency_key: str | None = None) -> Written:
         """Write operations as /v1/write takes them ({"op": "insert",
         "doc": {...}}, {"op": "delete", "key": k}, ...), in one request.
         With `idempotency_key`, the same request sent again (after a lost
         answer, or with the `idempotency_key` of an error whose `answer`
         says it failed partway through a coordinator, `"partial": True`)
-        is not applied twice."""
+        is not applied twice. Returns the rows written, a `Written` (an int
+        with the write's `seq_no` or, from a coordinator, `seq_nos`)."""
         body: dict[str, Any] = {"ops": ops}
         if idempotency_key is not None:
             body["idempotency_key"] = idempotency_key
-        return int(self._call("POST", "/v1/write", body)["written"])
+        return self._note(Written._of(self._call("POST", "/v1/write", body)))
 
-    def _ops(self, op: str, rows: list, table: str | None) -> int:
+    def _ops(self, op: str, rows: list, table: str | None) -> Written:
         named = {} if table is None else {"table": table}
-        n = 0
+        n = Written(0)
         for i in range(0, len(rows), WRITE_BATCH):
-            n += self.write([{"op": op, **named, "doc": r} for r in rows[i : i + WRITE_BATCH]])
+            n = n._then(self.write([{"op": op, **named, "doc": r} for r in rows[i : i + WRITE_BATCH]]))
         return n
 
-    def insert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
+    def insert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> Written:
         """Inserts a row or rows, whose keys must be new, into the first
-        table or `table`, 1,000 rows a request. Returns how many."""
+        table or `table`, 1,000 rows a request. Returns how many (a
+        `Written`, with the last request's sequence numbers)."""
         return self._ops("insert", _rows(rows), table)
 
-    def upsert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
+    def upsert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> Written:
         """Inserts a row or rows, replacing the rows that have their keys,
-        1,000 rows a request. Returns how many."""
+        1,000 rows a request. Returns how many (a `Written`)."""
         return self._ops("upsert", _rows(rows), table)
 
-    def delete(self, keys: Any, *, table: str | None = None, routing: Any = None) -> int:
+    def delete(self, keys: Any, *, table: str | None = None, routing: Any = None) -> Written:
         """Deletes the rows with this key or these keys. Through a
         coordinator, `routing` gives the `shard_by` value of a table placed
-        by a column."""
+        by a column. Returns how many (a `Written`)."""
         keys = [keys] if isinstance(keys, (str, int)) else list(keys)
         named = {k: v for k, v in {"table": table, "routing": routing}.items() if v is not None}
-        n = 0
+        n = Written(0)
         for i in range(0, len(keys), WRITE_BATCH):
-            n += self.write([{"op": "delete", **named, "key": k} for k in keys[i : i + WRITE_BATCH]])
+            n = n._then(self.write([{"op": "delete", **named, "key": k} for k in keys[i : i + WRITE_BATCH]]))
         return n
 
     def _table(self, table: str | None) -> str:
         return table if table is not None else self.schema["table"]
 
-    def get(self, key: Any, *, table: str | None = None) -> dict | None:
+    def get(self, key: Any, *, table: str | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None) -> dict | None:
         """The row with this primary key in the first table or `table`, read
         without SQL (GET /v1/kv/:table/:key): a dict of the columns `SELECT
         *` answers, or None when no live row has the key (or its
-        `expire_by` time has passed). A coordinator asks the key's shard."""
+        `expire_by` time has passed). A coordinator asks the key's shard.
+        `min_seq_no(s)` as for `query`."""
         path = f"/v1/kv/{urllib.parse.quote(self._table(table), safe='')}/{urllib.parse.quote(str(key), safe='')}"
+        after = self._after(min_seq_no, min_seq_nos)
+        if after:
+            path += "?" + urllib.parse.urlencode({k: ",".join(map(str, v)) if isinstance(v, list) else v for k, v in after.items()})
         try:
             return self._call("GET", path)["row"]
         except ChloeDBError as e:
@@ -342,12 +432,13 @@ class Client(Search, FrameStore):
                 return None
             raise
 
-    def get_many(self, keys: Iterable[Any], *, table: str | None = None, columns: Iterable[str] | None = None) -> list[dict | None]:
+    def get_many(self, keys: Iterable[Any], *, table: str | None = None, columns: Iterable[str] | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None) -> list[dict | None]:
         """`get` of several keys (POST /v1/kv/get), 10,000 a request, in
         their order; with `columns`, each row of those columns alone (a
-        ranker's features, say), which reads no other."""
+        ranker's features, say), which reads no other. `min_seq_no(s)` as
+        for `query`."""
         keys = list(keys)
-        body: dict[str, Any] = {"table": self._table(table)}
+        body: dict[str, Any] = {"table": self._table(table), **self._after(min_seq_no, min_seq_nos)}
         if columns is not None:
             body["columns"] = list(columns)
         out: list[dict | None] = []
@@ -355,14 +446,15 @@ class Client(Search, FrameStore):
             out += self._call("POST", "/v1/kv/get", {**body, "keys": keys[i : i + GET_BATCH]})["rows"]
         return out
 
-    def put(self, key: Any, row: Mapping[str, Any], *, table: str | None = None, if_seq_no: int | None = None) -> int:
+    def put(self, key: Any, row: Mapping[str, Any], *, table: str | None = None, if_seq_no: int | None = None) -> Written:
         """Writes `row` as the row with this key (PUT /v1/kv/:table/:key),
         in place of any that has it; with `if_seq_no`, only while that
-        row's sequence number is that. Returns the rows written."""
+        row's sequence number is that. Returns the rows written (a
+        `Written`)."""
         path = f"/v1/kv/{urllib.parse.quote(self._table(table), safe='')}/{urllib.parse.quote(str(key), safe='')}"
         if if_seq_no is not None:
             path += f"?if_seq_no={int(if_seq_no)}"
-        return int(self._call("PUT", path, dict(row))["written"])
+        return self._note(Written._of(self._call("PUT", path, dict(row))))
 
     def stream(self, events: Iterable[Mapping[str, Any]]) -> dict:
         """Writes `events` through /v1/stream as they come, in batches the
@@ -406,13 +498,9 @@ class Client(Search, FrameStore):
                             break
         except urllib.error.HTTPError as e:
             raw = e.read()
-            err = ChloeDBError(f"{raw.decode(errors='replace')} (HTTP {e.code})")
-            err.status, err.answer = e.code, None
-            raise err from None
+            raise make_error(f"{raw.decode(errors='replace')} (HTTP {e.code})", status=e.code) from None
         if "error" in last or not last.get("done"):
-            err = ChloeDBError(f"{last.get('error', 'the stream ended early')} (HTTP {last.get('status', 500)})")
-            err.status, err.answer = last.get("status", 500), last
-            raise err
+            raise make_error(f"{last.get('error', 'the stream ended early')} (HTTP {last.get('status', 500)})", status=last.get("status", 500), answer=last)
         return last
 
     def source(self, name: str) -> int | None:
@@ -559,7 +647,7 @@ class Client(Search, FrameStore):
     def _frame_batches(self, sql: str, params: Mapping[str, Any], types: Mapping[str, dict]) -> Iterator[Any]:
         """A frame's answer a page at a time (pyarrow Tables), by a scroll
         of pages as large as the server allows."""
-        body: dict[str, Any] = {"sql": sql, "params": _params(params, {}), "page_size": FRAME_PAGE}
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, {}), "page_size": FRAME_PAGE, **self._after()}
         cursor = None
         try:
             while True:
@@ -570,9 +658,7 @@ class Client(Search, FrameStore):
                     # --max-result-window rows a query.
                     if "a query returns at most" not in str(e) and "the most a query returns" not in str(e):
                         raise
-                    err = ChloeDBError(f"{e}; this server reads a frame in one query (it is from before scrolls), so it needs a larger --max-result-window (0: none)")
-                    err.status, err.answer = getattr(e, "status", None), getattr(e, "answer", None)
-                    raise err from None
+                    raise make_error(f"{e}; this server reads a frame in one query (it is from before scrolls), so it needs a larger --max-result-window (0: none)", status=getattr(e, "status", None), answer=getattr(e, "answer", None), code=e.code) from None
                 yield page
                 if not cursor:
                     return
@@ -628,3 +714,51 @@ class Client(Search, FrameStore):
 
     def __repr__(self) -> str:
         return f"<chloedb.Client {self.url}>"
+
+
+class Session(Client):
+    """A `Client` whose reads see its own writes, from any copy: it keeps
+    the latest sequence numbers its writes answered (`seq_no` from a
+    server, `seq_nos` from a coordinator, per shard) and sends them with
+    every read (`query`, `search`, `get`, `get_many`, `scroll`, a SELECT
+    by `sql`, a read plan by `run`), so a replica or a coordinator answers
+    with a version that holds them::
+
+        s = chloedb.connect("http://coordinator:7700").session()
+        s.upsert({"id": "u1", "name": "Ada"})
+        s.get("u1")  # sees the upsert, whichever copy answers
+
+    The servers must number their writes (--seq-no); without it a write
+    answers no number and a session reads as a plain client does. Numbers
+    a read is given explicitly are sent with the session's, the later of
+    each. `observe(written)` adds another client's write to what the
+    session's reads must see. Safe to share between threads."""
+
+    def __init__(self, url: str = "http://127.0.0.1:7700", **options: Any):
+        super().__init__(url, **options)
+        self._lock = threading.Lock()
+        self.seq_no: int | None = None
+        self.seq_nos: list[int] | None = None
+
+    def observe(self, written: Any) -> None:
+        """Makes later reads see this write: a `Written`, or a write's
+        answer ({"seq_no": n} or {"seq_nos": [...]})."""
+        seq_no = written.get("seq_no") if isinstance(written, Mapping) else getattr(written, "seq_no", None)
+        seq_nos = written.get("seq_nos") if isinstance(written, Mapping) else getattr(written, "seq_nos", None)
+        with self._lock:
+            self.seq_no = _later(self.seq_no, None if seq_no is None else int(seq_no))
+            self.seq_nos = _later_each(self.seq_nos, None if seq_nos is None else [int(n) for n in seq_nos])
+
+    def _note(self, written: Written) -> Written:
+        self.observe(written)
+        return written
+
+    def _after(self, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None) -> dict:
+        with self._lock:
+            return _after_body(_later(self.seq_no, min_seq_no), _later_each(self.seq_nos, None if min_seq_nos is None else list(min_seq_nos)))
+
+    def session(self) -> "Session":
+        return self
+
+    def __repr__(self) -> str:
+        return f"<chloedb.Session {self.url} seq_no={self.seq_no} seq_nos={self.seq_nos}>"

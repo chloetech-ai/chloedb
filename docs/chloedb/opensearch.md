@@ -5,7 +5,7 @@
 ## Run it
 
 ```sh
-chloedb-server --db search.strata --opensearch-listen 127.0.0.1:9200
+chloedb-server --db search.chloedb --opensearch-listen 127.0.0.1:9200
 curl -s localhost:9200/                      # {"version": {"number": "2.11.0", "distribution": "opensearch"}, ...}
 curl -s -XPUT localhost:9200/books -H 'content-type: application/json' \
   -d '{"mappings": {"properties": {"title": {"type": "text"}, "year": {"type": "long"}}}}'

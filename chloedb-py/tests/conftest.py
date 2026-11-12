@@ -50,7 +50,25 @@ def server_binary():
     return path if os.path.exists(path) else shutil.which("chloedb-server")
 
 
+_next_port = [0]
+
+
 def free_port():
+    """A free port: any, or one of CHLOEDB_TEST_PORTS ("9200-9299") when
+    the tests must keep to a range, taken in turn."""
+    span = os.environ.get("CHLOEDB_TEST_PORTS")
+    if span:
+        lo, hi = (int(x) for x in span.split("-"))
+        for _ in range(hi - lo + 1):
+            port = lo + _next_port[0] % (hi - lo + 1)
+            _next_port[0] += 1
+            with socket.socket() as s:
+                try:
+                    s.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            return port
+        raise RuntimeError(f"no free port in {span}")
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]

@@ -1,6 +1,6 @@
 # ChloeDB from JavaScript
 
-The `chloedb` package (`strata-db` before the rename) opens a ChloeDB file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [chloedb-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
+The `chloedb` package opens a ChloeDB file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [chloedb-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
 
 ## Install
 
@@ -8,13 +8,13 @@ The package is in [`chloedb-js/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-js-v<version>` release (`strata-js-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
+Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/strata-js-v0.1.0/strata-db-0.1.0-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.2.0/chloedb-0.2.0-darwin-arm64.tgz
 ```
 
-Release 0.1.0 was made before the rename: its tarballs are `strata-db-0.1.0-<platform>.tgz`, and code imports it as `"strata-db"`. Releases after it are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do.
+The tarballs are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do; release 0.1.0, from before the rename, was published as `strata-db` (tag `strata-js-v0.1.0`) and imports as `"strata-db"`.
 
 | platform | tarball |
 |---|---|
@@ -45,7 +45,7 @@ The client alone (`chloedb/client`) is plain JavaScript with no addon: a bundler
 ```js
 import { open } from "chloedb";
 
-const db = await open("books.strata", {
+const db = await open("books.chloedb", {
   schema: {
     table: "books",
     key: "id",
@@ -73,8 +73,8 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 
 | call | what |
 |---|---|
-| `db.query(sql, params)` | a SELECT: a `Result` |
-| `db.sql(sql, params)` | any statement: a SELECT's `Result`, or the rows an INSERT, UPDATE or DELETE wrote; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` too |
+| `db.query(sql, params, {timeoutMs, memory, signal})` | a SELECT: a `Result` ([limits](#limits-memory-deadlines-aborting)) |
+| `db.sql(sql, params, {timeoutMs, memory, signal})` | any statement: a SELECT's `Result`, or the rows an INSERT, UPDATE or DELETE wrote; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` too |
 | `db.search(text, {limit, where, columns, mode, textFields, vectorField, params, table})` | the rows that best match a text: BM25 over the text fields (`mode: "text"`), the similarity of an embedded vector field (`"vector"`), or both fused by reciprocal rank (`"hybrid"`, what `"auto"` picks when a model is open) |
 | `db.plan(sql, params)`, `db.run(plan)` | a statement's [plan](query-language.md) as JSON, without running it; running a plan |
 | `db.embed(text, {field, image, audio})`, `db.embedTokens(text, field)` | a query vector by an embedded field's model (of an image's or a sound's bytes too), a multi-vector field's token vectors |
@@ -84,6 +84,22 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 Parameters are `:name` in the SQL and an object of values: numbers, strings, booleans, null, `Date`s, arrays (an array of numbers or a `Float32Array` is a vector), an object of numbers (sparse term weights), `{embed: "some text"}` (the text's vector by an embedded field's model) or `{vector_of: key}` (a stored row's vector).
 
 A `Result` has `columns`, `rows` (arrays in column order), `keys` (each row's primary key), `scores` (what it was ranked by) and `stats` (what the engine did). Iterating it gives each row as an object; `r.at(i)`, `r.objects()`, `r.column(name)` and `r.scalar()` (a count, a sum) read it other ways.
+
+### Limits: memory, deadlines, aborting
+
+A query runs in your process, so what it builds up (its groups, the rows it orders and returns, a join's tables) is held by your program. The queries of every database a process opens share a memory budget, by default a quarter of the machine's memory (the cgroup's limit in a container, else RAM), or `CHLOEDB_QUERY_MEMORY_MB` MiB when that is set when the first database opens (`0`: no budget). A query that would hold more rejects with a `ChloeDBError` of code `memory`, naming the budget and how to raise it, and gives back what it held, instead of the process running out of memory.
+
+A query has no deadline unless it is given one. `db.query`, `db.sql`, `db.run` and `db.search` take a last argument of options: `timeoutMs` (its deadline, as a `Client`'s `query` takes it: it rejects with `DeadlineError` naming it), `memory` (a budget of its own in bytes; `0`: none) and `signal`, an `AbortSignal` that stops it when it aborts (it rejects with the signal's reason, as an aborted `fetch` does). A database's own limits, for every query that does not give its own, are set when it opens or later; `db.interrupt()` stops every query of the database running now, and returns how many there were:
+
+```js
+const db = await open("books.chloedb", { timeoutMs: 5000, memory: 512 * 2 ** 20 });  // 5 s, and 512 MiB its queries share
+await db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", null, { timeoutMs: 200 });
+await db.query("SELECT * FROM books", null, { memory: 0, signal: AbortSignal.timeout(1000) });
+db.setLimits({});                 // back to the defaults: no deadline, the process's budget
+db.timeoutMs, db.memory;          // the limits now (null: none)
+```
+
+A query checks its deadline and its signal between segments and every 1,024 rows it groups, orders, walks or joins, so it stops within milliseconds; it holds a thread of libuv's pool (`UV_THREADPOOL_SIZE`, 4 by default, which `fs` and `dns` share) until then. A write is not cut short: `sql`'s limits apply to a SELECT.
 
 ### Writing
 
@@ -110,7 +126,21 @@ An INT past 2^53 (a 64-bit key, a hash) comes back as a `BigInt`, and a `BigInt`
 | `fromParquet(parquetPath, path)`, `planParquet`, `db.importParquet`, `db.exportParquet` | [Parquet](parquet.md) files and directories in and out, and `s3://` URLs |
 | `upgrade(path)` | a database from before field ids, copied into this version's format |
 
-Errors reject with a `ChloeDBError`, whose message is the database's (`StrataError`, its name before the rename, is the same class).
+Errors reject with a `ChloeDBError`, whose message is the database's (`StrataError`, its name before the rename, is the same class), and whose `code` is stable, the same here, from a server and in Python: the server's JSON `code` when it gives one, else the kind the message starts with (`busy: ...`), else the HTTP status. The common codes reject as subclasses of `ChloeDBError`, so `instanceof ChloeDBError` still holds for every one:
+
+| code | class | when |
+|---|---|---|
+| `bad_request` | `BadRequestError` | a bad schema, query, value or request (400, 413, 422) |
+| `unauthorized` | `UnauthorizedError` | no token, or one without the rights needed (401, 403) |
+| `not_found` | `NotFoundError` | no such route, table or cursor (404) |
+| `conflict` | `ConflictError` | refused by the state it met (409): an `ifSeqNo` that no longer holds, an idempotency key still running, a `minSeqNo` past the server's last write |
+| `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others: send it again with the same idempotency key |
+| `busy` | `BusyError` | the database is open in another process, or another writer holds it |
+| `overloaded` | `OverloadedError` | refused for the server's load (429), after the client's retries |
+| `timeout` | `DeadlineError` | a deadline passed: `timeoutMs`, a coordinator's wait for a shard (504) |
+| `unavailable` | `UnavailableError` | no copy can serve it now (503) |
+
+Other codes are `memory` (a query past its memory budget), `corrupt`, `io`, `internal` and `error`; `errorCode(message, status, answer)` gives the code of any message.
 
 ## A server from JavaScript
 
@@ -125,6 +155,25 @@ const r = await client.search("book", { limit: 5 });
 `Client` has the methods of `Database` that a server offers, over its [HTTP API](server.md#http-api), and more of the server's own: `health()`, `stats()`, `explain(sql)`, `put(key, row, {ifSeqNo})`, `stream(events)` (an iterable or async iterable of [stream events](server.md#streams), applied once), `source(name)` and `sources()`, `ask(question)` (the server's agent), and the file calls, which upload a path's bytes (Node, Bun, Deno) or bytes given (a `Uint8Array`, a `Blob`). `exportSqlite(null)` and `exportParquet(null)` give the file's bytes instead of writing it. Rows are written 1,000 a request, keys read 10,000 a request. An error the server answers rejects with a `ChloeDBError` whose `status` is the HTTP status and `answer` its JSON; one where the server cannot be reached rejects with `fetch`'s error. `timeout` (milliseconds, 30 seconds by default) bounds each request, and `fetch` takes another fetch. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retryFor` milliseconds (10 seconds; 0 sends each request once), and rejects with the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, {idempotencyKey})` and `sql(sql, params, {idempotencyKey})` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator rejects with a `ChloeDBError` whose `answer` says so (`partial: true`) and names its key: `await client.write(ops, { idempotencyKey: e.answer.idempotency_key })` writes the rest.
+
+### Reading your own writes
+
+A read from a [replica](server.md#replication-a-primary-and-its-replicas), or through a coordinator whose shards have replicas, can be answered by a copy that has not applied a write yet. Servers that number their writes (`--seq-no`) fix that with sequence numbers ([reads that see a write](server.md#reads-that-see-a-write)):
+
+- `writeResult(ops, {idempotencyKey})` is `write` answering `{written, seqNo, seqNos, skipped}`: `seqNo` from a server, `seqNos` (one per shard) from a coordinator, neither from a server without `--seq-no`. `write`, `insert`, `upsert`, `delete`, `put` and `sql` still answer the number of rows.
+- `query(sql, params, {minSeqNo, minSeqNos})`, `search(text, {minSeqNo, minSeqNos})`, `get(key, {minSeqNo, minSeqNos})`, `getMany`, `sql` (a SELECT), `run` (a read plan) and `sidNext` take them: the copy that answers holds those writes (a replica waits up to a second; a server refuses a number past its last write, 409).
+- `client.session()` (or `new Session(url, options)`) is a client that does this itself: it keeps the latest numbers its own writes answered (`session.seqNo`, `session.seqNos`) and sends them with each of its reads, so reading your own writes is one line. `session.observe(answer)` adds another client's write.
+
+```js
+const s = connect("http://coordinator:7700").session();
+await s.upsert({ id: "u1", name: "Ada" });
+await s.get("u1"); // sees the upsert, whichever copy answers
+
+const w = await client.writeResult([{ op: "upsert", doc: { id: "u2", name: "Grace" } }]);
+await client.get("u2", { minSeqNo: w.seqNo, minSeqNos: w.seqNos });
+```
+
+The numbers go with reads only: a server refuses them on a write, so a session leaves them off an `INSERT`, `UPDATE` or `DELETE` by `sql`, judging a statement by its first word. A `Database` in the process ignores them: it reads every write it committed.
 
 In a browser, the client works from pages of the server's own origin (a page it serves, or behind the same reverse proxy): chloedb-server sends no CORS headers, and refuses writes from pages of other sites ([security](server.md#security)).
 

@@ -50,12 +50,11 @@ pub trait Adjacency {
     /// Appends the neighbours of `n` with edge weights: along the edges'
     /// direction, or against it when `reverse`.
     fn neighbors(&mut self, n: Node, reverse: bool, out: &mut Vec<(Node, f32)>) -> Result<()>;
-    /// [`Adjacency::neighbors`], allowed to stop once the weights of the
-    /// neighbours it has appended add up to more than `enough`, in the
-    /// order `neighbors` gives them; returns whether `out` holds them all.
-    /// A walk that only needs to know whether a row's weighted degree
-    /// passes a bound (PageRank's push test) reads no further. By default,
-    /// all of them.
+    /// [`Adjacency::neighbors`], allowed to stop once it has appended more
+    /// than `enough` neighbours, in the order `neighbors` gives them;
+    /// returns whether `out` holds them all. A walk that only needs to know
+    /// whether a row's number of edges passes a bound (PageRank's push
+    /// test) reads no further. By default, all of them.
     fn neighbors_upto(&mut self, n: Node, reverse: bool, enough: f64, out: &mut Vec<(Node, f32)>) -> Result<bool> {
         let _ = enough;
         self.neighbors(n, reverse, out)?;
@@ -211,14 +210,19 @@ pub fn shortest_path(adj: &mut dyn Adjacency, from: &[Node], to: &[Node], max_ho
 /// `s` with probability `w_s / Σ w`. Each node holds an estimate `p` and a
 /// residual `r`; pushing `u` moves `alpha · r(u)` into `p(u)` and spreads
 /// `(1 − alpha) · r(u)` over its neighbours in proportion to edge weight.
-/// Nodes are pushed while `r(u) ≥ eps · deg(u)`, which bounds the error of
-/// every estimate by `eps · deg`. Mass reaching a node without edges stays
-/// in its estimate (the walk restarts from there). At most `max_pushes`
-/// pushes.
+/// Nodes are pushed while `r(u) ≥ eps · n(u)`, `n(u)` the number of its
+/// edges, which bounds the error of every estimate by `eps · n`. The test
+/// counts edges rather than summing their weights so that the walk does not
+/// change when every weight is scaled alike (counts of co-occurrences rank
+/// as their frequencies do). Mass reaching a node without edges stays in
+/// its estimate (the walk restarts from there). At most `max_pushes`
+/// pushes; [`Ppr::capped`] says the walk stopped there.
 pub struct Ppr {
     pub scores: NodeMap<f64>,
     pub pushes: u64,
     pub edges: u64,
+    /// The walk stopped at `max_pushes` with nodes left to push.
+    pub capped: bool,
 }
 
 pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha: f64, eps: f64, max_pushes: u64) -> Result<Ppr> {
@@ -231,7 +235,7 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
     let mut queue: VecDeque<Node> = VecDeque::new();
     let mut queued: NodeMap<()> = node_map();
     if total <= 0.0 {
-        return Ok(Ppr { scores: p, pushes: 0, edges: 0 });
+        return Ok(Ppr { scores: p, pushes: 0, edges: 0, capped: false });
     }
     for &(s, w) in seeds {
         *r.entry(s).or_insert(0.0) += w.max(0.0) / total;
@@ -239,21 +243,22 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
             queue.push_back(s);
         }
     }
-    let (mut pushes, mut edges) = (0u64, 0u64);
+    let (mut pushes, mut edges, mut capped) = (0u64, 0u64, false);
     while let Some(u) = queue.pop_front() {
         queued.remove(&u);
         if pushes >= max_pushes {
+            capped = true;
             break;
         }
         let ru = r.get(&u).copied().unwrap_or(0.0);
-        // The threshold is eps · max(deg, 1) ≥ eps: below eps a node cannot
-        // be pushed, whatever its degree, so its neighbours are not needed.
+        // The threshold is eps · max(n, 1) ≥ eps: below eps a node cannot
+        // be pushed, whatever its edges, so its neighbours are not needed.
         if ru < eps {
             continue;
         }
-        // A row is pushed once ru ≥ eps · max(deg, 1). Most rows popped are
-        // not, so their neighbours are read only until their weights pass
-        // ru / eps (each neighbour read resolves a key): a degree past that
+        // A row is pushed once ru ≥ eps · max(n, 1). Most rows popped are
+        // not, so their neighbours are read only until more than ru / eps
+        // (each neighbour read resolves a key): a count past that
         // already says no, whatever the rest adds. A row popped again with
         // more residual reads again, at least twice as far, so that no row
         // reads more than about three times its list; a row pushed reads
@@ -261,13 +266,13 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
         for last in [false, true] {
             let read = match nbrs.get(&u) {
                 None => None,
-                Some((_, deg, full)) if !*full && !(ru < eps * deg.max(1.0)) => nbrs.remove(&u),
+                Some((l, _, full)) if !*full && !(ru < eps * (l.len() as f64).max(1.0)) => nbrs.remove(&u),
                 Some(_) => break,
             };
             let enough = match (&read, last) {
                 (_, true) => f64::INFINITY,
                 (None, false) => ru / eps,
-                (Some((_, deg, _)), false) => (ru / eps).max(2.0 * deg),
+                (Some((l, _, _)), false) => (ru / eps).max(2.0 * l.len() as f64),
             };
             let first = read.is_none();
             let mut list = read.map_or_else(|| Vec::with_capacity(16), |(l, _, _)| l);
@@ -280,7 +285,7 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
             nbrs.insert(u, (list, deg, full));
         }
         let (list, deg, _) = &nbrs[&u];
-        if ru < eps * deg.max(1.0) {
+        if ru < eps * (list.len() as f64).max(1.0) {
             continue;
         }
         pushes += 1;
@@ -304,7 +309,7 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
         }
         adj.hold(NODE_BYTES * (r.len() - before) as u64)?;
     }
-    Ok(Ppr { scores: p, pushes, edges })
+    Ok(Ppr { scores: p, pushes, edges, capped })
 }
 
 #[cfg(test)]
@@ -384,7 +389,8 @@ mod tests {
             for &(v, w) in &self.0[n as usize] {
                 self.2 += 1;
                 out.push((v, w));
-                sum += w as f64;
+                sum += 1.0;
+                let _ = w;
                 if sum > enough {
                     return Ok(false);
                 }

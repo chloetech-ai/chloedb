@@ -112,7 +112,9 @@ pub fn merge(q: &Select, shards: Vec<ResultSet>) -> Result<ResultSet> {
         None => (rows, q.limit),
         Some(OrderBy::Score { score, .. }) if Rank::of(score, 0).is_some() => {
             let want = q.limit.unwrap_or(DEFAULT_K);
-            (fuse(score, rows, first.unwrap_or(want.saturating_add(q.offset)))?, Some(want))
+            // The depth follows the page's rows, not its OFFSET, as on one
+            // database: pages of one query rank the same candidates.
+            (fuse(score, rows, first.unwrap_or(want))?, Some(want))
         }
         Some(OrderBy::Score { score, desc, .. }) => {
             let desc = *desc || !matches!(score, Score::Column { .. });
@@ -159,6 +161,14 @@ pub fn merge(q: &Select, shards: Vec<ResultSet>) -> Result<ResultSet> {
         (None, _) => want,
     };
     let end = want.map_or(rows.len(), |w| w.saturating_add(q.offset).min(rows.len()));
+    // A ranked query without LIMIT is cut at DEFAULT_K, and says so.
+    if q.limit.is_none() && first.is_none() && matches!(&q.order, Some(OrderBy::Score { score, .. }) if !matches!(score, Score::Column { .. })) {
+        stats.implicit_limit = Some(DEFAULT_K as u64);
+        if rows.len() > end {
+            stats.truncated = true;
+            stats.plan.push(format!("no LIMIT: a ranked query returns its top {DEFAULT_K} rows, and more rows match (add a LIMIT to choose how many)"));
+        }
+    }
     let rows: Vec<Row> = rows.into_iter().take(end).skip(q.offset).collect();
     let score_cols: Vec<usize> = q.projection.iter().enumerate().filter(|(_, (_, p))| *p == Projection::Score).map(|(i, _)| i).collect();
     let mut out = empty(Vec::with_capacity(rows.len()), stats);
@@ -183,6 +193,8 @@ fn shards_stats(shards: &[ResultSet]) -> ExecStats {
         stats.filter_docs += s.stats.filter_docs;
         stats.scored += s.stats.scored;
         stats.reranked += s.stats.reranked;
+        stats.truncated |= s.stats.truncated;
+        stats.max_pushes_reached |= s.stats.max_pushes_reached;
         stats.plan.extend(s.stats.plan.iter().map(|l| format!("shard {i}: {l}")));
         stats.nest(&s.stats, 0);
     }

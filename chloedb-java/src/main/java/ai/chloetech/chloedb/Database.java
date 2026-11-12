@@ -18,7 +18,7 @@ import java.util.Map;
  *     Map.of("name", "id", "type", "keyword"),
  *     Map.of("name", "title", "type", "text"),
  *     Map.of("name", "year", "type", "int")));
- * try (Database db = Database.create("books.strata", schema)) {
+ * try (Database db = Database.create("books.chloedb", schema)) {
  *     db.upsert(Map.of("id", "b1", "title", "The river and the dragon", "year", 1999));
  *     for (Map<String, Object> row : db.search("dragon")) {
  *         System.out.println(row.get("id") + " " + row.get("title"));
@@ -57,6 +57,8 @@ public final class Database implements AutoCloseable {
         private String models;
         private Integer threads;
         private boolean readOnly;
+        private Long timeoutMs;
+        private Long memory;
 
         /**
          * Keeps a new database as a directory of segment files instead of
@@ -98,6 +100,26 @@ public final class Database implements AutoCloseable {
         public Options readOnly(boolean readOnly) {
             this.readOnly = readOnly;
             return this;
+        }
+
+        /** The deadline of each of its queries, in ms (see {@link Database#setLimits}). */
+        public Options timeoutMs(long timeoutMs) {
+            this.timeoutMs = QueryOptions.whole("timeoutMs", timeoutMs);
+            return this;
+        }
+
+        /** The memory budget its queries share, in bytes (see {@link Database#setLimits}). */
+        public Options memory(long memory) {
+            this.memory = QueryOptions.whole("memory", memory);
+            return this;
+        }
+
+        /** Sets the limits given on a database just opened, and returns it. */
+        Database limit(Database db) {
+            if (timeoutMs != null || memory != null) {
+                db.setLimits(timeoutMs, memory);
+            }
+            return db;
         }
 
         Map<String, Object> args() {
@@ -178,7 +200,7 @@ public final class Database implements AutoCloseable {
         Map<String, Object> a = options.args();
         a.put("path", path);
         a.put("schema", schema instanceof Path ? schema.toString() : schema);
-        return new Database(calls("create", a), path);
+        return options.limit(new Database(calls("create", a), path));
     }
 
     public static Database create(Path path, Object schema) {
@@ -199,7 +221,7 @@ public final class Database implements AutoCloseable {
         a.remove("directory");
         a.put("path", path);
         a.put("readOnly", options.readOnly);
-        return new Database(calls("open", a), path);
+        return options.limit(new Database(calls("open", a), path));
     }
 
     public static Database open(Path path) {
@@ -320,9 +342,70 @@ public final class Database implements AutoCloseable {
     }
 
     /** Runs a SELECT with its {@code :name} parameters. */
-    @SuppressWarnings("unchecked")
     public Result query(String sql, Map<String, ?> params) {
-        return new Result((Map<String, Object>) call("query", "sql", sql, "params", params));
+        return query(sql, params, null);
+    }
+
+    /**
+     * Runs a SELECT with its {@code :name} parameters, limited by
+     * {@code options}: its deadline and memory budget ({@link QueryOptions}).
+     */
+    @SuppressWarnings("unchecked")
+    public Result query(String sql, Map<String, ?> params, QueryOptions options) {
+        return new Result((Map<String, Object>) call("query", args(options == null ? null : options.args(), "sql", sql, "params", params)));
+    }
+
+    /**
+     * Limits every query of this database from now on, unless a query
+     * gives its own ({@link QueryOptions}): a deadline of {@code timeoutMs}
+     * milliseconds ({@code null} or 0: none, the default), past which a
+     * query stops and throws a {@link ChloeDBException} whose message
+     * starts {@code timeout:}; and a memory budget of {@code memory} bytes
+     * that its queries share (0: none; {@code null}, the default: the
+     * budget every database of the process shares, a quarter of the
+     * machine's memory or {@code CHLOEDB_QUERY_MEMORY_MB} MiB), past which a
+     * query stops and throws one whose message starts {@code memory:}.
+     */
+    public void setLimits(Long timeoutMs, Long memory) {
+        call("setLimits", "timeoutMs", timeoutMs == null ? null : QueryOptions.whole("timeoutMs", timeoutMs), "memory", memory == null ? null : QueryOptions.whole("memory", memory));
+    }
+
+    /**
+     * Lets writes store rows without the vector of an embedded field whose
+     * model is not open here ({@code false}, the default: such a write
+     * throws, since a similarity search would never find the row). Fill
+     * the vectors in later, once the model opens, with the engine's
+     * backfill; chloedb-server does this for the rows it is sent.
+     */
+    public void setEmbedLater(boolean on) {
+        call("setEmbedLater", "on", on);
+    }
+
+    /** The deadline every query gets unless it gives its own, in ms ({@code null}: none). */
+    @SuppressWarnings("unchecked")
+    public Long timeoutMs() {
+        return (Long) ((Map<String, Object>) call("limits")).get("timeoutMs");
+    }
+
+    /** The memory budget its queries share, in bytes ({@code null}: none). */
+    @SuppressWarnings("unchecked")
+    public Long memory() {
+        return (Long) ((Map<String, Object>) call("limits")).get("memory");
+    }
+
+    /**
+     * Stops the queries of this database running now, from any thread: each
+     * throws a {@link ChloeDBException} whose message starts
+     * {@code timeout:} within a few thousand rows. Returns how many there were; queries that start after
+     * it run.
+     */
+    public int interrupt() {
+        return ((Long) call("interrupt")).intValue();
+    }
+
+    /** {@link #interrupt()} of the queries running now tagged {@code tag} ({@link QueryOptions#tag(long)}) alone. */
+    public int interrupt(long tag) {
+        return ((Long) call("interrupt", "tag", QueryOptions.whole("tag", tag))).intValue();
     }
 
     /**
@@ -335,9 +418,18 @@ public final class Database implements AutoCloseable {
     }
 
     /** {@link #execute(String)} with {@code :name} parameters. */
-    @SuppressWarnings("unchecked")
     public long execute(String sql, Map<String, ?> params) {
-        Map<String, Object> r = (Map<String, Object>) call("sql", "sql", sql, "params", params);
+        return execute(sql, params, null);
+    }
+
+    /**
+     * {@link #execute(String)} with {@code :name} parameters, a SELECT
+     * limited by {@code options} ({@link QueryOptions}); a write is not cut
+     * short.
+     */
+    @SuppressWarnings("unchecked")
+    public long execute(String sql, Map<String, ?> params, QueryOptions options) {
+        Map<String, Object> r = (Map<String, Object>) call("sql", args(options == null ? null : options.args(), "sql", sql, "params", params));
         Object written = r.get("written");
         return written != null ? (Long) written : ((List<?>) r.get("rows")).size();
     }

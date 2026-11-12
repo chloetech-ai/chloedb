@@ -61,7 +61,25 @@ export function serverBinary() {
   return existsSync(p) ? p : null;
 }
 
-function freePort() {
+let nextPort = 0;
+
+/** A free port: any, or one of $CHLOEDB_TEST_PORTS ("9200-9299") when the
+ * tests must keep to a range, taken in turn. */
+export async function freePort() {
+  const span = process.env.CHLOEDB_TEST_PORTS;
+  if (span) {
+    const [lo, hi] = span.split("-").map(Number);
+    for (let i = 0; i <= hi - lo; i++) {
+      const port = lo + (nextPort++ % (hi - lo + 1));
+      const free = await new Promise((ok) => {
+        const s = createServer();
+        s.once("error", () => ok(false));
+        s.listen(port, "127.0.0.1", () => s.close(() => ok(true)));
+      });
+      if (free) return port;
+    }
+    throw new Error(`no free port in ${span}`);
+  }
   return new Promise((ok, fail) => {
     const s = createServer();
     s.listen(0, "127.0.0.1", () => {
@@ -74,9 +92,15 @@ function freePort() {
 
 /** Starts chloedb-server on the database at `db`; resolves to {url, stop}. */
 export async function serve(db, ...args) {
-  const binary = serverBinary();
   const port = await freePort();
-  const p = spawn(binary, ["--db", db, "--listen", `127.0.0.1:${port}`, "--grpc", "off", ...args], { stdio: ["ignore", "ignore", "pipe"] });
+  return launch(["--db", db, "--listen", `127.0.0.1:${port}`, "--grpc", "off", ...args], port);
+}
+
+/** Starts chloedb-server with these arguments, its HTTP API on `port`;
+ * resolves to {url, stop} once it answers. */
+export async function launch(args, port) {
+  const binary = serverBinary();
+  const p = spawn(binary, args, { stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   p.stderr.on("data", (d) => (stderr += d));
   const url = `http://127.0.0.1:${port}`;

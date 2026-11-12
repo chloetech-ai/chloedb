@@ -138,10 +138,45 @@ pub enum Bug {
     /// replicas replace each other: 28 terms in a minute in one seed. Either
     /// fix alone stops it in the simulator; the server has both.
     ReplacesTheCopyItElected,
+    /// A primary elected commits nothing of its own term when it begins it
+    /// ([`crate::replication::term_opened`]), and counts a transaction of
+    /// an older term as acknowledged once a majority holds it
+    /// ([`crate::cores::shard::Primary::term_start`]): it answers a
+    /// client's retry of a write it holds from an older term (an
+    /// idempotency key it finds) as acknowledged, dies, and a copy holding
+    /// a transaction of a newer term at the same number is elected and
+    /// drops it from every copy (finding DS-5, Raft's figure 8).
+    AcksAnOlderTerm,
+    /// A primary's write held by its writer as the primary steps down
+    /// commits once it applied its new primary's first batch, under that
+    /// term and the next number, which the new primary gives a write of its
+    /// own (the server refuses it unapplied since, as the term it was taken
+    /// in is over: `Queued.term`). Alone it breaks no promise: the copy
+    /// refuses the next call that follows the new primary's transaction
+    /// under that term and number, by its digest
+    /// ([`crate::cores::shard::Replica::follows`]), and is sent a copy of
+    /// the primary. With [`Bug::TrustsTheSameTerm`] the copies' histories
+    /// stay apart.
+    CommitsAfterSteppingDown,
+    /// A replica applies a call that follows its last transaction by term
+    /// and number alone, as before protocol 20, without comparing the
+    /// primary's digest of it: a copy holding another transaction under
+    /// them takes the primary's next ones on top of its own, and its
+    /// history stays apart from the primary's.
+    TrustsTheSameTerm,
 }
 
 impl Bug {
-    pub const ALL: [Bug; 5] = [Bug::AsksAKnownTerm, Bug::TakesWritesInALease, Bug::RefusesOlderTerms, Bug::WaitsForAFirstCall, Bug::ReplacesTheCopyItElected];
+    pub const ALL: [Bug; 8] = [
+        Bug::AsksAKnownTerm,
+        Bug::TakesWritesInALease,
+        Bug::RefusesOlderTerms,
+        Bug::WaitsForAFirstCall,
+        Bug::ReplacesTheCopyItElected,
+        Bug::AcksAnOlderTerm,
+        Bug::CommitsAfterSteppingDown,
+        Bug::TrustsTheSameTerm,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -150,6 +185,9 @@ impl Bug {
             Bug::RefusesOlderTerms => "refuses-older-terms",
             Bug::WaitsForAFirstCall => "waits-for-a-first-call",
             Bug::ReplacesTheCopyItElected => "replaces-the-copy-it-elected",
+            Bug::AcksAnOlderTerm => "acks-an-older-term",
+            Bug::CommitsAfterSteppingDown => "commits-after-stepping-down",
+            Bug::TrustsTheSameTerm => "trusts-the-same-term",
         }
     }
 

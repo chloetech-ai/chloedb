@@ -7,10 +7,10 @@ A shop in one page: search, stock that never oversells, holds that expire, and c
 Download the server for your machine (no Rust or build needed), and start it on a new database:
 
 ```sh
-v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
-curl -LO https://github.com/chloetech-ai/chloedb/releases/download/strata-server-v$v/strata-server-$p.tar.gz
-tar xzf strata-server-$p.tar.gz && cp strata-server-$p/chloedb-server .
-./chloedb-server --db shop.strata --seq-no
+v=0.2.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
+tar xzf chloedb-server-$p.tar.gz && cp chloedb-server-$p/chloedb-server ./chloedb-server
+./chloedb-server --db shop.chloedb --seq-no
 ```
 
 The server listens on `http://127.0.0.1:7700` (HTTP JSON, and the command center in a browser) and on 7701 (gRPC). A new `--db` starts with no tables. `--seq-no` numbers every write, which the stock below needs. [Run it](server.md#run-it) has the options, the source build (`cd chloedb-server && cargo build --release`) and the image.
@@ -110,7 +110,7 @@ def buy(listing):
                 raise
 ```
 
-The Python package's client has the same calls (`strata.connect(url).get("l1", table="listings")`, `.write(ops)`); it needs only the standard library ([Python](python.md#a-server-from-python)). More in [conditional writes](server.md#conditional-writes).
+The Python package's client has the same calls (`chloedb.connect(url).get("l1", table="listings")`, `.write(ops)`); it needs only the standard library ([Python](python.md#a-server-from-python)). More in [conditional writes](server.md#conditional-writes).
 
 ## Hold an item for ten minutes
 
@@ -153,8 +153,8 @@ An error means nothing of the write was applied, with one exception on a cluster
 Several servers as shards, and one more as a coordinator, answer like one database: the same tables, SQL and HTTP API. Stop the server above, then:
 
 ```sh
-./chloedb-server --db s0.strata --seq-no --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711 &
-./chloedb-server --db s1.strata --seq-no --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721 &
+./chloedb-server --db s0.chloedb --seq-no --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711 &
+./chloedb-server --db s1.chloedb --seq-no --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721 &
 ./chloedb-server --shards http://127.0.0.1:7711,http://127.0.0.1:7721 --listen 127.0.0.1:7700 &
 ```
 
@@ -162,7 +162,7 @@ Several servers as shards, and one more as a coordinator, answer like one databa
 - A shard added later starts as the first ones did: here on a new database with no `--schema`, since this cluster began with no tables. The coordinator gives it the cluster's tables, and a rebalance [moves slots](server.md#moving-slots) onto it while rows keep being written:
 
 ```sh
-./chloedb-server --db s2.strata --seq-no --listen 127.0.0.1:7730 --grpc 127.0.0.1:7731 &
+./chloedb-server --db s2.chloedb --seq-no --listen 127.0.0.1:7730 --grpc 127.0.0.1:7731 &
 curl -s localhost:7700/v1/admin/shards -H 'content-type: application/json' -d '{"servers": ["http://127.0.0.1:7731"]}'
 curl -s localhost:7700/v1/admin/rebalance -X POST
 ```

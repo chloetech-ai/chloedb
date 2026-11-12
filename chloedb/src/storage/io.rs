@@ -81,7 +81,7 @@ pub fn remove_file(p: &Path) -> io::Result<()> {
 }
 
 #[cfg(feature = "fault-injection")]
-pub use imp::{arm, calls, crash, fail_at, Crash, Fault};
+pub use imp::{arm, calls, crash, fail_at, fail_next_sync, Crash, Fault};
 
 #[cfg(not(feature = "fault-injection"))]
 mod imp {
@@ -370,7 +370,37 @@ mod imp {
         }
     }
 
+    /// The file whose next sync fails, from whichever thread makes it, and
+    /// the error ([`fail_next_sync`]).
+    static SYNC_FAULT: std::sync::Mutex<Option<((u64, u64), i32)>> = std::sync::Mutex::new(None);
+
+    /// Makes the next sync (`fdatasync` or `fsync`) of the file at `path`
+    /// fail with `errno`, on any thread, recording or not: a write-back
+    /// error, which a background merge or flush can meet as well as the
+    /// thread that armed it. The file's content is left as it is.
+    pub fn fail_next_sync(path: &Path, errno: i32) -> io::Result<()> {
+        let k = key(&std::fs::metadata(path)?);
+        *SYNC_FAULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((k, errno));
+        Ok(())
+    }
+
+    /// Whether a sync of `f` is the one [`fail_next_sync`] armed.
+    fn sync_fault(f: &File) -> Option<i32> {
+        let mut g = SYNC_FAULT.lock().unwrap_or_else(|e| e.into_inner());
+        let k = key(&f.metadata().ok()?);
+        match *g {
+            Some((at, errno)) if at == k => {
+                *g = None;
+                Some(errno)
+            }
+            _ => None,
+        }
+    }
+
     pub fn sync(f: &File, all: bool) -> io::Result<()> {
+        if let Some(errno) = sync_fault(f) {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
         let done = with(|r| {
             r.tracked(f)?;
             if let Err(e) = r.count() {

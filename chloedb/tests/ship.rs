@@ -99,6 +99,29 @@ fn same(primary: &Db, replica: &Db, what: &str) {
     for s in 0..=p.seq {
         assert_eq!(r.term_at(s), p.term_at(s), "{what}: term of {s}");
     }
+    same_logs(primary, replica, what);
+}
+
+/// The transactions both logs hold read alike as `wal::shipped_parts`
+/// gives them, of which a digest of the transaction a call follows is
+/// taken (chloedb-server's `Replicate`): the replica logged what it
+/// applied as the primary did. Returns how many were compared.
+fn same_logs(primary: &Db, replica: &Db, what: &str) -> usize {
+    let held = |db: &Db, s: u64| match db.storage().log_from(s, 1) {
+        LogRead::Txns(t) => t.into_iter().next().filter(|t| t.seq.seq == s),
+        LogRead::Gone { .. } => None,
+    };
+    let mut compared = 0;
+    for s in 1..=last(primary).seq {
+        if let (Some(p), Some(r)) = (held(primary, s), held(replica, s)) {
+            assert_eq!(p.seq, r.seq, "{what}: transaction {s}");
+            let parts = chloedb::storage::wal::shipped_parts(&p.bytes);
+            assert!(parts.is_some(), "{what}: transaction {s} reads as records ending with a commit");
+            assert_eq!(chloedb::storage::wal::shipped_parts(&r.bytes), parts, "{what}: transaction {s} as each logged it");
+            compared += 1;
+        }
+    }
+    compared
 }
 
 /// A random transaction over both tables: upserts, inserts, deletes,
@@ -201,8 +224,43 @@ fn a_replica_holds_what_its_primary_wrote() {
         }
         let terms = primary.storage().numbering().unwrap().term;
         assert!(terms > 1 && shipped > 100, "seed {seed}: {terms} terms, {shipped} shipped");
+        // Those both logs hold since either opened last.
+        assert!(same_logs(&primary, &replica, "at the end") > 0, "seed {seed}: no transaction in both logs");
         replica.storage().check().unwrap();
     }
+}
+
+/// Two databases that commit the same operations under one term and
+/// number log them with the same parts, though each counts its
+/// transactions apart; other operations under that number, with others.
+#[test]
+fn two_transactions_of_one_number_read_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = Db::create(&dir.path().join("a.strata"), schema(), options(Layout::SingleFile)).unwrap();
+    let b = Db::create(&dir.path().join("b.strata"), schema(), options(Layout::SingleFile)).unwrap();
+    // A transaction before numbering on one only: their counts differ.
+    let mut tx = b.storage().begin().unwrap();
+    tx.upsert(doc(0, 1)).unwrap();
+    tx.commit().unwrap();
+    let commit = |db: &Db, i: u64, v: i64| {
+        let mut tx = db.storage().begin().unwrap();
+        tx.upsert(doc(i, v)).unwrap();
+        tx.commit_seq().unwrap().unwrap()
+    };
+    let logged = |db: &Db, s: u64| txns(db.storage().log_from(s, 1)).remove(0);
+    for db in [&a, &b] {
+        db.storage().start_seq_no().unwrap();
+        assert_eq!(commit(db, 1, 5), 1);
+        assert_eq!(commit(db, 2, 5 + std::ptr::eq(db, &b) as i64), 2);
+    }
+    let (a1, b1) = (logged(&a, 1), logged(&b, 1));
+    assert_eq!(a1.seq, b1.seq);
+    assert_ne!(a1.bytes, b1.bytes, "each counts its own transactions");
+    assert_eq!(chloedb::storage::wal::shipped_parts(&a1.bytes), chloedb::storage::wal::shipped_parts(&b1.bytes));
+    let (a2, b2) = (logged(&a, 2), logged(&b, 2));
+    assert_eq!(a2.seq, b2.seq, "one term and number");
+    assert_ne!(chloedb::storage::wal::shipped_parts(&a2.bytes), chloedb::storage::wal::shipped_parts(&b2.bytes));
+    assert_eq!(chloedb::storage::wal::shipped_parts(&a2.bytes[..a2.bytes.len() - 1]), None, "cut short");
 }
 
 /// A replica applies nothing that does not follow its last transaction,

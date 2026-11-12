@@ -180,7 +180,7 @@ fn header(buf: &[u8], db_id: u64, path: &Path) -> Result<Option<(bool, bool, u64
     let Some(names) = buf.get(20..20 + n) else { return Ok(None) };
     let names = std::str::from_utf8(names).map_err(|_| corrupt(format!("{}: the header's features are not text", path.display())))?;
     if let Some(x) = names.split(',').find(|x| !FEATURES.contains(x)) {
-        return Err(Error::Schema(format!("the write-ahead log {} uses feature {x:?}, which this version of Strata does not have: open it with a newer one", path.display())));
+        return Err(Error::Schema(format!("the write-ahead log {} uses feature {x:?}, which this version of ChloeDB does not have: open it with a newer one", path.display())));
     }
     let has = |f: &str| names.split(',').any(|x| x == f);
     Ok(Some((has(SEQ_NO), has(RANK_PROFILES), 20 + n as u64)))
@@ -662,6 +662,37 @@ pub fn decode_shipped(buf: &[u8], fits: &dyn Fn(u32, &Op) -> bool) -> Result<Wal
     }
 }
 
+/// The parts of the one transaction `buf` holds that every copy of a
+/// database logs alike, in order: each record's body, and its commit's
+/// without the transaction count there (each database counts its own
+/// transactions; the term and sequence number stay). A primary and its
+/// replica, which logs what it applies with the same records
+/// ([`crate::storage::Database::apply_shipped`]), give the same parts for
+/// one transaction, and different parts for two different ones of the
+/// same number: what a digest of a shipped transaction is taken of. `None`
+/// when `buf` is not records ending with a commit.
+pub fn shipped_parts(buf: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut parts = Vec::new();
+    let mut pos = 0;
+    while pos < buf.len() {
+        let len = u32::from_le_bytes(buf.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        let end = pos.checked_add(8)?.checked_add(len)?;
+        let body = buf.get(pos + 8..end)?;
+        if body.first() == Some(&COMMIT) {
+            // Kind, txn (8 bytes), operations, term and number.
+            if end != buf.len() || body.len() < 9 {
+                return None;
+            }
+            parts.push(&body[..1]);
+            parts.push(&body[9..]);
+            return Some(parts);
+        }
+        parts.push(body);
+        pos = end;
+    }
+    None
+}
+
 /// Whether the one transaction `buf` holds, as [`decode_shipped`] reads
 /// it, changes tables ([`Op::changes_tables`]): read from its records'
 /// kinds alone, without decoding its rows.
@@ -678,6 +709,70 @@ pub fn ships_table_changes(buf: &[u8]) -> bool {
         pos += 8 + len;
     }
     false
+}
+
+/// The txns of the committed transactions in the logs of database `db_id`
+/// at `path` (the open log and the sealed ones), read without changing
+/// them, intact commit records past damage included: what opening could
+/// replay, as evidence of which transactions the logs still hold.
+pub fn logged_txns(path: &Path, db_id: u64) -> Result<Vec<u64>> {
+    let mut files: Vec<PathBuf> = sealed_files(path)?.into_iter().map(|(_, p)| p).collect();
+    files.push(path.to_path_buf());
+    let mut out = Vec::new();
+    for p in files {
+        let buf = match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let Ok(Some((numbered, _, h))) = header(&buf, db_id, &p) else { continue };
+        let (txns, end) = decode(&buf[h as usize..], numbered, false, &|_, _| true);
+        out.extend(txns.iter().map(|t| t.txn));
+        out.extend(commits_after(&buf[h as usize + end..], txns.last().map_or(0, |t| t.txn), numbered));
+    }
+    Ok(out)
+}
+
+/// Whether the log at `path` holds zeros where a header's magic and
+/// database id go (its first 16 bytes): what a power loss leaves of a
+/// header that was written but not made durable. `false` for a missing
+/// file or one shorter than that.
+pub fn header_zeroed(path: &Path) -> Result<bool> {
+    let mut b = [0u8; 16];
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(read_up_to(&f, &mut b, 0)? == b.len() && b.iter().all(|&x| x == 0))
+}
+
+/// When the file at `path` is no log of database `db_id` (its header is
+/// damaged, or names another database) but holds intact commit records,
+/// which a log's header damaged after the fact leaves: what is wrong with
+/// it, in words. `None` for a log of this database, a missing or empty
+/// file, and a file with no commit record (a header a crash cut short).
+/// The flag says whether the header is whole and names another database.
+pub fn unreadable_log(path: &Path, db_id: u64) -> Result<Option<(String, bool)>> {
+    let buf = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if header(&buf, db_id, path)?.is_some() || buf.len() <= 16 {
+        return Ok(None);
+    }
+    let rest = &buf[16.min(buf.len())..];
+    let n = commits_after(rest, 0, false).len().max(commits_after(rest, 0, true).len());
+    if n == 0 {
+        return Ok(None);
+    }
+    let foreign = &buf[..8] == MAGIC || &buf[..8] == MAGIC_2;
+    let whose = match foreign {
+        true => format!("names database {:016x}, not this one ({db_id:016x})", u64::from_le_bytes(buf[8..16].try_into().unwrap())),
+        false => "has a damaged header".to_string(),
+    };
+    Ok(Some((format!("the write-ahead log {} {whose}, and holds {n} committed transactions", path.display()), foreign)))
 }
 
 /// The txns of the intact commit records in `rest` (the log past the last

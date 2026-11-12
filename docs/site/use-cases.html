@@ -38,7 +38,7 @@
   <section class="gutter" id="app-search"><div class="wrap block">
     <div class="uc2">
       <div><span class="ico text"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="5"/><circle cx="15.5" cy="11.5" r="2"/><path d="m17 13 1.6 1.6"/></svg></span><h2>Search inside an app</h2><p>A store, a notes app or a help center: typos, facets and hybrid search on the rows the app already keeps, with no second service.</p>
-        <dl class="kv"><dt>Replaces</dt><dd>SQLite with FTS5, or a database plus Elasticsearch</dd><dt>Measured</dt><dd>Hybrid search 4.8–33× faster than SQLite, DuckDB or LanceDB (<a href="bench-embedded.html">no server</a>)</dd></dl></div>
+        <dl class="kv"><dt>Replaces</dt><dd>SQLite with FTS5, or a database plus Elasticsearch</dd><dt>Measured</dt><dd>Hybrid search 1.9–17× faster than SQLite, DuckDB or LanceDB with each on one thread, 4.8–33× with ChloeDB on up to eight (<a href="bench-embedded.html">no server</a>)</dd></dl></div>
       <pre data-lang="sql">SELECT id, title, price, score() FROM products
 WHERE MATCH(title, :q, synonyms => 1) AND in_stock
 ORDER BY rrf(bm25(title, :q), similarity(emb, :v)) DESC LIMIT 10;
@@ -66,10 +66,10 @@ ORDER BY rrf(
     <div class="uc2">
       <div><span class="ico cols"><svg viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M8 9V7a4 4 0 0 1 8 0v2"/></svg></span><h2>Sessions, carts and caches</h2><p>Rows read by key on every request, in the same database, each with its own time to live.</p>
         <dl class="kv"><dt>Replaces</dt><dd>A key-value store or cache beside the database</dd><dt>Measured</dt><dd>21 µs a read inside an app; 0.99 ms through a coordinator at 10M (<a href="bench-10m.html#behind">behind Postgres</a>)</dd></dl></div>
-      <pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/sessions/s1 \
+      <pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/sessions/s1 -H 'content-type: application/json' \
   -d '{"usr": "u7", "until": "2026-11-02T12:00:00Z"}'
 curl -s localhost:7700/v1/kv/sessions/s1
-curl -s localhost:7700/v1/kv/get \
+curl -s localhost:7700/v1/kv/get -H 'content-type: application/json' \
   -d '{"table": "sessions", "keys": ["s1", "s2"]}'</pre>
     </div>
   </div></section>
@@ -108,10 +108,10 @@ ORDER BY rrf(bm25(caption, :q), similarity(emb, :v)) DESC LIMIT 12;</pre>
       <div><span class="ico cols"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><h2>Search over your Postgres</h2><p>The app keeps writing to Postgres. ChloeDB copies the tables of a publication, then applies every change a moment after it commits, each once, so search, vectors and facets run on the same rows.</p>
         <dl class="kv"><dt>Replaces</dt><dd>Debezium, Kafka and a sync job into a search engine</dd><dt>Read</dt><dd><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/postgres.md">Following Postgres</a></dd></dl></div>
       <pre data-lang="sh">chloedb-server follow-postgres \
-  --source 'postgres://strata:...@db.example:5432/shop' \
+  --source 'postgres://chloedb:...@db.example:5432/shop' \
   --target http://localhost:7700 --name shop
 
-curl -s localhost:7700/v1/sql -d '{"params": {"q": "trail shoes"},
+curl -s localhost:7700/v1/sql -H 'content-type: application/json' -d '{"params": {"q": "trail shoes"},
   "sql": "SELECT id, title FROM products WHERE MATCH(title, :q) LIMIT 10"}'</pre>
     </div>
   </div></section>
@@ -120,9 +120,9 @@ curl -s localhost:7700/v1/sql -d '{"params": {"q": "trail shoes"},
     <div class="uc2">
       <div><span class="ico vec"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></span><h2>Near me, on the phone</h2><p>The app keeps a slice of the places around its user and searches it on the device, scored as the server scores them. When it cannot prove its answer is the server's, it asks the server.</p>
         <dl class="kv"><dt>Replaces</dt><dd>A search request on every keystroke, and a separate offline index</dd><dt>Read</dt><dd><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md">Slices</a></dd></dl></div>
-      <pre data-lang="python">import strata
+      <pre data-lang="python">import chloedb
 
-near = strata.nearby("https://api.example", "places", "./slice")
+near = chloedb.nearby("https://api.example", "places", "./slice")
 near.move_to(40.7484, -73.9857)   # fetches the tiles around the user
 r = near.search("pizza", k=10, d0=1000)
 print(r.where, r.why)             # "device" or "server", and why
@@ -148,7 +148,7 @@ WHERE attributes['http.status_code'] >= 500 GROUP BY service;</pre>
   <section class="gutter" id="knowledge"><div class="wrap block">
     <div class="uc2">
       <div><span class="ico graph"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.4 6.4l7.1 1.2M6.7 8.4l1.6 7.2M16.4 10l-5.7 6"/></svg></span><h2>Knowledge graphs</h2><p>Edges are rows, written in the same transaction as the documents they link, and a walk can start from a search.</p>
-        <dl class="kv"><dt>Replaces</dt><dd>A graph database beside the search index</dd><dt>Measured</dt><dd>1st of 5 against four graph databases (<a href="bench-graph.html">graph</a>)</dd></dl></div>
+        <dl class="kv"><dt>Replaces</dt><dd>A graph database beside the search index</dd><dt>Measured</dt><dd>1st of 5 against four graph databases on summed places, on one laptop; 21 against Memgraph's 24 without PageRank, and about twice Memgraph's and FalkorDB's time on one to three hops (<a href="bench-graph.html">graph</a>)</dd></dl></div>
       <pre data-lang="sql">-- the papers two citations from the closest matches
 SELECT id, title, hops() FROM papers
 WHERE REACHABLE(cites,
@@ -164,7 +164,7 @@ ORDER BY hops(), id LIMIT 20;</pre>
       <h2>Try it</h2>
     </div>
     <div class="deploy pair">
-      <a class="dcard a" href="command-center.html#try" style="text-decoration:none"><span class="eyebrow">On your laptop</span><h3>The command center</h3><p>A demo catalogue served with its console, in one command.</p><pre>chloedb-server --demo 20000 --db products.strata</pre></a>
+      <a class="dcard a" href="command-center.html#try" style="text-decoration:none"><span class="eyebrow">On your laptop</span><h3>The command center</h3><p>A demo catalogue served with its console, in one command.</p><pre>chloedb-server --demo 20000 --db products.chloedb</pre></a>
       <a class="dcard b" href="examples.html" style="text-decoration:none"><span class="eyebrow">Read</span><h3>Every query</h3><p>One shop, every kind of query, from a search box to window functions.</p></a>
     </div>
   </div></section>

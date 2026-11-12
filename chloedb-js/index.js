@@ -10,7 +10,7 @@
 //
 //   import { open } from "chloedb";
 //
-//   const db = await open("books.strata", { schema: {
+//   const db = await open("books.chloedb", { schema: {
 //     table: "books", key: "id",
 //     fields: [
 //       { name: "id", type: "keyword" },
@@ -34,10 +34,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { Nearby } from "./nearby.js";
-import { ChloeDBError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
-export { ChloeDBError, StrataError, Result } from "./common.js";
-export { Client, connect } from "./client.js";
+export { ChloeDBError, StrataError, Result, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError } from "./common.js";
+export { Client, Session, connect } from "./client.js";
 export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,7 +57,7 @@ const native = load();
 /** A native error (a failed call) as a ChloeDBError. */
 function failed(e) {
   if (e instanceof ChloeDBError) return e;
-  return new ChloeDBError(e?.message ?? String(e), { cause: e });
+  return makeError(e?.message ?? String(e), { cause: e });
 }
 
 async function callStatic(op, args) {
@@ -68,12 +68,23 @@ async function callStatic(op, args) {
   }
 }
 
-async function opened(op, args) {
+async function opened(op, args, limits = {}) {
+  let db;
   try {
-    return new Database(await native.NativeDatabase.open(op, encode(given(args))));
+    db = new Database(await native.NativeDatabase.open(op, encode(given(args))));
   } catch (e) {
     throw failed(e);
   }
+  if (limits.timeoutMs != null || limits.memory != null) db.setLimits(limits);
+  return db;
+}
+
+/** A query's `timeoutMs` and `memory` as the native call takes them. */
+function limitArgs({ timeoutMs, memory } = {}) {
+  for (const [k, v] of [["timeoutMs", timeoutMs], ["memory", memory]]) {
+    if (v != null && !(Number.isInteger(v) && v >= 0)) throw new RangeError(`${k} is a whole number, at least 0`);
+  }
+  return { timeout_ms: timeoutMs ?? undefined, memory: memory ?? undefined };
 }
 
 /** A schema given as an object, JSON text or the path of a JSON file, as
@@ -138,6 +149,7 @@ function base64(bytes) {
  */
 export class Database extends Searchable {
   #n;
+  #tag = 0;
 
   /** @internal Use `Database.create`, `Database.open` or `open`. */
   constructor(nativeDb) {
@@ -155,16 +167,76 @@ export class Database extends Searchable {
    * is where embedded fields' models are (default $CHLOEDB_MODELS or
    * ~/.local/share/strata/models). `threads` is how many cores vector
    * indexes build on and each query searches segments on (default: every
-   * core).
+   * core). `timeoutMs` and `memory` limit its queries (see `setLimits`).
    */
-  static create(path, schema, { directory = false, models, threads } = {}) {
-    return opened("create", { path: paths(path), schema: schemaJson(schema), directory, models: paths(models), threads });
+  static create(path, schema, { directory = false, models, threads, timeoutMs, memory } = {}) {
+    return opened("create", { path: paths(path), schema: schemaJson(schema), directory, models: paths(models), threads }, { timeoutMs, memory });
   }
 
-  /** Opens the database at `path`; `models` and `threads` as `create` takes
-   * them. `readOnly` opens it to read while another process writes it. */
-  static open(path, { models, threads, readOnly = false } = {}) {
-    return opened("open", { path: paths(path), models: paths(models), threads, read_only: readOnly });
+  /** Opens the database at `path`; `models`, `threads`, `timeoutMs` and
+   * `memory` as `create` takes them. `readOnly` opens it to read while
+   * another process writes it. */
+  static open(path, { models, threads, readOnly = false, timeoutMs, memory } = {}) {
+    return opened("open", { path: paths(path), models: paths(models), threads, read_only: readOnly }, { timeoutMs, memory });
+  }
+
+  /**
+   * Limits every query of this database from now on, unless a query gives
+   * its own (`query(sql, params, { timeoutMs, memory })`): a deadline of
+   * `timeoutMs` milliseconds (none or 0: none, the default), past which a
+   * query stops and rejects with DeadlineError; and a memory budget of
+   * `memory` bytes that its queries share (0: none; none, the default: the
+   * budget every database of the process shares, a quarter of the
+   * machine's memory or $CHLOEDB_QUERY_MEMORY_MB MiB), past which a query
+   * stops and rejects with a ChloeDBError of code "memory".
+   */
+  setLimits({ timeoutMs, memory } = {}) {
+    const a = limitArgs({ timeoutMs, memory });
+    this.#n.setLimits(a.timeout_ms, a.memory);
+  }
+
+  /** The deadline every query gets unless it gives its own, in ms (null:
+   * none). */
+  get timeoutMs() {
+    return this.#n.timeoutMs ?? null;
+  }
+
+  /** The memory budget its queries share, in bytes (null: none). */
+  get memory() {
+    return this.#n.memory ?? null;
+  }
+
+  /** Stops the queries of this database running now: each rejects with
+   * DeadlineError within a few thousand rows. Returns how many there
+   * were; queries that start after it run. */
+  interrupt() {
+    return this.#n.interrupt();
+  }
+
+  /** A query's call: `timeoutMs` and `memory`, and `signal` (an
+   * AbortSignal) to stop it. */
+  async #query(op, args, { timeoutMs, memory, signal } = {}) {
+    const a = { ...args, ...limitArgs({ timeoutMs, memory }) };
+    if (signal == null) return this.#call(op, a);
+    signal.throwIfAborted();
+    const tag = ++this.#tag;
+    const stop = () => this.#n.interrupt(tag);
+    signal.addEventListener("abort", stop, { once: true });
+    try {
+      return await this.#call(op, { ...a, tag });
+    } catch (e) {
+      // Stopped by its signal: rejected with the signal's reason, as an
+      // aborted fetch is.
+      if (signal.aborted && e?.code === "timeout") throw signal.reason;
+      throw e;
+    } finally {
+      signal.removeEventListener("abort", stop);
+    }
+  }
+
+  /** @internal Queries run in this process (`search` takes `memory`). */
+  get _local() {
+    return true;
   }
 
   async #call(op, args = {}, vectors) {
@@ -223,15 +295,23 @@ export class Database extends Searchable {
     return s.fields.filter((f) => f.embed && !(f.name in broken)).map((f) => f.name);
   }
 
-  /** Runs a SELECT. `params` binds its `:name` placeholders. */
-  async query(sql, params) {
-    return new Result(await this.#call("query", { sql, params }));
+  /** Runs a SELECT. `params` binds its `:name` placeholders.
+   * `timeoutMs` is its deadline, as a `Client`'s query takes it: past it
+   * the query stops and rejects with DeadlineError (none or 0: the
+   * database's, see `setLimits`). `memory` is a budget of its own in bytes,
+   * past which it rejects with a ChloeDBError of code "memory" (0: none;
+   * none: the database's). `signal`, an AbortSignal, stops it when it
+   * aborts: it rejects with the signal's reason, as an aborted fetch
+   * does. */
+  async query(sql, params, { timeoutMs, memory, signal } = {}) {
+    return new Result(await this.#query("query", { sql, params }, { timeoutMs, memory, signal }));
   }
 
   /** Runs any statement: a SELECT's `Result`, or the number of rows an
-   * INSERT, UPDATE or DELETE wrote. */
-  async sql(sql, params) {
-    return resultOrWritten(await this.#call("sql", { sql, params }));
+   * INSERT, UPDATE or DELETE wrote. `timeoutMs`, `memory` and `signal`
+   * limit a SELECT as `query` takes them; a write is not cut short. */
+  async sql(sql, params, { timeoutMs, memory, signal } = {}) {
+    return resultOrWritten(await this.#query("sql", { sql, params }, { timeoutMs, memory, signal }));
   }
 
   /** @internal */
@@ -251,9 +331,10 @@ export class Database extends Searchable {
   }
 
   /** Runs a plan (as `plan` or a server's /v1/explain gives it): a read's
-   * `Result`, or the number of rows a write wrote. */
-  async run(plan) {
-    return resultOrWritten(await this.#call("run", { plan }));
+   * `Result`, or the number of rows a write wrote; a read limited by
+   * `timeoutMs`, `memory` and `signal` as `query` takes them. */
+  async run(plan, { timeoutMs, memory, signal } = {}) {
+    return resultOrWritten(await this.#query("run", { plan }, { timeoutMs, memory, signal }));
   }
 
   /** Inserts a row or rows, whose keys must be new, into the first table or
@@ -421,10 +502,10 @@ export class Database extends Searchable {
  * exist; `directory`, `models` and `threads` as `Database.create` takes
  * them.
  */
-export async function open(path, { schema, directory = false, models, threads, readOnly = false } = {}) {
-  if (existsSync(paths(path)) || readOnly) return Database.open(path, { models, threads, readOnly });
+export async function open(path, { schema, directory = false, models, threads, readOnly = false, timeoutMs, memory } = {}) {
+  if (existsSync(paths(path)) || readOnly) return Database.open(path, { models, threads, readOnly, timeoutMs, memory });
   if (schema == null) throw new ChloeDBError(`${paths(path)} does not exist: pass a schema to create it`);
-  return Database.create(path, schema, { directory, models, threads });
+  return Database.create(path, schema, { directory, models, threads, timeoutMs, memory });
 }
 
 /** Creates a database at `path` from the tables of a SQLite database file

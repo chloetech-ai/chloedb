@@ -9,7 +9,7 @@ use chloedb::query::Params;
 use chloedb::Value;
 
 use crate::store::Store;
-use crate::{err, Result};
+use crate::Result;
 
 /// A Strata value as JSON. Vectors are returned whole unless `max_dims`
 /// cuts them (with their length kept in `dim`).
@@ -34,9 +34,7 @@ pub fn value_json(v: &Value, max_dims: Option<usize>) -> Json {
 /// `ORDER BY similarity(emb, :q)` works from a sentence.
 pub fn query(store: &Store, req: &Json) -> Result<Json> {
     let sql = req.get("sql").and_then(|v| v.as_str()).unwrap_or("").trim();
-    if !sql.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("select")) {
-        return Err(err("only SELECT statements are allowed"));
-    }
+    crate::sqlguard::check_select(sql)?;
     let mut params = Params::new();
     if let Some(m) = req.get("params").and_then(|v| v.as_object()) {
         for (k, v) in m {
@@ -60,7 +58,7 @@ pub fn query(store: &Store, req: &Json) -> Result<Json> {
     let max_dims = req.get("max_dims").and_then(|v| v.as_u64()).map(|n| n as usize);
     let limit = req.get("max_rows").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
     let t0 = Instant::now();
-    let rs = store.query_with(sql, &params)?;
+    let rs = store.query_guarded(sql, &params, &crate::sqlguard::Limits::INSPECTOR)?;
     let ms = t0.elapsed().as_secs_f64() * 1e3;
     let rows: Vec<Json> = rs.rows.iter().take(limit).map(|r| Json::Array(r.iter().map(|v| value_json(v, max_dims)).collect())).collect();
     Ok(json!({

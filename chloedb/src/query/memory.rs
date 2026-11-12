@@ -9,9 +9,15 @@
 //! grow (a vector's next capacity, a new group, a row's values), not of
 //! every allocation. Index data a query reads is mapped from the file and
 //! not counted.
+//!
+//! A database opened in a program ([`crate::db::Db`]) counts its queries
+//! against [`process_budget`], which every database of the process shares:
+//! a quarter of the machine's memory (its cgroup limit, or RAM), or
+//! `CHLOEDB_QUERY_MEMORY_MB` (0: none). chloedb-server gives its queries
+//! its own (`--query-memory-mb`).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{Error, Result};
 use crate::value::Value;
@@ -26,11 +32,32 @@ pub struct MemoryBudget {
     limit: u64,
     used: AtomicU64,
     trips: AtomicU64,
+    /// Whose limit it is and how to raise it, for the error of a query it
+    /// refuses ([`Charge::refuse`]): "the server lets queries hold at once
+    /// (--query-memory-mb)".
+    what: String,
 }
 
+/// The share of the machine's memory the queries of a process may hold by
+/// default ([`process_budget`]): a quarter. A server's may hold a third,
+/// its process holding little else; a program that opens a database holds
+/// its own data too.
+pub const PROCESS_SHARE: u64 = 4;
+
+/// The setting that sizes [`process_budget`], in MiB (0: no budget).
+pub const PROCESS_SETTING: &str = "CHLOEDB_QUERY_MEMORY_MB";
+
 impl MemoryBudget {
+    /// A budget of `limit` bytes.
     pub fn new(limit: u64) -> Arc<MemoryBudget> {
-        Arc::new(MemoryBudget { limit, used: AtomicU64::new(0), trips: AtomicU64::new(0) })
+        MemoryBudget::named(limit, "queries may hold at once")
+    }
+
+    /// A budget of `limit` bytes whose refusals say `what` it is, whose
+    /// limit and how to raise it: "this database's queries may hold at
+    /// once (its memory option)".
+    pub fn named(limit: u64, what: impl Into<String>) -> Arc<MemoryBudget> {
+        Arc::new(MemoryBudget { limit, used: AtomicU64::new(0), trips: AtomicU64::new(0), what: what.into() })
     }
 
     pub fn limit(&self) -> u64 {
@@ -149,12 +176,8 @@ impl Charge {
             h.budget.trips.fetch_add(1, Ordering::Relaxed);
         }
         let mb = |b: u64| b.div_ceil(1 << 20);
-        Error::Memory(format!(
-            "the query needs more than the {} MiB the server lets queries hold at once ({} MiB of them in use, {} MiB by this query); add conditions or a LIMIT, or try again",
-            mb(h.budget.limit),
-            mb(h.budget.used()),
-            mb(counted)
-        ))
+        let b = &h.budget;
+        Error::Memory(format!("the query needs more than the {} MiB {} ({} MiB of them in use, {} MiB by this query); add conditions or a LIMIT, or try again", mb(b.limit), b.what, mb(b.used()), mb(counted)))
     }
 
     /// Counts `bytes` more if the budget has room for them; counts nothing
@@ -199,6 +222,41 @@ impl Charge {
             return Ok(());
         }
         self.add(row_bytes(row))
+    }
+}
+
+/// A budget of `bytes` (0: none) that a database's or a query's caller
+/// gives it, its refusals saying `what` it is ([`MemoryBudget::named`]).
+pub fn budget_of(bytes: u64, what: &str) -> Option<Arc<MemoryBudget>> {
+    (bytes > 0).then(|| MemoryBudget::named(bytes, what))
+}
+
+/// The budget the queries of every database this process opens share
+/// unless they are given another ([`crate::db::Db::exec`]):
+/// `CHLOEDB_QUERY_MEMORY_MB` MiB when it is set (0: none), else a
+/// [`PROCESS_SHARE`] of the machine's memory
+/// ([`crate::storage::memory_limit`]: the cgroup's limit, or RAM); none
+/// when neither is known. Read once, when the first database opens.
+pub fn process_budget() -> Option<Arc<MemoryBudget>> {
+    static BUDGET: OnceLock<Option<Arc<MemoryBudget>>> = OnceLock::new();
+    BUDGET
+        .get_or_init(|| {
+            let setting = crate::env::var(PROCESS_SETTING).ok();
+            let limit = process_limit(setting.as_deref(), crate::storage::memory_limit())?;
+            let given = setting.as_deref().is_some_and(|s| s.trim().parse::<u64>().is_ok());
+            let whose = if given { format!("{PROCESS_SETTING} lets the queries of this process hold at once") } else { "the queries of this process may hold at once, a quarter of the machine's memory".to_string() };
+            Some(MemoryBudget::named(limit, format!("{whose} (raise it with {PROCESS_SETTING}, 0 for no limit, or give the database or the query a memory budget of its own)")))
+        })
+        .clone()
+}
+
+/// The bytes of [`process_budget`]: `setting` MiB (`CHLOEDB_QUERY_MEMORY_MB`;
+/// 0: none) when it is a number, else a [`PROCESS_SHARE`] of `machine`
+/// bytes, and at least a MiB.
+pub fn process_limit(setting: Option<&str>, machine: Option<u64>) -> Option<u64> {
+    match setting.and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(mb) => (mb > 0).then(|| mb.saturating_mul(1 << 20)),
+        None => machine.map(|m| (m / PROCESS_SHARE).max(1 << 20)),
     }
 }
 
@@ -274,6 +332,28 @@ mod tests {
         assert_eq!(b.trips(), 1);
         drop((c, other));
         assert_eq!(b.used(), 0);
+    }
+
+    #[test]
+    fn a_refusal_says_whose_limit_it_is() {
+        let b = MemoryBudget::named(2 << 20, "this database's queries may hold at once (its memory option)");
+        let c = Charge::new(Some(b));
+        let e = c.add(3 << 20).unwrap_err().to_string();
+        assert!(e.contains("the query needs more than the 2 MiB this database's queries may hold at once (its memory option) ("), "{e}");
+        assert!(budget_of(0, "x").is_none());
+        assert_eq!(budget_of(5, "x").unwrap().limit(), 5);
+    }
+
+    #[test]
+    fn the_process_budget_is_a_share_of_the_machine_or_the_setting() {
+        assert_eq!(process_limit(None, Some(16 << 30)), Some(4 << 30));
+        assert_eq!(process_limit(None, None), None);
+        assert_eq!(process_limit(Some("512"), Some(16 << 30)), Some(512 << 20));
+        assert_eq!(process_limit(Some(" 0 "), Some(16 << 30)), None);
+        // A setting that is not a number leaves the default.
+        assert_eq!(process_limit(Some("lots"), Some(16 << 30)), Some(4 << 30));
+        // Never below a MiB.
+        assert_eq!(process_limit(None, Some(1000)), Some(1 << 20));
     }
 
     #[test]

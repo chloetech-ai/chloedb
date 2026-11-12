@@ -39,6 +39,11 @@ fn delete(db: &Database, ids: impl Iterator<Item = u64>) {
     tx.commit().unwrap();
 }
 
+/// Opening that accepts the loss of acknowledged writes.
+fn recover(src: &Arc<MapSource>) -> DbOptions {
+    DbOptions { recover: true, ..opts(src) }
+}
+
 fn wal_of(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push("-wal");
@@ -68,9 +73,10 @@ fn copy_with_damaged_manifest(path: &Path, to: &Path) -> Option<(u64, u64, u64)>
 }
 
 // A newest version whose manifest failed its checksum made the database
-// unopenable, although the older meta slot still named an intact version
-// (with `sync` off, a power loss can leave exactly that). Opening now falls
-// back to it, and says so.
+// unopenable, although the older meta slot still named an intact version.
+// Falling back to it loses what the newer version flushed (the log was
+// emptied after it), so opening refuses, changing nothing, and
+// `DbOptions::recover` falls back, and says so.
 #[test]
 fn a_damaged_newest_version_opens_the_one_before_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -88,8 +94,14 @@ fn a_damaged_newest_version_opens_the_one_before_it() {
     }
     let copy = dir.path().join("copy.strata");
     let (txn, _, _) = copy_with_damaged_manifest(&path, &copy).unwrap();
+    let before = std::fs::read(&copy).unwrap();
+    match Database::open(&copy, opts(&src)) {
+        Err(Error::Corrupt(m)) => assert!(m.contains(&format!("version {txn} skipped")) && m.contains("recover"), "{m}"),
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+    assert!(std::fs::read(&copy).unwrap() == before, "a refused open changed the file");
     {
-        let db = Database::open(&copy, opts(&src)).unwrap();
+        let db = Database::open(&copy, recover(&src)).unwrap();
         let why = db.damaged().expect("says what was skipped");
         assert!(why.contains(&format!("version {txn} skipped")), "{why}");
         // The flush before the last: the insert it flushed is lost with it.
@@ -130,7 +142,8 @@ fn a_newest_version_past_the_end_of_the_file_opens_the_one_before_it() {
         }
         f.set_len(at * PAGE).unwrap();
         drop(f);
-        let o = Database::open(&copy, opts(&src)).unwrap();
+        assert!(matches!(Database::open(&copy, opts(&src)), Err(Error::Corrupt(m)) if m.contains("would lose acknowledged writes")));
+        let o = Database::open(&copy, recover(&src)).unwrap();
         assert!(o.damaged().unwrap().contains("past the end of the file"), "{:?}", o.damaged());
         // The flush before: the WAL was reset after the newest one.
         assert_keys(&o.snapshot(), &keys(0..(k - 1) * 100));
@@ -185,7 +198,7 @@ fn every_older_version_stays_openable() {
         states.push(live.clone());
         let Some((_, older_pages, file_pages)) = copy_with_damaged_manifest(&path, &copy) else { continue };
         extended += (file_pages < older_pages) as u32;
-        let db = Database::open(&copy, opts(&src)).unwrap_or_else(|e| panic!("step {step}: {e}"));
+        let db = Database::open(&copy, recover(&src)).unwrap_or_else(|e| panic!("step {step}: {e}"));
         assert!(db.damaged().is_some(), "step {step}");
         db.check().unwrap_or_else(|e| panic!("step {step}: {e}"));
         let got: BTreeSet<u64> = live_keys(&db.snapshot()).keys().map(|k| k[1..].parse().unwrap()).collect();
@@ -476,7 +489,14 @@ fn verify_checksums_skips_a_version_with_a_damaged_segment() {
                 other => panic!("{name}: {:?}", other.map(|_| ())),
             }
         } else {
-            let db = Database::open(&path, verify).unwrap();
+            // The version before lacks the rows the damaged one flushed,
+            // and the log was emptied after it: opening refuses, unless
+            // asked to accept the loss.
+            match Database::open(&path, verify.clone()) {
+                Err(Error::Corrupt(m)) => assert!(m.contains("fails its checksum") && m.contains("would lose acknowledged writes"), "{m}"),
+                other => panic!("{name}: {:?}", other.map(|_| ())),
+            }
+            let db = Database::open(&path, DbOptions { recover: true, ..verify }).unwrap();
             let why = db.damaged().expect("says what was skipped");
             assert!(why.contains("fails its checksum"), "{why}");
             assert_keys(&db.snapshot(), &keys(0..300));

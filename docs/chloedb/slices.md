@@ -21,8 +21,8 @@ So a device answers short searches for common things near its user (pizza, a pha
 Slices exist only on a server started with `--slices DIR`. Build one from the command center (**Data → Slices → Build a slice**) or over HTTP:
 
 ```bash
-chloedb-server --db places.strata --slices ./slices --slices-rebuild-s 300 &
-curl -X POST localhost:7700/v1/admin/slices \
+chloedb-server --db places.chloedb --slices ./slices --slices-rebuild-s 300 &
+curl -X POST localhost:7700/v1/admin/slices -H 'content-type: application/json' \
   -d '{"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -73.98, "tile_m": 1000}'
 ```
 
@@ -68,7 +68,7 @@ It runs where the native addon does (Node, Bun, Deno), with the same options as 
 A slice can also cut a table by meaning: its VECTOR field into k-means clusters, each a file of rows. A device holds the clusters nearest its user's taste (a vector, such as the user's history summed) and answers `similarity` searches itself (recommendations for the user, tracks like the one playing) when it can prove that no row it lacks could beat its k-th.
 
 ```bash
-curl -X POST localhost:7700/v1/admin/slices -d '{"table": "tracks", "vector": "emb"}'
+curl -X POST localhost:7700/v1/admin/slices -H 'content-type: application/json' -d '{"table": "tracks", "vector": "emb"}'
 ```
 
 `clusters` sets their number (about the square root of the rows by default, at most 4,096 then). The server's search is exact (`similarity(emb, :v, strategy => 'flat', rerank => <rows>)` re-scores every row), so a device's proved answer is the server's to the last bit.
@@ -119,4 +119,4 @@ For a vector slice the map is a grid of its clusters, busiest first:
 | `GET /v1/slices/<table>/status` | version, built, fresh, changed |
 | `POST /v1/slices/<table>/usage` | a device's counts |
 
-`chloedb-slice` (in the strata crate) writes the same files from a database file without a server, for any web server or CDN to serve. `chloedb-server/demo/nearby` is a demo over New York's places.
+`chloedb-slice` (in the chloedb crate) writes the same files from a database file without a server, for any web server or CDN to serve. `chloedb-server/demo/nearby` is a demo over New York's places.

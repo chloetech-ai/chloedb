@@ -404,3 +404,55 @@ fn a_file_on_the_inode_of_a_removed_or_replaced_one_is_new_to_the_recorder() {
     fresh("after a replacement");
     io::crash();
 }
+
+// A failed sync of the database file returned a plain error from a
+// commit, and a merge's image synced through the same descriptor on
+// another thread returned one too: the handle went on, and the next
+// commit's sync, on Linux told nothing of pages the failed one dropped,
+// could install a version with holes or reset the log (ST-1). A failed
+// sync of the file now poisons the handle, wherever it happens, and no
+// later commit succeeds until it is opened again.
+#[test]
+fn a_failed_sync_of_the_file_refuses_every_later_commit() {
+    for (what, background) in [("a flush's", false), ("a background merge's", true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        let db = Arc::new(Database::create(&path, schema(), options(&src, true)).unwrap());
+        let insert = |db: &Database, ids: std::ops::Range<u64>| -> chloedb::Result<()> {
+            let mut tx = db.begin()?;
+            for i in ids {
+                let d = doc(i, 0);
+                src.put(&d);
+                tx.insert(d)?;
+            }
+            tx.commit()
+        };
+        for k in 0..3 {
+            insert(&db, k * 100..k * 100 + 100).unwrap();
+            db.flush().unwrap();
+        }
+        io::fail_next_sync(&path, libc::EIO).unwrap();
+        if background {
+            // Its image's sync fails on the merger's thread.
+            let policy = MergePolicy { merge_factor: 2, floor_docs: 10, ..MergePolicy::default() };
+            db.spawn_merger(chloedb::storage::MergerOptions { policy, ..Default::default() });
+            let t0 = std::time::Instant::now();
+            while !db.is_poisoned() && t0.elapsed() < std::time::Duration::from_secs(20) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            db.stop_merger();
+        } else {
+            insert(&db, 300..400).unwrap();
+            assert!(db.flush().is_err(), "{what} sync failed");
+        }
+        assert!(db.is_poisoned(), "{what} failed sync poisons the handle");
+        assert!(insert(&db, 1000..1001).is_err() && db.flush().is_err() && db.merge(&MergePolicy::default()).is_err(), "{what}: a later commit went through");
+        drop(db);
+        // Opening again is the way on: every acknowledged commit is there.
+        let db = Database::open(&path, options(&src, true)).unwrap();
+        let n = db.snapshot().n_live_docs();
+        assert!(n == 300 || n == 400, "{what}: {n}");
+        db.check().unwrap();
+    }
+}

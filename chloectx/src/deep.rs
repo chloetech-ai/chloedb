@@ -285,7 +285,7 @@ fn text_to_body(sql: &str) -> String {
 
 fn safe_sql(s: &str) -> bool {
     let l = s.to_lowercase();
-    s.len() <= 600 && !s.contains(';') && !s.contains("--") && !s.contains("/*") && !l.contains(" limit ") && !l.contains("select ")
+    s.len() <= 600 && !s.contains(';') && !s.contains("--") && !s.contains("/*") && !l.contains(" limit ") && !l.contains("select ") && crate::sqlguard::refused_call(s).is_none()
 }
 
 /// What memory holds, for the planner: size, time span, entity and file names.

@@ -2,7 +2,7 @@
 //!
 //! ```no_run
 //! # use chloedb::{db::Db, query::Params, storage::DbOptions, data};
-//! let db = Db::open(std::path::Path::new("papers.strata"), DbOptions::default()).unwrap();
+//! let db = Db::open(std::path::Path::new("papers.chloedb"), DbOptions::default()).unwrap();
 //! let rows = db.query("SELECT id, score() FROM docs ORDER BY bm25(body, 'mrna vaccine') DESC LIMIT 10", &Params::new()).unwrap();
 //! ```
 //!
@@ -172,9 +172,22 @@ pub struct Db {
     /// it changes, readers of images no snapshot holds are dropped, so that
     /// the files of segments made cold or evicted can go.
     readers_gen: std::sync::atomic::AtomicU64,
+    /// The options [`Db::query`], [`Db::sql`] and [`Db::run`] run with,
+    /// and that [`Db::query_with`]'s callers start from. They count each
+    /// query against the memory budget of the process
+    /// ([`crate::query::memory::process_budget`]: a quarter of the
+    /// machine's memory, or `CHLOEDB_QUERY_MEMORY_MB`), so that a query
+    /// that would hold more fails with `Error::Memory` instead of taking
+    /// the program's memory; `exec.memory = None` counts nothing. They set
+    /// no deadline, no row window (`max_rows`) and no group cap
+    /// (`max_groups`): a query given `deadline` or `cancel`
+    /// ([`ExecOptions::limited`]) stops within a few thousand rows of it.
     pub exec: ExecOptions,
     /// Models of embedded VECTOR fields ([`Db::set_embedder_in`]).
     embedders: RwLock<Vec<Model>>,
+    /// Writes may store rows without the vector of an embedded field whose
+    /// model is not open here ([`Db::set_embed_later`]).
+    embed_later: std::sync::atomic::AtomicBool,
     /// Models of derived TEXT fields ([`Db::set_deriver_in`]).
     derivers: RwLock<Vec<Deriving>>,
     /// Where [`Db::open_embedders`] found models, for the tables created
@@ -227,6 +240,7 @@ impl Db {
     /// and writes get codes from it.
     pub fn create_in(path: &Path, mut schema: Schema, opts: DbOptions, models: &Path) -> Result<Db> {
         crate::sid::resolve(&mut schema, models)?;
+        crate::embed::stamp_fingerprints(&mut schema, models);
         let db = Db::wrap(Database::create(path, schema, with_source(opts))?);
         db.open_codebooks(models);
         Ok(db)
@@ -260,8 +274,13 @@ impl Db {
             storage: Arc::new(storage),
             readers: RwLock::new(HashMap::new()),
             readers_gen: std::sync::atomic::AtomicU64::new(0),
-            exec: ExecOptions { filter_cache: Some(Arc::new(crate::query::exec::FilterCache::new(crate::query::exec::FILTER_CACHE_BYTES))), ..ExecOptions::default() },
+            exec: ExecOptions {
+                filter_cache: Some(Arc::new(crate::query::exec::FilterCache::new(crate::query::exec::FILTER_CACHE_BYTES))),
+                memory: crate::query::memory::process_budget(),
+                ..ExecOptions::default()
+            },
             embedders: RwLock::new(Vec::new()),
+            embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
             media: RwLock::new(Arc::new(Resolver::default())),
@@ -309,20 +328,24 @@ impl Db {
     /// What a program that embeds the database runs before it lets go of it
     /// (`close` in Python, JavaScript and Java): stops the background
     /// merger ([`Database::stop_merger`], waiting for a merge it runs),
-    /// merges small segments as the merger would ([`MergePolicy::default`]),
-    /// then, when an eighth of the file or more is free, returns that space
-    /// to the file system ([`Database::vacuum`]). The free space is what
-    /// merges freed: later writes would reuse it, but a program that writes
-    /// for a while and stops would leave it in the file. Rows still in
-    /// memory stay in the write-ahead log, which the next open reads. The
-    /// database still answers and takes writes after it, without merging
-    /// in the background. Returns the bytes the file shrank by. A database
-    /// opened read-only ([`DbOptions::read_only`]) is left as it is.
+    /// flushes the rows still in memory into the file
+    /// ([`Database::flush`]), which leaves the write-ahead log empty, so
+    /// that the file alone holds the database once this returns (a copy of
+    /// it is a backup), merges small segments as the merger would
+    /// ([`MergePolicy::default`]), then, when an eighth of the file or more
+    /// is free, returns that space to the file system
+    /// ([`Database::vacuum`]). The free space is what merges freed: later
+    /// writes would reuse it, but a program that writes for a while and
+    /// stops would leave it in the file. The database still answers and
+    /// takes writes after it, without merging in the background. Returns
+    /// the bytes the file shrank by. A database opened read-only
+    /// ([`DbOptions::read_only`]) is left as it is.
     pub fn close(&self) -> Result<u64> {
         if self.storage.is_read_only() {
             return Ok(0);
         }
         self.storage.stop_merger();
+        self.storage.flush()?;
         self.storage.merge(&MergePolicy::default())?;
         let st = self.storage.file_stats();
         // A database of the directory layout has no pages: its vacuum
@@ -467,6 +490,7 @@ impl Db {
         let dir = self.models.read().unwrap_or_else(|e| e.into_inner()).clone();
         let models = dir.clone().unwrap_or_else(crate::embed::models_dir);
         crate::sid::resolve(&mut schema, &models)?;
+        crate::embed::stamp_fingerprints(&mut schema, &models);
         self.storage.create_table(schema)?;
         if let Some(dir) = dir {
             self.open_embedders_of(&name, &dir);
@@ -618,7 +642,7 @@ impl Db {
     /// [`Db::try_load`] into the table named `table`.
     pub fn try_load_into(&self, table: &str, docs: impl IntoIterator<Item = Result<Document>>) -> Result<()> {
         let schema = self.table(table)?;
-        let models = self.models_of(&schema);
+        let models = self.write_models_of(&schema);
         let derivers = self.derivers_of(&schema);
         let media = self.media_resolver();
         let mut docs = docs.into_iter();
@@ -849,6 +873,33 @@ impl Db {
         self.models_of(&schema).swap_remove(i)
     }
 
+    /// Lets writes store rows without the vector of an embedded field whose
+    /// model is not open here (off by default: such a write fails, since
+    /// `similarity()` would never find the row). [`Db::embed_backfill`]
+    /// fills the vectors in once the model is open.
+    pub fn set_embed_later(&self, on: bool) {
+        self.embed_later.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The models a write embeds the fields of `schema` with: those open
+    /// ([`Db::models_of`]), and for a field of a model this database can
+    /// run but has not open, one that fails the write with what to do,
+    /// unless [`Db::set_embed_later`] lets the rows go without vectors.
+    fn write_models_of(&self, schema: &Schema) -> Vec<Option<Arc<dyn Embedder>>> {
+        let mut models = self.models_of(schema);
+        if self.embed_later.load(std::sync::atomic::Ordering::Relaxed) {
+            return models;
+        }
+        for (m, f) in models.iter_mut().zip(&schema.fields) {
+            if let (None, Some(e), FieldType::Vector { dim, .. }) = (&m, &f.embed, &f.ty) {
+                if crate::embed::known_dim(&e.model).is_some() {
+                    *m = Some(Arc::new(crate::embed::NotOpen { table: schema.table.clone(), field: f.name.clone(), model: e.model.clone(), dim: *dim }));
+                }
+            }
+        }
+        models
+    }
+
     /// The models of the embedded fields of the table `schema` describes,
     /// by field.
     fn models_of(&self, schema: &Schema) -> Vec<Option<Arc<dyn Embedder>>> {
@@ -981,7 +1032,9 @@ impl Db {
         let mut failed = Vec::new();
         for f in schema.fields.iter().filter(|f| which(f)) {
             let opened = match (&f.embed, &f.derive) {
-                (Some(spec), _) => crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models).and_then(|m| self.set_embedder_in(table, &f.name, m)),
+                (Some(spec), _) => crate::embed::check_fingerprint(&f.name, &spec.model, spec.fingerprint.as_deref(), models)
+                    .and_then(|_| crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models))
+                    .and_then(|m| self.set_embedder_in(table, &f.name, m)),
                 (_, Some(spec)) => crate::derive::open_for(spec, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
                 _ => continue,
             };
@@ -1119,13 +1172,15 @@ impl Db {
     /// text they leave out made (and the generated fields that read it
     /// filled in again), then the embedded vectors they leave out computed
     /// ([`Db::embed_missing_in`]). Generated fields must be filled in
-    /// first. [`Db::load`] and SQL writes do this themselves.
+    /// first. [`Db::load`] and SQL writes do this themselves. As a write,
+    /// a row that leaves out the vector of a field whose model is not open
+    /// is refused, unless [`Db::set_embed_later`] lets it go without.
     pub fn fill_in(&self, table: &str, docs: &mut [Document]) -> Result<()> {
         let schema = self.table(table)?;
         let media = self.media_resolver();
         let files = Files { resolver: &media, held: resolve_media(&media, &schema, docs)? };
         derive_known(&self.derivers_of(&schema), &schema, docs, &Derived::new(), &files)?;
-        embed_with(&self.models_of(&schema), &schema, docs, &files)
+        embed_with(&self.write_models_of(&schema), &schema, docs, &files)
     }
 
     /// Sets how writes through this `Db` resolve the MEDIA values they give
@@ -1273,13 +1328,19 @@ impl Db {
     /// made rows first. Any other answer is its rows ([`Leaf::Rows`]).
     #[cfg(feature = "datafusion")]
     pub fn query_leaf(&self, sql: &str, params: &Params) -> Result<Leaf> {
+        self.query_leaf_with(sql, params, &self.exec)
+    }
+
+    /// [`Db::query_leaf`] with `opts`, as [`Db::query_with`].
+    #[cfg(feature = "datafusion")]
+    pub fn query_leaf_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Leaf> {
         let snap = self.snapshot();
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
-            return self.json_paths_at(&snap, &call, params, &self.exec).map(|p| Leaf::Rows(p.to_result()));
+            return self.json_paths_at(&snap, &call, params, opts).map(|p| Leaf::Rows(p.to_result()));
         }
         let q = qsql::parse_query_cached(sql)?;
         let plan = plan_of_parsed(&snap, &q, params, &*self.functions_at(&snap)?)?;
-        self.run_leaf_on(&snap, &plan, &self.exec, Some(0))
+        self.run_leaf_on(&snap, &plan, opts, Some(0))
     }
 
     /// [`Db::run_on`], a plan of one table's rows as Arrow columns when
@@ -1325,9 +1386,15 @@ impl Db {
     /// A plan made elsewhere is checked against the table's schema as the
     /// binder checks SQL.
     pub fn run(&self, plan: &Plan) -> Result<SqlResult> {
+        self.run_with(plan, &self.exec)
+    }
+
+    /// [`Db::run`], a plan that reads run with `opts` (its deadline, cancel
+    /// flag and memory budget); a write runs as [`Db::run`] runs it.
+    pub fn run_with(&self, plan: &Plan, opts: &ExecOptions) -> Result<SqlResult> {
         match plan.is_write() {
             true => self.write_queued(writes::Job::Sql(self.prepare_plan(plan)?)).map(|(n, _)| SqlResult::Written(n)),
-            false => self.run_at(&self.snapshot(), plan, &self.exec).map(SqlResult::Rows),
+            false => self.run_at(&self.snapshot(), plan, opts).map(SqlResult::Rows),
         }
     }
 
@@ -1356,10 +1423,16 @@ impl Db {
     /// text field stored or generated. The rows to change are read after the
     /// transaction takes the writer lock, so no other write lands between.
     pub fn sql(&self, sql: &str, params: &Params) -> Result<SqlResult> {
+        self.sql_with(sql, params, &self.exec)
+    }
+
+    /// [`Db::sql`], a SELECT run with `opts` (its deadline, cancel flag and
+    /// memory budget); any other statement runs as [`Db::sql`] runs it.
+    pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         match bind_command(sql, &tables, params)? {
-            Command::Query => self.query(sql, params).map(SqlResult::Rows),
+            Command::Query => self.query_with(sql, params, opts).map(SqlResult::Rows),
             Command::Explain { json } => {
                 let sqlparser::ast::Statement::Explain { statement, .. } = qsql::parse_one(sql)? else { unreachable!("bound as EXPLAIN") };
                 let plan = self.explain_statement(&statement, params)?;
@@ -1518,7 +1591,7 @@ impl Db {
     /// for the write to report; an image that cannot be read fails the
     /// statement.
     fn embed_ahead(&self, schema: &Schema, write: &Write, files: &Files, backfill: Option<usize>) -> Result<(Known, Derived)> {
-        let models = self.models_of(schema);
+        let models = self.write_models_of(schema);
         let derivers = self.derivers_of(schema);
         if models.iter().all(Option::is_none) && derivers.iter().all(Option::is_none) {
             return Ok((Known::new(), Derived::new()));
@@ -1609,7 +1682,7 @@ impl Db {
         if tt.schema() != schema {
             return Err(Error::Query(format!("table {} was altered, or dropped and created again, while the statement ran; run it again", schema.table)));
         }
-        let models = self.models_of(schema);
+        let models = self.write_models_of(schema);
         let derivers = self.derivers_of(schema);
         // Text and vectors computed ahead cover the rows unless they changed
         // since: files of those are read here.

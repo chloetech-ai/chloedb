@@ -10,7 +10,7 @@ This document is the design. `report/` holds the evaluation of the prototype.
 
 ## 1. Goals
 
-* **Embedded and single-file.** One `.strata` file plus a `-wal` sidecar, like
+* **Embedded and single-file.** One `.chloedb` file plus a `-wal` sidecar, like
   SQLite in WAL mode. Opening a database maps the file; nothing is loaded
   eagerly, so databases larger than RAM work and a cold open is O(1).
 * **ACID with snapshot isolation.** One writer, any number of readers; readers

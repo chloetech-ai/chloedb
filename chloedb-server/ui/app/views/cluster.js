@@ -2711,12 +2711,12 @@ function renderNotCoordinator(page) {
     clear(box, card({ title: "This server's part", body: h("dl", { class: "kv" }, [["shard", `${hl.slots.shard} of ${hl.slots.of}`], ["cluster map", "epoch " + (hl.slots.epoch ?? "–")], ["role", rep.role || "standalone"], ["term", rep.term ?? "–"], ["last transaction", fmt.n(rep.seq_no ?? hl.txn)]].flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, String(v))])) }));
     return () => {};
   }
-  const name = h("input", { class: "input", value: "strata", style: { width: "140px" } });
+  const name = h("input", { class: "input", value: "chloedb", style: { width: "140px" } });
   const shards = h("input", { class: "input", type: "number", value: 2, min: 1, style: { width: "80px" } });
   const copiesN = h("input", { class: "input", type: "number", value: 3, min: 1, max: 9, style: { width: "80px" } });
   const pre = h("pre", { class: "code", style: { maxHeight: "360px" } });
   const out = () => {
-    const nm = name.value.trim() || "strata";
+    const nm = name.value.trim() || "chloedb";
     pre.textContent = ["# 1. The operator, once per Kubernetes cluster:", "#    kubectl apply -f chloedb-server/deploy/k8s/operator/operator.yaml", "# 2. This file: kubectl apply -f cluster.yaml",
       "apiVersion: strata.chloetech.ai/v1alpha1", "kind: StrataCluster", "metadata:", `  name: ${nm}`, "spec:", `  shards: ${+shards.value || 1}`, `  replicas: ${+copiesN.value || 3}`, "  coordinators: 2", "  storage:", "    size: 10Gi", "  demo: 10000", "  failoverAfterMs: 3000", "  writeAcks: all"].join("\n");
   };

@@ -1,6 +1,6 @@
 # chloedb: ChloeDB from Python
 
-`import strata` (or `import chloedb`, the same package by its new name) runs a ChloeDB database in your process (`chloedb.open`,
+`import chloedb` runs a ChloeDB database in your process (`chloedb.open`,
 `chloedb.Database`), or talks to a running `chloedb-server` (`chloedb.connect`,
 `chloedb.Client`), with the same methods: `insert`, `upsert`, `delete`,
 `import_file`, `query`, `sql`, `search`, and `table()` for queries built
@@ -10,14 +10,18 @@ read without copying them.
 
 ```sh
 # a release's prebuilt wheel (Linux glibc 2.35+, macOS 11+); no Rust needed
-pip install strata-db -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 pip install ./chloedb-py          # or from source, from the repository's root; needs Rust
 ```
+
+`import strata`, ChloeDB's old name, imports the same package for a release,
+with a `DeprecationWarning`; release 0.1.0, from before the rename, was
+published as `strata-db` and imports as `strata` only.
 
 ```python
 import chloedb
 
-db = chloedb.open("books.strata", schema={
+db = chloedb.open("books.chloedb", schema={
     "table": "books", "key": "id",
     "fields": [
         {"name": "id", "type": "keyword"},
@@ -33,14 +37,15 @@ for row in db.table().where(col("year") >= 1990).order_by(bm25("title", "dragon"
     print(row["title"])
 ```
 
-Frames are lazy dataframes over tables, run where the data is (pyarrow
-needed: `pip install "strata-db[frame]" -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0`):
+Frames are lazy dataframes over tables, run where the data is (a build
+from source, with pyarrow: `pip install "./chloedb-py[frame]"`; release 0.1.0
+has no frames):
 
 ```python
 import chloedb
 from chloedb import col
 
-shop = chloedb.connect("shop.strata")       # or a server: chloedb.connect("https://...")
+shop = chloedb.connect("shop.chloedb")      # or a server: chloedb.connect("https://...")
 (shop["orders"].filter(col("status") == "paid")
      .group_by("country").agg(revenue=col("amount").sum(), n=chloedb.len())
      .sort("revenue", descending=True).to_polars())

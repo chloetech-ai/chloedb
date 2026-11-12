@@ -10,7 +10,7 @@ that names it::
     import chloedb
 
     hash = chloedb.train.codebook(db, "items-rq", field="emb")
-    items = chloedb.open("items.strata", schema={
+    items = chloedb.open("items.chloedb", schema={
         "table": "items", "key": "id",
         "fields": [
             {"name": "id", "type": "keyword"},

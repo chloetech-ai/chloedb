@@ -1,0 +1,81 @@
+# cargo deny's rules for every crate that locks its dependencies (chloedb,
+# chloectx, chloedb-server, chloedb-py, chloedb-crawl, chloedb-sheets,
+# chloedb-java, chloedb-js). The Supply chain workflow (supply-chain.yml)
+# runs it in each, every day and on any change to a manifest or a lockfile:
+#
+#   cd chloedb-server && cargo deny --manifest-path Cargo.toml check --config ../deny.toml
+#
+# An advisory against a locked version fails the check. Fix it with
+# `cargo update -p <crate>` where a compatible version has the fix; ignore
+# it below only with the reason it does not reach ChloeDB, and the date.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec's database, fetched by the check.
+unmaintained = "all"
+yanked = "deny"
+# One file serves eight crates: an ignore that one of them never meets is
+# expected.
+unused-ignored-advisory = "allow"
+ignore = [
+    # quick-xml's quadratic duplicate-attribute check and unbounded namespace
+    # declarations (2026-11-12). It arrives through object_store, which
+    # parses the XML answers of the object store a database is configured
+    # to use (S3 and compatible stores), not input from ChloeDB's clients;
+    # the fixed quick-xml needs an object_store release that takes it.
+    { id = "RUSTSEC-2026-0194", reason = "object_store parses its configured store's answers only; waiting for an object_store release with quick-xml's fix" },
+    { id = "RUSTSEC-2026-0195", reason = "object_store parses its configured store's answers only; waiting for an object_store release with quick-xml's fix" },
+    # Unmaintained, with no known flaw (2026-11-12): replace when the
+    # crates that pull them in move on.
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, no known flaw; a proc macro used at build time by dependencies" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained, no known flaw; pulled in by dependencies" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, no known flaw; pulled in by serde_yaml" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained, no known flaw; pulled in by chloedb-crawl's HTML parser" },
+]
+
+[licenses]
+# Permissive licences, and MPL-2.0 (file-level copyleft: ChloeDB links the
+# crates unchanged). A new licence in the tree fails the check until it is
+# added here on purpose.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+
+[licenses.private]
+# The repository's own crates (path dependencies, never published from here).
+ignore = true
+
+[bans]
+# The tree has many duplicate versions of small crates; they cost build time,
+# not safety.
+multiple-versions = "allow"
+# A `*` version for a registry crate is an error to cargo publish anyway;
+# a path dependency (chloedb-server on ../chloedb) is how the crates here
+# build together, and cargo deny counts it as a wildcard in a crate that
+# does not say `publish = false`.
+wildcards = "warn"
+allow-wildcard-paths = true
+
+[sources]
+# crates.io only: a git dependency or another registry fails the check.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

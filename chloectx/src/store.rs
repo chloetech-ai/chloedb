@@ -31,6 +31,7 @@ use chloedb::{Document, Value, VectorIndexKind};
 
 use crate::cluster::{self, Cluster};
 use crate::embed::Embedder;
+use crate::redact::redact;
 use crate::record::{entity_id, file_entity_id, links_of, record_id, schema, Draft, Kind, Link, Record, COLUMNS};
 use crate::{err, Error, Result};
 
@@ -312,24 +313,32 @@ impl Store {
     }
 
     /// Embeds and stores records with the ids and sequence numbers they
-    /// have, replacing the stored ones with the same ids.
+    /// have, replacing the stored ones with the same ids. Their text and
+    /// context are redacted first.
     pub fn insert(&self, records: &[Record]) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
+        let mut records = records.to_vec();
+        for r in &mut records {
+            crate::redact::redact_record(r);
+        }
+        let records = &records[..];
         let texts: Vec<String> = records.iter().map(|r| r.embed_text()).collect();
         let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let embs = self.embedder.embed(&refs)?;
         self.insert_embedded(records, embs)
     }
 
-    /// Stores records with precomputed embeddings.
+    /// Stores records with precomputed embeddings, as they are (not
+    /// redacted: the embeddings were computed from this text).
     pub fn insert_embedded(&self, records: &[Record], embs: Vec<Vec<f32>>) -> Result<()> {
         let recs = records.iter().cloned().zip(embs).map(|(rec, emb)| Pending { rec, emb, how: How::Replace }).collect();
         self.run(Op::Put(recs)).map(|_| ())
     }
 
-    /// Bulk-loads records (for benchmarks and transcript back-fill).
+    /// Bulk-loads records as they are, not redacted (for benchmarks, and
+    /// records a sync pulled, which it redacted).
     pub fn bulk_insert(&self, records: &[Record], embs: Vec<Vec<f32>>) -> Result<()> {
         let Back::Local { db, writer } = &self.back else {
             // A server's table takes them as records to replace.
@@ -361,10 +370,17 @@ impl Store {
     /// Assigns sequence numbers and stores drafts for one session and turn.
     /// A draft's entities and files become links, and entities the store has
     /// not seen become records of their own.
+    /// Text is redacted ([`crate::redact`]) whichever way it came: what the
+    /// hooks captured, a transcript back-fill, `remember`, the distiller.
     pub fn append(&self, session: &str, turn: i64, ts: i64, drafts: Vec<Draft>) -> Result<Vec<Record>> {
         let mut drafts = drafts;
         let mut names: Vec<(String, String)> = Vec::new();
         for d in &mut drafts {
+            d.text = redact(&d.text);
+            d.ctx = redact(&d.ctx);
+            for w in d.when.iter_mut().chain(d.entities.iter_mut()) {
+                *w = redact(w);
+            }
             for n in std::mem::take(&mut d.entities) {
                 if let Some(id) = entity_id(&n) {
                     if !d.links.iter().any(|l| l.to == id) {
@@ -452,6 +468,22 @@ impl Store {
     pub fn query_with(&self, sql: &str, params: &Params) -> Result<ResultSet> {
         match &self.back {
             Back::Local { db, .. } => Ok(db.query_at(&self.snapshot(), sql, params, &db.exec)?),
+            Back::Remote(r) => r.cluster.query(&for_table(sql, &r.table), params),
+        }
+    }
+
+    /// A caller's statement ([`crate::sqlguard`]): checked to be one
+    /// `SELECT` without model calls, and run with `limits`' deadline,
+    /// memory budget and row cap. On a server's table the server's own
+    /// limits hold as well.
+    pub fn query_guarded(&self, sql: &str, params: &Params, limits: &crate::sqlguard::Limits) -> Result<ResultSet> {
+        crate::sqlguard::check_select(sql)?;
+        match &self.back {
+            Back::Local { db, .. } => {
+                let mut opts = db.exec.limited(Some(limits.timeout), Some(limits.memory_bytes), None);
+                opts.max_rows = Some(opts.max_rows.map_or(limits.max_rows, |m| m.min(limits.max_rows)));
+                Ok(db.query_at(&self.snapshot(), sql, params, &opts)?)
+            }
             Back::Remote(r) => r.cluster.query(&for_table(sql, &r.table), params),
         }
     }

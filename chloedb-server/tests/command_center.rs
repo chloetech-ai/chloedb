@@ -163,7 +163,7 @@ async fn shard_of(nodes: &mut [&mut Node]) -> (Arc<Coordinator>, Arc<Service>) {
     }
     let (coord, svc) = coordinator(nodes[0].url()).await;
     for n in nodes.iter().skip(1) {
-        coord.add_replica(0, &n.url(), false).await.unwrap();
+        coord.add_replica(0, &n.url(), false, false).await.unwrap();
     }
     let want = nodes.len() - 1;
     let primary: &Node = nodes[0];

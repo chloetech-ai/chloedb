@@ -1,6 +1,6 @@
 # ChloeDB from Python
 
-The `strata` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [chloedb-server](server.md). Both have the same methods, so a script written against a local file works against a server.
+The `chloedb` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [chloedb-server](server.md). Both have the same methods, so a script written against a local file works against a server.
 
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
@@ -10,22 +10,22 @@ The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-py-v<version>` release (`strata-py-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
 
 ```sh
-pip install strata-db -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 ```
 
-Release 0.1.0 was made before the rename, as `strata-db`; releases after it are `chloedb` (`pip install chloedb -f <its assets page>`). Its package is `chloedb` (`import chloedb`, with `import strata` in 0.1.0); `import strata` goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`.
+The package imports as `chloedb`, as the examples here do. `import strata`, its old name, goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`. Release 0.1.0, from before the rename, was published as `strata-db` (tag `strata-py-v0.1.0`) and imports as `strata` only.
 
 | platform | wheel |
 |---|---|
-| macOS 11+ on Apple silicon | `strata_db-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
-| macOS 11+ on Intel | `strata_db-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
-| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata_db-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
-| Linux aarch64, glibc 2.35+ | `strata_db-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
+| macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
+| macOS 11+ on Intel | `chloedb-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
+| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
+| Linux aarch64, glibc 2.35+ | `chloedb-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
 
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
 ### Only the client, with no build
 
@@ -62,7 +62,7 @@ The package includes [DataFusion](query-language.md#subqueries-with-and-joins), 
 ```python
 import chloedb
 
-db = chloedb.open("books.strata", schema={
+db = chloedb.open("books.chloedb", schema={
     "table": "books",
     "key": "id",
     "fields": [
@@ -92,7 +92,18 @@ db.close()
 
 A database written by a version of ChloeDB from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `chloedb.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
-One process at a time can have a database open to write it. Others can open it with `chloedb.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `ChloeDBError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `chloedb-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
+One process at a time can have a database open to write it. Others can open it with `chloedb.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `ChloeDBError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `chloedb-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, writes the rows still in memory into the file (so that the file alone holds the database, [backups](#backing-up-and-damaged-files)), merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
+
+### Backing up, and damaged files
+
+A database is its file plus `<path>-wal`, the write-ahead log, which holds the rows written since the last flush; copying the file alone while the database is open loses them. To back up a database:
+
+- while it is open and in use: `db.checkpoint("backup.chloedb")` writes a consistent copy (the destination must not exist), checks every segment against its checksum first, so that a damaged database fails the checkpoint instead of being copied, checks the copy, and only then gives it its name. Restore by opening the copy, or renaming it into place while nothing has the database open;
+- after `close()` (or a `with` block): `close()` writes the rows still in memory into the file and leaves the log empty, so the file alone is then a complete copy; `db.flush()` does the same at any moment, until the next write.
+
+Copying a database's files while it is written is not a backup, even with its `-wal`.
+
+When the newest version of a database or its log is damaged so that opening it would lose acknowledged writes (bit rot, a copy cut short, a log deleted while it held transactions), `chloedb.open` raises `ChloeDBError` naming the file, what is damaged and how to recover, and changes nothing: restore a backup, or open with `recover=True` to accept the loss. That keeps copies of the damaged files first (`<path>.damaged-<time>`, `<path>-wal.damaged`), opens what is left, issues a `RuntimeWarning`, and `db.damaged` says what was lost (it is `None` for a database that opened whole).
 
 ## Writing
 
@@ -115,11 +126,11 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 | `export_parquet(path, tables=None)` | writes the tables to Parquet: a `.parquet` file for one table, else a directory of them, each keeping its ChloeDB schema |
 | `import_arrow(data, table=None)` | writes the rows of a pyarrow Table or RecordBatchReader, a polars DataFrame, a DuckDB relation or anything with `__arrow_c_stream__`, columns into the fields of their names; bulk-loaded into an empty table, else upserted |
 
-`chloedb.from_sqlite("shop.sqlite", "shop.strata")` creates a database from a SQLite file's tables, and `chloedb.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `chloedb.from_parquet("events.parquet", "lake.strata")` and `chloedb.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
+`chloedb.from_sqlite("shop.sqlite", "shop.chloedb")` creates a database from a SQLite file's tables, and `chloedb.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `chloedb.from_parquet("events.parquet", "lake.chloedb")` and `chloedb.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
 
 `insert`, `upsert`, `delete` and `import_file` write the database's first table, the one `schema` describes, or the one `table=` names (`db.insert(rows, table="events")`); `sql` names the table it writes, and `tables()` lists every table's schema. Through a coordinator, `delete` on a table placed by a column takes that column's value as `routing=` ([tables on shards](server.md#tables-on-shards)). A key a row leaves out gets its field's `default`, and a field with `not_null` refuses a row without a value ([schema options](server.md#schemas)); a `timestamp` defaulting to `"now"` takes one time for all the rows of a call.
 
-Vectors of embedded fields that a row leaves out are computed by the field's model when it is open, here or behind an API: a field naming `openai/text-embedding-3-small`, `cohere/embed-v4.0`, `voyage/voyage-3.5`, `gemini/gemini-embedding-001`, `ollama/nomic-embed-text` or another [hosted model](server.md#hosted-models) gets its vectors from the provider, with the key in the process's environment (`OPENAI_API_KEY`, ...), so inserting plain text is enough. A write whose vectors the provider will not give (after its retries) raises `ChloeDBError` and writes nothing. `db.embed_errors` lists the embedded fields whose model did not open (a hosted model without its key says which variable to set), whose vectors rows must then bring, and the [semantic-ID fields](#semantic-id-codebooks) whose codebook did not open.
+Vectors of embedded fields that a row leaves out are computed by the field's model when it is open, here or behind an API: a field naming `openai/text-embedding-3-small`, `cohere/embed-v4.0`, `voyage/voyage-3.5`, `gemini/gemini-embedding-001`, `ollama/nomic-embed-text` or another [hosted model](server.md#hosted-models) gets its vectors from the provider, with the key in the process's environment (`OPENAI_API_KEY`, ...), so inserting plain text is enough. A write whose vectors the provider will not give (after its retries) raises `ChloeDBError` and writes nothing. `db.embed_errors` lists the embedded fields whose model did not open (a hosted model without its key says which variable to set), whose vectors rows must then bring: a write that leaves one to a model ChloeDB could run but has not open fails, and says so, unless `db.set_embed_later()` lets it store the row without its vector, to be filled in once the model opens (a server does it itself; from Rust, `Db::embed_backfill`) (before, such a row was stored without a vector, and no error said so; a server still does that, and fills them in itself). A table records the fingerprint of its model's weights (the SHA-256 of its weights file) when it is created with the model in its models directory, and a model of the same name with other weights does not open for it: it is listed in `db.embed_errors`, with what to do. It also lists the [semantic-ID fields](#semantic-id-codebooks) whose codebook did not open.
 
 ## Querying
 
@@ -183,6 +194,32 @@ p = db.plan("SELECT id FROM books WHERE year >= :y LIMIT 3", y=2000)
 db.run(p)
 ```
 
+### Limits: memory, deadlines, interrupting
+
+A query runs in your process, so what it builds up (its groups, the rows it orders and returns, a percentile's values, a join's tables) is held by your program. The queries of every database a process opens share a memory budget, by default a quarter of the machine's memory (the cgroup's limit in a container, else RAM), or `CHLOEDB_QUERY_MEMORY_MB` MiB when that is set when the first database opens (`0`: no budget). A query that would hold more stops and raises `ChloeDBError` with code `memory`, naming the budget and how to raise it, and gives back what it held; the program and its other queries go on. `SELECT * FROM big` on a table larger than the budget, a `GROUP BY` over a column with a value per row or a percentile over every row fail this way rather than taking the machine's memory. The counts are estimates of what a query grows, not of every allocation, and the index a query reads is mapped from the file and not counted.
+
+A query has no deadline unless it is given one. `timeout_ms` (to `query`, `query_arrow`, `scroll`, `sql`, `search` and `run`, as a `Client`'s query takes it) stops it once it has run that long: it raises `DeadlineError`, naming the `timeout_ms`. `memory=` gives a query a budget of its own, in bytes (`memory=0`: none). A database's own limits, for every query that does not give its own, are set when it opens or later:
+
+```python
+db = chloedb.open("books.chloedb", timeout_ms=5_000, memory=512 << 20)  # 5 s, and 512 MiB its queries share
+db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", timeout_ms=200)
+db.query("SELECT * FROM books", memory=0)                               # this one counts nothing
+db.set_limits(timeout_ms=None, memory=None)                             # back to the defaults
+db.timeout_ms, db.memory                                                # the limits now (None: none)
+```
+
+`db.interrupt()`, from any thread, stops the queries of the database running now, as `sqlite3.Connection.interrupt` does: each raises `DeadlineError` within a few thousand rows, and queries that start after it run. Calls release the GIL while they run, so another thread (a watchdog, a web server's request that was cancelled) can call it:
+
+```python
+threading.Timer(2.0, db.interrupt).start()
+try:
+    db.query("SELECT a.id, b.id FROM books a JOIN books b ON a.year = b.year")
+except chloedb.DeadlineError:
+    ...
+```
+
+A query checks its deadline and `interrupt` between segments and every 1,024 rows it groups, orders, walks or joins. A write is not cut short: `sql`'s limits apply to a `SELECT`. Ctrl-C reaches Python only when a call returns, so a notebook stops a runaway query with `timeout_ms` or `interrupt()` from another thread.
+
 ## Queries built in Python
 
 `table()` starts a query of the table built from Python values instead of SQL text, so nothing is quoted or escaped: fields are named as the schema names them (`col("order")`, `col("doc no")`), and values keep their types (a `str` is text whatever quotes it holds, a `date` or `datetime` a timestamp, UTC unless it says otherwise). Each method returns a new query; iterating one, or `run()`, runs it and gives its `Result`:
@@ -245,7 +282,7 @@ A [semantic-ID field](server.md#semantic-ids) gives each row a code from its vec
 h = chloedb.train.codebook(db, "items-rq", field="emb")       # a table's vectors
 h = chloedb.train.codebook(vectors, "items-rq")               # a list of lists, or a 2-D numpy array
 
-items = chloedb.open("items.strata", schema={
+items = chloedb.open("items.chloedb", schema={
     "table": "items", "key": "id",
     "fields": [
         {"name": "id", "type": "keyword"},
@@ -267,7 +304,7 @@ It returns the SHA-256 of the file, which the table records. The options are `le
 ```python
 from chloedb import ngrams
 
-db = chloedb.open("next.strata", ngrams.schema())
+db = chloedb.open("next.chloedb", ngrams.schema())
 db.write(ngrams.ops(["a", "b"], "c"))       # after each event: "c" after [..., "a", "b"]
 chloedb.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
 ```
@@ -278,7 +315,7 @@ chloedb.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
 
 ```python
 import chloedb.train
-db = chloedb.Database.open("shop.strata", models="models")
+db = chloedb.Database.open("shop.chloedb", models="models")
 out = chloedb.train.sequence(db, "next", table="items", field="emb",
                             events={"table": "events", "user": "usr", "item": "item", "action": "action", "time": "ts"},
                             learn_items=True, negatives="all", holdout=True, models="models")
@@ -310,7 +347,7 @@ for page in client.scroll("SELECT id, title FROM books WHERE year >= :y", y=1950
     handle(page.dicts())
 ```
 
-The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `chloedb.ChloeDBError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
+The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `chloedb.ChloeDBError` (or a subclass of it, [below](#errors)), with the HTTP status as `.status`, the JSON answer as `.answer` and a stable `.code`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
 
@@ -322,6 +359,63 @@ except chloedb.ChloeDBError as e:
         raise
     client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
 ```
+
+### Reading your own writes
+
+A read from a [replica](server.md#replication-a-primary-and-its-replicas), or through a coordinator whose shards have replicas, can be answered by a copy that has not applied a write yet. The servers fix that with sequence numbers ([reads that see a write](server.md#reads-that-see-a-write)), when they number their writes (`--seq-no`):
+
+- A write's count is a `chloedb.Written`: an `int` (it compares, adds, prints and serialises as one, so code that used the number goes on working) with the write's `seq_no` from a server, or `seq_nos`, one per shard, from a coordinator; both are None from a server without `--seq-no`. `write`, `insert`, `upsert`, `delete`, `put`, a write by `sql` and a write plan by `run` answer one; `insert` and the others that send several requests answer the latest numbers of all of them.
+- `query`, `query_arrow`, `search`, `get`, `get_many`, `scroll`, a read by `sql`, a read plan by `run` and `sid_next` take `min_seq_no=` and `min_seq_nos=`: the copy that answers holds those writes. A replica that has not applied them waits up to a second, then answers 503, and a coordinator passes the read to the shard's primary; a server refuses a number past its last write (409).
+- `client.session()` (or `chloedb.Session(url, ...)`) is a client that does this itself: it keeps the latest numbers its own writes answered and sends them with each of its reads, so reading your own writes through a coordinator or from a replica is one line. A session is safe to share between threads; `session.observe(written)` adds a write made by another client. Numbers given to a read explicitly are sent with the session's, the later of each.
+
+```python
+s = chloedb.connect("http://coordinator:7700").session()
+s.upsert({"id": "u1", "name": "Ada"})
+s.get("u1")                                  # sees the upsert, whichever copy answers
+
+w = client.upsert({"id": "u2", "name": "Grace"})     # or explicitly, by its numbers
+client.get("u2", min_seq_no=w.seq_no, min_seq_nos=w.seq_nos)
+```
+
+The numbers go with reads only: a server refuses them on a write (a write sees every write before it), so a session leaves them off an `INSERT`, `UPDATE` or `DELETE` by `sql`, judging a statement by its first word. A `Database` takes `min_seq_no` and `min_seq_nos` and ignores them: a database in your process reads every write it committed.
+
+### Errors
+
+Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBError` catches them all) with a stable `.code`, the same in your process and from a server: the server's JSON `code` when it gives one, else the kind the engine's message starts with (`busy: ...`), else the HTTP status. The common codes are raised as subclasses:
+
+| code | class | when |
+|---|---|---|
+| `bad_request` | `BadRequestError` | a bad schema, query, value or request (HTTP 400, 413, 422); sending it again fails again |
+| `unauthorized` | `UnauthorizedError` | no token, or one without the rights the request needs (401, 403) |
+| `not_found` | `NotFoundError` | no such route, table or cursor (404); `get` of a missing key answers None instead |
+| `conflict` | `ConflictError` | refused by the state it met (409): an `if_seq_no` that no longer holds, an idempotency key still running, a `min_seq_no` past the server's last write |
+| `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others (`answer["partial"]`): send it again with the same `idempotency_key` |
+| `busy` | `BusyError` | the database is open in another process, or another writer holds it |
+| `overloaded` | `OverloadedError` | refused for the server's load before any work (429), after the client's retries |
+| `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
+| `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
+
+Other codes have no subclass: `memory` (a query past its memory budget, [limits](#limits-memory-deadlines-interrupting)), `corrupt`, `io`, `internal` (another 5xx) and `error`. `chloedb.error_code(message, status, answer)` gives the code of any message. A server that cannot be reached still raises `urllib.error.URLError`, and a client's own timeout `TimeoutError`, as before.
+
+### Database and Client: what differs
+
+A script moves between `chloedb.open` and `chloedb.connect` unchanged as long as it keeps to what both have. `timeout_ms` means the same on both: a query's deadline ([limits](#limits-memory-deadlines-interrupting)). Options that only a server can honour raise `TypeError` on a `Database` rather than being taken as query parameters: `idempotency_key` (to `sql`, `write`), `keep_alive_ms` (to `scroll`), and `timeout_ms` to a method that runs no query (`plan`); a query parameter of one of those names goes in the `params` dict. The rest of the differences:
+
+| | `Database` (in your process) | `Client` (a server) |
+|---|---|---|
+| a write's count | `int` | `Written`, an `int` with `seq_no` / `seq_nos` |
+| `min_seq_no`, `min_seq_nos` | taken and ignored | sent: the answering copy holds those writes |
+| `timeout_ms` | the query's deadline, none by default | sent: the query's deadline, the server's `--timeout-ms` (5 s) by default |
+| `memory`, `interrupt()` | a query's budget; stops the running queries | the server's `--query-memory-mb` |
+| `idempotency_key`, `keep_alive_ms` | `TypeError` | sent |
+| `scroll` | slices of one answer | pages of a server-side scroll, past `--max-result-window` |
+| `export_sqlite` | returns a dict | returns the tables' names |
+| `export_parquet` | `tables=`, returns a dict | `table=`, returns the table's name |
+| `import_sqlite`, `import_parquet` | take `schemas=` / `schema=` | the server's schemas |
+| a plan | `plan(sql)` | `explain(sql)["ir"]` |
+| only here | `optimize`, `vacuum`, `expire`, `refresh`, `add_column`, `drop_column`, `rename_column`, `import_arrow`, `embed_errors` | `put`, `stream`, `source`, `sources`, `plan_sqlite`, `plan_parquet`, `health`, `stats`, `ask`, `session` |
+| errors | `ChloeDBError` subclasses, `status` None | the same classes and codes, with `status` and `answer` |
+| unreachable | | `urllib.error.URLError` |
 
 ### Streams and Kafka
 
@@ -341,7 +435,7 @@ def click(e):                                   # an ingest.Event: topic, partit
         {"op": "add", "table": "users", "key": c["usr"], "field": "n_events", "value": 1},
     ]
 
-ingest.kafka(chloedb.connect("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092", group="strata")
+ingest.kafka(chloedb.connect("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092", group="chloedb")
 ```
 
 The function gives an event's operations, which commit together with its offset; None writes the offset alone (for events to leave out). Without one, each value is JSON: an operation, or `{"ops": [...]}`. The consumer runs until interrupted, or until `max_events=` events were read or none came for `idle=` seconds, and returns counts (`events`, `written`, `skipped`, `streams`, `retries`). It keeps a stream open for `seconds_per_stream=` (1 by default), then commits the stream's offsets to Kafka for Kafka's own lag tools and opens the next. When the server cannot be reached, or answers 429 or 5xx, it waits and reads every partition again from the server's offsets, for up to `retry_for=` seconds (60). An event the function fails on stops it after the events before it are written, so a restart begins with that event. `config=` adds librdkafka settings, and consumers of one `group` share the partitions. `ingest.consume(client, log, to_ops)` runs the same loop over another log, through the small `ingest.Log` interface.

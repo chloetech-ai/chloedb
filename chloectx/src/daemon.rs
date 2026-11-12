@@ -144,6 +144,8 @@ pub struct Daemon {
     /// Held while state.json is written, so an older state never lands
     /// after a newer one.
     saving: Mutex<()>,
+    /// Held while events.log is appended to or rewritten (`redact`).
+    logging: Mutex<()>,
     /// Distillations run one at a time, so each sees what the last wrote.
     distilling: Mutex<()>,
     /// Turns distilled since the notes were last consolidated.
@@ -171,7 +173,7 @@ impl Daemon {
         let store = Arc::new(Store::open(&paths.db, embedder, StoreOptions { sync: cfg.sync, ..Default::default() })?);
         let state: State = std::fs::read_to_string(&paths.state).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
-            distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), last_activity: AtomicI64::new(now()) })
+            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), last_activity: AtomicI64::new(now()) })
     }
 
     /// Writes the session state: copied under the session lock, written
@@ -203,7 +205,11 @@ impl Daemon {
         }
     }
 
+    /// Appends an event to events.log, its strings redacted.
     fn log(&self, line: &Json) {
+        let mut line = line.clone();
+        crate::redact::redact_json(&mut line);
+        let _one = self.logging.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.paths.dir.join("events.log")) {
             let _ = writeln!(f, "{line}");
         }
@@ -224,6 +230,7 @@ impl Daemon {
             "sql" => self.op_sql(req).map(|r| (r, None)),
             "remember" => self.op_remember(req).map(|r| (r, None)),
             "forget" => self.op_forget(req).map(|r| (r, None)),
+            "redact" => self.op_redact(req).map(|r| (r, None)),
             "append" => self.op_append(req).map(|r| (r, None)),
             "stats" => self.op_stats().map(|r| (r, None)),
             "backup" => self.op_backup(req).map(|r| (r, None)),
@@ -239,6 +246,7 @@ impl Daemon {
                 let mut ck = self.checker();
                 recall::briefing_checked(&self.store, sid, self.cfg.briefing_chars, now(), Some(&mut ck)).map(|(t, _)| (json!({"text": t}), None))
             }
+            "sync" => self.op_sync(req).map(|r| (r, None)),
             "shutdown" => {
                 let me = self.clone();
                 Ok((json!({"ok": true}), Some(Box::new(move || me.shutdown()) as Deferred)))
@@ -256,10 +264,65 @@ impl Daemon {
         while self.pending.load(Ordering::Acquire) > 0 && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(200));
         }
+        // What was recorded since the last push goes before the daemon does.
+        let _ = self.sync_now(false);
         let _ = self.store.flush();
         self.save_state();
         let _ = std::fs::remove_file(&self.paths.socket);
         std::process::exit(0);
+    }
+
+    /// Pushes what the store recorded since the last push to the server
+    /// `chloectx sync setup` named (and, with `pull`, first stores the
+    /// project's records the server holds and the store lacks): the
+    /// sync's state after, or `None` with no server set up. One at a time.
+    pub fn sync_now(&self, pull: bool) -> Option<crate::sync::SyncState> {
+        static ONE: Mutex<()> = Mutex::new(());
+        let remote = crate::sync::remote(&crate::paths::home())?;
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
+        // What a pull stores keeps the server's sequence numbers, and the
+        // next push sends again those past what was pushed: the same rows,
+        // replaced by themselves. Taking them as pushed (pushed_seq set to
+        // the store's last) also took as pushed whatever the hooks recorded
+        // while the pull ran, which then never reached the server.
+        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st)) } else { None };
+        st.last_error = match (&pushed, &pulled) {
+            (Err(e), _) | (_, Some(Err(e))) => e.to_string(),
+            _ => String::new(),
+        };
+        let (p, g) = (pushed.as_ref().map_or(0, |n| *n), pulled.as_ref().and_then(|r| r.as_ref().ok()).copied().unwrap_or(0));
+        if p > 0 || g > 0 || !st.last_error.is_empty() {
+            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "pushed": p, "pulled": g, "error": st.last_error}));
+        }
+        crate::sync::save_state(&self.paths.dir, &st);
+        Some(st)
+    }
+
+    /// `{"op": "sync", "what": "status" | "push" | "pull"}`.
+    fn op_sync(&self, req: &Json) -> Result<Json> {
+        let what = req.get("what").and_then(|v| v.as_str()).unwrap_or("status");
+        let Some(remote) = crate::sync::remote(&crate::paths::home()) else {
+            return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
+        };
+        let st = match what {
+            "push" => self.sync_now(false),
+            "pull" => self.sync_now(true),
+            "status" => Some(crate::sync::load_state(&self.paths.dir, &remote.url)),
+            w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
+        }
+        .unwrap_or_default();
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
+        Ok(json!({
+            "server": remote.url, "token": remote.has_token(), "project": self.project, "synced_as": key,
+            "local_records": self.store.len(), "last_seq": self.store.last_seq(),
+            "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
+            "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
+            "server_records": on_server.as_ref().ok(), "server_error": on_server.err().filter(|e| !e.is_empty()),
+        }))
     }
 
     fn with_session<T>(&self, sid: &str, f: impl FnOnce(&mut Session) -> T) -> T {
@@ -325,7 +388,9 @@ impl Daemon {
                 Ok((ctx_out("SessionStart", text), None))
             }
             "UserPromptSubmit" => {
-                let prompt = p.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // Redacted at once: the prompt is kept in the session state
+                // (state.json) and in the context of the turn's records.
+                let prompt = crate::redact::redact(p.get("prompt").and_then(|v| v.as_str()).unwrap_or(""));
                 let (turn, recent) = self.with_session(&sid, |s| {
                     s.turn += 1;
                     s.episode = EpisodeAcc { prompt: prompt.clone(), ..Default::default() };
@@ -1087,10 +1152,7 @@ impl Daemon {
 
     fn op_sql(&self, req: &Json) -> Result<Json> {
         let sql = req.get("sql").and_then(|v| v.as_str()).unwrap_or("").trim();
-        if !sql.get(..6).map_or(false, |s| s.eq_ignore_ascii_case("select")) {
-            return Err(err("only SELECT statements over the memory table are allowed"));
-        }
-        let rs = self.store.query(sql)?;
+        let rs = self.store.query_guarded(sql, &chloedb::query::Params::new(), &crate::sqlguard::Limits::TOOL)?;
         let mut text = rs.columns.join(" | ") + "\n";
         for row in rs.rows.iter().take(100) {
             let cells: Vec<String> = row
@@ -1156,6 +1218,158 @@ impl Daemon {
         let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let found = self.store.delete(id)?;
         Ok(json!({"text": if found { format!("Deleted {id}.") } else { format!("No record {id}.") }}))
+    }
+
+    /// `{"op": "redact", "dry_run": bool}`, for a store written before
+    /// redaction knew a secret's shape: rewrites the records whose text or
+    /// context [`crate::redact`] changes, then compacts the store, so that
+    /// their old versions leave its segments and its write-ahead log;
+    /// redacts the session state and events.log the same way; and, when a
+    /// sync is set up, sends the rewritten records again, replacing the
+    /// server's copies. Answers how many changed and the kinds of secret
+    /// found, never what they were.
+    fn op_redact(&self, req: &Json) -> Result<Json> {
+        use crate::redact::{count_markers, redact_json, redact_record};
+        use std::collections::BTreeMap;
+        let dry = req.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
+        let mut found = |before: &str, after: &str| {
+            let (mut was, mut is) = (BTreeMap::new(), BTreeMap::new());
+            count_markers(before, &mut was);
+            count_markers(after, &mut is);
+            for (k, n) in is {
+                let more = n.saturating_sub(was.get(&k).copied().unwrap_or(0));
+                if more > 0 {
+                    *kinds.entry(k).or_default() += more;
+                }
+            }
+        };
+
+        // The records, in batches by id.
+        let rs = self.store.query(&format!("SELECT id FROM memory LIMIT {}", self.store.len() + 1000))?;
+        let ids: Vec<String> = rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str()).map(String::from)).collect();
+        let mut fixed: Vec<Record> = Vec::new();
+        for chunk in ids.chunks(500) {
+            let mut batch = Vec::new();
+            for mut r in self.store.get(chunk)? {
+                let before = format!("{}\n{}", r.text, r.ctx);
+                if redact_record(&mut r) {
+                    found(&before, &format!("{}\n{}", r.text, r.ctx));
+                    batch.push(r);
+                }
+            }
+            if !dry {
+                self.store.insert(&batch)?;
+            }
+            fixed.extend(batch);
+        }
+        let compacted = if dry || fixed.is_empty() {
+            Json::Null
+        } else {
+            match self.store.db().map(|db| db.optimize()) {
+                Some(Ok(_)) => json!(true),
+                Some(Err(e)) => json!(format!("the rewritten records are stored, but compacting failed ({e}): their old versions stay in the file until merges reach them")),
+                // A cluster's table: the server's merges drop the old versions.
+                None => Json::Null,
+            }
+        };
+
+        // The session state (prompts kept for recall after a compaction).
+        let mut sessions = 0;
+        {
+            let mut st = self.state.lock().unwrap();
+            for s in st.sessions.values_mut() {
+                let Ok(mut v) = serde_json::to_value(&*s) else { continue };
+                let before = v.to_string();
+                if redact_json(&mut v) {
+                    sessions += 1;
+                    found(&before, &v.to_string());
+                    if !dry {
+                        if let Ok(new) = serde_json::from_value(v) {
+                            *s = new;
+                        }
+                    }
+                }
+            }
+        }
+        if sessions > 0 && !dry {
+            self.save_state();
+        }
+
+        // events.log, line by line, while nothing appends to it.
+        let mut log_lines = 0;
+        {
+            let _one = self.logging.lock().unwrap_or_else(|e| e.into_inner());
+            let path = self.paths.dir.join("events.log");
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let mut out = String::with_capacity(text.len());
+                for line in text.split_inclusive('\n') {
+                    let (body, nl) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+                    let new = match serde_json::from_str::<Json>(body) {
+                        Ok(mut v) => {
+                            if redact_json(&mut v) {
+                                v.to_string()
+                            } else {
+                                body.to_string()
+                            }
+                        }
+                        Err(_) => crate::redact::redact(body),
+                    };
+                    if new != body {
+                        log_lines += 1;
+                        found(body, &new);
+                    }
+                    out += &new;
+                    out += nl;
+                }
+                if log_lines > 0 && !dry {
+                    let tmp = path.with_extension("log.tmp");
+                    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+                    f.write_all(out.as_bytes())?;
+                    drop(f);
+                    std::fs::rename(&tmp, &path)?;
+                }
+            }
+        }
+
+        // The server's copies.
+        let sync = match crate::sync::remote(&crate::paths::home()) {
+            Some(remote) if !dry && !fixed.is_empty() => {
+                let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+                match crate::sync::push_records(&remote, &key, &fixed) {
+                    Ok(n) => json!({"server": remote.url, "replaced": n}),
+                    Err(e) => json!({"server": remote.url, "error": e.to_string()}),
+                }
+            }
+            _ => Json::Null,
+        };
+        let old = chloedb::upgrade::old_path(&self.paths.db);
+        let old_copy = old.exists().then(|| old.display().to_string());
+
+        let verb = if dry { "would be redacted" } else { "redacted" };
+        let what: Vec<String> = kinds.iter().map(|(k, n)| format!("{k} x{n}")).collect();
+        let mut text = format!(
+            "{} of {} records {verb}{}; {sessions} session states and {log_lines} lines of events.log {verb}.",
+            fixed.len(),
+            ids.len(),
+            if what.is_empty() { String::new() } else { format!(" ({})", what.join(", ")) }
+        );
+        if let Some(e) = compacted.as_str() {
+            text += &format!(" Note: {e}.");
+        }
+        match (sync.get("replaced"), sync.get("error")) {
+            (Some(n), _) => text += &format!(" Replaced {n} records on {}.", sync["server"].as_str().unwrap_or("")),
+            (_, Some(e)) => text += &format!(" Could not replace them on {}: {}.", sync["server"].as_str().unwrap_or(""), e.as_str().unwrap_or("")),
+            _ => {}
+        }
+        if let Some(p) = &old_copy {
+            text += &format!(" An older copy of the store, from before its format was upgraded, is at {p}: delete it once you no longer need it.");
+        }
+        self.log(&json!({"ts": now(), "event": "redact", "dry_run": dry, "records": fixed.len(), "sessions": sessions, "log_lines": log_lines, "kinds": kinds}));
+        Ok(json!({
+            "records": ids.len(), "changed": fixed.len(), "kinds": kinds, "sessions": sessions, "log_lines": log_lines,
+            "dry_run": dry, "compacted": compacted, "sync": sync, "old_copy": old_copy, "text": text,
+        }))
     }
 
     /// Stores drafts for a session (transcript back-fill, tests).
@@ -1227,6 +1441,18 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
     }
     let listener = UnixListener::bind(&paths.socket)?;
     eprintln!("chloectx: serving {} on {} ({} records, embedder {})", project, paths.socket.display(), daemon.store.len(), daemon.store.embedder.name());
+    // The sync to a server, when one is set up: what this store lacks on
+    // start, then what it records, every PUSH_EVERY.
+    if crate::sync::remote(&crate::paths::home()).is_some() {
+        let d = daemon.clone();
+        std::thread::spawn(move || {
+            d.sync_now(true);
+            loop {
+                std::thread::sleep(crate::sync::PUSH_EVERY);
+                d.sync_now(false);
+            }
+        });
+    }
     {
         let d = daemon.clone();
         std::thread::spawn(move || loop {
@@ -1296,6 +1522,63 @@ pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Resu
             Err(_) => std::thread::sleep(Duration::from_millis(15)),
         }
     }
+}
+
+/// Replaces the store's file with a fresh copy of its live rows, after a
+/// `redact`: the versions it replaced are gone from every segment, but the
+/// pages they were on stay in the file, free, until later writes reuse
+/// them, and this copy has no free pages. It needs the file to itself: it
+/// holds the lock that clients take to start a daemon (so a hook that
+/// comes meanwhile finds no daemon and records nothing, for the few
+/// seconds this takes), stops the project's daemon, waits up to `wait`
+/// for it to let go of the file, and opens it here. The next request
+/// starts a daemon on the copy. Returns the file's size before and after.
+pub fn rewrite_file(dir: &Path, wait: Duration) -> Result<Json> {
+    use std::os::unix::io::AsRawFd;
+    let paths = StorePaths::new(dir);
+    if !paths.db.exists() {
+        return Err(err(format!("no store at {}", paths.db.display())));
+    }
+    let deadline = Instant::now() + wait;
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(&paths.spawn_lock)?;
+    // SAFETY: flock on an open descriptor.
+    while unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        if Instant::now() >= deadline {
+            return Err(err("a daemon is being started; try again"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if UnixStream::connect(&paths.socket).is_ok() {
+        let _ = try_request(&paths.socket, &json!({"op": "shutdown"}), Instant::now() + Duration::from_secs(10));
+    }
+    let db = loop {
+        match chloedb::db::Db::open(&paths.db, chloedb::storage::DbOptions::default()) {
+            Ok(db) => break db,
+            Err(chloedb::Error::Busy(_)) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(err(format!("open {}: {e}", paths.db.display()))),
+        }
+    };
+    let before = std::fs::metadata(&paths.db).map_or(0, |m| m.len());
+    // Without what merges dropped, then copied: the copy holds only live data.
+    db.optimize()?;
+    let copy = dir.join("memory.strata.redacted");
+    let _ = std::fs::remove_file(&copy);
+    let stats = db.storage().checkpoint(&copy, &chloedb::storage::CheckpointOptions::default())?;
+    let live = db.snapshot().n_live_docs();
+    drop(db);
+    if stats.live_docs != live {
+        let _ = std::fs::remove_file(&copy);
+        return Err(err(format!("the copy holds {} records, the store {live}: the store was left as it was", stats.live_docs)));
+    }
+    std::fs::rename(&copy, &paths.db)?;
+    // Empty since the checkpoint flushed; the copy starts its own.
+    match std::fs::remove_file(dir.join("memory.strata-wal")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    drop(lock);
+    let after = std::fs::metadata(&paths.db).map_or(0, |m| m.len());
+    Ok(json!({"records": live, "bytes_before": before, "bytes_after": after}))
 }
 
 /// Starts `chloectx serve` in the background unless one is starting already.

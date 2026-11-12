@@ -1,0 +1,863 @@
+//! Damage that opening used to take for a crash and recover from by
+//! dropping acknowledged writes, without an error:
+//!
+//! * a newest version (its meta slot, its manifest, or the file one byte
+//!   short of it) that fails a check, where opening fell back to the
+//!   version before and replayed a log that no longer held what the
+//!   newer one had flushed (and cut the newer one's pages off the file);
+//! * a write-ahead log whose header is damaged, or names another
+//!   database, which opening replaced with an empty log.
+//!
+//! Each must now fail to open, naming the file and the way out, and leave
+//! the files as they were; [`DbOptions::recover`] opens all the same,
+//! keeping a copy first. A fallback the log does cover still opens.
+
+mod storage_util;
+
+use std::collections::BTreeSet;
+use std::fs::OpenOptions;
+use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use storage_util::*;
+use chloedb::error::Error;
+use chloedb::storage::pager::{read_metas, PAGE};
+use chloedb::storage::{Database, DbOptions};
+
+fn keys(r: impl Iterator<Item = u64>) -> BTreeSet<String> {
+    r.map(key).collect()
+}
+
+fn insert(db: &Database, src: &MapSource, ids: impl Iterator<Item = u64>) {
+    let mut tx = db.begin().unwrap();
+    for i in ids {
+        let d = doc(i, 0);
+        src.put(&d);
+        tx.insert(d).unwrap();
+    }
+    tx.commit().unwrap();
+}
+
+fn wal_of(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push("-wal");
+    s.into()
+}
+
+fn flip(path: &Path, at: u64) {
+    let f = OpenOptions::new().read(true).write(true).open(path).unwrap();
+    let mut b = [0u8];
+    f.read_exact_at(&mut b, at).unwrap();
+    f.write_all_at(&[b[0] ^ 0xFF], at).unwrap();
+}
+
+fn sync_opts(src: &Arc<MapSource>) -> DbOptions {
+    DbOptions { sync: true, ..opts(src) }
+}
+
+/// Rows 0..300 flushed, rows 300..600 flushed (the newest version), and
+/// ten acknowledged transactions of one row each (600..610) in the log.
+fn two_flushes_and_a_log(path: &Path, src: &Arc<MapSource>) {
+    let db = Database::create(path, schema(), sync_opts(src)).unwrap();
+    insert(&db, src, 0..300);
+    db.flush().unwrap();
+    insert(&db, src, 300..600);
+    db.flush().unwrap();
+    for i in 600..610 {
+        insert(&db, src, i..i + 1);
+    }
+}
+
+/// The slot of the newest version, and its manifest's page.
+fn newest(path: &Path) -> (usize, u64) {
+    let f = std::fs::File::open(path).unwrap();
+    let (m, slot) = read_metas(&f).unwrap()[0];
+    (slot, m.manifest.page)
+}
+
+fn files_of(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_file())
+        .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(&p).unwrap()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn refused(path: &Path, o: DbOptions, what: &str) -> String {
+    match Database::open(path, o) {
+        Err(Error::Corrupt(m)) => m,
+        Err(e) => panic!("{what}: {e}"),
+        Ok(db) => panic!("{what}: opened with {} rows, damaged: {:?}", db.snapshot().n_live_docs(), db.damaged()),
+    }
+}
+
+// One flipped byte in the newest meta slot, in the newest manifest, or a
+// file one byte short: opening fell back to the version before, replayed
+// the log's last ten rows on it, and lost the 300 rows the newest version
+// had flushed (PR-1, ST-7). Read-only too.
+#[test]
+fn damage_to_the_newest_version_fails_to_open() {
+    let cases: [(&str, fn(&Path)); 5] = [
+        ("newest meta slot", |p| flip(p, newest(p).0 as u64 * PAGE)),
+        // Slot 0, which the database was created with: zeros there are
+        // no unwritten slot (the audit's last case of silent loss).
+        ("newest meta slot zeroed", |p| {
+            assert_eq!(newest(p).0, 0, "two flushes after creation leave the newest version in slot 0");
+            let f = OpenOptions::new().read(true).write(true).open(p).unwrap();
+            f.write_all_at(&vec![0u8; PAGE as usize], 0).unwrap();
+        }),
+        ("newest meta slot's txn", |p| flip(p, newest(p).0 as u64 * PAGE + 24)),
+        ("newest manifest", |p| flip(p, newest(p).1 * PAGE + 3)),
+        ("file one byte short of its page count", |p| {
+            let f = OpenOptions::new().read(true).write(true).open(p).unwrap();
+            let pages = read_metas(&f).unwrap()[0].0.page_count;
+            f.set_len(pages * PAGE - 1).unwrap();
+        }),
+    ];
+    for (what, damage) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        two_flushes_and_a_log(&path, &src);
+        damage(&path);
+        let before = files_of(dir.path());
+        let m = refused(&path, sync_opts(&src), what);
+        assert!(m.contains("would lose acknowledged writes") && m.contains("recover") && m.contains(&path.display().to_string()), "{what}: {m}");
+        let ro = DbOptions { read_only: true, ..sync_opts(&src) };
+        if what.starts_with("file") {
+            // A reader does not check the length: it reads the newest
+            // version, whose pages are all there but the last byte.
+            assert_eq!(Database::open(&path, ro).unwrap().snapshot().n_live_docs(), 610);
+        } else {
+            let m = refused(&path, ro, what);
+            assert!(m.contains("would lose acknowledged writes"), "{what}: {m}");
+        }
+        // Nothing was truncated, extended or written.
+        assert!(files_of(dir.path()) == before, "{what}: opening changed the files");
+
+        // Recovering accepts the loss, and keeps the file as it was.
+        let db = Database::open(&path, DbOptions { recover: true, ..sync_opts(&src) }).unwrap();
+        let why = db.damaged().expect("says what was lost").to_string();
+        assert!(why.contains("losing acknowledged writes") && why.contains(".damaged-"), "{what}: {why}");
+        assert_keys(&db.snapshot(), &keys((0..300).chain(600..610)));
+        db.check().unwrap();
+        let copies: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n.starts_with("db.strata.damaged-")).collect();
+        assert_eq!(copies.len(), 1, "{what}: {copies:?}");
+        assert!(before.iter().any(|(n, b)| n == "db.strata" && *b == std::fs::read(dir.path().join(&copies[0])).unwrap()), "{what}");
+    }
+}
+
+// The same damage, when the log still holds what the newest version
+// flushed (a crash between the version's commit and the log's reset leaves
+// that): falling back loses nothing, and opens.
+#[test]
+fn a_fallback_the_log_covers_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    let saved = dir.path().join("wal-before");
+    {
+        let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..300);
+        db.flush().unwrap();
+        for i in 300..310 {
+            insert(&db, &src, i..i + 1);
+        }
+        std::fs::copy(wal_of(&path), &saved).unwrap();
+        db.flush().unwrap();
+    }
+    std::fs::copy(&saved, wal_of(&path)).unwrap();
+    flip(&path, newest(&path).0 as u64 * PAGE);
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    let why = db.damaged().expect("says it fell back").to_string();
+    assert!(why.contains("which the write-ahead log completes"), "{why}");
+    assert_keys(&db.snapshot(), &keys(0..310));
+    db.check().unwrap();
+}
+
+// Damage to the older slot loses nothing: the newest version opens.
+#[test]
+fn damage_to_the_older_slot_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    two_flushes_and_a_log(&path, &src);
+    let older = 1 - newest(&path).0 as u64;
+    flip(&path, older * PAGE);
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_keys(&db.snapshot(), &keys(0..610));
+}
+
+/// Five acknowledged transactions of 100 rows, none flushed: all in the
+/// log.
+fn rows_in_the_log(path: &Path, src: &Arc<MapSource>) {
+    drop(Database::create(path, schema(), sync_opts(src)).unwrap());
+    rows_in_the_log_of(path, src);
+}
+
+fn rows_in_the_log_of(path: &Path, src: &Arc<MapSource>) {
+    let db = Database::open(path, sync_opts(src)).unwrap();
+    for k in 0..5u64 {
+        insert(&db, src, k * 100..k * 100 + 100);
+    }
+}
+
+// A log whose header was damaged (its magic, its database id) was taken
+// for no log and replaced by an empty one, dropping its 500 rows (ST-8,
+// PR-3); so was another database's log put in its place.
+#[test]
+fn a_log_with_a_damaged_header_fails_to_open() {
+    let other = tempfile::tempdir().unwrap();
+    let other_db = other.path().join("o.strata");
+    let osrc = Arc::new(MapSource::default());
+    rows_in_the_log(&other_db, &osrc);
+    let cases: [(&str, Box<dyn Fn(&Path)>); 4] = [
+        ("magic", Box::new(|w: &Path| flip(w, 0))),
+        ("database id", Box::new(|w: &Path| flip(w, 9))),
+        // With `sync` the header is durable before any record: zeros
+        // there are damage, not a power loss.
+        ("header zeroed", Box::new(|w: &Path| zero_header(w))),
+        ("another database's log", Box::new(|w: &Path| {
+            std::fs::copy(wal_of(&other_db), w).unwrap();
+        })),
+    ];
+    for (what, damage) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        // A version of its own first, so that the database is no new one
+        // a crash left beside an old log; then 500 rows in the log.
+        {
+            let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+            insert(&db, &src, 1000..1001);
+            db.flush().unwrap();
+        }
+        rows_in_the_log_of(&path, &src);
+        let wal = wal_of(&path);
+        let rows = Database::open(&path, sync_opts(&src)).unwrap().snapshot().n_live_docs();
+        assert_eq!(rows, 501, "{what}");
+        damage(&wal);
+        let before = files_of(dir.path());
+        let m = refused(&path, sync_opts(&src), what);
+        assert!(m.contains("committed transactions") && m.contains("recover") && m.contains(&wal.display().to_string()), "{what}: {m}");
+        assert!(files_of(dir.path()) == before, "{what}: opening changed the files");
+
+        let db = Database::open(&path, DbOptions { recover: true, ..sync_opts(&src) }).unwrap();
+        assert!(db.damaged().unwrap().contains(".damaged"), "{what}: {:?}", db.damaged());
+        assert!(before.iter().any(|(n, b)| n == "db.strata-wal" && *b == std::fs::read(dir.path().join("db.strata-wal.damaged")).unwrap()), "{what}");
+    }
+}
+
+// A checkpoint copied each segment as it was and gave the copy a fresh
+// checksum, so a damaged source became a backup that passed every check
+// (ST-2). It now fails, and leaves no copy.
+#[test]
+fn a_checkpoint_of_a_damaged_segment_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+    insert(&db, &src, 0..300);
+    db.flush().unwrap();
+    let f = std::fs::File::open(&path).unwrap();
+    let (m, _) = read_metas(&f).unwrap()[0];
+    let manifest = chloedb::storage::manifest::Manifest::decode(&chloedb::storage::pager::read_extent(&f, m.manifest, m.manifest_crc).unwrap()).unwrap();
+    let seg = manifest.segments().next().unwrap().extent;
+    // In the header (read once, at open), and in the middle of the image.
+    for at in [seg.page * PAGE + 20, seg.page * PAGE + seg.len / 2] {
+        flip(&path, at);
+        let dest = dir.path().join("backup.strata");
+        match db.checkpoint(&dest, &Default::default()) {
+            Err(Error::Corrupt(m)) => assert!(m.contains("fails its checksum") && m.contains("checkpoint"), "{m}"),
+            other => panic!("checkpointed a damaged segment: {other:?}"),
+        }
+        assert!(!dest.exists() && !wal_of(&dest).exists());
+        flip(&path, at);
+        db.checkpoint(&dest, &Default::default()).unwrap();
+        std::fs::remove_file(&dest).unwrap();
+    }
+}
+
+// After a clean close the rows still in memory were in the log only: a
+// copy of the file alone held none of them (ST-4). `Db::close` now
+// flushes, and leaves the log empty.
+#[test]
+fn a_closed_database_is_its_file() {
+    use chloedb::db::Db;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let db = Db::create(&path, schema(), DbOptions { sync: true, ..DbOptions::default() }).unwrap();
+    for i in 0..500u64 {
+        db.storage().begin().map(|mut tx| {
+            tx.insert(doc(i, 0)).unwrap();
+            tx.commit().unwrap();
+        }).unwrap();
+    }
+    db.close().unwrap();
+    drop(db);
+    let copy = dir.path().join("copy.strata");
+    std::fs::copy(&path, &copy).unwrap();
+    let wal_len = std::fs::metadata(wal_of(&path)).unwrap().len();
+    assert!(wal_len <= 64, "the log holds {wal_len} bytes after a close");
+    let db = Database::open(&copy, DbOptions::default()).unwrap();
+    assert_eq!(db.snapshot().n_live_docs(), 500);
+}
+
+// A log a crash cut inside its header, or emptied, holds no commit: it
+// opens as no log, as before.
+#[test]
+fn a_log_cut_inside_its_header_opens() {
+    for len in [0, 7, 15] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        rows_in_the_log(&path, &src);
+        OpenOptions::new().write(true).open(wal_of(&path)).unwrap().set_len(len).unwrap();
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        assert_eq!(db.snapshot().n_live_docs(), 0);
+    }
+}
+
+fn zero_header(wal: &Path) {
+    let f = OpenOptions::new().read(true).write(true).open(wal).unwrap();
+    f.write_all_at(&[0u8; 16], 0).unwrap();
+}
+
+// Without `sync` a log's header is not made durable before the records
+// appended after it, so a power loss can keep a later sector and lose the
+// header's, which reads as zeros (storage_faults found it: such a log was
+// refused as damaged). Those commits were never durable, and a power loss
+// without sync may lose them: opening drops them, keeps a copy and says
+// so. Opened with `sync`, the same log is refused.
+#[test]
+fn a_log_header_lost_to_a_power_loss_without_sync_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    let unsynced = DbOptions { sync: false, ..opts(&src) };
+    {
+        let db = Database::create(&path, schema(), unsynced.clone()).unwrap();
+        insert(&db, &src, 1000..1001);
+        db.flush().unwrap();
+        for k in 0..5u64 {
+            insert(&db, &src, k * 100..k * 100 + 100);
+        }
+    }
+    zero_header(&wal_of(&path));
+    let before = files_of(dir.path());
+    let m = refused(&path, sync_opts(&src), "with sync");
+    assert!(m.contains("damaged header") && m.contains("recover"), "{m}");
+    assert!(files_of(dir.path()) == before);
+    let db = Database::open(&path, unsynced).unwrap();
+    let why = db.damaged().expect("says what it dropped").to_string();
+    assert!(why.contains("header is zeros") && why.contains(".damaged"), "{why}");
+    assert_keys(&db.snapshot(), &keys(1000..1001));
+    assert!(before.iter().any(|(n, b)| n == "db.strata-wal" && *b == std::fs::read(dir.path().join("db.strata-wal.damaged")).unwrap()));
+    db.check().unwrap();
+}
+
+fn other() -> chloedb::Schema {
+    chloedb::Schema::from_json(r#"{"table": "other", "key": "id", "fields": [{"name": "id", "type": "int"}, {"name": "n", "type": "int"}]}"#).unwrap()
+}
+
+// A newer version that made a table and flushed nothing was taken for
+// one whose loss the log covers: falling back to the version before lost
+// the table, and replay skipped the rows logged into it without a word. A
+// change of tables is not logged, so falling back past one is refused.
+#[test]
+fn a_fallback_past_a_change_of_tables_fails_to_open() {
+    let cases: [(&str, fn(&Path)); 2] = [
+        ("newest meta slot", |p| flip(p, newest(p).0 as u64 * PAGE)),
+        ("file one byte short of its page count", |p| {
+            let f = OpenOptions::new().read(true).write(true).open(p).unwrap();
+            let pages = read_metas(&f).unwrap()[0].0.page_count;
+            f.set_len(pages * PAGE - 1).unwrap();
+        }),
+    ];
+    for (what, damage) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        {
+            let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+            insert(&db, &src, 0..300);
+            db.flush().unwrap();
+            db.create_table(other()).unwrap();
+            for i in 0..5i64 {
+                let mut tx = db.begin().unwrap();
+                tx.table("other").unwrap().insert(vec![chloedb::Value::Int(i), chloedb::Value::Int(i)]).unwrap();
+                tx.commit().unwrap();
+            }
+            insert(&db, &src, 600..610);
+        }
+        damage(&path);
+        let before = files_of(dir.path());
+        let m = refused(&path, sync_opts(&src), what);
+        assert!(m.contains("table other created") && m.contains("would lose acknowledged writes") && m.contains("recover"), "{what}: {m}");
+        if !what.starts_with("file") {
+            let m = refused(&path, DbOptions { read_only: true, ..sync_opts(&src) }, what);
+            assert!(m.contains("table other created"), "{what}: {m}");
+        }
+        assert!(files_of(dir.path()) == before, "{what}: opening changed the files");
+        let db = Database::open(&path, DbOptions { recover: true, ..sync_opts(&src) }).unwrap();
+        let why = db.damaged().expect("says what was lost").to_string();
+        assert!(why.contains("table other created") && why.contains(".damaged-"), "{what}: {why}");
+        assert!(db.table("other").is_none(), "{what}");
+        assert_keys(&db.snapshot(), &keys((0..300).chain(600..610)));
+        db.check().unwrap();
+    }
+}
+
+// Falling back past a merge loses nothing (the version before holds the
+// same rows in the segments it merged, and the log the rows since): that
+// still opens.
+#[test]
+fn a_fallback_past_a_merge_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    {
+        let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..300);
+        db.flush().unwrap();
+        insert(&db, &src, 300..600);
+        db.flush().unwrap();
+        for i in 600..610 {
+            insert(&db, &src, i..i + 1);
+        }
+        let stats = db.merge(&chloedb::storage::MergePolicy::compact()).unwrap();
+        assert_eq!((stats.merges, stats.segments_in), (1, 2), "the two segments merged");
+    }
+    flip(&path, newest(&path).0 as u64 * PAGE);
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    let why = db.damaged().expect("says it fell back").to_string();
+    assert!(why.contains("which the write-ahead log completes"), "{why}");
+    assert_keys(&db.snapshot(), &keys(0..610));
+    db.check().unwrap();
+}
+
+fn zero_page(path: &Path, page: u64) {
+    let f = OpenOptions::new().read(true).write(true).open(path).unwrap();
+    f.write_all_at(&vec![0u8; PAGE as usize], page * PAGE).unwrap();
+}
+
+/// Each meta slot's txn, `None` where it holds no valid version.
+fn slots(path: &Path) -> [Option<u64>; 2] {
+    let f = std::fs::File::open(path).unwrap();
+    let mut out = [None; 2];
+    for (m, s) in read_metas(&f).unwrap() {
+        out[s] = Some(m.txn);
+    }
+    out
+}
+
+/// Refused read-write and read-only, the files left as they were; then
+/// opened with `recover`, which says what was lost and keeps `want`.
+fn refused_then_recovered(dir: &Path, path: &Path, src: &Arc<MapSource>, what: &str, want: &BTreeSet<String>) {
+    let before = files_of(dir);
+    let m = refused(path, sync_opts(src), what);
+    assert!(m.contains("would lose acknowledged writes") && m.contains("recover") && m.contains(&path.display().to_string()) && m.contains("all zeros"), "{what}: {m}");
+    let m = refused(path, DbOptions { read_only: true, ..sync_opts(src) }, what);
+    assert!(m.contains("would lose acknowledged writes"), "{what}: {m}");
+    assert!(files_of(dir) == before, "{what}: opening changed the files");
+    let db = Database::open(path, DbOptions { recover: true, ..sync_opts(src) }).unwrap();
+    let why = db.damaged().expect("says what was lost").to_string();
+    assert!(why.contains("losing acknowledged writes") && why.contains("all zeros") && why.contains(".damaged-"), "{what}: {why}");
+    assert_keys(&db.snapshot(), want);
+    db.check().unwrap();
+}
+
+// Slot 1 zeroed under the newest version, beside an older one in slot 0:
+// it was taken for a slot no commit had written, and opening fell back to
+// slot 0 and lost the 300 rows the newest version had flushed. Slot 0 past
+// the version the database was created with shows that slot 1 was
+// written. With ten transactions in the log after it, and with none (a
+// clean close).
+#[test]
+fn a_zeroed_slot_1_fails_to_open() {
+    for log in [true, false] {
+        let what = if log { "with a log" } else { "after a clean close" };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        {
+            let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+            for k in 0..3 {
+                insert(&db, &src, k * 300..k * 300 + 300);
+                db.flush().unwrap();
+            }
+            if log {
+                for i in 900..910 {
+                    insert(&db, &src, i..i + 1);
+                }
+            }
+        }
+        let [Some(t0), Some(t1)] = slots(&path) else { panic!("{what}: both slots hold a version") };
+        assert!(t1 > t0 && t0 > 1, "{what}: three flushes leave the newest version in slot 1, slot 0 past creation ({t0}, {t1})");
+        zero_page(&path, 1);
+        let want = keys((0..600).chain(if log { 900..910 } else { 0..0 }));
+        refused_then_recovered(dir.path(), &path, &src, what, &want);
+    }
+}
+
+// The database's first version in slot 1, zeroed, with rows logged after
+// it: slot 0 still holds the version it was created with, which a
+// database before its first commit has too; but the log starts past the
+// transactions that came after that version, because the commit emptied
+// it. Opening took slot 1 for unwritten, replayed the ten rows and lost
+// the 300 the version had flushed.
+#[test]
+fn a_zeroed_first_version_fails_to_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    {
+        let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..300);
+        db.flush().unwrap();
+        for i in 300..310 {
+            insert(&db, &src, i..i + 1);
+        }
+    }
+    assert!(matches!(slots(&path), [Some(1), Some(_)]));
+    zero_page(&path, 1);
+    refused_then_recovered(dir.path(), &path, &src, "first version zeroed", &keys(300..310));
+}
+
+// A checkpoint of one table is the version it was created with and one
+// commit, in slot 1, and has no log until it is opened. Slot 1 zeroed
+// opened it empty; the pages past slot 0's version, beside no log, show
+// that a commit made them.
+#[test]
+fn a_checkpoint_with_its_version_zeroed_fails_to_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    let backup = dir.path().join("backup.strata");
+    {
+        let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..300);
+        db.checkpoint(&backup, &Default::default()).unwrap();
+    }
+    assert!(matches!(slots(&backup), [Some(1), Some(_)]) && !wal_of(&backup).exists());
+    zero_page(&backup, 1);
+    refused_then_recovered(dir.path(), &backup, &src, "checkpoint", &keys(0..0));
+}
+
+// A crash in a database's first commit, after its pages and before its
+// meta slot, leaves slot 1 unwritten and the file longer than slot 0
+// says: that opens as before, with the log's rows (a flush) or none (a
+// change of tables, which is not logged), and nothing is damaged. A first
+// version zeroed after a clean close looks the same, and opens the same
+// way: an empty log cannot tell the two apart.
+#[test]
+fn a_crash_in_the_first_commit_opens() {
+    for logged in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        {
+            let db = Database::create(&path, schema(), sync_opts(&src)).unwrap();
+            if logged {
+                insert(&db, &src, 0..300);
+            }
+        }
+        // The pages the commit wrote before it crashed.
+        let f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let end = f.metadata().unwrap().len();
+        f.write_all_at(&vec![0x5Au8; 3 * PAGE as usize], end).unwrap();
+        drop(f);
+        let want = keys(0..if logged { 300 } else { 0 });
+        let ro = Database::open(&path, DbOptions { read_only: true, ..sync_opts(&src) }).unwrap();
+        assert_keys(&ro.snapshot(), &want);
+        assert_eq!(ro.damaged(), None, "logged {logged}");
+        drop(ro);
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        assert_keys(&db.snapshot(), &want);
+        assert_eq!(db.damaged(), None, "logged {logged}");
+        db.check().unwrap();
+    }
+}
+
+/// The txn of the newest version on disk, in either layout.
+fn version_txn(path: &Path) -> u64 {
+    if path.is_dir() {
+        return chloedb::storage::dir::read_current(path).unwrap().0.txn;
+    }
+    slots(path).into_iter().flatten().max().unwrap()
+}
+
+fn log_of(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        path.join("wal")
+    } else {
+        wal_of(path)
+    }
+}
+
+/// The files beside (or in) the database, and the log record in `WRITER`:
+/// a writer's open rewrites the session in front of it, and nothing else.
+fn files_and_record(dir: &Path, path: &Path) -> (Vec<(String, Vec<u8>)>, Vec<u8>) {
+    let writer = if path.is_dir() { path.join("WRITER") } else { dir.join("db.strata-readers").join("WRITER") };
+    let mut files = files_of(if path.is_dir() { path } else { dir });
+    files.retain(|(n, _)| n != "WRITER");
+    let record = std::fs::read(writer).map(|b| b.get(24..).unwrap_or_default().to_vec()).unwrap_or_default();
+    (files, record)
+}
+
+/// Refused read-write and read-only, naming the log, the version on disk
+/// and `recover`; the read-write refusal.
+fn refused_deleted(path: &Path, o: DbOptions, what: &str) -> String {
+    let txn = version_txn(path);
+    let m = refused(path, o.clone(), what);
+    assert!(
+        m.contains(&log_of(path).display().to_string())
+            && m.contains("is missing")
+            && m.contains("transactions committed after txn ")
+            && m.contains(&format!("the version on disk (txn {txn})"))
+            && m.contains("would lose acknowledged writes")
+            && m.contains("recover"),
+        "{what}: {m}"
+    );
+    let r = refused(path, DbOptions { read_only: true, ..o }, what);
+    assert!(r.contains("is missing") && r.contains(&format!("the version on disk (txn {txn})")) && r.contains("recover"), "{what}, read-only: {r}");
+    m
+}
+
+// A log deleted outright while it held acknowledged transactions: opening
+// started a new, empty one and opened the version on disk without a word,
+// losing them. The file is not written between versions, so the writer's
+// log record in `-readers/WRITER` says the log after that version held
+// some. Refused read-write and read-only, changing nothing; `recover`
+// opens the version on disk, says what was lost, and clears the record.
+#[test]
+fn a_deleted_log_fails_to_open() {
+    use chloedb::storage::Layout;
+    for (layout, sync) in [(Layout::SingleFile, true), (Layout::SingleFile, false), (Layout::Directory, true), (Layout::Directory, false)] {
+        let what = format!("{layout:?}, sync {sync}");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(if layout == Layout::Directory { "db.dir" } else { "db.strata" });
+        let src = Arc::new(MapSource::default());
+        let o = DbOptions { sync, layout, ..opts(&src) };
+        {
+            let db = Database::create(&path, schema(), o.clone()).unwrap();
+            insert(&db, &src, 0..300);
+            db.flush().unwrap();
+            for i in 300..310 {
+                insert(&db, &src, i..i + 1);
+            }
+        }
+        std::fs::remove_file(log_of(&path)).unwrap();
+        let before = files_and_record(dir.path(), &path);
+        assert!(!before.1.is_empty(), "{what}: the writer left a log record");
+        let m = refused_deleted(&path, o.clone(), &what);
+        // A flush is numbered right after the last transaction it holds.
+        assert!(m.contains(&format!("transactions committed after txn {}", version_txn(&path))), "{what}: {m}");
+        assert!(files_and_record(dir.path(), &path) == before, "{what}: opening changed the files");
+
+        let db = Database::open(&path, DbOptions { recover: true, ..o.clone() }).unwrap();
+        let why = db.damaged().expect("says what was lost").to_string();
+        assert!(why.contains("is missing") && why.contains("recover") && why.contains("losing them"), "{what}: {why}");
+        assert_keys(&db.snapshot(), &keys(0..300));
+        db.check().unwrap();
+        drop(db);
+        // The record is cleared: the log the recovered open started holds
+        // nothing, and its loss loses nothing.
+        std::fs::remove_file(log_of(&path)).unwrap();
+        let db = Database::open(&path, o.clone()).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        assert_keys(&db.snapshot(), &keys(0..300));
+        // And the database goes on: a new row, in the log again, is covered.
+        insert(&db, &src, 310..311);
+        drop(db);
+        std::fs::remove_file(log_of(&path)).unwrap();
+        refused_deleted(&path, o.clone(), &what);
+    }
+}
+
+// The log after a version a background flush or a merge made while the
+// log held transactions it does not: the record names that version from
+// when it is made, not from the next append.
+#[test]
+fn a_log_deleted_after_a_background_flush_or_a_merge_fails_to_open() {
+    for merge in [false, true] {
+        let what = if merge { "merge" } else { "background flush" };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(MapSource::default());
+        let o = sync_opts(&src);
+        {
+            let db = Database::create(&path, schema(), o.clone()).unwrap();
+            insert(&db, &src, 0..300);
+            if merge {
+                db.flush().unwrap();
+                insert(&db, &src, 300..600);
+                db.flush().unwrap();
+                insert(&db, &src, 600..610);
+                let stats = db.merge(&chloedb::storage::MergePolicy::compact()).unwrap();
+                assert_eq!(stats.merges, 1, "{what}");
+            } else {
+                db.background_flush_with(|| insert(&db, &src, 600..610)).unwrap();
+            }
+        }
+        std::fs::remove_file(wal_of(&path)).unwrap();
+        refused_deleted(&path, o.clone(), what);
+        let db = Database::open(&path, DbOptions { recover: true, ..o }).unwrap();
+        assert_keys(&db.snapshot(), &keys(0..if merge { 600 } else { 300 }));
+    }
+}
+
+// A log that a writer without log records left (a version of ChloeDB from
+// before them, or one whose `-readers` was removed) is covered from the
+// next open that replays it.
+#[test]
+fn a_log_replayed_at_open_is_covered() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    rows_in_the_log(&path, &src);
+    std::fs::remove_dir_all(dir.path().join("db.strata-readers")).unwrap();
+    assert_eq!(Database::open(&path, sync_opts(&src)).unwrap().snapshot().n_live_docs(), 500);
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    refused_deleted(&path, sync_opts(&src), "replayed");
+}
+
+// A clean close flushes and empties the log: deleting it afterwards loses
+// nothing, and the database opens as it was.
+#[test]
+fn a_log_deleted_after_a_clean_close_opens() {
+    use chloedb::db::Db;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    {
+        let db = Db::create(&path, schema(), sync_opts(&src)).unwrap();
+        for i in 0..50u64 {
+            let mut tx = db.storage().begin().unwrap();
+            tx.insert(doc(i, 0)).unwrap();
+            tx.commit().unwrap();
+        }
+        db.close().unwrap();
+    }
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!(db.damaged(), None);
+    assert_keys(&db.snapshot(), &keys(0..50));
+    drop(db);
+    // A flush without a close too.
+    {
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        insert(&db, &src, 50..60);
+        db.flush().unwrap();
+    }
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, DbOptions { read_only: true, ..sync_opts(&src) }).unwrap();
+    assert_keys(&db.snapshot(), &keys(0..60));
+    drop(db);
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!(db.damaged(), None);
+    assert_keys(&db.snapshot(), &keys(0..60));
+}
+
+// What has no log, or another database's record, opens: a database never
+// written; a new database made where another was deleted (its `-readers`
+// left behind, with a record naming the old one); and a checkpoint renamed
+// into place with the old log removed, as backups are restored.
+#[test]
+fn a_missing_log_that_held_nothing_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    drop(Database::create(&path, schema(), sync_opts(&src)).unwrap());
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!((db.snapshot().n_live_docs(), db.damaged()), (0, None));
+    drop(db);
+
+    // Another database at the same path: the record names the first.
+    {
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..10);
+    }
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    assert!(dir.path().join("db.strata-readers").join("WRITER").exists());
+    drop(Database::create(&path, schema(), sync_opts(&src)).unwrap());
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!((db.snapshot().n_live_docs(), db.damaged()), (0, None));
+    drop(db);
+
+    // A checkpoint restored over a database whose log held rows.
+    let backup = dir.path().join("backup.strata");
+    {
+        let db = Database::open(&path, sync_opts(&src)).unwrap();
+        insert(&db, &src, 0..100);
+        db.checkpoint(&backup, &Default::default()).unwrap();
+        insert(&db, &src, 100..110);
+    }
+    std::fs::rename(&backup, &path).unwrap();
+    std::fs::remove_file(wal_of(&path)).unwrap();
+    let db = Database::open(&path, sync_opts(&src)).unwrap();
+    assert_eq!(db.damaged(), None);
+    assert_keys(&db.snapshot(), &keys(0..100));
+    db.check().unwrap();
+}
+
+// Databases the release before log records wrote (format_fixtures' newest
+// set, with a transaction in the log): they have no record, and open with
+// their log or without it; the first open that replays the log covers it.
+#[test]
+fn files_from_before_log_records_open() {
+    let set = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fieldids/format3");
+    for dir_layout in [false, true] {
+        let what = if dir_layout { "directory" } else { "one file" };
+        let copy = |with_log: bool| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = if dir_layout {
+                let p = dir.path().join("db.dir");
+                std::fs::create_dir(&p).unwrap();
+                for e in std::fs::read_dir(set.join("db.dir")).unwrap() {
+                    let e = e.unwrap();
+                    if with_log || e.file_name() != "wal" {
+                        std::fs::copy(e.path(), p.join(e.file_name())).unwrap();
+                    }
+                }
+                p
+            } else {
+                let p = dir.path().join("db.strata");
+                std::fs::copy(set.join("db.strata"), &p).unwrap();
+                if with_log {
+                    std::fs::copy(set.join("db.strata-wal"), wal_of(&p)).unwrap();
+                }
+                p
+            };
+            (dir, path)
+        };
+        let o = DbOptions { sync: false, ..DbOptions::default() };
+        let (_d, without) = copy(false);
+        let db = Database::open(&without, DbOptions { read_only: true, ..o.clone() }).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        drop(db);
+        let db = Database::open(&without, o.clone()).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        assert!(db.snapshot().n_live_docs() > 0, "{what}");
+        drop(db);
+
+        let (_d, with) = copy(true);
+        let db = Database::open(&with, DbOptions { read_only: true, ..o.clone() }).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        drop(db);
+        let db = Database::open(&with, o.clone()).unwrap();
+        assert_eq!(db.damaged(), None, "{what}");
+        let stats = db.file_stats();
+        assert!(stats.memtable_docs > 0 || stats.pending_deletes > 0, "{what}: the log's transaction is replayed");
+        drop(db);
+        std::fs::remove_file(log_of(&with)).unwrap();
+        refused_deleted(&with, o.clone(), what);
+    }
+}

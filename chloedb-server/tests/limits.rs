@@ -8,10 +8,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value as Json};
 use chloedb::db::Db;
-use chloedb::query::memory::MemoryBudget;
 use chloedb::storage::DbOptions;
 use chloedb_server::coord::Coordinator;
-use chloedb_server::service::{shard_of, AgentConfig, Backend, Service};
+use chloedb_server::service::{query_budget, shard_of, AgentConfig, Backend, Service};
 use chloedb_server::{demo, server};
 use tokio::net::TcpListener;
 
@@ -237,7 +236,7 @@ async fn metric(base: &str, name: &str) -> f64 {
 /// A server whose queries may hold 16 KiB together.
 fn tight(db: Arc<Db>) -> Service {
     let mut s = capped(db);
-    s.query_memory = Some(MemoryBudget::new(16 << 10));
+    s.query_memory = Some(query_budget(16 << 10));
     s
 }
 
@@ -279,7 +278,7 @@ async fn a_coordinator_passes_on_its_shards_429_and_counts_its_joins() {
     // compound query count against its own budget.
     let shards = vec![grpc(Arc::new(capped(open(dir.path(), "r0.strata", shard(0))))).await, grpc(Arc::new(capped(open(dir.path(), "r1.strata", shard(1))))).await];
     let mut coord = connect(shards).await;
-    coord.query_memory = Some(MemoryBudget::new(16 << 10));
+    coord.query_memory = Some(query_budget(16 << 10));
     let base = http(Arc::new(coord)).await;
     let (status, body) = query(&base, WIDE).await;
     assert_eq!(status, 200, "{body}");

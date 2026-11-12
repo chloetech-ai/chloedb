@@ -173,7 +173,7 @@ deploy/compare/compare.sh load es
 deploy/compare/compare.sh run es
 deploy/compare/compare.sh down es</code></pre></div>
       <div class="code"><div class="code-head"><span>Every engine on DigitalOcean, at once</span></div><pre data-lang="bash"><code>cd chloedb-server
-IMAGE=ghcr.io/chloetech-ai/strata-server:&lt;sha&gt; \
+IMAGE=ghcr.io/chloetech-ai/chloedb-server:&lt;sha&gt; \
   BUDGET=30 deploy/compare/fanout.sh run
 deploy/compare/fanout.sh analyze results/
 deploy/compare/fanout.sh down</code></pre></div>

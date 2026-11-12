@@ -70,6 +70,29 @@ pub struct IndexShape {
     pub kind: String,
     pub nlist: usize,
     pub hnsw_m: usize,
+    /// The vectors' dimensions; 0 where unknown, costed as the 1,024 the
+    /// model was fitted on.
+    #[serde(default)]
+    pub dim: usize,
+}
+
+/// The dimensions [`CostModel::default`] was fitted on.
+pub const FITTED_DIM: usize = 1024;
+
+/// The most float32 values (vectors times dimensions) an unfiltered search
+/// scans exactly rather than search the index: about 2 million, a fifth of
+/// a millisecond on a core (20,000 vectors of 64 dimensions took 0.15 to
+/// 0.2 ms, where HNSW took 0.13 ms at ef 64 and found 73% of the true top
+/// 10, and 0.24 ms at ef 200 for 96%). Below it exactness costs about what
+/// the index does.
+pub const EXACT_SCAN_DIMS: usize = 1 << 21;
+
+impl IndexShape {
+    /// Whether an unfiltered search scans the segment exactly
+    /// ([`EXACT_SCAN_DIMS`]).
+    pub fn scans_exactly(&self) -> bool {
+        self.dim > 0 && self.n.saturating_mul(self.dim) <= EXACT_SCAN_DIMS
+    }
 }
 
 /// Nanoseconds per operation, and the HNSW work curve.
@@ -193,9 +216,22 @@ impl CostModel {
         w
     }
 
-    /// Predicted latency (µs) of `strategy` (not `Auto`).
+    /// Predicted latency (µs) of `strategy` (not `Auto`). Scoring a code
+    /// or a float32 vector costs in proportion to its dimensions, and the
+    /// model's costs are those of [`FITTED_DIM`]; an HNSW expansion's cost
+    /// is mostly the memory it reaches, which shorter vectors reduce less
+    /// (a floor of a quarter).
     pub fn estimate(&self, shape: &IndexShape, strategy: Strategy, k: usize, card: Option<usize>, p: &SearchParams) -> f64 {
-        self.time_us(&self.work(shape, strategy, k, card, p))
+        let mut w = self.work(shape, strategy, k, card, p);
+        if shape.dim > 0 {
+            let f = shape.dim as f64 / FITTED_DIM as f64;
+            w.scan *= f;
+            w.gather *= f;
+            w.rerank *= f;
+            w.centroids *= f;
+            w.nodes *= f.max(0.25);
+        }
+        self.time_us(&w)
     }
 
     /// The strategies applicable to `shape` with or without a filter.

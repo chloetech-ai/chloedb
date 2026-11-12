@@ -117,6 +117,41 @@ fn a_damaged_section_fails_the_queries_that_read_it() {
     }
 }
 
+// A row's value read from a column whose section fails its checksum came
+// back NULL, while a filter on the same column failed: one flipped byte
+// in `kw.<k>.post` made `SELECT id, k` answer NULL for every row of the
+// segment (PR-2). Reading a value now fails as the filter does.
+#[test]
+fn a_damaged_keyword_section_fails_the_rows_that_read_it() {
+    use chloedb::{Field, FieldType, Schema, Value};
+    let schema = Schema::new("t", vec![Field::new("id", FieldType::Keyword), Field::new("n", FieldType::Int), Field::new("k", FieldType::Keyword)], Some("id")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    {
+        let db = Db::create(&path, schema.clone(), options(Layout::SingleFile)).unwrap();
+        db.load((0..DOCS).map(|i| vec![Value::Str(key(i)), Value::Int(i as i64), Value::Str(format!("k{}", i % 7))])).unwrap();
+    }
+    let (file, at) = first_segment(&path);
+    for part in ["post", "codes", "dict"] {
+        let name = format!("kw.{}.{part}", schema.key_of("k").unwrap());
+        let (off, len) = section_at(&file, at, &name);
+        flip(&file, at + off + len - 1);
+        let db = Db::open(&path, options(Layout::SingleFile)).unwrap();
+        for sql in ["SELECT id, k FROM t WHERE n < 5", "SELECT k FROM t WHERE id = 'k000003'", "SELECT id, n, k FROM t LIMIT 1000"] {
+            match db.query(sql, &Params::new()) {
+                Err(Error::Corrupt(m)) => assert!(m.contains(&format!("section {name} fails its checksum")), "{sql}: {m}"),
+                Ok(rs) => panic!("{name}: {sql} answered {} rows, e.g. {:?}", rs.rows.len(), rs.rows.first()),
+                Err(e) => panic!("{name}: {sql}: {e}"),
+            }
+        }
+        drop(db);
+        flip(&file, at + off + len - 1);
+    }
+    let db = Db::open(&path, options(Layout::SingleFile)).unwrap();
+    let rs = db.query("SELECT k FROM t WHERE id = 'k000003'", &Params::new()).unwrap();
+    assert_eq!(rs.rows[0][0], Value::Str("k3".into()));
+}
+
 #[test]
 fn attaching_a_damaged_image_fails() {
     let dir = tempfile::tempdir().unwrap();

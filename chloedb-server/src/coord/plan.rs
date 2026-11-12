@@ -1365,7 +1365,7 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
             if c.topo().replicas[i].iter().any(|r| r.url == url) {
                 said = "it was a copy of the shard already; ".into();
             } else {
-                c.add_replica(i, &url, false).await?;
+                c.add_replica(i, &url, false, false).await?;
             }
             wait_sync(c, k, i, &url).await?;
             Ok(format!("{said}in sync with its primary"))
@@ -1375,7 +1375,7 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
             if !c.topo().replicas[i].iter().any(|r| r.url == url) {
                 return Ok("it had left the shard already".into());
             }
-            c.remove_replica(i, &url).await?;
+            c.remove_replica(i, &url, false).await?;
             Ok(String::new())
         }
         "promote" => {

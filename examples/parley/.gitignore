@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.chloedb
+*.chloedb-wal
+*.strata
+*.strata-wal
+*-media/
+parley-media/
+data/
+keys.json
+runs.jsonl
+bench/out/

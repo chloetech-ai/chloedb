@@ -2,7 +2,7 @@
 name = "chloedb"
 version = "0.0.1"
 edition = "2021"
-description = "Placeholder: holds the name for Strata, an embedded search database with SQL. See https://github.com/chloetech-ai/chloedb"
+description = "Placeholder: holds the name for ChloeDB, an embedded search database with SQL. See https://github.com/chloetech-ai/chloedb"
 license = "Apache-2.0"
 repository = "https://github.com/chloetech-ai/chloedb"
 homepage = "https://github.com/chloetech-ai/chloedb"

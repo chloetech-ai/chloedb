@@ -21,7 +21,7 @@ In Python, `chloedb.ngrams` writes the statement (`ngrams.create_table()`) or th
 import chloedb
 from chloedb import ngrams
 
-db = chloedb.open("next.strata", ngrams.schema())
+db = chloedb.open("next.chloedb", ngrams.schema())
 
 # after each event: item "c" after the user's history [..., "a", "b"]
 db.write(ngrams.ops(["a", "b"], "c"))

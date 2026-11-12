@@ -1,19 +1,19 @@
 //! `chloedb-server`: ChloeDB over HTTP JSON and gRPC, with a query UI.
 //!
 //! ```text
-//! chloedb-server --demo 20000 --db products.strata      # a demo catalogue, UI at http://127.0.0.1:7700
-//! chloedb-server --db my.strata                         # an existing database, or a new one with no tables yet
-//! CHLOEDB_TOKEN=... chloedb-server --db my.strata --listen 0.0.0.0:7700   # beyond loopback: a token
+//! chloedb-server --demo 20000 --db products.chloedb     # a demo catalogue, UI at http://127.0.0.1:7700
+//! chloedb-server --db my.chloedb                        # an existing database, or a new one with no tables yet
+//! CHLOEDB_TOKEN=... chloedb-server --db my.chloedb --listen 0.0.0.0:7700  # beyond loopback: a token
 //! chloedb-server --shards http://a:7701,http://b:7701   # a coordinator over shard servers
 //! chloedb-server --shards 'http://a0:7701|http://a1:7701,http://b0:7701|http://b1:7701'   # two replicas each
-//! chloedb-server --db a0.strata --seq-no --replicas http://a1:7701   # a primary shipping its writes to a replica
-//! chloedb-server --db a1.strata --seq-no --replica                    # and that replica
-//! chloedb-server --db new.strata --schema new.json --copy-from my.strata   # re-embed into a new schema
+//! chloedb-server --db a0.chloedb --seq-no --replicas http://a1:7701  # a primary shipping its writes to a replica
+//! chloedb-server --db a1.chloedb --seq-no --replica                   # and that replica
+//! chloedb-server --db new.chloedb --schema new.json --copy-from my.chloedb  # re-embed into a new schema
 //! chloedb-server fetch-model potion-retrieval-32M       # download an embedding model
-//! chloedb-server import --db my.strata --schema my.json rows.jsonl more.csv   # load files
-//! chloedb-server import --db shop.strata shop.sqlite    # a SQLite database's tables
-//! chloedb-server export --db shop.strata shop-copy.sqlite   # and back to SQLite
-//! chloedb-server upgrade my.strata                      # copy a database from before field ids into this version's format
+//! chloedb-server import --db my.chloedb --schema my.json rows.jsonl more.csv  # load files
+//! chloedb-server import --db shop.chloedb shop.sqlite   # a SQLite database's tables
+//! chloedb-server export --db shop.chloedb shop-copy.sqlite  # and back to SQLite
+//! chloedb-server upgrade my.chloedb                     # copy a database from before field ids into this version's format
 //! ```
 
 use std::path::PathBuf;
@@ -72,6 +72,15 @@ struct Args {
     /// start on such a database.
     #[arg(long)]
     wal_drop_damaged: bool,
+    /// Open a damaged database that the server otherwise refuses to start
+    /// on because opening it loses acknowledged writes (its newest version
+    /// fails a check and the write-ahead log no longer holds what it held,
+    /// or the log's header is damaged): keeps a copy of the damaged file
+    /// (`<db>.damaged-<time>`, `<db>-wal.damaged`), opens what is left,
+    /// and reports the loss in `/v1/health` and `/v1/admin/check`.
+    /// Implies --wal-drop-damaged. Restoring a backup loses less.
+    #[arg(long)]
+    recover: bool,
     /// Check every segment of the database against its checksum before
     /// serving (reads the whole database once). A damaged newest version
     /// is then skipped for the one before it, as when its manifest is
@@ -127,6 +136,13 @@ struct Args {
     /// it serves no reads (0: no automatic failover; promote by hand).
     #[arg(long, default_value_t = 0)]
     failover_after_ms: u64,
+    /// How long a write's idempotency key is remembered, in seconds (at
+    /// least 60): a retry within it is answered as the first attempt was,
+    /// and a write through a coordinator that failed partway across shards
+    /// is finished by sending it again with its key within it. Each key a
+    /// write leaves is a row of `_sources` for that long.
+    #[arg(long, default_value_t = 3600)]
+    idempotency_ttl_s: u64,
     /// On a database server: read every segment against its checksum every
     /// this many seconds, while it serves, to find data damaged on disk
     /// before a query or a failover does (0: only when asked, POST
@@ -479,7 +495,7 @@ struct Args {
     #[arg(long, env = "CHLOEDB_ENVIRONMENT")]
     environment: Option<String>,
     /// Where people reach this server's command center
-    /// (https://strata.example.com), for links in alerts' webhooks.
+    /// (https://chloedb.example.com), for links in alerts' webhooks.
     #[arg(long, env = "CHLOEDB_PUBLIC_URL")]
     public_url: Option<String>,
     /// The address other coordinators reach this coordinator's HTTP API at
@@ -1044,6 +1060,7 @@ async fn run() {
     if cluster.is_some() && cluster == token {
         tracing::warn!("--cluster-token is --token: whoever holds the token can make the calls between servers. Give the cluster a token of its own");
     }
+    chloedb_server::idem::set_ttl(std::time::Duration::from_secs(a.idempotency_ttl_s));
     let write_acks = chloedb_server::replication::Acks::parse(&a.write_acks).unwrap_or_else(|| fail(&format!("--write-acks is all, majority or primary, not {:?}", a.write_acks)));
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
@@ -1057,6 +1074,7 @@ async fn run() {
         demo_shard,
         directory: a.directory,
         wal_drop_damaged: a.wal_drop_damaged,
+        recover: a.recover,
         verify_checksums: a.verify_checksums,
         seq_no: a.seq_no,
         replicas: a.replicas,

@@ -331,7 +331,7 @@
       st.appendChild(svg);
       var gLinks = sv("g", { class: "links" }, svg);
       // app and coordinator
-      box(L.app, 116, 54, "app", "strata.connect(...)", "node app");
+      box(L.app, 116, 54, "app", "chloedb.connect(...)", "node app");
       box(L.coord, 150, 64, "coordinator", "slot map · epoch " + S.epoch, "node coord");
       sv("line", { x1: L.app[0] + 58, y1: L.app[1], x2: L.coord[0] - 75, y2: L.coord[1], class: "link" }, gLinks);
       S.shards.forEach(function (sh, s) {

@@ -111,6 +111,18 @@ struct Provider {
     embeds: bool,
 }
 
+/// The prefix of the variables an `endpoint.json`'s `key_env` may name,
+/// besides a provider's own key variables: an endpoint's file names the
+/// variable its secret is sent from, and the server's other variables
+/// (its tokens, a cloud's credentials) are never one.
+pub const KEY_ENV_PREFIX: &str = "CHLOEDB_MODEL_KEY_";
+
+/// Whether `key_env` may name `var`: a provider's key variable, or one
+/// whose name starts with [`KEY_ENV_PREFIX`].
+fn key_env_allowed(var: &str) -> bool {
+    PROVIDERS.iter().any(|p| p.keys.contains(&var)) || var.strip_prefix(KEY_ENV_PREFIX).is_some_and(|rest| !rest.is_empty())
+}
+
 const PROVIDERS: &[Provider] = &[
     Provider { prefix: "openai", api: Api::OpenAi, base: "https://api.openai.com/v1", base_env: "OPENAI_BASE_URL", keys: &["OPENAI_API_KEY"], key_header: "authorization", batch: 256, batch_chars: 400_000, max_chars: 24_000, concurrency: 4, dim_param: "dimensions", rerank: Some(("/chat/completions", RerankApi::Chat, 1)), embeds: true },
     Provider { prefix: "cohere", api: Api::Cohere, base: "https://api.cohere.com", base_env: "COHERE_BASE_URL", keys: &["COHERE_API_KEY", "CO_API_KEY"], key_header: "authorization", batch: 96, batch_chars: usize::MAX, max_chars: usize::MAX, concurrency: 4, dim_param: "output_dimension", rerank: Some(("/v2/rerank", RerankApi::Cohere, 1000)), embeds: true },
@@ -583,6 +595,7 @@ impl Conf<'_> {
     fn key(&self, p: Option<&Provider>, own_server: bool, env: &dyn Fn(&str) -> Option<String>) -> Result<(Option<String>, String)> {
         let keys = p.map_or(&[][..], |p| p.keys);
         let (key, key_from) = match self.text("key_env")? {
+            Some(var) if !key_env_allowed(&var) => return Err(self.bad(format!("endpoint.json: key_env {var:?} is not a model's key variable: it names a provider's ({}) or one whose name starts with {KEY_ENV_PREFIX}, so that no endpoint sends another of the server's variables", PROVIDERS.iter().flat_map(|p| p.keys).copied().collect::<Vec<_>>().join(", ")))),
             Some(var) => (env(&var).filter(|k| !k.is_empty()), format!("${var}")),
             None => (keys.iter().find_map(|v| env(v).filter(|k| !k.is_empty())), keys.iter().map(|k| format!("${k}")).collect::<Vec<_>>().join(" or ")),
         };
@@ -641,14 +654,14 @@ mod tests {
         let e = Endpoint::from_config("openai/bge-m3", None, &env(&[("OPENAI_BASE_URL", "http://gpu:8000/v1/")])).unwrap();
         assert_eq!((e.url.as_str(), e.key.as_deref(), e.native_dim), ("http://gpu:8000/v1/embeddings", None, None));
         // A key_env that is not set is an error, whatever the URL.
-        let c = json!({"api": "openai", "url": "http://gpu/v1/embeddings", "key_env": "GPU_KEY"});
-        assert!(Endpoint::from_config("gpu", Some(&c), &env(&[])).unwrap_err().to_string().contains("$GPU_KEY is not set"));
+        let c = json!({"api": "openai", "url": "http://gpu/v1/embeddings", "key_env": "CHLOEDB_MODEL_KEY_GPU"});
+        assert!(Endpoint::from_config("gpu", Some(&c), &env(&[])).unwrap_err().to_string().contains("$CHLOEDB_MODEL_KEY_GPU is not set"));
     }
 
     #[test]
     fn endpoint_files() {
-        let c = json!({"api": "openai", "base_url": "https://res.openai.azure.com/openai/deployments/emb", "model": "text-embedding-3-small", "key_env": "AZURE_KEY", "key_header": "api-key", "headers": {"x-team": "search"}, "batch": 16, "query_prefix": "q: "});
-        let e = Endpoint::from_config("azure-small", Some(&c), &env(&[("AZURE_KEY", "az")])).unwrap();
+        let c = json!({"api": "openai", "base_url": "https://res.openai.azure.com/openai/deployments/emb", "model": "text-embedding-3-small", "key_env": "CHLOEDB_MODEL_KEY_AZURE", "key_header": "api-key", "headers": {"x-team": "search"}, "batch": 16, "query_prefix": "q: "});
+        let e = Endpoint::from_config("azure-small", Some(&c), &env(&[("CHLOEDB_MODEL_KEY_AZURE", "az")])).unwrap();
         assert_eq!((e.url.as_str(), e.key.as_deref(), e.key_header.as_str(), e.batch, e.query_prefix.as_str()), ("https://res.openai.azure.com/openai/deployments/emb/embeddings", Some("az"), "api-key", 16, "q: "));
         assert_eq!(e.headers, [("x-team".to_string(), "search".to_string())]);
         // Strata knows the model by the provider's name.
@@ -658,9 +671,13 @@ mod tests {
         let c = json!({"api": "openai", "url": "http://x/embed", "batchsize": 4});
         assert!(Endpoint::from_config("custom", Some(&c), &env(&[])).unwrap_err().to_string().contains("unknown key \"batchsize\""));
         // The secret stays out of what is printed.
-        let c = json!({"api": "openai", "url": "http://x/embed", "key_env": "K", "dim": 8});
-        let e = Endpoint::from_config("custom", Some(&c), &env(&[("K", "sekrit")])).unwrap();
+        let c = json!({"api": "openai", "url": "http://x/embed", "key_env": "CHLOEDB_MODEL_KEY_K", "dim": 8});
+        let e = Endpoint::from_config("custom", Some(&c), &env(&[("CHLOEDB_MODEL_KEY_K", "sekrit")])).unwrap();
         assert!(!format!("{e:?}").contains("sekrit"));
+        // key_env names a model's key: never another of the server's variables.
+        let c = json!({"api": "openai", "url": "http://x/embed", "key_env": "AWS_SECRET_ACCESS_KEY", "dim": 8});
+        let e = Endpoint::from_config("custom", Some(&c), &env(&[("AWS_SECRET_ACCESS_KEY", "aws")])).unwrap_err().to_string();
+        assert!(e.contains("is not a model's key variable") && !e.contains("aws\""), "{e}");
     }
 
     #[test]
@@ -694,8 +711,8 @@ mod tests {
         let c = json!({"api": "tei", "url": "http://gpu:8080/rerank"});
         let e = RerankEndpoint::from_config("bge-reranker-v2-m3", Some(&c), &env(&[("COHERE_API_KEY", "c")])).unwrap();
         assert_eq!((e.api, e.url.as_str(), e.key.as_deref(), e.batch, e.model.as_str()), (RerankApi::Tei, "http://gpu:8080/rerank", None, 32, "bge-reranker-v2-m3"));
-        let c = json!({"api": "tei", "base_url": "http://gpu:8080/", "key_env": "TEI_KEY", "batch": 64, "timeout_s": 3});
-        let e = RerankEndpoint::from_config("team/bge", Some(&c), &env(&[("TEI_KEY", "t")])).unwrap();
+        let c = json!({"api": "tei", "base_url": "http://gpu:8080/", "key_env": "CHLOEDB_MODEL_KEY_TEI", "batch": 64, "timeout_s": 3});
+        let e = RerankEndpoint::from_config("team/bge", Some(&c), &env(&[("CHLOEDB_MODEL_KEY_TEI", "t")])).unwrap();
         assert_eq!((e.url.as_str(), e.key.as_deref(), e.batch, e.timeout, e.model.as_str()), ("http://gpu:8080/rerank", Some("t"), 64, Duration::from_secs(3), "bge"));
         assert!(!format!("{e:?}").contains("\"t\""));
         let c = json!({"api": "tei"});

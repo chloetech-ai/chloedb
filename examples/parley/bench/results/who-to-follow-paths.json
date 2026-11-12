@@ -1,0 +1,69 @@
+{
+ "method": "Parley.who_to_follow timed for the same 200 seeded agents (random.Random(11)), with Store.graph_in_db True (REACHABLE + ppr in the database) and then False (the app-side two-hop walk); read-only, on the 100k datasets after the load runs",
+ "embedded": {
+  "target": "data/bench/emb/parley.strata",
+  "role": "embedded",
+  "graph_in_db": {
+   "p50_ms": 2.66,
+   "p95_ms": 3.55,
+   "p99_ms": 5.58,
+   "reads_per_call": 2.0,
+   "reads": {
+    "following": 200,
+    "who_to_follow:graph": 200
+   }
+  },
+  "app_walk": {
+   "p50_ms": 1.74,
+   "p95_ms": 3.29,
+   "p99_ms": 3.69,
+   "reads_per_call": 3.0,
+   "reads": {
+    "following": 200,
+    "who_to_follow:walk": 200,
+    "who_to_follow:rows": 200
+   }
+  }
+ },
+ "server": {
+  "target": "http://127.0.0.1:9700",
+  "role": "server",
+  "graph_in_db": {
+   "p50_ms": 5.53,
+   "p95_ms": 7.72,
+   "p99_ms": 11.52,
+   "reads_per_call": 2.0,
+   "reads": {
+    "following": 200,
+    "who_to_follow:graph": 200
+   }
+  },
+  "app_walk": {
+   "p50_ms": 5.33,
+   "p95_ms": 7.31,
+   "p99_ms": 8.31,
+   "reads_per_call": 3.0,
+   "reads": {
+    "following": 200,
+    "who_to_follow:walk": 200,
+    "who_to_follow:rows": 200
+   }
+  }
+ },
+ "coordinator, 2 shards": {
+  "target": "http://127.0.0.1:9600",
+  "role": "coordinator",
+  "graph_query_error": "ChloeDBError: graph queries (REACHABLE, PATH, hops(), ppr) are not supported through a coordinator yet: a row's edges point at rows other shards hold. Run them on a server or an embedded database that holds the whole table, or walk from the application, one round of reads by key per hop (the Graphs page of the docs, On a cluster) (HTTP 400)",
+  "app_walk": {
+   "p50_ms": 9.38,
+   "p95_ms": 13.68,
+   "p99_ms": 15.46,
+   "reads_per_call": 3.0,
+   "reads": {
+    "following": 200,
+    "who_to_follow:walk": 200,
+    "who_to_follow:rows": 200
+   }
+  }
+ }
+}

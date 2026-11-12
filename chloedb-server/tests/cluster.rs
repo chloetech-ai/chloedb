@@ -258,7 +258,7 @@ async fn replicas_join_and_leave_a_shard() {
     // sent a copy of it (its rows were bulk loaded, and took no number).
     let r0db = create(d, "r0.strata", |_| false);
     let (r0, u_r0) = serve(r0db.clone(), d, "r0.strata").await;
-    let j = a.add_replica(0, &u_r0, false).await.unwrap();
+    let j = a.add_replica(0, &u_r0, false, false).await.unwrap();
     assert_eq!(j["primary"], urls[0]);
     assert_eq!(j["replicas"], serde_json::json!([u_r0.clone()]));
     assert_eq!(servers(&a)[0], vec![urls[0].clone(), u_r0.clone()]);
@@ -284,15 +284,15 @@ async fn replicas_join_and_leave_a_shard() {
     // A second replica, added to a shard that replicates already.
     let r1db = create(d, "r1.strata", |_| false);
     let (r1, u_r1) = serve(r1db.clone(), d, "r1.strata").await;
-    let j = a.add_replica(0, &u_r1, false).await.unwrap();
+    let j = a.add_replica(0, &u_r1, false, false).await.unwrap();
     assert_eq!(j["replicas"], serde_json::json!([u_r0.clone(), u_r1.clone()]));
     until("the second replica catches up", || async { r1db.snapshot().n_live_docs() == mine.len() as u64 - 1 }).await;
 
-    let e = a.remove_replica(0, &urls[0]).await.unwrap_err();
+    let e = a.remove_replica(0, &urls[0], false).await.unwrap_err();
     assert!(e.message.contains("primary"), "the primary stays: {}", e.message);
-    let e = a.remove_replica(1, &urls[1]).await.unwrap_err();
+    let e = a.remove_replica(1, &urls[1], false).await.unwrap_err();
     assert!(e.message.contains("last server"), "{}", e.message);
-    let j = a.remove_replica(0, &u_r0).await.unwrap();
+    let j = a.remove_replica(0, &u_r0, false).await.unwrap();
     assert_eq!(j["shipping"]["replicas"], serde_json::json!([u_r1.clone()]));
     assert_eq!(servers(&a)[0], vec![urls[0].clone(), u_r1.clone()]);
     let (kept, _) = replication::kept_role(&d.join("s0.strata")).unwrap();
@@ -306,13 +306,13 @@ async fn replicas_join_and_leave_a_shard() {
     // lacks.
     let r2db = create(d, "r2.strata", |_| false);
     let (r2, u_r2) = serve(r2db.clone(), d, "r2.strata").await;
-    a.add_replica(1, &u_r2, false).await.unwrap();
+    a.add_replica(1, &u_r2, false, false).await.unwrap();
     until("the new replica serves reads", || async {
         r2.query(QueryReq { sql: "SELECT id FROM products LIMIT 10000".into(), ..Default::default() }).await.is_ok()
     })
     .await;
     let j = a.promote(1, &u_r2, false).await.unwrap();
-    assert_eq!((&j["primary"], &j["seq_no"]), (&serde_json::json!(u_r2.clone()), &serde_json::json!(0)), "{j}");
+    assert_eq!((&j["primary"], &j["seq_no"]), (&serde_json::json!(u_r2.clone()), &serde_json::json!(1)), "{j}"); // the term's first transaction
     assert_eq!((r2.role(), shards[1].role()), (pb::Role::Primary, pb::Role::Replica));
     sql(&svc_a, &format!("DELETE FROM products WHERE id = '{}'", all.iter().find(|id| !mine.contains(id)).unwrap())).await.unwrap();
     assert_eq!(ids(&svc_a).await.len(), N - 2);
@@ -338,7 +338,7 @@ async fn replicas_join_and_leave_a_shard() {
     }
     let r3db = create(d, "r3.strata", |_| false);
     let (r3, u_r3) = serve(r3db.clone(), d, "r3.strata").await;
-    a.add_replica(1, &u_r3, false).await.unwrap();
+    a.add_replica(1, &u_r3, false, false).await.unwrap();
     until("the third replica holds the notes", || async { notes(r3.clone()).await == notes(r2.clone()).await }).await;
     assert_eq!(r3db.catalog(), r2.catalog(), "its copy brought the table");
     sql(&svc_a, "DROP TABLE notes").await.unwrap();
@@ -352,7 +352,7 @@ async fn configure_refuses_what_would_lose_writes() {
     let d = dir.path();
     let (_, u) = serve(create(d, "a.strata", |i| i < 10), d, "a.strata").await;
     let mut c = pb::strata_client::StrataClient::connect(u.clone()).await.unwrap();
-    let ask = |role: pb::Role, replicas: Vec<String>, force: bool| pb::ConfigureRequest { role: role as i32, replicas, write_acks: String::new(), force, promote: false };
+    let ask = |role: pb::Role, replicas: Vec<String>, force: bool| pb::ConfigureRequest { role: role as i32, replicas, write_acks: String::new(), force, ..Default::default() };
     let e = c.configure(ask(pb::Role::Replica, vec![], false)).await.unwrap_err();
     assert!(e.message().contains("holds 10 rows"), "{}", e.message());
     let (_, r) = serve(create(d, "b.strata", |_| false), d, "b.strata").await;

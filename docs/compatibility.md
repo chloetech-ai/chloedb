@@ -1,0 +1,146 @@
+# Compatibility
+
+What this code promises about the files it reads and writes, the protocol
+its servers speak to each other, and the names it was known by before; and
+what it does not promise yet. It describes the code as it is on `main`
+(November 2026, every crate and package at version 0.1.0). The
+[changelog](../CHANGELOG.md) says what changed.
+
+ChloeDB is pre-1.0: the statements below are the current behaviour, which
+the code enforces, not a support commitment with a time limit.
+
+## The database file
+
+A database is one file (or, with `directory`, a directory with a `CURRENT`
+file naming its manifest). Its format has two layers.
+
+**Format version.** The file's meta slots carry a format version
+(`FORMAT_VERSION` in `chloedb/src/storage/pager.rs`, now 3):
+
+| format | what it is |
+|---|---|
+| 1 | a database holding only the table it was created with |
+| 2 | a database of several tables |
+| 3 | format 2 with the list of features the database uses; the last format number: later changes add features instead |
+
+This code opens formats 1 to 3 and refuses a higher number
+("unsupported format version").
+
+**Features.** A format-3 manifest lists the features it uses,
+`{required: [...], optional: [...]}` (`chloedb/src/storage/manifest.rs`).
+A reader refuses a database that requires a feature it does not know, and
+names the feature; it ignores optional features and keys it does not know.
+This code knows: `added_fields`, `bool`, `cluster_by`, `cold_segments`,
+`compact_keys`, `default`, `derive`, `derive_text`, `edge_table`,
+`expire_by`, `field_ids`, `functions`, `json`, `json_text`, `media`,
+`multi_vector`, `not_null`, `packed_positions`, `rank_profiles`, `rabitq`,
+`retain`, `semantic_id`, `seq_no`, `shard_by`, `sources`, `timestamp`,
+`vector_partition` and `zstd` (the list `FEATURES` in `manifest.rs` is the
+authority).
+
+**What it writes.** Every database this code creates is format 3 with
+feature `field_ids` (each field named by an id rather than its position).
+Other features are added as a database starts using them (a BOOL or
+TIMESTAMP field, a NOT NULL field or a DEFAULT, sequence numbers with
+`--seq-no`, a rank profile, ...). So a database stays readable by an older
+build exactly as long as it uses only features that build knows, and an
+older build that meets a newer feature refuses the file by name rather than
+misreading it. Starting to use a feature cannot be undone.
+
+**Databases from before field ids.** A database written before field ids
+(format 1, 2, or 3 without `field_ids`) no longer opens for use. `upgrade()`
+(`chloedb.upgrade(path)` in Python, `upgrade(path)` in JavaScript;
+`chloedb/src/upgrade.rs`) copies it
+into a new database of this format in its place and keeps the old files
+beside it as `<path>.before-field-ids`. It refuses a database that numbers
+its writes (replication) or keeps stream offsets (`_sources`), since the
+copy could not continue their numbers: such a database is rebuilt from its
+source or from a replica instead.
+
+**Not promised.** There is no downgrade: a file a newer build changed may
+not open in an older one. There is no stated period for which an old
+format stays readable by new builds; formats 1 to 3 and the `upgrade()`
+path are what this code has, and a change to that will be in the
+changelog.
+
+## The packages and the engine
+
+The Python wheel, the JavaScript addon and the Java library each compile
+the engine (`chloedb/`) into themselves from the same commit. A package
+version therefore opens what the engine of its commit opens (above), no
+more: a wheel built from an older commit refuses a file that uses a feature
+added since, by name. The Java jar checks that its native library is from
+the same checkout (`Native.ABI`) and refuses a mismatched pair.
+
+The HTTP clients (`chloedb.connect` in Python, `chloedb/client` in
+JavaScript) contain no engine: they speak the server's `/v1` HTTP JSON API
+and work with any server that has the routes they call. A client newer than
+its server may send an option the server does not know, and an older
+server may ignore it rather than refuse it (one from before Arrow answers
+ignores `"format": "arrow"`): the clients detect and fall back where their
+documentation says so (Arrow answers, scrolls), and otherwise assume a
+server of their own commit.
+
+**Not promised.** A package does not yet expose the engine commit or the
+format version it was built with, and nothing checks that a client and a
+server are of the same release. All packages are 0.1.0 whatever commit
+they were built from; until versions are bumped per release, name a build
+by its commit.
+
+## A cluster of mixed versions
+
+Servers of a cluster (coordinators, shards, replicas, followers) talk over
+gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
+`MIN_PROTOCOL` 1, `PROTOCOL` 18; [the list of what each adds](chloedb/server.md)).
+
+- When a coordinator or a peer connects it calls `Hello` with the range it
+  speaks (1 to 18) and the server answers its own range, the plan version
+  it reads (plan IR version 1) and the plan features it has. The two use
+  the highest protocol both speak; if the ranges do not meet the connection
+  is refused, naming both ranges. A coordinator asks again every minute and
+  after a copy fails, since it may have restarted on another version.
+- A coordinator keeps each shard copy's protocol, speaks the oldest any of
+  them speaks, and uses a newer call only where every server it needs
+  speaks it. Where one does not, it refuses
+  that request by name ("a coordinator refuses a scroll while a shard
+  speaks an older one") or falls back (rows instead of Arrow columns; a
+  read sent to the primary when a replica is older than protocol 5) rather
+  than sending a call the shard would misread.
+- A server refuses a protocol newer than its own, and a plan of a newer
+  version or one that needs a feature it lacks, by name.
+
+So a rolling upgrade works shard by shard: while versions are mixed, the
+cluster serves what the oldest server involved speaks, and the newer
+features turn on as the last server is upgraded (some, such as slot maps,
+only once the coordinator restarts after that). A replica is sent copies
+of its primary's rows and files, so the file-format rules above apply
+between them too: a replica older than its primary refuses a feature the
+primary started using. Upgrading the replicas of a shard before its
+primary avoids that.
+
+**Not promised.** There is no stated lowest version a cluster can be
+upgraded from in one step, and mixed-version clusters are tested for the
+protocol fallbacks above, not as a matrix of releases.
+
+## Old names
+
+ChloeDB was called Strata, and ChloeCtx Engram, until November 2026. The
+old names of programs (`strata-server`, `engram`), settings (`STRATA_*`,
+`ENGRAM_*`), headers (`x-strata-*`), packages (`import strata`) and error
+classes (`StrataError`) are still accepted, and are promised "for a
+release": they will be removed in a release that the changelog names in
+advance. The file format (`STRATADB` magic, `memory.strata`), the gRPC
+services and the internal names keep the old name and are not part of the
+rename.
+
+## Not promised yet
+
+- Semantic versioning, or any version bump rule.
+- A support period for releases; fixes go to `main` and the next release
+  ([SECURITY.md](../SECURITY.md)).
+- That a release tag is never rebuilt: the release workflows replace the
+  assets of an existing tag (`--clobber`). Check a download against the
+  release's `SHA256SUMS` (Python, JavaScript) or `.sha256` (server).
+- Stability of anything not described above: the Rust crate's API, the
+  command center's routes, the operator's resource beyond its documented
+  fields.

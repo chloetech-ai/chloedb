@@ -5,10 +5,12 @@ name: chloedb-server release
 # server binary, attached to a GitHub release.
 #
 # A tag chloedb-server-v<version> (chloedb-server/Cargo.toml's version;
-# the old name, strata-server-v<version>, works too) builds and tests
-# every platform and attaches the archives and their SHA-256 sums to the
-# tag's release; a run started by hand does the same and keeps them as
-# the run's artifacts. A change to this workflow builds every platform
+# the old name, strata-server-v<version>, works too) builds every
+# platform, checks that the binary starts and answers a query, and
+# attaches the archives and their SHA-256 sums to the tag's release; a run
+# started by hand does the same and keeps them as the run's artifacts.
+# The tests are CI's: a tag builds nothing unless it is on main and CI's
+# full matrix passed on its commit (release-gate.yml). A change to this workflow builds every platform
 # as a release does, without releasing.
 #
 # The image (image.yml) is the other way to run it without building:
@@ -30,8 +32,17 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # A tag releases only a commit of main on which CI's full matrix passed
+  # (release-gate.yml says how to start that run when it is missing).
+  gate:
+    uses: ./.github/workflows/release-gate.yml
+    permissions:
+      contents: read
+      actions: read
+
   build:
     name: ${{ matrix.platform }}
+    needs: gate
     strategy:
       fail-fast: false
       matrix:
@@ -48,8 +59,8 @@ jobs:
       # macOS 11 and later run it.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: The tag names Cargo.toml's version
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -58,7 +69,7 @@ jobs:
           test "$GITHUB_REF_NAME" = "chloedb-server-v$v" || test "$GITHUB_REF_NAME" = "strata-server-v$v"
       - name: Build
         working-directory: chloedb-server
-        run: cargo build --release --bin chloedb-server
+        run: cargo build --locked --release --bin chloedb-server
       # The binary starts on a new database, takes a table and a row, and
       # answers a query, from outside the checkout.
       - name: Run it
@@ -69,6 +80,8 @@ jobs:
           "$bin" --version
           "$bin" --db try.strata --demo 20 --listen 127.0.0.1:7790 --grpc 127.0.0.1:7791 > server.log 2>&1 &
           pid=$!
+          # Whatever step fails, the server's log says why.
+          trap 'test $? -eq 0 || { echo "--- server.log"; cat server.log; }' EXIT
           for _ in $(seq 1 60); do curl -sf http://127.0.0.1:7790/livez > /dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:7790/v1/sql -H 'content-type: application/json' -d '{"sql": "CREATE TABLE notes (id KEYWORD PRIMARY KEY, body TEXT)"}'
           curl -sf http://127.0.0.1:7790/v1/write -H 'content-type: application/json' -d '{"ops": [{"op": "upsert", "table": "notes", "doc": {"id": "a", "body": "rivers and mountains"}}]}'
@@ -89,7 +102,7 @@ jobs:
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           ls -la dist
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chloedb-server-${{ matrix.platform }}
           path: dist/chloedb-server-*.tar.gz*
@@ -104,7 +117,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: chloedb-server-*
           path: dist

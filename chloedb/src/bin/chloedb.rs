@@ -162,7 +162,7 @@ fn main() {
         // Another process writes it: read it, as that one writes.
         false => Db::open(&args.file, DbOptions::default()).or_else(|e| match e {
             chloedb::Error::Busy(_) if args.file.exists() => Db::open(&args.file, read_only).inspect(|_| {
-                eprintln!("strata: {} is open in another process to write it; opened read-only", args.file.display());
+                eprintln!("chloedb: {} is open in another process to write it; opened read-only", args.file.display());
             }),
             e => Err(e),
         }),
@@ -170,14 +170,14 @@ fn main() {
     let db = match opened {
         Ok(db) => db,
         Err(e) => {
-            eprintln!("strata: cannot open {}: {e}", args.file.display());
+            eprintln!("chloedb: cannot open {}: {e}", args.file.display());
             std::process::exit(1);
         }
     };
     let mut params = Params::new();
     for p in &args.params {
         let Some((name, value)) = p.split_once('=') else {
-            eprintln!("strata: --param expects NAME=VALUE, got {p}");
+            eprintln!("chloedb: --param expects NAME=VALUE, got {p}");
             std::process::exit(2);
         };
         params = params.set(name, parse_value(value));

@@ -464,6 +464,10 @@ fn parse_call(f: &sql::Function, params: &Params) -> Result<Call> {
     if model.trim().is_empty() {
         return Err(err(format!("{f}: the model is named; {USAGE}")));
     }
+    // A name, never a path: the model is read from the models directory.
+    if !super::model::is_model_path(&model) {
+        return Err(err(format!("{f}: the model is a provider's model (anthropic/<model>) or a directory of the models directory, its name letters, digits, _, - and . (two such names joined by / at most), not {model:?}")));
+    }
     if rest.len() < 2 {
         return Err(err(format!("{f}: the instructions and at least one input follow the model; {USAGE}")));
     }

@@ -53,12 +53,12 @@ Tell Claude Code (or another coding agent) in any session:
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb/chloectx
 cargo build --release --bin chloectx
 cargo install --path . --bin chloectx --root ~/.local       # a stable path for the hooks: ~/.local/bin/chloectx
-chloectx fetch-model                                        # potion-retrieval-32M, 129 MB
+chloectx fetch-model                                        # potion-retrieval-32M, 129 MB, at a pinned revision, SHA-256 checked
 chloectx install --user --distill-model haiku               # or: chloectx install --project /path/to/project
 chloectx doctor
 ```
 
-`chloectx install --user` merges nine hooks and a permission for the memory tools into `~/.claude/settings.json` (saving the previous file next to it as `settings.json.chloectx-<time>.bak`) and registers the MCP server at user scope with `claude mcp add-json`. A project with its own `chloectx install` keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.
+`chloectx install --user` merges nine hooks and a permission for the memory tools into `~/.claude/settings.json` (saving the previous file next to it as `settings.json.chloectx-<time>.bak`) and registers the MCP server at user scope with `claude mcp add-json`. A project install backs up the project's `.claude/settings.local.json` and `.mcp.json` the same way before it changes them (delete the `.bak` files once you are happy, and do not commit them). Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own `chloectx install` keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.
 
 ## Check it
 
@@ -118,9 +118,31 @@ It is also the quickest way to debug an install. A `DISTILL` event with an error
 | MCP server | `~/.claude.json` at user scope, or the project's `.mcp.json` |
 | stores | `~/.local/share/chloectx/projects/<folder>-<hash>/`, one per project directory: `memory.strata` and its WAL, `state.json`, `events.log` (recall and distill decisions), `daemon.log`, `project.txt`. A machine that has `~/.local/share/engram` from before the rename, and no `~/.local/share/chloectx`, keeps using the old folder |
 | embedding model | `~/.local/share/chloectx/models/potion-retrieval-32M/` (or in the old folder, as the stores) |
-| daemon socket | `engram.sock` in the store, or `$XDG_RUNTIME_DIR` / `/tmp/engram-<uid>/` when that path is too long |
+| daemon socket | `engram.sock` in the store, or, when that path is too long, `$XDG_RUNTIME_DIR`, `/tmp/engram-<uid>/` or `~/.cache/chloectx/`: the first that is a directory of yours alone (a `/tmp/engram-<uid>` another user made, or a link, is skipped) |
+| model calls' working directory | `distill/` in the stores' folder, private to you (the distiller's `claude -p` reads project settings from where it runs) |
 
-Store directories are created readable by their owner only. ChloeCtx redacts common credential formats (cloud and API keys, tokens, private keys, `password = …`) before storing anything, but a store is still a transcript of your sessions: treat it like your shell history.
+Store directories are created readable by their owner only. ChloeCtx redacts secrets before it stores anything ([below](#secrets-and-chloectx-redact)), but a store is still a transcript of your sessions: treat it like your shell history.
+
+### Secrets and `chloectx redact`
+
+Every record is redacted as it is stored, whatever wrote it (the hooks, `ingest-transcript`, `remember`, the distiller, compaction summaries), and again as `chloectx sync` sends or pulls it. So are the prompts kept in `state.json` and the lines of `events.log`. A secret is replaced by a marker that names its kind, and the text around it stays, so `DB_PASSWORD=hunter2` is stored as `DB_PASSWORD=[REDACTED:password]`. What is caught:
+
+- keys and tokens by their shape: Anthropic (`sk-ant-`), OpenAI (`sk-`, `sk-proj-`), GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), GitLab (`glpat-`), npm (`npm_`), AWS access key ids (`AKIA`, `ASIA`), Google API keys (`AIza`) and OAuth tokens (`ya29.`), Slack tokens (`xoxb-` and the like) and webhooks, Discord webhooks, Stripe (`sk_live_`, `rk_live_`, `whsec_`), DigitalOcean (`dop_v1_`), Hugging Face (`hf_`), SendGrid, ChloeDB API keys (`sk_<id>_<secret>`) and JWTs;
+- PEM private key blocks, also one cut off before its `END` line;
+- `Authorization:` headers (`Bearer`, `Basic` and others), `Bearer` tokens, `curl -u user:password`, and the password in a URL (`postgres://app:…@db`);
+- values assigned to a name that ends in a word for a secret (token, secret, password, passwd, passphrase, credential, or a key such as `api_key`, `AWS_SECRET_ACCESS_KEY`, `apiKey`): `NAME=value` in an environment dump or a `.env` file, `name: value` in YAML, `"name": "value"` in JSON, `name = "value"` in code.
+
+It is pattern-based, so it is best effort: a password written in prose, or a random string under an unremarkable name, is stored as it is. It leaves alone what only looks random (git hashes, digests, UUIDs) and code that names a secret without holding one (`token = get_token()`, `password: string`, `primary_key`).
+
+A store written before this redaction can hold secrets it would now catch. `chloectx redact`, in the project directory, rewrites them:
+
+```bash
+chloectx redact --dry-run   # count what would change; change nothing
+chloectx redact             # this project's store
+chloectx redact --all       # every store on this machine
+```
+
+The project's daemon rewrites each record whose text redaction changes, redacts `state.json` and `events.log` the same way, and, when a sync is set up, sends the rewritten records to the server again so they replace its copies. Then the daemon is stopped and the store's file replaced by a fresh copy of its live rows, because the pages the old versions were on would otherwise stay in the file until later writes reuse them; a hook that comes in those few seconds records nothing. It prints how many records, session states and log lines changed and which kinds of secret it found, never the secrets. What it cannot reach is up to you: backups made with `chloectx backup`, a `memory.strata.before-field-ids` copy left by a format upgrade (it names it), and the server's own backups.
 
 To back a store up, run `chloectx backup DEST` in the project directory. It copies the store while sessions go on: a consistent checkpoint of `memory.strata` (copying the file itself while the daemon writes can catch it half way through a commit), `state.json`, the config and `events.log`, into a new directory `DEST`. To restore, run `chloectx stop` and copy those files back into the store's directory. A backup is as private as the store.
 
@@ -154,8 +176,8 @@ Run the installer when the container is created, for example in `.devcontainer/d
 
 ```json
 {
-  "postCreateCommand": "git clone https://github.com/chloetech-ai/chloedb /tmp/strata && /tmp/strata/install.sh",
-  "containerEnv": { "CHLOECTX_HOME": "/workspaces/.engram" },
+  "postCreateCommand": "git clone https://github.com/chloetech-ai/chloedb /tmp/chloedb && /tmp/chloedb/install.sh",
+  "containerEnv": { "CHLOECTX_HOME": "/workspaces/.chloectx" },
   "forwardPorts": [8765]
 }
 ```
@@ -168,7 +190,26 @@ Use WSL 2 and run everything, including Claude Code, inside the Linux distributi
 
 ### Claude Code on the web
 
-Cloud sessions run in a fresh container each time, so a ChloeCtx store there starts empty and is lost when the container is reclaimed. A setup script can install ChloeCtx there to try it within one session, but memory across sessions needs a machine that keeps `~/.local/share/engram`.
+Cloud sessions run in a fresh container each time, so a ChloeCtx store there starts empty and is lost when the container is reclaimed. To keep memory across them, sync it with a ChloeDB server ([below](#keep-the-memory-on-a-chloedb-server)): the environment's setup script installs ChloeCtx and names the server, the environment holds the server's key in a variable, and each session pulls the project's memory when its daemon starts.
+
+### Keep the memory on a ChloeDB server
+
+`chloectx sync` copies each project's memory to a table, `chloectx_memory`, on a ChloeDB server or a cluster's coordinator, and back. The store stays a local file, so hooks and recall never wait on the network:
+
+- the daemon pushes what it recorded every 30 seconds and as it exits, and when it starts it pulls the project's records the store lacks (written on another machine, or by a container that is gone) and embeds them here;
+- records are keyed by project and record id, so several projects share the table, and the server can search them too; a project is its git repository (`owner/name` of `origin`), so checkouts in different folders share one memory, and `--rename owner/old=owner/new` lets a checkout of a renamed repository join the new name's (`SELECT content FROM chloectx_memory WHERE project = '/path' ORDER BY bm25(content, '...') DESC LIMIT 10`).
+
+```bash
+# the key from stdin, kept owner-only in ChloeCtx's home (sync.token)
+printf %s "$KEY" | chloectx sync setup --url https://chloedb.example.com --token-stdin
+# or: read it, whenever the daemon syncs, from a variable (a cloud environment's, say)
+chloectx sync setup --url https://chloedb.example.com --token-env CHLOEDB_KEY
+chloectx sync status        # what was sent and received, what the server holds
+chloectx sync push          # now, rather than within 30 s
+chloectx sync pull
+```
+
+`setup` creates the table, which needs a key with the `admin` scope (`--no-create` skips it; the first push creates it when the key can); after that an API key with the `write` scope is enough. `CHLOECTX_SYNC_URL` and `CHLOECTX_SYNC_TOKEN` override the settings. What is sent is what the store holds, transcripts of your sessions included, redacted again on the way ([secrets](#secrets-and-chloectx-redact)): use a server you control, over HTTPS, with a key. Sync only adds records: one retagged or forgotten after it was pushed is not sent again, and a record forgotten here comes back with the next pull while the server holds it (delete its row there too, `DELETE FROM chloectx_memory WHERE id = '<project>:<record id>'`). Two machines writing the same project at once can, rarely, give two records one id (`manual:<seq>` from `chloectx remember`); the server keeps the last one sent.
 
 ## Upgrade and remove
 

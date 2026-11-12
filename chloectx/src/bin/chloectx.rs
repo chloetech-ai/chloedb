@@ -9,7 +9,9 @@
 //!   chloectx search "query" | sql "SELECT ..." | stats | briefing | stop [--all]
 //!   chloectx remember <kind> "text"
 //!   chloectx ingest-transcript <file.jsonl>        back-fill from a Claude Code transcript
+//!   chloectx redact [--all] [--dry-run]            redact secrets a store recorded before
 //!   chloectx fetch-model [static|bert]             download the embedding model
+//!   chloectx sync setup --url URL [--token-stdin]  copy the memory to a ChloeDB server (status|push|pull)
 //!   chloectx doctor                                check the install and the project's store
 //!   chloectx ui [--port N] [--home DIR]            browse every local store in the inspector
 //!   chloectx rpc '{"op": ...}'                     send one raw request to the daemon
@@ -109,6 +111,17 @@ enum Cmd {
     Distill,
     /// Merge related notes now (it also runs on its own every few turns).
     Consolidate,
+    /// Redact the secrets a store recorded before redaction knew their shape:
+    /// rewrites the project's records (with --all, every store's), session
+    /// state and event log, compacts the store, and replaces the records on
+    /// the sync's server. Prints how many changed, never the secrets.
+    Redact {
+        #[arg(long)]
+        all: bool,
+        /// Count what would change, and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Stop the daemon (with --all, every running daemon, e.g. after an upgrade).
     Stop {
         #[arg(long)]
@@ -163,11 +176,46 @@ enum Cmd {
     },
     /// Back-fill records from a Claude Code transcript.
     IngestTranscript { path: PathBuf },
+    /// Copy the project's memory to a ChloeDB server or cluster, and back.
+    Sync {
+        #[command(subcommand)]
+        what: SyncCmd,
+    },
     /// Download an embedding model (static: potion-retrieval-32M; bert: bge-small-en-v1.5).
     FetchModel {
         #[arg(default_value = "static")]
         which: String,
     },
+}
+
+#[derive(Subcommand)]
+enum SyncCmd {
+    /// Name the server (e.g. https://chloedb.example.com) and create its table.
+    Setup {
+        #[arg(long)]
+        url: String,
+        /// Read the server's key (an API key or token) from stdin, kept
+        /// owner-only in ChloeCtx's home, never on the command line.
+        #[arg(long, conflicts_with = "token_env")]
+        token_stdin: bool,
+        /// Read the key from this environment variable whenever the daemon
+        /// syncs (one a cloud environment sets, say); no file holds it.
+        #[arg(long, default_value = "")]
+        token_env: String,
+        /// A repository renamed, as owner/old=owner/new (repeatable): a
+        /// checkout under either name syncs as the new one.
+        #[arg(long = "rename")]
+        renames: Vec<String>,
+        /// Do not create the table (it exists, or the key cannot: it needs the admin scope).
+        #[arg(long)]
+        no_create: bool,
+    },
+    /// What was sent and received, and what the server holds for this project.
+    Status,
+    /// Send what the store recorded since the last push.
+    Push,
+    /// Push, then store the project's records the server holds and the store lacks.
+    Pull,
 }
 
 fn send(project: &std::path::Path, req: Json, secs: u64) -> Json {
@@ -185,6 +233,24 @@ fn send(project: &std::path::Path, req: Json, secs: u64) -> Json {
             std::process::exit(1);
         }
     }
+}
+
+/// `chloectx redact` for one store: the daemon rewrites the records, then
+/// (when it changed any) the file is replaced by a copy without the pages
+/// their old versions were on. What it did, without the secrets.
+fn redact_store(dir: &std::path::Path, project: &str, dry_run: bool) -> Result<String, String> {
+    let r = daemon::request(dir, project, &json!({"op": "redact", "dry_run": dry_run}), Duration::from_secs(6 * 3600)).map_err(|e| e.to_string())?;
+    if let Some(e) = r.get("error") {
+        return Err(e.as_str().unwrap_or("error").to_string());
+    }
+    let mut out = r["text"].as_str().unwrap_or("").to_string();
+    if !dry_run && r["changed"].as_u64().unwrap_or(0) > 0 {
+        match daemon::rewrite_file(dir, Duration::from_secs(600)) {
+            Ok(f) => out += &format!(" The store's file was rewritten without the old versions ({} to {} bytes).", f["bytes_before"], f["bytes_after"]),
+            Err(e) => return Err(format!("{out} Rewriting the store's file failed, so the old versions may stay in its free pages until they are reused: {e}")),
+        }
+    }
+    Ok(out)
 }
 
 fn text(r: &Json) {
@@ -258,6 +324,46 @@ fn main() {
                 }
             }
         }
+        Cmd::Sync { what: SyncCmd::Setup { url, token_stdin, token_env, renames, no_create } } => {
+            let token = token_stdin.then(|| {
+                let mut t = String::new();
+                let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut t);
+                t
+            });
+            let home = paths::home();
+            if let Err(e) = chloectx::sync::setup(&home, &url, token.as_deref(), &token_env, &renames) {
+                eprintln!("chloectx sync: {e}");
+                std::process::exit(1);
+            }
+            let remote = chloectx::sync::remote(&home).expect("just set up");
+            if !no_create {
+                if let Err(e) = remote.create_table() {
+                    eprintln!("chloectx sync: could not create the table {} on {}: {e}", chloectx::sync::TABLE, remote.url);
+                    std::process::exit(1);
+                }
+            }
+            // Not fatal: the key may only be in the environment of the
+            // sessions to come (a cloud setup script runs before it is).
+            let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
+            match remote.count(&key) {
+                Ok(n) => println!("sync set up with {}; this project syncs as {key} ({n} records there)", remote.url),
+                Err(e) => println!("sync set up with {}; this project syncs as {key}; the server does not answer yet ({e}): the daemon tries again when it starts", remote.url),
+            }
+            // A running daemon syncs once it starts again (on the next hook or tool).
+            let dir = paths::store_dir(&project);
+            if std::os::unix::net::UnixStream::connect(paths::StorePaths::new(&dir).socket).is_ok() {
+                send(&project, json!({"op": "shutdown"}), 10);
+            }
+        }
+        Cmd::Sync { what } => {
+            let w = match what {
+                SyncCmd::Status => "status",
+                SyncCmd::Push => "push",
+                SyncCmd::Pull => "pull",
+                SyncCmd::Setup { .. } => unreachable!(),
+            };
+            println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
+        }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
         Cmd::App { server, key, host, port, token, embedder } => {
             if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), embedder }) {
@@ -269,6 +375,28 @@ fn main() {
             let home = home.map(|h| h.canonicalize().unwrap_or(h)).unwrap_or_else(paths::home);
             if let Err(e) = ui::run(ui::Options { host, port, home, open: !no_open, project: project.clone() }) {
                 eprintln!("chloectx ui: {e}");
+                std::process::exit(1);
+            }
+        }
+        Cmd::Redact { all, dry_run } => {
+            let stores: Vec<(PathBuf, String, String)> = if all {
+                ui::list_stores(&paths::home()).into_iter().map(|s| (s.dir, s.project.clone().unwrap_or_default(), s.project.unwrap_or(s.id))).collect()
+            } else {
+                let p = project.to_string_lossy().into_owned();
+                vec![(paths::store_dir(&project), p.clone(), p)]
+            };
+            let mut failed = 0;
+            for (dir, proj, name) in stores {
+                let prefix = if all { format!("{name}: ") } else { String::new() };
+                match redact_store(&dir, &proj, dry_run) {
+                    Ok(t) => println!("{prefix}{t}"),
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("chloectx redact: {prefix}{e}");
+                    }
+                }
+            }
+            if failed > 0 {
                 std::process::exit(1);
             }
         }
@@ -301,21 +429,16 @@ fn main() {
             println!("ingested {} events as {n} records from {}", events.len(), path.display());
         }
         Cmd::FetchModel { which } => {
-            let (repo, name, files): (&str, &str, &[&str]) = match which.as_str() {
-                "bert" => ("BAAI/bge-small-en-v1.5", "bge-small-en-v1.5", &["config.json", "tokenizer.json", "model.safetensors"]),
-                _ => ("minishlab/potion-retrieval-32M", "potion-retrieval-32M", &["config.json", "tokenizer.json", "model.safetensors"]),
-            };
+            let &(_, repo, name, files) = embed::FETCHED.iter().find(|m| m.0 == which).unwrap_or(&embed::FETCHED[0]);
             let dir = embed::models_dir().join(name);
-            std::fs::create_dir_all(&dir).expect("create model dir");
-            for f in files {
-                let url = format!("https://huggingface.co/{repo}/resolve/main/{f}");
-                let ok = std::process::Command::new("curl").args(["-fsSL", "-o"]).arg(dir.join(f)).arg(&url).status().map_or(false, |s| s.success());
-                if !ok {
-                    eprintln!("chloectx: failed to download {url}");
+            match embed::fetch_model("https://huggingface.co", repo, &dir, files) {
+                Ok(done) if done.iter().all(|f| matches!(f, embed::Fetched::Kept(_))) => println!("{repo} is already in {}, as pinned", dir.display()),
+                Ok(_) => println!("downloaded {repo} to {}, each file checked against its pinned SHA-256", dir.display()),
+                Err(e) => {
+                    eprintln!("chloectx: {e}");
                     std::process::exit(1);
                 }
             }
-            println!("downloaded {repo} to {}", dir.display());
         }
     }
 }

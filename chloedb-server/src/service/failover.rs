@@ -13,7 +13,12 @@
 //! down or cut off holds none up, and a replica that granted a vote waits
 //! a whole delay from then before it asks itself: the copy it voted for
 //! may be a moment from winning, and a newer term asked for would fence
-//! it.
+//! it. A replica that did not run itself for longer than the delay (its
+//! process stopped, or starved) waits a delay more before it asks
+//! ([`Failover::resumed`]): it heard nothing because it was not
+//! listening, and its primary, if it serves, calls within that delay.
+//! Asking at once would raise the term and make a primary that serves
+//! step down.
 //!
 //! A write is acknowledged once a majority of the copies hold it (with
 //! `--write-acks all` or `majority`), and an election needs a majority of
@@ -127,8 +132,12 @@ impl Service {
         tokio::spawn(async move {
             let mut f = Failover::new(after, Instant::now(), jitter(after));
             let mut asked: Option<Instant> = None;
+            let mut last = Instant::now();
             loop {
                 tokio::time::sleep(f.every()).await;
+                let now = Instant::now();
+                f.resumed(last, now, jitter(after));
+                last = now;
                 let Some(svc) = me.upgrade() else { return };
                 svc.fail_over(&mut f, &mut asked).await;
             }

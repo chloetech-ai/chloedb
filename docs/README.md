@@ -68,7 +68,7 @@ A statement is parsed and bound into a predicate tree and a scorer; the planner 
 
 | question | answer |
 |---|---|
-| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean, 7 November): ChloeDB **146**, Solr 286, Elasticsearch 291, Qdrant 300. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) |
+| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean; ChloeDB's build of 7 November against each other engine's newest run, of 4 to 6 November, on other nodes): ChloeDB **146**, Solr 286, Elasticsearch 291, Qdrant 300. In the one run with every engine on the same day (4 November), also first: 156 against Elasticsearch's 284. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) |
 | Is ChloeDB fast? | Warm BM25 **1.7–3.2×** faster than Tantivy, and 24 of 28 text and filter comparisons won; vector top-10 in **0.05–0.10 ms** at recall@10 0.99 on Quora. |
 | Does the planner earn its keep? | On filtered vector search it is **1.8–6.1×** faster than the best fixed strategy, at recall@10 0.991–0.998. |
 | Do graph edges help search? | Following the citations of the two nearest papers doubles nDCG@20 on arXiv (0.123 → 0.253). |
@@ -114,7 +114,8 @@ flowchart TB
 
 | question | answer |
 |---|---|
-| Does Claude Code do better with ChloeCtx on work that depends on earlier sessions? | **100 of 100** held-out tasks solved with ChloeCtx against **60 of 100** without; all of the gap is on facts that were only said in conversation (60/60 vs 20/60), p < 0.0001. |
+| Does Claude Code do better with ChloeCtx than with the memory it could have instead? | On four projects, 208 follow-up runs a system: **94%** solved with ChloeCtx as shipped, 86% with mem0 (p = 0.009 against ChloeCtx `main`), 78% with grep over past transcripts, 74% with Claude Code's own memory, 44% with none; the whole history in context solves 93%, and ChloeCtx costs about a quarter as much a run. |
+| And against no memory at all? | **100 of 100** runs of held-out tasks written to depend on earlier sessions (20 tasks, five runs each) against **60 of 100**; all of the gap is on facts that were only said in conversation (60/60 vs 20/60). A longer multi-day A/B showed no gain over compaction alone (27/30 against 26/30). |
 | After a compaction, do the lost details come back? | **13 of 15** automatically, 14 with one search. None were in the summary. |
 | Can a new session answer questions about a 26-hour history? | **8 of 8** with ChloeCtx, **0 of 4** without. |
 | How good is retrieval on a public benchmark? | LongMemEval-S: evidence in the top 10 for **90%** of questions; inside the default 4,000-character injection for 87%. |

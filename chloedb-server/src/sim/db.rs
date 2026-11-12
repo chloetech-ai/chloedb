@@ -38,6 +38,13 @@ impl Txn {
         b.into()
     }
 
+    /// The digest a copy compares a shipped transaction by
+    /// ([`crate::cores::shard::Replica::follows`]): of its bytes, which
+    /// name its write.
+    pub fn digest(b: &[u8]) -> u64 {
+        twox_hash::XxHash3_64::oneshot(b)
+    }
+
     pub fn of(b: &[u8]) -> Result<Txn, String> {
         let word = |i: usize| b.get(i * 8..i * 8 + 8).map(|w| u64::from_le_bytes(w.try_into().expect("8 bytes")));
         match (b.len(), word(0), word(1), word(2)) {

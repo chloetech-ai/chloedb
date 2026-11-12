@@ -3,8 +3,8 @@
 //! which any web server can serve.
 //!
 //! ```text
-//! chloedb-slice places.strata --text body --lat lat --lon lon --lat0 40.7 --lon0 -74.0 --out slices/places
-//! chloedb-slice tracks.strata --vector emb --clusters 800 --out slices/tracks
+//! chloedb-slice places.chloedb --text body --lat lat --lon lon --lat0 40.7 --lon0 -74.0 --out slices/places
+//! chloedb-slice tracks.chloedb --vector emb --clusters 800 --out slices/tracks
 //! ```
 //!
 //! chloedb-server builds and serves them itself (`--slices DIR`, `POST

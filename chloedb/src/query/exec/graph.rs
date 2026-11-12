@@ -133,7 +133,7 @@ impl<'x> GraphAdj<'x> {
     /// The neighbours of row `d` of segment `s` along the rows of edge table
     /// `et`: the targets of the rows whose source is its key, the sources of
     /// those whose target is (by direction), with positive weights; once
-    /// their weights add up to more than `enough`, no more of them
+    /// more than `enough` of them, no more
     /// ([`Adjacency::neighbors_upto`]): whether it gave them all.
     fn edge_table_neighbors(&mut self, et: &mut EdgeTable, s: usize, d: DocId, reverse: bool, enough: f64, out: &mut Vec<(Node, f32)>) -> Result<bool> {
         let snap = self.snap;
@@ -184,7 +184,7 @@ impl<'x> GraphAdj<'x> {
                     };
                     if let Some(n2) = n2 {
                         out.push((n2, w));
-                        sum += w as f64;
+                        sum += 1.0;
                         if sum > enough {
                             self.hold(copied)?;
                             return Ok(false);
@@ -297,7 +297,7 @@ impl Adjacency for GraphAdj<'_> {
                     if let Some(n2) = hit {
                         let w = g.weight(e);
                         out.push((n2, w));
-                        sum += w as f64;
+                        sum += 1.0;
                         if sum > enough {
                             return Ok(false);
                         }
@@ -339,7 +339,7 @@ impl Adjacency for GraphAdj<'_> {
                     if r.label_ok(g, e) && r.live(src) {
                         let w = g.weight(e);
                         out.push((node(s2, src), w));
-                        sum += w as f64;
+                        sum += 1.0;
                         if sum > enough {
                             return Ok(false);
                         }
@@ -382,6 +382,7 @@ impl<'a> Executor<'a> {
         let edges = g.edges.as_deref().map(|t| self.edge_table(t)).transpose()?;
         let mut adj = self.adjacency(g, &from, edges)?;
         let mut nodes: NodeMap<(u32, f64)> = traverse::node_map();
+        let mut capped = false;
         let (what, edges, extra) = match &g.kind {
             GraphKind::Reach { min_hops, max_hops } => {
                 let r = traverse::bfs(&mut adj, &seed_nodes, *max_hops, g.max_nodes)?;
@@ -415,7 +416,9 @@ impl<'a> Executor<'a> {
                         nodes.insert(n, (u32::MAX, sc));
                     }
                 }
-                ("ppr", r.edges, format!(", {} pushes", r.pushes))
+                capped = r.capped;
+                let cut = if r.capped { format!(" (stopped at max_pushes => {max_pushes}: scores of a shorter walk; raise max_pushes or eps)") } else { String::new() };
+                ("ppr", r.edges, format!(", {} pushes{cut}", r.pushes))
             }
         };
         // PageRank is a score, never a filter: it needs no document sets.
@@ -430,6 +433,7 @@ impl<'a> Executor<'a> {
             let n = self.snap.segments()[s].file.n_docs() as u32;
             per_seg.insert(s, Arc::new(DocSet::from_sorted(docs, n)));
         }
+        self.stats.max_pushes_reached |= capped;
         self.stats.plan.push(format!(
             "graph {id}: {what} over {}, {} seeds, {} rows, {edges} edges followed{extra}, {:.2} ms",
             g.edges.as_deref().unwrap_or(&self.schema.fields[g.field].name),
