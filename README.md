@@ -27,22 +27,20 @@ A cost-based planner decides, per segment and from exact statistics, how to run 
 
 ### Run a server
 
-Download a prebuilt server (Linux x86_64 and aarch64, macOS arm64 and x86_64) and start it with a demo catalogue:
+Install a prebuilt server (macOS 11+, or Linux x86_64 and aarch64 with glibc 2.35+) and start it with a demo catalogue:
 
 ```sh
-v=0.2.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
-curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
-tar xzf chloedb-server-$p.tar.gz
-chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh    # into ~/.local/bin
+chloedb-server --demo 20000 --db products.chloedb
 ```
 
-Open http://127.0.0.1:7700 for the command center: a query console, the cluster's health, and an agent that answers questions by writing SQL.
+Open http://127.0.0.1:7700 for the command center: a query console, the cluster's health, and an agent that answers questions by writing SQL. The [quickstart](docs/quickstart.md) goes from here to a first search of your own in five minutes, with a server or inside Python.
 
-Or run the container image:
+Or run the container image, which serves `/data/chloedb.chloedb`:
 
 ```sh
 docker run --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.chloedb --listen 0.0.0.0:7700
+  ghcr.io/chloetech-ai/chloedb-server:latest
 ```
 
 Or build it from source (Rust stable and a C compiler; the first build takes several minutes):
