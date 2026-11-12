@@ -31,10 +31,14 @@
 //! prefix is a value of it), each counted against the filter.
 //!
 //! A codebook is a model: `<models>/<name>/codebook.safetensors`, F32
-//! tensors `level.0` .. `level.<levels - 1>` of shape `[k, dim]`, the
-//! format an RQ-VAE trained in PyTorch can export
-//! (`safetensors.torch.save_file`). A field records the codebook's name and
-//! the SHA-256 of that file, so codes of two codebooks never mix.
+//! tensors `level.0` .. `level.<levels - 1>` of shape `[k, dim]`, which
+//! PyTorch writes with `safetensors.torch.save_file`. The centroids are in
+//! the space of the field's vectors: a residual quantiser trained on them
+//! outside ChloeDB can be loaded, but not the codebook of an RQ-VAE, whose
+//! centroids are in the space its encoder maps the vectors to (code those
+//! vectors ahead and write the codes, or store the encoder's output as
+//! the field's vectors). A field records the codebook's name and the
+//! SHA-256 of that file, so codes of two codebooks never mix.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -58,7 +62,8 @@ fn bad(m: impl std::fmt::Display) -> Error {
     Error::Schema(m.to_string())
 }
 
-/// Residual k-means centroids ([`Codebook::train`], or an RQ-VAE's).
+/// Residual k-means centroids ([`Codebook::train`], or trained elsewhere
+/// on the same vectors).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Codebook {
     pub dim: usize,
