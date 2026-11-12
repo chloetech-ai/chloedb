@@ -969,9 +969,9 @@ function compileScreen(text) {
   return { spec: compiled, scripts: scripts.join('\n') };
 }
 
-// Whether the app's owner let it reach the web (app.fetch): then its frames
-// may show images from any https address too (web/policy.js).
-const outward = () => !!S.app?.reach?.on?.fetch;
+// The hosts the app's owner let it read from (app.fetch): its frames may
+// show images from them too (web/policy.js).
+const webHosts = () => (S.app?.reach?.on?.fetch ? (S.app.reach.on.hosts || []).map((x) => x.host) : []);
 
 function srcdoc(view, params, components, helpers, design = S.designCss) {
   const screen = view.spec && view.spec.screen ? compileScreen(view.code) : null;
@@ -987,7 +987,7 @@ ${noClose(c.code)}
 ${noClose(c.code)}
 ;return helper(); });</script>`).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="${frameCsp(location.origin, { outward: outward() })}">
+<meta http-equiv="Content-Security-Policy" content="${frameCsp(location.origin, { hosts: webHosts() })}">
 <style>${KIT}</style><style id="__design">${design || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
@@ -1044,7 +1044,7 @@ function renderFrames() {
   }
   box.querySelector('.building')?.remove();
   // drop frames of views that are gone or changed, or whose components changed
-  const compSig = [...(st.components || []), ...(st.helpers || [])].map((c) => c.id).join(',') + (outward() ? '|web' : '');
+  const compSig = [...(st.components || []), ...(st.helpers || [])].map((c) => c.id).join(',') + `|${webHosts().join(' ')}`;
   for (const [slug, f] of S.frames) {
     const v = st.views.find((x) => x.slug === slug);
     if (!v || v.id !== f.capId || f.comps !== compSig) { f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
@@ -1255,7 +1255,7 @@ function changeTab(draft) {
   }
   // Model and web: in the Change tab once the app uses one or has one on.
   const r = st.reach;
-  if (st.version.n && r && Object.keys(r.abilities || {}).some((k) => r.uses?.[k] || r.on?.[k])) out.push(reachBox(st));
+  if (st.version.n && r && (Object.keys(r.abilities || {}).some((k) => r.uses?.[k] || r.on?.[k]) || r.secrets?.length || Object.keys(r.asked || {}).length)) out.push(reachBox(st));
   if (st.version.n && st.evolve) out.push(evolveBox(st));
   if (st.version.n) {
     const sugBtn = h('button', { class: 'btn small ghost', disabled: S.suggesting, onclick: async () => {
@@ -1304,7 +1304,85 @@ function reachBox(st) {
   return h('div', { class: 'col reach', style: 'display:flex;flex-direction:column;gap:8px' },
     h('div', { style: 'display:flex;align-items:center;gap:8px' }, h('h2', { class: 'label' }, 'Model and web'), h('span', { style: 'margin-left:auto' }, perDay)),
     ...rows,
+    (r.on?.fetch || r.uses?.fetch || r.on?.hosts?.length) ? hostsBox(r, set) : null,
+    (r.secrets?.length || r.uses?.secrets?.length || r.on?.fetch) ? secretsBox(r) : null,
+    r.schedules?.length ? schedulesBox(r) : null,
     h('div', { class: 'hint' }, `Today: ${t.asks || 0} question${t.asks === 1 ? '' : 's'} to the model${t.cached ? ` and ${t.cached} answered from kept answers` : ''}, ${dollars(t.usd)}; ${t.fetches || 0} page${t.fetches === 1 ? '' : 's'} fetched. Model calls count in this studio's spending limit.`));
+}
+
+// The hosts the app may read from, and send to: allowed by the owner one by
+// one; those its code names, or tried and was refused, are offered.
+function hostsBox(r, set) {
+  const allowed = r.on?.hosts || [];
+  const waiting = new Map();
+  for (const host of r.wants?.hosts || []) waiting.set(host, { send: false, why: 'named in the code' });
+  for (const [host, a] of Object.entries(r.asked || {})) waiting.set(host, { send: !!a.send, why: `tried ${a.count} time${a.count === 1 ? '' : 's'}${a.send ? ' to send' : ''}` });
+  const input = h('input', { class: 'inp small', placeholder: 'api.example.com', style: 'flex:1;min-width:0' });
+  const add = () => { const v = input.value.trim(); if (v) set({ allow: { host: v, send: false } }, `${v} allowed to read from`); };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+  return h('div', { class: 'reach-sub' },
+    h('div', { class: 'reach-head' }, h('b', 'Hosts'), h('span', { class: 'what' }, 'The app reads only from these, and sends (POST) only to those marked. A host covers its subdomains.')),
+    ...allowed.map((x) => h('div', { class: 'reach-item' },
+      h('span', { class: 'grow' }, x.host === '*' ? h('span', null, h('b', 'Any public host'), h('span', { class: 'what' }, ' (switched on before host lists: replace it with the hosts the app needs)')) : h('b', x.host)),
+      h('label', { class: `send${x.send ? ' on' : ''}`, title: 'May the app send data to this host (POST)?' },
+        h('input', { type: 'checkbox', checked: !!x.send, onchange: (e) => set({ allow: { host: x.host, send: e.target.checked } }, `${x.host === '*' ? 'Any host' : x.host}: ${e.target.checked ? 'reads and sends' : 'reads only'}`) }), ' sends'),
+      h('button', { class: 'btn small ghost', onclick: () => set({ forget: x.host }, `${x.host === '*' ? 'Any host' : x.host} no longer allowed`) }, 'Remove'))),
+    ...[...waiting].filter(([host, w]) => !allowed.some((x) => (x.host === '*' || host === x.host || host.endsWith(`.${x.host}`)) && (!w.send || x.send))).map(([host, w]) => h('div', { class: 'reach-item wants' },
+      h('span', { class: 'grow' }, h('b', host), h('span', { class: 'what' }, ` ${w.why}, not allowed`)),
+      h('button', { class: 'btn small', onclick: () => set({ allow: { host, send: w.send } }, `${host} allowed to ${w.send ? 'read from and send to' : 'read from'}`) }, w.send ? 'Allow reading and sending' : 'Allow'))),
+    !allowed.length && !waiting.size ? h('div', { class: 'hint' }, 'No hosts allowed yet: the app reaches none.') : null,
+    h('div', { class: 'reach-item' }, input, h('button', { class: 'btn small', onclick: add }, 'Allow host')));
+}
+
+// API keys: pasted once, sealed by the engine, sent only to their hosts,
+// never shown again.
+function secretsBox(r) {
+  const save = async (body, said) => {
+    try { await api('POST', `/api/apps/${S.appId}/secrets`, body); toast(said); } catch (e) { toast(e.message); }
+    refreshApp();
+  };
+  const have = new Set((r.secrets || []).map((x) => x.name));
+  const missing = (r.uses?.secrets || []).filter((n) => !have.has(n));
+  const f = {
+    name: h('input', { class: 'inp small', placeholder: 'name (as the code says)', value: missing[0] || '', style: 'flex:1 1 160px;min-width:120px' }),
+    value: h('input', { class: 'inp small', type: 'password', autocomplete: 'off', placeholder: 'the key', style: 'flex:2 1 220px;min-width:160px' }),
+    hosts: h('input', { class: 'inp small', placeholder: 'sent only to: api.example.com', value: (r.wants?.hosts || r.uses?.hosts || [])[0] || '', style: 'flex:2 1 220px;min-width:160px' }),
+    where: h('select', { class: 'evmode' }, h('option', { value: 'bearer' }, 'Authorization: Bearer'), h('option', { value: 'header' }, 'a header...'), h('option', { value: 'param' }, 'a query parameter...')),
+    pname: h('input', { class: 'inp small', placeholder: 'x-api-key or key', style: 'width:130px;display:none' }),
+  };
+  f.where.addEventListener('change', () => { f.pname.style.display = f.where.value === 'bearer' ? 'none' : ''; });
+  const add = () => {
+    const where = f.where.value;
+    const body = { name: f.name.value.trim(), value: f.value.value, hosts: f.hosts.value };
+    if (where === 'header') Object.assign(body, { header: f.pname.value.trim(), prefix: '' });
+    if (where === 'param') body.param = f.pname.value.trim();
+    save(body, `Secret ${body.name} kept; sent only to ${body.hosts}`);
+  };
+  return h('div', { class: 'reach-sub' },
+    h('div', { class: 'reach-head' }, h('b', 'Secrets'), h('span', { class: 'what' }, 'API keys the code names as {secret: \'name\'}. Kept sealed by the engine, sent only to their hosts, never shown again.')),
+    ...(r.secrets || []).map((x) => h('div', { class: 'reach-item' },
+      h('span', { class: 'grow' }, h('b', x.name), h('span', { class: 'what' }, ` ${x.hint ? `${x.hint} · ` : ''}to ${x.hosts.join(', ')} · ${x.param ? `?${x.param}=` : `${x.header}: ${x.prefix || ''}…`} · ${x.used ? `used ${new Date(x.used).toLocaleString()}` : 'not used yet'}`)),
+      h('button', { class: 'btn small ghost', onclick: async () => { try { await api('POST', `/api/apps/${S.appId}/secrets/${x.name}/delete`); toast(`Secret ${x.name} removed`); } catch (e) { toast(e.message); } refreshApp(); } }, 'Remove'))),
+    ...missing.map((n) => h('div', { class: 'reach-item wants' }, h('span', { class: 'grow' }, h('b', n), h('span', { class: 'what' }, ' the code asks for it; not set yet')))),
+    h('div', { class: 'reach-item', style: 'flex-wrap:wrap' }, f.name, f.value, f.hosts, f.where, f.pname, h('button', { class: 'btn small', onclick: add }, 'Keep secret')));
+}
+
+// Rules and functions that run on a clock: when, how the last run went.
+function schedulesBox(r) {
+  const act = async (slug, what, said) => {
+    try { await api('POST', `/api/apps/${S.appId}/schedules/${slug}/${what}`); toast(said); } catch (e) { toast(e.message); }
+    refreshApp();
+  };
+  const when = (iso) => (iso ? new Date(iso).toLocaleString() : '');
+  return h('div', { class: 'reach-sub' },
+    h('div', { class: 'reach-head' }, h('b', 'Schedules'), h('span', { class: 'what' }, r.on?.schedule ? 'They run on their own, with nobody watching; a schedule stops after 5 failures in a row.' : 'Switch on "Schedules" above for these to run on their own.')),
+    ...r.schedules.map((x) => h('div', { class: `reach-item${x.status === 'failed' || x.paused ? ' wants' : ''}` },
+      h('span', { class: 'grow' },
+        h('b', `${x.title}${x.source ? ' (source)' : ''}`),
+        h('span', { class: 'what' }, ` ${x.when}${x.next ? ` · next ${when(typeof x.next === 'number' ? new Date(x.next).toISOString() : x.next)}` : x.paused ? ' · paused' : ''}`),
+        x.last ? h('span', { class: 'what' }, ` · last ${when(x.last)}: ${x.status}${x.error ? `: ${x.error}` : x.result ? `: ${x.result}` : ''}`) : null),
+      h('button', { class: 'btn small', onclick: () => act(x.slug, 'run', `${x.title} ran`) }, 'Run now'),
+      h('button', { class: 'btn small ghost', onclick: () => act(x.slug, x.paused ? 'resume' : 'pause', `${x.title} ${x.paused ? 'started again' : 'paused'}`) }, x.paused ? 'Start again' : 'Pause'))));
 }
 
 // Built from use: the changes the engine made on its own from patterns in

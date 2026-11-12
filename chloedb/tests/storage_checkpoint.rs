@@ -339,3 +339,37 @@ fn directory_checkpoints_sync_into_one_place() {
         previous = Some(dest);
     }
 }
+
+/// A column added by ALTER TABLE may reference a table created after its
+/// own: the checkpoint creates the copy's tables in order, so it must not
+/// resolve references against the tables made so far. It refused every
+/// checkpoint of such a database (audit A-B1), whether the referencing
+/// table is the first one or a later one.
+#[test]
+fn a_checkpoint_copies_references_to_tables_created_later() {
+    for layout in [Layout::SingleFile, Layout::Directory] {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Db::create(&path_for(tmp.path(), "fwd", layout), schema(), opts(layout)).unwrap();
+        let p = Params::new();
+        db.sql("CREATE TABLE orders (id KEYWORD PRIMARY KEY, amount INT)", &p).unwrap();
+        db.sql("CREATE TABLE customers (id KEYWORD PRIMARY KEY, name KEYWORD)", &p).unwrap();
+        db.sql("ALTER TABLE t ADD COLUMN owner KEYWORD REFERENCES customers", &p).unwrap();
+        db.sql("ALTER TABLE orders ADD COLUMN customer KEYWORD REFERENCES customers", &p).unwrap();
+        db.sql("INSERT INTO customers (id, name) VALUES ('c1', 'Ada')", &p).unwrap();
+        db.sql("INSERT INTO orders (id, amount, customer) VALUES ('o1', 5, 'c1')", &p).unwrap();
+        db.sql("INSERT INTO t (id, n, body, owner) VALUES ('k1', 1, 'oak', 'c1')", &p).unwrap();
+        db.storage().flush().unwrap();
+        let want = rows(&db);
+        let dest = path_for(tmp.path(), "fwd-copy", layout);
+        db.storage().checkpoint(&dest, &CheckpointOptions { layout, link_from: None }).unwrap_or_else(|e| panic!("{layout:?}: {e}"));
+        let copy = Db::open(&dest, opts(layout)).unwrap();
+        assert_eq!(rows(&copy), want, "{layout:?}");
+        for (table, column) in [("t", "owner"), ("orders", "customer")] {
+            let s = copy.storage().table(table).unwrap();
+            let f = &s.fields[s.field_index(column).unwrap()];
+            assert_eq!(f.references.as_deref(), Some("customers"), "{layout:?} {table}.{column}");
+        }
+        // The copy checkpoints again.
+        copy.storage().checkpoint(&path_for(tmp.path(), "fwd-again", layout), &CheckpointOptions { layout, link_from: None }).unwrap();
+    }
+}

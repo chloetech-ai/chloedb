@@ -29,7 +29,7 @@ and use from an app:
 ```sh
 npm run build                         # cargo build --release; chloedb.node beside index.js
 npm run build -- --profile ci && npm test
-cd ../my-app && npm install ../chloedb/chloedb-js
+cd /path/to/my-app && npm install /path/to/chloedb/chloedb-js
 ```
 
 | file | what |

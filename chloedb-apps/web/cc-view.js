@@ -246,7 +246,9 @@ const EXAMPLES = [
 ];
 
 const ORIGIN_ORDER = ['create', 'scratch', 'hand', 'reused'];
-const USAGE = '~usage'; // the stage's Usage tab, where a screen's slug goes in the address
+const USAGE = '~usage';
+// The hosts an app's owner let it read from (engine/reach.mjs), for its frames' policy.
+const webHosts = (st) => (st?.reach?.on?.fetch ? (st.reach.on.hosts || []).map((x) => x.host) : []); // the stage's Usage tab, where a screen's slug goes in the address
 const ORIGIN_SHORT = { create: 'CREATE statements', scratch: 'written from scratch', hand: 'edited by hand', reused: 'reused from the library' };
 const KIND_LABEL = { strata: 'ChloeDB', plan: 'Model planning', model: 'Model planning and writing', write: 'Model writing pieces', fix: 'Model fixing', check: 'Checks' };
 const DECISION = {
@@ -601,8 +603,9 @@ function render(el, ctx) {
       const comps = (st.components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {\n${noClose(c.code)}\n;return typeof component === 'function' ? component : null; });</script>`).join('\n');
       const libs = (st.helpers || []).map((c) => `<script>__sa_helper(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {\n${noClose(c.code)}\n;return helper(); });</script>`).join('\n');
       const src = kit.publicUrl || `${kit.base}/`;
+      // The hosts the owner let the app read from (app.fetch): its frames may show images from them.
       return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="${frameCsp(src, { outward: !!st.reach?.on?.fetch })}">
+<meta http-equiv="Content-Security-Policy" content="${frameCsp(src, { hosts: webHosts(st) })}">
 <style>${kit.kit}</style><style id="__design">${W.designCss || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${kit.frame}</script>
@@ -926,7 +929,7 @@ __sa_ready();
         return;
       }
       // drop the frames of views that are gone or changed, or whose shared pieces changed
-      const sig = [...(st.components || []), ...(st.helpers || [])].map((x) => x.id).join(',') + (st.reach?.on?.fetch ? '|web' : '') + (W.tryV || '');
+      const sig = [...(st.components || []), ...(st.helpers || [])].map((x) => x.id).join(',') + `|${webHosts(st).join(' ')}` + (W.tryV || '');
       for (const [slug, f] of W.frames) {
         const v = st.views.find((x) => x.slug === slug);
         if (!v || v.id !== f.capId || f.sig !== sig) { f.iframe.remove(); W.frames.delete(slug); W.errors.delete(slug); }

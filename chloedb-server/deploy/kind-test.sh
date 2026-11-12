@@ -60,7 +60,7 @@ up)
     kubectl --context "kind-$CLUSTER" apply -f "$HERE/k8s/namespace.yaml"
     ;;
 image)
-    docker build -f "$HERE/Dockerfile" -t "$IMAGE" "$HERE/../.."
+    docker build -f "$HERE/Dockerfile" --target bench -t "$IMAGE" "$HERE/../.."
     kind load docker-image "$IMAGE" --name "$CLUSTER"
     ;;
 single)

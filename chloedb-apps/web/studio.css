@@ -440,3 +440,12 @@ body.bare.designed { background: var(--bg); }
 .reach-row .pill { white-space: nowrap; font-size: 11px; }
 .reach-row .pill.ok { color: #15803d; }
 .reach-row .pill.warn { color: #b45309; }
+.reach-sub { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; background: var(--card); }
+.reach-head { display: flex; flex-direction: column; gap: 2px; }
+.reach-head .what, .reach-item .what { color: var(--muted); font-size: 12.5px; }
+.reach-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.reach-item .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.reach-item.wants b { color: #b45309; }
+.reach-item .send { font-size: 12px; color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.reach-item .send.on { color: #b45309; }
+.reach-item .inp { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg, transparent); color: inherit; }

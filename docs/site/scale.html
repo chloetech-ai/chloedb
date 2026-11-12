@@ -12,7 +12,6 @@
 <link rel="stylesheet" href="assets/site.css?v=147f195651">
 </head>
 <body>
-<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
   <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
   <nav class="nav" aria-label="Site">
@@ -83,7 +82,7 @@ kubectl -n strata patch strata demo --type merge \
       <h2>What stays the same at every step</h2>
     </div>
     <div class="principles">
-      <div><b>The SQL</b><p>Over shards, the coordinator's merge gives what one database gives, scores and limits included.</p></div>
+      <div><b>The SQL</b><p>Over shards, the coordinator's merge gives what one database gives, scores and limits included. Graph queries and <code>INSERT … ON CONFLICT</code> still need one database.</p></div>
       <div><b>The schema</b><p>Tables, models, rank profiles and synonyms travel with the data.</p></div>
       <div><b>The file format</b><p>A shard is a ChloeDB file. A checkpoint of one opens on a laptop.</p></div>
       <div><b>The clients</b><p><code>chloedb.open</code> and <code>chloedb.connect</code> have the same methods.</p></div>

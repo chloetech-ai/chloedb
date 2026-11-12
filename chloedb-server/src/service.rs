@@ -882,7 +882,7 @@ impl Service {
                 self.tables_shipped(&before);
                 r
             }
-            Replication::Primary(p) => p.shipped_to(&r.primary, r.term),
+            Replication::Primary(p) => p.shipped_to(&r.primary, r.term, r.config),
             Replication::None => Err(conflict("this server is not a replica (--replica): it takes no shipped transactions".into())),
         }
     }
@@ -915,7 +915,7 @@ impl Service {
         match &self.replication() {
             Replication::Replica(f) => f.verify(r).await,
             Replication::Primary(p) => {
-                p.shipped_to(&r.primary, r.term)?;
+                p.shipped_to(&r.primary, r.term, r.config)?;
                 Err(conflict("this server is a primary: it has no rows of another primary's to compare".into()))
             }
             Replication::None => Err(conflict("this server is not a replica (--replica): it has no rows of a primary's to compare".into())),
@@ -2367,7 +2367,8 @@ impl Service {
                     return Err(ApiError::bad("a query that calls llm() is not scrolled: page it with LIMIT and OFFSET"));
                 }
                 let mut first = req.clone();
-                first.sql = split.first.to_string();
+                // As text that reads back as the very first step.
+                first.sql = split.first_sql()?;
                 let mut a = self.query_admitted(first).await?;
                 let rs = std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
                 let (params, models) = (req.params.clone(), self.models_dir());

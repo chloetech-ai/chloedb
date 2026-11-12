@@ -11,6 +11,154 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Security
+
+- `chloedb-server`: a key rotated on one server ends on every server of
+  its cluster. Merging keys took only the time a key was last used, so the
+  old secret of a key rotated on a coordinator stayed valid on the shards,
+  on other coordinators, and on that coordinator once it started again and
+  took its keys back from the shards. A key's end is now the earlier of
+  the two a merge sees.
+- The OpenSearch listener (`--opensearch-listen`) inflates a gzip body to
+  `--max-body-mb` at most (413 past it), asks a read key for every route
+  but `/` and `_cluster/health` (a feed key read documents before), and
+  keeps refusals and changes of indexes, mappings, settings and aliases
+  in the audit log, as the main listener does.
+- `POST /v1/alerts/peer`, by which coordinators tell each other their
+  alerts, takes the cluster's token (or the server's) only: an admin key
+  could replace rules, routes and silences without an audit entry.
+- Every HTTP answer carries `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin` and a
+  `Content-Security-Policy` with `frame-ancestors 'self'`, unless its
+  handler sets its own, so that another site cannot frame the command
+  center.
+- The HTTP listeners close a connection that takes longer than
+  `--header-timeout-secs` (30) to send a request's headers or a TLS
+  handshake, or that stays idle as long, and hold `--max-connections`
+  at once (by default three quarters of the open-file limit): a client
+  sending a byte a minute on thousands of connections no longer holds
+  the process's file descriptors.
+- A server over TLS that is told to stop finishes the requests under
+  way, as one without TLS did, instead of cutting them; both wait
+  `--stop-grace-ms` (20 s) at most, and a follower's open feed ends when
+  the server stops taking connections, rather than holding it up until
+  it is killed.
+- **Breaking:** `follow-postgres` with no `sslmode` in its URL requires TLS
+  of a database on another machine (`prefer` stays the default for
+  `localhost` and loopback addresses), and warns when a URL asks for
+  `prefer` or `disable` of one.
+- **Breaking:** the image `ghcr.io/chloetech-ai/chloedb-server` runs as
+  user 10001, not root, from base images pinned by digest, and holds
+  neither the benchmark tools nor `iproute2` (`docker build --target
+  bench` makes an image with `chloedb-server-bench` and `engine-compare`).
+  The operator's shard pods set `fsGroup: 10001`, which gives a volume a
+  root image wrote to that group; a Docker volume needs a `chown` once
+  ([the server's page](docs/chloedb/server.md)). Images carry build
+  provenance.
+- ChloeCtx: **breaking:** `chloectx app` refuses to start on an address
+  other than loopback (`--host 0.0.0.0`, say) with no `--token`, since
+  whoever reached the port could read and write every space and start
+  model calls billed to the app's key; `--insecure` starts it anyway. The
+  operator passes `--insecure` for a cluster without a `tokenSecret`
+  (which is open itself), and the app's token otherwise, as before. The
+  app also serves 64 requests at once (one more is answered 503) and runs
+  at most four distillations, with 256 waiting; past that an exchange is
+  stored without notes and `/v1/info` counts it under `distill.skipped`.
+  Before, each request and each exchange started a thread, without bound.
+- ChloeCtx: **breaking:** `chloectx sync` refuses a server reached over
+  plain `http://` anywhere but this machine (`127.0.0.1`, `::1`,
+  `localhost`), since it sends transcripts and the server's key;
+  `CHLOECTX_SYNC_ALLOW_HTTP=1` allows it. Each request's header file (the
+  key, owner-only) is its own, so a push every 30 s and an explicit
+  `chloectx sync` no longer remove each other's.
+- ChloeCtx: the inspector (`chloectx ui`) is served with a
+  Content-Security-Policy that runs only its own script (by hash), loads
+  nothing from elsewhere and connects only to itself, and with
+  `X-Frame-Options: DENY`.
+- `install.sh` builds ChloeCtx with `--locked`: the dependency versions in
+  `chloectx/Cargo.lock`, the ones CI tested, not newer ones the registry
+  offers on the day.
+- `chloedb-sheets`: a SQLite file's views are listed but not counted, and
+  come into a workbook only when named (the UI leaves them unticked): a
+  view runs its query as it is read, and a file's can be a query that
+  never ends, which held a server thread for good. Reading a SQLite file
+  stops after 60 s for its list of tables and 180 s for an import, and the
+  file is opened with `trusted_schema` off. An xlsx file is refused when
+  its parts expand past 512 MB (counted by decompressing them, not by the
+  sizes the file declares) or it holds more than 2 million cells, as CSV
+  and SQLite imports were bounded already.
+- App engine: `app.sql` keeps a view to its app's tables. It reads the SQL
+  as ChloeDB's parser does, finds every table it names (a quoted name, a
+  name after a comment and a CTE's name outside its query were not
+  checked), refuses block comments, prefixed and `$$` strings, quoted or
+  qualified table names, `|>`, `INTO` and `TABLE`, and then asks the
+  server's plan (`/v1/explain`) which tables the query reads.
+- App engine: a view's frame takes images and media from the engine and
+  the photo hosts only (and, once the owner turns on "Web pages and APIs",
+  from the hosts allowed there to read from), submits no form and opens no
+  popup; its links open from the studio after a click. A frame that
+  navigates away is closed.
+- Crawler: it reaches the public internet only. An address on its
+  machine, a private network, a link-local range (cloud metadata) or
+  another reserved one is refused, linked, redirected to or resolved to,
+  unless it is started with `--allow-host HOST[:PORT]` or
+  `--allow-private`. Each redirect is checked as a link is (scope,
+  `include`, `exclude`, robots.txt); robots.txt is read to 500 KB and a
+  sitemap to 50 MB.
+- App proxy: a path under `/v1/apps/<name>/` (and the hub's `/c/<name>/`)
+  stays under the app's URL: a dot segment, once or twice encoded, is
+  refused, and a decoded `?` or `#` stays in its segment. `/v1/apps` asks
+  the apps at once and keeps a failure for 15 s, so an app that does not
+  answer no longer empties the command center's list.
+
+### Storage
+
+- A SPARSE value whose term holds the character `\0` is refused when it
+  is written. It was accepted, and the next flush panicked building the
+  field's dictionary: on the flusher thread, which ended for good, and
+  again at each reopen, which replays the row. A term of that kind in a
+  row written before is left out of the index.
+- A panic in background work is that round's error, tried again as an
+  error is, and no longer ends the thread: the build of a background
+  flush, a merge on a merger thread, the cold tier's offload and eviction,
+  and a read-only database's refresh.
+- A checkpoint (a backup, the copy a replica is seeded from) of a database
+  where a column references a table created after its own table
+  (`ALTER TABLE .. ADD COLUMN .. REFERENCES`) failed with "references ..,
+  which is not a table". It copies such a database.
+
+### Query and indexes
+
+- **Breaking:** on the operators engine, a `LIMIT` over a join, `DISTINCT
+  ON` or `MAX k PER` whose first table holds more than 1,000,000 rows is
+  an error when the rows it wants are not among the first 1,000,000 read,
+  as the same query without its `LIMIT` is. It answered a short page,
+  down to no rows at all, without a word.
+- A plan from elsewhere (`Db::run`, `POST /v1/plan`) with a NOT over a NOT
+  or over `!=` matched the rows whose field is NULL: `not(not(price > 5))`
+  returned rows without a price. Each NOT is SQL's now, as in SQL text,
+  which was not affected.
+- The filter of `json_paths(.., filter => ..)`, `Db::json_paths` and
+  `Db::sid_next` is one condition, parsed by itself. Its text was put
+  into a statement's, so `'x = 1 LIMIT 0'` was taken as a filter.
+
+### Replication
+
+- **Breaking:** a database that numbers its writes (`--seq-no`) refuses a
+  bulk load (`Db::load`, `Database::bulk_load`) and `attach_segments` once
+  it has numbered a write or replicates: they write no log record, so its
+  replicas never got the rows. Before that they still seed it. Imports
+  (`POST /v1/import`, `chloedb-server import`, SQLite, Parquet and Arrow)
+  into such a database upsert in transactions of 10,000 rows, also into an
+  empty table: a bad row then stops the import after the transactions
+  before it, and a key the file holds twice keeps its last row.
+- `chloedb-server follow` and `follow-postgres` no longer stop with
+  "table ... already exists" when a `CREATE TABLE` or `ALTER TABLE` they
+  sent was applied but its answer was lost and they sent it again: a
+  table found as the source has it is taken as made.
+
+### App engine
+
 - App engine: the app creator is a page of the command center (Apps → App
   creator) rather than a separate studio: describe an app and build it
   there, follow each build (its steps, its screens drawn while the rest is
@@ -99,28 +247,6 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
   hook command spells it. Settings files are written beside and renamed
   into place, keep their keys' order and their links, and a project
   install backs up the files it changes.
-- App engine: `app.sql` keeps a view to its app's tables. It reads the SQL
-  as ChloeDB's parser does, finds every table it names (a quoted name, a
-  name after a comment and a CTE's name outside its query were not
-  checked), refuses block comments, prefixed and `$$` strings, quoted or
-  qualified table names, `|>`, `INTO` and `TABLE`, and then asks the
-  server's plan (`/v1/explain`) which tables the query reads.
-- App engine: a view's frame takes images and media from the engine and
-  the photo hosts only (any `https:` address once the owner turns on "Web
-  pages and APIs"), submits no form and opens no popup; its links open
-  from the studio after a click. A frame that navigates away is closed.
-- Crawler: it reaches the public internet only. An address on its
-  machine, a private network, a link-local range (cloud metadata) or
-  another reserved one is refused, linked, redirected to or resolved to,
-  unless it is started with `--allow-host HOST[:PORT]` or
-  `--allow-private`. Each redirect is checked as a link is (scope,
-  `include`, `exclude`, robots.txt); robots.txt is read to 500 KB and a
-  sitemap to 50 MB.
-- App proxy: a path under `/v1/apps/<name>/` (and the hub's `/c/<name>/`)
-  stays under the app's URL: a dot segment, once or twice encoded, is
-  refused, and a decoded `?` or `#` stays in its segment. `/v1/apps` asks
-  the apps at once and keeps a failure for 15 s, so an app that does not
-  answer no longer empties the command center's list.
 
 ### Storage
 
@@ -187,6 +313,9 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
   zeroed slot 1 that held the only version made since creation beside an
   empty log, which looks like a crash during that first commit; there is
   no point-in-time recovery.
+- A damaged freelist whose counts or extents overflow when added up is
+  refused as malformed; decoding it panicked before (found by the nightly
+  fuzzer).
 
 ### Query and indexes
 
@@ -391,6 +520,17 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
   a `SHA256SUMS`.
 - [docs/compatibility.md](docs/compatibility.md): the file formats this
   code reads and writes, the shard protocol, and what a version promises.
+- A release tag builds and publishes nothing unless its commit is on main
+  and CI's whole matrix (the nightly run, or one started by hand) passed
+  on it (`release-gate.yml`); the release workflows check that the binary
+  starts and leave the tests to CI. The server's image publishes `latest`
+  only after CI passed on this repository's main, and `<version>` from a
+  release tag.
+- A nightly run that fails opens an issue (`nightly-failure`); the fuzz
+  targets build again and run every night on a kept corpus.
+- Dependabot watches every lockfile, and `cargo deny` checks advisories
+  and licenses daily (`deny.toml`); zstd and its crates moved to versions
+  without the open advisories.
 
 ## Since the 0.1.0 releases
 

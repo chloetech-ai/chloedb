@@ -308,19 +308,36 @@ async fn until(base: &str, id: &str, phase: &str) -> Json {
 }
 
 async fn server(aws: Option<&str>, digitalocean: Option<&str>) -> (String, tempfile::TempDir, Arc<Service>) {
+    server_kept(aws, digitalocean, None, (true, true)).await
+}
+
+/// A server that runs on the node `node` (as `CHLOEDB_NODE` says in a pod).
+async fn server_on(aws: Option<&str>, digitalocean: Option<&str>, node: Option<&str>) -> (String, tempfile::TempDir, Arc<Service>) {
+    server_kept(aws, digitalocean, node, (true, true)).await
+}
+
+/// A server whose cloud view keeps its clusters and the accounts' keys in
+/// files beside its database (`files`: the clusters, the keys), or in
+/// memory only, as a coordinator does unless given files.
+async fn server_kept(aws: Option<&str>, digitalocean: Option<&str>, node: Option<&str>, (clusters, keys): (bool, bool)) -> (String, tempfile::TempDir, Arc<Service>) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::create(&dir.path().join("a.strata"), demo::schema(10), DbOptions::default()).unwrap();
+    let path = dir.path().join("a.strata");
+    let db = Db::create(&path, demo::schema(10), DbOptions::default()).unwrap();
     let schema = (*db.schema()).clone();
     let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
     let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent, 4, Duration::from_secs(10));
     svc.keys = Arc::new(Keys::open(dir.path().join("a.strata.keys.json")).unwrap());
     if let Some(u) = aws {
-        svc.aws = Arc::new(Aws::memory().with_endpoint(u));
+        let a = if keys { Aws::open(Aws::file_of(&path)).unwrap() } else { Aws::memory() };
+        svc.aws = Arc::new(a.with_endpoint(u));
     }
     if let Some(u) = digitalocean {
-        svc.digitalocean = Arc::new(DigitalOcean::memory().with_endpoint(u));
+        let d = if keys { DigitalOcean::open(DigitalOcean::file_of(&path)).unwrap() } else { DigitalOcean::memory() };
+        svc.digitalocean = Arc::new(d.with_endpoint(u));
     }
-    svc.clouds = Arc::new(Clusters::open(Clusters::file_of(&dir.path().join("a.strata"))).unwrap().with_every(Duration::from_millis(20)));
+    svc.place.node = node.map(str::to_string);
+    let clouds = if clusters { Clusters::open(Clusters::file_of(&path)).unwrap() } else { Clusters::memory() };
+    svc.clouds = Arc::new(clouds.with_every(Duration::from_millis(20)));
     let svc = Arc::new(svc);
     let (l, base) = listen().await;
     let access = Access { token: Some(Secret::new("root-token")), ..Default::default() };
@@ -350,22 +367,22 @@ async fn a_cluster_is_made_on_eks_installed_and_deleted_volumes_first() {
     let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": plan}))).await;
     assert_eq!(status, 400, "{j}");
     assert!(j["error"].as_str().unwrap().contains("confirm is the cluster's name, strata-search"), "{j}");
-    let (status, _) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "gcp", "plan": plan, "confirm": "strata-search"}))).await;
+    let (status, _) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "gcp", "plan": plan, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 400);
     let mut big = plan.clone();
     big["nodes"] = json!(40);
-    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": big, "confirm": "strata-search"}))).await;
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": big, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 409, "{j}");
     assert!(j["error"].as_str().unwrap().contains("the nodes need 80 vCPUs") && j["error"].as_str().unwrap().contains("may run 64"), "{j}");
     assert!(!seen.lock().unwrap().calls.iter().any(|c| c.contains("CreateStack")), "a refused plan made something");
 
-    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": plan, "confirm": "strata-search"}))).await;
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": plan, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 202, "{j}");
     let id = j["id"].as_str().unwrap().to_string();
     assert_eq!((j["phase"].as_str(), j["cluster"].as_str(), j["machine"].as_str(), j["nodes"].as_u64()), (Some("creating"), Some("strata-search"), Some("m7g.large"), Some(3)));
     assert!(j["cost_hour"].as_f64().unwrap() > 0.1, "{j}");
     // CloudFormation already has it: a second one is refused.
-    let (status, _) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": plan, "confirm": "strata-search"}))).await;
+    let (status, _) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": plan, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 409);
 
     let j = until(&base, &id, "ready").await;
@@ -430,6 +447,51 @@ async fn a_cluster_is_made_on_eks_installed_and_deleted_volumes_first() {
     assert!(a.iter().any(|d| d.starts_with("asked AWS for the cluster strata-search in us-east-1: 3 × m7g.large, $")), "{a:?}");
     assert!(a.iter().any(|d| d == "deleting the cluster strata-search on AWS in us-east-1"), "{a:?}");
     assert!(a.iter().any(|d| d == "forgot the cluster strata-search (Deleted)"), "{a:?}");
+}
+
+/// Finding E-6: a coordinator keeps no file of the clusters it makes nor
+/// of the accounts' keys unless it is given one, so a cluster made from
+/// its command center was forgotten when it restarted (every upgrade
+/// restarts it): its deletion time with it, and the cluster billed until
+/// someone found it in the cloud's console. Such a server makes none now,
+/// and a cluster is made with a deletion time or `keep: true`, said.
+#[tokio::test]
+async fn a_cluster_is_not_made_where_it_would_be_forgotten() {
+    let seen = Arc::new(Mutex::new(Aws_::default()));
+    let (l, aws_url) = listen().await;
+    let app = axum::Router::new().fallback(aws).with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(l, app).await });
+    let plan = json!({"name": "search", "region": "us-east-1", "machine": "m7g.large", "nodes": 3, "spot": false, "volume_gb": 10, "cluster": {"shards": 2, "replicas": 2}});
+    let make = |extra: Json| {
+        let mut b = json!({"provider": "aws", "plan": plan, "confirm": "strata-search"});
+        b.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        b
+    };
+
+    // The clusters in memory only, then the key.
+    for (kept, want) in [((false, true), "keeps the clusters it makes in memory only"), ((true, false), "keeps the account's key in memory only")] {
+        let (base, _dir, svc) = server_kept(Some(&aws_url), None, None, kept).await;
+        let (status, j) = call(&base, "PUT", "/v1/admin/aws/credentials", Some(json!({"access_key_id": KEY_ID, "secret_access_key": SECRET, "region": "us-east-1"}))).await;
+        assert_eq!(status, 200, "{j}");
+        let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(make(json!({"keep": true})))).await;
+        assert_eq!(status, 409, "{j}");
+        assert!(j["error"].as_str().unwrap().contains(want), "{want}: {j}");
+        assert!(svc.clouds.list().is_empty());
+    }
+    assert!(!seen.lock().unwrap().calls.iter().any(|c| c.contains("CreateStack")), "nothing was made");
+
+    // Kept in files: a deletion time, or keep, is asked for.
+    let (base, _dir, _svc) = server(Some(&aws_url), None).await;
+    let (status, j) = call(&base, "PUT", "/v1/admin/aws/credentials", Some(json!({"access_key_id": KEY_ID, "secret_access_key": SECRET, "region": "us-east-1"}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(make(json!({})))).await;
+    assert_eq!(status, 400, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("keep: true"), "{j}");
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(make(json!({"keep": true, "delete_after_hours": 4})))).await;
+    assert_eq!(status, 400, "{j}");
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(make(json!({"delete_after_hours": 4})))).await;
+    assert_eq!(status, 202, "{j}");
+    assert!(j["delete_at_ms"].as_u64().is_some(), "{j}");
 }
 
 // ------------------------------------------------------------ DigitalOcean
@@ -502,10 +564,10 @@ async fn a_cluster_is_made_on_doks_installed_and_deleted() {
     let plan = json!({"name": "search", "region": "nyc3", "machine": "m-4vcpu-32gb", "nodes": 2, "volume_gb": 10, "ha": false, "cluster": {"shards": 2, "replicas": 2}});
     let mut big = plan.clone();
     big["nodes"] = json!(30);
-    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "digitalocean", "plan": big, "confirm": "strata-search"}))).await;
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "digitalocean", "plan": big, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 409, "{j}");
     assert!(j["error"].as_str().unwrap().contains("the nodes need 30 droplets and the account runs 3 of its 25"), "{j}");
-    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search"}))).await;
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 202, "{j}");
     let id = j["id"].as_str().unwrap().to_string();
 
@@ -576,7 +638,7 @@ async fn a_stack_that_fails_says_why_and_is_deleted_not_forgotten() {
     let (status, _) = call(&base, "PUT", "/v1/admin/aws/credentials", Some(json!({"access_key_id": KEY_ID, "secret_access_key": SECRET, "region": "us-east-1"}))).await;
     assert_eq!(status, 200);
     let plan = json!({"name": "search", "region": "us-east-1", "machine": "m7g.large", "nodes": 3, "spot": false, "volume_gb": 10, "cluster": {}});
-    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": plan, "confirm": "strata-search"}))).await;
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "aws", "plan": plan, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 202, "{j}");
     let id = j["id"].as_str().unwrap().to_string();
     let j = until(&base, &id, "failed").await;
@@ -626,7 +688,7 @@ async fn a_cluster_made_here_opens_through_its_kubernetes_api() {
     let secret_at = by_hand.iter().position(|c| c.contains("create secret generic strata-token")).expect("a token's Secret, by hand too");
     assert!(secret_at < by_hand.iter().position(|c| c.ends_with("-cluster.yaml") && c.starts_with("kubectl apply")).unwrap(), "{by_hand:?}");
     // Not open yet: Strata is not installed on it.
-    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search"}))).await;
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search", "keep": true}))).await;
     assert_eq!(status, 202, "{j}");
     let id = j["id"].as_str().unwrap().to_string();
     let (status, j) = call(&base, "POST", "/v1/admin/hub/adopt", Some(json!({"made": id}))).await;
@@ -728,7 +790,7 @@ async fn a_cluster_made_here_brings_tables_once_it_is_ready() {
     assert_eq!(call(&base, "PUT", "/v1/admin/digitalocean/token", Some(json!({"token": DO_TOKEN}))).await.0, 200);
 
     let plan = json!({"name": "search", "region": "nyc3", "machine": "m-4vcpu-32gb", "nodes": 2, "volume_gb": 10, "ha": false, "cluster": {"shards": 2, "replicas": 2}});
-    let create = |bring: Json| json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search", "bring": bring});
+    let create = |bring: Json| json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search", "keep": true, "bring": bring});
     let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(create(json!(["nothing"])))).await;
     assert_eq!(status, 400, "a table this server lacks: {j}");
     let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(create(json!(["products"])))).await;
@@ -753,4 +815,117 @@ async fn a_cluster_made_here_brings_tables_once_it_is_ready() {
     let (_, book) = call(&base, "GET", "/v1/admin/hub", None).await;
     assert_eq!(book["connections"][0]["kube"]["cluster"], "strata-search", "{book}");
     assert!(kube_seen.lock().unwrap().proxied.iter().any(|(p, _, _)| p.starts_with("/v1/import")));
+}
+
+// ------------------------------------- clusters found in the account
+
+/// An account as DigitalOcean answers for it: clusters this server did
+/// not make, one of them ChloeDB's, one someone else's, one the server
+/// runs on.
+#[derive(Default)]
+struct Account {
+    calls: Vec<String>,
+    kube: String,
+    clusters: Vec<Json>,
+}
+
+const FOUND: &str = "0f0f0f0f-0000-4000-8000-0000000000aa";
+const OTHER: &str = "0f0f0f0f-0000-4000-8000-0000000000bb";
+const MINE: &str = "0f0f0f0f-0000-4000-8000-0000000000cc";
+
+async fn account(State(seen): State<Arc<Mutex<Account>>>, method: Method, OriginalUri(uri): OriginalUri, headers: HeaderMap) -> axum::response::Response {
+    let path = uri.path().to_string();
+    assert_eq!(headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or_default(), format!("Bearer {DO_TOKEN}"));
+    let mut s = seen.lock().unwrap();
+    s.calls.push(format!("{method} {path}"));
+    let one = |s: &Account, id: &str| s.clusters.iter().find(|c| c["id"] == id).cloned();
+    let not_found = || (StatusCode::NOT_FOUND, json!({"id": "not_found", "message": "The resource you were accessing could not be found."}).to_string()).into_response();
+    let parts: Vec<&str> = path.trim_start_matches("/v2/kubernetes/clusters").split('/').filter(|p| !p.is_empty()).collect();
+    match (method.as_str(), path.as_str()) {
+        ("GET", "/v2/account") => json!({"account": {"droplet_limit": 25, "uuid": "acct", "status": "active", "team": {"name": "My Team"}}}).to_string().into_response(),
+        ("GET", "/v2/kubernetes/clusters") => json!({"kubernetes_clusters": s.clusters}).to_string().into_response(),
+        ("GET", p) if p.starts_with("/v2/kubernetes/clusters/") && parts.len() == 1 => match one(&s, parts[0]) {
+            Some(c) => json!({"kubernetes_cluster": c}).to_string().into_response(),
+            None => not_found(),
+        },
+        ("GET", p) if p.starts_with("/v2/kubernetes/clusters/") && parts.get(1) == Some(&"credentials") => {
+            json!({"server": s.kube, "certificate_authority_data": "", "token": KUBE_TOKEN, "expires_at": "2026-11-08T00:00:00Z"}).to_string().into_response()
+        }
+        ("DELETE", p) if p.ends_with("/destroy_with_associated_resources/dangerous") => {
+            let id = parts[0].to_string();
+            s.clusters.retain(|c| c["id"] != id.as_str());
+            StatusCode::NO_CONTENT.into_response()
+        }
+        other => panic!("DigitalOcean was not asked for {other:?}"),
+    }
+}
+
+/// A cluster made from another server (or forgotten here) is listed from
+/// the account and deleted from here, its name typed again, its volumes
+/// first; someone else's cluster is never listed, and the one this
+/// server runs on is listed but not deleted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cluster_found_in_the_account_is_deleted_from_here() {
+    let (kube_seen, kube_url) = kube_api().await;
+    let pool = |size: &str, node: &str| json!([{"name": "strata", "size": size, "count": 2, "nodes": [{"name": node}, {"name": format!("{node}-b")}]}]);
+    let clusters = vec![
+        json!({"id": FOUND, "name": "strata-search", "region": "nyc3", "tags": ["strata", "strata-owner:alice", "k8s"], "status": {"state": "running"}, "node_pools": pool("m-4vcpu-32gb", "strata-abc"), "created_at": "2026-11-10T00:00:00Z"}),
+        json!({"id": OTHER, "name": "web-app", "region": "nyc3", "tags": ["k8s"], "status": {"state": "running"}, "node_pools": pool("s-2vcpu-4gb", "web-xyz")}),
+        json!({"id": MINE, "name": "strata-hub", "region": "sfo3", "tags": ["strata"], "status": {"state": "running"}, "node_pools": pool("s-4vcpu-8gb", "strata-hub-1")}),
+    ];
+    let seen = Arc::new(Mutex::new(Account { kube: kube_url, clusters, ..Default::default() }));
+    let (l, do_url) = listen().await;
+    let app = axum::Router::new().fallback(account).with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(l, app).await });
+    let (base, _dir, _svc) = server_on(None, Some(&do_url), Some("strata-hub-1")).await;
+    assert_eq!(call(&base, "PUT", "/v1/admin/digitalocean/token", Some(json!({"token": DO_TOKEN}))).await.0, 200);
+
+    let (status, j) = call(&base, "GET", "/v1/admin/cloud/found?provider=digitalocean", None).await;
+    assert_eq!(status, 200, "{j}");
+    let found = j["clusters"].as_array().unwrap();
+    let names: Vec<&str> = found.iter().map(|c| c["cluster"].as_str().unwrap()).collect();
+    assert_eq!(names, ["strata-search", "strata-hub"], "only ChloeDB's: {j}");
+    assert_eq!((found[0]["nodes"].as_u64(), found[0]["machine"].as_str(), found[0]["owner"].as_str(), found[0]["here"].as_bool()), (Some(2), Some("m-4vcpu-32gb"), Some("alice"), Some(false)), "{j}");
+    assert_eq!(found[1]["here"], true, "this server runs on it: {j}");
+    let (status, _) = call(&base, "GET", "/v1/admin/cloud/found?provider=gcp", None).await;
+    assert_eq!(status, 400);
+
+    // The name typed again; not someone else's; not the one this runs on.
+    let del = |id: &str, confirm: &str| json!({"provider": "digitalocean", "cloud_id": id, "confirm": confirm});
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/found/delete", Some(del(FOUND, "search"))).await;
+    assert_eq!(status, 400, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("confirm is the cluster's name, strata-search"), "{j}");
+    let (status, _) = call(&base, "POST", "/v1/admin/cloud/found/delete", Some(del(OTHER, "web-app"))).await;
+    assert_eq!(status, 404, "not ChloeDB's");
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/found/delete", Some(del(MINE, "strata-hub"))).await;
+    assert_eq!(status, 409, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("this server runs on strata-hub"), "{j}");
+    assert!(!seen.lock().unwrap().calls.iter().any(|c| c.starts_with("DELETE ")), "a refused delete deleted something");
+
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/found/delete", Some(del(FOUND, "strata-search"))).await;
+    assert_eq!(status, 202, "{j}");
+    assert_eq!((j["phase"].as_str(), j["found"].as_bool(), j["cloud_id"].as_str()), (Some("deleting"), Some(true), Some(FOUND)), "{j}");
+    let id = j["id"].as_str().unwrap().to_string();
+    // On the list now, so not found again, nor deleted twice.
+    let (_, j) = call(&base, "GET", "/v1/admin/cloud/found?provider=digitalocean", None).await;
+    assert_eq!(j["clusters"].as_array().unwrap().len(), 1, "{j}");
+    let (status, _) = call(&base, "POST", "/v1/admin/cloud/found/delete", Some(del(FOUND, "strata-search"))).await;
+    assert_eq!(status, 404);
+
+    let j = until(&base, &id, "deleted").await;
+    let steps: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["text"].as_str().unwrap()).collect();
+    assert!(steps[0].contains("found in the account, not made here"), "{steps:?}");
+    assert!(steps.iter().any(|s| *s == "deleted the StrataCluster and its volumes"), "{steps:?}");
+    assert_eq!(*steps.last().unwrap(), "deleted", "{steps:?}");
+    let k = kube_seen.lock().unwrap().calls.clone();
+    assert!(k.iter().any(|c| c == "DELETE /apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search"), "volumes first: {k:?}");
+    let calls = seen.lock().unwrap().calls.clone();
+    let deletes: Vec<&String> = calls.iter().filter(|c| c.starts_with("DELETE ")).collect();
+    assert_eq!(deletes, [&format!("DELETE /v2/kubernetes/clusters/{FOUND}/destroy_with_associated_resources/dangerous")], "{calls:?}");
+    let names: Vec<String> = seen.lock().unwrap().clusters.iter().map(|c| c["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names, ["web-app", "strata-hub"]);
+    // Forgotten once deleted, as a cluster made here is.
+    assert_eq!(call(&base, "DELETE", &format!("/v1/admin/cloud/clusters/{id}"), None).await.0, 200);
+    let a = audit(&base).await;
+    assert!(a.iter().any(|d| d == "deleting the cluster strata-search on DigitalOcean in nyc3, found in the account"), "{a:?}");
 }
