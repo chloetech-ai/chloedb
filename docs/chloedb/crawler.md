@@ -4,7 +4,7 @@
 
 ## Run it
 
-On a cluster the Kubernetes operator runs, one field of its `StrataCluster` starts the crawler beside it ([below](#on-kubernetes)). On one machine, build both programs, then start the crawler with a cluster of its own:
+On one machine, build both programs, then start the crawler with a cluster of its own (on Kubernetes, one field of the cluster's resource starts it: [below](#on-kubernetes)):
 
 ```bash
 (cd chloedb-server && cargo build --release)

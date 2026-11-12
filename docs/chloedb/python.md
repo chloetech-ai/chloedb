@@ -10,13 +10,13 @@ The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The package is not on PyPI yet, so point pip at the release and it picks the wheel for your machine:
 
 ```sh
 pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 ```
 
-The package imports as `chloedb`, as the examples here do. `import strata`, its old name, goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`. Release 0.1.0, from before the rename, was published as `strata-db` (tag `strata-py-v0.1.0`) and imports as `strata` only.
+Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2). The old name, `import strata`, still works for a release, with a `DeprecationWarning`; release 0.1.0 was published as `strata-db` and imports as `strata` only.
 
 | platform | wheel |
 |---|---|
@@ -25,7 +25,7 @@ The package imports as `chloedb`, as the examples here do. `import strata`, its 
 | Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
 | Linux aarch64, glibc 2.35+ | `chloedb-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
 
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds the wheels on a `chloedb-py-v<version>` tag and tests each one in an empty virtualenv before attaching it to the release.
 
 ### Only the client, with no build
 
