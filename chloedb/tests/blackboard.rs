@@ -181,11 +181,15 @@ fn findings_that_say_the_same_are_kept_as_duplicates_and_found_once() {
     assert!(found.findings.iter().all(|f| f.score > 0.0) && found.tasks[0].score > 0.0);
     assert!(ann.search("printer", 10).unwrap().findings.is_empty());
     refused(ann.search("?!", 10), "needs a word");
-    // Words a query's grammar reads as operators are words here.
+    // Words a query's grammar reads as operators are words here, and
+    // words the text index does not keep find nothing.
     ann.search("NOT (linker OR \"error", 10).unwrap();
+    let nothing = ann.search("the and of", 10);
+    assert!(nothing.as_ref().is_ok_and(|f| f.findings.is_empty() && f.tasks.is_empty()), "{nothing:?}");
+    assert_eq!(ann.post("The and of.", None, None).unwrap().dup_of, None);
 
     let s = ann.status().unwrap();
-    assert_eq!((s.findings, s.duplicates), (5, 2));
+    assert_eq!((s.findings, s.duplicates), (6, 2));
 }
 
 #[test]
