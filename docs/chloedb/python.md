@@ -22,10 +22,10 @@ The package imports as `chloedb`, as the examples here do. `import strata`, its 
 |---|---|
 | macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
 | macOS 11+ on Intel | `chloedb-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
-| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
-| Linux aarch64, glibc 2.35+ | `chloedb-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
+| Linux x86-64, glibc 2.28+ (RHEL 8, Amazon Linux 2023, Debian 10, Ubuntu 20.04 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_28_x86_64.whl` |
+| Linux aarch64, glibc 2.28+ | `chloedb-<version>-cp310-abi3-manylinux_2_28_aarch64.whl` |
 
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8). The same tag publishes them to PyPI once the repository is set up for it (the workflow's header says how), and `pip install chloedb` then takes them; until then the package is not on PyPI. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
 ### Only the client, with no build
 
