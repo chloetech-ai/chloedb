@@ -1392,8 +1392,19 @@ impl Follow {
             }
             None => {}
         }
-        self.sql(&create_sql(s)).await?;
-        self.load_tables().await
+        let made = self.sql(&create_sql(s)).await;
+        self.load_tables().await?;
+        // A CREATE TABLE tried again after its answer was lost (a 5xx, a
+        // coordinator that stopped as it answered) finds the table its first
+        // try made: made as the source has it, it is done.
+        match made {
+            Err(e) if !self.tables.get(&s.table.to_ascii_lowercase()).is_some_and(|h| token(h) == token(s)) => Err(e),
+            Err(e) => {
+                tracing::info!(table = %s.table, "making the table failed ({}), but it is here as the source has it: an earlier try made it", e.message);
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+        }
     }
 
     /// Applies a change of tables or rank profiles, which leaves a table
@@ -1409,7 +1420,15 @@ impl Follow {
                         Some(h) if token(&h) == token(&now) => {}
                         Some(h) if token(&h) == token(&was) => {
                             if let Some(sql) = alter_sql(&was, &now) {
-                                self.sql(&sql).await?;
+                                if let Err(e) = self.sql(&sql).await {
+                                    // Tried again after an answer lost, an
+                                    // earlier try may have changed it.
+                                    self.load_tables().await?;
+                                    if !self.tables.get(&table.to_ascii_lowercase()).is_some_and(|h| token(h) == token(&now)) {
+                                        return Err(e);
+                                    }
+                                    tracing::info!(table, "changing the table failed ({}), but it is here as the source has it: an earlier try changed it", e.message);
+                                }
                             }
                         }
                         _ => return Err(ApiError { status: 409, message: format!("table {table} here is neither as the source had it before its change nor after it") }),

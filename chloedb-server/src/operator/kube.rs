@@ -366,6 +366,10 @@ impl Cluster {
                     "metadata": {"labels": labels, "annotations": {CONFIG: s.server_config()}},
                     "spec": {
                         "terminationGracePeriodSeconds": 30,
+                        // The image runs as user 10001: the volume is its
+                        // group's, and the files a server wrote as root
+                        // (images before 0.3) are given to that group once.
+                        "securityContext": {"fsGroup": 10001, "fsGroupChangePolicy": "OnRootMismatch"},
                         // Copies of a shard on different nodes, when there are.
                         "affinity": {"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
                             {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
@@ -1941,6 +1945,10 @@ mod tests {
         assert_eq!(s["spec"]["replicas"], 3);
         assert_eq!(s["spec"]["serviceName"], "orders-servers");
         assert_eq!(s["spec"]["persistentVolumeClaimRetentionPolicy"]["whenScaled"], "Delete");
+        // The image runs as user 10001: its volume is that group's, and
+        // files a server wrote as root before are given to it.
+        let sc = &s["spec"]["template"]["spec"]["securityContext"];
+        assert_eq!((&sc["fsGroup"], &sc["fsGroupChangePolicy"]), (&json!(10001), &json!("OnRootMismatch")));
         let claim = &s["spec"]["volumeClaimTemplates"][0];
         assert_eq!((&claim["spec"]["resources"]["requests"]["storage"], &claim["spec"]["storageClassName"]), (&json!("5Gi"), &json!("fast")));
         let env = &s["spec"]["template"]["spec"]["containers"][0]["env"];

@@ -1428,7 +1428,12 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
 /// transaction n, whose term `after_term` is then; `whole=a,b`: but every
 /// row of tables a and b; `digests=true`: with the digests of the keys). A
 /// failure after the answer started ends it with `{"error": ..., "status": ..}`.
-async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+///
+/// The feed ends when the server stops taking connections
+/// ([`crate::server::Stopping`]), so that a server a follower reads from
+/// stops rather than waiting on it.
+async fn feed(State(app): State<App>, stopping: Option<axum::Extension<crate::server::Stopping>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+    let stopping = Box::pin(crate::server::Stopping::of(stopping.map(|axum::Extension(s)| s)));
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
@@ -1450,7 +1455,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
                 }
             })
         });
-        return Ok(ndjson(axum::body::Body::from_stream(lines)));
+        return Ok(ndjson(axum::body::Body::from_stream(futures::StreamExt::take_until(lines, stopping))));
     }
     // A shard's own server serves its own feed.
     let own = app.svc.slots().map_or(0, |(_, s)| s as u64);
@@ -1459,7 +1464,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     }
     let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
-    Ok(ndjson(axum::body::Body::from_stream(lines)))
+    Ok(ndjson(axum::body::Body::from_stream(futures::StreamExt::take_until(lines, stopping))))
 }
 
 /// `POST /v1/feed/keys {"tables": [...], "slots"?: [...]}`: the keys of
@@ -2612,7 +2617,7 @@ async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let params = app.svc.params(b.get("params")).await?;
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
-    let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first.to_string());
+    let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
     let sql = first.as_deref().unwrap_or(sql);
     let catalog = app.svc.catalog();
     let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
@@ -5338,7 +5343,13 @@ async fn alert_peer_state(State(app): State<App>) -> AxJson<Json> {
 
 /// alerts2: merges what another coordinator tells (as it answers
 /// `GET /v1/alerts/peer`, and routes); it is not told on again.
-async fn alert_peer_merge(State(app): State<App>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+/// Only with the cluster's token (or the server's), as another coordinator
+/// sends it: an admin key could otherwise replace the rules, routes and
+/// silences unaudited.
+async fn alert_peer_merge(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    if !who(p).root {
+        return Err(ApiError { status: 403, message: "only another coordinator tells this, with the cluster's token: an API key may not".into() });
+    }
     let from = crate::peers::from_peer(&headers).ok_or_else(|| ApiError::bad("only another coordinator tells this (the header x-strata-peer names it)"))?;
     let events = app.svc.alerts.merge(&b, &from)?;
     let n = events.len();
