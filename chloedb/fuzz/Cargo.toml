@@ -72,6 +72,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "substring"
+path = "fuzz_targets/substring.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "text_query"
 path = "fuzz_targets/text_query.rs"
 test = false

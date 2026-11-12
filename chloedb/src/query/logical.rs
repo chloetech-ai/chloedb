@@ -42,6 +42,14 @@ pub enum Pred {
     /// type there is UNKNOWN to it (to any test but [`PathTest::Has`]), so
     /// a negation asks for such a value.
     Path { field: usize, path: String, test: PathTest },
+    /// `field LIKE pattern`, or with `ci` `ILIKE`, on a field with a
+    /// substring index ([`crate::schema::Field::substring`]): `%` any run
+    /// of characters, `_` one. Answered from the index of each segment
+    /// that has one and from the stored values of the others
+    /// ([`crate::substring::like`]). With `negated`, the rows that have a
+    /// value and do not match (`NOT LIKE`, which is UNKNOWN without a
+    /// value).
+    Like { field: usize, pattern: String, ci: bool, negated: bool },
     And(Vec<Pred>),
     Or(Vec<Pred>),
     /// The rows at least `need` of `items` hold for (`AT_LEAST(n, c1,
@@ -273,6 +281,8 @@ impl Pred {
                 },
             },
             p if !negated => p,
+            // UNKNOWN without a value, and so is the negation.
+            Pred::Like { field, pattern, ci, negated: n } => Pred::Like { field, pattern, ci, negated: !n },
             Pred::True => Pred::False,
             Pred::False => Pred::True,
             // `x IN (.., NULL)` is never FALSE, so its negation never TRUE.

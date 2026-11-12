@@ -529,6 +529,14 @@ impl<'a> Raise<'a> {
                     v => return Err(err(format!("PREFIX of {} takes text, not {v:?}", fld.name))),
                 }
             }
+            // A field with a substring index: the Search answers it.
+            Expr::Like { expr, pattern, case_insensitive } if matches!(&**expr, Expr::Field(_)) && self.field_of(expr).is_ok_and(|f| self.schema.fields[f].substring) => {
+                let f = self.field_of(expr)?;
+                match self.lit(pattern)? {
+                    Value::Str(p) => Pred::Like { field: f, pattern: p, ci: *case_insensitive, negated: false },
+                    v => return Err(err(format!("LIKE on {} takes a text pattern, not {v:?}", self.schema.fields[f].name))),
+                }
+            }
             Expr::Graph(g) if !matches!(g.kind, GraphKind::Ppr { .. }) => Pred::Graph { id: self.graph(g)? },
             e => return Err(err(format!("a Search cannot filter by {e:?}"))),
         })

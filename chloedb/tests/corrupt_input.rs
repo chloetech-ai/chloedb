@@ -95,6 +95,33 @@ fn arbitrary_text_through_every_analyzer() {
 }
 
 #[test]
+fn patterns_on_intact_and_damaged_substring_indexes() {
+    // Intact: every pattern's answer is checked against a scan.
+    for data in inputs(9, 6000, 14) {
+        let how = data[0] & 0xf1 | 0x30;
+        harness::substring(&[&[how][..], &data[1..]].concat());
+        // Short runs of the frequent characters between `%`: patterns
+        // that match something.
+        let likely: Vec<u8> = data[1..].iter().map(|b| if b % 4 == 0 { 21 } else { b % 8 }).collect();
+        harness::substring(&[&[how][..], &likely].concat());
+    }
+    for p in ["%", "", "_", "%a%", "%İ%", "%i\u{307}%", "%σ", "ς%", "%É_東%", "a%b%n", "%\u{0}%", "%%_%%"] {
+        for how in [0xf2, 0xf3] {
+            harness::substring(&[&[how][..], p.as_bytes()].concat());
+        }
+    }
+    // An input with its first byte alone: the empty pattern, which the
+    // fuzzer found to panic as `ILIKE` in a build that checks overflow.
+    for how in [0xd0, 0xd1, 0x00, 0x01, 0x03] {
+        harness::substring(&[how]);
+    }
+    // Damaged: an error or an answer.
+    for data in inputs(10, 6000, 40) {
+        harness::substring(&[&[data[0] | 4][..], &data[1..]].concat());
+    }
+}
+
+#[test]
 fn arbitrary_text_queries() {
     for q in ["alpha", "\"bravo charlie\" -delta", "(echo OR golf) AND NOT kilo", "lim* india~2", "a'b", ""] {
         harness::text_query(q.as_bytes());
