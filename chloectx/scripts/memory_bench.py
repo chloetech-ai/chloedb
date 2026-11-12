@@ -56,6 +56,9 @@ settings, --strict-mcp-config):
   capsule          `chloectx pack` of the lane's store, mounted with
                    `chloectx mount` as the MCP server `capsule`
   summary+capsule  both
+  short            a note the writer is asked to keep under 1,500 characters,
+                   about a sub-agent's report (handoff_note_<lane>_short.md)
+  short+capsule    the short note and the capsule
 
   python3 scripts/memory_bench.py run --scenario stockroom --lanes engram --lane-bin engram=$PWD/target/release/chloectx \
       --variant engram+summary=BENCH_HANDOFF=summary --variant engram+capsule=BENCH_HANDOFF=capsule
@@ -125,7 +128,11 @@ HANDOFF_WRITER = (
     "user set, requirements for work planned later, what was tried and abandoned, and open tasks. Reply with the note only.\n\n{transcripts}"
 )
 
-HANDOFF_MODES = ("none", "summary", "capsule", "summary+capsule")
+# A short note, about the size of a sub-agent's final report.
+SHORT_NOTE = "Keep the note under {chars} characters: the next agent's context is shared with its own work, so keep only what matters most."
+SHORT_CHARS = 1500
+
+HANDOFF_MODES = ("none", "summary", "capsule", "summary+capsule", "short", "short+capsule")
 
 
 # kind: plain | transcripts | full | engram | claude-mem | mem0
@@ -499,8 +506,8 @@ class Lane:
     def capsule_log(self):
         return os.path.join(self.dir, "capsule_calls.jsonl")
 
-    def handoff_note_path(self):
-        return os.path.join(self.args.results, f"handoff_note_{slug(self.name)}.md")
+    def handoff_note_path(self, short=False):
+        return os.path.join(self.args.results, f"handoff_note_{slug(self.name)}{'_short' if short else ''}.md")
 
     def claude_args(self, phase):
         mode = self.handoff(phase)
@@ -511,8 +518,9 @@ class Lane:
             if "capsule" in mode:
                 cfg = {"mcpServers": {"capsule": {"command": os.path.join(self.bin, "engram"), "args": ["mount", self.capsule_dir(), "--log", self.capsule_log()]}}}
                 out += ["--mcp-config", json.dumps(cfg)]
-            if "summary" in mode:
-                out += ["--append-system-prompt", HANDOFF_PROMPT.format(note=open(self.handoff_note_path(), encoding="utf-8").read().strip())]
+            if "summary" in mode or "short" in mode:
+                note = open(self.handoff_note_path(short="short" in mode), encoding="utf-8").read().strip()
+                out += ["--append-system-prompt", HANDOFF_PROMPT.format(note=note)]
             return out
         out = ["--allowedTools", ",".join(BASE_TOOLS + self.d.get("mcp", [])), "--disallowedTools", "WebFetch,WebSearch"]
         if self.kind == "transcripts" and phase == "run":
@@ -900,36 +908,45 @@ class Lane:
                 raise RuntimeError(f"chloectx pack failed: {p.stdout}{p.stderr}")
             info["capsule"] = dict(json.loads(p.stdout), wall_s=round(wall, 2))
             log(self.name, f"capsule: {info['capsule']['records']} records, {info['capsule']['bytes']} bytes, packed in {info['capsule']['total_ms']:.0f} ms")
-        if not os.path.exists(self.handoff_note_path()):
-            exporter = load_module(os.path.join(COMPETITORS, "transcripts", "export_transcripts.py"), "export_transcripts")
-            tdir = os.path.join(self.dir, "handoff_transcripts")
-            shutil.rmtree(tdir, ignore_errors=True)
-            paths = [transcript_path(os.path.join(self.snap, "home"), s) for s in hist["sessions"]]
-            files = exporter.export([p for p in paths if p], tdir)
-            text = "\n\n".join(open(f, encoding="utf-8").read() for f in files)
-            # Written outside the repository, so that no project setting (ChloeCtx's hooks) runs.
-            wdir = os.path.join(self.dir, "handoff_writer")
-            os.makedirs(wdir, exist_ok=True)
-            env = {"PATH": os.pathsep.join([self.args.bench_bin, SYSTEM_PATH]), "HOME": os.path.join(self.dir, "handoff_home"), "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
-            if os.environ.get("ANTHROPIC_BASE_URL"):
-                env["ANTHROPIC_BASE_URL"] = os.environ["ANTHROPIC_BASE_URL"]
-            os.makedirs(env["HOME"], exist_ok=True)
-            t0 = time.time()
-            p = subprocess.run([os.path.join(self.args.bench_bin, "claude"), "-p", "--model", self.args.model, "--output-format", "json", "--tools", "",
-                                "--strict-mcp-config", "--setting-sources", "user"], input=HANDOFF_WRITER.format(transcripts=text), cwd=wdir, env=env,
-                               capture_output=True, text=True, timeout=self.args.timeout)
-            out = json.loads(p.stdout) if p.stdout.strip().startswith("{") else {"is_error": True, "result": (p.stdout + p.stderr)[-800:]}
-            if out.get("is_error") or not (out.get("result") or "").strip():
-                raise RuntimeError(f"handoff note failed: {out.get('result')}")
-            with open(self.handoff_note_path(), "w", encoding="utf-8") as f:
-                f.write(out["result"].strip() + "\n")
-            u = out.get("usage") or {}
-            info["note"] = {"chars": len(out["result"].strip()), "transcript_chars": len(text), "cost_usd": out.get("total_cost_usd"), "wall_s": round(time.time() - t0, 1),
-                            "input_tokens": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0),
-                            "output_tokens": u.get("output_tokens", 0), "model": list((out.get("modelUsage") or {}).keys())}
-            log(self.name, f"handoff note: {info['note']['chars']} chars from {len(text)} chars of transcripts, ${info['note']['cost_usd'] or 0:.3f}")
+        modes = {v.get("BENCH_HANDOFF") for v in variants(self.args, self.name).values()}
+        for short in (False, True):
+            if short and not any(m and "short" in m for m in modes):
+                continue
+            if not os.path.exists(self.handoff_note_path(short)):
+                info[("note_short" if short else "note")] = self.write_note(hist, short)
         json.dump(info, open(info_path, "w"), indent=1)
         return info
+
+    def write_note(self, hist, short):
+        """The handoff note, written by --model from the history's transcripts."""
+        exporter = load_module(os.path.join(COMPETITORS, "transcripts", "export_transcripts.py"), "export_transcripts")
+        tdir = os.path.join(self.dir, "handoff_transcripts")
+        shutil.rmtree(tdir, ignore_errors=True)
+        paths = [transcript_path(os.path.join(self.snap, "home"), s) for s in hist["sessions"]]
+        files = exporter.export([p for p in paths if p], tdir)
+        text = "\n\n".join(open(f, encoding="utf-8").read() for f in files)
+        # Written outside the repository, so that no project setting (ChloeCtx's hooks) runs.
+        wdir = os.path.join(self.dir, "handoff_writer")
+        os.makedirs(wdir, exist_ok=True)
+        env = {"PATH": os.pathsep.join([self.args.bench_bin, SYSTEM_PATH]), "HOME": os.path.join(self.dir, "handoff_home"), "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        if os.environ.get("ANTHROPIC_BASE_URL"):
+            env["ANTHROPIC_BASE_URL"] = os.environ["ANTHROPIC_BASE_URL"]
+        os.makedirs(env["HOME"], exist_ok=True)
+        t0 = time.time()
+        p = subprocess.run([os.path.join(self.args.bench_bin, "claude"), "-p", "--model", self.args.model, "--output-format", "json", "--tools", "",
+                            "--strict-mcp-config", "--setting-sources", "user"], input=HANDOFF_WRITER.format(transcripts=text) + ("\n\n" + SHORT_NOTE.format(chars=SHORT_CHARS) if short else ""), cwd=wdir, env=env,
+                           capture_output=True, text=True, timeout=self.args.timeout)
+        out = json.loads(p.stdout) if p.stdout.strip().startswith("{") else {"is_error": True, "result": (p.stdout + p.stderr)[-800:]}
+        if out.get("is_error") or not (out.get("result") or "").strip():
+            raise RuntimeError(f"handoff note failed: {out.get('result')}")
+        with open(self.handoff_note_path(short), "w", encoding="utf-8") as f:
+            f.write(out["result"].strip() + "\n")
+        u = out.get("usage") or {}
+        note = {"chars": len(out["result"].strip()), "transcript_chars": len(text), "cost_usd": out.get("total_cost_usd"), "wall_s": round(time.time() - t0, 1),
+                "input_tokens": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0),
+                "output_tokens": u.get("output_tokens", 0), "model": list((out.get("modelUsage") or {}).keys())}
+        log(self.name, f"handoff note{' (short)' if short else ''}: {note['chars']} chars from {len(text)} chars of transcripts, ${note['cost_usd'] or 0:.3f}")
+        return note
 
     def capsule_activity(self, offset):
         """What the capsule's mount did since `offset` of its log."""

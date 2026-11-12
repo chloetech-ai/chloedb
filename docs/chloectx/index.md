@@ -301,7 +301,11 @@ chloectx consolidate                                                      # merg
 chloectx backup ~/backups/chloectx-2026-10-28                             # a consistent copy of this project's store
 chloectx redact [--all] [--dry-run]                                       # redact secrets a store recorded before redaction caught them
 chloectx stats | briefing | stop
+chloectx pack ./work.capsule                                              # a capsule another agent mounts
+chloectx mount ./work.capsule                                             # serve it as MCP tools (stdio)
 ```
+
+A capsule hands a slice of this memory to another agent as one read-only file it queries: [capsules](capsules.md).
 
 | variable | effect |
 |---|---|

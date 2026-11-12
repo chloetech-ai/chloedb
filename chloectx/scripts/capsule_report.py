@@ -28,6 +28,8 @@ LANES = [
     ("engram+summary", "a handoff note in the system prompt"),
     ("engram+capsule", "a capsule mounted as MCP tools"),
     ("engram+both", "the note and the capsule"),
+    ("engram+short", "a short note (under 1,500 characters)"),
+    ("engram+shortcap", "the short note and the capsule"),
     ("engram", "ChloeCtx itself: briefing, recall and memory tools"),
     ("full", "the whole history in context (a fork of it)"),
 ]
@@ -127,7 +129,8 @@ def main():
                 out["per_scenario"].setdefault(sc, {})[lane] = {"runs": len(s), "solved": sum(r["solved"] for r in s)}
 
     comparisons = [("engram+capsule", "engram+none"), ("engram+summary", "engram+none"), ("engram+capsule", "engram+summary"),
-                   ("engram+both", "engram+summary"), ("engram+both", "engram"), ("engram+both", "full"), ("engram", "full")]
+                   ("engram+both", "engram+summary"), ("engram+shortcap", "engram+short"), ("engram+short", "engram+summary"),
+                   ("engram+both", "engram"), ("engram+both", "full"), ("engram", "full")]
     out["comparisons"] = []
     for a, b in comparisons:
         if a not in out["lanes"] or b not in out["lanes"]:
@@ -165,13 +168,13 @@ def main():
             md.append(f"| {lane} | {c['calls']} | {', '.join(f'{t} {n}' for t, n in c['by_tool'].items())} | {f(c['call_ms_p50'], 1)} / {f(c['call_ms_p95'], 1)} / {f(c['call_ms_max'], 1)} | "
                       f"{f(c['ask_ms_p50'], 1)} | {f(c['chars_mean'])} | {f(c['mount_ready_ms_p50'])} / {f(c['mount_ready_ms_p95'])} |")
     md += ["", "Making the handoff, once per project:", "",
-           "| project | capsule records | capsule bytes | pack ms (backup + cut) | note characters | note written from (transcript characters) | note $ | ChloeCtx's own model calls while recording the history, $ |",
+           "| project | capsule records | capsule bytes | pack ms (backup + cut) | note characters (short note) | note written from (transcript characters) | note $ (short note $) | ChloeCtx's own model calls while recording the history, $ |",
            "|---|---|---|---|---|---|---|---|"]
     for sc, h in hand.items():
-        cap, note = h.get("capsule") or {}, h.get("note") or {}
+        cap, note, short = h.get("capsule") or {}, h.get("note") or {}, h.get("note_short") or {}
         mem = (hist.get((sc, "engram")) or {}).get("memory_usd")
-        md.append(f"| {sc} | {f(cap.get('records'))} | {f(cap.get('bytes'))} | {f(cap.get('total_ms'))} | {f(note.get('chars'))} | {f(note.get('transcript_chars'))} | "
-                  f"{f(note.get('cost_usd'), 3)} | {f(mem, 3)} |")
+        md.append(f"| {sc} | {f(cap.get('records'))} | {f(cap.get('bytes'))} | {f(cap.get('total_ms'))} | {f(note.get('chars'))} ({f(short.get('chars'))}) | {f(note.get('transcript_chars'))} | "
+                  f"{f(note.get('cost_usd'), 3)} ({f(short.get('cost_usd'), 3)}) | {f(mem, 3)} |")
     md += ["", "Solved per project:", "", "| project | " + " | ".join(l for l in out["lanes"]) + " |", "|---|" + "---|" * len(out["lanes"])]
     for sc, by in out["per_scenario"].items():
         md.append(f"| {sc} | " + " | ".join(f"{by[l]['solved']}/{by[l]['runs']}" if l in by else "–" for l in out["lanes"]) + " |")
