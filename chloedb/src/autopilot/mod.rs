@@ -653,6 +653,17 @@ impl Replay<'_> {
 
 /// The multiplicative steps the search tries on each number, in order.
 const STEPS: [f64; 6] = [2.0, 0.5, 1.25, 0.8, 4.0, 0.25];
+/// The values the search tries for a knob at `x`: multiples of it, or for
+/// one at 0 (a default that turns an option off, a weight not used) a few
+/// values from it (a whole default rounds them: those it rounds alike are
+/// replayed once).
+fn tries(x: f64) -> Vec<f64> {
+    if x == 0.0 {
+        return vec![0.1, 0.5, 1.0, 3.0, 10.0];
+    }
+    STEPS.iter().map(|m| knobs::round_sig(x * m, 4)).collect()
+}
+
 /// The least training gain the search takes a step for.
 const EPS: f64 = 1e-4;
 
@@ -823,12 +834,12 @@ pub fn run(db: &Db, snap: &Snapshot, exec: &ExecOptions, o: &Options) -> Result<
     'rounds: for _round in 0..4 {
         let mut moved = false;
         for i in 0..start.len() {
-            for step in STEPS {
+            for next in tries(values[i]) {
                 if out.evaluations >= o.budget {
                     break 'rounds;
                 }
                 let mut v = values.clone();
-                v[i] = knobs::round_sig(values[i] * step, 4);
+                v[i] = next;
                 let settings: Vec<Setting> = start.iter().zip(&v).map(|(s, x)| Setting { knob: s.knob.clone(), value: *x }).collect();
                 let Ok(cand) = knobs::with(&profile, &settings) else { continue };
                 let key = cand.hash();

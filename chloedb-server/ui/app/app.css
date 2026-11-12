@@ -724,6 +724,7 @@ svg.focus .tbl:not(.hot) { opacity: .45; }
 .ap-form .input { min-width: 0; flex: 1 1 220px; max-width: 320px; }
 .ap-body { display: flex; flex-direction: column; gap: 10px; }
 .ap-kicker { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; font-weight: 600; }
+.ap-kicker .ap-id { text-transform: none; letter-spacing: 0; font-weight: 500; }
 .ap-headline { font-size: 14px; font-weight: 650; margin: 2px 0 4px; overflow-wrap: anywhere; }
 .ap-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 8px 0; }
 .ap-tile { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; background: var(--surface-2); min-width: 0; }

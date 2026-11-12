@@ -53,7 +53,8 @@ async fn the_autopilot_proposes_keeps_and_applies_over_http() {
     let base = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(server::serve_http(svc, l, Access::default()));
     let c = chloedb_server::http_client().build().unwrap();
-    let sql = |s: String| post(&c, &format!("{base}/v1/sql"), json!({"sql": s}));
+    let sql_url = format!("{base}/v1/sql");
+    let sql = |s: String| post(&c, &sql_url, json!({"sql": s}));
 
     let (st, j) = sql("CREATE TABLE docs (id KEYWORD PRIMARY KEY, title TEXT, body TEXT)".into()).await;
     assert_eq!(st, 200, "{j}");
@@ -87,7 +88,8 @@ async fn the_autopilot_proposes_keeps_and_applies_over_http() {
         assert_eq!(st, 200, "{j}");
         let qid = autopilot::qid_of(SQL, &Params::new().set("q", Value::Str(word(w))));
         for (i, (t, b)) in docs.iter().enumerate() {
-            let g = if t.contains(&w) { 3.0 } else if b.contains(&w) { 1.0 } else { continue };
+            // Some related rows are left ungraded, for Claude to fill.
+            let g = if t.contains(&w) { 3.0 } else if b.contains(&w) && i % 2 == 0 { 1.0 } else { continue };
             judgments.push(json!({"op": "upsert", "table": autopilot::JUDGMENTS, "doc": autopilot::judgment_doc(&qid, &word(w), &format!("d{i}"), g, "human", 0)}));
         }
     }

@@ -197,3 +197,17 @@ fn it_says_why_when_there_is_nothing_to_go_on() {
     assert!(r.reason.contains("ADD COLUMN query"), "{}", r.reason);
     drop(docs);
 }
+
+#[test]
+fn a_default_at_zero_is_tried_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, docs) = corpus(&dir.path().join("db"));
+    sql(&db, "CREATE OR REPLACE RANK PROFILE p ON docs AS SELECT * FROM docs ORDER BY bm25(body, :q) + :w * bm25(title, :q) DESC WITH (w => 0)");
+    log_and_grade(&db, &docs);
+    let r = db.autopilot(&Options::default()).unwrap();
+    assert_eq!(r.verdict, Verdict::Propose, "{}", r.reason);
+    assert_eq!(r.changes.len(), 1, "{:?}", r.changes);
+    assert_eq!(r.changes[0].0.knob.to_string(), ":w");
+    assert!(r.changes[0].1 > 0.0);
+    assert!(r.statement.as_deref().unwrap().contains("WITH (w => "), "{:?}", r.statement);
+}

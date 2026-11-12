@@ -83,9 +83,9 @@ function render(page) {
     const worse = (r.per_query || []).filter((q) => q.held_out && q.after < q.before - 1e-9).sort((a, b) => (a.after - a.before) - (b.after - b.before));
     const headline = changes.length ? changes.map((c) => `${c.knob}: ${c.from} to ${c.to}`).join(", ") : "No number moved";
     const parts = [
-      h("div", { class: "ap-kicker small muted" }, `Proposal ${p.id} for table ${p.target}`),
+      h("div", { class: "ap-kicker small muted" }, `Proposal for table ${p.target} `, h("code", { class: "ap-id" }, p.id)),
       h("div", { class: "ap-headline" }, headline),
-      h("p", { class: "small muted" }, `Replayed ${fmt.plural(r.workload?.queries ?? 0, "logged query", "logged queries")} (${r.workload?.requests ?? 0} requests, ${r.workload?.judged ?? 0} graded) against the snapshot at write ${r.snapshot ?? "–"}; the verdict is drawn from the ${hOut.queries ?? 0} held out of the search.`),
+      h("p", { class: "small muted" }, `Replayed ${fmt.plural(r.workload?.queries ?? 0, "logged query", "logged queries")} (${r.workload?.requests ?? 0} requests, ${r.workload?.judged ?? 0} graded) against one snapshot${r.snapshot != null ? ` (write ${r.snapshot})` : ""}; the verdict is drawn from the ${hOut.queries ?? 0} held out of the search.`),
       h("div", { class: "ap-tiles" },
         tile(r.metric || "nDCG@10", `${n4(hOut.before)} to ${n4(hOut.after)}`, `${signed(hOut.delta)}, 95% interval ${signed(hOut.ci?.[0])} to ${signed(hOut.ci?.[1])}`),
         tile("Queries better, worse", `${hOut.better ?? 0} and ${hOut.worse ?? 0}`, `sign test p = ${n4(hOut.p)}`, (hOut.better ?? 0) > (hOut.worse ?? 0) ? "ok" : null),

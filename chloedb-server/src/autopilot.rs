@@ -137,7 +137,7 @@ pub async fn list(svc: &Arc<Service>) -> Result<Json, ApiError> {
 
 /// A proposal with its proof as JSON.
 async fn one(db: Arc<Db>, id: String) -> Result<Json, ApiError> {
-    let mut p = blocking(move || db.proposal(&id, true)).await.map_err(|e| if e.message.starts_with("no proposal") { ApiError { status: 404, message: e.message } } else { e })?;
+    let mut p = blocking(move || db.proposal(&id, true)).await.map_err(|e| if e.message.contains("no proposal ") { ApiError { status: 404, message: e.message } } else { e })?;
     if let Some(s) = p.get("proof").and_then(|s| s.as_str()) {
         p["proof"] = serde_json::from_str(s).unwrap_or(Json::Null);
     }
