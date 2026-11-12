@@ -34,8 +34,8 @@ const CSS = `
 .ac .row { display: flex; align-items: center; gap: 8px; min-width: 0; } .ac .grow { flex: 1; min-width: 0; }
 .ac .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: ac-spin .8s linear infinite; vertical-align: -2px; }
 @keyframes ac-spin { to { transform: rotate(360deg); } }
-.ac .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text-2); border-radius: 999px; padding: 5px 11px; font: inherit; font-size: 12.5px; cursor: pointer; text-align: left; }
-.ac .chip:hover { border-color: var(--accent); color: var(--text); }
+.ac .ac-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text-2); border-radius: 999px; padding: 5px 11px; font: inherit; font-size: 12.5px; cursor: pointer; text-align: left; }
+.ac .ac-chip:hover { border-color: var(--accent); color: var(--text); }
 .ac .tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 1px 7px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
 .ac .tag.live { background: var(--good-soft); color: var(--good-ink); } .ac .tag.try { background: var(--warn-soft); color: var(--cc-warn-ink, #8a5b00); }
 .ac .tag.k-create { background: color-mix(in srgb, var(--ac-c) 16%, transparent); color: var(--ac-c); }
@@ -65,13 +65,13 @@ const CSS = `
 .ac .sectionhd { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 -4px; } .ac .sectionhd h2 { margin: 0; font-size: 15px; }
 
 /* the made-of meter */
-.ac .meter { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--surface-3); }
-.ac .meter.big { height: 14px; }
-.ac .meter span { display: block; min-width: 0; }
-.ac .meter .k-create, .ac i.k-create { background: var(--ac-c); } .ac .meter .k-scratch, .ac i.k-scratch { background: var(--ac-s); }
-.ac .meter .k-reused, .ac i.k-reused { background: var(--ac-r); } .ac .meter .k-hand, .ac i.k-hand { background: var(--ac-p); }
-.ac .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2); }
-.ac .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.ac .ac-meter { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--surface-3); }
+.ac .ac-meter.big { height: 14px; }
+.ac .ac-meter span { display: block; min-width: 0; }
+.ac .ac-meter .k-create, .ac i.k-create { background: var(--ac-c); } .ac .ac-meter .k-scratch, .ac i.k-scratch { background: var(--ac-s); }
+.ac .ac-meter .k-reused, .ac i.k-reused { background: var(--ac-r); } .ac .ac-meter .k-hand, .ac i.k-hand { background: var(--ac-p); }
+.ac .ac-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2); }
+.ac .ac-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .ac .headline { display: flex; align-items: baseline; gap: 10px; }
 .ac .headline .big { font-size: 34px; font-weight: 700; letter-spacing: -.02em; color: var(--ac-c); font-variant-numeric: tabular-nums; }
 .ac .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -130,7 +130,7 @@ const CSS = `
 .ac details.log div { font-family: var(--mono); font-size: 11px; color: var(--text-2); max-height: 160px; overflow: auto; margin-top: 4px; white-space: pre-wrap; }
 
 /* the stage */
-.ac .stage { background: var(--sunken); }
+.ac .ac-stage { background: var(--sunken); }
 .ac .screens { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
 .ac .screens button { border: 0; background: none; color: var(--text-2); font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
 .ac .screens button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); font-weight: 600; }
@@ -151,12 +151,13 @@ const CSS = `
 .ac .trybar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--warn-soft); border-bottom: 1px solid var(--line); font-size: 12.5px; }
 
 /* the inspector */
-.ac .itabs { display: flex; gap: 2px; padding: 6px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.ac .itabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px; border-bottom: 1px solid var(--line); }
 .ac .itabs button { border: 0; background: none; color: var(--text-2); font: inherit; font-size: 12.5px; padding: 6px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
 .ac .itabs button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .ac .ibody { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
 .ac .note { font-size: 12px; color: var(--muted); line-height: 1.45; }
-.ac .list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.ac .list { display: flex; flex-direction: column; flex: none; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.ac .ibody > *, .acr-tl > * { flex: none; }
 .ac .li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); font-size: 12.5px; cursor: pointer; background: var(--surface); }
 .ac .li:first-child { border-top: 0; } .ac .li:hover { background: var(--surface-2); } .ac .li.on { background: var(--accent-soft); }
 .ac .li .nm { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -176,21 +177,34 @@ const CSS = `
 .ac .rows table { font-size: 11.5px; }
 
 /* a build's timeline */
-.ac-tl { display: flex; flex-direction: column; gap: 14px; }
-.ac-tl h3 { margin: 0 0 6px; font-size: 13px; }
-.ac-tl .split { display: flex; height: 12px; border-radius: 6px; overflow: hidden; }
-.ac-tl .k-strata { background: #6b7a90; } .ac-tl .k-plan { background: #7b3fc4; } .ac-tl .k-model { background: #9d5ce0; } .ac-tl .k-write { background: #2f5bd3; } .ac-tl .k-check { background: #12a37a; } .ac-tl .k-fix { background: #d9822b; }
-.ac-tl .key { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
-.ac-tl .key i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; }
-.ac-tl .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--text-2); }
-.ac-tl .gantt { display: grid; grid-template-columns: minmax(120px, 34%) minmax(0, 1fr); gap: 3px 10px; font-size: 11.5px; }
-.ac-tl .gantt .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
-.ac-tl .gantt .track { position: relative; height: 16px; background: var(--surface-2); border-radius: 4px; }
-.ac-tl .gantt .track span { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; min-width: 2px; }
-.ac-tl .dec { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px 10px; font-size: 12px; align-items: baseline; }
-.ac-tl .badge { font-size: 10.5px; font-weight: 650; padding: 1px 6px; border-radius: 999px; background: var(--surface-3); white-space: nowrap; }
-.ac-tl .d-new { background: color-mix(in srgb, #12a37a 18%, transparent); } .ac-tl .d-change, .ac-tl .d-fork { background: color-mix(in srgb, #2f5bd3 16%, transparent); }
-.ac-tl .d-use, .ac-tl .d-copy { background: color-mix(in srgb, #9aa3ae 25%, transparent); }
+.acr-tl { display: flex; flex-direction: column; gap: 14px; }
+.acr-tl h3 { margin: 0 0 6px; font-size: 13px; }
+.acr-tl .split { display: flex; height: 12px; border-radius: 6px; overflow: hidden; }
+.acr-tl .k-strata { background: #6b7a90; } .acr-tl .k-plan { background: #7b3fc4; } .acr-tl .k-model { background: #9d5ce0; } .acr-tl .k-write { background: #2f5bd3; } .acr-tl .k-check { background: #12a37a; } .acr-tl .k-fix { background: #d9822b; }
+.acr-tl .key { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.acr-tl .key i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; }
+.acr-tl .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--text-2); }
+.acr-tl .gantt { display: grid; grid-template-columns: minmax(120px, 34%) minmax(0, 1fr); gap: 3px 10px; font-size: 11.5px; }
+.acr-tl .gantt .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.acr-tl .gantt .track { position: relative; height: 16px; background: var(--surface-2); border-radius: 4px; }
+.acr-tl .gantt .track span { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; min-width: 2px; }
+.acr-tl .bars { display: flex; flex-direction: column; gap: 4px; }
+.acr-tl .brow { display: grid; grid-template-columns: 44px minmax(0, 1fr) 50px 44px; gap: 8px; align-items: center; border: 0; background: none; padding: 3px 4px; border-radius: 6px; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+.acr-tl .brow:hover { background: var(--surface-2); }
+.acr-tl .bn { font-size: 11.5px; font-weight: 650; color: var(--text-2); } .acr-tl .bn.bad { color: var(--crit-ink); }
+.acr-tl .btrack { height: 12px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.acr-tl .bfill { display: flex; height: 100%; border-radius: 4px; overflow: hidden; }
+.acr-tl .bt, .acr-tl .bc { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.acr-tl .days { display: flex; align-items: flex-end; gap: 2px; height: 74px; }
+.acr-tl .day { flex: 1; height: 100%; display: flex; align-items: flex-end; min-width: 2px; }
+.acr-tl .day .col { width: 100%; height: 100%; display: flex; flex-direction: column-reverse; justify-content: flex-start; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.acr-tl .day .col i { display: block; width: 100%; }
+.acr-tl .u-open { background: var(--ac-c); } .acr-tl .u-did { background: var(--ac-s); } .acr-tl .u-err { background: var(--crit); }
+.acr-tl .key i.u-open, .acr-tl .key i.u-did, .acr-tl .key i.u-err { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; }
+.acr-tl .dec { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px 10px; font-size: 12px; align-items: baseline; }
+.acr-tl .badge { font-size: 10.5px; font-weight: 650; padding: 1px 6px; border-radius: 999px; background: var(--surface-3); white-space: nowrap; }
+.acr-tl .d-new { background: color-mix(in srgb, #12a37a 18%, transparent); } .acr-tl .d-change, .acr-tl .d-fork { background: color-mix(in srgb, #2f5bd3 16%, transparent); }
+.acr-tl .d-use, .acr-tl .d-copy { background: color-mix(in srgb, #9aa3ae 25%, transparent); }
 
 @media (max-width: 1180px) {
   .ac .grid3 { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); height: auto; }
@@ -201,7 +215,7 @@ const CSS = `
 @media (max-width: 760px) {
   .ac .grid3 { grid-template-columns: minmax(0, 1fr); }
   .ac .grid3 > .col { height: auto; min-height: 0; }
-  .ac .grid3 > .stage { height: 640px; }
+  .ac .grid3 > .ac-stage { height: 640px; }
   .ac .grid3 > .builder .scroll { max-height: 55vh; }
   .ac .wsbar h1 { max-width: 70vw; }
   .ac .wsbar .seg { display: none; }
@@ -370,7 +384,7 @@ function render(el, ctx) {
       h('h1', {}, 'What should we build?'),
       h('p', { class: 'lead' }, 'Describe an app in a sentence or two. The agent plans it, declares its tables, screens and rules as CREATE statements, writes JavaScript only where a statement cannot say it, checks every piece, and keeps the app in this cluster as rows. Then change it by asking.'),
       h('div', { class: 'prompt' }, ta, h('div', { class: 'bar' }, tip, err, go)),
-      h('div', { class: 'examples' }, EXAMPLES.map(([t, d]) => h('button', { class: 'chip', type: 'button', title: d, onclick: () => { ta.value = d; ta.focus(); } }, icon('plus'), t))),
+      h('div', { class: 'examples' }, EXAMPLES.map(([t, d]) => h('button', { class: 'ac-chip', type: 'button', title: d, onclick: () => { ta.value = d; ta.focus(); } }, icon('plus'), t))),
       facts);
     const gallery = h('div', { class: 'gallery' }, h('div', { class: 'small muted' }, 'Loading the apps...'));
     const libLink = h('a', { class: 'btn sm', href: ctx.href('library') }, icon('layers'), 'Library');
@@ -385,7 +399,7 @@ function render(el, ctx) {
         h('div', { class: 'row' }, h('div', { class: 'ico', style: { background: `hsl(${hue(a.id)} 55% 48%)` } }, initials || '·'),
           h('div', { class: 'grow' }, h('div', { class: 'nm' }, a.name || a.id), h('div', { class: 'meta' }, a.head ? h('span', { class: 'tag live' }, `v${a.head}`) : h('span', { class: 'tag try' }, 'building'), a.created ? core.ago(new Date(a.created).getTime()) : null))),
         h('div', { class: 'ds' }, a.description || ''),
-        m && m.runs ? [meter(m, false), h('div', { class: 'meta' }, h('span', {}, h('b', { style: { color: 'var(--ac-c)' } }, pct(m.totals.create.share)), ' from CREATE'), h('span', {}, `${num(m.runs)} lines`))] : h('div', { class: 'meter' }));
+        m && m.runs ? [meter(m, false), h('div', { class: 'meta' }, h('span', {}, h('b', { style: { color: 'var(--ac-c)' } }, pct(m.totals.create.share)), ' from CREATE'), h('span', {}, `${num(m.runs)} lines`))] : h('div', { class: 'ac-meter' }));
     };
     let apps = [];
     const paint = () => {
@@ -417,7 +431,7 @@ function render(el, ctx) {
 
   // A bar of where the lines that run came from.
   function meter(m, big = true) {
-    return h('div', { class: `meter${big ? ' big' : ''}`, title: ORIGIN_ORDER.filter((k) => m.totals[k].runs).map((k) => `${ORIGIN_SHORT[k]}: ${pct(m.totals[k].share)} (${num(m.totals[k].runs)} lines)`).join('\n') },
+    return h('div', { class: `ac-meter${big ? ' big' : ''}`, title: ORIGIN_ORDER.filter((k) => m.totals[k].runs).map((k) => `${ORIGIN_SHORT[k]}: ${pct(m.totals[k].share)} (${num(m.totals[k].runs)} lines)`).join('\n') },
       ORIGIN_ORDER.map((k) => (m.totals[k].runs ? h('span', { class: `k-${k}`, style: { flex: String(m.totals[k].runs) } }) : null)));
   }
 
@@ -480,7 +494,7 @@ function render(el, ctx) {
   }
 
   async function showTimeline(appId, requestId, heading) {
-    const body = h('div', { class: 'ac-tl' }, h('div', { class: 'small muted' }, 'Loading...'));
+    const body = h('div', { class: 'acr-tl' }, h('div', { class: 'small muted' }, 'Loading...'));
     core.drawer({ title: heading, wide: true, body });
     try {
       const { trace } = await api(`/api/apps/${appId}/traces/${encodeURIComponent(requestId)}`);
@@ -638,7 +652,7 @@ __sa_ready();
     const deviceBox = h('div', { class: `device ${W.device}` });
     const shell = h('div', { class: 'shell' });
     deviceBox.append(shell);
-    const stage = h('section', { class: 'col stage' }, h('div', { class: 'colhd', style: { background: 'var(--surface)' } }, screens, reload), tryBar, deviceBox);
+    const stage = h('section', { class: 'col ac-stage' }, h('div', { class: 'colhd', style: { background: 'var(--surface)' } }, screens, reload), tryBar, deviceBox);
 
     const itabs = h('div', { class: 'itabs', role: 'tablist' });
     const ibody = h('div', { class: 'ibody' });
@@ -868,7 +882,7 @@ __sa_ready();
           shell.append(pv);
         }
         shell.append(h('div', { class: 'previewbar' }, h('span', { class: 'spin' }), h('b', {}, 'Preview'), h('span', { class: 'grow muted' }, 'while the agent writes the rest'),
-          list.map((p) => h('button', { class: 'chip', style: p.slug === cur.slug ? { borderColor: 'var(--accent)' } : null, onclick: () => { W.previewView = p.slug; paintStage(); } }, p.title))));
+          list.map((p) => h('button', { class: 'ac-chip', style: p.slug === cur.slug ? { borderColor: 'var(--accent)' } : null, onclick: () => { W.previewView = p.slug; paintStage(); } }, p.title))));
         return;
       }
       shell.querySelector('iframe.pv')?.remove();
@@ -987,13 +1001,13 @@ __sa_ready();
 
     // ---- the inspector
 
-    const TABS = [['made', 'Made of'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach']];
+    const TABS = [['made', 'Made of'], ['time', 'Time'], ['usage', 'Usage'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach']];
     function paintInspector() {
       const st = W.st;
       itabs.replaceChildren(...TABS.map(([k, label]) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(W.tab === k), onclick: () => { W.tab = k; W.pick = null; paintInspector(); } }, label,
         k === 'versions' && st.versions?.length ? h('span', { class: 'muted' }, ` ${st.versions.length}`) : null)));
       const keepScroll = ibody.parentNode.scrollTop;
-      const draw = { made: madeTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab }[W.tab] || madeTab;
+      const draw = { made: madeTab, time: timeTab, usage: usageTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab }[W.tab] || madeTab;
       // A tab with a field being typed in is left as it is.
       if (ibody.contains(document.activeElement) && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName) && ibody.dataset.tab === W.tab) return;
       ibody.dataset.tab = W.tab;
@@ -1011,7 +1025,7 @@ __sa_ready();
         h('div', {}, h('div', { class: 'headline' }, h('span', { class: 'big' }, pct(t.create.share)), h('span', { class: 'dim' }, 'of the code that runs was generated from CREATE statements')),
           h('div', { class: 'small muted', style: { marginTop: '2px' } }, `${num(m.runs)} lines run in version ${m.version}: ${num(t.create.runs)} from CREATE TABLE, SCREEN and RULE, ${num(t.scratch.runs)} written from scratch${t.reused.runs ? `, ${num(t.reused.runs)} reused` : ''}${t.hand.runs ? `, ${num(t.hand.runs)} edited by hand` : ''}.`)),
         meter(m),
-        h('div', { class: 'legend' }, ORIGIN_ORDER.filter((k) => t[k].pieces).map((k) => h('span', {}, h('i', { class: `k-${k}` }), `${ORIGIN_SHORT[k]} ${pct(t[k].share)}`))),
+        h('div', { class: 'ac-legend' }, ORIGIN_ORDER.filter((k) => t[k].pieces).map((k) => h('span', {}, h('i', { class: `k-${k}` }), `${ORIGIN_SHORT[k]} ${pct(t[k].share)}`))),
         h('div', { class: 'tiles' },
           h('div', { class: 'tile' }, h('b', {}, num(m.agent.wrote)), h('span', {}, 'lines the agent wrote')),
           h('div', { class: 'tile' }, h('b', {}, pct(agentShare)), h('span', {}, 'of them as CREATE statements')),
@@ -1025,6 +1039,168 @@ __sa_ready();
             : [h('span', { class: 'w', style: { flex: String(p.wrote || 0) } }), p.generated ? h('span', { style: { flex: String(p.generated), background: p.origin === 'create' ? 'var(--ac-c)' : 'var(--ac-s)' } }) : null]),
           h('div', { class: 'how' }, p.how)))),
         h('div', { class: 'note' }, 'Lines that run: a screen’s JSON with its patterns expanded, a rule’s compiled steps, a table’s CREATE TABLE, a JavaScript piece’s code, all without blank lines. A bar shows what the agent wrote (dark) and what the engine generated from it. Reused pieces are the library’s, shared with other apps.'),
+      ];
+    }
+
+    // Where the building time went: every build of the app with a timeline
+    // (sa_traces), summed up, one bar per build, and the slowest steps.
+    function timeTab(st) {
+      const box = h('div', { class: 'acr-tl', style: { gap: '12px' } });
+      const key = (st.requests || []).map((r) => `${r.id}:${r.status}`).join(',');
+      const paintTime = (traces) => box.replaceChildren(...timeBody(traces).filter(Boolean));
+      if (W.traces?.key === key) paintTime(W.traces.list);
+      else {
+        box.append(h('div', { class: 'small muted' }, h('span', { class: 'spin' }), ' Reading the builds'));
+        api(`${base}/traces`).then(({ traces }) => { W.traces = { key, list: traces || [] }; if (W.tab === 'time') paintTime(W.traces.list); })
+          .catch((e) => box.replaceChildren(h('div', { class: 'small' }, e.message)));
+      }
+      return [box];
+    }
+    function timeBody(traces) {
+      if (!traces.length) return [h('div', { class: 'note' }, 'No builds with a timeline yet.')];
+      const KINDS = ['strata', 'plan', 'model', 'write', 'check', 'fix'];
+      const builds = traces.slice().sort((a, b) => (a.t0 || 0) - (b.t0 || 0)).map((t) => ({ t, ...timeSplit(t) }));
+      let ms = 0, cost = 0, model = 0, calls = 0, tin = 0, tout = 0;
+      const wall = {};
+      for (const b of builds) {
+        ms += b.t.ms || 0; cost += b.t.cost ?? b.model.cost; model += b.model.ms; calls += b.model.calls; tin += b.model.in; tout += b.model.out;
+        for (const [k, v] of Object.entries(b.wall)) wall[k] = (wall[k] || 0) + v;
+      }
+      const kinds = KINDS.filter((k) => wall[k]);
+      const sum = kinds.reduce((a, k) => a + wall[k], 0) || 1;
+      const longest = Math.max(...builds.map((b) => b.t.ms || 0), 1);
+      const done = builds.filter((b) => b.t.status !== 'failed');
+      const slow = builds.flatMap((b) => (b.t.spans || []).map((sp) => ({ ...sp, ms: sp.end - sp.start, build: b.t }))).sort((a, b) => b.ms - a.ms).slice(0, 6);
+      const label = (t) => (t.n ? `v${t.n}` : t.status === 'failed' ? 'failed' : '–');
+      const counts = {};
+      for (const b of builds) for (const d of b.t.decisions || []) if (d.kind !== 'table') counts[d.decision] = (counts[d.decision] || 0) + 1;
+      return [
+        h('div', { class: 'tiles' },
+          h('div', { class: 'tile' }, h('b', {}, String(builds.length)), h('span', {}, `build${builds.length === 1 ? '' : 's'}${builds.length > done.length ? `, ${builds.length - done.length} failed` : ''}`)),
+          h('div', { class: 'tile' }, h('b', {}, secs(ms)), h('span', {}, `building in all, ${secs(ms / builds.length)} a build`)),
+          h('div', { class: 'tile' }, h('b', {}, money(cost)), h('span', {}, `for ${calls} model call${calls === 1 ? '' : 's'}`)),
+          h('div', { class: 'tile' }, h('b', {}, `${kTok(tin)} / ${kTok(tout)}`), h('span', {}, `tokens in / out, ${secs(model)} of model time`))),
+        h('div', {}, h('h3', {}, 'Where the time went'),
+          h('div', { class: 'split', style: { height: '14px' } }, kinds.map((k) => h('span', { class: `k-${k}`, style: { flex: String(wall[k]) }, title: `${KIND_LABEL[k]}: ${secs(wall[k])}` }))),
+          h('div', { class: 'key' }, kinds.map((k) => h('span', {}, h('i', { class: `k-${k}` }), `${KIND_LABEL[k]} ${Math.round((wall[k] / sum) * 100)}%`)))),
+        h('div', {}, h('h3', {}, 'Each build'),
+          h('div', { class: 'bars' }, builds.map((b) => {
+            const own = KINDS.filter((k) => b.wall[k]);
+            const tot = own.reduce((a, k) => a + b.wall[k], 0) || 1;
+            return h('button', { type: 'button', class: 'brow', title: `“${b.t.text}”\n${secs(b.t.ms || 0)} · ${money(b.t.cost ?? b.model.cost)}`, onclick: () => showTimeline(appId, b.t.id, b.t.n ? `How version ${b.t.n} was built` : 'This build') },
+              h('span', { class: `bn${b.t.status === 'failed' ? ' bad' : ''}` }, label(b.t)),
+              h('span', { class: 'btrack' }, h('span', { class: 'bfill', style: { width: `${Math.max(2, ((b.t.ms || 0) / longest) * 100)}%` } },
+                own.map((k) => h('span', { class: `k-${k}`, style: { flex: String(b.wall[k] / tot) } })))),
+              h('span', { class: 'bt' }, secs(b.t.ms || 0)), h('span', { class: 'bc' }, money(b.t.cost ?? b.model.cost)));
+          })),
+          h('div', { class: 'note', style: { marginTop: '4px' } }, 'One bar per build, as long as it took; click one for its timeline.')),
+        h('div', {}, h('h3', {}, 'Slowest steps'), h('div', { class: 'list' }, slow.map((sp) => h('div', { class: 'li', onclick: () => showTimeline(appId, sp.build.id, sp.build.n ? `How version ${sp.build.n} was built` : 'This build') },
+          h('i', { class: `k-${sp.kind}`, style: { width: '9px', height: '9px', borderRadius: '3px', flex: 'none' } }), h('span', { class: 'grow', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, sp.label),
+          h('span', { class: 'small muted' }, label(sp.build)), h('b', { class: 'small' }, secs(sp.ms)))))),
+        Object.keys(counts).length ? h('div', {}, h('h3', {}, 'What the builds did with each piece'), h('div', { class: 'key' }, Object.entries(DECISION).filter(([k]) => counts[k]).map(([k, [l]]) => h('span', { class: `badge d-${k}` }, `${l} ${counts[k]}`)))) : null,
+      ];
+    }
+
+    // How people use the app: the engine's record of what they did
+    // (sa_events, GET /api/apps/:id/activity), over 7, 30 or 90 days.
+    function usageTab() {
+      const days = W.usageDays || 30;
+      const box = h('div', { class: 'acr-tl', style: { gap: '12px' } });
+      const period = core.seg([[7, '7 days'], [30, '30 days'], [90, '90 days']], days, (v) => { W.usageDays = v; W.usage = null; paintInspector(); });
+      const fresh = W.usage && W.usage.days === days && Date.now() - W.usage.at < 20000;
+      const paintUsage = (a) => box.replaceChildren(...usageBody(a, days).flat(Infinity).filter(Boolean));
+      if (fresh) paintUsage(W.usage.data);
+      else {
+        if (W.usage?.days === days) paintUsage(W.usage.data); else box.append(h('div', { class: 'small muted' }, h('span', { class: 'spin' }), ' Reading what people did'));
+        api(`${base}/activity?days=${days}`).then((a) => { W.usage = { days, at: Date.now(), data: a }; if (W.tab === 'usage' && (W.usageDays || 30) === days) paintUsage(a); })
+          .catch((e) => box.replaceChildren(h('div', { class: 'small' }, e.message)));
+      }
+      return [h('div', { class: 'row' }, h('span', { class: 'note grow' }, 'What people did in the app, on every version.'), period), box];
+    }
+    function usageBody(a, days) {
+      const ev = (a.events || []).map((e) => ({ ...e, t: new Date(e.ts).getTime() }));
+      if (!ev.length) return [h('div', { class: 'note' }, 'Nobody has used the app in this period yet. Use it here or on its own page and what people do shows up here: visits, screens, searches, what they add and change.')];
+      const DONE = new Set(['insert', 'update', 'delete', 'remove', 'call']);
+      const CAP = 30 * 60000;
+      const sessions = new Set(ev.map((e) => e.session).filter(Boolean));
+      const people = new Set(ev.map((e) => e.person).filter(Boolean));
+      const did = ev.filter((e) => DONE.has(e.kind));
+      const errors = ev.filter((e) => e.kind === 'error');
+      const time = ev.filter((e) => e.kind === 'leave').reduce((n, e) => n + Math.min(Number(e.ms) || 0, CAP), 0);
+      // each day: screens opened, things done, errors
+      const dayMs = 86400000;
+      const end = new Date(); end.setHours(0, 0, 0, 0);
+      const start = end.getTime() - (days - 1) * dayMs;
+      const byDay = Array.from({ length: days }, (_, i) => ({ t: start + i * dayMs, open: 0, did: 0, err: 0 }));
+      for (const e of ev) {
+        const i = Math.floor((e.t - start) / dayMs);
+        if (i < 0 || i >= days) continue;
+        if (e.kind === 'open') byDay[i].open++; else if (DONE.has(e.kind)) byDay[i].did++; else if (e.kind === 'error') byDay[i].err++;
+      }
+      const top = Math.max(1, ...byDay.map((d) => d.open + d.did + d.err));
+      // screens
+      const titles = new Map((a.screens || []).map((x) => [x.slug, x.title]));
+      const scr = new Map();
+      for (const e of ev) {
+        const slug = e.kind === 'open' ? e.detail : e.screen;
+        if (!slug || !titles.has(slug)) continue;
+        const x = scr.get(slug) || { slug, opens: 0, time: 0, did: 0 };
+        if (e.kind === 'open') x.opens++;
+        if (e.kind === 'leave') x.time += Math.min(Number(e.ms) || 0, CAP);
+        if (DONE.has(e.kind)) x.did++;
+        scr.set(slug, x);
+      }
+      const screens = [...scr.values()].sort((x, y) => y.opens - x.opens || y.time - x.time);
+      const maxOpens = Math.max(1, ...screens.map((x) => x.opens));
+      // searches and what was done
+      const searches = new Map();
+      for (const e of ev) if (e.kind === 'action' && /^search\b/.test(e.detail || '') && e.q) { const k = String(e.q).toLowerCase(); const x = searches.get(k) || { q: e.q, n: 0, none: 0 }; x.n++; if (Number(e.results) === 0) x.none++; searches.set(k, x); }
+      const kinds = {};
+      for (const e of did) kinds[e.kind] = (kinds[e.kind] || 0) + 1;
+      const tables = new Map((a.tables || []).map((t) => [t.name, t.noun || t.name]));
+      const tblDone = {};
+      for (const e of did) if (e.tbl || e.table) { const k = e.tbl || e.table; tblDone[k] = (tblDone[k] || 0) + 1; }
+      // how easy it is, against the brief's targets
+      const m = a.ux?.measures || {};
+      const tg = a.ux?.targets || {};
+      const easy = [
+        ['Taps to get something done', m.tapsToAct, tg.taps, (v) => v.toFixed(1), true],
+        ['Seconds to get something done', m.secsToAct, tg.secs, (v) => `${Math.round(v)} s`, true],
+        ['Done on the first screen', m.onFirst, tg.first, pct, false],
+        ['Forms given up', m.gaveUp, tg.gaveUp, pct, true],
+        ['Rows removed soon after being added', m.wrong, tg.wrong, pct, true],
+      ];
+      const sigs = (a.signals || []).slice(0, 5);
+      const errs = new Map();
+      for (const e of errors) { const k = String(e.detail || '').split('\n')[0].slice(0, 140); errs.set(k, (errs.get(k) || 0) + 1); }
+      return [
+        h('div', { class: 'tiles' },
+          h('div', { class: 'tile' }, h('b', {}, num(sessions.size)), h('span', {}, `visit${sessions.size === 1 ? '' : 's'} by ${num(people.size)} ${people.size === 1 ? 'person' : 'people'}`)),
+          h('div', { class: 'tile' }, h('b', {}, num(did.length)), h('span', {}, 'things done: rows added, changed, removed, functions run')),
+          h('div', { class: 'tile' }, h('b', {}, time ? secs(time) : '–'), h('span', {}, `on the screens${sessions.size ? `, ${secs(time / sessions.size)} a visit` : ''}`)),
+          h('div', { class: 'tile' }, h('b', { style: errors.length ? { color: 'var(--crit-ink)' } : null }, num(errors.length)), h('span', {}, `error${errors.length === 1 ? '' : 's'} in the screens`))),
+        h('div', {}, h('h3', {}, 'Each day'),
+          h('div', { class: 'days' }, byDay.map((d) => h('span', { class: 'day', title: `${new Date(d.t).toLocaleDateString()}: ${d.open} screens opened, ${d.did} things done${d.err ? `, ${d.err} errors` : ''}` },
+            h('span', { class: 'col' }, d.err ? h('i', { class: 'u-err', style: { height: `${(d.err / top) * 100}%` } }) : null, d.did ? h('i', { class: 'u-did', style: { height: `${(d.did / top) * 100}%` } }) : null, d.open ? h('i', { class: 'u-open', style: { height: `${(d.open / top) * 100}%` } }) : null)))),
+          h('div', { class: 'key' }, h('span', {}, h('i', { class: 'u-open' }), 'screens opened'), h('span', {}, h('i', { class: 'u-did' }), 'things done'), errors.length ? h('span', {}, h('i', { class: 'u-err' }), 'errors') : null,
+            h('span', { class: 'grow', style: { textAlign: 'right' } }, `${new Date(start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} to today`))),
+        screens.length ? h('div', {}, h('h3', {}, 'Screens'), h('div', { class: 'bars' }, screens.map((x) => h('button', { type: 'button', class: 'brow', style: { gridTemplateColumns: 'minmax(0, 34%) minmax(0, 1fr) 64px' }, title: `${x.opens} opens · ${secs(x.time)} · ${x.did} things done`, onclick: () => switchView(x.slug) },
+          h('span', { class: 'bn', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, titles.get(x.slug)),
+          h('span', { class: 'btrack' }, h('span', { class: 'bfill', style: { width: `${Math.max(3, (x.opens / maxOpens) * 100)}%`, background: 'var(--ac-c)' } })),
+          h('span', { class: 'bt' }, `${x.opens} · ${x.time ? secs(x.time) : '–'}`))))) : null,
+        did.length ? h('div', {}, h('h3', {}, 'What people did'), h('div', { class: 'key' },
+          Object.entries(kinds).map(([k, n]) => h('span', { class: 'badge' }, `${{ insert: 'added', update: 'changed', delete: 'removed', remove: 'removed', call: 'ran' }[k] || k} ${n}`)),
+          Object.entries(tblDone).sort((x, y) => y[1] - x[1]).slice(0, 4).map(([t, n]) => h('span', { class: 'muted' }, `${tables.get(t) || t}: ${n}`)))) : null,
+        searches.size ? h('div', {}, h('h3', {}, 'Searches'), h('div', { class: 'key' }, [...searches.values()].sort((x, y) => y.n - x.n).slice(0, 10).map((x) => h('span', { class: 'badge', title: x.none ? `found nothing ${x.none} time${x.none === 1 ? '' : 's'}` : '' }, `“${x.q}” ${x.n}${x.none ? ' · nothing found' : ''}`)))) : null,
+        h('div', {}, h('h3', {}, 'How easy it is'), h('div', { class: 'list' }, easy.map(([label, v, target, f, lower]) => {
+          const has = v !== null && v !== undefined;
+          const ok = has && target != null ? (lower ? v <= target : v >= target) : null;
+          return h('div', { class: 'li', style: { cursor: 'default' } }, h('span', { class: 'grow' }, label),
+            h('span', { class: 'small muted' }, target != null ? `aim ${lower ? '≤' : '≥'} ${f(target)}` : ''),
+            h('b', { class: 'small', style: { color: ok === false ? 'var(--cc-warn-ink, #8a5b00)' : ok ? 'var(--good-ink)' : 'var(--muted)', minWidth: '62px', textAlign: 'right' } }, has ? f(v) : 'not yet'));
+        })), h('div', { class: 'note', style: { marginTop: '4px' } }, `Measured over ${a.ux?.sittings ?? sessions.size} visits against targets from the app’s brief; the engine judges a measure once there are five visits, forms or rows to judge it on.`)),
+        sigs.length ? h('div', {}, h('h3', {}, 'Patterns the engine sees'), h('div', { class: 'list' }, sigs.map((x) => h('div', { class: 'li', style: { cursor: 'default' } }, h('span', { class: 'grow' }, x.text), x.answered ? h('span', { class: 'tag' }, 'answered') : null)))) : null,
+        errs.size ? h('div', {}, h('h3', {}, 'Errors'), h('div', { class: 'list' }, [...errs].sort((x, y) => y[1] - x[1]).slice(0, 4).map(([k, n]) => h('div', { class: 'li', style: { cursor: 'default' } }, h('span', { class: 'grow small mono', style: { whiteSpace: 'normal' } }, k), h('b', { class: 'small' }, `${n}×`))))) : null,
       ];
     }
 
