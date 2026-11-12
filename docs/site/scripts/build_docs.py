@@ -66,6 +66,7 @@ NAV = [
         ("javascript", "JavaScript", "docs/chloedb/javascript.md", "reference"),
         ("java", "Java and JDBC", "docs/chloedb/java.md", "reference"),
         ("frameworks", "LangChain, LangGraph, LlamaIndex", "docs/guide/frameworks.md", "guide"),
+        ("frameworks-reference", "Framework adapters reference", "docs/chloedb/frameworks.md", "reference"),
     ]),
     ("Server and cluster", [
         ("server", "chloedb-server", "docs/chloedb/server.md", "reference"),
@@ -92,10 +93,23 @@ TITLE_LANG = {"js": "JavaScript", "java": "Java", "text": "Output", "html": "HTM
 FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>[^\n`]*)\n(?P<body>.*?)^(?P=indent)(?P=fence)[ \t]*$", re.M | re.S)
 
 
+# Pages about code another change adds: each is left out, as a missing
+# source is, until this file of the code exists.
+REQUIRES = {
+    "frameworks": "chloedb-py/python/chloedb/langchain.py",
+}
+
+
+def present(page, source):
+    """Whether a page is on the site: its source, and the code it documents, exist."""
+    need = REQUIRES.get(page)
+    return (ROOT / source).exists() and (need is None or (ROOT / need).exists())
+
+
 def pages():
     for section, items in NAV:
         for page, title, source, kind in items:
-            if (ROOT / source).exists():
+            if present(page, source):
                 yield section, page, title, ROOT / source, kind
 
 

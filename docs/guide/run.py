@@ -59,7 +59,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.dont_write_bytecode = True  # no __pycache__ beside build_docs.py
 sys.path.insert(0, str(ROOT / "docs" / "site" / "scripts"))
-from build_docs import FENCE, NAV, parse_info  # noqa: E402
+from build_docs import FENCE, NAV, parse_info, present  # noqa: E402
 
 PROGRAMS = {
     "chloedb-server": "chloedb-server",
@@ -74,7 +74,7 @@ RUN_LANGS = {"sh", "bash", "console", "shell", "python", "py", "js", "javascript
 def guide_pages():
     for _, items in NAV:
         for page, _title, source, kind in items:
-            if kind == "guide" and (ROOT / source).exists():
+            if kind == "guide" and present(page, source):
                 yield page, ROOT / source
 
 

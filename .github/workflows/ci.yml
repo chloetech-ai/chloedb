@@ -871,7 +871,7 @@ jobs:
             (cd "$crate" && cargo build --locked --profile ci)
           done
           . "$RUNNER_TEMP/venv/bin/activate"
-          pip install maturin numpy
+          pip install maturin -r docs/guide/requirements.txt
           (cd chloedb-py && maturin develop --locked --profile ci)
       # The embedding models the pages name are kept between runs.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
