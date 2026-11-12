@@ -662,6 +662,9 @@ jobs:
           # Database.query_arrow's and the Parquet tests (tests/test_arrow.py,
           # tests/test_parquet.py), the S3 ones against moto's local server
           pip install pyarrow polars pandas "moto[server]" boto3
+          # The framework adapters' tests (tests/test_langchain.py,
+          # test_langgraph.py, test_llama_index.py)
+          pip install langchain-core langgraph llama-index-core
           # strata.train.sequence's test: CPU PyTorch (PyPI's macOS wheel is one)
           if [ "$RUNNER_OS" = Linux ]; then pip install torch --index-url https://download.pytorch.org/whl/cpu; else pip install torch; fi
           # The ci profile, as the crates' tests have: release's link-time
