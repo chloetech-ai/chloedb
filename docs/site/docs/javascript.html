@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -76,9 +76,9 @@
 <h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2>
 <p>The package is in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-js"><code>chloedb-js/</code></a>: a Node-API addon written in Rust (<a href="https://napi.rs">napi-rs</a>) and the JavaScript around it, an ES module, for Node 18 or later, Bun and Deno.</p>
 <h3 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h3>
-<p>Each <code>chloedb-js-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a tarball per platform with the addon built in, which installs with no Rust and no compiler:</p>
+<p>Each <code>chloedb-js-v&lt;version&gt;</code> release on <a href="https://github.com/chloetech-ai/chloedb/releases">GitHub</a> has a tarball per platform with the addon built in, which installs with no Rust and no compiler. The package is not on npm yet, so install the tarball for your platform:</p>
 <pre data-lang="sh">npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.2.0/chloedb-0.2.0-darwin-arm64.tgz</pre>
-<p>The tarballs are <code>chloedb-&lt;version&gt;-&lt;platform&gt;.tgz</code>, imported as <code>"chloedb"</code>, as the examples here do; release 0.1.0, from before the rename, was published as <code>strata-db</code> (tag <code>strata-js-v0.1.0</code>) and imports as <code>"strata-db"</code>.</p>
+<p>It imports as <code>"chloedb"</code>. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as <code>strata-db</code> and imports as <code>"strata-db"</code>.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -105,13 +105,13 @@
 </tr>
 </tbody>
 </table></div>
-<p>The workflow <a href="https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml"><code>js-release.yml</code></a> builds them on a tag <code>chloedb-js-v&lt;version&gt;</code> (or <code>strata-js-v&lt;version&gt;</code>; the version in <code>chloedb-js/package.json</code>), tests each one, installs it into an empty app and runs it there, then attaches them to the release; <code>node scripts/pack.mjs &lt;platform&gt;</code> packs one by hand. The package is not on npm yet. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2).</p>
+<p>The workflow <a href="https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml"><code>js-release.yml</code></a> builds the tarballs on a <code>chloedb-js-v&lt;version&gt;</code> tag and runs each one in an empty app before attaching it to the release; <code>node scripts/pack.mjs &lt;platform&gt;</code> packs one by hand.</p>
 <h3 id="from-source">From source<a class="anchor" href="#from-source" aria-label="Link to this section">#</a></h3>
 <p>It needs Rust (stable) and a C compiler.</p>
 <pre data-lang="sh">cd chloedb-js
 npm run build                    # cargo build --release, then copies the addon to chloedb.node
-cd ../my-app
-npm install ../chloedb/chloedb-js  # or &quot;chloedb&quot;: &quot;file:../chloedb/chloedb-js&quot; in package.json</pre>
+cd /path/to/my-app
+npm install /path/to/chloedb/chloedb-js  # or &quot;chloedb&quot;: &quot;file:/path/to/chloedb/chloedb-js&quot; in package.json</pre>
 <p><code>npm install</code> of the directory builds the addon itself when <code>chloedb.node</code> is missing. <code>npm run build -- --features bert</code> builds more of ChloeDB's features in (<code>bert</code>, <code>onnx</code>, <code>vision</code>, <code>audio</code>; <code>datafusion</code>, <code>parquet</code> and <code>s3</code> are on by default). <code>$CHLOEDB_NODE_ADDON</code> (or <code>$STRATA_NODE_ADDON</code>) loads an addon from another place.</p>
 <p>The client alone (<code>chloedb/client</code>) is plain JavaScript with no addon: a bundler takes it into a page, and the package's <code>browser</code> and <code>workerd</code> conditions give it for <code>chloedb</code> too.</p>
 <h2 id="a-database-in-the-process">A database in the process<a class="anchor" href="#a-database-in-the-process" aria-label="Link to this section">#</a></h2>
@@ -361,7 +361,7 @@ npm test                                  # node --test</pre>
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

@@ -158,6 +158,12 @@ class Page:
         self.rel = source.relative_to(ROOT).as_posix()
 
 
+# Where a link to a page that another change adds goes until it is here.
+STAND_IN = {
+    "docs/quickstart.md": "README.md#quick-start",
+}
+
+
 def rewrite_links(body, page, by_source):
     """Point a page's relative links at the site's pages, Pages or GitHub."""
     src_dir = page.source.parent
@@ -170,6 +176,9 @@ def rewrite_links(body, page, by_source):
         if not path:
             return m.group(0)
         target = (src_dir / path).resolve()
+        if not target.exists() and target.is_relative_to(ROOT) and target.relative_to(ROOT).as_posix() in STAND_IN:
+            path, _, frag = STAND_IN[target.relative_to(ROOT).as_posix()].partition("#")
+            target = ROOT / path
         frag = "#" + frag if frag else ""
         if target in by_source:
             new = by_source[target].page + ".html" + frag
@@ -315,7 +324,7 @@ TEMPLATE = """<!doctype html>
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="{start}">{start_label}</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="{github}">GitHub</a></li><li><a href="{github}/blob/{branch}/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
@@ -352,13 +361,14 @@ def render_page(p, all_pages, by_source, hashes):
     if len(toc) >= 3:
         items = "".join(f'<li><a href="#{i}">{n}</a></li>' for _, i, n in toc)
         toc_html = f'<details class="doc-toc" open><summary>On this page</summary><ol>{items}</ol></details>'
+    start = "quickstart.html" if any(q.page == "quickstart" for q in all_pages) else "index.html"
     return TEMPLATE.format(
         title=html.escape(re.sub(r"<[^>]+>", "", html.unescape(title))), desc=html.escape(desc, quote=True),
         h_site_css=hashes.get("site.css", ""), h_docs_css=hashes.get("docs.css", ""), h_site_js=hashes.get("site.js", ""),
         source=p.rel, github=GITHUB, branch=BRANCH, sidebar=sidebar(p, all_pages), section=html.escape(p.section),
         h1=title, badge=badge, toc=toc_html, body=body, edit=f"{GITHUB}/edit/{BRANCH}/{p.rel}", pager=pager,
         mermaid=MERMAID if has_mermaid else "",
-        start="quickstart.html" if any(q.page == "quickstart" for q in all_pages) else "index.html")
+        start=start, start_label="Quickstart" if start == "quickstart.html" else "Overview")
 
 
 def check_links(out, written):

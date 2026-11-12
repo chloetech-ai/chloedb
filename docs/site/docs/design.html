@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -72,17 +72,18 @@
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#goals">Goals</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#storage-engine">Storage engine</a></li><li><a href="#segments">Segments</a></li><li><a href="#index-families">Index families</a></li><li><a href="#planning-and-execution">Planning and execution</a></li><li><a href="#where-it-fits">Where it fits</a></li><li><a href="#code-layout">Code layout</a></li></ol></details>
     <div class="doc-body">
 
-<p>ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions, and is queried with SQL. Every table is indexed three ways at once (posting lists, a columnar forward index and vector indexes), rows can hold graph edges to other rows, and a cost-based planner combines all of it in one statement.</p>
+<p>ChloeDB is to search what SQLite is to relational data: a library that keeps a whole database in one file, needs no server or configuration, gives ACID transactions, and is queried with SQL. Every table is indexed for full text (posting lists), structured columns (a columnar forward index) and vectors, rows can hold graph edges to other rows, and a cost-based planner combines all of it in one statement.</p>
+<p>This page is the design: the file format, transactions, every index and the planner. To use ChloeDB, start with the <a href="https://github.com/chloetech-ai/chloedb/blob/main/README.md">README</a> or <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/build-an-app.md">Build an app</a>.</p>
 <h2 id="goals">Goals<a class="anchor" href="#goals" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><strong>Embedded and single-file.</strong> One <code>.chloedb</code> file plus a <code>-wal</code> sidecar, like SQLite in WAL mode. Opening a database maps the file and loads nothing eagerly, so databases larger than RAM work and a cold open costs the same whatever the size.</li>
 <li><strong>ACID with snapshot isolation.</strong> One writer, any number of readers. Readers never block and always see a consistent snapshot; a crash at any point leaves the last committed state. Threads that write at once take turns, and those that wait share the next commit.</li>
 <li><strong>SQL with search extensions.</strong> <code>SELECT … WHERE … ORDER BY … LIMIT</code>, <code>GROUP BY</code> for facets, plus <code>MATCH</code> (boolean full text), <code>bm25()</code>, <code>similarity()</code> and <code>distance()</code> (vectors and learned sparse weights), <code>rrf()</code>, weighted sums and products (fusion and boosts), <code>decay()</code> (closeness to a value or a time) and graph traversal, and <code>INSERT</code>, <code>UPDATE</code> and <code>DELETE</code>. The <a href="sql.html">query language</a> page is the reference.</li>
-<li><strong>Three index families, freely combined.</strong> Full text (BM25, boolean and phrase queries), structured fields (equality, <code>IN</code>, ranges, facets) and vectors (approximate and exact nearest neighbours), in any combination: filtered vector search, filtered BM25, hybrid ranking, facets over any result.</li>
+<li><strong>Index families, freely combined.</strong> Full text (BM25, boolean and phrase queries), structured fields (equality, <code>IN</code>, ranges, facets) and vectors (approximate and exact nearest neighbours), in any combination: filtered vector search, filtered BM25, hybrid ranking, facets over any result.</li>
 <li><strong>Graphs over the same rows.</strong> A row can hold typed, weighted edges to other rows. Traversals, shortest paths and personalized PageRank run in the same statement as everything else (<a href="graphs.html">Graphs</a>).</li>
 <li><strong>Disk-aware.</strong> Every structure is read in place through <code>mmap</code>, with no deserialisation, and laid out so that a query's I/O is proportional to its work.</li>
 </ul>
-<p>Multiple writer processes are out of scope for the prototype. Joins across tables, and sharding and replication in <a href="server.html">chloedb-server</a>, came later; <a href="#where-it-fits">current limits</a> has where they stand.</p>
+<p>One process writes a database at a time; other processes can <a href="#readers-in-other-processes">read it while it is written</a>. Joins across tables, and sharding and replication in <a href="server.html">chloedb-server</a>, came later; <a href="#where-it-fits">current limits</a> has where they stand.</p>
 <h2 id="architecture">Architecture<a class="anchor" href="#architecture" aria-label="Link to this section">#</a></h2>
 <p><img alt="ChloeDB's layers: SQL is parsed and bound, a per-segment planner chooses operators, and operators read immutable segments in one file plus a WAL" src="../../assets/img/strata-layers.png" /></p>
 <p>A statement goes through four stages. The binder turns SQL into a predicate tree and a scorer; the planner picks, per segment and from exact statistics, how to evaluate each part; operators run against zero-copy views of the segment's sections; per-segment results are merged.</p>
@@ -298,7 +299,7 @@ $$</p>
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -73,19 +73,19 @@
     <div class="doc-body">
 
 <p>The <code>ai.chloetech.chloedb</code> package runs a ChloeDB database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by ChloeDB's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (<code>jdbc:chloedb:books.chloedb</code>), for code and tools that speak JDBC. It works on Java 11 and later.</p>
-<p>Before ChloeDB was renamed, the package was <code>ai.chloetech.strata</code>, its jar <code>ai.chloetech:strata</code>, its errors <code>StrataException</code> and its driver's classes <code>Strata*</code> (<code>StrataDriver</code>, <code>StrataConnection</code>, ...). They are <code>ai.chloetech.chloedb</code>, <code>ai.chloetech:chloedb</code>, <code>ChloeDBException</code> and <code>ChloeDB*</code> now: change the imports and the dependency when you rebuild. URLs that begin <code>jdbc:strata:</code> still open a database.</p>
+<p>Before ChloeDB was renamed, the package was <code>ai.chloetech.strata</code> and its jar <code>ai.chloetech:strata</code>: change the imports and the dependency when you rebuild (<code>StrataException</code> is <code>ChloeDBException</code>, and the driver's <code>Strata*</code> classes are <code>ChloeDB*</code>). URLs that begin <code>jdbc:strata:</code> still open a database.</p>
 <h2 id="build-it">Build it<a class="anchor" href="#build-it" aria-label="Link to this section">#</a></h2>
 <p>The package is in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-java"><code>chloedb-java/</code></a>: Java classes (<code>src/main/java</code>) and the Rust crate of their native library (<code>src/*.rs</code>). Building it needs Rust (stable), a C compiler, a JDK (11 or later) and Maven.</p>
 <pre data-lang="sh">cd chloedb-java
 mvn package          # cargo builds the library, Maven the classes; tests run against both
-mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.1.0</pre>
-<p>The jar (<code>target/java/chloedb-0.1.0.jar</code>) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:</p>
+mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.2.0</pre>
+<p>The jar (<code>target/java/chloedb-0.2.0.jar</code>) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:</p>
 <pre data-lang="xml">&lt;dependency&gt;
   &lt;groupId&gt;ai.chloetech&lt;/groupId&gt;
   &lt;artifactId&gt;chloedb&lt;/artifactId&gt;
-  &lt;version&gt;0.1.0&lt;/version&gt;
+  &lt;version&gt;0.2.0&lt;/version&gt;
 &lt;/dependency&gt;</pre>
-<p>or, with Gradle, <code>implementation("ai.chloetech:chloedb:0.1.0")</code> with <code>mavenLocal()</code> among the repositories.</p>
+<p>or, with Gradle, <code>implementation("ai.chloetech:chloedb:0.2.0")</code> with <code>mavenLocal()</code> among the repositories.</p>
 <p><code>-Dcargo.profile=ci</code> builds the library without link-time optimisation, much faster, for a build that only runs the tests. <code>-Dcargo.features=bert</code> (comma-separated) turns on Cargo features as the Python package has them: <code>bert</code> for BERT embedding models (<code>accelerate</code> on a Mac), <code>onnx</code>, <code>vision</code>, <code>audio</code>. The library already includes DataFusion, Parquet and <code>s3://</code> URLs. <code>-Dcargo.skip=true</code> packages the library cargo built before.</p>
 <h2 id="a-database-in-your-process">A database in your process<a class="anchor" href="#a-database-in-your-process" aria-label="Link to this section">#</a></h2>
 <pre data-lang="java" data-title="Java">import ai.chloetech.chloedb.Database;
@@ -249,7 +249,7 @@ try (Connection c = DriverManager.getConnection(&quot;jdbc:chloedb:books.chloedb
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

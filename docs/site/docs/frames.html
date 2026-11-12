@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -79,22 +79,22 @@
 <p>Frames came in release 0.2.0: release 0.1.0's wheel (<code>strata-db</code>, from before the rename) has no frames and no <code>frame</code> extra.</p>
 <h2 id="a-first-frame">A first frame<a class="anchor" href="#a-first-frame" aria-label="Link to this section">#</a></h2>
 <pre data-lang="python">import polars as pl
-import chloedb as st
+import chloedb as cdb
 from chloedb import col
 
-shop = st.connect(&quot;shop.chloedb&quot;)             # a file; st.connect(&quot;https://...&quot;) for a server
+shop = cdb.connect(&quot;shop.chloedb&quot;)             # a file; cdb.connect(&quot;https://...&quot;) for a server
 orders = shop.create_table(&quot;orders&quot;, pl.read_parquet(&quot;orders.parquet&quot;), key=&quot;id&quot;, text=[&quot;note&quot;])
 # or, once the table exists: orders = shop[&quot;orders&quot;]
 
 top = (orders
        .filter(col(&quot;status&quot;) == &quot;paid&quot;, country=&quot;cl&quot;)
        .group_by(month=col(&quot;ts&quot;).dt.truncate(&quot;month&quot;))
-       .agg(revenue=col(&quot;amount&quot;).sum(), p90=col(&quot;amount&quot;).quantile(0.9), n=st.len())
+       .agg(revenue=col(&quot;amount&quot;).sum(), p90=col(&quot;amount&quot;).quantile(0.9), n=cdb.len())
        .sort(&quot;month&quot;))
 
 top.to_polars()     # or .to_pandas(), .to_arrow(), .to_numpy(), .to_dicts()
 print(top.sql())    # the statement it runs; its values are parameters, top.params()</pre>
-<p><code>st.connect(path)</code> opens a database file, or makes it with its first <code>create_table</code>; <code>st.connect(url)</code> is a <a href="python.html#a-server-from-python"><code>Client</code></a> of a server or a coordinator of shards, with <code>token=</code> when the server asks for one. Both give frames and <code>create_table</code> the same way.</p>
+<p><code>cdb.connect(path)</code> opens a database file, or makes it with its first <code>create_table</code>; <code>cdb.connect(url)</code> is a <a href="python.html#a-server-from-python"><code>Client</code></a> of a server or a coordinator of shards, with <code>token=</code> when the server asks for one. Both give frames and <code>create_table</code> the same way.</p>
 <h2 id="making-tables">Making tables<a class="anchor" href="#making-tables" aria-label="Link to this section">#</a></h2>
 <p><code>create_table(name, data, ...)</code> makes a table from rows and returns its frame. <code>data</code> is anything that streams Arrow (a pyarrow Table, a Polars DataFrame, a DuckDB relation, another frame), a pandas DataFrame, or a list of dicts. The schema comes from the Arrow types as the <a href="parquet.html">Parquet import</a> makes one: strings are KEYWORD (or TEXT when they read as prose), lists of numbers of one length are vectors, timestamps are TIMESTAMP.</p>
 <pre data-lang="python">shop.create_table(&quot;users&quot;, users_df)                                  # key: the column named id
@@ -148,7 +148,7 @@ shop.create_table(&quot;scores&quot;, preds, key=&quot;user&quot;, if_exists=&qu
 </tr>
 <tr>
 <td><code>select(*cols, name=expr)</code>, <code>with_columns(...)</code></td>
-<td>the answer's columns; every column with these added or replaced. Aggregates alone give one row: <code>select(n=st.len(), total=col("x").sum())</code></td>
+<td>the answer's columns; every column with these added or replaced. Aggregates alone give one row: <code>select(n=cdb.len(), total=col("x").sum())</code></td>
 </tr>
 <tr>
 <td><code>drop(*cols)</code>, <code>rename({old: new})</code></td>
@@ -175,7 +175,7 @@ shop.create_table(&quot;scores&quot;, preds, key=&quot;user&quot;, if_exists=&qu
 <td>each row once; the first row of each value in the frame's order (<code>DISTINCT ON</code>)</td>
 </tr>
 <tr>
-<td><code>union(*frames)</code>, <code>st.concat(frames)</code></td>
+<td><code>union(*frames)</code>, <code>cdb.concat(frames)</code></td>
 <td>the rows of each (<code>UNION ALL</code>; <code>distinct=True</code> for <code>UNION</code>)</td>
 </tr>
 <tr>
@@ -194,7 +194,7 @@ shop.create_table(&quot;scores&quot;, preds, key=&quot;user&quot;, if_exists=&qu
 </thead>
 <tbody>
 <tr>
-<td><code>col(name)</code>, <code>st.lit(value)</code>, <code>+ - * / % **</code>, <code>== != &lt; &lt;= &gt; &gt;=</code>, <code>&amp; \| ~</code></td>
+<td><code>col(name)</code>, <code>cdb.lit(value)</code>, <code>+ - * / % **</code>, <code>== != &lt; &lt;= &gt; &gt;=</code>, <code>&amp; \| ~</code></td>
 <td>columns, values, arithmetic, comparisons, and, or, not</td>
 </tr>
 <tr>
@@ -202,7 +202,7 @@ shop.create_table(&quot;scores&quot;, preds, key=&quot;user&quot;, if_exists=&qu
 <td></td>
 </tr>
 <tr>
-<td><code>st.when(cond).then(a).when(...).then(b).otherwise(c)</code></td>
+<td><code>cdb.when(cond).then(a).when(...).then(b).otherwise(c)</code></td>
 <td><code>CASE WHEN</code></td>
 </tr>
 <tr>
@@ -214,7 +214,7 @@ shop.create_table(&quot;scores&quot;, preds, key=&quot;user&quot;, if_exists=&qu
 <td>timestamps</td>
 </tr>
 <tr>
-<td><code>.sum()</code>, <code>.mean()</code>, <code>.median()</code>, <code>.quantile(q, interpolation="linear")</code>, <code>.min()</code>, <code>.max()</code>, <code>.count()</code>, <code>.n_unique()</code>, <code>st.len()</code></td>
+<td><code>.sum()</code>, <code>.mean()</code>, <code>.median()</code>, <code>.quantile(q, interpolation="linear")</code>, <code>.min()</code>, <code>.max()</code>, <code>.count()</code>, <code>.n_unique()</code>, <code>cdb.len()</code></td>
 <td>aggregates, for <code>agg</code> or a <code>select</code> of totals</td>
 </tr>
 <tr>
@@ -227,18 +227,18 @@ shop.create_table(&quot;scores&quot;, preds, key=&quot;user&quot;, if_exists=&qu
 </tr>
 </tbody>
 </table></div>
-<p>Every function of <a href="python.html#queries-built-in-python">queries built in Python</a> is an expression of a frame too: <code>st.bm25</code>, <code>st.similarity</code>, <code>st.rrf</code>, <code>st.minmax</code>, <code>st.zscore</code>, <code>st.gbdt</code>, <code>st.coalesce</code>, and the rest.</p>
+<p>Every function of <a href="python.html#queries-built-in-python">queries built in Python</a> is an expression of a frame too: <code>cdb.bm25</code>, <code>cdb.similarity</code>, <code>cdb.rrf</code>, <code>cdb.minmax</code>, <code>cdb.zscore</code>, <code>cdb.gbdt</code>, <code>cdb.coalesce</code>, and the rest.</p>
 <h2 id="search-and-ranking">Search and ranking<a class="anchor" href="#search-and-ranking" aria-label="Link to this section">#</a></h2>
 <p>Search is a verb of the frame. Each of these keeps the <code>k</code> best rows (100 by default), best first, and adds a <code>score</code> column:</p>
 <pre data-lang="python">docs = shop[&quot;docs&quot;]
 docs.search(&quot;refund damaged&quot;, on=&quot;body&quot;, k=20)                  # BM25 over a TEXT field
 docs.near(&quot;parcel arrived broken&quot;, on=&quot;emb&quot;, k=20)              # a text the field&#x27;s model embeds, or a vector
-docs.rank_by(0.6 * st.minmax(st.bm25(&quot;body&quot;, q))                # any ranking expression
-             + 0.4 * st.minmax(st.similarity(&quot;emb&quot;, q)), k=100)
+docs.rank_by(0.6 * cdb.minmax(cdb.bm25(&quot;body&quot;, q))                # any ranking expression
+             + 0.4 * cdb.minmax(cdb.similarity(&quot;emb&quot;, q)), k=100)
 
 (docs.filter(col(&quot;lang&quot;) == &quot;en&quot;)                               # filters first narrow what is ranked
      .search(q, on=&quot;body&quot;, k=200)
-     .rerank(st.gbdt(&quot;docs_ltr&quot;, st.bm25(&quot;body&quot;, q), col(&quot;rating&quot;)), k=20)   # rank the 200 again
+     .rerank(cdb.gbdt(&quot;docs_ltr&quot;, cdb.bm25(&quot;body&quot;, q), col(&quot;rating&quot;)), k=20)   # rank the 200 again
      .max_per(2, &quot;site&quot;)                                         # at most two rows of a site
      .filter(col(&quot;rating&quot;) &gt; 3))                                 # filters after narrow the hits</pre>
 <p><code>search</code> reads <a href="sql.html#weights-required-and-excluded-words">weights, required and excluded words</a> (<code>"+mrna vaccine^2 -animal"</code>) unless <code>syntax="plain"</code>. <code>rerank</code> is a <a href="sql.html#rerank-phases">rerank phase</a>, for a costlier score over the rows of the search before it.</p>
@@ -311,7 +311,7 @@ orders.filter(col(&quot;ts&quot;) &lt; &quot;2025-01-01&quot;).delete()         
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

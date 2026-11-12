@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -89,7 +89,7 @@
 </ol>
 <h2 id="architecture">Architecture<a class="anchor" href="#architecture" aria-label="Link to this section">#</a></h2>
 <p><img alt="ChloeCtx's architecture: hooks and the MCP server talk to one daemon per project, which owns the ChloeDB file" src="../../assets/img/engram-architecture.png" /></p>
-<p>ChloeDB holds an exclusive lock on its file, and hooks are short-lived processes that run concurrently with the MCP server. So one daemon per project owns the database, and hooks and the MCP server are its clients over a Unix socket.</p>
+<p>Only one process at a time may write a ChloeDB file, and hooks are short-lived processes that run concurrently with the MCP server. So one daemon per project owns the database, and hooks and the MCP server are its clients over a Unix socket.</p>
 <ul>
 <li><strong>Lazy start.</strong> The first client to find no socket spawns the daemon under a spawn lock; the daemon exits after 30 idle minutes. Its first hook takes 50–72 ms, because the 129 MB embedding table is memory-mapped rather than read.</li>
 <li><strong>Warm state.</strong> The embedder, segment readers and the memtable stay in memory between hooks.</li>
@@ -618,7 +618,7 @@ chloectx stats | briefing | stop</pre>
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

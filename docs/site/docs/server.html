@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>chloedb-server · ChloeDB docs</title>
-<meta name="description" content="chloedb-server serves a ChloeDB database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Run several of them as shards and one more as a…">
+<meta name="description" content="chloedb-server serves a ChloeDB database over HTTP JSON and gRPC. Every server has a command center in the browser, with a query console and an agent that answers questions by writing SQL. Run several servers as…">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -72,9 +72,43 @@
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#schemas">Schemas</a></li><li><a href="#loading-rows">Loading rows</a></li><li><a href="#embedded-vector-fields">Embedded vector fields</a></li><li><a href="#media-fields">Media fields</a></li><li><a href="#semantic-ids">Semantic IDs</a></li><li><a href="#http-api">HTTP API</a></li><li><a href="#security">Security</a></li><li><a href="#grpc">gRPC</a></li><li><a href="#sharding-one-coordinator-many-shards">Sharding: one coordinator, many shards</a></li><li><a href="#replication-a-primary-and-its-replicas">Replication: a primary and its replicas</a></li><li><a href="#on-kubernetes">On Kubernetes</a></li><li><a href="#deadlines-admission-and-metrics">Deadlines, admission and metrics</a></li><li><a href="#the-ui">The UI</a></li><li><a href="#the-agent">The agent</a></li><li><a href="#the-on-call-agent">The on-call agent</a></li><li><a href="#agents-over-mcp">Agents over MCP</a></li></ol></details>
     <div class="doc-body">
 
-<p><code>chloedb-server</code> serves a ChloeDB database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Run several of them as shards and one more as a coordinator, and the coordinator answers like one database.</p>
-<p>New to it? <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/build-an-app.md">Build an app</a> is one page from an empty server to search, stock, holds, events counted once and a cluster; this page is the reference.</p>
-<p><strong>Old and new names.</strong> ChloeDB was called Strata, and the names on this page are the new ones. The old ones go on working for a release, so that a deployment can move one piece at a time: the server image and the release archives also run the programs as <code>strata-server</code>, <code>strata-crawl</code> and <code>strata-sheets</code>; every <code>CHLOEDB_*</code> setting can be set as <code>STRATA_*</code> (<code>STRATA_TOKEN</code> for <code>CHLOEDB_TOKEN</code>; when both are set, the new one wins); a client may send the headers it sets (<code>x-chloedb-client</code>, <code>-app</code>, <code>-reason</code>, <code>-confirm</code>, <code>-table</code>) as <code>x-strata-*</code>, over HTTP and as gRPC metadata; and an answer carries its headers under both names (<code>x-chloedb-took-ms</code> and <code>x-strata-took-ms</code>). The metrics are renamed outright, from <code>strata_*</code> to <code>chloedb_*</code> (a dashboard over servers from before and after the rename matches <code>{__name__=~"(chloedb|strata)_.*"}</code>), and so are the alert messages, which begin <code>[chloedb FIRING ...]</code> rather than <code>[strata FIRING ...]</code>. The browser UI moves what it saved under <code>strata.*</code> to <code>chloedb.*</code> the first time it loads, the MCP server introduces itself as <code>chloedb</code>, and the OpenSearch API's cluster is named <code>chloedb</code>. The container image is <code>ghcr.io/chloetech-ai/chloedb-server</code>, and every version is also published as <code>ghcr.io/chloetech-ai/strata-server</code>, the same image under its old name, so that a cluster that follows the old name keeps getting new versions. The Kubernetes operator's resources keep the old name (the <code>StrataCluster</code> kind, the <code>strata-system</code> namespace), and its pods start the programs by their old names, with <code>STRATA_*</code> settings, which every image understands, those from before the rename too.</p>
+<p><code>chloedb-server</code> serves a ChloeDB database over HTTP JSON and gRPC. Every server has a command center in the browser, with a query console and an agent that answers questions by writing SQL. Run several servers as shards behind one more as a coordinator, and the coordinator answers like one database.</p>
+<p>New to it? <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/build-an-app.md">Build an app</a> goes from an empty server to search, stock, holds, events counted once and a cluster in one page. This page is the reference:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>part</th>
+<th>sections</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Start it</td>
+<td><a href="#run-it">Run it</a> (every flag), <a href="#schemas">Schemas</a>, <a href="#loading-rows">Loading rows</a></td>
+</tr>
+<tr>
+<td>Models and media</td>
+<td><a href="#embedded-vector-fields">Embedded vector fields</a>, <a href="#media-fields">Media fields</a>, <a href="#semantic-ids">Semantic IDs</a></td>
+</tr>
+<tr>
+<td>The API</td>
+<td><a href="#http-api">HTTP API</a>, <a href="#security">Security</a>, <a href="#grpc">gRPC</a></td>
+</tr>
+<tr>
+<td>A cluster</td>
+<td><a href="#sharding-one-coordinator-many-shards">Sharding</a>, <a href="#replication-a-primary-and-its-replicas">Replication</a>, <a href="#on-kubernetes">On Kubernetes</a></td>
+</tr>
+<tr>
+<td>Running it</td>
+<td><a href="#deadlines-admission-and-metrics">Deadlines, admission and metrics</a>: limits, health, logs, alerts</td>
+</tr>
+<tr>
+<td>The command center</td>
+<td><a href="#the-ui">The UI</a>, <a href="#the-agent">The agent</a>, <a href="#the-on-call-agent">The on-call agent</a>, <a href="#agents-over-mcp">Agents over MCP</a></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Old names.</strong> ChloeDB was called Strata until November 2026. The names on this page are the new ones, and the old ones (<code>strata-server</code>, <code>STRATA_*</code> settings, <code>x-strata-*</code> headers) still work for a release: <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md#old-names">Compatibility</a> lists them.</p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each server <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> (tagged <code>chloedb-server-v&lt;version&gt;</code>) has one archive a platform: <code>linux-x86_64</code> and <code>linux-aarch64</code> (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), <code>macos-arm64</code> and <code>macos-x86_64</code> (macOS 11 or later), each with its <code>.sha256</code> beside it.</p>
 <pre data-lang="sh">v=0.2.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
@@ -162,6 +196,11 @@ target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
 <td>on a database server: how often it reads every segment against its checksum while it serves, at <code>--scrub-mib-s</code> (64 MiB/s) at most, to find data <a href="#replication-a-primary-and-its-replicas">damaged on disk</a> (0: only when asked, <code>POST /v1/admin/scrub</code>); the first scrub starts within ten minutes</td>
 </tr>
 <tr>
+<td><code>--merge-nice N</code></td>
+<td>10</td>
+<td>on Linux, the nice value (0 to 19) merges run at, so that a merge gets the cores reads and writes leave idle; 0 runs them at the priority of reads and writes</td>
+</tr>
+<tr>
 <td><code>--verify-every-s N</code></td>
 <td>600</td>
 <td>with <code>--replicas</code>: how often each replica's rows are <a href="#replication-a-primary-and-its-replicas">compared</a> with the primary's; a replica whose rows differ is sent a copy of the primary (0: only when asked, <code>POST /v1/admin/verify</code>)</td>
@@ -200,6 +239,16 @@ target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
 <td><code>--slot-map FILE</code></td>
 <td>equal runs, epoch 1</td>
 <td>with <code>--shards</code>: the <a href="#slots">slot map</a> to route writes by, which the shards are given</td>
+</tr>
+<tr>
+<td><code>--shard-timeout-ms N</code></td>
+<td>0</td>
+<td>with <code>--shards</code>: give up on a shard after this many milliseconds (0: at the query's deadline)</td>
+</tr>
+<tr>
+<td><code>--partial</code></td>
+<td>off</td>
+<td>with <code>--shards</code>: answer without the shards that have no copy answering, flagged <code>"partial"</code>; a request's own <code>"partial"</code> overrides it</td>
 </tr>
 <tr>
 <td><code>--listen ADDR</code></td>
@@ -426,13 +475,23 @@ target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
 <td><code>$CHLOEDB_NODE_NAME</code>, else <code>HOST:PORT</code> (the host name and the HTTP port)</td>
 <td>what the log store calls this server, in its <code>node</code> column</td>
 </tr>
+<tr>
+<td><code>--app NAME=URL</code></td>
+<td><code>$CHLOEDB_APPS</code></td>
+<td>an <a href="#apps">app</a> the command center shows as a view (repeatable, or comma-separated): the server forwards <code>/v1/apps/NAME/...</code> to it</td>
+</tr>
+<tr>
+<td><code>--app-token T</code></td>
+<td><code>$CHLOEDB_APP_TOKEN</code></td>
+<td>the token the server sends its apps (<code>Authorization: Bearer T</code>)</td>
+</tr>
 </tbody>
 </table></div>
 <p><code>chloedb-server import</code>, <code>chloedb-server fetch-model</code> and <code>chloedb-server promote</code> are subcommands: <a href="#loading-rows">loading rows</a>, <a href="#embedded-vector-fields">embedded vector fields</a> and <a href="#replication-a-primary-and-its-replicas">promotion</a>.</p>
 <p><code>CHLOEDB_ENGINE</code> chooses the engine of <a href="sql.html#subqueries-with-and-joins">joins, groups and sorts over joined or derived rows</a>, over a database's own tables and on a coordinator above its shards' rows. The default, <code>auto</code>, uses DataFusion when a query's single-table parts read more than 4,096 rows and ChloeDB's operators below that. The other values are <code>operators</code>, <code>datafusion</code> and <code>datafusion-only</code>. Build with <code>--no-default-features</code> to leave DataFusion out of the server.</p>
 <p><code>chloedb-server upgrade PATH</code> copies a database written by a version of ChloeDB from before field ids, which this one refuses to serve, into this version's format in its place, and keeps the old one as <code>PATH.before-field-ids</code> (<a href="design.html#wal-memtable-and-snapshots">field ids</a>). Stop the server that has it open first. A database started with <code>--seq-no</code> is not copied: create a new one and fill it with <code>--copy-from</code>.</p>
 <h2 id="schemas">Schemas<a class="anchor" href="#schemas" aria-label="Link to this section">#</a></h2>
-<p>A database starts with one table, whose schema is set when the database is created (<code>--schema FILE</code>, <code>chloedb-server import --schema FILE</code>, the query console's schema designer, or <code>chloedb.Database.create</code> in <a href="python.html">Python</a>). <a href="sql.html#tables"><code>CREATE TABLE</code></a> and <code>DROP TABLE</code> over <code>POST /v1/sql</code> add and drop more, <a href="sql.html#changing-a-tables-columns"><code>ALTER TABLE</code></a> adds, drops and renames the columns of any table while it serves, and the server serves every table: SQL names its tables, write operations and imports name theirs (<code>"table"</code>, <code>?table=</code>; the first table when they name none), <code>GET /v1/tables</code> lists the schemas and <code>GET /v1/schema?table=</code> gives one. <a href="sql.html#rank-profiles-a-ranking-kept-with-its-table"><code>CREATE RANK PROFILE</code></a> and <code>DROP RANK PROFILE</code> keep rankings with a table the same way. A <a href="#replication-a-primary-and-its-replicas">primary</a> takes all five and ships them to its replicas as it ships writes, and answers once the copies its acks name hold them. A schema is JSON: the table's name, its key, and its fields by type, with options only where they differ from the defaults.</p>
+<p>A database starts with the table its schema names, or with none, and the schema is set when the database is created (<code>--schema FILE</code>, <code>chloedb-server import --schema FILE</code>, the query console's schema designer, or <code>chloedb.Database.create</code> in <a href="python.html">Python</a>). <a href="sql.html#tables"><code>CREATE TABLE</code></a> and <code>DROP TABLE</code> over <code>POST /v1/sql</code> add and drop more, <a href="sql.html#changing-a-tables-columns"><code>ALTER TABLE</code></a> adds, drops and renames the columns of any table while it serves, and the server serves every table: SQL names its tables, write operations and imports name theirs (<code>"table"</code>, <code>?table=</code>; the first table when they name none), <code>GET /v1/tables</code> lists the schemas and <code>GET /v1/schema?table=</code> gives one. <a href="sql.html#rank-profiles-a-ranking-kept-with-its-table"><code>CREATE RANK PROFILE</code></a> and <code>DROP RANK PROFILE</code> keep rankings with a table the same way. A <a href="#replication-a-primary-and-its-replicas">primary</a> takes all five and ships them to its replicas as it ships writes, and answers once the copies its acks name hold them. A schema is JSON: the table's name, its key, and its fields by type, with options only where they differ from the defaults.</p>
 <pre data-lang="json">{
   &quot;table&quot;: &quot;docs&quot;,
   &quot;key&quot;: &quot;id&quot;,
@@ -1331,6 +1390,7 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
   &quot;sql&quot;: &quot;SELECT id, title, price, score() FROM products WHERE category = :c ORDER BY 0.5 * minmax(bm25(body, :t)) + 0.5 * minmax(similarity(emb, :v)) DESC LIMIT 5&quot;,
   &quot;params&quot;: {&quot;c&quot;: &quot;kitchen&quot;, &quot;t&quot;: &quot;quiet espresso&quot;, &quot;v&quot;: {&quot;vector_of&quot;: &quot;p0011051&quot;}}
 }&#x27;</pre>
+<p><a id="writes"></a></p>
 <p><code>/v1/write</code> takes a batch of operations, applied in one transaction:</p>
 <pre data-lang="json">{&quot;ops&quot;: [
   {&quot;op&quot;: &quot;insert&quot;, &quot;doc&quot;: {&quot;id&quot;: &quot;p1&quot;, &quot;title&quot;: &quot;red mug&quot;, &quot;price&quot;: 12.5, &quot;tags&quot;: [&quot;kitchen&quot;, &quot;gift&quot;]}},
@@ -1928,6 +1988,14 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {&q
 <tr>
 <td><code>DELETE /v1/admin/cloud/clusters/{id}</code></td>
 <td>takes it off the list, once it is deleted or failed before the cloud made anything; a 409 while it may still be billed</td>
+</tr>
+<tr>
+<td><code>GET /v1/admin/cloud/found?provider=digitalocean</code> (or <code>?provider=aws&amp;region=</code>)</td>
+<td>the ChloeDB clusters the account holds that this server's list does not follow, made from another server or forgotten here: DOKS clusters tagged <code>strata</code> or named <code>strata-*</code> (every region), or a region's CloudFormation stacks tagged <code>strata.chloetech.ai/cluster</code>, each with its cloud id, state, nodes and owner, and <code>here</code> for the one this server runs on</td>
+</tr>
+<tr>
+<td><code>POST /v1/admin/cloud/found/delete</code></td>
+<td><code>{"provider", "cloud_id", "region"?, "confirm": "&lt;the cluster's name&gt;"}</code>: puts it on the list (<code>found: true</code>) and deletes it as <strong>Delete</strong> does, its volumes first; 202. A 400 unless <code>confirm</code> is its name, a 404 when the account no longer has it, a 409 for the cluster this server runs on (deleting it from here would stop the server halfway)</td>
 </tr>
 </tbody>
 </table></div>
@@ -2714,7 +2782,7 @@ claude mcp add chloedb --env CHLOEDB_KEY=$CHLOEDB_KEY -- chloedb-server mcp --ur
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

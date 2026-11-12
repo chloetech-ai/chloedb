@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -951,14 +951,15 @@ SELECT id, score() FROM top ORDER BY sigmoid(gbdt(&#x27;clicks&#x27;, bm25(title
 </ul>
 <h4 id="cross-encoders-cross_encodermodel-fields-query">Cross-encoders: <code>cross_encoder('model', fields…, query)</code><a class="anchor" href="#cross-encoders-cross_encodermodel-fields-query" aria-label="Link to this section">#</a></h4>
 <p>A cross-encoder reads the query and a row's text together and scores how well the text answers it. It costs thousands of times what BM25 does per row, so it reranks the top rows of a cheaper ranking, in a rerank phase of its own:</p>
-<pre data-lang="sql">WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 100)
+<pre data-lang="sql">WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 20)
 SELECT id, title, score() FROM top
 ORDER BY cross_encoder(&#x27;ms-marco-MiniLM-L-6-v2&#x27;, title, body, :q) DESC LIMIT 10;
 
 -- mixed with other scores of the row, and a phase after it
-WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 100),
-     ce AS (SELECT * FROM top ORDER BY cross_encoder(&#x27;bge-reranker-base&#x27;, body, :q) + 0.1 * coalesce(rating, 0) DESC LIMIT 20)
-SELECT id, score() FROM ce ORDER BY bm25(title, :q) + decay(published, now(), 2592000) DESC LIMIT 10;</pre>
+WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :q) DESC LIMIT 20),
+     ce AS (SELECT * FROM top ORDER BY cross_encoder(&#x27;bge-reranker-base&#x27;, body, :q) + 0.1 * coalesce(rating, 0) DESC LIMIT 10)
+SELECT id, score() FROM ce ORDER BY bm25(title, :q) + decay(published, now(), 2592000) DESC LIMIT 5;</pre>
+<p>A server reranks at most 20 rows a query by default: start it with <code>--max-rerank 100</code> to rerank the top 100, as the measurements below do.</p>
 <ul>
 <li><strong>The model</strong> is a Hugging Face directory <code>&lt;models&gt;/&lt;model&gt;</code> holding <code>config.json</code>, <code>tokenizer.json</code> and its weights. A <code>model.onnx</code>, any sequence classifier with one label exported to ONNX (int8 ones too, as Hugging Face repositories ship them under <code>onnx/</code>, such as <code>model_qint8_avx512_vnni.onnx</code>), runs through ONNX Runtime in a server or Python package built with <code>--features onnx</code>, which downloads ONNX Runtime's library when it builds and links it in; its rows are sorted by length into batches of 16, so that little of a batch is padding. A <code>model.safetensors</code>, a <code>BertForSequenceClassification</code> (such as <code>cross-encoder/ms-marco-MiniLM-L-6-v2</code>) or an <code>XLMRobertaForSequenceClassification</code> (such as <code>BAAI/bge-reranker-base</code>) with one label, runs through candle in <code>f32</code> in one built with <code>--features bert</code> (<code>accelerate</code> on a Mac), as BERT embedding models do. A directory with both runs its <code>model.onnx</code>; without the feature its weights need, a query by it is refused. <code>chloedb-server fetch-model ms-marco-MiniLM-L-6-v2-int8</code> (or <code>gte-reranker-modernbert-base-int8</code>, a ModernBERT model) downloads an int8 export ready to run. A model is read when a query first uses it and again when one of its files changes. <code>builtin:overlap</code> needs no files: the share of the query's distinct words the text holds, for tests and demos.</li>
 <li><strong>A model served elsewhere</strong> is called over HTTP, a batch of rows a request (feature <code>hosted</code>, on by default), for models too large or slow for the server's CPU: a provider's by name, <code>cohere/rerank-v3.5</code>, <code>voyage/rerank-2.5</code> or <code>jina/jina-reranker-v2-base-multilingual</code>, with the key in <code>COHERE_API_KEY</code> (or <code>CO_API_KEY</code>), <code>VOYAGE_API_KEY</code> or <code>JINA_API_KEY</code>; or a server of one's own that a directory <code>&lt;models&gt;/&lt;model&gt;</code> names in an <code>endpoint.json</code>, such as Hugging Face TEI on a GPU (<code>{"api": "tei", "url": "http://gpu:8080/rerank"}</code>), or vLLM, Infinity or LiteLLM (<code>"api": "vllm"</code>, <code>"infinity"</code> or <code>"litellm"</code>, with a <code>base_url</code>; they answer at <code>/rerank</code> in Cohere's shape). <code>endpoint.json</code> takes the keys an <a href="server.html#embedded-vector-fields">embedding model's</a> does that apply (<code>url</code> or <code>base_url</code>, <code>model</code>, <code>key_env</code>, <code>key_header</code>, <code>headers</code>, <code>batch</code>, <code>max_chars</code>, <code>concurrency</code>, <code>retries</code>, <code>timeout_s</code>), and <code>COHERE_BASE_URL</code>, <code>VOYAGE_BASE_URL</code> or <code>JINA_BASE_URL</code> sends a provider's requests to a server of its API. A request carries 1,000 rows at most (TEI's default batch, 32, for a server of one's own), four are sent at once, a rate limit or a server's error is tried twice more (pauses of at most 5 s; a request times out after 10 s), and a refused key, a server that keeps failing or an answer that misses a row fails the query. A provider's score is its <code>relevance_score</code>, between 0 and 1; TEI's is the logit (<code>raw_scores</code>), as a model run here gives it. A row with no text is not sent, and gets no score. The plan's hash is of the endpoint (its API, URL and model, not its key), so a plan made with one server is refused by another.</li>
@@ -1595,7 +1596,7 @@ DELETE FROM products WHERE stock = 0 ORDER BY price LIMIT 100;</pre>
 </ul>
 <p>Each statement is one transaction, and returns the number of rows it wrote. From Rust, the transaction API (<code>Database::begin</code>, <code>WriteTxn::insert</code>, <code>upsert</code>, <code>set</code>, <code>delete</code>, <code>commit</code>, and <code>WriteTxn::table</code> for the other tables) groups several writes into one, across tables too; <code>WriteTxn::upsert_if_newer</code> keeps whichever version of a row has the highest version number, for replaying a feed out of order.</p>
 <h2 id="explain">EXPLAIN<a class="anchor" href="#explain" aria-label="Link to this section">#</a></h2>
-<p><code>EXPLAIN &lt;statement&gt;</code> shows the plan of a <code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code> or <code>DELETE</code> without running it: a row per line, in a column named <code>plan</code>, the root first and each operator's input indented under it.</p>
+<p><code>EXPLAIN &lt;statement&gt;</code> shows the plan of a <code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code> or <code>DELETE</code> without running it: a row per line, in a column named <code>plan</code>, the root first and each operator's input indented under it. It runs in-process (<code>db.sql</code> in Python, <code>Db::sql</code> in Rust); over HTTP, send the statement without <code>EXPLAIN</code> to <a href="server.html#http-api"><code>POST /v1/explain</code></a>, which answers the same lines as <code>tree</code>.</p>
 <pre data-lang="sql">EXPLAIN SELECT category, COUNT(*) AS n FROM papers WHERE published &gt;= &#x27;2026-10-01&#x27;
 GROUP BY category HAVING COUNT(*) &gt;= 2 ORDER BY n DESC, category LIMIT 5;</pre>
 <pre data-lang="text" data-title="Output">Project: category, COUNT(*) AS n
@@ -1632,7 +1633,7 @@ GROUP BY category HAVING COUNT(*) &gt;= 2 ORDER BY n DESC, category LIMIT 5;</pr
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

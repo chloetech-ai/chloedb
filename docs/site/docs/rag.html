@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=147f195651">
+<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
 <link rel="stylesheet" href="../assets/docs.css?v=4dcef93e66">
 </head>
 <body class="docs">
@@ -73,7 +73,7 @@
     <div class="doc-body">
 
 <p>A model answers questions about your documents well when it is handed the right passages, with their sources. This recipe splits documents into passages, stores them in ChloeDB with a vector each, and retrieves for a question by words and meaning at once, at most two passages from any one document, so that the model sees several sources. Then it builds the prompt and, if you have an Anthropic API key, asks Claude.</p>
-<p>You need Python with the <code>chloedb</code> package and <code>chloedb-server</code> on your <code>PATH</code> (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/quickstart.md">quickstart</a>).</p>
+<p>You need Python with the <code>chloedb</code> package and <code>chloedb-server</code> on your <code>PATH</code> (<a href="https://github.com/chloetech-ai/chloedb/blob/main/README.md#quick-start">quickstart</a>).</p>
 <h2 id="the-documents">The documents<a class="anchor" href="#the-documents" aria-label="Link to this section">#</a></h2>
 <p>Any directory of text or Markdown files will do. Here are three short ones:</p>
 <pre data-lang="markdown" data-title="handbook/returns.md"># Returns
@@ -257,7 +257,7 @@ Question: Can I get express delivery for a sofa?</pre>
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
