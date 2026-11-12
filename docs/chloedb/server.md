@@ -173,7 +173,7 @@ A database starts with the table its schema names, or with none, and the schema 
 | `pool` | multi `vector` | | merge a row's vectors at least this similar (cosine, such as `0.9`) into their mean at write |
 | `pool_factor` | multi `vector` | | cluster a row's vectors into one group for every this many (such as `2`, half as many) by Ward's linkage, and keep each group's mean at write; not with `pool` |
 | `positions` | `text` | true | keep word positions, for phrase searches |
-| `analyzer` | `text` | `"english"` | how text becomes words to search: `"english"` drops stopwords and stems (`running` finds `run`), `"simple"` keeps every word as written; another than `"english"` makes the database format 3 |
+| `analyzer` | `text` | `"english"` | how text becomes words to search: `"english"` drops stopwords and stems (`running` finds `run`), `"simple"` keeps every word as written, `"standard"` reads text in [any language and script](index.md#text-in-other-languages), `"cjk"` is `standard` with pairs of characters for Chinese and Japanese, and a language (`"french"`, `"arabic"`, `"hindi"`, `"chinese"`, ...) is `standard` with its stemmer; another than `"english"` makes the database format 3 |
 | `from` | `text` | | generated: the named fields' text joined, such as a `body` of title and description to search at once |
 | `dim` | `vector` | the model's, for a known `embed` model | the number of dimensions |
 | `index` | `vector` | `"hnsw"` (m 16, ef_construction 200) | `"flat"` (an exact scan), `{"hnsw": {"m": 32, "ef_construction": 400}}` or `{"ivf": {"nlist": 1024}}` |

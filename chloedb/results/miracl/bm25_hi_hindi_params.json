@@ -1,0 +1,39 @@
+{
+  "analyzer": "hindi",
+  "collections": {
+    "miracl-hi": {
+      "db_bytes": 287625256,
+      "docs": 506264,
+      "load_s": 30.046192949,
+      "queries": 350,
+      "variants": {
+        "k09b04_r100": {
+          "failed": 0,
+          "ms_mean": 2.9850898599999995,
+          "ms_p50": 2.390256,
+          "ms_p99": 11.272136,
+          "ndcg10": 0.43213593604281114,
+          "recall10": 0.5706802721088435,
+          "recall100": 0.8398435374149662
+        },
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 3.9513555457142857,
+          "ms_p50": 3.1499140000000003,
+          "ms_p99": 15.738907999999999,
+          "ndcg10": 0.42838040497660684,
+          "recall10": 0.5594285714285715,
+          "recall100": 0.8368707482993198
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "hi_hindi_params"
+}

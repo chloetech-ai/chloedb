@@ -6,7 +6,7 @@ use std::collections::{BinaryHeap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use super::analyzer::{for_each_word, Analyzer};
+use super::analyzer::Analyzer;
 use super::codec::{encode_norm, get_varint, put_varint};
 use super::cursor::{write_packed_positions, write_positions};
 use super::dict::DictBuilder;
@@ -207,7 +207,7 @@ impl TextFieldBuilder {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.clear();
         let mut pos = 0u32;
-        for_each_word(text, |w| {
+        self.analyzer.for_each_token(text, |w| {
             let id = match self.words.get(w) {
                 Some(&id) => id,
                 None => {

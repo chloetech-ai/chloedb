@@ -1,0 +1,39 @@
+{
+  "analyzer": "standard",
+  "collections": {
+    "miracl-th": {
+      "db_bytes": 318910504,
+      "docs": 542166,
+      "load_s": 38.431899799,
+      "queries": 733,
+      "variants": {
+        "k09b04_r100": {
+          "failed": 0,
+          "ms_mean": 3.30872084583902,
+          "ms_p50": 2.665629,
+          "ms_p99": 13.505541,
+          "ndcg10": 0.5081091227660299,
+          "recall10": 0.6552415600164577,
+          "recall100": 0.8998522055479763
+        },
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 4.040681967257843,
+          "ms_p50": 3.2569690000000002,
+          "ms_p99": 14.892756,
+          "ndcg10": 0.4570418847943518,
+          "recall10": 0.6149386084583902,
+          "recall100": 0.8750454752160073
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "th_standard_params"
+}
