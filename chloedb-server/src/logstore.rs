@@ -291,6 +291,9 @@ fn open_db(path: &Path) -> Result<Db, String> {
     // go: the served database keeps filters (`--filter-cache-mb`), this
     // one does not.
     db.exec.filter_cache = None;
+    // As the served database's: its queries are given a budget where they
+    // run.
+    db.exec.memory = None;
     for want in schemas() {
         match db.catalog().into_iter().find(|t| t.table == want.table) {
             None => db.create_table((**want).clone()).map_err(at)?,

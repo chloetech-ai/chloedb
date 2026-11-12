@@ -125,6 +125,26 @@ still 0.1.0, and the next release will name its version here.
   `set_embed_later(True)` and run `embed_backfill` once the model is there.
 - Not yet: a per-field metric option (cosine, dot, L2), and a fingerprint
   recorded on a model's first open for tables created before this change.
+- A database opened in a program (Rust's `Db`, and the Python, JavaScript
+  and Java packages) counts its queries against a memory budget the whole
+  process shares: a quarter of the machine's memory (its cgroup limit, else
+  RAM), or `CHLOEDB_QUERY_MEMORY_MB` MiB (0: none). A query past it fails
+  with a `memory:` error naming the budget and how to raise it, and gives
+  back what it held, where it used to grow until the process ran out of
+  memory (`SELECT *` of a large table, a `GROUP BY` with a group per row, a
+  percentile over every row). Such a database still sets no deadline, row
+  window or group cap: a server's are for answers sent over the network,
+  and a program reading a whole table into a frame or a scroll has no way
+  past them; `max_rows` and `max_groups` stay options. `ExecOptions::limited`
+  gives one query a deadline, a budget of its own and a cancel flag,
+  `Interrupts` cancels the queries running from another thread, and
+  `Db::sql_with`, `Db::run_with` and `Db::query_leaf_with` take options as
+  `Db::query_with` does. chloedb-server keeps its own budget
+  (`--query-memory-mb`), whose refusals now name that flag. **Breaking for
+  embedded use:** a query that needed more than a quarter of the machine's
+  memory now fails; set `CHLOEDB_QUERY_MEMORY_MB` (0 for no budget), give
+  the database or the query a larger `memory`, or `db.exec.memory = None` in
+  Rust.
 
 ### Replication
 
@@ -218,6 +238,24 @@ still 0.1.0, and the next release will name its version here.
   moved from `chloedb.connect` to `chloedb.open` fails loudly rather than
   losing its deadline or idempotency. A query parameter of such a name is
   passed in `params`.
+- A database in the process takes query limits, and can be stopped from
+  another thread. Python: `timeout_ms` (a deadline, as a `Client`'s query
+  takes it, raising `DeadlineError`) and `memory` (a budget in bytes; 0:
+  none) on `query`, `query_arrow`, `scroll`, `sql`, `search` and `run`, the
+  same on `chloedb.open`, `Database.open`/`create` and `set_limits` for
+  every query of the database, and `Database.interrupt()`, as
+  `sqlite3.Connection.interrupt`. JavaScript: `{timeoutMs, memory, signal}`
+  (an `AbortSignal`) on `query`, `sql`, `run` and `search`, `timeoutMs` and
+  `memory` on `open` and `setLimits`, and `db.interrupt()`. Java:
+  `QueryOptions` on `query`, `execute` and `SearchOptions.limits`,
+  `Database.Options.timeoutMs`/`memory`, `setLimits` and `interrupt()`; the
+  JDBC driver's `Statement.setQueryTimeout` now holds (it was kept and
+  ignored) and `Statement.cancel()` works (it threw). `timeout_ms` to a
+  Python `Database` is no longer the `TypeError` of the change above except
+  where nothing runs a query (`plan`). The HTTP clients are unchanged, but
+  for a `search` that passes `timeout_ms`/`timeoutMs` on to their `query`.
+  **Breaking:** a Python query parameter passed as the keyword `memory` is
+  now the query's budget, not a parameter; pass it in `params`.
 
 ### ChloeCtx
 

@@ -389,6 +389,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             return Err(format!("{} does not number its writes, which replication ships by: pass --seq-no", path.display()));
         }
         let mut db = db;
+        // Each query is given the server's own budget (--query-memory-mb)
+        // where it runs, not the one a program's database counts against.
+        db.exec.memory = None;
         if let Some(mb) = o.filter_cache_mb {
             db.exec.filter_cache = Some(Arc::new(chloedb::query::exec::FilterCache::new(mb << 20)));
         }
@@ -453,7 +456,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(b) = query_memory {
         tracing::info!(memory_mib = b >> 20, "queries share a memory budget");
     }
-    svc.query_memory = query_memory.map(chloedb::query::memory::MemoryBudget::new);
+    svc.query_memory = query_memory.map(crate::service::query_budget);
     svc.max_queued_writes = if o.max_queued_writes > 0 { o.max_queued_writes } else { usize::MAX };
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);

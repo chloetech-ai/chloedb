@@ -127,9 +127,12 @@ class Search:
         params: Mapping[str, Any] | None = None,
         min_seq_no: int | None = None,
         min_seq_nos: Sequence[int] | None = None,
+        timeout_ms: int | None = None,
+        memory: int | None = None,
     ) -> Result:
         """The rows that best match `text`. `min_seq_no(s)` name writes the
-        answer must see, as `query` takes them.
+        answer must see, and `timeout_ms` bounds it, as `query` takes them;
+        a `Database` also takes `memory`, as its `query` does.
 
         `mode` "text" ranks by BM25 over the text fields, "vector" by the
         similarity of an embedded vector field to the text's embedding, and
@@ -140,6 +143,12 @@ class Search:
         `where` is a condition (`col("year") >= 2000`), or an SQL condition
         with `params` for its placeholders.
         """
+        # The limits given, as this store's query and run take them: a
+        # client's take timeout_ms alone (a server's queries share its
+        # memory budget).
+        limits = {k: v for k, v in (("timeout_ms", timeout_ms), ("memory", memory)) if v is not None}
+        if memory is not None and not getattr(self, "_local", False):
+            raise TypeError(f"{type(self).__name__}.search() takes no memory: the server's queries share its --query-memory-mb")
         s = self.schema
         if text_fields is None:
             texts = [f for f in s["fields"] if f["type"] == "text" and f.get("indexed", True)]
@@ -180,7 +189,7 @@ class Search:
                 p["_q"] = text
             if "similarity" in order:
                 p["_v"] = {"embed": text, "field": vector_field}
-            return self.query(sql, p, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos)
+            return self.query(sql, p, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos, **limits)
         # A condition built in Python: the query is a plan.
         ranks = [bm25(f, text) for f in text_fields] if mode in ("text", "hybrid") else []
         if mode in ("vector", "hybrid"):
@@ -189,6 +198,6 @@ class Search:
         if columns != "*":
             names = [c.strip() for c in columns.split(",")] if isinstance(columns, str) else list(columns)
             q = q.select(*[{"score()": score(), "hops()": hops()}.get(c.lower(), c) for c in names])
-        if min_seq_no is not None or min_seq_nos is not None:
-            return self.run(q, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos)
+        if min_seq_no is not None or min_seq_nos is not None or limits:
+            return self.run(q, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos, **limits)
         return q.run()

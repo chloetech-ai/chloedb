@@ -192,9 +192,11 @@ def upgrade(path: str | os.PathLike) -> tuple[str, int, int] | None:
 # Options a `Client` takes by keyword that a database in this process has
 # no use for. Passed to `Database` they would otherwise bind as query
 # parameters and be ignored, so code moved from a server loses its
-# deadline or its idempotency without a word: they raise instead.
+# deadline or its idempotency without a word: they raise instead. (The
+# methods that run a query, `query`, `query_arrow`, `scroll`, `sql`,
+# `search` and `run`, take `timeout_ms` as a client's do.)
 _CLIENT_ONLY = {
-    "timeout_ms": "Database.{method}() takes no timeout_ms: a query in this process has no deadline (a Client's does). Pass params={{'timeout_ms': ...}} for a query parameter of that name.",
+    "timeout_ms": "Database.{method}() takes no timeout_ms (query, query_arrow, scroll, sql, search and run do). Pass params={{'timeout_ms': ...}} for a query parameter of that name.",
     "idempotency_key": "Database.{method}() takes no idempotency_key: a write in this process commits or raises, with no answer to lose (a Client's can be sent again). Pass params={{'idempotency_key': ...}} for a query parameter of that name.",
     "keep_alive_ms": "Database.{method}() takes no keep_alive_ms: a scroll in this process holds its answer itself. Pass params={{'keep_alive_ms': ...}} for a query parameter of that name.",
 }
@@ -207,6 +209,15 @@ def _local_params(method: str, given: Mapping[str, Any] | None, kw: Mapping[str,
         if name in _CLIENT_ONLY:
             raise TypeError(_CLIENT_ONLY[name].format(method=method))
     return _params(given, kw)
+
+
+def _limits(timeout_ms: int | None, memory: int | None) -> tuple[int | None, int | None]:
+    """A query's `timeout_ms` and `memory` as the native calls take them."""
+    if timeout_ms is not None and timeout_ms < 0:
+        raise ValueError("timeout_ms: at least 0")
+    if memory is not None and memory < 0:
+        raise ValueError("memory: bytes, at least 0")
+    return (None if timeout_ms is None else int(timeout_ms), None if memory is None else int(memory))
 
 
 def _schema_json(schema: Any) -> str:
@@ -269,28 +280,43 @@ class Database(Search, FrameStore):
     either. Only one process may have a database open: to share one, serve
     it with `chloedb-server` and use `Client`. Calls release the GIL, so
     threads can query at once. `db["table"]` is a lazy `Frame` of a table.
+
+    Its queries are limited (see `set_limits`): those of every database of
+    the process share a memory budget, a quarter of the machine's memory
+    (or $CHLOEDB_QUERY_MEMORY_MB MiB), and a query that would hold more
+    raises ChloeDBError (code "memory") instead of taking the program's
+    memory. They have no deadline unless given `timeout_ms`, and
+    `interrupt()` stops them from another thread.
     """
 
-    def __init__(self, inner: Any):
+    # Queries run in this process (`Search.search` takes `memory`).
+    _local = True
+
+    def __init__(self, inner: Any, *, timeout_ms: int | None = None, memory: int | None = None):
         self._db = inner
         #: What the last SQLite or Parquet import into it did (`from_sqlite`,
         #: `import_sqlite`, `from_parquet`, `import_parquet`).
         self.last_import: dict | None = None
+        self._limits = (timeout_ms, memory)
+        if timeout_ms is not None or memory is not None:
+            self.set_limits(timeout_ms=timeout_ms, memory=memory)
 
     @classmethod
-    def create(cls, path: str | os.PathLike, schema: Any, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None) -> "Database":
+    def create(cls, path: str | os.PathLike, schema: Any, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, timeout_ms: int | None = None, memory: int | None = None) -> "Database":
         """Creates a database at `path` with `schema` (a dict, JSON text, or
         the path of a JSON file; the short form or the long one).
         `directory` keeps it as a directory of segment files instead of one
         file. `models` is where embedded fields' models are (default
         $CHLOEDB_MODELS or ~/.local/share/strata/models; see `chloedb-server
         fetch-model`). `threads` is how many cores vector indexes build on
-        and each query searches segments on (default: every core)."""
-        return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads))
+        and each query searches segments on (default: every core).
+        `timeout_ms` and `memory` limit its queries (see `set_limits`)."""
+        return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads), timeout_ms=timeout_ms, memory=memory)
 
     @classmethod
-    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False) -> "Database":
-        """Opens the database at `path`; `threads` as `create` takes it.
+    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False, timeout_ms: int | None = None, memory: int | None = None) -> "Database":
+        """Opens the database at `path`; `threads`, `timeout_ms` and
+        `memory` as `create` takes them.
         `read_only` opens it to read while another process writes it (a
         web server's other workers, a script): it sees each commit of the
         writer, and every write fails. Without it only one process may have
@@ -303,12 +329,52 @@ class Database(Search, FrameStore):
         the damaged files are kept first (`<path>.damaged-<time>`,
         `<path>-wal.damaged`), `damaged` says what was lost, and a
         `RuntimeWarning` is issued."""
-        db = cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only, recover))
+        db = cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only, recover), timeout_ms=timeout_ms, memory=memory)
         if db.damaged is not None:
             import warnings
 
             warnings.warn(f"{os.fspath(path)}: opened past damage: {db.damaged}", RuntimeWarning, stacklevel=2)
         return db
+
+    def set_limits(self, *, timeout_ms: int | None = None, memory: int | None = None) -> None:
+        """Limits every query of this database from now on, unless a query
+        gives its own (`query(..., timeout_ms=, memory=)`): a deadline of
+        `timeout_ms` milliseconds (None or 0: none, the default), past
+        which a query stops and raises DeadlineError; and a memory budget
+        of `memory` bytes that its queries share (0: none; None, the
+        default: the budget every database of the process shares, a
+        quarter of the machine's memory or $CHLOEDB_QUERY_MEMORY_MB MiB),
+        past which a query stops and raises ChloeDBError with code
+        "memory". The budget counts what a query builds up (its groups, the
+        rows it orders and returns, a join's tables), not the index it
+        reads."""
+        self._limits = _limits(timeout_ms, memory)
+        if not isinstance(self._db, _Pending):
+            self._db.set_limits(*self._limits)
+
+    @property
+    def timeout_ms(self) -> int | None:
+        """The deadline every query gets unless it gives its own, in
+        milliseconds (None: none)."""
+        if isinstance(self._db, _Pending):
+            return self._limits[0] or None
+        return self._db.timeout_ms()
+
+    @property
+    def memory(self) -> int | None:
+        """The memory budget its queries share, in bytes (None: none)."""
+        if isinstance(self._db, _Pending):
+            return self._limits[1] or None
+        return self._db.memory()
+
+    def interrupt(self) -> int:
+        """Stops the queries of this database running now, from any thread
+        (as `sqlite3.Connection.interrupt`): each raises DeadlineError
+        within a few thousand rows. Returns how many there were; queries
+        that start after it run."""
+        if isinstance(self._db, _Pending):
+            return 0
+        return self._db.interrupt()
 
     @property
     def read_only(self) -> bool:
@@ -377,44 +443,53 @@ class Database(Search, FrameStore):
     def __len__(self) -> int:
         return self._db.count()
 
-    def query(self, sql: str, params: Mapping[str, Any] | None = None, *, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Result:
-        """Runs a SELECT. `min_seq_no` and `min_seq_nos` are taken for code
-        written against a `Client`, and change nothing: a database in this
-        process reads every write it committed. A client's other options
-        (`timeout_ms`, ...) raise TypeError rather than bind as parameters;
-        a parameter of that name goes in `params`."""
-        return Result._of(self._db.query(sql, _local_params("query", params, kw)))
+    def query(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Result:
+        """Runs a SELECT. `timeout_ms` is its deadline, as a `Client`'s
+        query takes it: past it the query stops and raises DeadlineError
+        (None or 0: the database's, see `set_limits`). `memory` is a budget
+        of its own in bytes, past which it raises ChloeDBError with code
+        "memory" (0: none; None: the database's). `min_seq_no` and
+        `min_seq_nos` are taken for code written against a `Client`, and
+        change nothing: a database in this process reads every write it
+        committed. A client's other options (`idempotency_key`, ...) raise
+        TypeError rather than bind as parameters; a parameter of that name
+        goes in `params`."""
+        return Result._of(self._db.query(sql, _local_params("query", params, kw), *_limits(timeout_ms, memory)))
 
-    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, *, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> ArrowResult:
+    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> ArrowResult:
         """Runs a SELECT: its answer as Arrow columns, which pyarrow,
-        polars and pandas read without copying (`ArrowResult`)."""
+        polars and pandas read without copying (`ArrowResult`);
+        `timeout_ms` and `memory` as `query` takes them."""
         if not hasattr(self._db, "query_arrow"):
             raise ChloeDBError("this build of chloedb has no Arrow: build it with the feature datafusion (the default)")
-        return ArrowResult(self._db.query_arrow(sql, _local_params("query_arrow", params, kw)))
+        return ArrowResult(self._db.query_arrow(sql, _local_params("query_arrow", params, kw), *_limits(timeout_ms, memory)))
 
-    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Iterator[Any]:
+    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Iterator[Any]:
         """Runs a SELECT and yields its answer a page at a time, as
         `Client.scroll` does: `Result`s, or with `arrow=True` pyarrow
         Tables, of at most `page_size` rows. A database in this process
-        answers every row at once, so its pages are slices of one answer."""
+        answers every row at once, so its pages are slices of one answer,
+        and `timeout_ms` and `memory` (as `query` takes them) bound that
+        answer."""
         _local_params("scroll", params, kw)
         n = max(int(page_size), 1)
         if arrow:
             import pyarrow
 
-            t = pyarrow.table(self.query_arrow(sql, params, **kw))
+            t = pyarrow.table(self.query_arrow(sql, params, timeout_ms=timeout_ms, memory=memory, **kw))
             for i in range(0, max(t.num_rows, 1), n):
                 yield t.slice(i, n)
             return
-        r = self.query(sql, params, **kw)
+        r = self.query(sql, params, timeout_ms=timeout_ms, memory=memory, **kw)
         for i in range(0, max(len(r.rows), 1), n):
             yield Result(r.columns, r.rows[i : i + n], r.keys[i : i + n], r.scores[i : i + n], r._stats if i == 0 else None, r.took_ms if i == 0 else None)
 
-    def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Result | int:
+    def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
-        INSERT, UPDATE or DELETE wrote. A client's `idempotency_key` and
-        `timeout_ms` raise TypeError (see `query`)."""
-        r = self._db.sql(sql, _local_params("sql", params, kw))
+        INSERT, UPDATE or DELETE wrote. `timeout_ms` and `memory` limit a
+        SELECT as `query` takes them; a write is not cut short. A client's
+        `idempotency_key` raises TypeError (see `query`)."""
+        r = self._db.sql(sql, _local_params("sql", params, kw), *_limits(timeout_ms, memory))
         return r if isinstance(r, int) else Result._of(r)
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:
@@ -428,12 +503,13 @@ class Database(Search, FrameStore):
         it: the plan IR as JSON, which `run` takes."""
         return json.loads(self._db.plan(sql, _local_params("plan", params, kw)))
 
-    def run(self, plan: Mapping[str, Any] | Query, *, min_seq_no: int | None = None, min_seq_nos: Any = None) -> Result | int:
+    def run(self, plan: Mapping[str, Any] | Query, *, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None) -> Result | int:
         """Runs a plan (as `plan`, a `Query` or a server's /v1/explain gives
-        it): a read's `Result`, or the number of rows a write wrote."""
+        it): a read's `Result`, or the number of rows a write wrote; a read
+        limited by `timeout_ms` and `memory` as `query` takes them."""
         if isinstance(plan, Query):
             plan = plan.plan()
-        r = self._db.run(json.dumps(plan))
+        r = self._db.run(json.dumps(plan), *_limits(timeout_ms, memory))
         return r if isinstance(r, int) else Result._of(r)
 
     def insert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
@@ -652,6 +728,7 @@ class Database(Search, FrameStore):
         if isinstance(self._db, _Pending):
             p = self._db
             self._db = _strata.Database.create(p.path, json.dumps(schema), p.directory, None if p.models is None else os.fspath(p.models), p.threads)
+            self._db.set_limits(*self._limits)
         else:
             self._db.sql(_strata.create_sql(json.dumps(schema)), None)
 
@@ -661,18 +738,19 @@ class Database(Search, FrameStore):
         return self.import_arrow(data, table=table)
 
 
-def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False) -> Database:
+def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False, timeout_ms: int | None = None, memory: int | None = None) -> Database:
     """Opens the database at `path`, creating it with `schema` if it does
     not exist. `threads`: how many cores vector indexes build on and each
     query searches segments on (default: every core). `read_only`: opens
     it to read while another process writes it; `recover`: opens a
     damaged database accepting the loss of acknowledged writes (see
-    `Database.open`)."""
+    `Database.open`). `timeout_ms` and `memory` limit its queries (see
+    `Database.set_limits`)."""
     if os.path.exists(path) or read_only:
-        return Database.open(path, models=models, threads=threads, read_only=read_only, recover=recover)
+        return Database.open(path, models=models, threads=threads, read_only=read_only, recover=recover, timeout_ms=timeout_ms, memory=memory)
     if schema is None:
         raise ChloeDBError(f"{os.fspath(path)} does not exist: pass a schema to create it")
-    return Database.create(path, schema, directory=directory, models=models, threads=threads)
+    return Database.create(path, schema, directory=directory, models=models, threads=threads, timeout_ms=timeout_ms, memory=memory)
 
 
 def from_sqlite(sqlite_path: str | os.PathLike, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None) -> Database:

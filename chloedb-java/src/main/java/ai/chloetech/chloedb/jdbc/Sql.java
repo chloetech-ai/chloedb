@@ -5,6 +5,7 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLNonTransientConnectionException;
 import java.sql.SQLSyntaxErrorException;
+import java.sql.SQLTimeoutException;
 import java.util.Locale;
 
 /** SQL text as JDBC gives it, and errors as JDBC throws them. */
@@ -105,6 +106,10 @@ final class Sql {
     static SQLException error(RuntimeException e) {
         String m = e.getMessage() == null ? e.toString() : e.getMessage();
         if (e instanceof ChloeDBException) {
+            if (m.startsWith("timeout:")) {
+                // Cancelled (Statement.cancel), or past its query timeout.
+                return m.contains("cancelled") ? new SQLException(m, "HY008", e) : new SQLTimeoutException(m, "HYT00", e);
+            }
             return m.startsWith("query error") ? new SQLSyntaxErrorException(m, "42000", e) : new SQLException(m, "HY000", e);
         }
         if (e instanceof IllegalStateException) {

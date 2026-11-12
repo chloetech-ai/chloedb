@@ -23,6 +23,13 @@ public final class SearchOptions {
     List<String> textFields;
     String vectorField;
     final Map<String, Object> params = new LinkedHashMap<>();
+    QueryOptions limits;
+
+    /** The search's deadline and memory budget, as a query's ({@link QueryOptions}). */
+    public SearchOptions limits(QueryOptions limits) {
+        this.limits = limits;
+        return this;
+    }
 
     /** The rows to answer, 10 unless set. */
     public SearchOptions limit(int limit) {

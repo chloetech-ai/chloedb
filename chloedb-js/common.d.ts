@@ -111,6 +111,12 @@ export interface SearchOptions {
   /** Through a `Client`: a write the answer must see ({@link ReadAfter}). */
   minSeqNo?: number;
   minSeqNos?: number[];
+  /** Its deadline in ms, as `query` takes it. */
+  timeoutMs?: number;
+  /** A `Database`'s only: a memory budget of its own, in bytes. */
+  memory?: number;
+  /** A `Database`'s only: stops it when it aborts. */
+  signal?: AbortSignal;
 }
 
 /** The writes a read must see: `minSeqNo`, the `seqNo` a server's write

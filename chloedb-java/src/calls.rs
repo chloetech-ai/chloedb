@@ -10,11 +10,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use serde_json::{Map, Value as Json};
 use chloedb::db::{Db, SqlResult, WriteOp};
 use chloedb::ingest::{self, Format};
-use chloedb::query::exec::ResultSet;
+use chloedb::query::exec::{ExecOptions, Interrupts, ResultSet};
+use chloedb::query::memory::{self as qmemory, MemoryBudget};
 use chloedb::query::ir::Plan;
 use chloedb::query::sql::{ident, quoted};
 use chloedb::query::Params;
@@ -72,6 +74,42 @@ pub struct Handle {
     db: RwLock<Option<Arc<Db>>>,
     /// Embedded fields whose model did not open, with the reason.
     embed_errors: Vec<(String, String)>,
+    /// What every query is limited to unless it says otherwise
+    /// (`setLimits`).
+    limits: RwLock<Limits>,
+    /// The queries running now, which `interrupt` cancels.
+    running: Interrupts,
+}
+
+/// A database's limits on its queries: the deadline each gets, and the
+/// memory budget they share.
+#[derive(Clone, Default)]
+struct Limits {
+    timeout: Option<Duration>,
+    /// `None`: the database's own options', the process's budget
+    /// ([`qmemory::process_budget`]); `Some(None)`: no budget.
+    memory: Option<Option<Arc<MemoryBudget>>>,
+}
+
+/// The options a query runs with, made of the database's limits and its
+/// call's, and its deadline, for its error.
+struct Limited {
+    opts: ExecOptions,
+    timeout: Option<Duration>,
+}
+
+impl Limited {
+    /// `e`, saying which limit stopped the query and how to change it.
+    fn err(&self, e: chloedb::Error) -> Fail {
+        Fail::Db(match e {
+            chloedb::Error::Timeout(m) if m.contains("deadline") => match self.timeout {
+                Some(t) => chloedb::Error::Timeout(format!("{m}, timeoutMs={} (give the query, or the database, a larger timeoutMs)", t.as_millis())),
+                None => chloedb::Error::Timeout(m),
+            },
+            chloedb::Error::Timeout(m) if m.contains("cancelled") => chloedb::Error::Timeout(format!("{m} by Database.interrupt()")),
+            e => e,
+        })
+    }
 }
 
 impl Handle {
@@ -80,7 +118,21 @@ impl Handle {
         // Segments merge in the background as writes add them, one merge
         // at a time, as a server's do (as chloedb-py's).
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
-        Handle { db: RwLock::new(Some(Arc::new(db))), embed_errors }
+        Handle { db: RwLock::new(Some(Arc::new(db))), embed_errors, limits: RwLock::new(Limits::default()), running: Interrupts::default() }
+    }
+
+    /// The options of a query called with `a`'s `timeoutMs` (0 or none:
+    /// the database's) and `memory` (bytes of a budget of its own; 0: none;
+    /// none: the database's), with a cancel flag `interrupt` sets.
+    fn limited(&self, db: &Db, a: &mut Args) -> R<Limited> {
+        let limits = self.limits.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let timeout = a.opt_count("timeoutMs")?.filter(|&ms| ms > 0).map(|ms| Duration::from_millis(ms as u64)).or(limits.timeout);
+        let memory = a.opt_count("memory")?.map(|b| b as u64);
+        let base = match limits.memory {
+            Some(budget) => ExecOptions { memory: budget, ..db.exec.clone() },
+            None => db.exec.clone(),
+        };
+        Ok(Limited { opts: base.limited(timeout, memory, Some(self.running.start(a.opt_count("tag")?.unwrap_or(0) as u64))), timeout })
     }
 
     fn get(&self) -> R<Arc<Db>> {
@@ -123,10 +175,14 @@ fn takes(method: &str) -> Option<&'static [&'static str]> {
         "upgrade" => &["path"],
         "schema" => &["table"],
         "alterTable" => &["changes", "table"],
-        "query" | "sql" | "plan" => &["sql", "params"],
+        "query" | "sql" => &["sql", "params", "timeoutMs", "memory", "tag"],
+        "plan" => &["sql", "params"],
+        "setLimits" => &["timeoutMs", "memory"],
+        "limits" => &[],
+        "interrupt" => &["tag"],
         "queryLogged" => &["sql", "params", "log"],
         "exportRankLog" => &["options"],
-        "run" => &["plan"],
+        "run" => &["plan", "timeoutMs", "memory", "tag"],
         "insert" | "upsert" => &["rows", "table"],
         "delete" | "getMany" => &["keys", "table"],
         "write" => &["ops"],
@@ -745,13 +801,14 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
         "query" => {
             let sql = a.str("sql")?;
             let p = a.params(db)?;
+            let l = h.limited(db, a)?;
             // EXPLAIN answers rows too, and writes nothing.
             let explain = sql.trim_start().get(..7).is_some_and(|w| w.eq_ignore_ascii_case("explain"));
             match explain {
-                true => sql_result(db.sql(&sql, &p)?),
+                true => sql_result(db.sql_with(&sql, &p, &l.opts).map_err(|e| l.err(e))?),
                 false => {
                     let mut w = Writer::default();
-                    result(&mut w, &db.query(&sql, &p)?, 0);
+                    result(&mut w, &db.query_with(&sql, &p, &l.opts).map_err(|e| l.err(e))?, 0);
                     w.b
                 }
             }
@@ -759,8 +816,21 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
         "sql" => {
             let sql = a.str("sql")?;
             let p = a.params(db)?;
-            sql_result(db.sql(&sql, &p)?)
+            let l = h.limited(db, a)?;
+            sql_result(db.sql_with(&sql, &p, &l.opts).map_err(|e| l.err(e))?)
         }
+        "setLimits" => {
+            let timeout = a.opt_count("timeoutMs")?.filter(|&ms| ms > 0).map(|ms| Duration::from_millis(ms as u64));
+            let memory = a.opt_count("memory")?.map(|b| qmemory::budget_of(b as u64, "this database's queries may hold at once (its memory option)"));
+            *h.limits.write().unwrap_or_else(|e| e.into_inner()) = Limits { timeout, memory };
+            null()
+        }
+        "limits" => {
+            let limits = h.limits.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let memory = limits.memory.unwrap_or_else(|| db.exec.memory.clone());
+            json(&serde_json::json!({"timeoutMs": limits.timeout.map(|t| t.as_millis() as u64), "memory": memory.map(|b| b.limit())}))
+        }
+        "interrupt" => int(h.running.interrupt(a.opt_count("tag")?.map(|t| t as u64)) as u64),
         "queryLogged" => {
             let sql = a.str("sql")?;
             let p = a.params(db)?;
@@ -800,7 +870,8 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
         }
         "run" => {
             let plan = a.json("plan")?.ok_or_else(|| Fail::Arg("run: plan is missing".into()))?;
-            sql_result(db.run(&Plan::from_json(&plan)?)?)
+            let l = h.limited(db, a)?;
+            sql_result(db.run_with(&Plan::from_json(&plan)?, &l.opts).map_err(|e| l.err(e))?)
         }
         "insert" => {
             let table = a.opt_str("table")?;

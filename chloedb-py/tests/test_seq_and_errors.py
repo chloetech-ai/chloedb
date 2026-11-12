@@ -248,16 +248,18 @@ needs_native = pytest.mark.skipif(not chloedb._native.NATIVE, reason="the extens
 
 @needs_native
 def test_database_refuses_client_options(db):
+    # timeout_ms is a query's deadline here, as on a client (test_limits.py
+    # has more); a method that runs no query refuses it.
+    assert db.query("SELECT COUNT(*) FROM books", timeout_ms=60_000).rows == [[200]]
+    assert db.query_arrow("SELECT id FROM books", timeout_ms=60_000).num_rows == 200
     with pytest.raises(TypeError, match="timeout_ms"):
-        db.query("SELECT COUNT(*) FROM books", timeout_ms=1)
+        db.plan("SELECT COUNT(*) FROM books", timeout_ms=1)
     with pytest.raises(TypeError, match="idempotency_key"):
         db.sql("UPDATE books SET year = 1 WHERE id = 'b0001'", idempotency_key="abc")
     with pytest.raises(TypeError, match="idempotency_key"):
         db.write([{"op": "delete", "key": "b0001"}], idempotency_key="abc")
     with pytest.raises(TypeError, match="keep_alive_ms"):
         list(db.scroll("SELECT id FROM books", keep_alive_ms=10))
-    with pytest.raises(TypeError, match="timeout_ms"):
-        db.query_arrow("SELECT id FROM books", timeout_ms=1)
     # Nothing was written by the refused calls.
     assert db.get("b0001")["year"] == 1901
     # A parameter of such a name still binds, from params.

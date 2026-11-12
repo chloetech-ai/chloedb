@@ -194,6 +194,32 @@ p = db.plan("SELECT id FROM books WHERE year >= :y LIMIT 3", y=2000)
 db.run(p)
 ```
 
+### Limits: memory, deadlines, interrupting
+
+A query runs in your process, so what it builds up (its groups, the rows it orders and returns, a percentile's values, a join's tables) is held by your program. The queries of every database a process opens share a memory budget, by default a quarter of the machine's memory (the cgroup's limit in a container, else RAM), or `CHLOEDB_QUERY_MEMORY_MB` MiB when that is set when the first database opens (`0`: no budget). A query that would hold more stops and raises `ChloeDBError` with code `memory`, naming the budget and how to raise it, and gives back what it held; the program and its other queries go on. `SELECT * FROM big` on a table larger than the budget, a `GROUP BY` over a column with a value per row or a percentile over every row fail this way rather than taking the machine's memory. The counts are estimates of what a query grows, not of every allocation, and the index a query reads is mapped from the file and not counted.
+
+A query has no deadline unless it is given one. `timeout_ms` (to `query`, `query_arrow`, `scroll`, `sql`, `search` and `run`, as a `Client`'s query takes it) stops it once it has run that long: it raises `DeadlineError`, naming the `timeout_ms`. `memory=` gives a query a budget of its own, in bytes (`memory=0`: none). A database's own limits, for every query that does not give its own, are set when it opens or later:
+
+```python
+db = chloedb.open("books.strata", timeout_ms=5_000, memory=512 << 20)   # 5 s, and 512 MiB its queries share
+db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", timeout_ms=200)
+db.query("SELECT * FROM books", memory=0)                               # this one counts nothing
+db.set_limits(timeout_ms=None, memory=None)                             # back to the defaults
+db.timeout_ms, db.memory                                                # the limits now (None: none)
+```
+
+`db.interrupt()`, from any thread, stops the queries of the database running now, as `sqlite3.Connection.interrupt` does: each raises `DeadlineError` within a few thousand rows, and queries that start after it run. Calls release the GIL while they run, so another thread (a watchdog, a web server's request that was cancelled) can call it:
+
+```python
+threading.Timer(2.0, db.interrupt).start()
+try:
+    db.query("SELECT a.id, b.id FROM books a JOIN books b ON a.year = b.year")
+except chloedb.DeadlineError:
+    ...
+```
+
+A query checks its deadline and `interrupt` between segments and every 1,024 rows it groups, orders, walks or joins. A write is not cut short: `sql`'s limits apply to a `SELECT`. Ctrl-C reaches Python only when a call returns, so a notebook stops a runaway query with `timeout_ms` or `interrupt()` from another thread.
+
 ## Queries built in Python
 
 `table()` starts a query of the table built from Python values instead of SQL text, so nothing is quoted or escaped: fields are named as the schema names them (`col("order")`, `col("doc no")`), and values keep their types (a `str` is text whatever quotes it holds, a `date` or `datetime` a timestamp, UTC unless it says otherwise). Each method returns a new query; iterating one, or `run()`, runs it and gives its `Result`:
@@ -369,17 +395,19 @@ Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBE
 | `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
 
-Other codes have no subclass: `memory` (a query past its memory budget), `corrupt`, `io`, `internal` (another 5xx) and `error`. `chloedb.error_code(message, status, answer)` gives the code of any message. A server that cannot be reached still raises `urllib.error.URLError`, and a client's own timeout `TimeoutError`, as before.
+Other codes have no subclass: `memory` (a query past its memory budget, [limits](#limits-memory-deadlines-interrupting)), `corrupt`, `io`, `internal` (another 5xx) and `error`. `chloedb.error_code(message, status, answer)` gives the code of any message. A server that cannot be reached still raises `urllib.error.URLError`, and a client's own timeout `TimeoutError`, as before.
 
 ### Database and Client: what differs
 
-A script moves between `chloedb.open` and `chloedb.connect` unchanged as long as it keeps to what both have. Options that only a server can honour raise `TypeError` on a `Database` rather than being taken as query parameters: `timeout_ms` (to `query`, `query_arrow`, `scroll`, `sql`), `idempotency_key` (to `sql`, `write`) and `keep_alive_ms` (to `scroll`); a query parameter of one of those names goes in the `params` dict. The rest of the differences:
+A script moves between `chloedb.open` and `chloedb.connect` unchanged as long as it keeps to what both have. `timeout_ms` means the same on both: a query's deadline ([limits](#limits-memory-deadlines-interrupting)). Options that only a server can honour raise `TypeError` on a `Database` rather than being taken as query parameters: `idempotency_key` (to `sql`, `write`), `keep_alive_ms` (to `scroll`), and `timeout_ms` to a method that runs no query (`plan`); a query parameter of one of those names goes in the `params` dict. The rest of the differences:
 
 | | `Database` (in your process) | `Client` (a server) |
 |---|---|---|
 | a write's count | `int` | `Written`, an `int` with `seq_no` / `seq_nos` |
 | `min_seq_no`, `min_seq_nos` | taken and ignored | sent: the answering copy holds those writes |
-| `timeout_ms`, `idempotency_key`, `keep_alive_ms` | `TypeError` | sent |
+| `timeout_ms` | the query's deadline, none by default | sent: the query's deadline, the server's `--timeout-ms` (5 s) by default |
+| `memory`, `interrupt()` | a query's budget; stops the running queries | the server's `--query-memory-mb` |
+| `idempotency_key`, `keep_alive_ms` | `TypeError` | sent |
 | `scroll` | slices of one answer | pages of a server-side scroll, past `--max-result-window` |
 | `export_sqlite` | returns a dict | returns the tables' names |
 | `export_parquet` | `tables=`, returns a dict | `table=`, returns the table's name |

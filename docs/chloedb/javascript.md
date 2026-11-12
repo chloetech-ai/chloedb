@@ -73,8 +73,8 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 
 | call | what |
 |---|---|
-| `db.query(sql, params)` | a SELECT: a `Result` |
-| `db.sql(sql, params)` | any statement: a SELECT's `Result`, or the rows an INSERT, UPDATE or DELETE wrote; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` too |
+| `db.query(sql, params, {timeoutMs, memory, signal})` | a SELECT: a `Result` ([limits](#limits-memory-deadlines-aborting)) |
+| `db.sql(sql, params, {timeoutMs, memory, signal})` | any statement: a SELECT's `Result`, or the rows an INSERT, UPDATE or DELETE wrote; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` too |
 | `db.search(text, {limit, where, columns, mode, textFields, vectorField, params, table})` | the rows that best match a text: BM25 over the text fields (`mode: "text"`), the similarity of an embedded vector field (`"vector"`), or both fused by reciprocal rank (`"hybrid"`, what `"auto"` picks when a model is open) |
 | `db.plan(sql, params)`, `db.run(plan)` | a statement's [plan](query-language.md) as JSON, without running it; running a plan |
 | `db.embed(text, {field, image, audio})`, `db.embedTokens(text, field)` | a query vector by an embedded field's model (of an image's or a sound's bytes too), a multi-vector field's token vectors |
@@ -84,6 +84,22 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 Parameters are `:name` in the SQL and an object of values: numbers, strings, booleans, null, `Date`s, arrays (an array of numbers or a `Float32Array` is a vector), an object of numbers (sparse term weights), `{embed: "some text"}` (the text's vector by an embedded field's model) or `{vector_of: key}` (a stored row's vector).
 
 A `Result` has `columns`, `rows` (arrays in column order), `keys` (each row's primary key), `scores` (what it was ranked by) and `stats` (what the engine did). Iterating it gives each row as an object; `r.at(i)`, `r.objects()`, `r.column(name)` and `r.scalar()` (a count, a sum) read it other ways.
+
+### Limits: memory, deadlines, aborting
+
+A query runs in your process, so what it builds up (its groups, the rows it orders and returns, a join's tables) is held by your program. The queries of every database a process opens share a memory budget, by default a quarter of the machine's memory (the cgroup's limit in a container, else RAM), or `CHLOEDB_QUERY_MEMORY_MB` MiB when that is set when the first database opens (`0`: no budget). A query that would hold more rejects with a `ChloeDBError` of code `memory`, naming the budget and how to raise it, and gives back what it held, instead of the process running out of memory.
+
+A query has no deadline unless it is given one. `db.query`, `db.sql`, `db.run` and `db.search` take a last argument of options: `timeoutMs` (its deadline, as a `Client`'s `query` takes it: it rejects with `DeadlineError` naming it), `memory` (a budget of its own in bytes; `0`: none) and `signal`, an `AbortSignal` that stops it when it aborts (it rejects with the signal's reason, as an aborted `fetch` does). A database's own limits, for every query that does not give its own, are set when it opens or later; `db.interrupt()` stops every query of the database running now, and returns how many there were:
+
+```js
+const db = await open("books.strata", { timeoutMs: 5000, memory: 512 * 2 ** 20 });  // 5 s, and 512 MiB its queries share
+await db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", null, { timeoutMs: 200 });
+await db.query("SELECT * FROM books", null, { memory: 0, signal: AbortSignal.timeout(1000) });
+db.setLimits({});                 // back to the defaults: no deadline, the process's budget
+db.timeoutMs, db.memory;          // the limits now (null: none)
+```
+
+A query checks its deadline and its signal between segments and every 1,024 rows it groups, orders, walks or joins, so it stops within milliseconds; it holds a thread of libuv's pool (`UV_THREADPOOL_SIZE`, 4 by default, which `fs` and `dns` share) until then. A write is not cut short: `sql`'s limits apply to a SELECT.
 
 ### Writing
 
@@ -124,7 +140,7 @@ Errors reject with a `ChloeDBError`, whose message is the database's (`StrataErr
 | `timeout` | `DeadlineError` | a deadline passed: `timeoutMs`, a coordinator's wait for a shard (504) |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503) |
 
-Other codes are `memory`, `corrupt`, `io`, `internal` and `error`; `errorCode(message, status, answer)` gives the code of any message.
+Other codes are `memory` (a query past its memory budget), `corrupt`, `io`, `internal` and `error`; `errorCode(message, status, answer)` gives the code of any message.
 
 ## A server from JavaScript
 

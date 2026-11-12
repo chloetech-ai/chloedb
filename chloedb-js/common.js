@@ -306,9 +306,13 @@ export class Searchable {
    * "hybrid" fuses both by reciprocal rank (RRF). "auto" is hybrid when the
    * table has an embedded field whose model is open here, and text
    * otherwise. `where` is an SQL condition, with `params` for its
-   * placeholders.
+   * placeholders. `timeoutMs` bounds it as `query` takes it; a `Database`
+   * also takes `memory` and `signal`, as its `query` does.
    */
-  async search(text, { limit = 10, where, columns = "*", mode = "auto", textFields, vectorField, params, table, minSeqNo, minSeqNos } = {}) {
+  async search(text, { limit = 10, where, columns = "*", mode = "auto", textFields, vectorField, params, table, minSeqNo, minSeqNos, timeoutMs, memory, signal } = {}) {
+    // A client's query takes timeoutMs alone: a server's queries share its
+    // memory budget.
+    if ((memory != null || signal != null) && !this._local) throw new TypeError(`${this.constructor.name}.search() takes no ${memory != null ? "memory" : "signal"}`);
     const s = await this.schema(table);
     if (textFields == null) {
       const texts = s.fields.filter((f) => f.type === "text" && (f.indexed ?? true));
@@ -341,7 +345,8 @@ export class Searchable {
     const p = { ...(params ?? {}) };
     if (order.includes("bm25")) p._q = text;
     if (order.includes("similarity")) p._v = { embed: text, field: vectorField, ...(table == null ? {} : { table: s.table }) };
-    return minSeqNo == null && minSeqNos == null ? this.query(sql, p) : this.query(sql, p, { minSeqNo, minSeqNos });
+    const opts = Object.fromEntries(Object.entries({ minSeqNo, minSeqNos, timeoutMs, memory, signal }).filter(([, v]) => v != null));
+    return Object.keys(opts).length ? this.query(sql, p, opts) : this.query(sql, p);
   }
 }
 
