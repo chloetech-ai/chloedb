@@ -23,17 +23,19 @@ use chloedb_server::service::{AgentConfig, Backend, QueryReq, Service};
 const N: usize = 300;
 const AFTER_MS: u64 = 600;
 
-/// A port free now, of a block of 40 that this test process takes alone
+/// A port free now, from a block of 40 that this test process starts at
 /// (by its process id) below the ranges the other tests and the system's
 /// own connections take ports from: a port taken with port 0 can be handed
 /// to a connection's own end before the server, started again, binds it.
+/// When ports of its block are held by another process, it goes on into
+/// the next blocks, up to 400 ports in all.
 fn port() -> u16 {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let base = 10_000 + (std::process::id() % 500) * 40;
+    let base = (std::process::id() % 500) * 40;
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        assert!(n < 40, "this test process took its 40 ports");
-        let p = (base + n) as u16;
+        assert!(n < 400, "this test process tried 400 ports and found none free");
+        let p = (10_000 + (base + n) % 20_000) as u16;
         if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
             return p;
         }
@@ -445,4 +447,62 @@ async fn a_primary_cut_off_from_its_majority_is_given_no_new_copies() {
     .await;
     reship(&a, &[bu, cu, du], false).await.unwrap();
     drop((dd, e));
+}
+
+/// Finding E-1 on real processes: shard {A, B, C}, A its primary. B and C
+/// stop with their volumes, and A is left alone (two removals, with
+/// accept_data_loss, as an operator shrinking a shard by hand does) and
+/// takes writes. B and C come back holding the membership that names them,
+/// and elect one of themselves in a newer term (they are two of its three
+/// copies). That primary's calls fenced A, which stepped down, followed it
+/// and was sent a copy of it that dropped every write A took alone. Now A
+/// refuses calls of an older membership than its own, serves on in its
+/// term, and keeps those writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn copies_removed_while_down_do_not_depose_the_primary_when_they_return() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let mut a = Node::new(d, "a", N);
+    let mut b = Node::new(d, "b", 0);
+    let mut c = Node::new(d, "c", 0);
+    for n in [&mut a, &mut b, &mut c] {
+        n.start().await;
+    }
+    let (coord, svc) = coordinator(a.url()).await;
+    coord.add_replica(0, &b.url(), false, false).await.unwrap();
+    coord.add_replica(0, &c.url(), false, false).await.unwrap();
+    until("both replicas are in sync and vote", &[&a, &b, &c], || async {
+        let r = a.replication().await;
+        r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
+    })
+    .await;
+    svc.write_ops(set(0, 100), None).await.unwrap();
+    let (_, term) = role(&a).await;
+
+    // B and C down, their volumes kept; A alone.
+    b.kill();
+    c.kill();
+    coord.remove_replica(0, &b.url(), true).await.unwrap();
+    coord.remove_replica(0, &c.url(), true).await.unwrap();
+    assert_eq!(a.replication().await["replicas"].as_array().map(Vec::len), Some(0), "A ships to no replica");
+    svc.write_ops(set(1, 101), None).await.unwrap();
+
+    // B and C back: they elect one of themselves.
+    b.start().await;
+    c.start().await;
+    until("B or C is elected by the other", &[&a, &b, &c], || async {
+        let (rb, tb) = role(&b).await;
+        let (rc, tc) = role(&c).await;
+        (rb == "primary" && tb > term) || (rc == "primary" && tc > term)
+    })
+    .await;
+    // Some calls of the new primary's, and some of its failover rounds.
+    tokio::time::sleep(Duration::from_millis(AFTER_MS * 6)).await;
+    let r = a.replication().await;
+    assert_eq!((r["role"].as_str(), r["term"].as_u64(), r.get("replaced_by_term")), (Some("primary"), Some(term), None), "A serves on in its term: {r}\n{}", a.logs());
+    let (lb, lc) = (b.logs(), c.logs());
+    assert!(lb.contains("of the shard's membership") || lc.contains("of the shard's membership"), "A refused the new primary's calls:\n{lb}\n{lc}");
+    svc.write_ops(set(2, 102), None).await.unwrap();
+    let got = sold(&svc).await;
+    assert_eq!((got["p0000000"], got["p0000001"], got["p0000002"]), (100, 101, 102), "the writes A took alone are kept");
 }

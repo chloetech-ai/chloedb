@@ -79,7 +79,7 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 | `db.plan(sql, params)`, `db.run(plan)` | a statement's [plan](query-language.md) as JSON, without running it; running a plan |
 | `db.embed(text, {field, image, audio})`, `db.embedTokens(text, field)` | a query vector by an embedded field's model (of an image's or a sound's bytes too), a multi-vector field's token vectors |
 | `db.queryLogged(sql, params, {context, variant, ...})`, `db.exportRankLog({...})` | the [rank log](query-language.md#the-rank-log-what-each-query-served): a ranked query that logs what it served, and the log as records for training |
-| `db.sidNext(prefixes, {field, where})`, `db.trainCodebook(field, name)` | semantic IDs: the codes that can follow prefixes, and training a codebook |
+| `db.sidNext(prefixes, {field, where})`, `db.trainCodebook(field, name, {balanced})` | semantic IDs: the codes that can follow prefixes, and training a codebook (`balanced: true` uses every level's numbers evenly) |
 
 Parameters are `:name` in the SQL and an object of values: numbers, strings, booleans, null, `Date`s, arrays (an array of numbers or a `Float32Array` is a vector), an object of numbers (sparse term weights), `{embed: "some text"}` (the text's vector by an embedded field's model) or `{vector_of: key}` (a stored row's vector).
 

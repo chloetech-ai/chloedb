@@ -8,7 +8,10 @@
 //! - **shrink**: when they are all less than `busyBelow` busy for
 //!   `forMinutes`, remove a copy from every shard, down to `min`;
 //! - **volumes**: when the fullest volume is more than `fullAbove` full,
-//!   grow every volume by half, or add a shard (the slots even out);
+//!   grow every volume by half, up to `maxSize`, or add a shard (the slots
+//!   even out), up to `maxShards`; not again until the reading fell below
+//!   what it was when the rule last fired (a volume that cannot grow in
+//!   place, or deletes not merged away yet, keep it high: finding E-8);
 //! - **freeze**: weekly windows (UTC) in which nothing changes, or only
 //!   copies are added;
 //! - **cooldown**: a change waits `cooldownMinutes` after the one before,
@@ -104,11 +107,15 @@ pub struct Volumes {
     /// The fullest volume's used share, 0 to 1.
     pub full_above: f64,
     pub action: VolumeAction,
+    /// The size a volume grows to at most (`grow`), as in the spec.
+    pub max_size: String,
+    /// The shards the cluster grows to at most (`addShard`).
+    pub max_shards: usize,
 }
 
 impl Default for Volumes {
     fn default() -> Volumes {
-        Volumes { full_above: 0.8, action: VolumeAction::Grow }
+        Volumes { full_above: 0.8, action: VolumeAction::Grow, max_size: "1Ti".into(), max_shards: 16 }
     }
 }
 
@@ -188,6 +195,8 @@ pub fn schema() -> Json {
         "volumes": {"type": "object", "description": "When the fullest volume fills.", "properties": {
             "fullAbove": share("Its used share (default 0.8)."),
             "action": {"type": "string", "enum": ["grow", "addShard"], "description": "grow: every volume by half; addShard: one more shard (default grow)."},
+            "maxSize": {"type": "string", "description": "grow: the size a volume grows to at most, as 500Gi (default 1Ti)."},
+            "maxShards": int(1, "addShard: the shards the cluster grows to at most (default 16)."),
         }},
         "freeze": {"type": "array", "description": "Weekly windows, in UTC, in which nothing changes.", "items": {"type": "object", "properties": {
             "from": {"type": "string", "description": "A day and a time, like Fri 16:00."},
@@ -210,8 +219,8 @@ impl Autoscale {
         }
         if let Some(v) = &self.volumes {
             parts.push(match v.action {
-                VolumeAction::Grow => format!("volumes half as big again when one is over {} full", pct(v.full_above)),
-                VolumeAction::AddShard => format!("a shard more when a volume is over {} full", pct(v.full_above)),
+                VolumeAction::Grow => format!("volumes half as big again when one is over {} full, up to {}", pct(v.full_above), v.max_size),
+                VolumeAction::AddShard => format!("a shard more when a volume is over {} full, up to {} shards", pct(v.full_above), v.max_shards),
             });
         }
         for f in &self.freeze {
@@ -253,6 +262,12 @@ impl Autoscale {
         }
         if let Some(v) = &self.volumes {
             share("volumes.fullAbove", v.full_above)?;
+            if mebibytes(&v.max_size).is_none_or(|m| m <= 0.0) {
+                return Err(format!("autoscale.volumes.maxSize is a size, as 500Gi or 2Ti, not {:?}", v.max_size));
+            }
+            if v.max_shards == 0 {
+                return Err("autoscale.volumes.maxShards is 1 or more".into());
+            }
         }
         for f in &self.freeze {
             week_minute(&f.from)?;
@@ -305,8 +320,22 @@ pub struct State {
     pub dismissed_ms: Option<u64>,
     /// Why nothing changes now, when a rule would fire.
     pub waiting: Option<String>,
+    /// The volume rule's last change, until the reading goes back under
+    /// `fullAbove`: once the change is made, the rule fires again only
+    /// after the reading fell below what it was then (finding E-8).
+    pub volumes_fired: Option<Fired>,
     /// The latest changes made or suggested, the newest last.
     pub log: Vec<Entry>,
+}
+
+/// When the volume rule fired ([`State::volumes_fired`]): the fullest
+/// volume's share then, and the sizes it changed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Fired {
+    pub full: f64,
+    pub volume: String,
+    pub shards: usize,
 }
 
 /// A change the rules make: a merge patch of the spec, and why.
@@ -349,13 +378,13 @@ fn minutes(m: u64) -> String {
     }
 }
 
-/// A volume's size half as big again: `10Gi` → `15Gi` (in Mi below 1Gi).
-pub fn grown(size: &str) -> Option<String> {
+/// A volume's size in MiB: `10Gi` is 10,240.
+pub fn mebibytes(size: &str) -> Option<f64> {
     let s = size.trim();
     let split = s.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(s.len());
     let (n, unit) = s.split_at(split);
     let n: f64 = n.parse().ok()?;
-    let mi = match unit {
+    Some(match unit {
         "Ti" => n * 1024.0 * 1024.0,
         "Gi" => n * 1024.0,
         "Mi" => n,
@@ -363,8 +392,40 @@ pub fn grown(size: &str) -> Option<String> {
         "G" => n * 1e9 / 1048576.0,
         "M" => n * 1e6 / 1048576.0,
         _ => return None,
-    } * 1.5;
-    Some(if mi >= 1024.0 { format!("{}Gi", (mi / 1024.0).ceil() as u64) } else { format!("{}Mi", mi.ceil() as u64) })
+    })
+}
+
+fn size_of(mi: f64) -> String {
+    if mi >= 1024.0 {
+        format!("{}Gi", (mi / 1024.0).ceil() as u64)
+    } else {
+        format!("{}Mi", mi.ceil() as u64)
+    }
+}
+
+/// A volume's size half as big again: `10Gi` → `15Gi` (in Mi below 1Gi).
+pub fn grown(size: &str) -> Option<String> {
+    Some(size_of(mebibytes(size)? * 1.5))
+}
+
+/// [`grown`], but not past `max`: `None` when `size` is `max` or more, or
+/// either is not a size.
+pub fn grown_to(size: &str, max: &str) -> Option<String> {
+    let (now, max) = (mebibytes(size)?, mebibytes(max)?);
+    if now >= max {
+        return None;
+    }
+    let to = mebibytes(&grown(size)?)?;
+    Some(if to >= max { max_size(max) } else { size_of(to) })
+}
+
+/// A size of `mi` MiB as the spec would say it, not rounded up past it.
+fn max_size(mi: f64) -> String {
+    if mi >= 1024.0 && (mi / 1024.0).fract() == 0.0 {
+        format!("{}Gi", (mi / 1024.0) as u64)
+    } else {
+        format!("{}Mi", mi.floor() as u64)
+    }
 }
 
 /// The rules on `r`, after `before`: the state to keep, and the change
@@ -389,23 +450,53 @@ pub fn decide(a: &Autoscale, before: &State, r: &Reading, sizes: &Sizes, settled
             fire = Some(Change { at_ms: now, rule: "grow".into(), patch: json!({"replicas": to}), text });
         }
     }
+    // The volume rule's last change: forgotten once the reading went back
+    // under its threshold.
+    match (&a.volumes, r.full) {
+        (Some(v), Some(full)) if full > v.full_above => {}
+        (Some(_), None) => {}
+        _ => s.volumes_fired = None,
+    }
+    // Why the volume rule, which would fire, does not.
+    let mut held_back = None;
     if fire.is_none() {
         if let (Some(v), Some(full)) = (&a.volumes, r.full) {
             if full > v.full_above {
-                fire = match v.action {
-                    VolumeAction::Grow => grown(&sizes.volume).map(|to| Change {
-                        at_ms: now,
-                        rule: "volumes".into(),
-                        patch: json!({"storage": {"size": to}}),
-                        text: format!("the fullest volume was {} full, over {}: every volume {} → {to}", pct(full), pct(v.full_above), sizes.volume),
-                    }),
-                    VolumeAction::AddShard => Some(Change {
-                        at_ms: now,
-                        rule: "volumes".into(),
-                        patch: json!({"shards": sizes.shards + 1}),
-                        text: format!("the fullest volume was {} full, over {}: {} → {} shards (the slots even out)", pct(full), pct(v.full_above), sizes.shards, sizes.shards + 1),
-                    }),
-                };
+                let over = format!("the fullest volume is {} full, over {}", pct(full), pct(v.full_above));
+                // Made (the sizes are no longer those it changed), and the
+                // reading no lower.
+                let made = s.volumes_fired.as_ref().filter(|f| full >= f.full && (f.volume != sizes.volume || f.shards != sizes.shards));
+                if let Some(was) = made.map(|f| f.full) {
+                    // The change before has not lowered the reading: a
+                    // volume that cannot grow in place, or deletes not
+                    // merged away yet. Another change would not either.
+                    held_back = Some(format!("{over}, but it was {} when the volume rule last changed the cluster, and has not fallen since: the rule waits for that change to take effect (a storage class that cannot grow volumes in place does not)", pct(was)));
+                } else {
+                    fire = match v.action {
+                        VolumeAction::Grow => match grown_to(&sizes.volume, &v.max_size) {
+                            Some(to) => Some(Change {
+                                at_ms: now,
+                                rule: "volumes".into(),
+                                patch: json!({"storage": {"size": to}}),
+                                text: format!("the fullest volume was {} full, over {}: every volume {} → {to}", pct(full), pct(v.full_above), sizes.volume),
+                            }),
+                            None => {
+                                held_back = Some(format!("{over}, and every volume is {}, at autoscale.volumes.maxSize ({}) or not a size", sizes.volume, v.max_size));
+                                None
+                            }
+                        },
+                        VolumeAction::AddShard if sizes.shards >= v.max_shards => {
+                            held_back = Some(format!("{over}, and the cluster has {} shards, at autoscale.volumes.maxShards ({})", sizes.shards, v.max_shards));
+                            None
+                        }
+                        VolumeAction::AddShard => Some(Change {
+                            at_ms: now,
+                            rule: "volumes".into(),
+                            patch: json!({"shards": sizes.shards + 1}),
+                            text: format!("the fullest volume was {} full, over {}: {} → {} shards (the slots even out)", pct(full), pct(v.full_above), sizes.shards, sizes.shards + 1),
+                        }),
+                    };
+                }
             }
         }
     }
@@ -419,6 +510,7 @@ pub fn decide(a: &Autoscale, before: &State, r: &Reading, sizes: &Sizes, settled
     }
     let Some(change) = fire else {
         s.suggestion = None;
+        s.waiting = held_back;
         return (s, None);
     };
 
@@ -442,6 +534,9 @@ pub fn decide(a: &Autoscale, before: &State, r: &Reading, sizes: &Sizes, settled
         return (s, None);
     }
     s.suggestion = None;
+    if change.rule == "volumes" {
+        s.volumes_fired = r.full.map(|full| Fired { full, volume: sizes.volume.clone(), shards: sizes.shards });
+    }
     (s, Some(change))
 }
 
@@ -458,6 +553,10 @@ pub fn step(a: &Autoscale, mut before: State, latest_ms: Option<u64>, dismissed:
     if let Some(s) = before.suggestion.clone().filter(|s| dismissed == Some(s.at_ms.to_string().as_str())) {
         before.suggestion = None;
         before.dismissed_ms = Some(now);
+        // A volume change not made has not lowered the reading.
+        if s.rule == "volumes" {
+            before.volumes_fired = None;
+        }
         before.note(now, format!("dismissed: {}", s.text));
     }
     let (mut s, change) = decide(a, &before, r, sizes, settled);
@@ -526,7 +625,10 @@ impl Replayed {
             self.sizes.shards = n as usize;
         }
         if let Some(v) = c.patch["storage"]["size"].as_str() {
-            self.volume_scale /= 1.5;
+            self.volume_scale /= match (mebibytes(v), mebibytes(&self.sizes.volume)) {
+                (Some(to), Some(from)) if from > 0.0 => to / from,
+                _ => 1.5,
+            };
             self.sizes.volume = v.to_string();
         }
     }
@@ -748,6 +850,58 @@ mod tests {
         assert!(s.suggestion.is_none());
     }
 
+    /// Finding E-8: a storage class that cannot grow volumes in place
+    /// keeps the fullest volume's reading where it was, and the rule used
+    /// to fire again every cooldown: 10Gi became 380Gi in nine rounds. Now
+    /// it fires once and waits for the reading to fall, grows no volume
+    /// past `maxSize` and adds no shard past `maxShards`.
+    #[test]
+    fn the_volume_rule_waits_for_its_change_to_show_and_stops_at_its_ceiling() {
+        let a = Autoscale { grow: None, shrink: None, ..rules() };
+        let tue = MONDAY + (1440 + 10 * 60) * MIN;
+        let mut sizes = sizes(3);
+        let (mut state, mut made) = (State::default(), Vec::new());
+        for round in 0..9 {
+            let at = tue + round * 21 * MIN;
+            let r = Reading { at_ms: at, busy: Some(0.5), full: Some(0.85) };
+            let (s, c) = step(&a, state, made.last().map(|_: &Change| at - 21 * MIN), None, &r, &sizes, true);
+            state = s;
+            if let Some(c) = c {
+                sizes.volume = c.patch["storage"]["size"].as_str().unwrap().to_string();
+                made.push(c);
+            }
+        }
+        assert_eq!((made.len(), sizes.volume.as_str()), (1, "15Gi"), "{made:?}");
+        let w = state.waiting.clone().unwrap_or_default();
+        assert!(w.contains("85% when the volume rule last changed the cluster, and has not fallen since"), "{w}");
+        // The volume grew: the reading falls, and when it rises past the
+        // threshold again the rule fires again.
+        let later = tue + 5 * 60 * MIN;
+        let (s, c) = step(&a, state, Some(later - 60 * MIN), None, &Reading { at_ms: later, busy: None, full: Some(0.6) }, &sizes, true);
+        assert!(c.is_none() && s.volumes_fired.is_none());
+        let (_, c) = step(&a, s, Some(later - 60 * MIN), None, &Reading { at_ms: later + 30 * MIN, busy: None, full: Some(0.9) }, &sizes, true);
+        assert_eq!(c.unwrap().patch, json!({"storage": {"size": "23Gi"}}));
+        // A reading lower than the last, still over: it fires.
+        let fired = State { volumes_fired: Some(Fired { full: 0.95, volume: "10Gi".into(), shards: 4 }), ..State::default() };
+        let (_, c) = decide(&a, &fired, &Reading { at_ms: tue, busy: None, full: Some(0.9) }, &sizes, true);
+        assert!(c.is_some());
+        // Not made yet (the sizes are still those it changed, a suggestion
+        // waiting for a person): the suggestion stands.
+        let pending = State { volumes_fired: Some(Fired { full: 0.85, volume: "15Gi".into(), shards: 4 }), ..State::default() };
+        assert!(decide(&a, &pending, &Reading { at_ms: tue, busy: None, full: Some(0.9) }, &sizes, true).1.is_some());
+
+        // The ceilings.
+        assert_eq!((grown_to("800Gi", "1Ti").as_deref(), grown_to("1Ti", "1Ti"), grown_to("10Gi", "12Gi").as_deref()), (Some("1024Gi"), None, Some("12Gi")));
+        let at_max = Sizes { volume: "1Ti".into(), ..sizes.clone() };
+        let (s, c) = decide(&a, &State::default(), &Reading { at_ms: tue, busy: None, full: Some(0.9) }, &at_max, true);
+        assert!(c.is_none() && s.waiting.as_deref().unwrap_or_default().contains("at autoscale.volumes.maxSize (1Ti)"), "{s:?}");
+        let split = Autoscale { volumes: Some(Volumes { action: VolumeAction::AddShard, max_shards: 4, ..Volumes::default() }), ..a.clone() };
+        let (s, c) = decide(&split, &State::default(), &Reading { at_ms: tue, busy: None, full: Some(0.9) }, &sizes, true);
+        assert!(c.is_none() && s.waiting.as_deref().unwrap_or_default().contains("at autoscale.volumes.maxShards (4)"), "{s:?}");
+        let bad = Autoscale { volumes: Some(Volumes { max_size: "big".into(), ..Volumes::default() }), ..rules() };
+        assert!(bad.check().unwrap_err().contains("maxSize"));
+    }
+
     #[test]
     fn rules_that_undo_each_other_are_refused() {
         assert!(rules().check().is_ok());
@@ -788,7 +942,7 @@ mod tests {
         assert_eq!(when(tue), "Tue 10:00");
         assert_eq!((answer_ms(tue), answer_ms(tue + 9 * 60 * MIN), answer_ms(MONDAY + 5 * 1440 * MIN + 12 * 60 * MIN)), (20 * MIN, 120 * MIN, 120 * MIN));
         assert_eq!(rules().said(), "1 copy a shard when its copies are over 70% busy for 10 min, up to 5; one fewer when under 35% for 1 h, down to 2; \
-             volumes half as big again when one is over 80% full; nothing but growth from Fri 16:00 to Mon 08:00 (UTC); 20 min between changes; the operator acts");
+             volumes half as big again when one is over 80% full, up to 1Ti; nothing but growth from Fri 16:00 to Mon 08:00 (UTC); 20 min between changes; the operator acts");
     }
 
     #[test]

@@ -261,7 +261,7 @@ pub(crate) enum Req {
     Hello,
     Vote(pb::VoteRequest),
     Replicate(pb::ReplicateRequest),
-    Restore { term: u64, primary: String, copy: Checkpoint },
+    Restore { term: u64, primary: String, config: u64, copy: Checkpoint },
     Write { id: u64 },
     Read { sent: Time },
     Promote,

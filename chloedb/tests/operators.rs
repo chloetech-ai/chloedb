@@ -157,3 +157,33 @@ fn visit(n: &mut Node, f: &mut dyn FnMut(&mut Node)) {
         _ => {}
     }
 }
+
+/// Under a LIMIT, a join's first table and the rows of `DISTINCT ON` are
+/// read in growing slices, up to [`compound::MAX_ROWS`] rows. When the
+/// last slice was cut there and still too few rows came out, the answer
+/// was a short page, silently (audit Q1); the same query without LIMIT is
+/// refused for reading too many rows. A cut scan is that error too.
+#[test]
+fn a_limit_past_the_rows_a_scan_may_read_is_an_error_not_a_short_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let orders = Schema::new("o", vec![Field::new("id", FieldType::Keyword), Field::new("cust", FieldType::Keyword)], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("o.strata"), orders, DbOptions { sync: false, segment_max_docs: 400_000, ..DbOptions::default() }).unwrap();
+    db.sql("CREATE TABLE c (id KEYWORD PRIMARY KEY, country KEYWORD)", &Params::new()).unwrap();
+    db.sql("INSERT INTO c (id, country) VALUES ('c0', 'XX'), ('c1', 'IS')", &Params::new()).unwrap();
+    // The one order of c1 comes after the first MAX_ROWS in scan order.
+    let n = compound::MAX_ROWS + 20;
+    let late = compound::MAX_ROWS + 5;
+    db.load((0..n).map(|i| vec![Value::Str(format!("o{i:08}")), Value::Str(if i == late { "c1" } else { "c0" }.into())])).unwrap();
+    for (sql, want) in [
+        ("SELECT o.id FROM o JOIN c ON o.cust = c.id WHERE c.country = 'IS' LIMIT 10", vec![format!("o{late:08}")]),
+        ("SELECT DISTINCT ON (cust) id FROM o LIMIT 2", vec![format!("o{:08}", 0), format!("o{late:08}")]),
+    ] {
+        match db.query(sql, &Params::new()) {
+            Ok(r) => {
+                let got: Vec<String> = r.rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
+                assert_eq!(got, want, "{sql}: a short page");
+            }
+            Err(e) => assert!(e.to_string().contains(&format!("more than {} rows", compound::MAX_ROWS)), "{sql}: {e}"),
+        }
+    }
+}

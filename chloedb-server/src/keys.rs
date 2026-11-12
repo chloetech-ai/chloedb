@@ -229,7 +229,9 @@ impl KeySet {
     /// either, by id, but the revoked ones. Of two keys with one id and
     /// other secrets (two servers drew the same 64 random bits), the one
     /// with the smaller digest stays, so that every server keeps the same.
-    /// The time a key was last used is the later of the two.
+    /// The time a key was last used is the later of the two, and the time
+    /// it ends the earlier (a key rotated on one server ends on every
+    /// other, and none that still holds it unended brings it back).
     pub fn merged(&self, other: &KeySet) -> (KeySet, bool) {
         let mut next = self.clone();
         let mut changed = false;
@@ -254,6 +256,14 @@ impl KeySet {
                         x.last_addr = k.last_addr.clone();
                     }
                     x.last_used_ms = x.last_used_ms.max(k.last_used_ms);
+                    let ends = match (x.expires_ms, k.expires_ms) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    };
+                    if ends != x.expires_ms {
+                        x.expires_ms = ends;
+                        changed = true;
+                    }
                 }
                 Some(x) => {
                     if k.sha256 < x.sha256 {
@@ -958,6 +968,47 @@ mod tests {
         let y = KeySet { keys: vec![kb], revoked: vec![] };
         assert_eq!(x.merged(&y).0.keys[0].sha256, "0".repeat(64));
         assert_eq!(y.merged(&x).0.keys[0].sha256, "0".repeat(64));
+    }
+
+    /// D-B1: a key rotated on one server, its old secret ending at once,
+    /// ends on every server it merges with, and on a coordinator that
+    /// starts again with no keys file and takes them back from its shards;
+    /// a server that still holds the key unexpired does not revive it.
+    #[test]
+    fn a_rotated_keys_end_reaches_every_server() {
+        let coordinator = Keys::memory();
+        let shard = Keys::memory();
+        coordinator.create("ops", Scope::Admin, None, true, false).unwrap();
+        let (leaked, secret) = coordinator.create("ci", Scope::Write, None, true, false).unwrap();
+        let admits = |k: &Keys| k.resolve(None, None, Some(&format!("Bearer {secret}"))).is_some();
+        assert!(shard.merge(&coordinator.set()).unwrap());
+        assert!(admits(&shard));
+        coordinator.rotate(&leaked.id, 0, true).unwrap();
+        assert!(!admits(&coordinator));
+        // The shard takes the end, and says its keys changed.
+        assert!(shard.merge(&coordinator.set()).unwrap());
+        assert!(!admits(&shard), "the shard still takes the rotated key");
+        // Merged back, the shard's copy does not lift it.
+        assert!(!coordinator.merge(&shard.set()).unwrap());
+        assert!(!admits(&coordinator));
+        // A coordinator that starts again takes its keys from the shard.
+        let again = Keys::memory();
+        again.merge(&shard.set()).unwrap();
+        assert!(!admits(&again), "a restarted coordinator revived the rotated key");
+        // The earlier end wins whichever side holds it.
+        let late = Key { expires_ms: Some(now_ms() + 86_400_000), ..leaked.clone() };
+        let early = Key { expires_ms: Some(now_ms() - 1), ..leaked.clone() };
+        for (a, b) in [(&late, &early), (&early, &late)] {
+            let x = KeySet { keys: vec![a.clone()], revoked: vec![] };
+            let y = KeySet { keys: vec![b.clone()], revoked: vec![] };
+            assert_eq!(x.merged(&y).0.keys[0].expires_ms, early.expires_ms);
+        }
+        let forever = KeySet { keys: vec![leaked.clone()], revoked: vec![] };
+        let ending = KeySet { keys: vec![late.clone()], revoked: vec![] };
+        let (merged, changed) = forever.merged(&ending);
+        assert_eq!((merged.keys[0].expires_ms, changed), (late.expires_ms, true));
+        let (merged, changed) = ending.merged(&forever);
+        assert_eq!((merged.keys[0].expires_ms, changed), (late.expires_ms, false));
     }
 
     #[test]

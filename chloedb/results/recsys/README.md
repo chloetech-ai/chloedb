@@ -96,6 +96,38 @@ day, one query at a time.
   equal weights let two weaker lists push repeats down. Weights or a
   learned blend, chosen on the validation day, are the next step there.
 
+### In-batch negatives, corrected
+
+The sequence model above trains against the other targets of its batch,
+which teaches it to rank popular tracks low and never shows it most of the
+catalog as a negative. `yambda.py train --logq --uniform-negatives 4096`
+takes from each negative's score the log of the chance that the batch
+holds it, and adds 4,096 tracks drawn evenly to every batch
+(`strata.train.sequence(logq=True, uniform_negatives=4096)`). Same split,
+histories, model and 80 minutes; Recall@10 on each user's held-out last
+listen after each epoch, measured on a cloud container (Intel Xeon @
+2.30GHz, 4 cores, 16.5 GB), 2026-11-12, with the trainer loaded on its own
+(the train stage's code, without the database package):
+
+| training | epoch 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| in-batch, from the SVD ([`quality/train.json`](quality/train.json), 2026-11-06) | 0.0057 | 0.0119 | 0.0181 | 0.0229 | 0.0258 |
+| corrected, 4,096 uniform, from the SVD ([`quality/train-logq.json`](quality/train-logq.json)) | 0.0110 | 0.0205 | 0.0274 | **0.0334** | not reached |
+| corrected, 4,096 uniform, from random vectors ([`quality/train-logq-random.json`](quality/train-logq-random.json)) | 0.0039 | 0.0026 | 0.0047 | 0.0076 | 0.0099 |
+
+- **Epoch for epoch the corrected model is ahead by about half** (0.0334
+  against 0.0229 at epoch 4, NDCG@10 0.0182 against 0.0124), and it was
+  still rising when the 80 minutes ended. It reached 4 epochs in them,
+  with other work on the machine, and its fourth is ahead of the plain
+  run's fifth (0.0258).
+- **From random vectors it now learns** (0.0099 after five epochs, rising),
+  where the plain run stayed at chance after an epoch. The SVD start is
+  still worth three epochs.
+- **Not measured yet:** the table above (the next-day test against
+  ItemKNN and `history`) still has the plain model's row. The corrected
+  model has to go through `load` and `eval` for that, and to train for
+  longer than 80 minutes on 4 cores to say where it ends.
+
 ## Serving: r1 to r6 on eight engines
 
 [`serving_data.py`](serving_data.py) took the 100,000 most played tracks of

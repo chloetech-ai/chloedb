@@ -596,31 +596,55 @@ fn same_question(r: &Record, terms: &HashSet<String>) -> bool {
 /// Selects hits within the budget; returns them oldest first with snippets.
 /// Answers marked uncertain and earlier copies of the same question are skipped.
 pub fn pack(hits: &[Hit], query: &str, skip: &HashSet<String>, p: &PackParams) -> Vec<(Record, String)> {
+    pack_explained(hits, query, skip, p).0
+}
+
+/// [`pack`], and for each hit why it was taken or left out, in the words a
+/// receipt uses ([`crate::receipt`]): `take`, `excerpt` (taken as a
+/// snippet), or `skip: ` and the reason.
+pub fn pack_explained(hits: &[Hit], query: &str, skip: &HashSet<String>, p: &PackParams) -> (Vec<(Record, String)>, HashMap<String, String>) {
     let terms: HashSet<String> = chloedb::text::analyze_query(query).into_iter().collect();
     let mut per: HashMap<(String, i64), usize> = HashMap::new();
     let mut used = 0usize;
     let mut out: Vec<(Record, String)> = Vec::new();
+    let mut why: HashMap<String, String> = HashMap::new();
     for h in hits {
+        let mut note = |w: &str| {
+            why.entry(h.record.id.clone()).or_insert_with(|| w.to_string());
+        };
         if out.len() >= p.max_records {
-            break;
+            note("skip: record cap");
+            continue;
         }
-        if skip.contains(&h.record.id) || h.record.tag == "uncertain" || same_question(&h.record, &terms) {
+        if skip.contains(&h.record.id) {
+            note("skip: shown before");
+            continue;
+        }
+        if h.record.tag == "uncertain" {
+            note("skip: uncertain");
+            continue;
+        }
+        if same_question(&h.record, &terms) {
+            note("skip: same question");
             continue;
         }
         let k = (h.record.session.clone(), h.record.turn);
         if *per.get(&k).unwrap_or(&0) >= p.per_turn {
+            note("skip: per-turn cap");
             continue;
         }
         let snip = snippet(&h.record.text, &terms, p.snippet_chars);
         if used + snip.len() + 80 > p.budget_chars && !out.is_empty() {
+            note("skip: over budget");
             continue;
         }
         used += snip.len() + 80;
         *per.entry(k).or_default() += 1;
+        note(if snip == h.record.text { "take" } else { "excerpt" });
         out.push((h.record.clone(), snip));
     }
     out.sort_by_key(|(r, _)| r.seq);
-    out
+    (out, why)
 }
 
 /// `2026-10-11 07:43 UTC` for a Unix time.

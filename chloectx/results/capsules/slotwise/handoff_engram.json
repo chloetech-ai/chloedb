@@ -1,0 +1,90 @@
+{
+ "capsule": {
+  "backup_ms": 67.794938,
+  "by_kind": {
+   "answer": 102,
+   "decision": 7,
+   "entity": 79,
+   "episode": 14,
+   "error": 24,
+   "fact": 12,
+   "preference": 11,
+   "prompt": 15,
+   "todo": 9
+  },
+  "bytes": 950272,
+  "created_ts": 1794477855,
+  "dim": 512,
+  "dir": "/home/user/bench/work/slotwise/engram/capsule",
+  "embedder": "static",
+  "embedder_name": "static:potion-retrieval-32M",
+  "format": "chloectx-capsule/1",
+  "kinds": [
+   "decision",
+   "preference",
+   "fact",
+   "todo",
+   "note",
+   "entity",
+   "prompt",
+   "answer",
+   "episode",
+   "summary",
+   "error"
+  ],
+  "pack_ms": 31.613059999999997,
+  "project": "/home/user/bench/work/slotwise/engram/slotwise",
+  "records": 273,
+  "redacted": 0,
+  "sha256": "8b9e6799a8af1db6ff529a5355c94bedfd9467273191e4be53ab19235e4ffe70",
+  "since_ts": null,
+  "source_last_seq": 442,
+  "title": "slotwise",
+  "topics": [
+   "slotwise",
+   "src/slotwise/schedule.py",
+   "book()",
+   "schedule.py",
+   "Appointment",
+   "tests/test_schedule.py",
+   "SMS reminders",
+   "Schedule",
+   "front-desk app",
+   "reception",
+   "BookingError",
+   "SMS gateway",
+   "src/slotwise/clients.py",
+   "therapist",
+   "ClientBook",
+   "SlotTaken",
+   "appointment gap",
+   "client register",
+   "clients.py",
+   "tests/test_clients.py"
+  ],
+  "total_ms": 161.45580900000002,
+  "wall_s": 0.16
+ },
+ "note": {
+  "chars": 9329,
+  "transcript_chars": 69597,
+  "cost_usd": 0.009003170000000001,
+  "wall_s": 29.2,
+  "input_tokens": 30791,
+  "output_tokens": 6586,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ },
+ "note_short": {
+  "chars": 2044,
+  "transcript_chars": 69597,
+  "cost_usd": 0.007108070000000001,
+  "wall_s": 13.4,
+  "input_tokens": 30828,
+  "output_tokens": 2781,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ }
+}

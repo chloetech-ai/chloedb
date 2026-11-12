@@ -100,6 +100,23 @@
                         "pattern": "^https?://[^?# ]+$",
                         "type": "string"
                       },
+                      "publish": {
+                        "description": "Open the apps their owners publish to everyone, at <name>.<domain>, with certificates from Let's Encrypt, behind a load balancer of their own (<cluster>-apps-public).",
+                        "properties": {
+                          "domain": {
+                            "description": "apps.example.com, with a DNS record *.apps.example.com pointing at the load balancer; or sslip: its address as a name of sslip.io, with no record.",
+                            "type": "string"
+                          },
+                          "email": {
+                            "description": "Who Let's Encrypt writes to about the certificates.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "domain"
+                        ],
+                        "type": "object"
+                      },
                       "resources": {
                         "description": "Resources of its container.",
                         "type": "object",
@@ -245,6 +262,15 @@
                             "maximum": 1,
                             "minimum": 0,
                             "type": "number"
+                          },
+                          "maxShards": {
+                            "description": "addShard: the shards the cluster grows to at most (default 16).",
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "maxSize": {
+                            "description": "grow: the size a volume grows to at most, as 500Gi (default 1Ti).",
+                            "type": "string"
                           }
                         },
                         "type": "object"

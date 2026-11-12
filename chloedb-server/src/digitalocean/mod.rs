@@ -248,6 +248,10 @@ impl DigitalOcean {
         self
     }
 
+    pub fn file(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Stored>> {
         self.stored.lock().unwrap_or_else(|e| e.into_inner())
     }
