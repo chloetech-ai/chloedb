@@ -643,7 +643,7 @@ target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
 <td><code>analyzer</code></td>
 <td><code>text</code></td>
 <td><code>"english"</code></td>
-<td>how text becomes words to search: <code>"english"</code> drops stopwords and stems (<code>running</code> finds <code>run</code>), <code>"simple"</code> keeps every word as written; another than <code>"english"</code> makes the database format 3</td>
+<td>how text becomes words to search: <code>"english"</code> drops stopwords and stems (<code>running</code> finds <code>run</code>), <code>"simple"</code> keeps every word as written, <code>"standard"</code> reads text in <a href="design.html#text-in-other-languages">any language and script</a>, <code>"cjk"</code> is <code>standard</code> with pairs of characters for Chinese and Japanese, and a language (<code>"french"</code>, <code>"arabic"</code>, <code>"hindi"</code>, <code>"chinese"</code>, ...) is <code>standard</code> with its stemmer; another than <code>"english"</code> makes the database format 3</td>
 </tr>
 <tr>
 <td><code>from</code></td>
