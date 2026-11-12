@@ -1139,9 +1139,12 @@ impl Embedder for OnnxEmbedder {
 /// document's and a query's weights meet in a SPARSE field's index, which
 /// ranks their dot product with the text index's top-k code.
 ///
-/// On BEIR (SciFact, NFCorpus, ArguAna) its documents with BM25 under
-/// `rrf` come within two points of nDCG@10 of granite-small-r2 dense
-/// vectors, and a query takes well under a millisecond.
+/// On BEIR (SciFact, NFCorpus, ArguAna; `examples/sparse_beir.rs`, int8,
+/// 4 cores) its documents fused with BM25 by `rrf` come within 1.2 to 1.8
+/// points of nDCG@10 of granite-small-r2's dense vectors, with a query's
+/// p50 at 0.2 to 2.6 ms against 6 to 50 ms and 35 to 80 times the queries
+/// a second, and documents encode faster than granite's (19 to 34 a
+/// second).
 #[cfg(feature = "onnx")]
 pub struct SparseEncoder {
     tokenizer: tokenizers::Tokenizer,

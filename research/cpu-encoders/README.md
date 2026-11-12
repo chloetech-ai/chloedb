@@ -43,6 +43,7 @@ runs 2.5 times faster than float32 with the same vectors (cosine 1.000);
 | `onnx_export.py REPO OUT`, `onnx_encode.py` | ONNX export of an encoder, its int8 copy (dynamic quantisation), and an encoder over it |
 | `sparse.py --export DIR` | inference-free learned sparse retrieval (OpenSearch doc-v3-distill) and the static sparse expansion; writes the term weights for ChloeDB |
 | `static_sparse_sweep.py` | the static expansion pruned |
+| `sparse_onnx_export.py [REPO OUT]`, `sparse_onnx_eval.py DIR FILE` | the learned sparse document encoder exported to ONNX with its pooling in the graph (output `[batch, vocabulary]`), its int8 copy, and a check against PyTorch |
 | `speed.py` | documents a second and one query's latency of each encoder, at 1 and 4 threads, nothing else running |
 
 ChloeDB's side (from `chloedb/`):
@@ -51,9 +52,25 @@ ChloeDB's side (from `chloedb/`):
 cargo run --profile ci --example static_tables -- ~/beir/scifact/corpus.jsonl F32_MODEL_DIR INT8_MODEL_DIR
 cargo run --profile ci --example sparse_eval -- DIR scifact nfcorpus arguana   # DIR from sparse.py --export
 cargo run --profile ci --features onnx --example embed_beir -- ONNX_MODEL_DIR ~/beir/scifact
+cargo run --profile ci --features onnx --example sparse_beir -- SPARSE_DIR ~/beir/scifact --dense ONNX_MODEL_DIR
 ```
 
 An ONNX model directory for `OnnxEmbedder` holds `model.onnx` (the int8
 export renamed), `tokenizer.json`, `config.json` and, from the
 sentence-transformers repository, `1_Pooling/config.json` (and
 `sentence_bert_config.json` to cut texts shorter than 512 tokens).
+
+A directory for `SparseEncoder` holds `model.onnx` (from
+`sparse_onnx_export.py`, int8 renamed), `tokenizer.json`, `config.json`
+and `idf.json`, and `sentence_bert_config.json` to cut documents shorter
+than 512 tokens.
+
+`sparse_beir` on this 4-core machine, nothing else running (int8, 512
+tokens; nDCG@10, query p50, queries a second on 4 threads, documents a
+second):
+
+| collection | rrf(bm25, learned sparse) | granite-small-r2 int8, dense |
+|---|---|---|
+| SciFact | 0.7206, 0.54 ms, 5,112 q/s, 19.4 docs/s | 0.7387, 9.24 ms, 103 q/s, 16.6 docs/s |
+| NFCorpus | 0.3494, 0.18 ms, 10,209 q/s, 18.7 docs/s | 0.3622, 6.14 ms, 162 q/s, 15.4 docs/s |
+| ArguAna | 0.5259, 2.55 ms, 1,434 q/s, 33.9 docs/s | 0.5377, 50.49 ms, 18 q/s, 27.8 docs/s |
