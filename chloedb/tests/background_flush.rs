@@ -283,3 +283,35 @@ fn the_flusher_keeps_the_memtable_bounded_under_a_stream_of_commits() {
         db.storage().check().unwrap();
     }
 }
+
+/// A panic while a background flush builds its segments (a bug in a
+/// field's builder) is that flush's error, as a failed build is: the
+/// flusher thread, which runs it, does not die of it, and the next flush
+/// installs everything (audit S-1).
+#[test]
+fn a_panic_in_a_background_flush_is_its_error() {
+    for layout in [Layout::SingleFile, Layout::Directory] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = path_for(dir.path(), layout);
+        let mut rng = StdRng::seed_from_u64(11);
+        let mut model = Rows::new();
+        let db = Db::create(&path, schema(), options(layout, false)).unwrap();
+        write(&db, &mut rng, &mut model, 120, 500);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.storage().background_flush_with(|| panic!("a builder's bug"))));
+        let e = match r {
+            Ok(r) => r.err().map(|e| e.to_string()).unwrap_or_default(),
+            Err(_) => panic!("{layout:?}: the panic left the flush"),
+        };
+        assert!(e.contains("a builder's bug"), "{layout:?}: {e:?}");
+        assert!(db.storage().flush_error().is_some_and(|f| f.contains("a builder's bug")));
+        write(&db, &mut rng, &mut model, 30, 500);
+        assert_eq!(rows(&db), model);
+        db.storage().background_flush().unwrap();
+        assert!(db.storage().flush_error().is_none());
+        assert_eq!(rows(&db), model);
+        db.storage().check().unwrap();
+        drop(db);
+        let db = Db::open(&path, options(layout, false)).unwrap();
+        assert_eq!(rows(&db), model);
+    }
+}

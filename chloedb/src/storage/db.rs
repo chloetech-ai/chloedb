@@ -727,7 +727,12 @@ fn merger(db: Weak<Database>, m: Arc<Merger>) {
         while let Some(claim) = (!m.closed()).then(|| db.next_merge(&m)).flatten() {
             let mut stats = MergeStats::default();
             let t0 = Instant::now();
-            let r = db.merge_claimed(&claim, m.pacer.as_ref(), &mut stats);
+            // A panic in a merge (a builder's bug, an input its checks let
+            // through) is that merge's error: the thread goes on merging
+            // after its pause, rather than ending and leaving the segments
+            // to pile up.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.merge_claimed(&claim, m.pacer.as_ref(), &mut stats)))
+                .unwrap_or_else(|p| Err(panicked("a merge", p)));
             let segments = claim.ids.len();
             drop(claim);
             let mut st = lock(&db.merging);
@@ -743,6 +748,13 @@ fn merger(db: Weak<Database>, m: Arc<Merger>) {
         backoff = if failed { (backoff * 2).clamp(Duration::from_secs(1), Duration::from_secs(60)) } else { Duration::ZERO };
         drop(db);
     }
+}
+
+/// The error of work on a background thread that panicked: `what`
+/// panicked, with the panic's message.
+fn panicked(what: &str, p: Box<dyn std::any::Any + Send>) -> Error {
+    let m = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "no message".into());
+    Error::Io(std::io::Error::other(format!("{what} panicked: {m}")))
 }
 
 /// Wakes the flusher thread.
@@ -2704,18 +2716,27 @@ impl Database {
             }
             (sealed, txn)
         };
-        between();
         let max = self.opts.segment_max_docs.max(1);
-        let mut built = Vec::with_capacity(sealed.len());
-        for s in &sealed {
-            let (live, seqs, docids) = s.live();
-            let images = live
-                .chunks(max)
-                .zip(seqs.chunks(max))
-                .map(|(c, seqs)| Ok((rowseq::build(&s.schema, c, s.numbered.then_some(seqs), &self.opts.build)?, c.len() as u32)))
-                .collect::<Result<Vec<_>>>()?;
-            built.push((images, docids));
-        }
+        // The build holds no lock and changes nothing shared, so a panic in
+        // it (a field builder's bug, or a row it cannot index) is this
+        // flush's error, as a failed build is: the sealed rows stay in the
+        // memtable and the log, the next flush tries again, and the flusher
+        // thread that runs it goes on.
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            between();
+            let mut built = Vec::with_capacity(sealed.len());
+            for s in &sealed {
+                let (live, seqs, docids) = s.live();
+                let images = live
+                    .chunks(max)
+                    .zip(seqs.chunks(max))
+                    .map(|(c, seqs)| Ok((rowseq::build(&s.schema, c, s.numbered.then_some(seqs), &self.opts.build)?, c.len() as u32)))
+                    .collect::<Result<Vec<_>>>()?;
+                built.push((images, docids));
+            }
+            Ok(built)
+        }))
+        .unwrap_or_else(|p| Err(panicked("building a background flush's segments", p)))?;
 
         let mut wal = self.background_writer();
         self.check_poisoned()?;
@@ -4040,10 +4061,11 @@ impl Database {
                 if db.is_poisoned() {
                     continue;
                 }
-                let mut r = db.evict_cold().map(|_| ());
+                // A panic is a failed round, tried again as an error is.
+                let mut r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.evict_cold().map(|_| ()))).unwrap_or_else(|p| Err(panicked("evicting cold segments", p)));
                 if r.is_ok() && Instant::now() >= next_offload {
                     next_offload = Instant::now() + every;
-                    r = db.offload().map(|_| ());
+                    r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.offload().map(|_| ()))).unwrap_or_else(|p| Err(panicked("offloading segments", p)));
                 }
                 let now = r.err().map(|e| e.to_string());
                 match (&now, &last) {

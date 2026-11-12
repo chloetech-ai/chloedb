@@ -120,16 +120,26 @@ pub enum Pooling<'a> {
 pub fn conform_as(schema: &Schema, doc: &mut Document, pooling: Pooling) -> Result<()> {
     let typed = |v: &Value| matches!(v, Value::Bool(_) | Value::Timestamp(_));
     for (i, (f, v)) in schema.fields.iter().zip(doc.iter_mut()).enumerate() {
+        let new = match pooling {
+            Pooling::All => true,
+            Pooling::None => false,
+            Pooling::Fields(new) => new.contains(&i),
+        };
         if f.is_multi_vector() {
             *v = crate::vector::multi::normalize(f, std::mem::replace(v, Value::Null))?;
-            if match pooling {
-                Pooling::All => true,
-                Pooling::None => false,
-                Pooling::Fields(new) => new.contains(&i),
-            } {
+            if new {
                 *v = crate::vector::multi::pooled(f, std::mem::replace(v, Value::Null));
             }
             continue;
+        }
+        // A new sparse value is held to what a dictionary stores
+        // ([`crate::text::sparse::parse`]); one the row had, or a
+        // primary's, is taken as [`validate`] takes it.
+        if new && f.ty == FieldType::Sparse && matches!(v, Value::Str(_)) {
+            crate::text::sparse::parse(v).map_err(|e| match e {
+                Error::Schema(m) => Error::Schema(format!("field {}: {m}", f.name)),
+                e => e,
+            })?;
         }
         if f.ty == FieldType::Json {
             *v = crate::json::canonical(std::mem::replace(v, Value::Null), &f.name)?;
@@ -180,8 +190,12 @@ pub fn validate(schema: &Schema, doc: &Document) -> Result<()> {
                 crate::graph::parse_edges(v, crate::graph::int_keys(schema))?;
                 true
             }
+            // As stored: a row written before terms were checked may
+            // hold one no dictionary stores, which its index leaves out
+            // ([`crate::text::sparse::parse_stored`]). Refusing it here
+            // would make the log that holds the row damaged.
             (FieldType::Sparse, Value::Str(_)) => {
-                crate::text::sparse::parse(v)?;
+                crate::text::sparse::parse_stored(v)?;
                 true
             }
             (FieldType::Json, Value::Str(s)) => {
