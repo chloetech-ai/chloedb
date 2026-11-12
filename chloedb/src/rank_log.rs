@@ -56,10 +56,13 @@ fn bad(m: impl Into<String>) -> Error {
 /// `id` (`<request>#<position>`), then the request, its time and context,
 /// and per row its key, position, whether it was shown, its score, its
 /// features (JSON text, stored and not indexed), the client's name for
-/// the ranking (`variant`, an A/B arm) and a label written later. Rows are
-/// kept sorted by context, which [`export`] reads by. A table made by hand
-/// may add columns (`retain`, `shard_by = 'context'` with `context NOT
-/// NULL`) as long as it has these ([`check`]).
+/// the ranking (`variant`, an A/B arm), a label written later, and on the
+/// request's first row its query (`query`, [`query_json`]), which the
+/// relevance autopilot replays ([`crate::autopilot`]). Rows are kept sorted
+/// by context, which [`export`] reads by. A table made by hand may add
+/// columns (`retain`, `shard_by = 'context'` with `context NOT NULL`) as
+/// long as it has these ([`check`]); `query` it may leave out, and then no
+/// query is kept.
 pub fn create_sql(table: &str) -> Result<String> {
     if table.is_empty() || !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || table.starts_with(|c: char| c.is_ascii_digit()) {
         return Err(bad(format!("a log table's name is letters, digits and _, not {table:?}")));
@@ -67,7 +70,7 @@ pub fn create_sql(table: &str) -> Result<String> {
     Ok(format!(
         "CREATE TABLE IF NOT EXISTS {table} (id KEYWORD PRIMARY KEY, request KEYWORD NOT NULL, ts TIMESTAMP NOT NULL, context KEYWORD, \
          row_key KEYWORD NOT NULL, position INT NOT NULL, shown BOOL NOT NULL, score FLOAT, features KEYWORD OPTIONS(indexed = false), \
-         variant KEYWORD, label FLOAT) OPTIONS(cluster_by = 'context')"
+         variant KEYWORD, label FLOAT, query KEYWORD OPTIONS(indexed = false)) OPTIONS(cluster_by = 'context')"
     ))
 }
 
@@ -250,6 +253,32 @@ pub struct Prepared {
     offset: usize,
     /// The rows the query's own LIMIT returns.
     limit: Option<usize>,
+    /// The query as asked, with its parameters ([`query_json`]).
+    query: String,
+}
+
+/// A logged request's query as its log keeps it, in column `query` of its
+/// first row: `{"sql": ..., "params": ...}`, the SQL as the client sent it
+/// and its parameters as they were bound ([`crate::autopilot::params_json`]:
+/// a vector as `{"$vector": [...]}`, a time as `{"$ts": microseconds}`), so
+/// that replaying it runs the same query.
+pub fn query_json(sql_text: &str, params: &Params) -> String {
+    json!({"sql": sql_text, "params": crate::autopilot::params_json(params)}).to_string()
+}
+
+/// Whether log table `schema` keeps each request's query (column `query`,
+/// KEYWORD). A log table made before the column was added keeps none.
+pub fn keeps_query(schema: &Schema) -> bool {
+    schema.field("query").is_some_and(|f| f.ty == FieldType::Keyword && !f.multi && f.stored)
+}
+
+/// Keeps `p`'s query on the first row `served` logs when `schema` has
+/// the column for it ([`keeps_query`]), and on no other row.
+pub fn keep_query(served: &mut Served, p: &Prepared, schema: &Schema) {
+    let keep = keeps_query(schema);
+    for (i, e) in served.entries.iter_mut().enumerate() {
+        e.query = (keep && i == 0).then(|| p.query.clone());
+    }
 }
 
 /// `sql_text` as a logged query runs it: one SELECT ranked by an ORDER BY
@@ -276,7 +305,7 @@ pub fn prepare(sql_text: &str, params: &Params, log: &Log) -> Result<Prepared> {
         }
     }
     crate::query::sql::add_features(&mut q)?;
-    Ok(Prepared { sql: q.to_string(), offset, limit })
+    Ok(Prepared { sql: q.to_string(), offset, limit, query: query_json(sql_text, params) })
 }
 
 /// One row of the log ([`create_sql`]).
@@ -293,16 +322,23 @@ pub struct Entry {
     /// A JSON object of the values the ranking read.
     pub features: String,
     pub variant: Option<String>,
+    /// The request's query ([`query_json`]), on its first row only, where
+    /// the log table keeps it ([`keep_query`]).
+    pub query: Option<String>,
 }
 
 impl Entry {
     /// The row as a JSON document of the log table.
     pub fn to_json(&self) -> Json {
-        json!({
+        let mut j = json!({
             "id": self.id, "request": self.request, "ts": crate::timestamp::format(self.ts), "context": self.context,
             "row_key": self.row_key, "position": self.position, "shown": self.shown, "score": self.score,
             "features": self.features, "variant": self.variant,
-        })
+        });
+        if let Some(q) = &self.query {
+            j["query"] = json!(q);
+        }
+        j
     }
 }
 
@@ -373,6 +409,7 @@ pub fn serve(mut rs: ResultSet, p: &Prepared, log: &Log) -> Result<Served> {
             score,
             features: Json::Object(features).to_string(),
             variant: log.variant.clone(),
+            query: None,
         });
     }
     let n = rs.rows.len().min(shown);
