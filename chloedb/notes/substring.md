@@ -319,6 +319,18 @@ text plus the directory, about 0.9 bits a byte, 0.11 n. Two more entries
 for each document matter only for very short values. So about 0.75 to
 0.85 n in all for text like the above, 0.70 to 0.79 n at `s = 64`.
 
+Measured by version 1's builder on three of Loghub's logs
+(`results/substring/`, 2026-11-12): 0.94 n on SSH, 1.02 n on Android and
+0.97 n on BGL, above the estimate on both counts. The levels take 5.9 to
+6.6 bits a byte, a log's bytes (digits, hexadecimal, punctuation) being
+spread more evenly than prose's. The samples take 1.5 to 1.9 bits a byte,
+because a line is 49 to 75 bytes and the entries each document adds
+(1.4 of them a line here, at 30 bits each) are then 0.6 to 0.9 bits a
+byte. The same logs have a run in `L` for every
+24 to 34 bytes, so a run-length encoding, at some 20 bits a run (an
+estimate, nothing built), would put the transform under 1 bit a byte and
+leave the samples as most of the index.
+
 Work, in cache-missing reads: a rank is one block per level, about 2.5
 levels on prose, so a pattern byte costs about 5 and counting a 10-byte
 pattern about 50. Listing one occurrence costs on average `s / 2` steps

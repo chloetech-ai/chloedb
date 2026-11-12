@@ -2089,6 +2089,14 @@ impl<'a> Executor<'a> {
         Ok(res)
     }
 
+    /// The nanoseconds [`Self::like_among`] takes for `rows` documents of
+    /// segment `s`: a block of the store read for each, or every block
+    /// where they are more than the blocks, and each value tested.
+    fn like_among_cost(&self, s: &Seg<'a>, rows: usize) -> f64 {
+        let blocks = s.r.store().ok().flatten().map_or(0, |st| st.n_blocks());
+        rows.min(blocks) as f64 * plan::LIKE_PROBE + rows as f64 * plan::LIKE_SCAN
+    }
+
     /// The documents of `among` whose stored value of `field` matches the
     /// `LIKE` pattern, or with `negated` those with a value that does not:
     /// what a few rows the other conditions left cost less than
@@ -2224,7 +2232,7 @@ impl<'a> Executor<'a> {
                         },
                         (Some(a), _) if a.is_empty() => return Ok(a),
                         // By each survivor's stored value.
-                        (Some(a), Pred::Like { field, pattern, ci, negated }) if a.len() as f64 * plan::LIKE_PROBE < mat_cost => self.like_among(s, &a, *field, pattern, *ci, *negated)?,
+                        (Some(a), Pred::Like { field, pattern, ci, negated }) if self.like_among_cost(s, a.len()) < mat_cost => self.like_among(s, &a, *field, pattern, *ci, *negated)?,
                         (Some(a), _) => {
                             let e = planner.estimate(c);
                             if e.probeable && a.len() as f64 * e.probe_cost < e.mat_cost {

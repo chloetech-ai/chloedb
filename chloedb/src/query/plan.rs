@@ -151,8 +151,8 @@ pub struct PredEstimate {
 /// candidate the index found; to test a document's value in a scan of
 /// them all, block after block; and to read and test the value of one
 /// document on its own, which decompresses its block (what a conjunction
-/// pays for each row its other conditions left, where that is less than
-/// the whole segment's).
+/// pays for the rows its other conditions left, a block for each at
+/// most, where that is less than the whole segment's).
 pub const LIKE_LOCATE: f64 = 1_500.0;
 pub const LIKE_READ: f64 = 6_000.0;
 pub const LIKE_SCAN: f64 = 200.0;
