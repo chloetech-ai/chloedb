@@ -72,6 +72,7 @@ pub mod sim;
 pub mod slices;
 pub mod slots;
 pub mod telemetry;
+pub mod tenants;
 pub mod traffic;
 pub mod ui;
 

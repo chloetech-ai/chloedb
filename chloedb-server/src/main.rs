@@ -529,6 +529,15 @@ struct Args {
     /// The token the server sends its apps (Authorization: Bearer).
     #[arg(long, env = "CHLOEDB_APP_TOKEN", hide_env_values = true)]
     app_token: Option<String>,
+    /// Experimental: serve tenants, databases kept whole in an object
+    /// store (an `s3://bucket/prefix/` URL or a directory), under
+    /// /v1/admin/tenants. Their layout may change without a migration.
+    #[arg(long, env = "CHLOEDB_TENANTS")]
+    tenants: Option<String>,
+    /// Where this server keeps its copies of the tenants it has open (a
+    /// cache; default: a directory under the system's temporary one).
+    #[arg(long, env = "CHLOEDB_TENANT_CACHE")]
+    tenant_cache: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -1160,6 +1169,8 @@ async fn run() {
         slo_p99_ms: Some(a.slo_p99_ms),
         trust_proxy: a.trust_proxy.clone(),
         apps: a.apps.clone(),
+        tenants: a.tenants.clone(),
+        tenant_cache: a.tenant_cache.clone(),
         app_token: a.app_token.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
         image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),

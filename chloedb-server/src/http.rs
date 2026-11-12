@@ -312,6 +312,11 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/apps", get(apps_list))
         // An app may take files (a spreadsheet's import): rows' size, as /v1/import.
         .route("/v1/apps/:name/*rest", axum::routing::any(app_forward).layer(rows.clone()))
+        // Tenants (experimental): databases kept in an object store (crate::tenants).
+        .route("/v1/admin/tenants", post(tenant_create))
+        .route("/v1/admin/tenants/:id", get(tenant_get).delete(tenant_delete))
+        .route("/v1/admin/tenants/:id/sql", post(tenant_sql).layer(rows.clone()))
+        .route("/v1/admin/tenants/:id/base", post(tenant_base))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
@@ -4031,6 +4036,62 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some()});
     j["logs"] = json!({"filter": obs::log_filter()});
     AxJson(j)
+}
+
+/// The tenants this server serves, or 404 when it serves none.
+fn tenants(app: &App) -> Result<Arc<crate::tenants::Tenants>, ApiError> {
+    app.svc.tenants.clone().ok_or_else(|| ApiError { status: 404, message: "this server serves no tenants (start it with --tenants URL; experimental)".into() })
+}
+
+/// A tenant's call: it reads and writes the object store, and blocks.
+async fn tenant_call<T: Send + 'static>(f: impl FnOnce() -> Result<T, chloedb::tenant::TenantError> + Send + 'static) -> Result<T, ApiError> {
+    Ok(tokio::task::spawn_blocking(f).await.map_err(ApiError::internal)??)
+}
+
+async fn tenant_create(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let t = tenants(&app)?;
+    let id = body_str(&b, "id")?.to_string();
+    if !chloedb::tenant::valid_id(&id) {
+        return Err(ApiError::bad("a tenant's id is 1 to 128 of A-Z a-z 0-9 . _ -, not starting with . or _"));
+    }
+    let not_sql = || ApiError::bad("sql is a statement or a list of statements");
+    let statements: Vec<String> = match b.get("sql") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(Json::String(s)) => vec![s.clone()],
+        Some(Json::Array(a)) => a.iter().map(|s| s.as_str().map(String::from).ok_or_else(not_sql)).collect::<Result<_, _>>()?,
+        Some(_) => return Err(not_sql()),
+    };
+    Ok(AxJson(tenant_call(move || t.create(&id, &statements)).await?))
+}
+
+async fn tenant_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let t = tenants(&app)?;
+    Ok(AxJson(tenant_call(move || t.describe(&id)).await?))
+}
+
+async fn tenant_sql(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    let t = tenants(&app)?;
+    let sql = body_str(&b, "sql")?.to_string();
+    let params = crate::json::params(b.get("params"))?;
+    let (latest, objects) = (body_bool(&b, "latest")?, body_bool(&b, "objects")?);
+    let mut j = tenant_call(move || t.sql(&id, &sql, &params, latest)).await?;
+    if objects && j.get("columns").is_some() {
+        as_objects(&mut j);
+    }
+    Ok(AxJson(j))
+}
+
+async fn tenant_base(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let t = tenants(&app)?;
+    Ok(AxJson(tenant_call(move || t.make_base(&id)).await?))
+}
+
+async fn tenant_delete(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let t = tenants(&app)?;
+    match tenant_call(move || t.delete(&id)).await? {
+        true => Ok(AxJson(json!({"deleted": true}))),
+        false => Err(ApiError { status: 404, message: "no tenant has this id".into() }),
+    }
 }
 
 async fn apps_list(State(app): State<App>) -> AxJson<Json> {

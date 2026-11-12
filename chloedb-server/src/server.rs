@@ -212,6 +212,10 @@ pub struct Options {
     pub apps: Vec<String>,
     /// What the server sends apps as its token (`CHLOEDB_APP_TOKEN`).
     pub app_token: Option<String>,
+    /// `--tenants URL`: the object store of the tenants this server opens
+    /// (experimental, [`crate::tenants`]), and `--tenant-cache DIR`.
+    pub tenants: Option<String>,
+    pub tenant_cache: Option<PathBuf>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -425,6 +429,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         svc.image_repository = r;
     }
     svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
+    if let Some(url) = given(&o.tenants) {
+        let cache = o.tenant_cache.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("chloedb-tenants-{}", std::process::id())));
+        svc.tenants = Some(Arc::new(crate::tenants::Tenants::open(&url, cache)?));
+        tracing::warn!(store = %url, "tenants are experimental: their layout in the store may change without a migration");
+    }
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
