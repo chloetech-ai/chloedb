@@ -11,48 +11,6 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-### Added
-
-- ChloeDB: `PACK n TOKENS` ends a SELECT and fills a budget of tokens
-  rather than a number of rows: rows too long are cut to the stretch that
-  matches the query (`EXCERPT n`), rows that repeat one taken are skipped
-  (`DEDUPE x`, by words or `ON` a vector field), rows an `EDGES` field
-  links to come with the row that links them (`FOLLOW links 1 HOP`), and
-  `WITH RECEIPT` says why each candidate was taken or skipped. `Db::pack`
-  answers the receipt with the snapshot read. On a file, a server and a
-  coordinator; no change to the file format or the shard protocol.
-
-### Storage
-
-- Semantic IDs: a background flush keeps the tie numbers of rows deleted
-  before it. It dropped them with the rows, so the next row under the
-  same levels was given a deleted row's whole code again: a code named
-  two rows over time, which the tie exists to prevent. A foreground flush
-  and a merge already kept them.
-
-### Query and indexes
-
-- Semantic IDs: `chloedb.train.codebook(balanced=True)` (Rust's
-  `TrainOptions.balance`, JavaScript's and Java's `balanced`) trains each
-  level of a codebook with every centroid given the same number of the
-  training vectors. Plain k-means uses the later levels' numbers
-  unevenly; on Amazon Beauty's 12,101 items, balanced, the third level's
-  256 numbers are all in use alike and the items sharing a code go from
-  3,288 to 2,601. Off by default, and a codebook's file is as before.
-  `chloedb.train.codebook_report` (`Codebook::report`,
-  `Db::codebook_report`) says what a codebook makes of a set of vectors:
-  the distinct codes, the rows sharing one, and each level's use.
-- Sequence models: `chloedb.train.sequence(logq=True, uniform_negatives=n)`
-  for catalogs too large to train against every item. With the other
-  targets of a batch as the negatives the model learns to rank popular
-  items low; `logq` takes that out of each negative's score and
-  `uniform_negatives` adds items drawn evenly. On Yambda-50M's 629,298
-  tracks, held-out Recall@10 after four epochs goes from 0.0229 to
-  0.0334. Both are off by default.
-- CI's recommender gate checks semantic IDs: a plain and a balanced
-  codebook on MovieLens-1M, the codes a table gives against
-  `codebook_report`, and the report against the fixtures.
-
 ### App engine
 
 - App engine: the app creator is a page of the command center (Apps → App
@@ -89,8 +47,47 @@ format: `chloedb-server-v0.2.1`, `chloedb-py-v0.2.1` and
 It has breaking changes, each marked below. The shard protocol stays 20:
 `RestoreChunk` and `VerifyRequest` gain a `config` field, which a server of
 0.2.0 does not send and this one accepts as 0, so a shard can run both
-versions during an upgrade. It also brings the one-line installer and the
-app engine's schedules, sources and reach controls.
+versions during an upgrade. It also brings the one-line installer, the
+app engine's schedules, sources and reach controls, and a first set of
+additions, none of which changes the file format or the shard protocol:
+`PACK n TOKENS`, set operators on multi-valued fields, ChloeCtx capsules,
+the Python framework adapters and options for training semantic IDs.
+
+### Added
+
+- ChloeDB: `PACK n TOKENS` ends a SELECT and fills a budget of tokens
+  rather than a number of rows: rows too long are cut to the stretch that
+  matches the query (`EXCERPT n`), rows that repeat one taken are skipped
+  (`DEDUPE x`, by words or `ON` a vector field), rows an `EDGES` field
+  links to come with the row that links them (`FOLLOW links 1 HOP`), and
+  `WITH RECEIPT` says why each candidate was taken or skipped. `Db::pack`
+  answers the receipt with the snapshot read. On a file, a server and a
+  coordinator; no change to the file format or the shard protocol.
+- ChloeDB: set operators on a multi-valued field, as PostgreSQL's arrays
+  have them: `tags @> ARRAY['red', 'sale']` (every value of the list),
+  `tags && ARRAY[...]` (any of them) and, on an `INT[]` field,
+  `groups <@ :allowed` (each value of the row is in the list), read from
+  the field's index and usable as a search's filter. A `KEYWORD[]` field
+  does not take `<@` yet.
+- ChloeCtx capsules: `chloectx pack DIR` writes a slice of a project's
+  memory (decisions, rules, facts, open tasks, notes, their entities and
+  the conversation, redacted again, without raw tool calls) to one
+  read-only file and a manifest with its hash, and `chloectx mount DIR`
+  serves it to another agent's Claude Code as the MCP tools
+  `capsule_ask`, `capsule_search`, `capsule_timeline` and `capsule_sql`.
+  With a short handoff note the next agent solved 72% of the follow-up
+  tasks, and 89% with a capsule as well
+  ([docs/chloectx/capsules.md](docs/chloectx/capsules.md)).
+- Python: `chloedb.langchain` (a LangChain vector store),
+  `chloedb.langgraph` (a LangGraph checkpointer and store),
+  `chloedb.llama_index` (a LlamaIndex vector store and embedding) and
+  `chloedb.dbapi`, a DB-API 2.0 driver, with the extras `langchain`,
+  `langgraph` and `llama-index`
+  ([docs/chloedb/frameworks.md](docs/chloedb/frameworks.md)).
+- In the repository: `chloedb-swarm`, simulated users who do tasks with
+  ChloeDB through its MCP tools or the command center, and a review of
+  each session ([chloedb-swarm/README.md](chloedb-swarm/README.md)). It
+  ships in no package.
 
 ### Security
 
@@ -264,6 +261,11 @@ app engine's schedules, sources and reach controls.
   where a column references a table created after its own table
   (`ALTER TABLE .. ADD COLUMN .. REFERENCES`) failed with "references ..,
   which is not a table". It copies such a database.
+- Semantic IDs: a background flush keeps the tie numbers of rows deleted
+  before it. It dropped them with the rows, so the next row under the
+  same levels was given a deleted row's whole code again: a code named
+  two rows over time, which the tie exists to prevent. A foreground flush
+  and a merge already kept them.
 
 ### Query and indexes
 
@@ -279,6 +281,26 @@ app engine's schedules, sources and reach controls.
 - The filter of `json_paths(.., filter => ..)`, `Db::json_paths` and
   `Db::sid_next` is one condition, parsed by itself. Its text was put
   into a statement's, so `'x = 1 LIMIT 0'` was taken as a filter.
+- Semantic IDs: `chloedb.train.codebook(balanced=True)` (Rust's
+  `TrainOptions.balance`, JavaScript's and Java's `balanced`) trains each
+  level of a codebook with every centroid given the same number of the
+  training vectors. Plain k-means uses the later levels' numbers
+  unevenly; on Amazon Beauty's 12,101 items, balanced, the third level's
+  256 numbers are all in use alike and the items sharing a code go from
+  3,288 to 2,601. Off by default, and a codebook's file is as before.
+  `chloedb.train.codebook_report` (`Codebook::report`,
+  `Db::codebook_report`) says what a codebook makes of a set of vectors:
+  the distinct codes, the rows sharing one, and each level's use.
+- Sequence models: `chloedb.train.sequence(logq=True, uniform_negatives=n)`
+  for catalogs too large to train against every item. With the other
+  targets of a batch as the negatives the model learns to rank popular
+  items low; `logq` takes that out of each negative's score and
+  `uniform_negatives` adds items drawn evenly. On Yambda-50M's 629,298
+  tracks, held-out Recall@10 after four epochs goes from 0.0229 to
+  0.0334. Both are off by default.
+- CI's recommender gate checks semantic IDs: a plain and a balanced
+  codebook on MovieLens-1M, the codes a table gives against
+  `codebook_report`, and the report against the fixtures.
 
 ### Replication
 
