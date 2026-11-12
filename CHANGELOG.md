@@ -20,8 +20,20 @@ still 0.1.0, and the next release will name its version here.
   header is damaged but whose commits are intact, or a log from another
   database, is refused the same way, and so is a first page of zeros
   (slot 0 is written when a database is created, so zeros there are
-  damage). Before, one flipped byte could reopen an older version without
-  a word.
+  damage), and so is a zeroed slot 1 where the file shows a commit wrote
+  it: slot 0 holds a version past the one the database was created with,
+  or the log starts past the transactions after that version, or the file
+  has pages past it and no log, as a checkpoint has until it is opened.
+  A newer version that changed tables (created, altered or dropped one)
+  or began numbering writes is never taken for one the log covers, since
+  none of that is logged: falling back past it lost the table and the rows
+  logged into it. Before, one flipped byte could reopen an older version
+  without a word.
+- Without `sync`, a log whose header is zeros before intact commits is
+  what a power loss leaves when the header never reached the disk: it is
+  dropped (copied to `<wal>.damaged`, and `damaged()` says so), as a power
+  loss without sync may, instead of being refused as damaged. With `sync`
+  the header is durable before any record, so zeros there are refused.
 - `recover` (Rust `DbOptions`, Python `chloedb.open(..., recover=True)`,
   `chloedb-server --recover`) accepts the loss on purpose: it keeps a copy
   of the damaged file as `<path>.damaged-<time>` first, and `damaged()`
@@ -40,9 +52,11 @@ still 0.1.0, and the next release will name its version here.
 - `close()` flushes, so after a clean close the file alone is a complete
   copy of the database. Python adds `flush()` and `checkpoint(dest)`;
   docs/chloedb/python.md and index.md say how to back a database up.
-- Not yet: a log deleted outright cannot be detected, nor can a zeroed
-  slot 1 (it looks like a slot no commit has written); there is no
-  point-in-time recovery.
+- Not yet: a log deleted outright cannot be detected (the file is not
+  written between versions, so nothing in it says the log held
+  transactions); nor can a zeroed slot 1 that held the only version made
+  since creation beside an empty log, which looks like a crash during
+  that first commit; there is no point-in-time recovery.
 
 ### Query and indexes
 

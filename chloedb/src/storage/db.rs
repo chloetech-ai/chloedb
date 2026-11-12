@@ -956,7 +956,7 @@ impl Database {
             let meta = Meta {
                 format: manifest.format(),
                 db_id,
-                txn: 1,
+                txn: pager::FIRST_TXN,
                 manifest: mext,
                 manifest_crc: crc32fast::hash(&mbytes),
                 freelist: fext,
@@ -1260,7 +1260,7 @@ impl Database {
         wal::remove_leftovers(&wal_path);
         let fits = |table: u32, op: &Op| manifest.table(table).is_none_or(|t| op_fits(&t.schema, op));
         let numbered = manifest.seq_no.is_some();
-        let header_note = check_log_header(&wal_path, meta.db_id, meta.txn <= 1, opts.wal_drop_damaged || opts.recover)?;
+        let header_note = check_log_header(&wal_path, meta.db_id, meta.txn <= 1, !opts.sync, opts.wal_drop_damaged || opts.recover)?;
         let (sealed, mut txns, cut) = read_sealed_wals(&wal_path, &manifest, meta.db_id, opts.wal_drop_damaged || opts.recover, &fits)?;
         let (mut wal, wal_dropped) = match cut {
             None => {
@@ -5961,8 +5961,9 @@ fn read_sealed_wals(
             continue;
         }
         let Some((got, damage)) = wal::read_sealed(&p, db_id, fits)? else {
-            // Damage after the fact too, when its commits are intact.
-            if check_log_header(&p, db_id, false, drop_damaged)?.is_some() {
+            // Damage after the fact too, when its commits are intact: a
+            // log is synced, header and all, before it is sealed.
+            if check_log_header(&p, db_id, false, false, drop_damaged)?.is_some() {
                 io::remove_file(&p)?;
                 cut = Some(format!("{} has a damaged header (or names another database): dropped it and the logs after it, each copied to <log>.damaged", p.display()));
                 continue;
@@ -6011,37 +6012,110 @@ pub(crate) struct Fallback {
 pub(crate) fn fallback_decision(file: &File, wal_path: &Path, meta: Meta, manifest: &Manifest, skipped: Option<&(Meta, String)>) -> Result<Option<Fallback>> {
     // The newer version's `wal_txn`, where its manifest can be read.
     let mut newer: Option<Option<u64>> = None;
+    // What the newer version changed that no log holds, where its manifest
+    // can be read.
+    let mut unlogged = None;
     let mut what = Vec::new();
     if let Some((n, m)) = skipped {
-        let wal_txn = pager::read_extent(file, n.manifest, n.manifest_crc).ok().and_then(|b| Manifest::decode(&b).ok()).map(|m| m.wal_txn);
-        newer = Some(wal_txn);
+        let nm = pager::read_extent(file, n.manifest, n.manifest_crc).ok().and_then(|b| Manifest::decode(&b).ok());
+        newer = Some(nm.as_ref().map(|m| m.wal_txn));
+        unlogged = nm.as_ref().and_then(|nm| unlogged_changes(manifest, nm));
         what.push(format!("version {} skipped: {m}", n.txn));
     }
-    for (slot, m) in pager::damaged_slots(file)? {
-        match m {
+    for d in pager::damaged_slots(file)? {
+        let slot = d.slot;
+        match d.manifest {
             // The older slot: nothing of its version is read.
             Some(m) if m.txn < meta.txn => {}
             Some(m) => {
                 newer = Some(Some(m.wal_txn));
+                unlogged = unlogged.or(unlogged_changes(manifest, &m));
                 what.push(format!("meta slot {slot} fails its checksum, and names a newer version (txn {})", m.txn));
             }
             None => {
                 newer = Some(newer.flatten());
-                what.push(format!("meta slot {slot} fails its checksum, and the version it names (newer than txn {} or not) cannot be read", meta.txn));
+                let why = match (d.zeroed, slot) {
+                    (true, 0) => "is all zeros, though a database is created with it written",
+                    (true, _) => "is all zeros, though the version in slot 0 shows that a commit wrote it",
+                    (false, _) => "fails its checksum",
+                };
+                what.push(format!("meta slot {slot} {why}, and the version it names (newer than txn {} or not) cannot be read", meta.txn));
             }
         }
     }
-    let Some(newer_wal) = newer else { return Ok(None) };
-    let logged = wal::logged_txns(wal_path, meta.db_id)?;
     let w = manifest.wal_txn;
-    let safe = fallback_keeps_commits(meta.txn, w, newer_wal, &logged);
+    // Read only when a fallback is considered: it reads the logs whole.
+    let mut logged = None;
+    // Slot 1 all zeros beside the version the database was created with
+    // is a database before its first commit, or one a crash cut that
+    // commit short in before it wrote the slot; or a first commit whose
+    // slot was zeroed since. That commit wrote pages past slot 0's
+    // version, which has no free page to reuse, so a file no longer than
+    // slot 0 says has had none. Past that, the logs tell where they can:
+    // the commit emptied the log (a flush) or took a txn after the
+    // transactions logged before it, so a log that holds a transaction
+    // but not the first after slot 0's version follows a version that is
+    // gone. And a commit is made by a writer, which opened the log first,
+    // so those pages beside no log at all (a checkpoint's copy, never
+    // opened) are a version gone too. An empty log leaves it unproven:
+    // opening goes on, as after a crash.
+    if newer.is_none() && meta.txn == pager::FIRST_TXN && file.metadata()?.len() > meta.page_count * PAGE && pager::slot_zeroed(file, 1)? {
+        let l = logged.insert(wal::logged_txns(wal_path, meta.db_id)?);
+        let gap = !l.is_empty() && !fallback_keeps_commits(meta.txn, w, None, l);
+        let no_log = !gap && !wal_path.exists() && wal::sealed_files(wal_path)?.is_empty();
+        if gap || no_log {
+            newer = Some(None);
+            what.push(match gap {
+                true => format!("meta slot 1 is all zeros, though the write-ahead log starts past the transactions that followed the version in slot 0 (txn {}): a commit wrote slot 1 and emptied the log, and the version it named cannot be read", meta.txn),
+                false => format!("meta slot 1 is all zeros, though the file holds pages past the version in slot 0 (txn {}) and there is no write-ahead log, which the writer that wrote them opened first: the version they belong to cannot be read", meta.txn),
+            });
+        }
+    }
+    let Some(newer_wal) = newer else { return Ok(None) };
+    let logged = match logged {
+        Some(l) => l,
+        None => wal::logged_txns(wal_path, meta.db_id)?,
+    };
+    let keeps = fallback_keeps_commits(meta.txn, w, newer_wal, &logged);
     let first = logged.iter().copied().filter(|&t| t > w).min();
-    let lost = match (safe, first) {
+    let mut lost = match (keeps, first) {
         (true, _) => String::new(),
         (false, Some(c)) => format!(": the transactions committed after txn {w} and before txn {c}, which the newer version held and the write-ahead log no longer does"),
         (false, None) => format!(": every transaction committed after txn {w}, which the newer version held and the write-ahead log no longer does"),
     };
-    Ok(Some(Fallback { safe, what: what.join("; "), lost }))
+    if let Some(u) = &unlogged {
+        lost = format!(": {u}{}", lost.replacen(": ", "; and ", 1));
+    }
+    Ok(Some(Fallback { safe: keeps && unlogged.is_none(), what: what.join("; "), lost }))
+}
+
+/// What a newer version changed, against the older `older`, that no log
+/// holds and falling back to `older` would undo: tables created, altered
+/// or dropped, and the numbering of writes started or given a new term.
+/// Each is a version of its own and is not logged, so a log that holds
+/// every transaction does not hold it; and replay would skip the logged
+/// writes to a table the older version lacks. `None` when it changed
+/// none (a flush, a merge, a vacuum: the older version and the logs hold
+/// the same rows).
+fn unlogged_changes(older: &Manifest, newer: &Manifest) -> Option<String> {
+    let mut out = Vec::new();
+    for t in &newer.tables {
+        match older.tables.iter().find(|o| o.id == t.id) {
+            None => out.push(format!("table {} created", t.schema.table)),
+            Some(o) if o.schema != t.schema => out.push(format!("table {} altered", t.schema.table)),
+            Some(_) => {}
+        }
+    }
+    for o in older.tables.iter().filter(|o| !newer.tables.iter().any(|t| t.id == o.id)) {
+        out.push(format!("table {} dropped", o.schema.table));
+    }
+    match (&older.seq_no, &newer.seq_no) {
+        (None, Some(_)) => out.push("the numbering of writes started".to_string()),
+        (Some(a), Some(b)) if a.term != b.term => out.push(format!("term {} begun", b.term)),
+        (Some(_), None) => out.push("the numbering of writes stopped".to_string()),
+        _ => {}
+    }
+    (!out.is_empty()).then(|| format!("what the newer version changed, which no log holds ({})", out.join(", ")))
 }
 
 /// Whether the version before a damaged one (txn `older_txn`, holding the
@@ -6058,17 +6132,31 @@ pub(crate) fn fallback_decision(file: &File, wal_path: &Path, meta: Meta, manife
 /// `wal_txn + 2` where the older version itself took `wal_txn + 1` (a
 /// flush is numbered right after the last transaction it holds). Txns
 /// with gaps between them (versions of their own, merges) leave this
-/// unproven, and an empty log too: then falling back is refused.
+/// unproven, and an empty log too: then falling back is refused. Where
+/// the newer version is not known, a gap among the logged txns past the
+/// older version's is a version after it that took that txn, whose
+/// changes nothing here shows (a change of tables, say), and is refused
+/// too.
+///
+/// This is about the logged transactions only: a newer version that
+/// changed tables is lost all the same ([`unlogged_changes`]).
 pub(crate) fn fallback_keeps_commits(older_txn: u64, wal_txn: u64, newer_wal: Option<u64>, logged: &[u64]) -> bool {
     if let Some(wn) = newer_wal {
         if wn <= wal_txn || logged.iter().any(|&t| t > wal_txn && t <= wn) {
             return true;
         }
     }
-    match logged.iter().copied().filter(|&t| t > wal_txn).min() {
+    let first = match logged.iter().copied().filter(|&t| t > wal_txn).min() {
         Some(c) => c == wal_txn + 1 || (older_txn == wal_txn + 1 && c == wal_txn + 2),
         None => false,
+    };
+    if !first || newer_wal.is_some() {
+        return first;
     }
+    let mut after: Vec<u64> = logged.iter().copied().filter(|&t| t > older_txn).collect();
+    after.sort_unstable();
+    after.dedup();
+    after.iter().enumerate().all(|(i, &t)| t == older_txn + 1 + i as u64)
 }
 
 /// The error of an open that refuses to fall back to version `txn`.
@@ -6099,12 +6187,31 @@ fn damaged_copy(path: &Path) -> Result<PathBuf> {
 /// else copies it to `<wal>.damaged` and says so. A log that names another
 /// database beside one that never made a version (`fresh`) is what a crash
 /// while creating it leaves, and is left to be replaced.
-fn check_log_header(wal_path: &Path, db_id: u64, fresh: bool, drop: bool) -> Result<Option<String>> {
+///
+/// `unsynced`: the log is written without `DbOptions::sync`. A log is
+/// started with its header alone, and without `sync` nothing makes that
+/// durable before the records appended after it: a power loss can keep
+/// a later sector and lose the header's, which then reads as zeros
+/// before intact commits. Those commits were never durable, and losing
+/// them is what a power loss without `sync` may do, so such a log is
+/// dropped (copied aside, and said) rather than refused. A header that
+/// is not zeros, or zeros in a log written with `sync` (whose header is
+/// synced before the log is named), is damage after the fact. Byte for
+/// byte a header zeroed by damage looks the same: without `sync` it is
+/// taken for the power loss.
+fn check_log_header(wal_path: &Path, db_id: u64, fresh: bool, unsynced: bool, drop: bool) -> Result<Option<String>> {
     let Some((what, foreign)) = wal::unreadable_log(wal_path, db_id)? else { return Ok(None) };
     if foreign && fresh {
         return Ok(None);
     }
     let saved = wal::damaged_path(wal_path);
+    if unsynced && wal::header_zeroed(wal_path)? {
+        std::fs::copy(wal_path, &saved)?;
+        return Ok(Some(format!(
+            "{what}, and its header is zeros, as a power loss leaves a log written without DbOptions::sync before its header reached the disk: dropped them (they were not durable), the log is copied to {}",
+            saved.display()
+        )));
+    }
     if !drop {
         return Err(corrupt(format!(
             "{what}: opening would drop them. Nothing was changed. Put back this database's log, or open with DbOptions::recover (Python: chloedb.open(..., recover=True); chloedb-server --recover) to copy it to {} and start an empty log, losing them",
