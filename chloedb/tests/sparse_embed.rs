@@ -206,3 +206,28 @@ fn a_learned_sparse_model_opens_from_the_models_directory() {
     assert_eq!(top(&db, "similarity(sp, :q)", "cardiac drug")[0], "a");
     assert_eq!(top(&db, "similarity(sp, :q)", "railway timetable")[0], "b");
 }
+
+/// A database without an embedded SPARSE field declares nothing new: a
+/// plain SPARSE field, and embedded VECTOR fields, need what they needed
+/// before, so versions from before `sparse_embed` open it.
+#[test]
+fn only_an_embedded_sparse_field_needs_the_new_feature() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Schema::new(
+        "docs",
+        vec![
+            Field::new("id", FieldType::Keyword),
+            Field::new("body", FieldType::Text { positions: false }),
+            Field::new("sp", FieldType::Sparse),
+            Field::new("emb", FieldType::Vector { dim: 8, index: VectorIndexKind::Flat }).embedded("hash:8", &["body"]),
+        ],
+        Some("id"),
+    )
+    .unwrap();
+    let db = Db::create(&dir.path().join("p.strata"), s, DbOptions::default()).unwrap();
+    db.set_embedder("emb", Arc::new(HashEmbedder { dim: 8 })).unwrap();
+    db.load([vec![Value::Str("a".into()), Value::Str("a car".into()), Value::Str(r#"{"car": 1}"#.into()), Value::Null]]).unwrap();
+    db.storage().flush().unwrap();
+    let features = chloedb::storage::manifest::read(&dir.path().join("p.strata")).unwrap().features();
+    assert!(!features.iter().any(|f| f == "sparse_embed"), "{features:?}");
+}
