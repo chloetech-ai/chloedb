@@ -52,6 +52,9 @@ fn damaged_manifests() {
     for data in inputs(4, 3000, 30) {
         harness::manifest(&data);
     }
+    // Found by the nightly fuzzer: a freelist whose counts overflow when
+    // summed, which decoding added up unchecked.
+    harness::manifest(&[0x01, 0x8f, 0x10, 0x00, 0x61, 0x6d, 0x65, 0xff]);
 }
 
 #[test]

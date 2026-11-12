@@ -139,6 +139,9 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
   zeroed slot 1 that held the only version made since creation beside an
   empty log, which looks like a crash during that first commit; there is
   no point-in-time recovery.
+- A damaged freelist whose counts or extents overflow when added up is
+  refused as malformed; decoding it panicked before (found by the nightly
+  fuzzer).
 
 ### Query and indexes
 
