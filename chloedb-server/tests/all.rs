@@ -60,6 +60,7 @@ mod rank_log;
 mod rank_models;
 mod rank_profiles;
 mod replication;
+mod safety;
 mod scroll_pages;
 mod server;
 mod sim;

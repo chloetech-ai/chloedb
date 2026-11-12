@@ -11,6 +11,51 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Security
+
+- `chloedb-server`: a key rotated on one server ends on every server of
+  its cluster. Merging keys took only the time a key was last used, so the
+  old secret of a key rotated on a coordinator stayed valid on the shards,
+  on other coordinators, and on that coordinator once it started again and
+  took its keys back from the shards. A key's end is now the earlier of
+  the two a merge sees.
+- The OpenSearch listener (`--opensearch-listen`) inflates a gzip body to
+  `--max-body-mb` at most (413 past it), asks a read key for every route
+  but `/` and `_cluster/health` (a feed key read documents before), and
+  keeps refusals and changes of indexes, mappings, settings and aliases
+  in the audit log, as the main listener does.
+- `POST /v1/alerts/peer`, by which coordinators tell each other their
+  alerts, takes the cluster's token (or the server's) only: an admin key
+  could replace rules, routes and silences without an audit entry.
+- Every HTTP answer carries `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin` and a
+  `Content-Security-Policy` with `frame-ancestors 'self'`, unless its
+  handler sets its own, so that another site cannot frame the command
+  center.
+- The HTTP listeners close a connection that takes longer than
+  `--header-timeout-secs` (30) to send a request's headers or a TLS
+  handshake, or that stays idle as long, and hold `--max-connections`
+  at once (by default three quarters of the open-file limit): a client
+  sending a byte a minute on thousands of connections no longer holds
+  the process's file descriptors.
+- A server over TLS that is told to stop finishes the requests under
+  way, as one without TLS did, instead of cutting them; both wait
+  `--stop-grace-ms` (20 s) at most, and a follower's open feed ends when
+  the server stops taking connections, rather than holding it up until
+  it is killed.
+- **Breaking:** `follow-postgres` with no `sslmode` in its URL requires TLS
+  of a database on another machine (`prefer` stays the default for
+  `localhost` and loopback addresses), and warns when a URL asks for
+  `prefer` or `disable` of one.
+- **Breaking:** the image `ghcr.io/chloetech-ai/chloedb-server` runs as
+  user 10001, not root, from base images pinned by digest, and holds
+  neither the benchmark tools nor `iproute2` (`docker build --target
+  bench` makes an image with `chloedb-server-bench` and `engine-compare`).
+  The operator's shard pods set `fsGroup: 10001`, which gives a volume a
+  root image wrote to that group; a Docker volume needs a `chown` once
+  ([the server's page](docs/chloedb/server.md)). Images carry build
+  provenance.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

@@ -2367,7 +2367,8 @@ impl Service {
                     return Err(ApiError::bad("a query that calls llm() is not scrolled: page it with LIMIT and OFFSET"));
                 }
                 let mut first = req.clone();
-                first.sql = split.first.to_string();
+                // As text that reads back as the very first step.
+                first.sql = split.first_sql()?;
                 let mut a = self.query_admitted(first).await?;
                 let rs = std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
                 let (params, models) = (req.params.clone(), self.models_dir());
