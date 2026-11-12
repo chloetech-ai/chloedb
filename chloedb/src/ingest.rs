@@ -375,7 +375,9 @@ pub const IMPORT_BATCH: usize = 10_000;
 
 /// Writes `rows` into `db`. Into an empty table they are bulk-loaded in one
 /// commit (keys must then be distinct), and a bad row writes nothing;
-/// otherwise they are upserted, [`IMPORT_BATCH`] rows a transaction, and a
+/// otherwise, and in a database that numbers its writes (whose bulk loads
+/// would reach no replica), they are upserted (inserted, in a table
+/// without a key), [`IMPORT_BATCH`] rows a transaction, and a
 /// bad row stops the import after the transactions before it. Embedded
 /// vectors the rows leave out are computed when the database has the
 /// field's model ([`Db::set_embedder`]).
@@ -388,7 +390,8 @@ pub fn import(db: &Db, rows: Rows<'_>) -> Result<Imported> {
 pub fn import_into(db: &Db, table: &str, mut rows: Rows<'_>) -> Result<Imported> {
     let view = db.snapshot().table(table).ok_or_else(|| Error::Query(format!("no such table: {table}")))?;
     let mut out = Imported::default();
-    if view.n_live_docs() == 0 {
+    let keyed = view.schema().primary_key.is_some();
+    if view.n_live_docs() == 0 && db.storage().seq_no().is_none() {
         let mut n = 0u64;
         db.try_load_into(table, rows.by_ref().inspect(|r| n += r.is_ok() as u64))?;
         (out.rows, out.bulk) = (n, true);
@@ -406,7 +409,12 @@ pub fn import_into(db: &Db, table: &str, mut rows: Rows<'_>) -> Result<Imported>
             let mut t = db.storage().begin()?;
             let mut tt = t.table(table)?;
             for d in batch {
-                tt.upsert(d)?;
+                // A table without a key has nothing to replace a row by.
+                if keyed {
+                    tt.upsert(d)?;
+                } else {
+                    tt.insert(d)?;
+                }
             }
             t.commit()?;
             out.rows += n;

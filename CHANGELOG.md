@@ -32,6 +32,48 @@ changes collect under "Unreleased".
 
 ### Security
 
+- `chloedb-server`: a key rotated on one server ends on every server of
+  its cluster. Merging keys took only the time a key was last used, so the
+  old secret of a key rotated on a coordinator stayed valid on the shards,
+  on other coordinators, and on that coordinator once it started again and
+  took its keys back from the shards. A key's end is now the earlier of
+  the two a merge sees.
+- The OpenSearch listener (`--opensearch-listen`) inflates a gzip body to
+  `--max-body-mb` at most (413 past it), asks a read key for every route
+  but `/` and `_cluster/health` (a feed key read documents before), and
+  keeps refusals and changes of indexes, mappings, settings and aliases
+  in the audit log, as the main listener does.
+- `POST /v1/alerts/peer`, by which coordinators tell each other their
+  alerts, takes the cluster's token (or the server's) only: an admin key
+  could replace rules, routes and silences without an audit entry.
+- Every HTTP answer carries `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin` and a
+  `Content-Security-Policy` with `frame-ancestors 'self'`, unless its
+  handler sets its own, so that another site cannot frame the command
+  center.
+- The HTTP listeners close a connection that takes longer than
+  `--header-timeout-secs` (30) to send a request's headers or a TLS
+  handshake, or that stays idle as long, and hold `--max-connections`
+  at once (by default three quarters of the open-file limit): a client
+  sending a byte a minute on thousands of connections no longer holds
+  the process's file descriptors.
+- A server over TLS that is told to stop finishes the requests under
+  way, as one without TLS did, instead of cutting them; both wait
+  `--stop-grace-ms` (20 s) at most, and a follower's open feed ends when
+  the server stops taking connections, rather than holding it up until
+  it is killed.
+- **Breaking:** `follow-postgres` with no `sslmode` in its URL requires TLS
+  of a database on another machine (`prefer` stays the default for
+  `localhost` and loopback addresses), and warns when a URL asks for
+  `prefer` or `disable` of one.
+- **Breaking:** the image `ghcr.io/chloetech-ai/chloedb-server` runs as
+  user 10001, not root, from base images pinned by digest, and holds
+  neither the benchmark tools nor `iproute2` (`docker build --target
+  bench` makes an image with `chloedb-server-bench` and `engine-compare`).
+  The operator's shard pods set `fsGroup: 10001`, which gives a volume a
+  root image wrote to that group; a Docker volume needs a `chown` once
+  ([the server's page](docs/chloedb/server.md)). Images carry build
+  provenance.
 - ChloeCtx: **breaking:** `chloectx app` refuses to start on an address
   other than loopback (`--host 0.0.0.0`, say) with no `--token`, since
   whoever reached the port could read and write every space and start
@@ -64,6 +106,52 @@ changes collect under "Unreleased".
   its parts expand past 512 MB (counted by decompressing them, not by the
   sizes the file declares) or it holds more than 2 million cells, as CSV
   and SQLite imports were bounded already.
+
+### Storage
+
+- A SPARSE value whose term holds the character `\0` is refused when it
+  is written. It was accepted, and the next flush panicked building the
+  field's dictionary: on the flusher thread, which ended for good, and
+  again at each reopen, which replays the row. A term of that kind in a
+  row written before is left out of the index.
+- A panic in background work is that round's error, tried again as an
+  error is, and no longer ends the thread: the build of a background
+  flush, a merge on a merger thread, the cold tier's offload and eviction,
+  and a read-only database's refresh.
+- A checkpoint (a backup, the copy a replica is seeded from) of a database
+  where a column references a table created after its own table
+  (`ALTER TABLE .. ADD COLUMN .. REFERENCES`) failed with "references ..,
+  which is not a table". It copies such a database.
+
+### Query and indexes
+
+- **Breaking:** on the operators engine, a `LIMIT` over a join, `DISTINCT
+  ON` or `MAX k PER` whose first table holds more than 1,000,000 rows is
+  an error when the rows it wants are not among the first 1,000,000 read,
+  as the same query without its `LIMIT` is. It answered a short page,
+  down to no rows at all, without a word.
+- A plan from elsewhere (`Db::run`, `POST /v1/plan`) with a NOT over a NOT
+  or over `!=` matched the rows whose field is NULL: `not(not(price > 5))`
+  returned rows without a price. Each NOT is SQL's now, as in SQL text,
+  which was not affected.
+- The filter of `json_paths(.., filter => ..)`, `Db::json_paths` and
+  `Db::sid_next` is one condition, parsed by itself. Its text was put
+  into a statement's, so `'x = 1 LIMIT 0'` was taken as a filter.
+
+### Replication
+
+- **Breaking:** a database that numbers its writes (`--seq-no`) refuses a
+  bulk load (`Db::load`, `Database::bulk_load`) and `attach_segments` once
+  it has numbered a write or replicates: they write no log record, so its
+  replicas never got the rows. Before that they still seed it. Imports
+  (`POST /v1/import`, `chloedb-server import`, SQLite, Parquet and Arrow)
+  into such a database upsert in transactions of 10,000 rows, also into an
+  empty table: a bad row then stops the import after the transactions
+  before it, and a key the file holds twice keeps its last row.
+- `chloedb-server follow` and `follow-postgres` no longer stop with
+  "table ... already exists" when a `CREATE TABLE` or `ALTER TABLE` they
+  sent was applied but its answer was lost and they sent it again: a
+  table found as the source has it is taken as made.
 
 ## 0.2.0
 

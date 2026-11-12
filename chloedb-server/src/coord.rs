@@ -40,8 +40,12 @@
 //! another shard holds. UPDATE and DELETE statements go to every shard. A
 //! shard whose replicas replicate (`Hello` names their roles) takes its
 //! writes at its primary, which ships them to the others
-//! ([`crate::replication`]); otherwise every replica takes every write,
-//! and one that misses a write (it was down) is not caught up: rebuild it.
+//! ([`crate::replication`]). A shard of several servers none of which
+//! replicates serves reads only: its writes are refused, as each server
+//! would take them on its own and the copies would diverge (finding E-7),
+//! unless [`CoordOptions::write_every_copy`] (`--write-every-copy`) has
+//! every replica take every write, where one that misses a write (it was
+//! down) is not caught up: rebuild it.
 //! A write that spans shards is one transaction per shard, not one across
 //! them.
 //!
@@ -145,6 +149,15 @@ pub struct CoordOptions {
     /// The shard served by this process, if any: the coordinator calls the
     /// server of that URL in-process.
     pub local: Option<LocalShard>,
+    /// Writes to a shard of several servers none of which replicates
+    /// (none started with `--replicas` or `--replica`) go to each of them,
+    /// as before finding E-7: each takes the write on its own and numbers
+    /// it its own way, one that misses a write is never caught up, and a
+    /// write one of them refuses is answered as failed though the others
+    /// applied it, so the copies diverge and reads rotate over different
+    /// databases. Off (the default), such a shard serves reads only, and
+    /// its writes are refused (409) before any server is sent them.
+    pub write_every_copy: bool,
 }
 
 impl Default for CoordOptions {
@@ -160,6 +173,7 @@ impl Default for CoordOptions {
             slots: None,
             stats_cache_terms: STATS_CACHE_TERMS,
             local: None,
+            write_every_copy: false,
         }
     }
 }
@@ -894,6 +908,10 @@ pub struct Coordinator {
     /// though none said so: the next change gives it again first
     /// ([`core::Change::in_doubt`]).
     doubt: Mutex<Option<SlotMap>>,
+    /// On Kubernetes, the Lease it holds while it changes the map, which
+    /// keeps the map in doubt for whichever coordinator changes it next
+    /// ([`crate::operator::lease`], finding E-2).
+    lease: std::sync::OnceLock<crate::operator::lease::MapLease>,
     /// The newest map epoch a server said it holds, and what wakes the
     /// watcher to take it up ([`Coordinator::watch`]).
     newer: AtomicU64,
@@ -1462,6 +1480,7 @@ impl Coordinator {
             topo: RwLock::new(Arc::new(topo)),
             changing: tokio::sync::Mutex::new(()),
             doubt: Mutex::new(None),
+            lease: std::sync::OnceLock::new(),
             newer: AtomicU64::new(0),
             wake: Arc::new(tokio::sync::Notify::new()),
             schema,
@@ -2671,6 +2690,7 @@ impl Coordinator {
     async fn write(&self, t: &Topology, i: usize, r: pb::WriteRequest, need: u32) -> Result<Wrote, ApiError> {
         let to: Vec<usize> = match self.primary(t, i).await? {
             Some(k) => vec![k],
+            None if t.replicas[i].len() > 1 && !self.opts.write_every_copy => return Err(unreplicated(i, t.replicas[i].len())),
             None => (0..t.replicas[i].len()).collect(),
         };
         let named = |(k, s): (usize, tonic::Status)| self.named(&t.replicas[i][k].url, s);
@@ -3832,6 +3852,16 @@ impl Coordinator {
         });
     }
 
+    /// Changes the cluster map from now on only while it holds `lease`, and
+    /// keeps the map in doubt there ([`crate::operator::lease`]): on
+    /// Kubernetes, where the operator's calls reach any coordinator. Once.
+    pub fn lease_map_changes(&self, lease: crate::operator::lease::MapLease) {
+        let me = lease.me().to_string();
+        if self.lease.set(lease).is_ok() {
+            tracing::info!(holder = %me, "changes the cluster map only while it holds the map's Lease");
+        }
+    }
+
     /// Changes the cluster map, as [`core::Change`] decides: `f` makes the
     /// next map from the newest, which every server of the next map is
     /// given, and the coordinator routes by it. One change at a time here;
@@ -3848,9 +3878,34 @@ impl Coordinator {
     /// not take it.
     pub async fn change(&self, f: impl Fn(&SlotMap) -> Result<SlotMap, String>, first: &[String]) -> Result<(SlotMap, Vec<String>), ApiError> {
         let _one = self.changing.lock().await;
-        let doubt = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let lease = self.lease.get();
+        let mut doubt = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(l) = lease {
+            // The map another coordinator, or this one before it started
+            // again, left in doubt: the newer of it and this one's own.
+            let kept = l.take(crate::operator::lease::WAIT, &crate::operator::now_ms).await?;
+            if kept.as_ref().map_or(0, |m| m.epoch) > doubt.as_ref().map_or(0, |m| m.epoch) {
+                doubt = kept;
+            }
+        }
+        let r = self.change_held(f, first, doubt, lease).await;
+        if let Some(l) = lease {
+            let left = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Err(e) = l.release(left.as_ref(), crate::operator::now_ms()).await {
+                // The map it last kept there stays in doubt: given again,
+                // which is safe, by the next change.
+                tracing::warn!(error = %e.message, "could not end this coordinator's hold on the cluster map's Lease");
+            }
+        }
+        r
+    }
+
+    /// A [`Self::change`], with the Lease held when there is one.
+    async fn change_held(&self, f: impl Fn(&SlotMap) -> Result<SlotMap, String>, first: &[String], doubt: Option<SlotMap>, lease: Option<&crate::operator::lease::MapLease>) -> Result<(SlotMap, Vec<String>), ApiError> {
         let (mut change, mut step) = core::Change::new(first, doubt);
         let mut t = self.topo();
+        // The epoch of the map last given to a server, which may hold it.
+        let mut given = 0;
         loop {
             step = match step {
                 core::ChangeStep::Sync => {
@@ -3875,6 +3930,16 @@ impl Coordinator {
                     change.synced(now.as_ref(), &f, &source)
                 }
                 core::ChangeStep::Give { map, to } => {
+                    // Kept before any server is given it: a coordinator that
+                    // stops meanwhile leaves it in doubt for the next.
+                    if let Some(l) = lease {
+                        if let Err(e) = l.keep(Some(&map), crate::operator::now_ms()).await {
+                            let doubt = if given == map.epoch { Some(map.clone()) } else { change.in_doubt() };
+                            *self.doubt.lock().unwrap_or_else(|e| e.into_inner()) = doubt;
+                            return Err(e);
+                        }
+                    }
+                    given = map.epoch;
                     let staged = Topology::new(map.replicas().to_vec(), Some(map.clone()), Some(&t), &self.opts)?;
                     let wait = Duration::from_secs(if change.giving_first() { 30 } else { 60 });
                     let answers = join_all(to.iter().map(|(i, url)| {
@@ -4140,6 +4205,17 @@ fn refused_op(m: &str) -> Option<(usize, &str)> {
     let at = m.find(&format!("{VALIDATE_OP} "))?;
     let (n, why) = m[at + VALIDATE_OP.len() + 1..].split_once(VALIDATE_OF)?;
     Some((n.parse().ok()?, why))
+}
+
+/// The refusal of a write to shard `i`, of `servers` servers none of which
+/// replicates ([`CoordOptions::write_every_copy`]).
+fn unreplicated(i: usize, servers: usize) -> ApiError {
+    ApiError {
+        status: 409,
+        message: format!(
+            "shard {i}'s {servers} servers do not replicate (none was started with --replicas or --replica), so each would take the write on its own and nothing would ever make them agree again: the write was not applied. Give the shard a primary (start one with --replicas naming the others, and those with --replica), serve it from one server, or start this coordinator with --write-every-copy to write to each as before"
+        ),
+    }
 }
 
 /// Sets the part in replication of the server at `url` (`Configure`).
