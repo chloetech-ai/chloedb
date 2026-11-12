@@ -14,15 +14,21 @@
 //! Bearer`) in place of the caller's key. So an app needs no address
 //! that browsers reach, and no keys of its own: the server checks the
 //! caller's (read scope for `GET`, admin for the rest).
+//!
+//! The server also starts apps itself (`--start-apps`, [`crate::app_procs`]):
+//! those are listed here too, each with a token of its own ([`App::token`])
+//! in place of `CHLOEDB_APP_TOKEN`, and with their process's state.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value as Json};
+
+use crate::app_procs::{AppKeys, Plan, Proc};
 
 /// The most an app's answer may be.
 const MAX_ANSWER: usize = 32 << 20;
@@ -31,6 +37,10 @@ const MAX_ANSWER: usize = 32 << 20;
 pub struct App {
     pub name: String,
     pub url: String,
+    /// The token sent to this app in place of the server's
+    /// `CHLOEDB_APP_TOKEN`: an app the server starts has one of its own
+    /// ([`crate::app_procs`]).
+    pub token: Option<String>,
 }
 
 /// `name=url` for each `--app`.
@@ -48,7 +58,7 @@ pub fn parse(specs: &[String]) -> Result<Vec<App>, String> {
         if out.iter().any(|a| a.name == name) {
             return Err(format!("--app: two apps named {name}"));
         }
-        out.push(App { name: name.to_string(), url: url.to_string() });
+        out.push(App { name: name.to_string(), url: url.to_string(), token: None });
     }
     Ok(out)
 }
@@ -59,6 +69,8 @@ pub struct Apps {
     http: Option<reqwest::Client>,
     /// Each app's manifest, read at most every 15 s.
     manifests: Mutex<HashMap<String, (Instant, Json)>>,
+    /// The apps this server runs as child processes ([`crate::app_procs`]).
+    pub procs: Vec<Arc<Proc>>,
 }
 
 impl Default for Apps {
@@ -70,7 +82,37 @@ impl Default for Apps {
 impl Apps {
     pub fn new(list: Vec<App>, token: Option<String>) -> Apps {
         let http = (!list.is_empty()).then(|| crate::http_client().connect_timeout(Duration::from_secs(5)).build().expect("an HTTP client"));
-        Apps { list, token: token.filter(|t| !t.is_empty()), http, manifests: Mutex::new(HashMap::new()) }
+        Apps { list, token: token.filter(|t| !t.is_empty()), http, manifests: Mutex::new(HashMap::new()), procs: Vec::new() }
+    }
+
+    /// These apps and the ones the server starts (`plans`), which are
+    /// listed after the others under their own names and tokens.
+    pub fn with_started(list: Vec<App>, token: Option<String>, plans: Vec<Plan>) -> Apps {
+        let mut list = list;
+        list.extend(plans.iter().map(|p| App { name: p.name.clone(), url: p.url(), token: Some(p.token.clone()) }));
+        let mut apps = Apps::new(list, token);
+        apps.procs = plans.into_iter().map(Proc::new).collect();
+        apps
+    }
+
+    /// Starts the apps' processes, against the server at `server`.
+    pub fn start(&self, server: &str, keys: Arc<dyn AppKeys>) {
+        for p in &self.procs {
+            tokio::spawn(p.clone().supervise(server.to_string(), keys.clone()));
+        }
+    }
+
+    /// Stops the apps' processes.
+    pub async fn stop(&self) {
+        futures::future::join_all(self.procs.iter().map(|p| p.stop())).await;
+    }
+
+    fn token_of<'a>(&'a self, a: &'a App) -> Option<&'a String> {
+        a.token.as_ref().or(self.token.as_ref())
+    }
+
+    fn proc_of(&self, name: &str) -> Option<&Arc<Proc>> {
+        self.procs.iter().find(|p| p.plan.name == name)
     }
 
     fn find(&self, name: &str) -> Option<&App> {
@@ -82,14 +124,19 @@ impl Apps {
         let mut out = Vec::new();
         for a in &self.list {
             let m = self.manifest(a).await;
-            out.push(match m {
+            let process = self.proc_of(&a.name).map(|p| p.json());
+            let mut entry = match m {
                 Ok(m) => json!({
                     "name": a.name, "url": a.url, "up": true,
                     "title": m["title"].as_str().unwrap_or(&a.name), "description": m["description"], "icon_svg": m["icon_svg"],
                     "view": m["view"].as_str().map(|v| format!("/v1/apps/{}/{}", a.name, v.trim_start_matches('/'))), "version": m["version"],
                 }),
                 Err(e) => json!({"name": a.name, "url": a.url, "up": false, "title": a.name, "error": e}),
-            });
+            };
+            if let Some(p) = process {
+                entry["process"] = p;
+            }
+            out.push(entry);
         }
         json!({ "apps": out })
     }
@@ -102,7 +149,7 @@ impl Apps {
         }
         let http = self.http.as_ref().ok_or("no apps")?;
         let mut req = http.get(format!("{}/app.json", a.url)).timeout(Duration::from_secs(5));
-        if let Some(t) = &self.token {
+        if let Some(t) = self.token_of(a) {
             req = req.bearer_auth(t);
         }
         let r = req.send().await.map_err(|e| format!("{} does not answer: {e}", a.url))?;
@@ -134,7 +181,7 @@ impl Apps {
                 req = req.header(h, v);
             }
         }
-        if let Some(t) = &self.token {
+        if let Some(t) = self.token_of(a) {
             req = req.bearer_auth(t);
         }
         let r = match req.body(body).send().await {
@@ -161,7 +208,7 @@ mod tests {
     #[test]
     fn parses_apps() {
         let a = parse(&["crawler=http://127.0.0.1:7800/".into(), " x-2 = https://h ".into()]).unwrap();
-        assert_eq!(a, vec![App { name: "crawler".into(), url: "http://127.0.0.1:7800".into() }, App { name: "x-2".into(), url: "https://h".into() }]);
+        assert_eq!(a, vec![App { name: "crawler".into(), url: "http://127.0.0.1:7800".into(), token: None }, App { name: "x-2".into(), url: "https://h".into(), token: None }]);
         assert!(parse(&["crawler".into()]).is_err());
         assert!(parse(&["Crawler=http://h".into()]).is_err());
         assert!(parse(&["c=ftp://h".into()]).is_err());

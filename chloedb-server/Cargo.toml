@@ -15,7 +15,7 @@ serde_json = "1"
 # Where a word goes on (the OpenSearch API's standard tokenizer: combining marks).
 unicode-segmentation = "1"
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "io-std", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "io-std", "io-util", "process"] }
 axum = "0.7"
 # Answers gzip-compressed for clients that ask (the command center polls large JSON).
 tower = { version = "0.5", default-features = false, features = ["util"] }

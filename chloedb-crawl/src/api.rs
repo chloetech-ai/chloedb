@@ -34,6 +34,10 @@ pub struct Service {
     /// The contact of crawls that give none (`--contact`): whom a site's
     /// owner reaches, in the user agent.
     pub contact: Option<String>,
+    /// What every table a crawl fills starts with (`--table-prefix`):
+    /// `crawl_` for the crawler a chloedb-server starts, whose key may
+    /// touch only tables named so.
+    pub table_prefix: Option<String>,
 }
 
 impl Service {
@@ -42,7 +46,20 @@ impl Service {
     }
 
     pub fn with_contact(strata: Strata, grower: Arc<Grower>, token: Option<String>, local: bool, contact: Option<String>) -> Arc<Service> {
-        Arc::new(Service { strata, grower, jobs: Mutex::new(Vec::new()), token: token.filter(|t| !t.is_empty()), next: AtomicU64::new(1), local, contact: contact.filter(|c| !c.trim().is_empty()) })
+        Service::with_prefix(strata, grower, token, local, contact, None)
+    }
+
+    pub fn with_prefix(strata: Strata, grower: Arc<Grower>, token: Option<String>, local: bool, contact: Option<String>, table_prefix: Option<String>) -> Arc<Service> {
+        Arc::new(Service {
+            strata,
+            grower,
+            jobs: Mutex::new(Vec::new()),
+            token: token.filter(|t| !t.is_empty()),
+            next: AtomicU64::new(1),
+            local,
+            contact: contact.filter(|c| !c.trim().is_empty()),
+            table_prefix: table_prefix.filter(|p| !p.is_empty()),
+        })
     }
 
     fn jobs(&self) -> std::sync::MutexGuard<'_, Vec<Arc<Job>>> {
@@ -57,6 +74,13 @@ impl Service {
     pub fn start(&self, mut spec: Spec) -> Result<Arc<Job>, String> {
         if spec.contact.is_none() {
             spec.contact = self.contact.clone();
+        }
+        if let Some(p) = &self.table_prefix {
+            let t = spec.table_name()?;
+            if !t.starts_with(p.as_str()) {
+                spec.table = Some(format!("{p}{t}"));
+                spec.table_name()?;
+            }
         }
         let id = format!("c{}", self.next.fetch_add(1, Ordering::Relaxed));
         let job = Job::new(id, spec)?;

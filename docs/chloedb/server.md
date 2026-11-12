@@ -120,6 +120,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--node-name NAME` | `$CHLOEDB_NODE_NAME`, else `HOST:PORT` (the host name and the HTTP port) | what the log store calls this server, in its `node` column |
 | `--app NAME=URL` | `$CHLOEDB_APPS` | an [app](#apps) the command center shows as a view (repeatable, or comma-separated): the server forwards `/v1/apps/NAME/...` to it |
 | `--app-token T` | `$CHLOEDB_APP_TOKEN` | the token the server sends its apps (`Authorization: Bearer T`) |
+| `--start-apps auto\|off\|NAMES` | `auto` (`$CHLOEDB_START_APPS`) | the [apps the server starts itself](#apps-the-server-starts), as child processes: `auto` starts the crawler, Sheets and ChloeCtx when `chloedb-crawl`, `chloedb-sheets` and `chloectx` are installed beside `chloedb-server`; names (`sheets,chloectx`) start those, looked for on the `PATH` too |
 
 `chloedb-server import`, `chloedb-server fetch-model` and `chloedb-server promote` are subcommands: [loading rows](#loading-rows), [embedded vector fields](#embedded-vector-fields) and [promotion](#replication-a-primary-and-its-replicas).
 
@@ -1666,6 +1667,17 @@ An app is a program of its own that the command center shows as a view: the [cra
 
 - `GET /v1/apps` lists the apps (read scope), each with its manifest, the app's `GET /app.json`: `title`, `description`, `icon_svg` (the shapes of a 24-unit outline icon; only shapes and their geometry are drawn), `version`, and `view`, the path of its view module, as `/v1/apps/<name>/<view>`. An app that does not answer is listed with `up: false` and why. Manifests are read again after 15 seconds.
 - `/v1/apps/<name>/<path>` is sent on to the app's `<path>`, with its query, body, `content-type` and `accept`, and the server's `CHLOEDB_APP_TOKEN` as `Authorization: Bearer` in place of the caller's key; the caller's key is checked first, read scope for `GET` and `HEAD` and admin scope for the rest. A request's body may be as large as an import's (`--max-body-mb`, 256 MiB), an answer is at most 32 MB, in at most 120 s, and an app that does not answer is a 502.
+
+#### Apps the server starts
+
+A server of its own, or a coordinator, starts the crawler (`chloedb-crawl serve`), Sheets (`chloedb-sheets serve`) and ChloeCtx (`chloectx app`) itself when their programs are installed in its own directory, as an install puts them (a build's `target/` has none of them, so tests and `cargo run` start nothing). Each is a child process that listens on a loopback port of its own and is listed under its name, as if it had been given with `--app`:
+
+- it takes requests only with a token the server makes for it at each start, which no one else holds;
+- it calls the server back with a key of its own, scoped to the tables it keeps (the crawler `crawl_*`, Sheets `sheets_*` and reads of the rest, ChloeCtx `ctx_*` and reads of `chloectx_memory`), made at each start, held in memory only and never in the keys file; it is never given the server's token, cluster token or keys: its environment is the server's with every credential taken out (the `PATH`, the home, the locale, proxies, CA files and `ANTHROPIC_API_KEY` stay);
+- it runs in a process group of its own and, on Linux, ends when the server ends; when it exits it is started again after a second, then up to a minute between tries; when the server stops it gets SIGTERM, and SIGKILL 10 s later;
+- its output goes to the server's log, each line under `app=<name>`, and `GET /v1/apps` lists its `process`: `program`, `pid`, `running`, `restarts`, `last_exit` and its last 40 lines, which the command center shows when the app does not answer.
+
+The crawler a server starts does not grow the cluster (`--grow off`), and names the tables it fills `crawl_<host>`. A replica, a shard (a server with a cluster token and no `--shards` or `--replicas`), a shard with its coordinator beside it, a pod the Kubernetes operator runs (which runs the apps as Deployments of their own) and a server over TLS start none; `--start-apps off` turns it off anywhere, and an `--app` of the same name takes the app's place. The servers `chloedb-crawl --local` and `chloedb-sheets serve --local` start are given `CHLOEDB_START_APPS=off`, since those programs are their apps.
 
 The navigation lists the apps under **Apps**, each at `#/app/<name>`. Its view module is JavaScript the command center loads through the server (with the signed-in key) and runs with its own helpers: the module's default export's `render(el, ctx)` draws into `el` and may return a function that stops it, and `ctx` holds `core`, `charts` and `data` (the command center's modules), `app` (its listing), `api(path, opts)` (the app's API through the server), `path()`, `href(...)` and `onPath(f)` for the view's own paths under `#/app/<name>/`. An app's view is trusted as the server's own pages are: an admin names the app on the server's command line.
 
