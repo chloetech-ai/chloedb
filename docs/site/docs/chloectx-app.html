@@ -22,7 +22,7 @@
     <a href="../benchmarks.html">Benchmarks</a>
     <a href="../use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html">Get started</a></div>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
@@ -31,6 +31,7 @@
     <nav class="doc-nav" aria-label="Documentation">
       <span class="h">Start</span>
       <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
@@ -110,6 +111,11 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 <td>the token every caller must send (<code>Authorization: Bearer</code>); chloedb-server sends its <code>CHLOEDB_APP_TOKEN</code></td>
 </tr>
 <tr>
+<td><code>--insecure</code></td>
+<td>off</td>
+<td>serve any caller with no token on an address other than loopback; without it, <code>chloectx app</code> refuses to start with <code>--host 0.0.0.0</code> (or any non-loopback address) and no token, since whoever reached the port could read and write every space and start model calls billed to its key</td>
+</tr>
+<tr>
 <td><code>--host</code>, <code>--port</code></td>
 <td><code>127.0.0.1</code>, <code>7760</code></td>
 <td>where it listens</td>
@@ -121,12 +127,12 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 </tr>
 </tbody>
 </table></div>
-<p>Model calls (writing a conversation's notes down, drafting an incident from a postmortem) go to Anthropic's API when <code>ANTHROPIC_API_KEY</code> is set (model <code>CHLOECTX_APP_MODEL</code>, by default Haiku), else to the <code>claude</code> CLI when it is on the PATH (<code>CHLOECTX_DISTILL_MODEL</code>). <code>CHLOECTX_APP_MODEL=off</code> turns them off. Everything else, asking included, works without a model.</p>
+<p>Model calls (writing a conversation's notes down, drafting an incident from a postmortem) go to Anthropic's API when <code>ANTHROPIC_API_KEY</code> is set (model <code>CHLOECTX_APP_MODEL</code>, by default Haiku), else to the <code>claude</code> CLI when it is on the PATH (<code>CHLOECTX_DISTILL_MODEL</code>). <code>CHLOECTX_APP_MODEL=off</code> turns them off. Everything else, asking included, works without a model. At most four conversations are distilled at once and 256 wait; past that an exchange is stored without notes (its answer says <code>skipped</code>, and <code>/v1/info</code> counts it under <code>distill.skipped</code>). The app serves 64 requests at once and answers one more with 503.</p>
 <p>The app refuses requests that carry an <code>Origin</code> header: a browser reaches it only through chloedb-server, which checks the signed-in key (reads need a read key, writes an admin key) and forwards with the app's token.</p>
 <h3 id="on-kubernetes">On Kubernetes<a class="anchor" href="#on-kubernetes" aria-label="Link to this section">#</a></h3>
 <p>A cluster the <a href="server.html#on-kubernetes">operator</a> runs gets ChloeCtx from its <code>StrataCluster</code>, with nothing to start by hand:</p>
 <pre data-lang="sh">kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {&quot;chloectx&quot;: {}}}&#x27;</pre>
-<p>The operator runs <code>chloectx app</code> from the cluster's own image (it carries it, as it carries the crawler and the spreadsheets) as a Deployment of one pod, <code>&lt;cluster&gt;-chloectx</code>, behind a Service of that name on port 7760, and restarts the coordinators so that they list it: <strong>Apps → ChloeCtx</strong> appears in the command center. It reads and writes with the cluster's admin token (<code>tokenSecret</code>), which its API requires too, so the coordinators send it that token and nothing else reaches it, and it calls the model with the cluster's <code>secretEnv</code> (<code>ANTHROPIC_API_KEY</code>; without one, everything but writing a conversation's notes down and drafting incidents works). The embedding model is not in the image, which every server pulls: an init container downloads it from Hugging Face (125 MB) into the pod's scratch volume each time the pod starts. The spaces are tables of the cluster, so a pod started again (a new image, a node replaced) has them all; the upgrader moves it with the servers, since it runs their image (from the image of 2026-11-10 on: an older one has no <code>chloectx</code>).</p>
+<p>The operator runs <code>chloectx app</code> from the cluster's own image (it carries it, as it carries the crawler and the spreadsheets) as a Deployment of one pod, <code>&lt;cluster&gt;-chloectx</code>, behind a Service of that name on port 7760, and restarts the coordinators so that they list it: <strong>Apps → ChloeCtx</strong> appears in the command center. It reads and writes with the cluster's admin token (<code>tokenSecret</code>), which its API requires too, so the coordinators send it that token and nothing else reaches it (a cluster without a <code>tokenSecret</code> is open to whoever reaches it, and the operator starts its ChloeCtx with <code>--insecure</code> to match), and it calls the model with the cluster's <code>secretEnv</code> (<code>ANTHROPIC_API_KEY</code>; without one, everything but writing a conversation's notes down and drafting incidents works). The embedding model is not in the image, which every server pulls: an init container downloads it from Hugging Face (125 MB) into the pod's scratch volume each time the pod starts. The spaces are tables of the cluster, so a pod started again (a new image, a node replaced) has them all; the upgrader moves it with the servers, since it runs their image (from the image of 2026-11-10 on: an older one has no <code>chloectx</code>).</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -286,7 +292,7 @@ cd ../chloectx &amp;&amp; CHLOECTX_NEED_SERVER=1 cargo test --profile ci --test 
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

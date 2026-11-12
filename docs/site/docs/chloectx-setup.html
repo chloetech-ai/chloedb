@@ -22,7 +22,7 @@
     <a href="../benchmarks.html">Benchmarks</a>
     <a href="../use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html">Get started</a></div>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
@@ -31,6 +31,7 @@
     <nav class="doc-nav" aria-label="Documentation">
       <span class="h">Start</span>
       <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
@@ -165,7 +166,7 @@ chloectx doctor</pre>
 <p><code>chloectx install --user</code> merges nine hooks and a permission for the memory tools into <code>~/.claude/settings.json</code> (saving the previous file next to it as <code>settings.json.chloectx-&lt;time&gt;.bak</code>) and registers the MCP server at user scope with <code>claude mcp add-json</code>. A project install backs up the project's <code>.claude/settings.local.json</code> and <code>.mcp.json</code> the same way before it changes them (delete the <code>.bak</code> files once you are happy, and do not commit them). Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own <code>chloectx install</code> keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.</p>
 <h2 id="check-it">Check it<a class="anchor" href="#check-it" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">$ chloectx doctor
-ChloeCtx 0.1.0 for /home/you/code/app
+ChloeCtx 0.2.0 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
   ok    Claude Code CLI: 2.1.299 (Claude Code)
   ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)
@@ -315,7 +316,7 @@ chloectx sync setup --url https://chloedb.example.com --token-env CHLOEDB_KEY
 chloectx sync status        # what was sent and received, what the server holds
 chloectx sync push          # now, rather than within 30 s
 chloectx sync pull</pre>
-<p><code>setup</code> creates the table, which needs a key with the <code>admin</code> scope (<code>--no-create</code> skips it; the first push creates it when the key can); after that an API key with the <code>write</code> scope is enough. <code>CHLOECTX_SYNC_URL</code> and <code>CHLOECTX_SYNC_TOKEN</code> override the settings. What is sent is what the store holds, transcripts of your sessions included, redacted again on the way (<a href="#secrets-and-chloectx-redact">secrets</a>): use a server you control, over HTTPS, with a key. Sync only adds records: one retagged or forgotten after it was pushed is not sent again, and a record forgotten here comes back with the next pull while the server holds it (delete its row there too, <code>DELETE FROM chloectx_memory WHERE id = '&lt;project&gt;:&lt;record id&gt;'</code>). Two machines writing the same project at once can, rarely, give two records one id (<code>manual:&lt;seq&gt;</code> from <code>chloectx remember</code>); the server keeps the last one sent.</p>
+<p><code>setup</code> creates the table, which needs a key with the <code>admin</code> scope (<code>--no-create</code> skips it; the first push creates it when the key can); after that an API key with the <code>write</code> scope is enough. <code>CHLOECTX_SYNC_URL</code> and <code>CHLOECTX_SYNC_TOKEN</code> override the settings. What is sent is what the store holds, transcripts of your sessions included, redacted again on the way (<a href="#secrets-and-chloectx-redact">secrets</a>): use a server you control, over HTTPS, with a key (plain <code>http://</code> is refused except to this machine, <code>127.0.0.1</code> or <code>localhost</code>; <code>CHLOECTX_SYNC_ALLOW_HTTP=1</code> allows it). Sync only adds records: one retagged or forgotten after it was pushed is not sent again, and a record forgotten here comes back with the next pull while the server holds it (delete its row there too, <code>DELETE FROM chloectx_memory WHERE id = '&lt;project&gt;:&lt;record id&gt;'</code>). Two machines writing the same project at once can, rarely, give two records one id (<code>manual:&lt;seq&gt;</code> from <code>chloectx remember</code>); the server keeps the last one sent.</p>
 <h2 id="upgrade-and-remove">Upgrade and remove<a class="anchor" href="#upgrade-and-remove" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">cd chloedb &amp;&amp; git pull &amp;&amp; ./install.sh           # rebuilds, replaces the binary, restarts daemons (a clone from before the rename: cd strata)
 chloectx stop --all                                # restart daemons by hand (they start again on demand)
@@ -376,7 +377,7 @@ rm -rf ~/.local/share/chloectx/projects/&lt;store&gt;  # delete one project&#x27
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>

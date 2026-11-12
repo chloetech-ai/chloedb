@@ -22,7 +22,7 @@
     <a href="../benchmarks.html">Benchmarks</a>
     <a href="../use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html">Get started</a></div>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
@@ -31,6 +31,7 @@
     <nav class="doc-nav" aria-label="Documentation">
       <span class="h">Start</span>
       <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
@@ -125,7 +126,7 @@ chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOK
 target/release/chloedb-sheets import shop.sqlite --tables orders,customers --name Shop --strata http://127.0.0.1:7700
 target/release/chloedb-sheets export &lt;workbook id&gt; -o budget.xlsx --strata http://127.0.0.1:7700</pre>
 <h2 id="the-app">The app<a class="anchor" href="#the-app" aria-label="Link to this section">#</a></h2>
-<p><strong>Sheets</strong> lists the workbooks, newest first, the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes).</p>
+<p><strong>Sheets</strong> lists the workbooks, newest first, the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes). A file is not trusted: a SQLite file's views come in only when named (a view runs its query as it is read, and that query may not end), and reading one stops after 60 s for the list of tables and 180 s for the import; an xlsx file may expand to at most 512 MB and hold at most 2 million cells.</p>
 <p><img alt="A workbook: a color scale, data bars, number formats, a frozen header row and a stacked column chart over the sheet" src="../../assets/img/strata-sheets-workbook.png" /></p>
 <p><strong>A workbook</strong> is a grid drawn on a canvas, so a sheet of a million rows scrolls as one of ten; its cells are read a tile at a time as they come into view. Above it:</p>
 <ul>
@@ -181,7 +182,7 @@ target/release/chloedb-sheets export &lt;workbook id&gt; -o budget.xlsx --strata
 </tr>
 <tr>
 <td><code>POST /v1/sqlite/tables</code></td>
-<td>a SQLite file's tables, their columns and row counts</td>
+<td>a SQLite file's tables, their columns and row counts, and its views (<code>"kind": "view"</code>, not counted)</td>
 </tr>
 <tr>
 <td><code>POST /v1/from-table {table \| sql, name, limit}</code></td>
@@ -240,7 +241,7 @@ target/release/chloedb-sheets export &lt;workbook id&gt; -o budget.xlsx --strata
 
 <footer class="foot gutter"><div class="wrap">
   <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>Start</h4><ul><li><a href="index.html">Overview</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
