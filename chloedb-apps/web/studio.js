@@ -113,7 +113,7 @@ function connect() {
   es.addEventListener('hello', (e) => {
     const { feed } = JSON.parse(e.data);
     dot.className = 'status live';
-    dot.title = feed ? 'Live: following Strata\'s feed of changes' : 'Live';
+    dot.title = feed ? 'Live: following ChloeDB\'s feed of changes' : 'Live';
   });
   es.onerror = () => { dot.className = 'status down'; dot.title = 'Not connected to the engine'; };
   const mine = (e) => { const d = JSON.parse(e.data); return d.app === S.appId ? d : null; };
@@ -242,14 +242,14 @@ async function renderHome() {
   main.replaceChildren(h('div', { class: 'page scroll' },
     h('section', { class: 'hero' },
       h('h1', 'Describe an app. Use it. Ask it to change.'),
-      h('p', 'Each app starts from your description and grows by your requests. The engine writes the code, checks it, and stores every piece in Strata, where other apps can reuse it. It watches what you do and suggests what to add next.')),
+      h('p', 'Each app starts from your description and grows by your requests. The engine writes the code, checks it, and stores every piece in ChloeDB, where other apps can reuse it. It watches what you do and suggests what to add next.')),
     h('section', { class: 'describe' }, ta, h('div', { class: 'bar' }, go, h('span', { class: 'hint' }, '⌘/Ctrl + Enter'), err)),
     h('div', { class: 'examples' }, EXAMPLES.map((x) => h('button', { class: 'example', onclick: () => { ta.value = x; ta.focus(); } }, x.split(':')[0]))),
     h('section', { class: 'col', style: 'display:flex;flex-direction:column;gap:10px' }, h('h2', { class: 'label' }, 'Your apps'), list),
     h('section', { class: 'how' },
-      h('div', h('b', '1. Describe it'), 'The forge asks the model for tables, views and server functions, checks the code, and stores each piece as a row in Strata.'),
+      h('div', h('b', '1. Describe it'), 'The forge asks the model for tables, views and server functions, checks the code, and stores each piece as a row in ChloeDB.'),
       h('div', h('b', '2. Use it, change it'), 'Views run in sandboxed frames, functions in a WebAssembly sandbox. Ask for any change; each one is a new version you can go back from.'),
-      h('div', h('b', '3. It grows'), 'What you do is recorded in Strata. The engine suggests changes from it, and reuses what other apps built from the shared library.')),
+      h('div', h('b', '3. It grows'), 'What you do is recorded in ChloeDB. The engine suggests changes from it, and reuses what other apps built from the shared library.')),
   ));
   setTimeout(() => ta.focus(), 0);
   try {
@@ -268,7 +268,7 @@ async function renderHome() {
 // app and, when found through others, the pieces between.
 function answerOf(a) {
   const head = h('div', { class: 'answer-head' }, h('b', a.understood), h('span', { class: 'meta' },
-    `${a.answer.length} found${a.found_by === 'meaning' ? ` · "${a.about.map((x) => x.label).join(', ')}" found by meaning` : ''} · from sa_graph in Strata`));
+    `${a.answer.length} found${a.found_by === 'meaning' ? ` · "${a.about.map((x) => x.label).join(', ')}" found by meaning` : ''} · from sa_graph in ChloeDB`));
   if (!a.answer.length) return [head, h('div', { class: 'hint' }, a.note || 'Nothing in any app does that yet.')];
   return [head, ...a.answer.map((r) => h('div', { class: 'libitem' },
     h('span', { class: `pill ${r.kind === 'function' && r.rule ? 'rule' : r.kind}` }, r.kind === 'view' ? 'screen' : r.kind === 'function' && r.rule ? 'rule' : r.kind),
@@ -293,7 +293,7 @@ async function renderLibrary(selected) {
     h('button', { class: mode === 'list' ? 'on' : '', onclick: () => { location.hash = '#/library'; } }, 'List'),
     h('button', { class: mode === 'graph' ? 'on' : '', onclick: () => { location.hash = '#/library/graph'; } }, 'Graph'));
   main.replaceChildren(h('div', { class: `page scroll${mode === 'graph' ? ' wide' : ''}` },
-    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components and helpers, which every app can call, screen patterns every app’s screens expand from, and each app’s views, functions and tables. Each version is a row of sa_capabilities in Strata, searched by its words (BM25 over what it is and its code) and by its meaning (its title and description embedded), and linked to what it uses in a graph. The forge looks here before it writes something new.')),
+    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components and helpers, which every app can call, screen patterns every app’s screens expand from, and each app’s views, functions and tables. Each version is a row of sa_capabilities in ChloeDB, searched by its words (BM25 over what it is and its code) and by its meaning (its title and description embedded), and linked to what it uses in a graph. The forge looks here before it writes something new.')),
     switcher, mode === 'graph' ? out : q, mode === 'graph' ? null : asks, mode === 'graph' ? null : out));
   if (mode === 'graph') return libraryGraph(out, { selected });
   let apps = [];
@@ -346,7 +346,7 @@ async function libraryGraph(out, { app, selected } = {}) {
   const pick = async (id) => {
     if (!id || id === picked) return;
     picked = id;
-    side.replaceChildren(h('div', { class: 'hint' }, 'Asking Strata...'));
+    side.replaceChildren(h('div', { class: 'hint' }, 'Asking ChloeDB...'));
     const panel = await nodePanel(id, { h, api, showCode, onPick: (x) => g.select(x) });
     if (picked === id) side.replaceChildren(panel);
   };
@@ -370,7 +370,7 @@ async function showMap(appId, name) {
 
 // ---- a build's timeline: what took the time, and what was decided for each piece
 
-const KIND_LABEL = { strata: 'Strata', plan: 'Model planning', model: 'Model planning and writing in one answer', write: 'Model writing pieces', fix: 'Model fixing', check: 'Checks' };
+const KIND_LABEL = { strata: 'ChloeDB', plan: 'Model planning', model: 'Model planning and writing in one answer', write: 'Model writing pieces', fix: 'Model fixing', check: 'Checks' };
 const DECISION = {
   use: ['Used', 'as it is'], copy: ['Copied', 'as it is'], keep: ['Kept', 'as it was'], new: ['New', 'written from scratch'],
   change: ['Rewrote', 'changed'], fork: ['Forked', 'started from another'], version: ['New version', 'of a shared piece'],
@@ -579,7 +579,7 @@ async function showCode(id, newer) {
       cap.description ? h('div', cap.description) : null,
       trigger ? h('div', trigger) : null,
       h('div', h('span', { class: 'mono' }, cap.id), ` · written by ${cap.author || 'forge'} ${ago(cap.created)}`, cap.forked_from ? ` · from ${cap.forked_from}` : ''),
-      h('div', `A row of sa_capabilities in Strata, stored as this SQL${compiled ? ' (compiled when it is read)' : ''}${cap.kind === 'table' ? `; its data is the table app_${cap.app}_${cap.slug}` : ''}.`)),
+      h('div', `A row of sa_capabilities in ChloeDB, stored as this SQL${compiled ? ' (compiled when it is read)' : ''}${cap.kind === 'table' ? `; its data is the table app_${cap.app}_${cap.slug}` : ''}.`)),
     pre));
   modal.hidden = false;
 }
@@ -1088,7 +1088,7 @@ const STEP_LABELS = {
   read: () => 'Read the app and the library',
   plan: (b) => b.first ? 'Plan the app' : stepKeys(b).includes('write') ? 'Plan the change' : 'Write the change',
   write: (b) => b.first ? 'Write the screens and rules' : 'Write the pieces',
-  store: () => 'Check it and store it in Strata',
+  store: () => 'Check it and store it in ChloeDB',
 };
 
 function stepKeys(b) {
@@ -1347,7 +1347,7 @@ function versionsTab() {
   const stats = h('div', { class: 'tl-stats' });
   buildStats(stats);
   return [
-    h('div', { class: 'where' }, 'Each version is a row of sa_compositions in Strata naming the capabilities it is made of. Going back moves the app to that row; data stays as it is (tables only grow).'),
+    h('div', { class: 'where' }, 'Each version is a row of sa_compositions in ChloeDB naming the capabilities it is made of. Going back moves the app to that row; data stays as it is (tables only grow).'),
     stats,
     h('div', { class: 'versions' }, items.length ? items : h('div', { class: 'hint' }, 'No version yet.')),
     failed.length ? h('div', { class: 'col', style: 'display:flex;flex-direction:column;gap:6px' }, h('h2', { class: 'label' }, 'Requests that failed'),
@@ -1455,7 +1455,7 @@ function insideTab() {
     extra ? h('span', { class: 'v' }, extra) : null, h('span', { class: 'v' }, `v${c.version}`));
   return [
     ...(st.version.n && st.reach ? [reachBox(st)] : []),
-    h('div', { class: 'where' }, `This app is data in Strata: version ${st.version.n} is the row `, h('span', { class: 'mono' }, `${st.app.id}#${st.version.n}`),
+    h('div', { class: 'where' }, `This app is data in ChloeDB: version ${st.version.n} is the row `, h('span', { class: 'mono' }, `${st.app.id}#${st.version.n}`),
       ' of sa_compositions; each piece below is a row of sa_capabilities, stored as its SQL; the app\'s data is in tables named ', h('span', { class: 'mono' }, `app_${st.app.id}_*`), '. Click a piece to read its SQL.'),
     st.version.n ? h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
       h('button', { class: 'btn small', onclick: () => showAppSql(st.app.id) }, 'Whole app as SQL'),

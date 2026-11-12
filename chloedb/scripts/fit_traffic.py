@@ -34,7 +34,7 @@ import subprocess
 import sys
 import datetime as dt
 
-UA = "strata-engine-compare/1.0 (https://github.com/chloetech-ai/strata)"
+UA = "strata-engine-compare/1.0 (https://github.com/chloetech-ai/chloedb)"
 
 
 def zipf(a):

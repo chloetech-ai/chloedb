@@ -46,18 +46,24 @@ rules:
   - apiGroups: [""]
     resources: [services, configmaps, serviceaccounts]
     verbs: [get, create, patch]
+  # (delete: the Service of an app beside the cluster that was turned off,
+  # spec.crawler, spec.sheets, spec.apps or spec.follow.)
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [delete]
   # The coordinators' account, which reads and scales its own cluster.
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [roles, rolebindings]
     verbs: [get, create, patch]
   # Which copies are ready, restarting one with new settings, growing
-  # volumes, and deleting the volumes of a shard that left.
+  # volumes, deleting the volumes of a shard that left, and making the app
+  # engine's volume (spec.apps).
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, delete]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [list, delete, patch]
+    verbs: [get, list, create, delete, patch]
   # A cluster's tokenSecret, to call its coordinators.
   - apiGroups: [""]
     resources: [secrets]

@@ -84,7 +84,7 @@ What a request gets that OpenSearch would answer otherwise:
 
 ## Numbers
 
-OpenSearch 2.11 (its default 1 GB heap) and ChloeDB's OpenSearch API on the same machine, one at a time, the other stopped: a cloud container of 4 vCPUs (Intel Xeon @ 2.10GHz) and 15.7 GB, 2026-11-08. [BEIR's TREC-COVID](https://huggingface.co/datasets/BeIR/trec-covid) (171,332 abstracts) in one index, written with `_bulk`, then ten kinds of search 300 times each from one client, the same requests to both; OpenSearch's request cache off. The script, its output and how it was run: [`chloedb-server/results/opensearch`](https://github.com/chloetech-ai/strata/tree/main/chloedb-server/results/opensearch).
+OpenSearch 2.11 (its default 1 GB heap) and ChloeDB's OpenSearch API on the same machine, one at a time, the other stopped: a cloud container of 4 vCPUs (Intel Xeon @ 2.10GHz) and 15.7 GB, 2026-11-08. [BEIR's TREC-COVID](https://huggingface.co/datasets/BeIR/trec-covid) (171,332 abstracts) in one index, written with `_bulk`, then ten kinds of search 300 times each from one client, the same requests to both; OpenSearch's request cache off. The script, its output and how it was run: [`chloedb-server/results/opensearch`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/results/opensearch).
 
 | search | OpenSearch p50 / p99 ms | ChloeDB p50 / p99 ms |
 |---|---|---|

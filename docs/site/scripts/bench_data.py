@@ -42,7 +42,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / "docs/site/assets/bench-data.js"
-GH = "https://github.com/chloetech-ai/strata/"
+GH = "https://github.com/chloetech-ai/chloedb/"
 
 KINDS = [
     ("bm25", "BM25", "text"), ("bm25 + filter", "BM25 + filter", "text"), ("phrase", "Phrase", "text"),

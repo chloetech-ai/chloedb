@@ -457,6 +457,7 @@ impl Cluster {
     fn app_url(&self, app: &str) -> String {
         let port = match app {
             super::sheets::APP => super::sheets::PORT,
+            super::chloectx::APP => super::chloectx::PORT,
             super::apps::APP => super::apps::PORT,
             _ => super::crawler::PORT,
         };
@@ -604,6 +605,87 @@ impl Cluster {
         json!({
             "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.sheets_name(), self.labels()),
             "spec": {"selector": self.sheets_labels(), "ports": [{"name": "http", "port": port, "targetPort": port}]},
+        })
+    }
+
+    fn chloectx_name(&self) -> String {
+        format!("{}-{}", self.name, super::chloectx::APP)
+    }
+
+    fn chloectx_labels(&self) -> Json {
+        let mut labels = self.labels();
+        labels["app.kubernetes.io/component"] = json!("chloectx");
+        labels
+    }
+
+    /// ChloeCtx's Deployment ([`super::chloectx`]): one pod, or none while
+    /// paused, never two at once (Recreate: it numbers the records it
+    /// writes to the spaces), that reads and writes through the
+    /// coordinators' Service with the admin token, which its API requires
+    /// too, and calls the model with the cluster's `secretEnv`. With the
+    /// `static` embedder an init container first downloads the model into
+    /// the pod's scratch volume.
+    pub fn chloectx_deployment(&self, c: &super::ChloectxSpec) -> Json {
+        let s = &self.spec;
+        let labels = self.chloectx_labels();
+        let models = super::chloectx::MODELS;
+        let mut env = Vec::new();
+        if let Some(t) = &s.token_secret {
+            env.push(secret_env("CHLOEDB_KEY", t));
+            env.push(secret_env("CHLOECTX_APP_TOKEN", t));
+        }
+        env.push(json!({"name": "CHLOECTX_MODELS", "value": models}));
+        env.extend(self.from_secrets());
+        let port = super::chloectx::PORT;
+        let resources = c.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"memory": "1Gi"}}));
+        let mounts = json!([{"name": "models", "mountPath": models}]);
+        let mut container = json!({
+            "name": "chloectx", "image": s.image, "command": ["chloectx"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
+            "ports": [{"name": "http", "containerPort": port}],
+            "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5},
+            "volumeMounts": mounts,
+            "resources": resources,
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        let mut model = json!({
+            "name": "model", "image": s.image, "command": ["chloectx", "fetch-model"],
+            "env": [{"name": "CHLOECTX_MODELS", "value": models}],
+            "volumeMounts": mounts,
+            "resources": resources,
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        if let Some(p) = &s.image_pull_policy {
+            container["imagePullPolicy"] = json!(p);
+            model["imagePullPolicy"] = json!(p);
+        }
+        let mut pod = json!({
+            "automountServiceAccountToken": false,
+            "enableServiceLinks": false,
+            "terminationGracePeriodSeconds": 10,
+            "volumes": [{"name": "models", "emptyDir": {"sizeLimit": "512Mi"}}],
+            "containers": [container],
+        });
+        if c.needs_model() {
+            pod["initContainers"] = json!([model]);
+        }
+        json!({
+            "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&self.chloectx_name(), labels.clone()),
+            "spec": {
+                "replicas": if c.paused { 0 } else { 1 },
+                "selector": {"matchLabels": labels},
+                "strategy": {"type": "Recreate"},
+                "template": {"metadata": {"labels": labels}, "spec": pod},
+            },
+        })
+    }
+
+    /// ChloeCtx's Service, which the coordinators forward
+    /// `/v1/apps/chloectx/...` to.
+    pub fn chloectx_service(&self) -> Json {
+        let port = super::chloectx::PORT;
+        json!({
+            "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.chloectx_name(), self.labels()),
+            "spec": {"selector": self.chloectx_labels(), "ports": [{"name": "http", "port": port, "targetPort": port}]},
         })
     }
 
@@ -990,6 +1072,11 @@ impl Platform for Cluster {
     async fn sheets(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
         self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), with.sheets_deployment(c)))).await
+    }
+
+    async fn chloectx(&self, spec: &Spec) -> Result<(), String> {
+        let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
+        self.beside(self.app_paths(&self.chloectx_name()), spec.chloectx.as_ref().map(|c| (with.chloectx_service(), with.chloectx_deployment(c)))).await
     }
 
     async fn apps(&self, spec: &Spec) -> Result<(), String> {
@@ -1678,6 +1765,54 @@ mod tests {
         assert_eq!(crawler.spec.coordinator_config(), super::super::short_hash(&j));
         let paused = cluster(json!({"tokenSecret": "admin", "sheets": {"paused": true}}));
         assert_eq!(paused.sheets_deployment(paused.spec.sheets.as_ref().unwrap())["spec"]["replicas"], 0);
+    }
+
+    #[test]
+    fn chloectx_runs_beside_the_cluster_with_its_model_and_the_clusters_model_key() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always",
+            "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}], "sheets": {}, "chloectx": {}}));
+        let d = c.chloectx_deployment(c.spec.chloectx.as_ref().unwrap());
+        assert_eq!(d["metadata"]["name"], "orders-chloectx");
+        assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
+        assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
+        let pod = &d["spec"]["template"]["spec"];
+        assert_eq!((&pod["automountServiceAccountToken"], &pod["enableServiceLinks"]), (&json!(false), &json!(false)));
+        assert!(pod["volumes"][0]["emptyDir"].is_object(), "the model is the pod's own, downloaded at each start");
+        let k = &pod["containers"][0];
+        assert_eq!(k["command"], json!(["chloectx"]));
+        assert_eq!(k["image"], c.spec.image.as_str(), "the cluster's image, which carries chloectx");
+        assert_eq!(k["imagePullPolicy"], "Always");
+        assert_eq!(k["args"], json!(["app", "--server", "http://orders:7700", "--host", "0.0.0.0", "--port", "7760", "--embedder", "static"]));
+        assert_eq!(k["volumeMounts"][0]["mountPath"], "/models");
+        let env = k["env"].as_array().unwrap();
+        let secret = |n: &str| env.iter().find(|e| e["name"] == n).map(|e| e["valueFrom"]["secretKeyRef"].clone()).unwrap_or_default();
+        assert_eq!(secret("CHLOEDB_KEY"), json!({"name": "admin", "key": "token"}));
+        assert_eq!(secret("CHLOECTX_APP_TOKEN"), json!({"name": "admin", "key": "token"}));
+        assert_eq!(secret("ANTHROPIC_API_KEY"), json!({"name": "anthropic", "key": "key"}));
+        assert!(!env.iter().any(|e| e["name"] == "STRATA_CLUSTER_TOKEN"), "never the cluster's token");
+        assert!(env.iter().any(|e| e["name"] == "CHLOECTX_MODELS" && e["value"] == "/models"));
+        let init = &pod["initContainers"][0];
+        assert_eq!(init["command"], json!(["chloectx", "fetch-model"]));
+        assert_eq!((&init["image"], &init["volumeMounts"], &init["imagePullPolicy"]), (&k["image"], &k["volumeMounts"], &json!("Always")));
+        assert!(init["env"].as_array().unwrap().iter().all(|e| e["valueFrom"].is_null()), "no secret in the download");
+        let s = c.chloectx_service();
+        assert_eq!(s["metadata"]["name"], "orders-chloectx");
+        assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
+        assert_eq!(s["spec"]["ports"][0]["port"], 7760);
+        let env = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let apps = env.iter().find(|e| e["name"] == "STRATA_APPS").and_then(|e| e["value"].as_str()).unwrap_or_default().to_string();
+        assert_eq!(apps, "sheets=http://orders-sheets:7820,chloectx=http://orders-chloectx:7760");
+        // The servers do not restart for it.
+        let sheets = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always", "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}], "sheets": {}}));
+        assert_eq!(c.spec.server_config(), sheets.spec.server_config());
+        assert_ne!(c.spec.coordinator_config(), sheets.spec.coordinator_config());
+        // No model to download with the hash embedder; paused: no pod.
+        let hash = cluster(json!({"tokenSecret": "admin", "chloectx": {"embedder": "hash:256"}}));
+        let d = hash.chloectx_deployment(hash.spec.chloectx.as_ref().unwrap());
+        assert!(d["spec"]["template"]["spec"]["initContainers"].is_null());
+        assert_eq!(d["spec"]["template"]["spec"]["containers"][0]["args"][8], "hash:256");
+        let paused = cluster(json!({"tokenSecret": "admin", "chloectx": {"paused": true}}));
+        assert_eq!(paused.chloectx_deployment(paused.spec.chloectx.as_ref().unwrap())["spec"]["replicas"], 0);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 {
   "name": "chloedb",
   "version": "0.0.1",
-  "description": "Placeholder: holds the name for Strata. Install releases from https://github.com/chloetech-ai/strata/releases",
+  "description": "Placeholder: holds the name for Strata. Install releases from https://github.com/chloetech-ai/chloedb/releases",
   "license": "Apache-2.0",
-  "repository": { "type": "git", "url": "git+https://github.com/chloetech-ai/strata.git", "directory": "packaging/chloedb/npm" },
-  "homepage": "https://github.com/chloetech-ai/strata",
+  "repository": { "type": "git", "url": "git+https://github.com/chloetech-ai/chloedb.git", "directory": "packaging/chloedb/npm" },
+  "homepage": "https://github.com/chloetech-ai/chloedb",
   "type": "module",
   "main": "./index.js",
   "files": ["index.js", "README.md"]

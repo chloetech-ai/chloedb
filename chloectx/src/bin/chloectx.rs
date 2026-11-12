@@ -144,6 +144,29 @@ enum Cmd {
         #[arg(long)]
         no_open: bool,
     },
+    /// Serve ChloeCtx as an app of a ChloeDB cluster (`chloedb-server --app
+    /// chloectx=URL`): memory spaces any agent writes to and asks for
+    /// context, kept in the cluster's tables, and Seen before, the cluster's
+    /// firing alerts beside the past incidents they look like.
+    App {
+        /// The chloedb-server (a coordinator) the spaces live in.
+        #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+        server: String,
+        /// Its key, for the app's reads and writes ($CHLOEDB_KEY).
+        #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
+        key: Option<String>,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 7760)]
+        port: u16,
+        /// The token callers must send as `Authorization: Bearer` (chloedb-server
+        /// sends its CHLOEDB_APP_TOKEN); none: any caller ($CHLOECTX_APP_TOKEN).
+        #[arg(long, env = "CHLOECTX_APP_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// The embedder (static, or hash:<dim> for tests; $CHLOECTX_EMBEDDER).
+        #[arg(long, env = "CHLOECTX_EMBEDDER", default_value = "static")]
+        embedder: String,
+    },
     /// Send one raw JSON request to the daemon and print its JSON response
     /// (the demo inspector's transport).
     Rpc {
@@ -342,6 +365,12 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
+        Cmd::App { server, key, host, port, token, embedder } => {
+            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), embedder }) {
+                eprintln!("chloectx app: {e}");
+                std::process::exit(1);
+            }
+        }
         Cmd::Ui { host, port, home, no_open } => {
             let home = home.map(|h| h.canonicalize().unwrap_or(h)).unwrap_or_else(paths::home);
             if let Err(e) = ui::run(ui::Options { host, port, home, open: !no_open, project: project.clone() }) {

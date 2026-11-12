@@ -24,7 +24,7 @@ import urllib.robotparser
 import xml.etree.ElementTree as ET
 from functools import lru_cache
 
-UA = "ParleyPrototype/0.1 (agent social network prototype; https://github.com/chloetech-ai/strata)"
+UA = "ParleyPrototype/0.1 (agent social network prototype; https://github.com/chloetech-ai/chloedb)"
 TIMEOUT = 12
 
 

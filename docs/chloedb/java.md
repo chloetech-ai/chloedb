@@ -6,7 +6,7 @@ Before ChloeDB was renamed, the package was `ai.chloetech.strata`, its jar `ai.c
 
 ## Build it
 
-The package is in [`chloedb-java/`](https://github.com/chloetech-ai/strata/tree/main/chloedb-java): Java classes (`src/main/java`) and the Rust crate of their native library (`src/*.rs`). Building it needs Rust (stable), a C compiler, a JDK (11 or later) and Maven.
+The package is in [`chloedb-java/`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-java): Java classes (`src/main/java`) and the Rust crate of their native library (`src/*.rs`). Building it needs Rust (stable), a C compiler, a JDK (11 or later) and Maven.
 
 ```sh
 cd chloedb-java
@@ -180,7 +180,7 @@ The database's errors (a bad schema, query, value or file, a database open elsew
 
 ## How it works
 
-The JNI boundary is two functions: `call(handle, method, args)` runs one of the library's methods with its arguments as one value and gives its answer as another, both in a small tagged binary form ([`codec.rs`](https://github.com/chloetech-ai/strata/blob/main/chloedb-java/src/codec.rs), and `Codec.java` on the Java side), and `free(handle)` drops a database once Java no longer holds it. So no JNI call is made per value, and what a method does lives in one place ([`calls.rs`](https://github.com/chloetech-ai/strata/blob/main/chloedb-java/src/calls.rs)), as the Python package does it: rows, schemas and options are read by the code that reads files and the HTTP API. JNI rather than the Foreign Function and Memory API (Panama) because Panama is final only from Java 22, and JNI runs on every Java from 11.
+The JNI boundary is two functions: `call(handle, method, args)` runs one of the library's methods with its arguments as one value and gives its answer as another, both in a small tagged binary form ([`codec.rs`](https://github.com/chloetech-ai/chloedb/blob/main/chloedb-java/src/codec.rs), and `Codec.java` on the Java side), and `free(handle)` drops a database once Java no longer holds it. So no JNI call is made per value, and what a method does lives in one place ([`calls.rs`](https://github.com/chloetech-ai/chloedb/blob/main/chloedb-java/src/calls.rs)), as the Python package does it: rows, schemas and options are read by the code that reads files and the HTTP API. JNI rather than the Foreign Function and Memory API (Panama) because Panama is final only from Java 22, and JNI runs on every Java from 11.
 
 The library is loaded from the path in the system property `chloedb.library` (or `CHLOEDB_JNI_LIBRARY`; the old names `strata.library` and `STRATA_JNI_LIBRARY` work too) if set, else from the jar, unpacked to a temporary file that is removed once loaded, else from `java.library.path`. A jar and a library built from different checkouts refuse each other. Java 22 and later warn when a library is loaded without `--enable-native-access=ALL-UNNAMED` (the jar's manifest says so for an executable jar); pass it to the JVM.
 

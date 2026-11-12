@@ -174,7 +174,7 @@ target/release/chloectx-bench latency --data data/longmemeval_s.jsonl --sizes 10
 target/release/chloectx-bench probes --transcript <session.jsonl> --probes probes/lost_probes.json --points 1952:4632,4633:5392
 ```
 
-**Record structure and answers** (`chloectx-structure`, `scripts/extract_facts.py`, `scripts/reader_eval.py`) and **Claude Code with and without ChloeCtx** call a model; see the [ChloeCtx README](https://github.com/chloetech-ai/strata/blob/main/chloectx/README.md#evaluation) for the full commands. The A/B statistics alone need nothing but the committed runs:
+**Record structure and answers** (`chloectx-structure`, `scripts/extract_facts.py`, `scripts/reader_eval.py`) and **Claude Code with and without ChloeCtx** call a model; see the [ChloeCtx README](https://github.com/chloetech-ai/chloedb/blob/main/chloectx/README.md#evaluation) for the full commands. The A/B statistics alone need nothing but the committed runs:
 
 ```sh
 python3 scripts/ab_stats.py stockroom=results/ab/stockroom/runs.jsonl slotwise=results/ab/slotwise/runs.jsonl --out /tmp/ab_stats.json

@@ -90,7 +90,7 @@ const r = await tracks.similar(taste, { k: 10 });
 
 `focus` keeps the clusters that fit in `rows` rows and drops those that fall beyond half as many again, so a taste that drifts does not fetch and drop the same clusters over and over. `codes=False` (`codes: false`) skips the codes; `{"codes": false}` builds a slice without them.
 
-On Yambda's 629,298 tracks (64-dimension vectors, 4,599 users, measured in a cloud container; [the replay](https://github.com/chloetech-ai/strata/tree/main/chloedb/results/slices#vector-slices-on-yambda-proving-similarity-search-on-the-device) has every number), with 4,096 clusters and 20,000 tracks on the device:
+On Yambda's 629,298 tracks (64-dimension vectors, 4,599 users, measured in a cloud container; [the replay](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/slices#vector-slices-on-yambda-proving-similarity-search-on-the-device) has every number), with 4,096 clusters and 20,000 tracks on the device:
 
 | search | proved by the clusters' centres | proved with the codes | proved after fetching what the codes name |
 |---|---:|---:|---:|

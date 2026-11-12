@@ -96,6 +96,29 @@ pub struct Built {
     pub text: String,
     pub records: Vec<Record>,
     pub ms: f64,
+    /// Why each of `records` is shown (one each, in the same order).
+    pub picks: Vec<Pick>,
+    /// Records the searches found that the context leaves out, and why:
+    /// `superseded` (a later note replaced it), `uncertain`, or `budget`
+    /// (no room left).
+    pub left_out: Vec<(Record, &'static str)>,
+}
+
+/// How a record came into a context.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct Pick {
+    /// `rule`, `note`, `timeline` (every note, for a broad question),
+    /// `reply` or `excerpt`.
+    pub section: &'static str,
+    /// Characters of the context it takes (a reply's two messages share one
+    /// block, counted on the first).
+    pub chars: usize,
+    /// Its BM25 score and cosine similarity to the question, when the
+    /// search that found it ranked it by them.
+    pub bm25: Option<f64>,
+    pub cos: Option<f64>,
+    /// The earlier version a note replaced, as the context shows it.
+    pub replaced: Option<String>,
 }
 
 const NOTE_KINDS: [Kind; 5] = [Kind::Decision, Kind::Preference, Kind::Fact, Kind::Todo, Kind::Note];
@@ -256,7 +279,16 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
     };
     let store = &store.pinned();
     let with = |kinds: &[Kind]| Filter { kinds: kinds.to_vec(), ..filter.clone() };
-    let one = |q: &str, f: &Filter, n: usize| -> Result<Vec<Record>> { Ok(recall::search(store, q, f, &RankParams { n, ..Default::default() })?.0.into_iter().map(|h| h.record).collect()) };
+    // Each search's scores, for the picks' reasons.
+    let signals: std::sync::Mutex<HashMap<String, (Option<f64>, Option<f64>)>> = Default::default();
+    let one = |q: &str, f: &Filter, n: usize| -> Result<Vec<Record>> {
+        let hits = recall::search(store, q, f, &RankParams { n, ..Default::default() })?.0;
+        let mut sig = signals.lock().unwrap_or_else(|e| e.into_inner());
+        for h in &hits {
+            sig.entry(h.record.id.clone()).or_insert((h.bm25, h.cos));
+        }
+        Ok(hits.into_iter().map(|h| h.record).collect())
+    };
     let (notes, messages, answers, rules) = std::thread::scope(|s| {
         let notes = s.spawn(|| one(question, &with(&NOTE_KINDS), p.notes));
         let messages = s.spawn(|| one(question, &with(&[Kind::Prompt, Kind::Answer]), p.excerpts));
@@ -274,7 +306,16 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
         )
     });
     let (notes, messages, answers, rules) = (notes?, messages?, answers?, rules?);
+    let signals = signals.into_inner().unwrap_or_else(|e| e.into_inner());
     let live = |r: &Record| r.tag != "superseded" && r.tag != "uncertain" && r.tag != "cue";
+    let mut left_out: Vec<(Record, &'static str)> = Vec::new();
+    let mut gone: HashSet<String> = HashSet::new();
+    for r in notes.iter().chain(rules.iter().filter(|(_, c)| *c >= p.rule_min_cos).map(|(r, _)| r)) {
+        if !live(r) && r.tag != "cue" && gone.insert(r.id.clone()) {
+            left_out.push((r.clone(), if r.tag == "superseded" { "superseded" } else { "uncertain" }));
+        }
+    }
+    let rule_cos: HashMap<String, f64> = rules.iter().map(|(r, c)| (r.id.clone(), *c)).collect();
     let rules: Vec<Record> = rules.into_iter().filter(|(r, c)| *c >= p.rule_min_cos && live(r)).map(|(r, _)| r).take(p.rules).collect();
     let notes: Vec<Record> = notes.into_iter().filter(|r| live(r) && !rules.iter().any(|x| x.id == r.id)).collect();
     // A broad question's timeline: every live note.
@@ -400,6 +441,18 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
 
     let mut text = String::new();
     let mut records = Vec::new();
+    let mut picks: Vec<Pick> = Vec::new();
+    let in_timeline: HashSet<String> = timeline.iter().map(|(r, _)| r.id.clone()).collect();
+    let pick = |r: &Record, section: &'static str, chars: usize| {
+        let (bm25, cos) = signals.get(&r.id).copied().unwrap_or((None, rule_cos.get(&r.id).copied()));
+        Pick { section, chars, bm25, cos, replaced: changes.get(&r.id).map(|c| c.trim().trim_start_matches('(').trim_end_matches(')').to_string()) }
+    };
+    // Found, not live, and not shown: no room for it.
+    for r in lists[0].iter().skip(next[0]).chain(lists[1].iter().skip(next[1])).map(|(r, _)| r) {
+        if !shown.contains(&r.id) && gone.insert(r.id.clone()) {
+            left_out.push((r.clone(), "budget"));
+        }
+    }
     let every = !timeline.is_empty();
     picked[0].append(&mut timeline);
     if !rule_lines.is_empty() || !picked[0].is_empty() {
@@ -410,7 +463,16 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
         });
         text += if every { "Every note" } else { "Notes" };
         text += " from earlier conversations with the user, in their current versions, oldest first (date, kind, note; what it replaced in brackets). Rules come first; a later note can change what an earlier one says:\n";
+        let rule_ids: HashSet<String> = rule_lines.iter().map(|(r, _)| r.id.clone()).collect();
         for (r, l) in rule_lines.into_iter().chain(picked[0].drain(..)) {
+            let section = if rule_ids.contains(&r.id) {
+                "rule"
+            } else if in_timeline.contains(&r.id) {
+                "timeline"
+            } else {
+                "note"
+            };
+            picks.push(pick(&r, section, l.len()));
             text += &l;
             records.push(r);
         }
@@ -420,6 +482,9 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
         replies.sort_by_key(|b| (b.0, b.1));
         text += "What the assistant replied in the exchanges closest to the question, oldest first (the start of the user's message, then the part of the reply closest to the question):\n";
         for (_, _, b, recs) in replies {
+            for (i, r) in recs.iter().enumerate() {
+                picks.push(pick(r, "reply", if i == 0 { b.len() } else { 0 }));
+            }
             text += &b;
             records.extend(recs);
         }
@@ -429,11 +494,12 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
         picked[1].sort_by_key(|(r, _)| (r.ts, r.seq));
         text += "Excerpts of the messages:\n";
         for (r, l) in picked[1].drain(..) {
+            picks.push(pick(&r, "excerpt", l.len()));
             text += &l;
             records.push(r);
         }
     }
-    Ok(Built { text: text.trim_end().to_string(), records, ms: t0.elapsed().as_secs_f64() * 1e3 })
+    Ok(Built { text: text.trim_end().to_string(), records, ms: t0.elapsed().as_secs_f64() * 1e3, picks, left_out })
 }
 
 #[cfg(test)]

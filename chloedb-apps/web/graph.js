@@ -144,4 +144,4 @@ export async function nodePanel(id, { h, api, showCode, onPick }) {
     list('Goes with', n.related, `ORDER BY ppr(links, ${key}) DESC`, (r) => r.score.toFixed(3)));
 }
 
-export const GRAPH_HELP = 'Each app, view, function, table and shared piece is a row of sa_graph in Strata, and what it points at is its links field (Strata’s EDGES type). Click a node: Strata walks the graph from it (REACHABLE, both ways) and ranks what goes with it by personalized PageRank. The forge ranks the library the same way, fused with BM25 over the request, before it writes anything new.';
+export const GRAPH_HELP = 'Each app, view, function, table and shared piece is a row of sa_graph in ChloeDB, and what it points at is its links field (ChloeDB’s EDGES type). Click a node: ChloeDB walks the graph from it (REACHABLE, both ways) and ranks what goes with it by personalized PageRank. The forge ranks the library the same way, fused with BM25 over the request, before it writes anything new.';

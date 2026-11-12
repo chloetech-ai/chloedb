@@ -50,7 +50,7 @@ spec:
               set -euo pipefail
               cd /code
               git init -q src && cd src
-              git remote add origin https://github.com/chloetech-ai/strata
+              git remote add origin https://github.com/chloetech-ai/chloedb
               git sparse-checkout set chloedb-apps
               git fetch -q --depth 1 --filter=blob:none origin "$REF"
               git checkout -q FETCH_HEAD

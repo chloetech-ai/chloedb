@@ -22,7 +22,7 @@
 
   <name>ChloeDB</name>
   <description>ChloeDB, an embedded search database with SQL, in-process from Java</description>
-  <url>https://github.com/chloetech-ai/strata</url>
+  <url>https://github.com/chloetech-ai/chloedb</url>
   <licenses>
     <license>
       <name>Apache-2.0</name>

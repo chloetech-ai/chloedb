@@ -8,7 +8,7 @@ Download the server for your machine (no Rust or build needed), and start it on 
 
 ```sh
 v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
-curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
+curl -LO https://github.com/chloetech-ai/chloedb/releases/download/strata-server-v$v/strata-server-$p.tar.gz
 tar xzf strata-server-$p.tar.gz && cp strata-server-$p/strata-server ./chloedb-server
 ./chloedb-server --db shop.strata --seq-no
 ```

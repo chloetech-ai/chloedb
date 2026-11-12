@@ -6,14 +6,14 @@ For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, 
 
 ## Install
 
-The package is in [`chloedb-py/`](https://github.com/chloetech-ai/strata/tree/main/chloedb-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later.
+The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later.
 
 ### Prebuilt
 
-Each `chloedb-py-v<version>` release (`strata-py-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/strata/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+Each `chloedb-py-v<version>` release (`strata-py-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
 
 ```sh
-pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+pip install strata-db -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0
 ```
 
 **With release 0.1.0, write `import strata as chloedb` in the examples on this page.** 0.1.0 was made before the rename, as `strata-db`, and its module is `strata` only: `import chloedb` fails on it with `ModuleNotFoundError`, and its error class is `StrataError`. It also predates [frames](frames.md), which need a build from source until the next release. Releases after it are `chloedb` (`pip install chloedb -f <its assets page>`) and import as `chloedb`, as the examples here do; there `import strata` goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`. A build from source ([below](#from-source)) is today's package.
@@ -25,7 +25,7 @@ pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expande
 | Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata_db-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
 | Linux aarch64, glibc 2.35+ | `strata_db-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
 
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
 ### Only the client, with no build
 

@@ -19,7 +19,7 @@ The CLI login matters more than it looks. The distiller runs `claude -p` in the 
 ## Install in one command
 
 ```bash
-git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh
+git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh
 ```
 
 `install.sh` does five things and can be run again at any time:
@@ -43,14 +43,14 @@ Sessions that were already open pick ChloeCtx up when they restart.
 
 Tell Claude Code (or another coding agent) in any session:
 
-> Clone https://github.com/chloetech-ai/strata and set ChloeCtx up for my Claude Code by following its AGENTS.md.
+> Clone https://github.com/chloetech-ai/chloedb and set ChloeCtx up for my Claude Code by following its AGENTS.md.
 
-[`AGENTS.md`](https://github.com/chloetech-ai/strata/blob/main/AGENTS.md) tells the agent to check the prerequisites without installing anything unasked, to ask you whether to install for every session or one project, to run `install.sh` and `chloectx doctor`, and to report what failed. Two things stay with you: `claude auth login` if the CLI is logged out (it is interactive), and starting a new session afterwards, because the session that ran the install started before the hooks existed.
+[`AGENTS.md`](https://github.com/chloetech-ai/chloedb/blob/main/AGENTS.md) tells the agent to check the prerequisites without installing anything unasked, to ask you whether to install for every session or one project, to run `install.sh` and `chloectx doctor`, and to report what failed. Two things stay with you: `claude auth login` if the CLI is logged out (it is interactive), and starting a new session afterwards, because the session that ran the install started before the hooks existed.
 
 ## Or step by step
 
 ```bash
-git clone https://github.com/chloetech-ai/strata && cd strata/chloectx
+git clone https://github.com/chloetech-ai/chloedb && cd chloedb/chloectx
 cargo build --release --bin chloectx
 cargo install --path . --bin chloectx --root ~/.local       # a stable path for the hooks: ~/.local/bin/chloectx
 chloectx fetch-model                                        # potion-retrieval-32M, 129 MB
@@ -175,7 +175,7 @@ Run the installer when the container is created, for example in `.devcontainer/d
 
 ```json
 {
-  "postCreateCommand": "git clone https://github.com/chloetech-ai/strata /tmp/strata && /tmp/strata/install.sh",
+  "postCreateCommand": "git clone https://github.com/chloetech-ai/chloedb /tmp/strata && /tmp/strata/install.sh",
   "containerEnv": { "CHLOECTX_HOME": "/workspaces/.engram" },
   "forwardPorts": [8765]
 }
@@ -213,13 +213,13 @@ chloectx sync pull
 ## Upgrade and remove
 
 ```bash
-cd strata && git pull && ./install.sh            # rebuilds, replaces the binary, restarts daemons
+cd chloedb && git pull && ./install.sh           # rebuilds, replaces the binary, restarts daemons (a clone from before the rename: cd strata)
 chloectx stop --all                                # restart daemons by hand (they start again on demand)
 chloectx uninstall --user                          # or `chloectx uninstall` in a project; stores are kept
 rm -rf ~/.local/share/chloectx/projects/<store>  # delete one project's memory (or ~/.local/share/engram/...)
 ```
 
-The repository was called `rkonow/engram` until October 2026. A checkout made before then keeps working, because GitHub redirects the old address: upgrade it with `git pull && ./install.sh` in its folder (still named `engram`), and `git remote set-url origin https://github.com/chloetech-ai/strata` points it at the new name.
+The repository was called `rkonow/engram` until October 2026. A checkout made before then keeps working, because GitHub redirects the old address: upgrade it with `git pull && ./install.sh` in its folder (still named `engram`), and `git remote set-url origin https://github.com/chloetech-ai/chloedb` points it at the new name.
 
 ## ChloeCtx was called Engram
 

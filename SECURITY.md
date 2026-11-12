@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report a vulnerability privately, through GitHub: open
-[a private security advisory](https://github.com/chloetech-ai/strata/security/advisories/new)
+[a private security advisory](https://github.com/chloetech-ai/chloedb/security/advisories/new)
 on this repository. Don't open a public issue or pull request for it.
 
 Say what is affected (see the parts below), the release or commit you

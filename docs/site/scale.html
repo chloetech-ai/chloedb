@@ -22,7 +22,7 @@
     <a href="benchmarks.html">Benchmarks</a>
     <a href="use-cases.html">Use cases</a>
   </nav>
-  <div class="top-links"><a href="https://github.com/chloetech-ai/strata/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+  <div class="top-links"><a href="https://github.com/chloetech-ai/chloedb/tree/main/docs">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
 
 <main>
@@ -99,7 +99,7 @@ kubectl -n strata patch strata demo --type merge \
       <p>On kind it has the same pods, operator and resource as on EKS or DigitalOcean. Only the image, the storage and the sizes change.</p>
     </div>
     <div class="split2 even">
-      <div><pre data-lang="sh" data-title="on the laptop">git clone https://github.com/chloetech-ai/strata && cd strata
+      <div><pre data-lang="sh" data-title="on the laptop">git clone https://github.com/chloetech-ai/chloedb && cd chloedb
 deploy=chloedb-server/deploy
 $deploy/kind-test.sh up          # a kind cluster in Docker
 $deploy/kind-test.sh image       # build the server image, load it
@@ -152,8 +152,8 @@ curl -s -X POST 'localhost:7700/v1/import?format=sqlite' \
   <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js?v=7f52b41b8a"></script>
 <script src="assets/site.js?v=142c29c3e0"></script>

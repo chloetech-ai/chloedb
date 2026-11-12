@@ -514,6 +514,7 @@ jobs:
             chloedb-server
             chloedb-crawl
             chloedb-sheets
+            chloectx
           key: chloedb-server-smoke
       - name: Build
         working-directory: chloedb-server
@@ -569,6 +570,16 @@ jobs:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOEDB_SHEETS_NEED_SERVER: "1"
         run: cargo test --locked --profile ci --test cluster
+      # ChloeCtx as an app of a cluster of this build's servers (two shards
+      # and a coordinator): spaces, notes, contexts within a budget, an
+      # exchange distilled by a stub model, incidents matched to an alert
+      # that fires, and a restart.
+      - name: ChloeCtx in a cluster
+        working-directory: chloectx
+        env:
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
+          CHLOECTX_NEED_SERVER: "1"
+        run: cargo test --locked --profile ci --test app_cluster
       # The app engine (chloedb-apps, a prototype in Node): apps built from
       # plans, stored as SQL rows in a server of this build, run, tested and
       # searched; no model is called.

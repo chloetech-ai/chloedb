@@ -2,9 +2,9 @@
 
 An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.
 
-[How ChloeDB works](chloedb/index.md) · [Query language](chloedb/query-language.md) · [Server](chloedb/server.md) · [Python](chloedb/python.md) · [JavaScript](chloedb/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
+[How ChloeDB works](chloedb/index.md) · [Query language](chloedb/query-language.md) · [Server](chloedb/server.md) · [Python](chloedb/python.md) · [JavaScript](chloedb/javascript.md) · [Website](https://chloetech-ai.github.io/chloedb/)
 
-> ChloeDB was called Strata until November 2026. The folders, crates, commands, settings (`CHLOEDB_*`), headers (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`, `ai.chloetech.chloedb`) carry the new name; the repository, the Kubernetes operator and the container image still carry the old one. The old names keep working for a release: `STRATA_*` settings, `x-strata-*` headers, `import strata`, `jdbc:strata:` URLs, and the `strata-server` command in the image and the release archives. ChloeCtx, its memory for Claude Code, was called Engram: the command is `chloectx` (`engram` still runs it), its settings are `CHLOECTX_*` (`ENGRAM_*` still read), and an install keeps its stores where they were ([what changes](chloectx/setup.md#chloectx-was-called-engram)).
+> ChloeDB was called Strata until November 2026. The folders, crates, commands, settings (`CHLOEDB_*`), headers (`x-chloedb-*`), metrics (`chloedb_*`) and packages (`import chloedb`, `ai.chloetech.chloedb`) carry the new name, as do the container image (`ghcr.io/chloetech-ai/chloedb-server`) and the repository (`chloetech-ai/chloedb`: links to `chloetech-ai/strata` redirect, but the website moved to [chloetech-ai.github.io/chloedb](https://chloetech-ai.github.io/chloedb/)); the Kubernetes operator's resources (`StrataCluster`) still carry the old one. The old names keep working for a release: `STRATA_*` settings, `x-strata-*` headers, `import strata`, `jdbc:strata:` URLs, the `strata-server` command in the image and the release archives, and the image's old name, `ghcr.io/chloetech-ai/strata-server`. ChloeCtx, its memory for Claude Code, was called Engram: the command is `chloectx` (`engram` still runs it), its settings are `CHLOECTX_*` (`ENGRAM_*` still read), and an install keeps its stores where they were ([what changes](chloectx/setup.md#chloectx-was-called-engram)).
 
 ---
 
@@ -21,7 +21,7 @@ This repository holds ChloeDB, the pieces around it, and ChloeCtx, an applicatio
 | **chloedb-py** | ChloeDB from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of chloedb-server with the same methods. | [Python](chloedb/python.md) |
 | **chloedb-js** | ChloeDB from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of chloedb-server for any runtime, with the same methods. | [JavaScript](chloedb/javascript.md) |
 | **ChloeDB's posting lists** | A study of compressed posting lists and their intersection and union algorithms, which produced three new formats. ChloeDB's text and keyword indexes use two of them. | [Posting lists](posting-lists.md) |
-| **ChloeCtx**, built on ChloeDB | Long-term memory for Claude Code. Hooks store every event of a session in a ChloeDB file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](chloectx/index.md) · [Install](chloectx/setup.md) · [Inspector](chloectx/inspector.md) · [Results](chloectx/results.md) · [Why ChloeCtx](https://chloetech-ai.github.io/strata/why/) |
+| **ChloeCtx**, built on ChloeDB | Long-term memory for Claude Code. Hooks store every event of a session in a ChloeDB file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](chloectx/index.md) · [Install](chloectx/setup.md) · [Inspector](chloectx/inspector.md) · [Results](chloectx/results.md) · [Why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/) |
 
 ## One query
 
@@ -68,7 +68,7 @@ A statement is parsed and bound into a predicate tree and a scorer; the planner 
 
 | question | answer |
 |---|---|
-| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean; ChloeDB's build of 7 November against each other engine's newest run, of 4 to 6 November, on other nodes): ChloeDB **146**, Solr 286, Elasticsearch 291, Qdrant 300. In the one run with every engine on the same day (4 November), also first: 156 against Elasticsearch's 284. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
+| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean; ChloeDB's build of 7 November against each other engine's newest run, of 4 to 6 November, on other nodes): ChloeDB **146**, Solr 286, Elasticsearch 291, Qdrant 300. In the one run with every engine on the same day (4 November), also first: 156 against Elasticsearch's 284. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) |
 | Is ChloeDB fast? | Warm BM25 **1.7–3.2×** faster than Tantivy, and 24 of 28 text and filter comparisons won; vector top-10 in **0.05–0.10 ms** at recall@10 0.99 on Quora. |
 | Does the planner earn its keep? | On filtered vector search it is **1.8–6.1×** faster than the best fixed strategy, at recall@10 0.991–0.998. |
 | Do graph edges help search? | Following the citations of the two nearest papers doubles nDCG@20 on arXiv (0.123 → 0.253). |
@@ -84,13 +84,13 @@ A coding agent's context window is its whole working memory. When a long session
 
 ChloeCtx keeps all of it in a ChloeDB file per project and brings back what a prompt needs. ChloeDB answers every question ChloeCtx asks with SQL: recall is two searches (BM25 and vectors) under a filter that excludes what the model can still see, the briefing is a handful of structured queries, and the model's `memory_sql` tool is ChloeDB's SQL itself, read-only.
 
-[How ChloeCtx works](chloectx/index.md) · [Install it](chloectx/setup.md) · [Why ChloeCtx](https://chloetech-ai.github.io/strata/why/)
+[How ChloeCtx works](chloectx/index.md) · [Install it](chloectx/setup.md) · [Why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/)
 
 ![The ChloeCtx live inspector: a new session answers from memory](assets/img/inspector-new-session.png)
 
 *A fresh Claude Code session, asked what storage was chosen earlier and why, answers from the briefing ChloeCtx injected at session start. Right: the records the hooks wrote and the knowledge a small model distilled from the previous session. See [the live inspector](chloectx/inspector.md).*
 
-[Try the inspector in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) It replays a recorded session, and every panel queries the recorded store with ChloeDB's SQL, run by a JavaScript model of ChloeDB.
+[Try the inspector in your browser](https://chloetech-ai.github.io/chloedb/demo/inspector.html) It replays a recorded session, and every panel queries the recorded store with ChloeDB's SQL, run by a JavaScript model of ChloeDB.
 
 ```mermaid
 flowchart TB
@@ -129,14 +129,14 @@ For the short version, with the week-long Kestrel benchmark and its cost compari
 
 Each project also has a long-form report with interactive charts, formulas and every table. They are published on the website:
 
-- [ChloeDB: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html)
-- [ChloeDB graphs](https://chloetech-ai.github.io/strata/reports/graph.html)
-- [Posting lists: formats and algorithms](https://chloetech-ai.github.io/strata/reports/posting-lists.html) and [the three new designs](https://chloetech-ai.github.io/strata/reports/posting-list-designs.html)
-- [ChloeCtx: the memory system](https://chloetech-ai.github.io/strata/reports/engram.html)
-- [ChloeCtx: what a record should be](https://chloetech-ai.github.io/strata/reports/structure.html)
+- [ChloeDB: the database and its evaluation](https://chloetech-ai.github.io/chloedb/reports/strata.html)
+- [ChloeDB graphs](https://chloetech-ai.github.io/chloedb/reports/graph.html)
+- [Posting lists: formats and algorithms](https://chloetech-ai.github.io/chloedb/reports/posting-lists.html) and [the three new designs](https://chloetech-ai.github.io/chloedb/reports/posting-list-designs.html)
+- [ChloeCtx: the memory system](https://chloetech-ai.github.io/chloedb/reports/engram.html)
+- [ChloeCtx: what a record should be](https://chloetech-ai.github.io/chloedb/reports/structure.html)
 
 ## Where the numbers come from
 
-Every figure in these documents comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. The comparisons with other engines ran on DigitalOcean, and [each report](https://chloetech-ai.github.io/strata/site/benchmarks.html) names its machines. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
+Every figure in these documents comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. The comparisons with other engines ran on DigitalOcean, and [each report](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) names its machines. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
 
-The repository was called `rkonow/engram` until October 2026. ChloeDB's website is [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/); these documents are read here on GitHub.
+The repository was called `rkonow/engram` until October 2026. ChloeDB's website is [chloetech-ai.github.io/chloedb](https://chloetech-ai.github.io/chloedb/); these documents are read here on GitHub.
