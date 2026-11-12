@@ -60,6 +60,31 @@ def test_a_codebook_from_vectors_gives_a_table_its_codes(tmp_path):
     assert db.query("SELECT sid FROM items WHERE id = 'new'").scalar()[1] == sids["i0"][1]
 
 
+
+def test_a_report_says_how_a_codebook_spreads_vectors(tmp_path):
+    models = tmp_path / "models"
+    chloedb.train.codebook(grid(400), "grid", models=models, levels=2, k=4)
+    r = chloedb.train.codebook_report(grid(400), "grid", models=models)
+    # 16 places of the grid, 25 rows at each: every row shares its code.
+    assert (r["rows"], r["codes"], r["shared_rows"], r["largest_group"]) == (400, 16, 400, 25)
+    assert [lv["used"] for lv in r["levels"]] == [4, 4] and [lv["fullest"] for lv in r["levels"]] == [100, 100]
+    assert all(abs(lv["perplexity"] - 4) < 1e-6 for lv in r["levels"])
+    assert r["levels"][0]["residual"] > r["levels"][1]["residual"] and r["levels"][1]["residual"] < 0.001
+    # A table's vectors, and vectors the codebook was not trained on.
+    src = chloedb.Database.create(tmp_path / "src.strata", {"table": "docs", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": 2}]})
+    src.upsert([{"id": f"d{i}", "emb": v} for i, v in enumerate(grid(8))])
+    r = chloedb.train.codebook_report(src, "grid", field="emb", models=models)
+    assert (r["rows"], r["codes"], r["shared_rows"], r["levels"][0]["used"]) == (8, 8, 0, 4)
+    with pytest.raises(TypeError, match="field"):
+        chloedb.train.codebook_report(src, "grid", models=models)
+    with pytest.raises(chloedb.ChloeDBError, match="nothere"):
+        chloedb.train.codebook_report(grid(8), "nothere", models=models)
+    # Balanced training is seeded too, and finds an even grid as it is.
+    a = chloedb.train.codebook(grid(400), "even", models=models, levels=2, k=4, balanced=True)
+    assert a == chloedb.train.codebook(grid(400), "even", models=models, levels=2, k=4, balanced=True)
+    assert chloedb.train.codebook_report(grid(400), "even", models=models)["codes"] == 16
+
+
 def test_a_codebook_from_a_tables_vectors(tmp_path):
     models = tmp_path / "models"
     src = chloedb.Database.create(tmp_path / "src.strata", {"table": "docs", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": 2}]})
@@ -165,3 +190,46 @@ def test_a_sequence_model_trained_from_a_table_ranks_in_strata_as_in_pytorch(tmp
         # The next item of the walk.
         learned += r.rows[0][0] == f"i{(int(mine[-1]['item'][1:]) + 2) % 30}"
     assert learned >= 15, learned
+
+
+def test_in_batch_negatives_corrected_by_how_often_a_batch_holds_them(tmp_path):
+    """After any item the popular one comes next most often (0.4, against
+    0.3 for each of the item's own two followers). A small batch always
+    holds the popular item and rarely a given follower, and never an item
+    that is no history's next, so uncorrected in-batch training ranks the
+    popular item below them; with `logq` and `uniform_negatives` it ranks
+    first, as the histories say."""
+    torch = pytest.importorskip("torch")
+    import random
+
+    from chloedb import _sequence as S
+
+    rng = random.Random(5)
+    n = 1000
+    vectors = {f"i{i}": [rng.gauss(0, 1) for _ in range(16)] for i in range(n)}
+
+    def walk():
+        at, out = rng.randrange(1, n), []
+        for _ in range(12):
+            out.append((f"i{at}", None, None))
+            at = 0 if at != 0 and rng.random() < 0.4 else 1 + (at * 7 + rng.randrange(2)) % (n - 1)
+        return out
+
+    seqs = {f"u{u}": walk() for u in range(600)}
+
+    def popular_first(name, **how):
+        out = chloedb.train.sequence(None, name, vectors=vectors, sequences=seqs, models=tmp_path, width=16, max_len=12,
+                                    learn_items=True, epochs=8, batch=4, lr=1e-2, dropout=0.0, seed=1, **how)
+        model, cfg = S.load(out["path"])
+        keys = list(out["vectors"])
+        index = {k: i for i, k in enumerate(keys)}
+        E = torch.tensor([out["vectors"][k] for k in keys])
+        hs = [[(f"i{i}", None, None)] for i in range(1, 101)]
+        v = S.encode_batch(model, hs, index, {"": 0}, cfg, E, [None] * len(hs))
+        return int(((v @ E.T).argmax(dim=1) == index["i0"]).sum())
+
+    plain, corrected = popular_first("plain"), popular_first("corrected", logq=True, uniform_negatives=32)
+    assert corrected >= 90, corrected
+    assert plain < corrected, (plain, corrected)
+    with pytest.raises(ValueError, match="in_batch"):
+        chloedb.train.sequence(None, "m", vectors=vectors, sequences=seqs, models=tmp_path, negatives="all", logq=True)

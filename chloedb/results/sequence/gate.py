@@ -50,6 +50,20 @@ The sources:
 
 All but the baselines run as Strata queries on a database the gate builds.
 
+The gate also checks semantic IDs (`semantic_ids` in each fixture): two
+codebooks of 3 levels of 256 trained on the model's item vectors by
+`strata.train.codebook`, one as it trains by default (`plain`) and one
+with `balanced=True`, each scored by `strata.train.codebook_report` (the
+distinct codes, the rows that share one, each level's perplexity, what
+the last level leaves of the vectors) and by how often a test item has
+the first number of the code of the user's last item (`next_shares_1`:
+codes that put what is watched next under the same number are what a
+decoder over them learns from; by chance it is 1 in 250). The items are
+written to a table with a semantic-ID field for each codebook, and the
+codes the table gives them, read back by `sid_at` and `sid_next`, have to
+count the same as the report: that part is exact, whatever the fixture
+says.
+
     python gate.py --ratings ~/data/ml-1m/ratings.dat              # check both protocols
     python gate.py --ratings ... --protocol time                    # check one
     STRATA_RECSYS_GATE=update python gate.py --ratings ...           # rewrite
@@ -61,9 +75,21 @@ by revision and SHA-256 (.github/workflows/ci.yml).
 A metric that moves by more than its tolerance fails the gate (rounding
 and SIMD differences move none by 0.001 at this size), and so does a
 Strata source that no longer beats both baselines' Recall@10 where the
-fixture says it did. A change that moves them commits the new numbers,
-which the gate writes with STRATA_RECSYS_GATE=update, and says why in its
-pull request.
+fixture says it did.
+
+A codebook's numbers have tolerances of their own (`SID_TOLERANCE`).
+K-means follows the last bit of a sum, so a processor with other kernels
+ends at other centroids, as another seed does (`--sid-seed`), and the
+tolerances are about twice what seeds 0 to 4 spread over on the machine
+that wrote the fixtures. The plain codebook's second and third levels and its shared rows swing
+too far with the seed to be held to a number: what a level leaves of
+the vectors points every way alike, and there k-means keeps most
+centroids on one far item each and gives the rest to the few centroids
+near the middle (189 of level 2's 256 numbers had one item at seed 0,
+and its perplexity was 59 to 158 over five seeds),
+so the fixture holds them for
+the balanced codebook only, and the gate fails when the balanced codebook
+leaves more rows sharing a code than the plain one.
 """
 import argparse
 import csv
@@ -100,6 +126,12 @@ PROTOCOLS = {
 CUTOFF = 0.9
 TOLERANCE = {"recall@10": 0.002, "recall@50": 0.002, "recall@100": 0.002, "ndcg@10": 0.002, "coverage@10": 0.005}
 K = 100
+# The codebooks' tolerances (differences), and what the fixture holds
+# each codebook to.
+SID_TOLERANCE = {
+    "plain": {"codes": 60, "perplexity_1": 12, "residual": 0.06, "next_shares_1": 0.03},
+    "balanced": {"codes": 15, "shared_rows": 15, "perplexity_1": 6, "perplexity_2": 6, "perplexity_3": 6, "residual": 0.01, "next_shares_1": 0.03},
+}
 
 
 def ratings(path):
@@ -268,6 +300,64 @@ def train_model(model, train, items, minutes, epochs=200, seed=0):
     print(f"trained {len(r['history'])} epochs, best {best}", flush=True)
 
 
+def semantic_ids(work, train, test, items, vectors, users, seed=0):
+    """The two codebooks' scores on the item vectors, after checking that a
+    table's semantic-ID fields give the items the codes the reports
+    count."""
+    import strata.train
+
+    models = os.path.join(work, "sid-models")
+    shutil.rmtree(models, ignore_errors=True)
+    emb = [vectors[k] for k in items]
+    names = {"plain": False, "balanced": True}
+    reports = {}
+    for name, balanced in names.items():
+        strata.train.codebook(emb, f"gate-{name}", models=models, seed=seed, balanced=balanced)
+        reports[name] = strata.train.codebook_report(emb, f"gate-{name}", models=models)
+    path = os.path.join(work, "sid-db")
+    shutil.rmtree(path, ignore_errors=True)
+    fields = [{"name": "id", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": len(emb[0]), "index": "flat"}]
+    fields += [{"name": f"sid_{n}", "type": "keyword", "multi": True, "semantic_id": {"from": "emb", "codebook": f"gate-{n}"}} for n in names]
+    db = strata.Database.create(path, {"table": "items", "key": "id", "fields": fields}, models=models)
+    db.insert([{"id": k, "emb": v} for k, v in zip(items, emb)])
+    out = {}
+    for name in names:
+        r, f = reports[name], f"sid_{name}"
+        levels = len(r["levels"])
+        groups = [n for _, n in db.query(f"SELECT sid_at({f}, {levels}), COUNT(*) FROM items GROUP BY sid_at({f}, {levels}) LIMIT {len(items)}").rows]
+        first = db.sid_next([""], field=f)[""]
+        table = (len(groups), sum(n for n in groups if n > 1), max(groups), len(first), max(first.values()), sum(first.values()))
+        report = (r["codes"], r["shared_rows"], r["largest_group"], r["levels"][0]["used"], r["levels"][0]["fullest"], r["rows"])
+        if table != report:
+            raise SystemExit(f"the {name} codebook: the table's codes count {table} (codes, rows sharing one, the largest group, first numbers, the fullest's rows, rows), the report {report}")
+        code = dict(db.query(f"SELECT id, sid_at({f}, 1) FROM items LIMIT {len(items)}").rows)
+        out[name] = {
+            "codes": r["codes"],
+            "shared_rows": r["shared_rows"],
+            **{f"perplexity_{i + 1}": round(lv["perplexity"], 1) for i, lv in enumerate(r["levels"])},
+            "residual": round(r["levels"][-1]["residual"], 4),
+            "next_shares_1": round(sum(code[train[u][-1][2]] == code[test[u][2]] for u in users) / len(users), 4),
+        }
+    db.close()
+    shutil.rmtree(path, ignore_errors=True)
+    shutil.rmtree(models, ignore_errors=True)
+    return out
+
+
+def sid_failures(got, want):
+    """What of the codebooks' scores is further from the fixture's
+    (`semantic_ids`) than its tolerance."""
+    failed = []
+    for name, metrics in want.get("codebooks", {}).items():
+        for k, v in metrics.items():
+            d = got[name][k] - v
+            if abs(d) > want["tolerance"][name][k]:
+                failed.append(f"semantic IDs, {name} codebook, {k}: {got[name][k]} against {v} ({d:+.4g})")
+    if want.get("balanced_shares_no_more_rows") and got["balanced"]["shared_rows"] > got["plain"]["shared_rows"]:
+        failed.append(f"semantic IDs: the balanced codebook leaves more rows sharing a code than the plain one ({got['balanced']['shared_rows']} against {got['plain']['shared_rows']})")
+    return failed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ratings", required=True, help="ratings.dat of MovieLens-1M, or a CSV of the same columns")
@@ -275,6 +365,7 @@ def main():
     ap.add_argument("--work", default=None)
     ap.add_argument("--users", type=int, default=None, help="score this many users only (a quick run; not a check)")
     ap.add_argument("--train", type=float, default=None, metavar="MINUTES", help="first retrain each protocol's model, for at most this long")
+    ap.add_argument("--sid-seed", type=int, default=0, help="train the semantic-ID codebooks with another seed (to see what a seed moves; not a check)")
     ap.add_argument("--epochs", type=int, default=200, help="with --train, at most this many epochs (a count does not depend on the machine's load)")
     a = ap.parse_args()
     update = os.environ.get("STRATA_RECSYS_GATE") == "update"
@@ -357,14 +448,17 @@ def gate(protocol, seqs, data, a, update):
         ms = (time.perf_counter() - t) * 1e3
         tally["next_items"].add(nxt + [x for x in popular[u] if x not in nxt][: K - len(nxt)], target, ms)
     db.close()
+    sids = semantic_ids(work, train, test, items, vectors, users, a.sid_seed)
     if not a.work:
         shutil.rmtree(work, ignore_errors=True)
 
     got = {s: t.result() for s, t in tally.items()}
     for s, r in got.items():
         print(f"{s:>11} " + "  ".join(f"{k} {v}" for k, v in r.items()), flush=True)
-    if a.users:
-        print("a run over some users only: not checked")
+    for name, r in sids.items():
+        print(f"{'sid ' + name:>12} " + "  ".join(f"{k} {v}" for k, v in r.items()), flush=True)
+    if a.users or a.sid_seed:
+        print("a run over some users only, or codebooks of another seed: not checked")
         return 0
     baseline = max(got["popularity"]["recall@10"], got["item_knn"]["recall@10"])
     beats = sorted(s for s in ("encode", "maxsim", "next_items", "ppr") if got[s]["recall@10"] > baseline)
@@ -380,6 +474,11 @@ def gate(protocol, seqs, data, a, update):
             "tolerance": TOLERANCE,
             "beat_both_baselines": [s for s in beats if got[s]["recall@10"] > margin],
             "sources": {s: {k: v for k, v in r.items() if not k.startswith("query_ms")} for s, r in got.items()},
+            "semantic_ids": {
+                "tolerance": SID_TOLERANCE,
+                "balanced_shares_no_more_rows": sids["balanced"]["shared_rows"] <= sids["plain"]["shared_rows"],
+                "codebooks": {name: {k: sids[name][k] for k in held} for name, held in SID_TOLERANCE.items()},
+            },
         }
         with open(p["fixture"], "w") as f:
             json.dump(out, f, indent=1)
@@ -398,6 +497,7 @@ def gate(protocol, seqs, data, a, update):
     for s in want["beat_both_baselines"]:
         if s not in beats:
             failed.append(f"{s} no longer beats both baselines' Recall@10 ({got[s]['recall@10']} against {baseline})")
+    failed += sid_failures(sids, want.get("semantic_ids", {}))
     if failed:
         print(f"the recommender gate ({protocol}) fails:\n  " + "\n  ".join(failed) + "\nIf the change is meant to move them, rerun with STRATA_RECSYS_GATE=update, commit the fixture, and say why in the pull request.")
         return 1

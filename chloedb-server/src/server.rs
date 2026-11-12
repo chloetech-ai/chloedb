@@ -1279,8 +1279,14 @@ pub fn spawn_watch(svc: &Arc<Service>) {
 
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
+    serve_http_until(svc, listener, access, shutdown()).await
+}
+
+/// [`serve_http`] until `stop` ends (rather than until SIGTERM or Ctrl-C
+/// and the drain time).
+pub async fn serve_http_until(svc: Arc<Service>, listener: TcpListener, access: Access, stop: impl std::future::Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
     let router = http::router(svc, &access);
-    serve_router(router, listener, &access).await
+    serve_router_until(router, listener, &access, stop).await
 }
 
 /// Serves the OpenSearch-compatible API ([`crate::opensearch`]) on its own
@@ -1288,22 +1294,54 @@ pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access
 /// TLS. `version` is the version its root reports.
 pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: Access, version: &str) -> std::io::Result<()> {
     let router = crate::opensearch::router(svc, &access, version);
-    serve_router(router, listener, &access).await
+    serve_router_until(router, listener, &access, shutdown()).await
 }
 
-/// Serves `router` on `listener`, over TLS with `access.tls`.
-async fn serve_router(router: axum::Router, listener: TcpListener, access: &Access) -> std::io::Result<()> {
+/// Serves `router` on `listener`, over TLS with `access.tls`, until `stop`
+/// ends; then waits for the requests under way, up to
+/// [`auth::Limits::stop_grace`], and returns.
+///
+/// Each connection must send a request's headers within
+/// [`auth::Limits::header_read`] (an idle keep-alive one is closed after
+/// it, and a TLS handshake has as long, 10 s at most), and the listener
+/// holds [`auth::Limits::max_connections`] at once: a client that opens
+/// thousands and sends a byte a minute holds neither the process's file
+/// descriptors nor its memory. Every answer says to browsers not to sniff
+/// its type nor be framed by another site ([`security_headers`]). Long
+/// answers that would never end on their own (a follower's feed) watch
+/// [`Stopping`] and end when the listener stops taking connections.
+pub async fn serve_router_until(router: axum::Router, listener: TcpListener, access: &Access, stop: impl std::future::Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+    let (stopping, stopped) = tokio::sync::watch::channel(false);
     // x-chloedb-* headers are read as their x-strata-* names (crate::names).
-    let router = crate::names::http_layer(router);
-    let Some(tls) = &access.tls else {
-        // Each request knows its peer's address (the audit log's `addr`).
-        return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
+    let router = crate::names::http_layer(router).layer(axum::middleware::map_response(security_headers)).layer(axum::Extension(Stopping(stopped)));
+    let tls = match &access.tls {
+        Some(t) => Some(tokio_rustls::TlsAcceptor::from(auth::server_config(t).map_err(std::io::Error::other)?)),
+        None => None,
     };
-    let config = auth::server_config(tls).map_err(std::io::Error::other)?;
-    let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    let stop = shutdown();
+    let limits = access.limits;
+    let permits = match limits.max_connections {
+        0 => connections(),
+        n => Arc::new(tokio::sync::Semaphore::new(n)),
+    };
+    let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    builder.http1().timer(TokioTimer::new()).header_read_timeout(limits.header_read);
+    // HTTP/2 has no header timeout: pings find a peer that went away.
+    builder.http2().timer(TokioTimer::new()).keep_alive_interval(limits.header_read).keep_alive_timeout(limits.header_read.min(Duration::from_secs(20)));
+    let builder = Arc::new(builder);
+    // Each connection's task holds a clone of `open`: once every clone is
+    // dropped, `closed` ends. A connection is told to finish when
+    // `stopping` says true; a listener dropped rather than stopped (its
+    // task aborted) leaves its connections be, as axum's does.
+    let (open, mut closed) = tokio::sync::mpsc::channel::<()>(1);
+    let handshake = limits.header_read.min(Duration::from_secs(10));
     tokio::pin!(stop);
     loop {
+        // Past the cap, wait for a connection to close before taking one.
+        let permit = tokio::select! {
+            p = permits.clone().acquire_owned() => p.map_err(std::io::Error::other)?,
+            _ = &mut stop => break,
+        };
         let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
                 Ok(c) => c,
@@ -1313,19 +1351,105 @@ async fn serve_router(router: axum::Router, listener: TcpListener, access: &Acce
                     continue;
                 }
             },
-            _ = &mut stop => return Ok(()),
+            _ = &mut stop => break,
         };
         let _ = tcp.set_nodelay(true);
+        // Each request knows its peer's address (the audit log's `addr`).
         let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))));
-        let acceptor = acceptor.clone();
+        let (tls, builder, open, mut told) = (tls.clone(), builder.clone(), open.clone(), stopping.subscribe());
         tokio::spawn(async move {
-            // A client that never finishes its handshake holds a task, not
-            // the accept loop.
-            let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else { return };
-            let io = hyper_util::rt::TokioIo::new(stream);
-            let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new()).serve_connection_with_upgrades(io, service).await;
+            let (_permit, _open) = (permit, open);
+            // Serves one connection until it ends, or finishes the
+            // request under way once the listener stops.
+            macro_rules! serve {
+                ($io:expr) => {{
+                    let conn = builder.serve_connection_with_upgrades(TokioIo::new($io), service);
+                    tokio::pin!(conn);
+                    tokio::select! {
+                        _ = conn.as_mut() => {}
+                        Ok(()) = async { told.wait_for(|s| *s).await.map(|_| ()) } => {
+                            conn.as_mut().graceful_shutdown();
+                            let _ = conn.await;
+                        }
+                    }
+                }};
+            }
+            match tls {
+                None => serve!(tcp),
+                Some(acceptor) => {
+                    // A client that never finishes its handshake holds a
+                    // task for a while, not the accept loop.
+                    let Ok(Ok(stream)) = tokio::time::timeout(handshake, acceptor.accept(tcp)).await else { return };
+                    serve!(stream)
+                }
+            }
         });
     }
+    drop(listener);
+    let _ = stopping.send(true);
+    drop(open);
+    if tokio::time::timeout(limits.stop_grace, closed.recv()).await.is_err() {
+        tracing::warn!(grace_ms = limits.stop_grace.as_millis() as u64, "stopping with requests still under way: they had their grace time (--stop-grace-ms)");
+    }
+    Ok(())
+}
+
+/// That the listener a request came in on stopped taking connections, for
+/// an answer that goes on until told to end (a feed): [`Self::wait`].
+#[derive(Clone)]
+pub struct Stopping(tokio::sync::watch::Receiver<bool>);
+
+impl Stopping {
+    /// Ends once the listener stops taking connections (never, when it
+    /// was dropped without stopping).
+    pub async fn wait(mut self) {
+        if self.0.wait_for(|s| *s).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// [`Self::wait`] for `s`, or never without one.
+    pub async fn of(s: Option<Stopping>) {
+        match s {
+            Some(s) => s.wait().await,
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// The connections the HTTP listeners hold at once, all of them together,
+/// when `--max-connections` is 0: three quarters of the process's
+/// open-file limit (the rest for its databases, its shards and the
+/// listeners themselves).
+fn connections() -> Arc<tokio::sync::Semaphore> {
+    static ALL: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut n = 65_536;
+        #[cfg(unix)]
+        {
+            let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // SAFETY: getrlimit writes the struct it is given, and nothing else.
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } == 0 && r.rlim_cur != libc::RLIM_INFINITY {
+                n = (r.rlim_cur as usize / 4 * 3).clamp(64, 1 << 20);
+            }
+        }
+        Arc::new(tokio::sync::Semaphore::new(n))
+    })
+    .clone()
+}
+
+/// Headers every HTTP answer carries unless its handler set its own: no
+/// guessing a type other than the one it says (`nosniff`), no framing by
+/// a page of another site (clicks on a framed command center would run
+/// its queries), and no address of a page sent to other sites.
+async fn security_headers(mut res: axum::response::Response) -> axum::response::Response {
+    use axum::http::header::{self, HeaderValue};
+    let h = res.headers_mut();
+    h.entry(header::X_CONTENT_TYPE_OPTIONS).or_insert(HeaderValue::from_static("nosniff"));
+    h.entry(header::X_FRAME_OPTIONS).or_insert(HeaderValue::from_static("SAMEORIGIN"));
+    h.entry(header::REFERRER_POLICY).or_insert(HeaderValue::from_static("same-origin"));
+    h.entry(header::CONTENT_SECURITY_POLICY).or_insert(HeaderValue::from_static("frame-ancestors 'self'; base-uri 'self'; object-src 'none'"));
+    res
 }
 
 /// Serves gRPC: every call needs `access.cluster`, `access.token` or a key

@@ -252,6 +252,23 @@ impl Cluster {
     }
 
     /// The objects every cluster has: the schema, and the two Services.
+    /// The coordinators' Role: this one StrataCluster, read and scaled
+    /// from the command center, and (`lease`) the Lease of the cluster's
+    /// map, which one coordinator at a time holds while it changes the map
+    /// (finding E-2, [`super::lease`]). Kubernetes lets the operator make
+    /// a Role only of what its own ClusterRole holds: one from before the
+    /// Lease (operator.yaml as it was, or the cloud view's install) holds
+    /// no Leases, and [`common`] makes the Role without them then.
+    pub fn coordinator_role(&self, lease: bool) -> Json {
+        let mut rules = vec![json!({"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": [self.name], "verbs": ["get", "patch"]})];
+        if lease {
+            // A create cannot name the object.
+            rules.push(json!({"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": [format!("{}-map", self.name)], "verbs": ["get", "update"]}));
+            rules.push(json!({"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]}));
+        }
+        json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": self.meta(&self.coordinator_account(), self.labels()), "rules": rules})
+    }
+
     pub fn common(&self) -> Vec<(String, Json)> {
         let ns = &self.ns;
         let schema = json!({"apiVersion": "v1", "kind": "ConfigMap", "metadata": self.meta(&format!("{}-schema", self.name), self.labels()), "data": {"schema.json": self.spec.schema_json()}});
@@ -272,17 +289,7 @@ impl Cluster {
         // from the command center.
         let account = self.coordinator_account();
         let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": self.meta(&account, self.labels())});
-        let role = json!({
-            "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": self.meta(&account, self.labels()),
-            "rules": [
-                {"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": [self.name], "verbs": ["get", "patch"]},
-                // The Lease of the cluster's map, which one coordinator at
-                // a time holds while it changes the map (finding E-2,
-                // super::lease); a create cannot name the object.
-                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": [format!("{}-map", self.name)], "verbs": ["get", "update"]},
-                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]},
-            ],
-        });
+        let role = self.coordinator_role(true);
         let binding = json!({
             "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": self.meta(&account, self.labels()),
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": account},
@@ -359,6 +366,11 @@ impl Cluster {
                     "metadata": {"labels": labels, "annotations": {CONFIG: s.server_config()}},
                     "spec": {
                         "terminationGracePeriodSeconds": 30,
+                        // The servers run as user 10001: the volume is its
+                        // group's, and the files a server wrote as root
+                        // (images and operators before 0.2.1) are given to
+                        // that group once.
+                        "securityContext": run_as(true),
                         // Copies of a shard on different nodes, when there are.
                         "affinity": {"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
                             {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
@@ -423,7 +435,7 @@ impl Cluster {
                 "minReadySeconds": 2,
                 "template": {
                     "metadata": {"labels": labels, "annotations": {CONFIG: s.coordinator_config()}},
-                    "spec": {"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "containers": [container]},
+                    "spec": {"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "securityContext": run_as(false), "containers": [container]},
                 },
             },
         })
@@ -455,6 +467,8 @@ impl Cluster {
                     "spec": {
                         "automountServiceAccountToken": false,
                         "terminationGracePeriodSeconds": 0,
+                        // As the user the servers will run it as.
+                        "securityContext": run_as(false),
                         // One on each node that runs copies.
                         "affinity": {
                             "nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": nodes}]}]}},
@@ -924,6 +938,24 @@ impl Cluster {
 /// How a copy starts: on an empty volume, the first copy of a shard the
 /// cluster starts with loads its demo products, and every other copy is
 /// created empty with the schema (it joins its shard and is sent a copy).
+/// The user the servers, the coordinators and the pre-flight run as: the
+/// image's `chloedb` (10001), not root, given here rather than by the image
+/// (deploy/Dockerfile), whose user stays root so that an operator from
+/// before this one, which gives its pods no user, still runs its servers as
+/// root on the volumes a root image wrote. `volume`: the pod's volume
+/// belongs to that group, and files written as root are given to it the
+/// first time (`OnRootMismatch`: only while the volume's root is not yet
+/// the group's). The images from before 0.2.1 run as that user too: their
+/// programs are anyone's to run, and their data is the volume.
+fn run_as(volume: bool) -> Json {
+    let mut s = json!({"runAsUser": 10001, "runAsGroup": 10001, "runAsNonRoot": true});
+    if volume {
+        s["fsGroup"] = json!(10001);
+        s["fsGroupChangePolicy"] = json!("OnRootMismatch");
+    }
+    s
+}
+
 const SERVER_SCRIPT: &str = r#"set -e
 set -- --db /data/db.strata --seq-no --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --failover-after-ms "$STRATA_FAILOVER_AFTER_MS" --write-acks "$STRATA_WRITE_ACKS"
 [ -n "$STRATA_TOKEN$STRATA_CLUSTER_TOKEN" ] || set -- "$@" --no-token
@@ -1671,7 +1703,17 @@ fn same(a: &Json, b: &Json) -> bool {
 async fn common(c: &Cluster) -> Result<Admin, String> {
     c.spec.check()?;
     for (path, obj) in c.common() {
-        c.kube.apply(&path, &obj).await?;
+        match c.kube.apply(&path, &obj).await {
+            // The coordinators' Role, refused as granting what this
+            // operator's ClusterRole does not hold (one from before the
+            // map's Lease): made without the Lease, so the cluster is still
+            // kept, and its coordinators change the map without one.
+            Err(e) if obj["kind"] == "Role" && e.contains(" 403 ") => {
+                tracing::warn!(cluster = %c.name, error = %e, "the operator's ClusterRole holds no Leases (it is from an older operator.yaml): the coordinators' Role is made without the cluster map's Lease; apply deploy/k8s/operator/operator.yaml again to give it");
+                c.kube.apply(&path, &c.coordinator_role(false)).await?;
+            }
+            r => drop(r?),
+        }
     }
     Ok(Admin::new(&c.admin_url(), c.admin_token().await?))
 }
@@ -1924,6 +1966,12 @@ mod tests {
         assert_eq!(s["spec"]["replicas"], 3);
         assert_eq!(s["spec"]["serviceName"], "orders-servers");
         assert_eq!(s["spec"]["persistentVolumeClaimRetentionPolicy"]["whenScaled"], "Delete");
+        // The servers run as user 10001, which the pod says (the image's
+        // user is root, for older operators): its volume is that group's,
+        // and files a server wrote as root before are given to it.
+        let sc = &s["spec"]["template"]["spec"]["securityContext"];
+        assert_eq!((&sc["fsGroup"], &sc["fsGroupChangePolicy"]), (&json!(10001), &json!("OnRootMismatch")));
+        assert_eq!((&sc["runAsUser"], &sc["runAsGroup"], &sc["runAsNonRoot"]), (&json!(10001), &json!(10001), &json!(true)));
         let claim = &s["spec"]["volumeClaimTemplates"][0];
         assert_eq!((&claim["spec"]["resources"]["requests"]["storage"], &claim["spec"]["storageClassName"]), (&json!("5Gi"), &json!("fast")));
         let env = &s["spec"]["template"]["spec"]["containers"][0]["env"];
@@ -1950,6 +1998,9 @@ mod tests {
         assert_eq!(args.as_array().unwrap()[args.as_array().unwrap().len() - 2..], [json!("--hedge-ms"), json!("40")]);
         assert_eq!(d["spec"]["template"]["metadata"]["annotations"][CONFIG], json!(c.spec.coordinator_config()));
         assert_eq!(d["spec"]["replicas"], 2);
+        assert_eq!(d["spec"]["template"]["spec"]["securityContext"], json!({"runAsUser": 10001, "runAsGroup": 10001, "runAsNonRoot": true}));
+        let pre = c.preflight_deployment("chloedb-server:new", &["n1".into()]);
+        assert_eq!(pre["spec"]["template"]["spec"]["securityContext"]["runAsUser"], 10001, "the pre-flight runs the image as the servers will");
         let (svc, front) = (&c.common()[1].1, &c.common()[2].1);
         assert_eq!((&svc["spec"]["clusterIP"], &svc["spec"]["publishNotReadyAddresses"]), (&json!("None"), &json!(true)));
         assert_eq!(front["spec"]["selector"]["app.kubernetes.io/component"], "coordinator");
@@ -2076,5 +2127,63 @@ mod tests {
             let closed = run("orders-s0-1", false, &[(t, "x")]);
             assert!(!closed.contains("--no-token") && closed.contains("--schema\n"), "{t}: {closed}");
         }
+    }
+
+    /// Kubernetes refuses a Role that grants what its maker does not hold
+    /// (RBAC's escalation check): every rule of the coordinators' Role is
+    /// one the operator's ClusterRole (operator.yaml, and the cloud view's
+    /// copy of it) holds, or no cluster gets past its Role.
+    #[test]
+    fn the_operator_holds_what_it_grants_the_coordinators() {
+        let c = cluster(json!({"demo": 10}));
+        let operator = crate::cloud::install::operator_objects("chloedb-server:dev").into_iter().find(|o| o["kind"] == "ClusterRole").unwrap();
+        let strs = |j: &Json| j.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        for lease in [true, false] {
+            for rule in c.coordinator_role(lease)["rules"].as_array().unwrap() {
+                for (g, r, v) in strs(&rule["apiGroups"]).iter().flat_map(|g| strs(&rule["resources"]).into_iter().map(move |r| (g.clone(), r))).flat_map(|(g, r)| strs(&rule["verbs"]).into_iter().map(move |v| (g.clone(), r.clone(), v))) {
+                    let held = operator["rules"].as_array().unwrap().iter().any(|o| {
+                        let all = |k: &str, x: &str| strs(&o[k]).iter().any(|y| y == x || y == "*");
+                        all("apiGroups", &g) && all("resources", &r) && all("verbs", &v) && o["resourceNames"].is_null()
+                    });
+                    assert!(held, "the coordinators' Role grants {v} {g}/{r}, which the operator's ClusterRole does not hold");
+                }
+            }
+        }
+        let leases = |role: &Json| role["rules"].as_array().unwrap().iter().any(|r| r["resources"] == json!(["leases"]));
+        assert!(leases(&c.coordinator_role(true)) && !leases(&c.coordinator_role(false)));
+    }
+
+    /// An operator whose ClusterRole is from before the map's Lease (the
+    /// live clusters' until operator.yaml is applied again) is refused the
+    /// coordinators' Role with the Lease: it makes the Role without it and
+    /// keeps the cluster, rather than failing every reconcile there.
+    #[tokio::test]
+    async fn a_role_refused_for_its_lease_is_made_without_it() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<(String, Json)>>> = Arc::default();
+        let s = seen.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: axum::body::Bytes| {
+            let s = s.clone();
+            async move {
+                let j: Json = serde_json::from_slice(&body).unwrap_or(Json::Null);
+                s.lock().unwrap().push((uri.path().to_string(), j.clone()));
+                if j["kind"] == "Role" && j.to_string().contains("coordination.k8s.io") {
+                    let m = json!({"message": "roles.rbac.authorization.k8s.io \"orders-coordinator\" is forbidden: user is attempting to grant RBAC permissions not currently held"});
+                    return (axum::http::StatusCode::FORBIDDEN, axum::Json(m));
+                }
+                (axum::http::StatusCode::OK, axum::Json(j))
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let mut c = cluster(json!({"demo": 10}));
+        c.kube = Kube::new(&Options { api: Some(url), token: Some("t".into()), ..Default::default() }).unwrap();
+        common(&c).await.unwrap();
+        let seen = seen.lock().unwrap();
+        let roles: Vec<&Json> = seen.iter().filter(|(p, _)| p.ends_with("/roles/orders-coordinator")).map(|(_, j)| j).collect();
+        assert_eq!(roles.len(), 2, "{seen:?}");
+        assert_eq!(*roles[1], c.coordinator_role(false));
+        assert!(seen.iter().any(|(p, _)| p.ends_with("/rolebindings/orders-coordinator")), "the binding after it is made too");
     }
 }

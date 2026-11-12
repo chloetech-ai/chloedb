@@ -262,7 +262,7 @@ image)
         kubectl --context "$CONTEXT" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
         exit 0
     fi
-    docker build -f "$HERE/../Dockerfile" -t "$IMAGE" "$HERE/../../.."
+    docker build -f "$HERE/../Dockerfile" --target bench -t "$IMAGE" "$HERE/../../.."
     nodes=$(IFS=,; echo "${NODES[*]},$CLIENT_NODE")
     kind load docker-image "$IMAGE" --name "$CLUSTER" --nodes "$nodes"
     kind load docker-image "$ES_IMAGE" "$OS_IMAGE" "$SOLR_IMAGE" --name "$CLUSTER" --nodes "$(IFS=,; echo "${NODES[*]}")"

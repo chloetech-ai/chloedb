@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "chloedb"
-version = "0.2.0"
+version = "0.2.1"
 description = "ChloeDB from Python: an embedded search database (full text, vectors, graphs, SQL), or a chloedb-server over HTTP"
 readme = "README.md"
 license = "Apache-2.0"
@@ -18,6 +18,13 @@ test = ["pytest"]
 frame = ["pyarrow>=14"]
 # chloedb.ingest.kafka
 kafka = ["confluent-kafka>=2.3"]
+# chloedb.langchain: a LangChain vector store (numpy for its maximal
+# marginal relevance search)
+langchain = ["langchain-core>=0.3", "numpy"]
+# chloedb.langgraph: a LangGraph checkpointer and store
+langgraph = ["langgraph>=0.3", "langgraph-checkpoint>=2.0"]
+# chloedb.llama_index: a LlamaIndex vector store
+llama-index = ["llama-index-core>=0.12"]
 
 [tool.maturin]
 python-source = "python"
