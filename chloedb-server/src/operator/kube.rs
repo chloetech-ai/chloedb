@@ -1201,7 +1201,10 @@ impl Platform for Cluster {
             if let Some(id) = have["metadata"]["annotations"][cr::KEY_ID].as_str() {
                 admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
             }
-            self.kube.delete(&path).await?;
+            match self.kube.delete(&path).await {
+                Err(e) if forbidden(&e) => tracing::warn!(cluster = %self.name, app, error = %e, "{OLD_ROLE}: the Secret of an app taken out of the spec is left (its key is revoked)"),
+                r => r?,
+            }
         }
         if apps.is_empty() || !cr::supported(admin).await {
             return Ok(());
@@ -1219,6 +1222,24 @@ impl Platform for Cluster {
                 Some(t) => t.clone(),
                 None => crate::keys::random_hex(32).map_err(|e| e.message)?,
             };
+            if have.is_none() {
+                // The Secret first, with its token alone: an operator whose
+                // ClusterRole is from before apps' credentials (an
+                // installed operator upgrades neither itself nor it) may
+                // not make Secrets, and then makes no key either, which it
+                // would make again at every reconcile. Its apps keep the
+                // admin token, as they had it.
+                let mut data = serde_json::Map::new();
+                data.insert(cr::TOKEN.into(), json!(base64_encode(token.as_bytes())));
+                let meta = self.meta(&cr::secret_name(&self.name, app), self.labels());
+                match self.kube.apply(&path, &json!({"apiVersion": "v1", "kind": "Secret", "metadata": meta, "type": "Opaque", "data": data})).await {
+                    Err(e) if forbidden(&e) => {
+                        tracing::warn!(cluster = %self.name, error = %e, "{OLD_ROLE}: the apps keep the admin token");
+                        return Ok(());
+                    }
+                    r => drop(r?),
+                }
+            }
             let mut key = e.get(cr::KEY).filter(|k| !k.is_empty()).cloned();
             let mut id = old_id.clone();
             let keyed = cr::keyed(spec, app);
@@ -1816,6 +1837,14 @@ fn same(a: &Json, b: &Json) -> bool {
     }
 }
 
+/// Whether the API server refused a request as not allowed (403).
+fn forbidden(e: &str) -> bool {
+    e.contains(" 403 ")
+}
+
+/// What an operator is told when its ClusterRole may not make Secrets.
+const OLD_ROLE: &str = "the operator's ClusterRole may not make, change or delete Secrets (it is from an older operator.yaml), so apps get no keys and tokens of their own; apply deploy/k8s/operator/operator.yaml again to give it";
+
 /// Applies the objects every cluster has, and the coordinators' client.
 async fn common(c: &Cluster) -> Result<Admin, String> {
     c.spec.check()?;
@@ -2342,5 +2371,45 @@ mod tests {
         assert_eq!(roles.len(), 2, "{seen:?}");
         assert_eq!(*roles[1], c.coordinator_role(false));
         assert!(seen.iter().any(|(p, _)| p.ends_with("/rolebindings/orders-coordinator")), "the binding after it is made too");
+    }
+
+    /// An operator whose ClusterRole may not make Secrets (one from before
+    /// apps' credentials: an installed operator upgrades neither itself
+    /// nor it) makes no key for its apps, which keep the admin token, and
+    /// the reconcile goes on.
+    #[tokio::test]
+    async fn an_operator_that_may_not_make_secrets_makes_no_keys() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let s = seen.clone();
+        let app = axum::Router::new().fallback(move |method: axum::http::Method, uri: axum::http::Uri| {
+            let s = s.clone();
+            async move {
+                let path = uri.path().to_string();
+                s.lock().unwrap().push((method.to_string(), path.clone()));
+                match (method.as_str(), path.as_str()) {
+                    ("GET", "/v1/whoami") => (axum::http::StatusCode::OK, axum::Json(json!({"auth": {"app_keys": true}}))),
+                    ("GET", "/v1/admin/keys") => (axum::http::StatusCode::OK, axum::Json(json!({"keys": []}))),
+                    ("POST", "/v1/admin/keys") => (axum::http::StatusCode::OK, axum::Json(json!({"key": {"id": "k1", "tables": {"sheets_*": "admin"}}, "secret": "sk_k1_x"}))),
+                    ("GET", p) if p.contains("/secrets/") => (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({"message": "not found"}))),
+                    (_, p) if p.contains("/secrets/") => (axum::http::StatusCode::FORBIDDEN, axum::Json(json!({"message": "secrets is forbidden: User \"system:serviceaccount:strata-system:strata-operator\" cannot patch resource \"secrets\""}))),
+                    _ => (axum::http::StatusCode::OK, axum::Json(json!({}))),
+                }
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let mut c = cluster(json!({"tokenSecret": "admin", "sheets": {}, "chloectx": {}}));
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let spec = c.spec.clone();
+        c.app_credentials(&spec, &admin).await.unwrap();
+        // Its apps keep the admin token, for their key and their token.
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert!(!creds.key && !creds.token);
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|(m, p)| m == "POST" && p == "/v1/admin/keys"), "no key is made: {seen:?}");
+        assert!(seen.iter().any(|(m, p)| m == "PATCH" && p.contains("/secrets/")), "{seen:?}");
     }
 }
