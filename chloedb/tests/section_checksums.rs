@@ -168,3 +168,38 @@ fn attaching_a_damaged_image_fails() {
     db.attach_segments(&[image]).unwrap();
     assert_eq!(ids(&db, "SELECT id FROM t WHERE n = 7").unwrap(), [key(7)]);
 }
+
+/// Damage anywhere in a text field's postings, with the sections checked
+/// (the default), is an error of the queries that read them, never a
+/// panic (audit S-6: the text reader panics on a list it finds corrupt,
+/// which section checks keep it from seeing).
+#[test]
+fn damaged_text_postings_fail_queries_without_a_panic() {
+    let post = format!("text.{}.post", schema().key_of("body").unwrap());
+    for layout in [Layout::SingleFile, Layout::Directory] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(if layout == Layout::Directory { "db.dir" } else { "db.strata" });
+        Db::create(&path, schema(), options(layout)).unwrap().load((0..DOCS).map(|i| doc(i, i as i64))).unwrap();
+        let (file, at) = first_segment(&path);
+        let (off, len) = section_at(&file, at, &post);
+        let mut failed = 0;
+        for i in (0..len).step_by((len as usize / 48).max(1)) {
+            flip(&file, at + off + i);
+            let db = Db::open(&path, options(layout)).unwrap();
+            for sql in ["SELECT id FROM t WHERE MATCH(body, 'document') LIMIT 500", "SELECT id FROM t ORDER BY bm25(body, 'lorem 42') DESC LIMIT 5"] {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ids(&db, sql))) {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(Error::Corrupt(m))) => {
+                        assert!(m.contains(&post), "{m}");
+                        failed += 1;
+                    }
+                    Ok(Err(e)) => panic!("{layout:?} byte {i}: {sql}: {e}"),
+                    Err(_) => panic!("{layout:?} byte {i}: {sql} panicked"),
+                }
+            }
+            drop(db);
+            flip(&file, at + off + i);
+        }
+        assert!(failed > 0, "{layout:?}");
+    }
+}

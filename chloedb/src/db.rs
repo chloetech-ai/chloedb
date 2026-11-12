@@ -1066,6 +1066,33 @@ impl Db {
     /// it as `name` under `models`, for semantic-ID fields to name. Returns
     /// the SHA-256 of its file.
     pub fn train_codebook(&self, table: &str, field: &str, name: &str, models: &Path, opts: &crate::sid::TrainOptions) -> Result<String> {
+        let (vectors, dim) = self.field_vectors(table, field)?;
+        if vectors.is_empty() {
+            return Err(Error::Schema(format!("{table}.{field} holds no vectors to train a codebook on")));
+        }
+        crate::sid::Codebook::train(&vectors, dim, opts)?.save(name, models)
+    }
+
+    /// What the codebook saved as `name` under `models` makes of the
+    /// vectors of VECTOR field `field` of the table named `table`
+    /// ([`crate::sid::Codebook::report`]): how many rows share a code and
+    /// how evenly each level's numbers are used, before or after a
+    /// semantic-ID field names it.
+    pub fn codebook_report(&self, table: &str, field: &str, name: &str, models: &Path) -> Result<crate::sid::Report> {
+        let (vectors, dim) = self.field_vectors(table, field)?;
+        let (cb, _) = crate::sid::Codebook::open(name, models)?;
+        if cb.dim != dim {
+            return Err(Error::Schema(format!("codebook {name} is of {} dimensions, {table}.{field} of {dim}", cb.dim)));
+        }
+        if vectors.is_empty() {
+            return Err(Error::Schema(format!("{table}.{field} holds no vectors")));
+        }
+        cb.report(&vectors)
+    }
+
+    /// The live rows' vectors of VECTOR field `field` of the table named
+    /// `table`, one after another, and their dimension.
+    fn field_vectors(&self, table: &str, field: &str) -> Result<(Vec<f32>, usize)> {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Schema(format!("no table {table}")))?;
         let schema = snap.schema();
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
@@ -1079,10 +1106,7 @@ impl Db {
                 }
             }
         }
-        if vectors.is_empty() {
-            return Err(Error::Schema(format!("{table}.{field} holds no vectors to train a codebook on")));
-        }
-        crate::sid::Codebook::train(&vectors, dim, opts)?.save(name, models)
+        Ok((vectors, dim))
     }
 
     /// The primary keys of the live rows of the table named `table` whose
@@ -1229,6 +1253,11 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
+        if crate::query::pack::may_pack(sql) {
+            if let Some(p) = self.pack_at(snap, sql, params, opts)? {
+                return Ok(p.rs);
+            }
+        }
         let q = qsql::parse_query_cached(sql)?;
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
@@ -1241,6 +1270,25 @@ impl Db {
         }
         let plan = plan_of_parsed(snap, &q, params, &functions)?;
         self.run_on(snap, &plan, opts)
+    }
+
+    /// Runs a query that ends in `PACK n TOKENS` ([`crate::query::pack`]):
+    /// its rows taken to fill the budget, and the receipt of how they were
+    /// chosen. A query without the clause is an error.
+    pub fn pack(&self, sql: &str, params: &Params) -> Result<crate::query::pack::Packed> {
+        self.pack_at(&self.snapshot(), sql, params, &self.exec)?.ok_or_else(|| Error::Query("the query has no PACK n TOKENS clause".into()))
+    }
+
+    /// [`Db::pack`] against a given snapshot, `None` for a query without
+    /// the clause. Every slice of candidates, and every row followed, is
+    /// read from `snap`.
+    pub fn pack_at(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Option<crate::query::pack::Packed>> {
+        let key_of = |t: &str| snap.table(t).and_then(|v| v.schema().primary_key.map(|k| v.schema().fields[k].name.clone()));
+        let Some(mut p) = crate::query::pack::Packer::of_sql(sql, params, &key_of)? else { return Ok(None) };
+        while let Some(q) = p.next_query()? {
+            p.feed(self.query_at(snap, &q, params, opts)?)?;
+        }
+        p.finish(Some(snap.txn()), snap.seq_no()).map(Some)
     }
 
     /// Where this database's models are: the directory
@@ -2131,8 +2179,7 @@ impl Db {
     /// numbers. At most [`crate::sid::MAX_PREFIXES`] prefixes.
     pub fn sid_next(&self, table: &str, field: &str, prefixes: &[String], filter: Option<&str>, params: &Params) -> Result<Vec<Vec<(String, u64)>>> {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Query(format!("no such table: {table}")))?;
-        let sql = format!("SELECT COUNT(*) FROM {}{}", qsql::ident(&snap.schema().table), filter.map(|c| format!(" WHERE {c}")).unwrap_or_default());
-        let select = qsql::bind(&sql, snap.schema(), params)?;
+        let select = qsql::bind_condition(snap.schema(), filter, params)?;
         self.sid_next_with(&snap, &select, field, prefixes, &self.exec)
     }
 
@@ -2167,8 +2214,7 @@ impl Db {
         let snap = snap.table(&call.table).ok_or_else(|| Error::Query(format!("no such table: {}", call.table)))?;
         let schema = snap.schema();
         let f = call.field_of(schema)?;
-        let sql = format!("SELECT COUNT(*) FROM {}{}", qsql::ident(&schema.table), call.filter.as_deref().map(|c| format!(" WHERE {c}")).unwrap_or_default());
-        let select = qsql::bind(&sql, schema, params)?;
+        let select = qsql::bind_condition(schema, call.filter.as_deref(), params)?;
         let readers = self.readers(&snap)?;
         Executor::new(&snap, &readers, opts).json_paths(&select, f, call)
     }

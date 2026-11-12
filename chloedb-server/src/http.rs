@@ -1428,7 +1428,12 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
 /// transaction n, whose term `after_term` is then; `whole=a,b`: but every
 /// row of tables a and b; `digests=true`: with the digests of the keys). A
 /// failure after the answer started ends it with `{"error": ..., "status": ..}`.
-async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+///
+/// The feed ends when the server stops taking connections
+/// ([`crate::server::Stopping`]), so that a server a follower reads from
+/// stops rather than waiting on it.
+async fn feed(State(app): State<App>, stopping: Option<axum::Extension<crate::server::Stopping>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+    let stopping = Box::pin(crate::server::Stopping::of(stopping.map(|axum::Extension(s)| s)));
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
@@ -1450,7 +1455,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
                 }
             })
         });
-        return Ok(ndjson(axum::body::Body::from_stream(lines)));
+        return Ok(ndjson(axum::body::Body::from_stream(futures::StreamExt::take_until(lines, stopping))));
     }
     // A shard's own server serves its own feed.
     let own = app.svc.slots().map_or(0, |(_, s)| s as u64);
@@ -1459,7 +1464,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     }
     let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
-    Ok(ndjson(axum::body::Body::from_stream(lines)))
+    Ok(ndjson(axum::body::Body::from_stream(futures::StreamExt::take_until(lines, stopping))))
 }
 
 /// `POST /v1/feed/keys {"tables": [...], "slots"?: [...]}`: the keys of
@@ -2612,7 +2617,7 @@ async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let params = app.svc.params(b.get("params")).await?;
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
-    let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first.to_string());
+    let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
     let sql = first.as_deref().unwrap_or(sql);
     let catalog = app.svc.catalog();
     let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
@@ -4686,6 +4691,11 @@ async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): 
     if !(rest.starts_with("v1/") || matches!(rest, "livez" | "readyz" | "metrics")) {
         return Err(ApiError { status: 404, message: format!("/c/{name}/ forwards ChloeDB's API (/v1/...), not /{rest}") });
     }
+    // The path as decoded: no dot segment (once or twice encoded) to climb
+    // out of /v1, and no ? or # to start a query (audit D-B9).
+    if rest.split('/').any(crate::apps::dot_segment) || rest.contains(['?', '#']) {
+        return Err(ApiError::bad("a path the hub forwards has no . or .. segment, ? or # in it"));
+    }
     let path = format!("/{rest}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;
     let headers = req.headers().clone();
@@ -4719,18 +4729,24 @@ async fn cloud_one(State(app): State<App>, axum::extract::Path(id): axum::extrac
     Ok(AxJson(m.view()))
 }
 
-/// `{"provider", "plan", "confirm", "delete_after_hours"?, "bring"?}`:
+/// `{"provider", "plan", "confirm", "delete_after_hours" | "keep", "bring"?}`:
 /// makes the plan's cluster, which bills the account until it is deleted.
-/// `confirm` is the cluster's name, typed again; `bring` names tables of
-/// this server the cluster copies in once it is ready
-/// ([`crate::copy::bring_when_ready`]). Refused when the account's limit
-/// would not start the nodes, or when the cloud already has a cluster of
-/// that name. 202: the cluster is on its way; `GET` it to follow.
+/// `confirm` is the cluster's name, typed again; `delete_after_hours` has
+/// it delete itself then, and without it `keep: true` says it is kept
+/// until someone deletes it; `bring` names tables of this server the
+/// cluster copies in once it is ready ([`crate::copy::bring_when_ready`]).
+/// Refused when this server would forget the cluster or the account's key
+/// when it restarts (finding E-6: a coordinator keeps no file by default,
+/// and the cluster then bills until someone finds it in the cloud's
+/// console), when the account's limit would not start the nodes, or when
+/// the cloud already has a cluster of that name. 202: the cluster is on
+/// its way; `GET` it to follow.
 async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     use crate::cloud::clusters::{Made, Phase};
     let provider = b["provider"].as_str().unwrap_or_default().to_string();
     let plan = b["plan"].clone();
     let refuse = |m: String| ApiError { status: 409, message: m };
+    cloud_durable(&app, &provider).map_err(refuse)?;
     let (j, nodes) = match provider.as_str() {
         "aws" => {
             let (p, j) = aws_planned(&app, plan).await?;
@@ -4780,6 +4796,11 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
     }
     if b["confirm"].as_str() != Some(cluster.as_str()) {
         return Err(ApiError::bad(format!("confirm is the cluster's name, {cluster}, typed again: making it bills the account until it is deleted")));
+    }
+    match (after_ms, b["keep"].as_bool()) {
+        (Some(_), Some(true)) => return Err(ApiError::bad("delete_after_hours or keep, not both")),
+        (None, Some(true)) | (Some(_), _) => {}
+        (None, _) => return Err(ApiError::bad("delete_after_hours (it deletes itself then), or keep: true (it bills the account until someone deletes it)")),
     }
     let who = who(w);
     let now = crate::operator::now_ms();
@@ -4834,6 +4855,29 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
+}
+
+/// Whether a cluster made here, and the key of `provider`'s account that
+/// deletes it, outlive a restart of this server: kept in files, or the key
+/// in the environment. A coordinator keeps no file unless it is given one
+/// (`--cloud-file`, `--aws-file`, `--digitalocean-file`): its list of made
+/// clusters, their deletion times and the key would last as long as the
+/// process (finding E-6).
+fn cloud_durable(app: &App, provider: &str) -> Result<(), String> {
+    let svc = &app.svc;
+    if svc.clouds.file().is_none() {
+        return Err("this server keeps the clusters it makes in memory only (a coordinator keeps no file unless given one): restarted, it would forget this one, which would bill the account until someone deletes it in the cloud's console, and would not delete itself when asked to. Start it with --cloud-file on a disk that outlives it, or make the cluster from a server of a database".into());
+    }
+    let memory_key = match provider {
+        "aws" => svc.aws.creds().is_some_and(|(_, source)| source == "stored") && svc.aws.file().is_none(),
+        "digitalocean" => svc.digitalocean.token().is_some_and(|(_, source)| source == "stored") && svc.digitalocean.file().is_none(),
+        _ => false,
+    };
+    if memory_key {
+        let flag = if provider == "aws" { "--aws-file" } else { "--digitalocean-file" };
+        return Err(format!("this server keeps the account's key in memory only: restarted, it could not delete the cluster. Start it with {flag} on a disk that outlives it, or give the key in its environment"));
+    }
+    Ok(())
 }
 
 /// `delete_after_hours`: a number of hours (above 0, at most 30 days) as
@@ -5304,7 +5348,13 @@ async fn alert_peer_state(State(app): State<App>) -> AxJson<Json> {
 
 /// alerts2: merges what another coordinator tells (as it answers
 /// `GET /v1/alerts/peer`, and routes); it is not told on again.
-async fn alert_peer_merge(State(app): State<App>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+/// Only with the cluster's token (or the server's), as another coordinator
+/// sends it: an admin key could otherwise replace the rules, routes and
+/// silences unaudited.
+async fn alert_peer_merge(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    if !who(p).root {
+        return Err(ApiError { status: 403, message: "only another coordinator tells this, with the cluster's token: an API key may not".into() });
+    }
     let from = crate::peers::from_peer(&headers).ok_or_else(|| ApiError::bad("only another coordinator tells this (the header x-strata-peer names it)"))?;
     let events = app.svc.alerts.merge(&b, &from)?;
     let n = events.len();

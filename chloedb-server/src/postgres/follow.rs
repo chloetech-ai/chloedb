@@ -632,8 +632,17 @@ impl Follower {
             }
             let sql = format!("CREATE TABLE {} ({})", ident(&rel.table), cols.join(", "));
             tracing::info!(table = %rel.table, "making the table: {sql}");
-            self.sql(&sql).await?;
+            let made = self.sql(&sql).await;
             self.load_tables().await?;
+            // Tried again after its answer was lost (a 5xx, a server that
+            // stopped as it answered), it finds the table its first try
+            // made: there, it is made.
+            if let Err(e) = made {
+                if !self.tables.contains_key(&rel.table.to_ascii_lowercase()) || !e.message.contains("already exists") {
+                    return Err(e);
+                }
+                tracing::info!(table = %rel.table, "making the table failed ({}), but it is here: an earlier try made it", e.message);
+            }
             return Ok(false);
         };
         let pk = have.primary_key.map(|k| have.fields[k].name.clone());
@@ -651,7 +660,13 @@ impl Follower {
             if let Some(t) = decl(i) {
                 let sql = format!("ALTER TABLE {} ADD COLUMN {} {t}", ident(&rel.table), ident(&c.name));
                 tracing::info!(table = %rel.table, "Postgres has a column the table lacks: {sql}");
-                self.sql(&sql).await?;
+                if let Err(e) = self.sql(&sql).await {
+                    // An earlier try, its answer lost, may have added it.
+                    self.load_tables().await?;
+                    if !self.tables.get(&rel.table.to_ascii_lowercase()).is_some_and(|t| t.field_index(&c.name).is_some()) {
+                        return Err(e);
+                    }
+                }
                 changed = true;
             }
         }
@@ -1196,7 +1211,14 @@ impl Follower {
                     if schema.field_index(&c.name).is_some() && schema.field_index(&now.name).is_none() {
                         let sql = format!("ALTER TABLE {} RENAME COLUMN {} TO {}", ident(&rel.table), ident(&c.name), ident(&now.name));
                         tracing::info!(table = %rel.table, "Postgres renamed a column: {sql}");
-                        self.sql(&sql).await?;
+                        if let Err(e) = self.sql(&sql).await {
+                            // An earlier try, its answer lost, may have renamed it.
+                            self.load_tables().await?;
+                            let s = self.schema(&rel.table)?;
+                            if s.field_index(&now.name).is_none() || s.field_index(&c.name).is_some() {
+                                return Err(e);
+                            }
+                        }
                         self.load_tables().await?;
                         // Rows read before the rename name it as it was.
                         for op in &mut buf.ops {

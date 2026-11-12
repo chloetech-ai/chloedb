@@ -60,6 +60,9 @@ const COREDNS_CPU: f64 = 0.1;
 /// [`SMALLEST`]: memory for its segments' pages and a core's half to
 /// answer with, under which a copy starves.
 pub const COPY_FLOOR_GIB: f64 = 1.0;
+
+/// The nodes a plan has at most (finding E-6: it was 1,000).
+pub const MAX_NODES: u32 = 100;
 pub const COPY_FLOOR_CPU: f64 = 0.5;
 
 /// The machine a plan names to get the cheapest size whose nodes give

@@ -156,16 +156,19 @@ impl Config {
             database: if database.is_empty() { user.clone() } else { database },
             password: password.or_else(|| std::env::var("PGPASSWORD").ok()),
             user,
+            // Set below, once the host is known, unless the URL names it.
             ssl: SslMode::Prefer,
             root_cert: None,
             application_name: "chloedb-server".into(),
             connect_timeout: Duration::from_secs(10),
         };
+        let mut ssl_named = false;
         for kv in query.into_iter().flat_map(|q| q.split('&')).filter(|kv| !kv.is_empty()) {
             let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
             let v = decode_part(v)?;
             match k {
                 "sslmode" => {
+                    ssl_named = true;
                     c.ssl = match v.as_str() {
                         "disable" => SslMode::Disable,
                         "allow" | "prefer" => SslMode::Prefer,
@@ -188,6 +191,18 @@ impl Config {
                 _ => tracing::warn!(parameter = k, "a parameter of the Postgres URL this client does not use"),
             }
         }
+        // libpq's default, prefer, falls back to plain text when the server
+        // (or someone on the path) answers that it takes no TLS: the
+        // password's proof and every row would then cross the network in
+        // the clear. Off this machine, TLS is required unless the URL says
+        // otherwise.
+        if !is_loopback(&c.host) {
+            match c.ssl {
+                _ if !ssl_named => c.ssl = SslMode::Require,
+                SslMode::Disable | SslMode::Prefer => tracing::warn!(host = %c.host, "sslmode lets the connection to Postgres be in plain text: the password's proof and every row may be read on the way (require or verify-full would not)"),
+                _ => {}
+            }
+        }
         Ok(c)
     }
 
@@ -195,6 +210,11 @@ impl Config {
     pub fn shown(&self) -> String {
         format!("postgres://{}@{}:{}/{}", self.user, self.host, self.port, self.database)
     }
+}
+
+/// Whether `host` is this machine: `localhost` or a loopback address.
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 trait Io: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
@@ -848,6 +868,23 @@ mod tests {
         assert_eq!((c.host.as_str(), c.port, c.database.as_str(), c.ssl), ("::1", 5432, "u", SslMode::Prefer));
         assert!(Config::parse("http://x").is_err());
         assert!(Config::parse("postgres://u@h/d?sslmode=sometimes").is_err());
+    }
+
+    /// D-B15: with no sslmode, a server elsewhere on the network is
+    /// asked for TLS and refused without it; a server on this machine
+    /// may still answer in plain text, as libpq's `prefer` lets it.
+    #[test]
+    fn with_no_sslmode_a_remote_server_needs_tls() {
+        let mode = |url: &str| Config::parse(url).unwrap().ssl;
+        assert_eq!(mode("postgres://u@db.example.com/d"), SslMode::Require);
+        assert_eq!(mode("postgres://u@10.0.0.7:6543/d"), SslMode::Require);
+        assert_eq!(mode("postgres://u@localhost/d?host=db.example.com"), SslMode::Require);
+        for local in ["postgres://u@localhost/d", "postgres://u@127.0.0.1/d", "postgres://u@[::1]/d", "postgres:///d"] {
+            assert_eq!(mode(local), SslMode::Prefer, "{local}");
+        }
+        // Asked for by name, prefer and disable are kept.
+        assert_eq!(mode("postgres://u@db.example.com/d?sslmode=prefer"), SslMode::Prefer);
+        assert_eq!(mode("postgres://u@db.example.com/d?sslmode=disable"), SslMode::Disable);
     }
 
     #[test]

@@ -283,8 +283,9 @@ impl Source {
     }
 
     /// Creates the tables of `plan` that `db` lacks and writes their rows:
-    /// into an empty table in one bulk load each (all or nothing), into a
-    /// table with rows upserted by key ([`IMPORT_BATCH`] rows a
+    /// into an empty table in one bulk load each (all or nothing), unless
+    /// the database numbers its writes (a bulk load would reach no replica);
+    /// into a table with rows, and then, upserted by key ([`IMPORT_BATCH`] rows a
     /// transaction). Embedded vectors the rows leave out are computed when
     /// `db` has the field's model ([`Db::open_embedders`]).
     pub fn load(&self, db: &Db, plan: &Plan) -> Result<Imported> {
@@ -294,7 +295,7 @@ impl Source {
             if db.storage().table(&name).is_none() {
                 db.create_table(t.schema.clone())?;
             }
-            let empty = db.snapshot().table(&name).is_none_or(|s| s.n_live_docs() == 0);
+            let empty = db.storage().seq_no().is_none() && db.snapshot().table(&name).is_none_or(|s| s.n_live_docs() == 0);
             let rows = if empty {
                 self.documents(t, |docs| {
                     let mut n = 0u64;
