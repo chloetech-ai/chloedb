@@ -9,7 +9,7 @@ import { checkFunction } from './sandbox.mjs';
 import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical, briefOf } from './store.mjs';
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
-import { rewriteSql } from './sql.mjs';
+import { rewriteSql, checkReads } from './sql.mjs';
 import { expandPlan, expandScreen, patternsDoc, PATTERNS, BUILTIN, usePatterns, checkPattern, PATTERN_ADD_DOC } from './patterns.mjs';
 import { placePhotos, placeScreenPhotos, photoIds } from './photos.mjs';
 import { withPhotos } from './source.mjs';
@@ -658,6 +658,7 @@ export async function dryRunScreens(db, appId, names, plan) {
       if (Object.entries((q && typeof q === 'object' && q.params) || {}).some(([k, x]) => typeof x === 'string' && x.startsWith('=') && params[k] == null)) continue;
       try {
         const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
+        await checkReads(db, phys, params, names.map((t) => physical(appId, t)));
         await db.query(phys, params);
       } catch (e) { problems.push(`view ${v.slug}: data.${name} (${sql.replace(/\s+/g, ' ').slice(0, 200)}) fails: ${String(e.message).replace(/^strata \/v1\/query: /, '').slice(0, 300)}`); }
     }

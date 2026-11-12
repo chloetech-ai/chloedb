@@ -40,7 +40,7 @@ const WEB_BUDGET_USD = 0.25;
 export const ABILITIES = {
   ask: { title: 'A model', what: 'app.ask: the app asks a small model to summarize, sort, extract or draft' },
   web: { title: 'Web search', what: 'app.ask(..., {web: true}): the model searches the web for current facts' },
-  fetch: { title: 'Web pages and APIs', what: 'app.fetch: the app reads public pages and APIs' },
+  fetch: { title: 'Web pages and APIs', what: 'app.fetch: the app reads public pages and APIs, and its screens show images from any web address' },
 };
 
 const err = (message, status = 400, extra = {}) => Object.assign(new Error(message), { status, ...extra });
