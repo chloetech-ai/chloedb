@@ -39,12 +39,12 @@ target/release/chloedb-server --demo 20000 --db products.chloedb
 Or from the image every merge to main publishes (`linux/amd64` and `linux/arm64`). Beyond the container's own loopback the server needs a token, which the command center then asks for:
 
 ```sh
-docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
+docker run --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
   ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.chloedb --listen 0.0.0.0:7700
 # open http://127.0.0.1:7700; add --demo 20000 for the demo catalogue
 ```
 
-The image runs as user 10001, not root, and its `/data` belongs to it, so a new volume works as above. A volume or directory a root image wrote before (images before 0.3) needs to be given to that user once: `docker run --rm -u 0 -v chloedb:/data --entrypoint chown ghcr.io/chloetech-ai/chloedb-server:latest -R 10001:10001 /data`. The operator's shard pods do this themselves (`fsGroup`). The benchmark tools (`chloedb-server-bench`, `engine-compare`) are not in the image; `docker build --target bench` builds an image with them.
+The image has a user 10001 (`chloedb`) that owns its `/data`: run it as that user, not root, with `--user 10001:10001` as above, and a new volume works. A volume or directory a root image wrote before needs to be given to that user once: `docker run --rm -v chloedb:/data --entrypoint chown ghcr.io/chloetech-ai/chloedb-server:latest -R 10001:10001 /data`. The image's own user stays root for now, so that an operator installed before 0.2.1, which runs new images on volumes a root image wrote and gives its pods no user, keeps working; the operator from 0.2.1 runs the servers, the coordinators and the pre-flight as user 10001 itself, and gives the shards' volumes to its group (`fsGroup`). The benchmark tools (`chloedb-server-bench`, `engine-compare`) are not in the image; `docker build --target bench` builds an image with them.
 
 A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'s, or with neither as a database with no tables yet, which `CREATE TABLE` and the [loads](#loading-rows) fill. Until its first table exists it lists none, and a write that names no table is refused; then that table is the one requests naming none go to, as a database's first table is. (Such a database keeps an empty first table named `_placeholder`, which listings, exports and writes leave alone; an older version of ChloeDB opens the file and lists it.)
 

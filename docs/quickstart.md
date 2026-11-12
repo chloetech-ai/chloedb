@@ -187,7 +187,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 
 ```sh
 # install
-docker run -d --name chloedb -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
+docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
   ghcr.io/chloetech-ai/chloedb-server:0.2.0
 ```
 

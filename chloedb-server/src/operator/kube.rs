@@ -366,10 +366,11 @@ impl Cluster {
                     "metadata": {"labels": labels, "annotations": {CONFIG: s.server_config()}},
                     "spec": {
                         "terminationGracePeriodSeconds": 30,
-                        // The image runs as user 10001: the volume is its
+                        // The servers run as user 10001: the volume is its
                         // group's, and the files a server wrote as root
-                        // (images before 0.3) are given to that group once.
-                        "securityContext": {"fsGroup": 10001, "fsGroupChangePolicy": "OnRootMismatch"},
+                        // (images and operators before 0.2.1) are given to
+                        // that group once.
+                        "securityContext": run_as(true),
                         // Copies of a shard on different nodes, when there are.
                         "affinity": {"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
                             {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
@@ -434,7 +435,7 @@ impl Cluster {
                 "minReadySeconds": 2,
                 "template": {
                     "metadata": {"labels": labels, "annotations": {CONFIG: s.coordinator_config()}},
-                    "spec": {"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "containers": [container]},
+                    "spec": {"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "securityContext": run_as(false), "containers": [container]},
                 },
             },
         })
@@ -466,6 +467,8 @@ impl Cluster {
                     "spec": {
                         "automountServiceAccountToken": false,
                         "terminationGracePeriodSeconds": 0,
+                        // As the user the servers will run it as.
+                        "securityContext": run_as(false),
                         // One on each node that runs copies.
                         "affinity": {
                             "nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": nodes}]}]}},
@@ -935,6 +938,24 @@ impl Cluster {
 /// How a copy starts: on an empty volume, the first copy of a shard the
 /// cluster starts with loads its demo products, and every other copy is
 /// created empty with the schema (it joins its shard and is sent a copy).
+/// The user the servers, the coordinators and the pre-flight run as: the
+/// image's `chloedb` (10001), not root, given here rather than by the image
+/// (deploy/Dockerfile), whose user stays root so that an operator from
+/// before this one, which gives its pods no user, still runs its servers as
+/// root on the volumes a root image wrote. `volume`: the pod's volume
+/// belongs to that group, and files written as root are given to it the
+/// first time (`OnRootMismatch`: only while the volume's root is not yet
+/// the group's). The images from before 0.2.1 run as that user too: their
+/// programs are anyone's to run, and their data is the volume.
+fn run_as(volume: bool) -> Json {
+    let mut s = json!({"runAsUser": 10001, "runAsGroup": 10001, "runAsNonRoot": true});
+    if volume {
+        s["fsGroup"] = json!(10001);
+        s["fsGroupChangePolicy"] = json!("OnRootMismatch");
+    }
+    s
+}
+
 const SERVER_SCRIPT: &str = r#"set -e
 set -- --db /data/db.strata --seq-no --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --failover-after-ms "$STRATA_FAILOVER_AFTER_MS" --write-acks "$STRATA_WRITE_ACKS"
 [ -n "$STRATA_TOKEN$STRATA_CLUSTER_TOKEN" ] || set -- "$@" --no-token
@@ -1945,10 +1966,12 @@ mod tests {
         assert_eq!(s["spec"]["replicas"], 3);
         assert_eq!(s["spec"]["serviceName"], "orders-servers");
         assert_eq!(s["spec"]["persistentVolumeClaimRetentionPolicy"]["whenScaled"], "Delete");
-        // The image runs as user 10001: its volume is that group's, and
-        // files a server wrote as root before are given to it.
+        // The servers run as user 10001, which the pod says (the image's
+        // user is root, for older operators): its volume is that group's,
+        // and files a server wrote as root before are given to it.
         let sc = &s["spec"]["template"]["spec"]["securityContext"];
         assert_eq!((&sc["fsGroup"], &sc["fsGroupChangePolicy"]), (&json!(10001), &json!("OnRootMismatch")));
+        assert_eq!((&sc["runAsUser"], &sc["runAsGroup"], &sc["runAsNonRoot"]), (&json!(10001), &json!(10001), &json!(true)));
         let claim = &s["spec"]["volumeClaimTemplates"][0];
         assert_eq!((&claim["spec"]["resources"]["requests"]["storage"], &claim["spec"]["storageClassName"]), (&json!("5Gi"), &json!("fast")));
         let env = &s["spec"]["template"]["spec"]["containers"][0]["env"];
@@ -1975,6 +1998,9 @@ mod tests {
         assert_eq!(args.as_array().unwrap()[args.as_array().unwrap().len() - 2..], [json!("--hedge-ms"), json!("40")]);
         assert_eq!(d["spec"]["template"]["metadata"]["annotations"][CONFIG], json!(c.spec.coordinator_config()));
         assert_eq!(d["spec"]["replicas"], 2);
+        assert_eq!(d["spec"]["template"]["spec"]["securityContext"], json!({"runAsUser": 10001, "runAsGroup": 10001, "runAsNonRoot": true}));
+        let pre = c.preflight_deployment("chloedb-server:new", &["n1".into()]);
+        assert_eq!(pre["spec"]["template"]["spec"]["securityContext"]["runAsUser"], 10001, "the pre-flight runs the image as the servers will");
         let (svc, front) = (&c.common()[1].1, &c.common()[2].1);
         assert_eq!((&svc["spec"]["clusterIP"], &svc["spec"]["publishNotReadyAddresses"]), (&json!("None"), &json!(true)));
         assert_eq!(front["spec"]["selector"]["app.kubernetes.io/component"], "coordinator");

@@ -1,7 +1,11 @@
 # chloedb-server in a small Linux image, with chloedb-crawl, chloedb-sheets
 # and chloectx, the crawler, the spreadsheets and ChloeCtx the operator runs
-# beside a cluster (spec.crawler, spec.sheets, spec.chloectx). It runs as
-# user 10001 (chloedb), not root; its data directory is /data.
+# beside a cluster (spec.crawler, spec.sheets, spec.chloectx). It has a
+# user 10001 (chloedb) that owns its data directory, /data: run it as that
+# user (`docker run --user 10001:10001`, or `runAsUser`, as the operator's
+# pods do). It does not switch to that user itself yet, because the
+# operators already installed run its new versions on volumes a root image
+# wrote, without the fsGroup that would let user 10001 write them.
 #
 #   docker build -f chloedb-server/deploy/Dockerfile -t chloedb-server:dev .   # from the repository root
 #
@@ -87,14 +91,16 @@ COPY --from=build /out-bench/ /usr/local/bin/
 # engine-compare's traffic profiles (engine-compare plan/replay --profile).
 COPY chloedb-server/deploy/compare/profiles /usr/local/share/engine-compare/profiles
 
-# The image published: the last stage, so the default target.
+# The image published: the last stage, so the default target. Its user is
+# root, as before 0.2.1, until the operators that run it give their pods
+# user 10001 themselves (operator/kube.rs, `run_as`): a USER here would
+# leave an older operator's servers unable to write their volumes.
 FROM runtime AS server
-USER 10001:10001
 # With no arguments, `docker run` serves /data/chloedb.chloedb (created
 # with no tables the first time) on all of the container's interfaces,
 # which the server allows only with a token:
 #
-#   docker run -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data ghcr.io/chloetech-ai/chloedb-server
+#   docker run --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data ghcr.io/chloetech-ai/chloedb-server
 #
 # Arguments replace all of these (pass --listen 0.0.0.0:7700 again). The
 # operator's pods give their own command or arguments, so this default never
