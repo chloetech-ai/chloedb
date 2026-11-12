@@ -10,6 +10,9 @@
 //! coordinators send it (`STRATA_APP_TOKEN`). Its workbooks live in two
 //! tables of the cluster (`sheets_books`, `sheets_cells`), which it makes
 //! at its first start: a pod started again, anywhere, finds them there.
+//!
+//! Once the coordinators make keys limited to tables, it holds a key and a
+//! token of its own instead ([`super::credentials`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -27,6 +30,11 @@ pub struct SheetsSpec {
     /// coordinators still list it, as an app that does not answer; the
     /// workbooks stay in their tables).
     pub paused: bool,
+    /// The tables its key may touch, as `table=scope` (`crawl_*=admin`,
+    /// `*=read`; [`crate::keys::Grant`]); none: the app's own
+    /// ([`super::credentials::default_tables`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<String>,
     /// More arguments of `chloedb-sheets serve`.
     pub args: Vec<String>,
     /// Resources of its container.
@@ -40,6 +48,7 @@ const SET: &[&str] = &["--listen", "--strata", "--key", "--token", "--local", "-
 impl SheetsSpec {
     /// What is wrong with it, if anything.
     pub fn check(&self) -> Result<(), String> {
+        super::credentials::check_tables(APP, &self.tables)?;
         for a in &self.args {
             let flag = a.split('=').next().unwrap_or_default();
             if SET.contains(&flag) {
@@ -65,6 +74,7 @@ pub fn schema() -> Json {
         "description": "Spreadsheets beside the cluster: a chloedb-sheets Deployment of one, which the command center shows under Apps; its workbooks are rows of two tables of the cluster, and the cluster's tables open in it as sheets.",
         "properties": {
             "paused": {"type": "boolean", "description": "No spreadsheets pod for now (the workbooks stay)."},
+            "tables": super::credentials::schema(APP),
             "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments of chloedb-sheets serve."},
             "resources": {"type": "object", "x-kubernetes-preserve-unknown-fields": true, "description": "Resources of its container."},
         },

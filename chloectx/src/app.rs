@@ -45,8 +45,9 @@
 //! | `POST /v1/spaces/:s/apps`, `GET` | `{title, description, kinds, exclude?, confirm}` | a build by the app engine, loaded with the approved notes; the builds |
 //! | `POST /v1/spaces/:s/apps/:build/open` | | a one-time link into the studio, at the built app |
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -141,19 +142,47 @@ pub struct Options {
     pub key: Option<String>,
     /// The token callers must send (chloedb-server sends its app token).
     pub token: Option<String>,
+    /// Serve any caller on an address other than loopback, with no token.
+    pub insecure: bool,
     /// Embedder spec ([`crate::embed::open`]).
     pub embedder: String,
+    /// Show this machine's Claude Code stores (under this ChloeCtx home):
+    /// their receipts, kept snapshots and blame. Off unless asked for, since
+    /// a store is a transcript of its sessions and the command center's
+    /// users would read it.
+    pub local: Option<std::path::PathBuf>,
 }
 
 /// Distillations in the background, for `/v1/info`.
 #[derive(Default)]
 struct Jobs {
+    /// Workers running (at most [`DISTILLERS`]).
     running: usize,
+    /// Exchanges waiting for a worker (at most [`DISTILL_QUEUE`]).
+    queue: VecDeque<Distill>,
     done: u64,
     notes: u64,
     failed: u64,
+    /// Exchanges stored but not distilled: the queue was full.
+    skipped: u64,
     last_error: Option<String>,
 }
+
+/// An exchange to write notes down from.
+struct Distill {
+    space: String,
+    first: Record,
+    user: String,
+    assistant: String,
+}
+
+/// Distillations at once: each is a model call, billed to the app's key.
+const DISTILLERS: usize = 4;
+/// Exchanges that may wait for one; past that an exchange is stored and
+/// not distilled, and `/v1/info` counts it under `skipped`.
+const DISTILL_QUEUE: usize = 256;
+/// Requests served at once; one more is answered 503.
+const CONNECTIONS: usize = 64;
 
 pub struct App {
     pub cluster: Arc<Cluster>,
@@ -162,6 +191,8 @@ pub struct App {
     pub model: Model,
     token: Option<String>,
     jobs: Mutex<Jobs>,
+    /// The ChloeCtx home whose stores the Receipts and Blame pages read.
+    local: Option<std::path::PathBuf>,
 }
 
 /// An error with the HTTP status it answers with.
@@ -299,7 +330,7 @@ Use only what the text says. Do not invent numbers, names or causes. If the text
 impl App {
     pub fn new(cluster: Arc<Cluster>, embedder: Arc<dyn Embedder>, model: Model, token: Option<String>) -> Result<App> {
         cluster.sql(CREATE_SPACES)?;
-        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()) })
+        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None })
     }
 
     fn space_row(&self, name: &str) -> Result<Option<Json>> {
@@ -465,26 +496,57 @@ impl App {
         }
         let stored = self.append(&store, b, drafts)?;
         let wants = b["distill"].as_bool().unwrap_or(true) && !matches!(self.model, Model::Off);
-        if wants {
-            let (me, space, first) = (self.clone(), space.to_string(), stored[0].clone());
-            self.jobs.lock().unwrap_or_else(|e| e.into_inner()).running += 1;
-            std::thread::spawn(move || {
-                let r = me.distill(&space, &first, &user, &assistant);
-                let mut j = me.jobs.lock().unwrap_or_else(|e| e.into_inner());
-                j.running -= 1;
-                match r {
-                    Ok(n) => {
-                        j.done += 1;
-                        j.notes += n as u64;
-                    }
-                    Err(e) => {
-                        j.failed += 1;
-                        j.last_error = Some(e.0);
+        let distilling = wants && self.queue_distill(Distill { space: space.to_string(), first: stored[0].clone(), user, assistant });
+        let mut out = json!({"stored": stored.iter().map(record_json).collect::<Vec<_>>(), "distilling": distilling});
+        if wants && !distilling {
+            out["skipped"] = json!(format!("{DISTILL_QUEUE} exchanges are already waiting to be distilled: this one is stored, and no notes are written from it"));
+        }
+        Ok(out)
+    }
+
+    /// Queues an exchange for a distiller, starting one if fewer than
+    /// [`DISTILLERS`] run; false when the queue is full.
+    fn queue_distill(self: &Arc<Self>, d: Distill) -> bool {
+        let mut j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        if j.queue.len() >= DISTILL_QUEUE {
+            j.skipped += 1;
+            return false;
+        }
+        j.queue.push_back(d);
+        if j.running < DISTILLERS {
+            j.running += 1;
+            let me = self.clone();
+            std::thread::spawn(move || me.distiller());
+        }
+        true
+    }
+
+    /// One distiller: takes exchanges off the queue until it is empty.
+    fn distiller(&self) {
+        loop {
+            let d = {
+                let mut j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+                match j.queue.pop_front() {
+                    Some(d) => d,
+                    None => {
+                        j.running -= 1;
+                        return;
                     }
                 }
-            });
+            };
+            let r = self.distill(&d.space, &d.first, &d.user, &d.assistant);
+            let mut j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            match r {
+                Ok(n) => {
+                    j.done += 1;
+                    j.notes += n as u64;
+                }
+                Err(e) => {
+                    j.failed += 1;
+                    j.last_error = Some(e.0);
+                }
+            }
         }
-        Ok(json!({"stored": stored.iter().map(record_json).collect::<Vec<_>>(), "distilling": wants}))
     }
 
     /// Writes down an exchange's notes, as the daemon does after a turn.
@@ -809,6 +871,33 @@ impl App {
         Ok(json!({"drafts": drafts, "usage": reply.usage.json()}))
     }
 
+    // ------------------------------------------------------------ local stores
+
+    fn local_home(&self) -> std::result::Result<&std::path::Path, Fail> {
+        self.local.as_deref().ok_or_else(|| {
+            Fail(404, "this chloectx app shows no local stores: start it with --local-stores (or CHLOECTX_APP_LOCAL=1) on the machine whose Claude Code sessions ChloeCtx records".into())
+        })
+    }
+
+    /// This machine's ChloeCtx stores, one per project.
+    pub fn local_stores(&self) -> Answer {
+        let home = self.local_home()?;
+        let ss: Vec<Json> = crate::ui::list_stores(home).iter().map(|s| s.json()).collect();
+        Ok(json!({"home": home, "stores": ss}))
+    }
+
+    /// One request to a local store's daemon (started if it is not running).
+    fn local_rpc(&self, store: &str, req: &Json, secs: u64) -> Answer {
+        let home = self.local_home()?;
+        let s = crate::ui::list_stores(home).into_iter().find(|s| s.id == store).ok_or_else(|| Fail(404, format!("no local store {store}")))?;
+        let r = crate::daemon::request(&s.dir, s.project.as_deref().unwrap_or(""), req, Duration::from_secs(secs)).map_err(|e| Fail(502, format!("the daemon of {store}: {e}")))?;
+        match r.get("error").and_then(|e| e.as_str()) {
+            Some(e) if e.starts_with("no receipt") => Err(Fail(404, e.to_string())),
+            Some(e) => Err(Fail(400, e.to_string())),
+            None => Ok(r),
+        }
+    }
+
     pub fn info(&self) -> Json {
         let health = self.cluster.get("/v1/health");
         let j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -816,8 +905,9 @@ impl App {
             "version": env!("CARGO_PKG_VERSION"),
             "server": {"url": self.cluster.url, "ok": health.is_ok(), "error": health.err().map(|e| e.to_string())},
             "embedder": self.embedder.name(), "dim": self.embedder.dim(), "model": self.model.json(),
-            "distill": {"running": j.running, "done": j.done, "notes": j.notes, "failed": j.failed, "last_error": j.last_error},
+            "distill": {"running": j.running, "waiting": j.queue.len(), "done": j.done, "notes": j.notes, "failed": j.failed, "skipped": j.skipped, "last_error": j.last_error},
             "tables": {"spaces": SPACES, "space": "ctx_<space>"},
+            "local": self.local.is_some(),
         })
     }
 }
@@ -900,6 +990,13 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("POST", ["v1", "spaces", s, "apps", "suggest"]) => app.suggest(s, &body_json(req)?),
         ("POST", ["v1", "spaces", s, "apps", "items"]) => app.build_items(s, &body_json(req)?),
         ("POST", ["v1", "spaces", s, "apps", id, "open"]) => app.open_build(s, id),
+        ("GET", ["v1", "local"]) => app.local_stores(),
+        ("GET", ["v1", "local", st, "receipts"]) => app.local_rpc(st, &json!({"op": "receipts", "session": req.param("session").filter(|s| !s.is_empty()), "limit": num("limit", 50)}), 30),
+        ("GET", ["v1", "local", st, "receipts", id]) => app.local_rpc(st, &json!({"op": "receipt", "id": id, "replay": req.param("replay") != Some("0"), "text": true}), 120),
+        ("GET", ["v1", "local", st, "blame"]) => app.local_rpc(st, &json!({"op": "blame", "target": req.param("target").unwrap_or(""), "replay": req.param("replay") != Some("0")}), 120),
+        ("GET", ["v1", "local", st, "snapshots"]) => app.local_rpc(st, &json!({"op": "snapshot", "what": "list"}), 30),
+        ("POST", ["v1", "local", st, "snapshots"]) => app.local_rpc(st, &json!({"op": "snapshot", "what": "keep", "name": body_json(req)?["name"]}), 600),
+        ("DELETE", ["v1", "local", st, "snapshots", name]) => app.local_rpc(st, &json!({"op": "snapshot", "what": "drop", "name": name}), 60),
         (_, ["v1", ..]) => Err(Fail(404, format!("no {m} {}", req.path))),
         _ => Err(Fail(404, format!("no {}", req.path))),
     }
@@ -948,15 +1045,38 @@ fn handle(app: &Arc<App>, mut stream: std::net::TcpStream) {
     }
 }
 
+/// Whether `host` (as given to `--host`) is a loopback address, which only
+/// this machine reaches.
+pub fn loopback(host: &str) -> bool {
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Refuses to serve every caller of a network with no token: anyone who
+/// reaches the port could read and write every space and start model calls
+/// billed to the app's key.
+pub fn check_exposure(host: &str, token: Option<&str>, insecure: bool) -> Result<()> {
+    if token.is_none() && !insecure && !loopback(host) {
+        return Err(err(format!(
+            "chloectx app would serve anyone who reaches {host} with no token: set --token (CHLOECTX_APP_TOKEN; chloedb-server sends its CHLOEDB_APP_TOKEN), listen on 127.0.0.1, or pass --insecure"
+        )));
+    }
+    Ok(())
+}
+
 /// Serves the app until the process ends.
 pub fn run(opts: Options) -> Result<()> {
+    check_exposure(&opts.host, opts.token.as_deref(), opts.insecure)?;
     let cluster = Arc::new(Cluster::new(&opts.server, opts.key.clone()));
     let embedder: Arc<dyn Embedder> = Arc::from(crate::embed::open(&opts.embedder)?);
     // The cluster may still be starting: wait for it, up to a minute.
     let mut tries = 0;
     let app = loop {
         match App::new(cluster.clone(), embedder.clone(), Model::from_env(), opts.token.clone()) {
-            Ok(a) => break Arc::new(a),
+            Ok(mut a) => {
+                a.local = opts.local.clone();
+                break Arc::new(a);
+            }
             Err(e) if tries < 30 => {
                 tries += 1;
                 eprintln!("chloectx app: waiting for {} ({e})", opts.server);
@@ -975,10 +1095,20 @@ pub fn run(opts: Options) -> Result<()> {
         embedder.name(),
         app.model.json()["how"].as_str().unwrap_or("off")
     );
+    let busy = Arc::new(AtomicUsize::new(0));
     for conn in listener.incoming() {
-        let Ok(stream) = conn else { continue };
-        let a = app.clone();
-        std::thread::spawn(move || handle(&a, stream));
+        let Ok(mut stream) = conn else { continue };
+        if busy.fetch_add(1, Ordering::SeqCst) >= CONNECTIONS {
+            busy.fetch_sub(1, Ordering::SeqCst);
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+            respond_json(&mut stream, "503 Service Unavailable", &json!({"error": format!("chloectx app is serving {CONNECTIONS} requests: try again")}));
+            continue;
+        }
+        let (a, b) = (app.clone(), busy.clone());
+        std::thread::spawn(move || {
+            handle(&a, stream);
+            b.fetch_sub(1, Ordering::SeqCst);
+        });
     }
     Ok(())
 }
@@ -986,6 +1116,19 @@ pub fn run(opts: Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_token_is_refused_off_loopback() {
+        for host in ["127.0.0.1", "::1", "[::1]", "localhost", "127.0.0.2"] {
+            assert!(check_exposure(host, None, false).is_ok(), "{host} is this machine only");
+        }
+        for host in ["0.0.0.0", "::", "10.0.0.7", "chloectx.example.com"] {
+            let e = check_exposure(host, None, false).unwrap_err().to_string();
+            assert!(e.contains("--token") && e.contains("--insecure"), "{host}: {e}");
+            assert!(check_exposure(host, Some("t"), false).is_ok());
+            assert!(check_exposure(host, None, true).is_ok(), "--insecure is the caller's choice");
+        }
+    }
 
     #[test]
     fn incidents_read_back_their_fields() {

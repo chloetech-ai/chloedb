@@ -25,6 +25,7 @@ pub mod arrow;
 pub mod compound;
 pub mod cross_encoder;
 pub mod ddl;
+pub mod embed_sql;
 #[cfg(feature = "datafusion")]
 pub mod df;
 pub mod exec;
@@ -37,6 +38,7 @@ pub mod logical;
 pub mod memory;
 pub mod model;
 pub mod ops;
+pub mod pack;
 pub mod parse;
 pub mod paths;
 pub mod plan;

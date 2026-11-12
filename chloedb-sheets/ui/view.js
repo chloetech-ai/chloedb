@@ -3223,7 +3223,7 @@ function homePage(root, ctx) {
     let list;
     try { list = (await ctx.api("/v1/sqlite/tables", { body: file, type: "application/octet-stream", timeout: 120000 })).tables; }
     catch (e) { toast(`${file.name}: ${e.message}`, "bad", 8000); return; }
-    const boxes = list.map((t) => { const cb = h("input", { type: "checkbox", checked: true, value: t.name }); return [t, cb]; });
+    const boxes = list.map((t) => { const cb = h("input", { type: "checkbox", checked: t.kind !== "view", value: t.name }); return [t, cb]; });
     let where = "book";
     const seg = core.seg([["book", "A workbook (a sheet a table)"], ["cluster", "Tables of the cluster"]], where, (v) => { where = v; go.textContent = v === "book" ? "Open as a workbook" : "Copy into the cluster"; note.textContent = v === "book" ? "Each table becomes a sheet: its first row the column names. Up to 2 million cells." : "Each table becomes a ChloeDB table of the same name, with its columns' types, key and indexes, written with your key. Tables that exist already get the rows too."; });
     const note = h("p", { class: "small dim", style: { margin: 0 } }, "Each table becomes a sheet: its first row the column names. Up to 2 million cells.");
@@ -3232,7 +3232,7 @@ function homePage(root, ctx) {
     const m = core.modal({ title: `Import ${file.name}`, wide: true,
       body: h("div", { class: "stack", style: { gap: "12px" } },
         h("div", {}, h("b", { class: "small" }, "Its tables"),
-          h("div", { class: "sx-values", style: { marginTop: "6px" } }, boxes.map(([t, cb]) => h("label", {}, cb, h("span", { class: "grow" }, h("b", {}, t.name), h("span", { class: "small muted" }, `  ${(t.columns || []).map((c) => c.name).join(", ").slice(0, 90)}`)), h("span", { class: "small muted" }, `${(t.rows ?? 0).toLocaleString()} rows`))))),
+          h("div", { class: "sx-values", style: { marginTop: "6px" } }, boxes.map(([t, cb]) => h("label", {}, cb, h("span", { class: "grow" }, h("b", {}, t.name), h("span", { class: "small muted" }, `  ${(t.columns || []).map((c) => c.name).join(", ").slice(0, 90)}`)), h("span", { class: "small muted" }, t.kind === "view" ? "a view: runs its query as it is read" : `${(t.rows ?? 0).toLocaleString()} rows`))))),
         h("div", {}, h("b", { class: "small" }, "As"), h("div", { style: { marginTop: "6px" } }, seg)), note, out),
       foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), go] });
     go.onclick = async () => {

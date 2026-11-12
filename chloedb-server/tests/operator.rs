@@ -897,13 +897,19 @@ async fn every_step(run: &mut Run) {
     // Gated: the fullest volume over 0.01% of its disk, which every volume
     // here is, for a second holds the rollout, until it is resumed.
     run.spec.rollout = RolloutSpec { paused: false, gates: Gates { disk_used_ratio: Some(0.0001), ..Gates::default() }, hold_after_seconds: 1, soak_seconds: 1, on_failure: OnFailure::Hold, ..quick() };
-    let (held, _) = run.until("held", |o| o.rollout.held.is_some()).await;
+    // The copy restarted just before the gate held may still be starting
+    // when it holds, and then serves its soak second (Scaling, "serves 1 s
+    // with them") before the rollout says Paused again: copies stop as
+    // soon as their requests end now, where they used to be killed at the
+    // grace period with a follower's feed open. Held, no copy restarts.
+    let (held, _) = run.until("held", |o| o.rollout.held.is_some() && o.phase == Phase::Paused).await;
     let h = held.rollout.held.clone().unwrap();
     assert!(h.gate == "diskUsedRatio" && h.text.starts_with("the fullest volume was") && h.text.contains("over its 0.01% limit"), "{h:?}");
     assert!(held.phase == Phase::Paused && held.message.starts_with("held: the fullest volume was"), "{held:?}");
     for _ in 0..10 {
         let o = run.once().await;
-        assert_eq!((o.phase, o.rollout.held.as_ref()), (Phase::Paused, Some(&h)), "{o:?}");
+        let soaking = o.phase == Phase::Scaling && o.message.contains("serves 1 s with them");
+        assert!((o.phase == Phase::Paused || soaking) && o.rollout.held.as_ref() == Some(&h), "{o:?}");
     }
     let left = run.procs.stale(&run.spec).await.unwrap().len();
     assert!((7..=9).contains(&left), "{left} copies left: a second goes before the gate holds");

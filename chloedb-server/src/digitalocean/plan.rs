@@ -10,7 +10,7 @@ use serde_json::{json, Value as Json};
 
 use super::{Catalog, HOURS_A_MONTH, MAX_PODS};
 use crate::aws::catalog::Machine;
-use crate::cloud::{check_name, cluster_objects, cluster_yaml, fit, operator_yaml, Node, IMAGE};
+use crate::cloud::{check_name, cluster_objects, cluster_yaml, fit, operator_yaml, Node, IMAGE, MAX_NODES};
 
 /// The storage class DOKS makes: block storage volumes that grow in place
 /// and are deleted with their claims.
@@ -122,8 +122,9 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         return Err(format!("the sizes are those of {}, not {}", cat.region, p.region));
     }
     let m = machine(p, cat)?;
-    if !(1..=1000).contains(&p.nodes) {
-        return Err("nodes is 1 to 1,000".into());
+    // A typo of a zero too many would bill the account for it.
+    if !(1..=MAX_NODES).contains(&p.nodes) {
+        return Err(format!("nodes is 1 to {MAX_NODES}"));
     }
     if !(1..=16_384).contains(&p.volume_gb) {
         return Err("volume_gb is 1 to 16,384 (a volume's size)".into());

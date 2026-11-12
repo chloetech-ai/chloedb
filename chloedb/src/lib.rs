@@ -31,6 +31,7 @@
 pub mod arrow_rows;
 #[cfg(feature = "audio")]
 pub mod audio;
+pub mod autopilot;
 #[cfg(feature = "baselines")]
 pub mod baselines;
 pub mod beir;

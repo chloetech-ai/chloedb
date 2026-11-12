@@ -51,6 +51,7 @@ FROM <table> [JOIN <table> ON ...] | <WITH name> | (SELECT ...) AS t
 [WINDOW name AS (<window>), ...]
 [{UNION | INTERSECT | EXCEPT} [ALL] SELECT ...]
 [ORDER BY <score, column or aggregate> [ASC | DESC] [NULLS FIRST | LAST] [, <more keys> [ASC | DESC]] [MAX k PER <field>]]
+[PACK n TOKENS [OF <columns>] [EXCERPT n] [DEDUPE x [ON <vector field>]] [FOLLOW <edges field> [n HOP]] [WITH RECEIPT]]
 [LIMIT n [OFFSET m]]
 ```
 
@@ -95,6 +96,16 @@ A `BOOL` is `TRUE` or `FALSE`; a write also takes 1 and 0 and the text `'true'`,
 A `TIMESTAMP` is a moment, kept to the microsecond in UTC and written as ISO 8601 text: a date (`'2026-10-01'`, midnight UTC) or a date and time (`'2026-10-01T12:30:00Z'`, `'2026-10-01 14:30:05.25+02:00'`), with an offset or none (UTC). A number is refused, so seconds are not mistaken for microseconds. Comparisons, `BETWEEN`, `IN`, `ORDER BY`, `MIN`, `MAX` and `COUNT` work on it (`SUM` and `AVG` do not), and answers are ISO 8601 text in UTC, such as `2026-10-01T12:30:05.250Z`. In `decay(at, origin, scale)` on a `TIMESTAMP`, the origin is a time or `now()`, and the scale and offset are seconds: `decay(published, now(), 2592000)` halves a row's weight for each 30 days of age. `date_trunc`, `EXTRACT` and `strftime` take [parts of times](#parts-of-times-date_trunc-extract-and-strftime), for `GROUP BY` a day, a week or a month. A database whose tables use `BOOL` or `TIMESTAMP` is written in [file format 3](index.md#wal-memtable-and-snapshots), which versions of ChloeDB before these types refuse.
 
 `KEYWORD` and `INT` fields may be multi-valued (`"multi": true` in the schema): a row holds a list, such as `ARRAY['red', 'blue']`, and a filter matches a row if any of its values matches. A facet counts each distinct value once per row.
+
+A multi-valued field also compares with a list of values as a set, by PostgreSQL's array operators. The list is `ARRAY[...]` of values or a list parameter (`:groups`), and its values are written as the field's are:
+
+| condition | holds where | read from the index as |
+|---|---|---|
+| `tags @> ARRAY['red', 'sale']` | the row has every value of the list (contains all) | an `AND` of equalities; every row for an empty list |
+| `tags && ARRAY['red', 'sale']` | the row has a value of the list (overlaps) | `IN` the values; no row for an empty list |
+| `groups <@ :allowed` | each value of the row is in the list (contained by), on an `INT[]` field | `NOT` of the ranges between the list's values |
+
+The list may come first: `ARRAY['red'] <@ tags` is `tags @> ARRAY['red']`. A row without values is the empty set, so `@>` an empty list and `<@` any list hold for it, and `NOT` of a set operator holds where the set operator does not, as for other conditions on a multi-valued field. `<@` is how a row lists what it needs and a query what it has: with `required INT[]` holding the groups a reader must belong to, `WHERE required <@ :user_groups` keeps the documents whose every required group is one of the user's (and those that require none), and it filters a vector or text search as any condition does. A `KEYWORD[]` field does not take `<@` yet, since its index cannot list the values outside a list; an `INT[]` of ids does. Over rows in memory (a `WITH` result), `&&` compares any two lists, and `@>` a list column with a list written out.
 
 A `KEYWORD[]` field may hold the [semantic ID](server.md#semantic-ids) of a vector field: every prefix of a code such as `12.7.201.0`, filled in by the writer, so `sid = '12.7'` finds the rows under a prefix. `sid_at(sid, n)` is the first `n` numbers of a code (`sid_at(sid, 2)` is `'12.7'`), in `SELECT`, `WHERE` and `GROUP BY`.
 
@@ -392,6 +403,12 @@ The text may weigh a word, require it or exclude it, as a search box does:
 ### `similarity(field, vector)` and `distance(field, vector)`
 
 The dot product (cosine for unit vectors) and the Euclidean (L2) distance between a row's vector and the query vector, which is a bound parameter or a JSON array of the field's dimension.
+
+**Text instead of a vector.** On a field a model embeds (`OPTIONS(embed = 'body', model = '...')`), the second argument may be text, a literal or a parameter that holds text: `ORDER BY similarity(emb, 'how do I reset my password') DESC`, or `similarity(emb, :q)` with `:q` bound to a string. The text is embedded as a query by the field's own model when the query is planned, once however often the query repeats it, and the query runs as if its vector had been given (`distance` and `maxsim` take text the same way; on a multi-vector field the text is its tokens' vectors). `similarity(emb, embed(:q))` says the same. A string that is a JSON array of numbers is still a vector, and a `SPARSE` field's terms are still text.
+
+**`embed('model', text)`** is the query vector of a text by the model named, wherever a vector goes: against a field of no model, `similarity(raw, embed('potion-base-8M', :q))`, or in a projection, `SELECT id, embed('potion-base-8M', 'tents') AS v FROM docs`. The model is one an embedded field uses, `hash:N`, or a directory directly under the models directory, named as `llm()` names one (letters, digits, `_`, `-` and `.`, never a path; `chloedb-server fetch-model` fetches the known ones). A model behind an API (`openai/...`, an `endpoint.json`) is taken only when a field uses it, so that a query spends no key a table was not given. The text is a value or a parameter, not a column: the model runs once a query, not once a row, and a column is embedded when rows are written, by declaring its vector field `OPTIONS(embed = 'column', model = '...')`.
+
+The text is embedded where the query is planned: by the database from Rust, Python and JavaScript, and by the server (a coordinator for its shards) on the cores it embeds writes with, as a parameter's `{"embed": "text"}` is. With a static model (Model2Vec, such as `potion-retrieval-32M`) that takes tens of microseconds; the median query on SciFact, its text embedded and every row measured, took 0.45 ms ([results](../../chloedb/results/static-int8/README.md)).
 
 `similarity` is the raw dot product of the vectors as written: ChloeDB does not normalise the vectors a write supplies (the models it runs itself write unit vectors), so on vectors of other lengths long vectors rank first. For cosine similarity, write unit vectors. `ORDER BY distance(emb, :v) ASC` ranks by $\lVert v - q \rVert$, nearest first, and `score()` is minus the distance (ranking is always best first). On a field a model embeds the vectors are unit length, where distance orders rows as the dot product does, so the index searches them (`strategy => 'flat'` measures every row); on any other field every row `WHERE` keeps is measured exactly, a scan of the field's float32 vectors, since its index ranks by the dot product. **Changed:** `distance()` ranked like `similarity(...) DESC` before, which is the nearest row only for unit vectors, and its `score()` was the similarity; a shard from before this change still ranks it so. In an expression, `distance()` stays refused: use `similarity()`.
 
@@ -719,7 +736,8 @@ CREATE TABLE IF NOT EXISTS rank_log (
   request KEYWORD NOT NULL, ts TIMESTAMP NOT NULL, context KEYWORD,
   row_key KEYWORD NOT NULL, position INT NOT NULL, shown BOOL NOT NULL,
   score FLOAT, features KEYWORD OPTIONS(indexed = false),
-  variant KEYWORD, label FLOAT
+  variant KEYWORD, label FLOAT,
+  query KEYWORD OPTIONS(indexed = false)  -- on a request's first row: {"sql": ..., "params": ...}
 ) OPTIONS(cluster_by = 'context');
 
 -- a label written later: a judge's grade, an agent citing the row
@@ -734,7 +752,7 @@ curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{"sql": 
 
 - **A logged query** is one `SELECT` ranked by an `ORDER BY` ([rerank phases](#rerank-phases) and [rank profiles](#rank-profiles-a-ranking-kept-with-its-table) included) of a table with a primary key: `"log"` in the body of `POST /v1/query` or `/v1/sql` (`true`, or an object of options), `db.query_logged(sql, params, context=...)` in [Python](python.md#the-rank-log), `Db::query_logged` in Rust. It runs with `score()` and [`features()`](#features-the-values-a-ranking-read) added to its columns, answers with the columns it asked for and the request's id (`request`), and writes its rows to the log in one transaction once it has answered: a logged query costs a write.
 - **Options**: `context`, whom the request served (a user, a session, a query class), which the export reads events by; `request`, the request's id (a random one when left out; logging a request's id again overwrites its rows at the same positions); `variant`, the client's name for the ranking that served (an A/B arm); `candidates`, a number of rows from the query's `OFFSET` to log, more than its `LIMIT` returns, those past the `LIMIT` logged as not shown (unshown negatives); `ts`, when it was served (ISO 8601 text or microseconds; now when left out), for replaying past traffic; `table`, another log table; `interleave`, a second ranking to show in the same list ([interleaving](#interleaving-two-rankings)).
-- **A row** holds its request, time and context, the key of the row served (`row_key`, as text), its `position` from 0 (the `OFFSET` included), whether it was `shown`, its `score()`, and `features`: a JSON object of each `features()` column, named by its SQL text, whose numbers read back to the bits the ranking computed. A table made by hand serves as a log if it has these columns, of these types (with `retain = '90 days'`, say).
+- **A row** holds its request, time and context, the key of the row served (`row_key`, as text), its `position` from 0 (the `OFFSET` included), whether it was `shown`, its `score()`, and `features`: a JSON object of each `features()` column, named by its SQL text, whose numbers read back to the bits the ranking computed. The request's first row also keeps its `query`: the SQL as the client sent it and its parameters as they were bound (a vector as `{"$vector": [...]}`, a time as `{"$ts": microseconds}`), which the [relevance autopilot](#the-relevance-autopilot) replays. A table made by hand serves as a log if it has these columns, of these types (with `retain = '90 days'`, say); it may leave out `query`, and then keeps no query (a log made before the column was added: `ALTER TABLE rank_log ADD COLUMN query KEYWORD OPTIONS(indexed = false)`).
 - **Through a coordinator** the query is the coordinator's, so the values are one database's ([features over shards](#features-the-values-a-ranking-read)), and the rows go to the shards their keys place them on; the first logged query makes the table on every shard. A replica refuses a logged query, the log being a write; a primary ships the table it makes to its copies, as it ships the rows. A shard's query (`"shard": true`) is not logged.
 - **Cost.** Computing the values is nearly free, since the ranking computes them anyway; the write is the cost. On a 4-core cloud VM over HTTP, with 100,000 documents and one client, a query took 1.87 ms at the median plain, 1.85 ms with its values added and 4.33 ms logged (7.81 ms logging 100 candidates); writing the same ten rows alone through `/v1/write` took 1.97 ms. Without the disk's flush (`--no-sync`) the logged query took 3.50 ms: the sync is a third of the log's cost here, and the rest is the write itself. Four clients got 1,620 plain and 670 logged queries a second. A row took 152 bytes in the segments (an Intel Xeon @ 2.10GHz, 16.9 GB, Linux 6.18; `chloedb-server/results/rank_log/vm.json` and `vm-no-sync.json`, from `chloedb-rank-log-bench`). The export read 70,000 records a second, each with a history of 20 events and a label.
 
@@ -774,6 +792,31 @@ curl -s localhost:7700/v1/rank_log/interleaving -H 'content-type: application/js
 - **The second ranking** is a `SELECT` of the same table answering the same columns, with the same parameters. Both need a `LIMIT` and no `OFFSET` (a draft is of a first page), and `candidates` and `variant` are left out: each row shown is logged with its own ranking's score and features and its team's name as its `variant` (`variants`, `["a", "b"]` unless named).
 - **The credit**: `POST /v1/rank_log/interleaving` takes the export's body and reads the log as the export does, labels included. A request is interleaved when its shown rows carry two variants, and it goes to the team whose rows its user acted on more (a label above 0), or is a tie; a request nobody acted on counts for neither. `delta` is Chapelle et al.'s Δ, (wins of the first + ties / 2) / requests acted on − 0.5, above 0 when the first ranking (by name) is preferred; `p` is the two-sided sign test of the wins, ties left out. `Db::interleaving_credit` gives the same in Rust, and the command center's Recsys eval draws it.
 
+#### The relevance autopilot
+
+The autopilot reads the queries the rank log kept, proposes new numbers for the [rank profile](#rank-profiles-a-ranking-kept-with-its-table) they rank by, and shows the measured before and after on the database's own data before anything changes.
+
+```sh
+curl -s localhost:7700/v1/relevance/autopilot -H 'content-type: application/json' -d '{"profile": "recall", "since": "2026-11-01", "judge": true}'
+# {"report": {"verdict": "propose", "reason": "held-out nDCG@10 0.412 to 0.447 (+0.035, 95% interval +0.019 to +0.052): 61 queries better, 12 worse (sign test p = 0.000)",
+#   "statement": "CREATE OR REPLACE RANK PROFILE recall ON docs AS SELECT * FROM docs ORDER BY bm25(body, :q) + 0.4 * bm25(title, :q) DESC",
+#   "changes": [{"knob": "0.05 * bm25(title, :q)", "from": 0.05, "to": 0.4}], "snapshot": 81231,
+#   "held_out": {"queries": 140, "before": 0.412, "after": 0.447, "better": 61, "worse": 12, "p": 0.0, "ci": [0.019, 0.052]},
+#   "latency_ms": {"before": {"p50": 1.9, "p95": 4.1}, "after": {"p50": 1.9, "p95": 4.3}}, "holes": [...], ...},
+#  "proposal": "6932a1f0-9e1b...", "judged": {"rows": 184, "model": "...", "errors": []}}
+curl -s -X POST localhost:7700/v1/relevance/proposals/6932a1f0-9e1b.../apply
+```
+
+(The numbers above show the shape of an answer; they were not measured.)
+
+- **The workload** is each distinct query (its SQL and parameters, named by a `qid`) that a logged request asked with `ORDER BY rank_profile(...)`, the most recent first (`max_queries`, 500), logged since `since`. The profile is the one most of them rank by unless `table` and `profile` name one. The autopilot tunes a profile because a profile is what a proposal can change; a query that ranks by an expression of its own is left out.
+- **Grades** are the rank log's labels (a row's mean over the query's requests) and the judgments table's, `relevance_judgments` unless `judgments` names another, which win for the same row: `{id: '<qid>#<row_key>', qid, query, row_key, grade, source, ts}`, grades 0 to 3 (UMBRELA's scale and the relevance lab's). A query needs a row graded above 0 to count, and the autopilot says nothing with fewer than `min_queries` (20) such queries.
+- **The search** is coordinate ascent (Metzler and Croft, 2007) over the profile's numbers: the defaults of its parameters (`WITH (w => 0.2)`) and the numeric literals of its rankings' `ORDER BY` expressions, 0 and 1 left out as structure. Each number is tried at 2, 0.5, 1.25, 0.8, 4 and 0.25 times its value, and a step is taken when the training queries' mean nDCG@k (`k`, 10) rises, until no step helps or `budget` (60) candidates have been replayed. A proposal is the profile with some numbers moved, nothing else.
+- **The proof**: every query reads one snapshot (`snapshot` is its sequence number), so both rankings see the same rows and the same statistics. The share `held_out` (0.3) of the graded queries, picked by a seeded hash of their `qid`, is kept out of the search, and the verdict is drawn from those alone: `propose` when their mean nDCG@k rose by more than `min_gain` (0.005), the sign test of the queries made better against those made worse says so at `alpha` (0.05), and the 95th percentile of the queries' time did not grow by more than `max_slowdown` (1.5 times, beyond 2 ms). Otherwise `no_change`, `no_gain`, `not_significant`, `slower`, `too_few_judged` or `no_workload`, each with a `reason`. The report has the training, held-out and overall measures, a bootstrap interval of the held-out change, each query's nDCG both ways, and the share of the top k that was graded. With the same data and `seed` a report is made again the same.
+- **Rows no one graded** gain nothing, which favours the ranking now (its rows are the ones people saw and graded). The report lists them (`holes`, `max_holes`, 200); with `"judge": true` the server has Claude grade them first (UMBRELA's prompt, as `POST /v1/judge` does; the server's `ANTHROPIC_API_KEY` or `api_key`), writes the grades to the judgments table with source `claude`, and measures again.
+- **Proposals** are kept in `relevance_proposals` with the report (`keep`, true): `GET /v1/relevance/proposals` lists them, `GET /v1/relevance/proposals/:id` gives one with its proof, `POST .../:id/apply` runs its `CREATE OR REPLACE RANK PROFILE` and `POST .../:id/dismiss` closes it. Applying is refused once the profile has changed since the measure (the proof is of another profile: run the autopilot again), and for a verdict other than `propose` unless `{"force": true}`. Running, applying and dismissing need an admin key. The command center's Labs have it as Relevance autopilot.
+- **In Rust**: `Db::autopilot(&Options)` gives the report and reads only; `Db::keep_proposal`, `Db::apply_proposal` and `Db::add_judgments` write. A coordinator does not run it, since its shards hold a snapshot each: run it on a single server or on each shard's server.
+
 #### Sequence models: `encode('model', history)`
 
 A sequence model reads what a user did, newest first, and gives a vector in the space of an item field, so that the items it ranks first are the ones the user is likely to want next:
@@ -806,7 +849,7 @@ LIMIT 10;
   chloedb.train.write_vectors(db, "next")   # with learn_items, the items' learned vectors into items.emb
   ```
 
-  It trains next-item prediction over each user's events, with every item in the field (`negatives="all"`) or the other targets of a batch (`"in_batch"`, for many items) as the negatives, and writes the model where `models=` says (the models directory by default), with the item vectors it was trained with. With `learn_items=True` the item vectors are trained too, starting from the field's: `chloedb.train.write_vectors` writes them into the field, changing nothing else of each row, and until then `encode` refuses the model. Otherwise the field's vectors are kept as they are and only the model learns.
+  It trains next-item prediction over each user's events, with every item in the field (`negatives="all"`) or the other targets of a batch (`"in_batch"`, for many items; with `logq=True` and `uniform_negatives=n` it no longer learns to rank popular items low) as the negatives, and writes the model where `models=` says (the models directory by default), with the item vectors it was trained with. With `learn_items=True` the item vectors are trained too, starting from the field's: `chloedb.train.write_vectors` writes them into the field, changing nothing else of each row, and until then `encode` refuses the model. Otherwise the field's vectors are kept as they are and only the model learns.
 - **Equal to PyTorch's**: ChloeDB's vector is the one the PyTorch module gives for the same history, within 2·10⁻⁵ (`chloedb/tests/sequence.rs`), and the items a query ranks are the ones PyTorch's vector ranks.
 - **How well it ranks**: on MovieLens-1M and Amazon Beauty, leave-one-out over every item as SASRec is measured, a model of two layers that reads items only has Recall@10 0.278 and 0.066 (NDCG@10 0.159 and 0.041). That is above the original SASRec's published 0.250 and 0.061, but below SASRec trained the same way as this model, with cross-entropy over every item (SASRec+, 0.315 on MovieLens), and on Beauty below counted transitions from the same events ([`chloedb.next_items`](next-items.md), 0.069): good, not the best published. Reading times too, it has 0.319 and 0.077. Both MovieLens runs stopped at a time limit while still improving. ChloeDB's answers equal PyTorch's on every user ([`results/sequence`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/sequence), with the protocol and the published numbers), and CI checks ranking quality on MovieLens-1M against popularity and item-kNN baselines and ChloeDB's other sources (`chloedb/results/sequence/gate.py`): there a model trained for an hour has Recall@10 0.306, `ppr` over what came after what 0.242, counted transitions 0.211 and item-kNN 0.069.
 - **What it costs**: the model alone, on one thread of a cloud VM's Xeon at 2.80 GHz, takes 0.09 ms for 10 events, 0.28 ms for 50 and 1.5 ms for 200 (p50); the whole query, reading the history and searching the field, 0.6 to 0.7 ms on Beauty's 50 events and 2 to 3 ms on MovieLens's 200. Keep `max_len` as short as the ranking allows.
@@ -1078,6 +1121,34 @@ On ArguAna (BEIR's 8,674 arguments from 592 debates on 15 topics; a document's d
 Debates and topics are the mean number of each in a query's answer. Each segment keeps the cap as it scores, so a cap costs about 1.5 times the uncapped query whatever the field: BM25 can skip fewer rows, since the 20th row kept scores lower than the 20th of all. One row of each of the 15 topics cannot fill 20 rows, so that query scores every argument that matches, once, and returns 15. Before the scan kept the cap, the same queries read growing slices of the ranking: 6.0 to 6.1 ms by debate, 7.1 and 18.8 ms for three and two per topic, and 549 ms for one per topic, which read every row again at each slice (with the uncapped query at 3.3 ms in that run).
 
 Caps trade relevance for spread. ArguAna's answer to a query is the argument against it, in the query's own debate, so a cap on debates also caps how many of the right debate's arguments the ranking can show: nDCG@10 falls from 0.489 to 0.307 with one per debate, and to 0.419 with three. The run is `chloedb-per-cap-bench` ([`results/text/per_cap.json`](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/text/per_cap.json)).
+
+## As much as fits: `PACK n TOKENS`
+
+A query's answer is often the context a language model is given, and the model has a budget of tokens, not of rows. `PACK n TOKENS` at the end of a SELECT fills that budget: it reads the query's rows in its order and decides each once, so that a long row, a row that repeats one already taken and a row linked to one taken are weighed inside the query rather than by the application after a top k.
+
+```sql
+-- what memory says about the task, in at most 4,000 tokens
+SELECT id, kind, text FROM memory
+WHERE superseded = false
+ORDER BY rrf(bm25(text, :task), similarity(emb, :q)) DESC
+PACK 4000 TOKENS DEDUPE 0.85 FOLLOW links 1 HOP WITH RECEIPT;
+```
+
+Each row, in the query's order, is:
+
+- **taken** whole when its text fits what is left of the budget;
+- **excerpted** when it is longer than one row may be (`EXCERPT n`; a quarter of the budget by default) or than what is left: the stretch of its longest text column with the most words of the query's `bm25` and `MATCH` texts (or its start, when it has none), marked `… ` where it was cut;
+- **skipped as a near-duplicate** of a row taken before it, with `DEDUPE x`: at least the share x of the shorter one's words are in the other, or, with `DEDUPE x ON emb`, the cosine of their vectors is at least x;
+- **skipped as over budget** when not even an excerpt of 32 tokens fits.
+
+With `FOLLOW edges n HOP` (1 to 3 hops, 1 by default), each row taken brings the rows its [`EDGES`](#graphs) field reaches, up to 16, right after it in the order of its edges, if they pass the query's `WHERE`, decided the same way (`linked from k`). The rows are read by key, a hop at a time, so `FOLLOW` works through a coordinator, where graph walks do not: a decision a file note links to is taken with the note, though it shares no word with the task.
+
+The answer is the rows taken, in that order, with two more columns: `pack_tokens`, the tokens the row spends, and `pack_decision` (`take`, `excerpt`, `linked from k`). `WITH RECEIPT` adds the rows skipped (`skip: near-duplicate of k`, `skip: over budget`) and the columns `pack_score`, the query's score of the row, and `pack_used`, the tokens spent up to and with it. In Rust, `Db::pack` answers the rows and a receipt with every decision and the snapshot read (`txn` and `seq_no`).
+
+- **The text counted** is every text column but the key's, or the columns `OF a, b` names. Tokens are an estimate (`chloedb::query::pack::count_tokens`), as the real count depends on the model's tokenizer: a run of letters is a token per six letters, a run of digits a token per three, a CJK character or a punctuation mark one each.
+- **Reads.** The rows are read in slices, 64 and then four times as many, and reading stops once what is left of the budget is too small for any row: a query whose first rows fill the budget reads one slice. `LIMIT` is the most candidates read (1,000 without one), and `OFFSET` where they start. Every slice, and every row followed, is a query of its own on the same snapshot.
+- **Choosing** is greedy in the query's order. A row that does not fit whole is excerpted rather than skipped, so that one long log cannot spend the budget, and a smaller row after one over the budget is still taken.
+- **Where.** On a file, a server and a coordinator alike: a coordinator merges each slice from its shards, and packs. `PACK` inside a subquery is not the clause (`pack` stays a name there, and anywhere it is not followed by a number and `TOKENS`).
 
 ## Graphs
 

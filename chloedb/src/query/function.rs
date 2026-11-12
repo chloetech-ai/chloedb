@@ -73,7 +73,7 @@ const TYPES: [&str; 8] = ["INT", "FLOAT", "TEXT", "KEYWORD", "BOOL", "TIMESTAMP"
 /// takes.
 const RESERVED: &[&str] = &[
     "abs", "array_agg", "at_least", "avg", "bm25", "ceil", "ceiling", "char_length", "character_length", "clamp", "coalesce", "concat", "count", "count_true", "cross_encoder", "cume_dist", "date", "date_add",
-    "date_format", "date_part", "date_sub", "date_trunc", "datediff", "datepart", "datetrunc", "day", "dayofweek", "decay", "dense_rank", "distance", "dot", "encode", "exp", "extract", "features", "first_value",
+    "date_format", "date_part", "date_sub", "date_trunc", "datediff", "datepart", "datetrunc", "day", "dayofweek", "decay", "dense_rank", "distance", "dot", "embed", "encode", "exp", "extract", "features", "first_value",
     "floor", "gbdt", "greatest", "group_concat", "hash", "hops", "hour", "ifnull", "instr", "isnull", "json_extract", "lag", "last_value", "lcase", "lead", "least", "left", "len", "length", "llm", "ln", "log", "lower",
     "ltrim", "match", "max", "maxsim", "min", "minmax", "month", "now", "nth_value", "ntile", "nvl", "path", "percent_rank", "percentile_cont", "percentile_disc", "position", "pow", "power", "ppr", "prefix", "rand",
     "random", "rank", "rank_profile", "ranked", "reachable", "replace", "reverse", "right", "round", "row_number", "rrf", "rtrim", "score", "seq_no", "sid_at", "sigmoid", "similarity", "sparse", "split_part",
@@ -1238,7 +1238,7 @@ pub fn called(sql_text: &str, set: &FunctionSet) -> Vec<String> {
 
 /// Calls `f` with each expression of `e`, outermost first; `f` returning
 /// false skips what is inside (it replaced it).
-fn visit_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
+pub(crate) fn visit_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
     if !f(e) {
         return;
     }
@@ -1340,7 +1340,7 @@ fn visit_query(q: &sql::Query, f: &mut dyn FnMut(&Expr)) {
 
 /// Calls `f` with each top-level expression of `q` (its CTEs, set
 /// operations, derived tables and joins' conditions included).
-fn query_exprs_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn query_exprs_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
     if let Some(w) = &mut q.with {
         for cte in &mut w.cte_tables {
             query_exprs_mut(&mut cte.query, f);
@@ -1433,7 +1433,7 @@ fn join_constraint_mut(o: &mut sql::JoinOperator) -> Option<&mut sql::JoinConstr
 /// Calls `f` with each table factor of `q` that names a table (or calls a
 /// table function), in its CTEs, set operations, derived tables, joins
 /// and subqueries too.
-fn relations_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut TableFactor)) {
+pub(crate) fn relations_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut TableFactor)) {
     if let Some(w) = &mut q.with {
         for cte in &mut w.cte_tables {
             relations_mut(&mut cte.query, f);
