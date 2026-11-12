@@ -1229,6 +1229,11 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
+        if crate::query::pack::may_pack(sql) {
+            if let Some(p) = self.pack_at(snap, sql, params, opts)? {
+                return Ok(p.rs);
+            }
+        }
         let q = qsql::parse_query_cached(sql)?;
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
@@ -1241,6 +1246,25 @@ impl Db {
         }
         let plan = plan_of_parsed(snap, &q, params, &functions)?;
         self.run_on(snap, &plan, opts)
+    }
+
+    /// Runs a query that ends in `PACK n TOKENS` ([`crate::query::pack`]):
+    /// its rows taken to fill the budget, and the receipt of how they were
+    /// chosen. A query without the clause is an error.
+    pub fn pack(&self, sql: &str, params: &Params) -> Result<crate::query::pack::Packed> {
+        self.pack_at(&self.snapshot(), sql, params, &self.exec)?.ok_or_else(|| Error::Query("the query has no PACK n TOKENS clause".into()))
+    }
+
+    /// [`Db::pack`] against a given snapshot, `None` for a query without
+    /// the clause. Every slice of candidates, and every row followed, is
+    /// read from `snap`.
+    pub fn pack_at(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Option<crate::query::pack::Packed>> {
+        let key_of = |t: &str| snap.table(t).and_then(|v| v.schema().primary_key.map(|k| v.schema().fields[k].name.clone()));
+        let Some(mut p) = crate::query::pack::Packer::of_sql(sql, params, &key_of)? else { return Ok(None) };
+        while let Some(q) = p.next_query()? {
+            p.feed(self.query_at(snap, &q, params, opts)?)?;
+        }
+        p.finish(Some(snap.txn()), snap.seq_no()).map(Some)
     }
 
     /// Where this database's models are: the directory

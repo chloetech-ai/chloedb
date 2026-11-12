@@ -225,6 +225,17 @@ app engine's schedules, sources and reach controls.
   sent was applied but its answer was lost and they sent it again: a
   table found as the source has it is taken as made.
 
+### Added
+
+- ChloeDB: `PACK n TOKENS` ends a SELECT and fills a budget of tokens
+  rather than a number of rows: rows too long are cut to the stretch that
+  matches the query (`EXCERPT n`), rows that repeat one taken are skipped
+  (`DEDUPE x`, by words or `ON` a vector field), rows an `EDGES` field
+  links to come with the row that links them (`FOLLOW links 1 HOP`), and
+  `WITH RECEIPT` says why each candidate was taken or skipped. `Db::pack`
+  answers the receipt with the snapshot read. On a file, a server and a
+  coordinator; no change to the file format or the shard protocol.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,
