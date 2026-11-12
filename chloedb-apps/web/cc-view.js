@@ -135,6 +135,19 @@ const CSS = `
 .ac .screens button { border: 0; background: none; color: var(--text-2); font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
 .ac .screens button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); font-weight: 600; }
 .ac .screens .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--crit); }
+.ac .screens .usage-tab { margin-left: auto; }
+.ac .screens .usage-tab .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+/* the Usage tab: the studio's Activity view (web/activity.css), under the
+   command center's tokens, given the names the view reads */
+.ac .ac-usage { flex: 1; min-height: 0; position: relative; background: var(--sunken);
+  --fg: var(--text); --bg: var(--sunken); --card: var(--surface); --soft: var(--surface-2); --ok: var(--good); --bad: var(--crit);
+  --accent-fg: var(--accent-ink); --radius: 12px; --radius-control: 8px; --card-border: var(--line); --card-shadow: none; }
+.ac .ac-usage[hidden] { display: none; }
+.ac .device[hidden] { display: none; }
+/* Usage takes the inspector's column too: its charts and visits need the width */
+.ac .grid3.usage-on { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
+.ac .grid3.usage-on > .inspect { display: none; }
+.ac .ac-usage .sep { flex: none; }
 .ac .device { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; padding: 16px; overflow: auto; position: relative; }
 .ac .device .shell { position: relative; background: var(--bg); width: 100%; height: 100%; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 0 var(--line), 0 10px 30px rgba(0,0,0,.08); }
 .ac .device.phone .shell { width: 390px; height: min(800px, 100%); border-radius: 34px; border: 9px solid #15171b; box-shadow: 0 18px 40px rgba(0,0,0,.18); }
@@ -169,7 +182,7 @@ const CSS = `
 .ac .ver .m { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 .ac .design { display: flex; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 10px; cursor: pointer; background: var(--surface); text-align: left; font: inherit; color: inherit; width: 100%; }
 .ac .design.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
-.ac .sw { display: inline-block; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); flex: none; }
+.ac .ac-sw { display: inline-block; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); flex: none; }
 .ac .reach { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-top: 1px solid var(--line); background: var(--surface); }
 .ac .reach:first-child { border-top: 0; } .ac .reach.wants { background: var(--warn-soft); }
 .ac .reach .what { display: block; color: var(--muted); font-size: 11.5px; }
@@ -195,12 +208,6 @@ const CSS = `
 .acr-tl .btrack { height: 12px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
 .acr-tl .bfill { display: flex; height: 100%; border-radius: 4px; overflow: hidden; }
 .acr-tl .bt, .acr-tl .bc { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
-.acr-tl .days { display: flex; align-items: flex-end; gap: 2px; height: 74px; }
-.acr-tl .day { flex: 1; height: 100%; display: flex; align-items: flex-end; min-width: 2px; }
-.acr-tl .day .col { width: 100%; height: 100%; display: flex; flex-direction: column-reverse; justify-content: flex-start; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
-.acr-tl .day .col i { display: block; width: 100%; }
-.acr-tl .u-open { background: var(--ac-c); } .acr-tl .u-did { background: var(--ac-s); } .acr-tl .u-err { background: var(--crit); }
-.acr-tl .key i.u-open, .acr-tl .key i.u-did, .acr-tl .key i.u-err { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; }
 .acr-tl .dec { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px 10px; font-size: 12px; align-items: baseline; }
 .acr-tl .badge { font-size: 10.5px; font-weight: 650; padding: 1px 6px; border-radius: 999px; background: var(--surface-3); white-space: nowrap; }
 .acr-tl .d-new { background: color-mix(in srgb, #12a37a 18%, transparent); } .acr-tl .d-change, .acr-tl .d-fork { background: color-mix(in srgb, #2f5bd3 16%, transparent); }
@@ -213,6 +220,7 @@ const CSS = `
   .ac .grid3 > .inspect { height: auto; }
 }
 @media (max-width: 760px) {
+  .ac .grid3.usage-on { grid-template-columns: minmax(0, 1fr); }
   .ac .grid3 { grid-template-columns: minmax(0, 1fr); }
   .ac .grid3 > .col { height: auto; min-height: 0; }
   .ac .grid3 > .ac-stage { height: 640px; }
@@ -233,6 +241,7 @@ const EXAMPLES = [
 ];
 
 const ORIGIN_ORDER = ['create', 'scratch', 'hand', 'reused'];
+const USAGE = '~usage'; // the stage's Usage tab, where a screen's slug goes in the address
 const ORIGIN_SHORT = { create: 'CREATE statements', scratch: 'written from scratch', hand: 'edited by hand', reused: 'reused from the library' };
 const KIND_LABEL = { strata: 'ChloeDB', plan: 'Model planning', model: 'Model planning and writing', write: 'Model writing pieces', fix: 'Model fixing', check: 'Checks' };
 const DECISION = {
@@ -311,8 +320,9 @@ function render(el, ctx) {
       const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
       try { return await import(url); } finally { URL.revokeObjectURL(url); }
     };
-    const [design, policy] = await Promise.all([imp(kit.design), imp(kit.policy)]);
-    mods = { design, policy };
+    const [design, policy, activity] = await Promise.all([imp(kit.design), imp(kit.policy), imp(kit.activity)]);
+    mods = { design, policy, activity };
+    el.append(h('style', {}, kit.activityCss || ''));
     // Where a frame loads files and map tiles from: the engine's public
     // address (no key needed there for those), else through this server.
     kit.base = kit.publicUrl || new URL(core.at('/v1/apps/apps'), location.href).href.replace(/\/$/, '');
@@ -652,7 +662,9 @@ __sa_ready();
     const deviceBox = h('div', { class: `device ${W.device}` });
     const shell = h('div', { class: 'shell' });
     deviceBox.append(shell);
-    const stage = h('section', { class: 'col ac-stage' }, h('div', { class: 'colhd', style: { background: 'var(--surface)' } }, screens, reload), tryBar, deviceBox);
+    // Usage: the Activity view (web/activity.js, the studio's), over the whole stage.
+    const usageBox = h('div', { class: 'ac-usage', hidden: true });
+    const stage = h('section', { class: 'col ac-stage' }, h('div', { class: 'colhd', style: { background: 'var(--surface)' } }, screens, reload), tryBar, deviceBox, usageBox);
 
     const itabs = h('div', { class: 'itabs', role: 'tablist' });
     const ibody = h('div', { class: 'ibody' });
@@ -719,7 +731,7 @@ __sa_ready();
       if (kit.publicUrl && st.views.length) { ownLink.hidden = false; ownLink.href = `${kit.publicUrl}/a/${appId}${atV()}`; } else ownLink.hidden = true;
       studioBtn.hidden = !kit.publicUrl;
       applyDesign();
-      if (!st.views.find((v) => v.slug === W.view)) W.view = st.views[0]?.slug || null;
+      if (W.view !== USAGE && !st.views.find((v) => v.slug === W.view)) W.view = st.views[0]?.slug || null;
       paintConvo();
       paintStage();
       paintInspector();
@@ -859,7 +871,9 @@ __sa_ready();
       if (!st) return;
       // the screens
       screens.replaceChildren(...(st.views.length ? st.views.map((v) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(v.slug === W.view), onclick: () => switchView(v.slug) },
-        v.title, W.errors.has(v.slug) ? h('span', { class: 'dot', title: 'This screen hit an error' }) : null)) : [h('span', { class: 'small muted', style: { padding: '0 6px' } }, 'No screens yet')]));
+        v.title, W.errors.has(v.slug) ? h('span', { class: 'dot', title: 'This screen hit an error' }) : null)) : [h('span', { class: 'small muted', style: { padding: '0 6px' } }, 'No screens yet')]),
+        st.views.length ? h('button', { type: 'button', role: 'tab', class: 'usage-tab', title: 'What people did in the app: each visit, step by step', 'aria-pressed': String(W.view === USAGE), onclick: () => switchView(USAGE) }, h('span', { class: 'pulse' }), 'Usage') : null);
+      paintUsage();
       // trying a version
       const c = st.version.trying ? (st.evolve?.candidates || []).find((x) => x.n === st.version.trying) : null;
       tryBar.replaceChildren(...(st.version.trying ? [h('div', { class: 'trybar' }, h('span', { class: 'grow' }, h('b', {}, c ? c.text : `Version ${st.version.trying}`), h('span', { class: 'muted' }, ` · on the app's real data; everyone else sees v${st.version.live}`)),
@@ -921,6 +935,7 @@ __sa_ready();
         W.frames.set(v.slug, { iframe, capId: v.id, sig, slug: v.slug });
       }
       for (const [slug, f] of W.frames) f.iframe.hidden = slug !== W.view;
+      if (W.view === USAGE) return;
       shell.querySelector('.viewerr')?.remove();
       const err = W.errors.get(W.view);
       if (err) {
@@ -929,6 +944,21 @@ __sa_ready();
           !err.repairing ? h('button', { class: 'btn sm', onclick: () => ask(`The screen "${v?.title}" shows this error: ${err.message}. Fix it.`) }, 'Ask to fix') : null,
           h('button', { class: 'btn sm ghost', onclick: () => { W.errors.delete(W.view); paintStage(); } }, 'Dismiss')));
       }
+    }
+    // The Usage tab: what people did, each visit step by step, drawn by the
+    // studio's Activity view. It reads GET /api/apps/:id/activity.
+    function paintUsage() {
+      const on = W.view === USAGE && !!W.st?.views.length;
+      deviceBox.hidden = on;
+      usageBox.hidden = !on;
+      stage.parentNode?.classList.toggle('usage-on', on);
+      if (!on) { W.act?.destroy(); W.act = null; return; }
+      if (W.act) { W.act.refresh(); return; }
+      W.act = mods.activity.mountActivity(usageBox, {
+        appId,
+        api: (method, p, body) => api(p, method === 'GET' ? {} : { method, body }),
+        openScreen: (slug) => switchView(slug),
+      });
     }
     function switchView(slug, params) {
       if (params) {
@@ -1001,13 +1031,13 @@ __sa_ready();
 
     // ---- the inspector
 
-    const TABS = [['made', 'Made of'], ['time', 'Time'], ['usage', 'Usage'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach']];
+    const TABS = [['made', 'Made of'], ['time', 'Time'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach']];
     function paintInspector() {
       const st = W.st;
       itabs.replaceChildren(...TABS.map(([k, label]) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(W.tab === k), onclick: () => { W.tab = k; W.pick = null; paintInspector(); } }, label,
         k === 'versions' && st.versions?.length ? h('span', { class: 'muted' }, ` ${st.versions.length}`) : null)));
       const keepScroll = ibody.parentNode.scrollTop;
-      const draw = { made: madeTab, time: timeTab, usage: usageTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab }[W.tab] || madeTab;
+      const draw = { made: madeTab, time: timeTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab }[W.tab] || madeTab;
       // A tab with a field being typed in is left as it is.
       if (ibody.contains(document.activeElement) && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName) && ibody.dataset.tab === W.tab) return;
       ibody.dataset.tab = W.tab;
@@ -1103,107 +1133,6 @@ __sa_ready();
 
     // How people use the app: the engine's record of what they did
     // (sa_events, GET /api/apps/:id/activity), over 7, 30 or 90 days.
-    function usageTab() {
-      const days = W.usageDays || 30;
-      const box = h('div', { class: 'acr-tl', style: { gap: '12px' } });
-      const period = core.seg([[7, '7 days'], [30, '30 days'], [90, '90 days']], days, (v) => { W.usageDays = v; W.usage = null; paintInspector(); });
-      const fresh = W.usage && W.usage.days === days && Date.now() - W.usage.at < 20000;
-      const paintUsage = (a) => box.replaceChildren(...usageBody(a, days).flat(Infinity).filter(Boolean));
-      if (fresh) paintUsage(W.usage.data);
-      else {
-        if (W.usage?.days === days) paintUsage(W.usage.data); else box.append(h('div', { class: 'small muted' }, h('span', { class: 'spin' }), ' Reading what people did'));
-        api(`${base}/activity?days=${days}`).then((a) => { W.usage = { days, at: Date.now(), data: a }; if (W.tab === 'usage' && (W.usageDays || 30) === days) paintUsage(a); })
-          .catch((e) => box.replaceChildren(h('div', { class: 'small' }, e.message)));
-      }
-      return [h('div', { class: 'row' }, h('span', { class: 'note grow' }, 'What people did in the app, on every version.'), period), box];
-    }
-    function usageBody(a, days) {
-      const ev = (a.events || []).map((e) => ({ ...e, t: new Date(e.ts).getTime() }));
-      if (!ev.length) return [h('div', { class: 'note' }, 'Nobody has used the app in this period yet. Use it here or on its own page and what people do shows up here: visits, screens, searches, what they add and change.')];
-      const DONE = new Set(['insert', 'update', 'delete', 'remove', 'call']);
-      const CAP = 30 * 60000;
-      const sessions = new Set(ev.map((e) => e.session).filter(Boolean));
-      const people = new Set(ev.map((e) => e.person).filter(Boolean));
-      const did = ev.filter((e) => DONE.has(e.kind));
-      const errors = ev.filter((e) => e.kind === 'error');
-      const time = ev.filter((e) => e.kind === 'leave').reduce((n, e) => n + Math.min(Number(e.ms) || 0, CAP), 0);
-      // each day: screens opened, things done, errors
-      const dayMs = 86400000;
-      const end = new Date(); end.setHours(0, 0, 0, 0);
-      const start = end.getTime() - (days - 1) * dayMs;
-      const byDay = Array.from({ length: days }, (_, i) => ({ t: start + i * dayMs, open: 0, did: 0, err: 0 }));
-      for (const e of ev) {
-        const i = Math.floor((e.t - start) / dayMs);
-        if (i < 0 || i >= days) continue;
-        if (e.kind === 'open') byDay[i].open++; else if (DONE.has(e.kind)) byDay[i].did++; else if (e.kind === 'error') byDay[i].err++;
-      }
-      const top = Math.max(1, ...byDay.map((d) => d.open + d.did + d.err));
-      // screens
-      const titles = new Map((a.screens || []).map((x) => [x.slug, x.title]));
-      const scr = new Map();
-      for (const e of ev) {
-        const slug = e.kind === 'open' ? e.detail : e.screen;
-        if (!slug || !titles.has(slug)) continue;
-        const x = scr.get(slug) || { slug, opens: 0, time: 0, did: 0 };
-        if (e.kind === 'open') x.opens++;
-        if (e.kind === 'leave') x.time += Math.min(Number(e.ms) || 0, CAP);
-        if (DONE.has(e.kind)) x.did++;
-        scr.set(slug, x);
-      }
-      const screens = [...scr.values()].sort((x, y) => y.opens - x.opens || y.time - x.time);
-      const maxOpens = Math.max(1, ...screens.map((x) => x.opens));
-      // searches and what was done
-      const searches = new Map();
-      for (const e of ev) if (e.kind === 'action' && /^search\b/.test(e.detail || '') && e.q) { const k = String(e.q).toLowerCase(); const x = searches.get(k) || { q: e.q, n: 0, none: 0 }; x.n++; if (Number(e.results) === 0) x.none++; searches.set(k, x); }
-      const kinds = {};
-      for (const e of did) kinds[e.kind] = (kinds[e.kind] || 0) + 1;
-      const tables = new Map((a.tables || []).map((t) => [t.name, t.noun || t.name]));
-      const tblDone = {};
-      for (const e of did) if (e.tbl || e.table) { const k = e.tbl || e.table; tblDone[k] = (tblDone[k] || 0) + 1; }
-      // how easy it is, against the brief's targets
-      const m = a.ux?.measures || {};
-      const tg = a.ux?.targets || {};
-      const easy = [
-        ['Taps to get something done', m.tapsToAct, tg.taps, (v) => v.toFixed(1), true],
-        ['Seconds to get something done', m.secsToAct, tg.secs, (v) => `${Math.round(v)} s`, true],
-        ['Done on the first screen', m.onFirst, tg.first, pct, false],
-        ['Forms given up', m.gaveUp, tg.gaveUp, pct, true],
-        ['Rows removed soon after being added', m.wrong, tg.wrong, pct, true],
-      ];
-      const sigs = (a.signals || []).slice(0, 5);
-      const errs = new Map();
-      for (const e of errors) { const k = String(e.detail || '').split('\n')[0].slice(0, 140); errs.set(k, (errs.get(k) || 0) + 1); }
-      return [
-        h('div', { class: 'tiles' },
-          h('div', { class: 'tile' }, h('b', {}, num(sessions.size)), h('span', {}, `visit${sessions.size === 1 ? '' : 's'} by ${num(people.size)} ${people.size === 1 ? 'person' : 'people'}`)),
-          h('div', { class: 'tile' }, h('b', {}, num(did.length)), h('span', {}, 'things done: rows added, changed, removed, functions run')),
-          h('div', { class: 'tile' }, h('b', {}, time ? secs(time) : '–'), h('span', {}, `on the screens${sessions.size ? `, ${secs(time / sessions.size)} a visit` : ''}`)),
-          h('div', { class: 'tile' }, h('b', { style: errors.length ? { color: 'var(--crit-ink)' } : null }, num(errors.length)), h('span', {}, `error${errors.length === 1 ? '' : 's'} in the screens`))),
-        h('div', {}, h('h3', {}, 'Each day'),
-          h('div', { class: 'days' }, byDay.map((d) => h('span', { class: 'day', title: `${new Date(d.t).toLocaleDateString()}: ${d.open} screens opened, ${d.did} things done${d.err ? `, ${d.err} errors` : ''}` },
-            h('span', { class: 'col' }, d.err ? h('i', { class: 'u-err', style: { height: `${(d.err / top) * 100}%` } }) : null, d.did ? h('i', { class: 'u-did', style: { height: `${(d.did / top) * 100}%` } }) : null, d.open ? h('i', { class: 'u-open', style: { height: `${(d.open / top) * 100}%` } }) : null)))),
-          h('div', { class: 'key' }, h('span', {}, h('i', { class: 'u-open' }), 'screens opened'), h('span', {}, h('i', { class: 'u-did' }), 'things done'), errors.length ? h('span', {}, h('i', { class: 'u-err' }), 'errors') : null,
-            h('span', { class: 'grow', style: { textAlign: 'right' } }, `${new Date(start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} to today`))),
-        screens.length ? h('div', {}, h('h3', {}, 'Screens'), h('div', { class: 'bars' }, screens.map((x) => h('button', { type: 'button', class: 'brow', style: { gridTemplateColumns: 'minmax(0, 34%) minmax(0, 1fr) 64px' }, title: `${x.opens} opens · ${secs(x.time)} · ${x.did} things done`, onclick: () => switchView(x.slug) },
-          h('span', { class: 'bn', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, titles.get(x.slug)),
-          h('span', { class: 'btrack' }, h('span', { class: 'bfill', style: { width: `${Math.max(3, (x.opens / maxOpens) * 100)}%`, background: 'var(--ac-c)' } })),
-          h('span', { class: 'bt' }, `${x.opens} · ${x.time ? secs(x.time) : '–'}`))))) : null,
-        did.length ? h('div', {}, h('h3', {}, 'What people did'), h('div', { class: 'key' },
-          Object.entries(kinds).map(([k, n]) => h('span', { class: 'badge' }, `${{ insert: 'added', update: 'changed', delete: 'removed', remove: 'removed', call: 'ran' }[k] || k} ${n}`)),
-          Object.entries(tblDone).sort((x, y) => y[1] - x[1]).slice(0, 4).map(([t, n]) => h('span', { class: 'muted' }, `${tables.get(t) || t}: ${n}`)))) : null,
-        searches.size ? h('div', {}, h('h3', {}, 'Searches'), h('div', { class: 'key' }, [...searches.values()].sort((x, y) => y.n - x.n).slice(0, 10).map((x) => h('span', { class: 'badge', title: x.none ? `found nothing ${x.none} time${x.none === 1 ? '' : 's'}` : '' }, `“${x.q}” ${x.n}${x.none ? ' · nothing found' : ''}`)))) : null,
-        h('div', {}, h('h3', {}, 'How easy it is'), h('div', { class: 'list' }, easy.map(([label, v, target, f, lower]) => {
-          const has = v !== null && v !== undefined;
-          const ok = has && target != null ? (lower ? v <= target : v >= target) : null;
-          return h('div', { class: 'li', style: { cursor: 'default' } }, h('span', { class: 'grow' }, label),
-            h('span', { class: 'small muted' }, target != null ? `aim ${lower ? '≤' : '≥'} ${f(target)}` : ''),
-            h('b', { class: 'small', style: { color: ok === false ? 'var(--cc-warn-ink, #8a5b00)' : ok ? 'var(--good-ink)' : 'var(--muted)', minWidth: '62px', textAlign: 'right' } }, has ? f(v) : 'not yet'));
-        })), h('div', { class: 'note', style: { marginTop: '4px' } }, `Measured over ${a.ux?.sittings ?? sessions.size} visits against targets from the app’s brief; the engine judges a measure once there are five visits, forms or rows to judge it on.`)),
-        sigs.length ? h('div', {}, h('h3', {}, 'Patterns the engine sees'), h('div', { class: 'list' }, sigs.map((x) => h('div', { class: 'li', style: { cursor: 'default' } }, h('span', { class: 'grow' }, x.text), x.answered ? h('span', { class: 'tag' }, 'answered') : null)))) : null,
-        errs.size ? h('div', {}, h('h3', {}, 'Errors'), h('div', { class: 'list' }, [...errs].sort((x, y) => y[1] - x[1]).slice(0, 4).map(([k, n]) => h('div', { class: 'li', style: { cursor: 'default' } }, h('span', { class: 'grow small mono', style: { whiteSpace: 'normal' } }, k), h('b', { class: 'small' }, `${n}×`))))) : null,
-      ];
-    }
-
     function codeTab(st) {
       if (W.pick) return codeDetail(W.pick);
       const group = (label, list) => (list.length ? [h('div', { class: 'lbl' }, label), h('div', { class: 'list' }, list.map((c) => h('div', { class: 'li', onclick: () => { W.pick = c; paintInspector(); } },
@@ -1307,7 +1236,7 @@ __sa_ready();
         ...d.designs.map((x, i) => h('button', { class: `design${i === d.chosen ? ' on' : ''}`, type: 'button', onclick: async () => {
           d.chosen = i; applyDesign(); paintInspector();
           try { await post(`${base}/designs`, { chosen: i }); } catch (e) { toast(e.message, 'bad'); }
-        } }, h('span', { class: 'sw', style: { background: x.light?.accent } }), h('span', { class: 'sw', style: { background: x.dark?.bg } }),
+        } }, h('span', { class: 'ac-sw', style: { background: x.light?.accent } }), h('span', { class: 'ac-sw', style: { background: x.dark?.bg } }),
           h('span', { class: 'grow' }, h('b', {}, x.name), x.about ? h('div', { class: 'small muted' }, x.about) : null, h('div', { class: 'small muted' }, [x.look, x.titles && `${x.titles} titles`, x.corners && `${x.corners} corners`, x.nav].filter(Boolean).join(' · '))),
           i === d.chosen ? h('span', { class: 'tag live' }, 'in use') : null)),
         h('div', { class: 'row' }, again, h('span', { class: 'small muted' }, 'keeps the one in use')),
@@ -1404,6 +1333,7 @@ __sa_ready();
       kind: 'app', onEvent, noEvents,
       stop() {
         W.stopped = true;
+        W.act?.destroy();
         clearInterval(pacer);
         poll?.();
         window.removeEventListener('message', onMessage);

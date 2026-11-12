@@ -428,6 +428,7 @@ const STATIC = {
   '/design.js': ['web/design.js', 'text/javascript; charset=utf-8'],
   '/policy.js': ['web/policy.js', 'text/javascript; charset=utf-8'],
   '/activity.js': ['web/activity.js', 'text/javascript; charset=utf-8'],
+  '/activity.css': ['web/activity.css', 'text/css; charset=utf-8'],
   // The app creator, the engine's page in a cluster's command center (Apps -> App creator).
   '/cc/view.js': ['web/cc-view.js', 'text/javascript; charset=utf-8'],
 };
@@ -547,12 +548,13 @@ const routes = [
     Math.min(25000, Math.max(0, Number(url.searchParams.get('wait') ?? 20000) || 0)))],
   // What a view's frame is made of, for a page that builds frames itself
   // (the command center's app creator): the stylesheet, the runtime, the
-  // screen renderer, and the design tokens and the frame's policy as the
-  // modules the studio imports (web/design.js, web/policy.js).
+  // screen renderer, the design tokens, the frame's policy and the Activity
+  // view as the modules the studio imports (web/design.js, web/policy.js,
+  // web/activity.js, with its stylesheet).
   ['GET', /^\/api\/kit$/, async () => {
     const read = (f) => readFile(path.join(ROOT, 'web', f), 'utf8');
-    const [kit, frontCss, frame, screen, front, design, policy] = await Promise.all(['kit.css', 'front.css', 'frame.js', 'screen.js', 'front.js', 'design.js', 'policy.js'].map(read));
-    return { kit: `${kit}\n${frontCss}`, frame, screen, front, design, policy, publicUrl: login.publicUrl || null, login: login.on };
+    const [kit, frontCss, frame, screen, front, design, policy, activityJs, activityCss] = await Promise.all(['kit.css', 'front.css', 'frame.js', 'screen.js', 'front.js', 'design.js', 'policy.js', 'activity.js', 'activity.css'].map(read));
+    return { kit: `${kit}\n${frontCss}`, frame, screen, front, design, policy, activity: activityJs, activityCss, publicUrl: login.publicUrl || null, login: login.on };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/made$/, async (b, [id]) => provenance(await engine.view(id), id)],
   ['POST', /^\/api\/apps$/, async (b) => {
