@@ -56,6 +56,13 @@ changes collect under "Unreleased".
   ([the server's page](docs/chloedb/server.md)). Images carry build
   provenance.
 
+### Replication
+
+- `chloedb-server follow` and `follow-postgres` no longer stop with
+  "table ... already exists" when a `CREATE TABLE` or `ALTER TABLE` they
+  sent was applied but its answer was lost and they sent it again: a
+  table found as the source has it is taken as made.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

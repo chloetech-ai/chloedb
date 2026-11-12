@@ -35,6 +35,7 @@ mod failover;
 mod feed;
 mod fleet;
 mod follow;
+mod follow_retries;
 mod hash_cluster;
 mod hosted_models;
 mod hub;
