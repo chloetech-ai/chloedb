@@ -19,6 +19,33 @@ use serde_json::{json, Value as Json};
 use crate::{daemon, paths, Result};
 
 const PAGE: &str = include_str!("../demo/index.html");
+
+/// The inspector's Content-Security-Policy: its one inline script, by hash,
+/// and nothing from anywhere else, so text from a store that slipped past
+/// `esc()` could not run a script or send what the page shows elsewhere.
+fn page_csp() -> String {
+    use sha2::Digest;
+    let start = PAGE.find("<script>").expect("the inspector's script") + "<script>".len();
+    let end = start + PAGE[start..].find("</script>").expect("the end of the inspector's script");
+    let hash = sha2::Sha256::digest(PAGE[start..end].as_bytes());
+    format!(
+        "default-src 'none'; script-src 'sha256-{}'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        base64(&hash)
+    )
+}
+
+/// Standard base64 with padding.
+fn base64(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            out.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
 /// Daemon ops the page may call (all read-only).
 const RPC_OPS: [&str; 7] = ["inspect_query", "inspect_layout", "inspect_embed", "search", "timeline", "stats", "briefing"];
 const MAX_BODY: usize = 1 << 20;
@@ -281,7 +308,7 @@ impl Server {
                 } else {
                     // The page starts in browse mode rather than the demo's chat.
                     let page = PAGE.replacen("<body>", "<body class=\"browse\">", 1);
-                    respond(&mut stream, "200 OK", "text/html; charset=utf-8", &[], page.as_bytes());
+                    respond(&mut stream, "200 OK", "text/html; charset=utf-8", &[("Content-Security-Policy", page_csp()), ("X-Frame-Options", "DENY".into())], page.as_bytes());
                 }
             }
             ("GET", "/api/stores") => {
@@ -418,6 +445,32 @@ pub fn run(opts: Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_runs_only_its_own_script() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(PAGE.matches("<script").count(), 1, "one inline script, the one the policy names by hash");
+        let csp = page_csp();
+        assert!(csp.starts_with("default-src 'none'; script-src 'sha256-") && csp.contains("connect-src 'self'"), "{csp}");
+        let hash = csp.split("'sha256-").nth(1).unwrap().split('\'').next().unwrap();
+        assert_eq!(hash.len(), 44, "{hash}");
+        let attr = inline_handlers(PAGE);
+        assert!(attr.is_empty(), "inline handlers do not run under the policy: {attr:?}");
+    }
+
+    /// Inline event handler attributes (` onclick=` and the like) in `page`.
+    fn inline_handlers(page: &str) -> Vec<String> {
+        page.match_indices(" on")
+            .filter_map(|(i, _)| {
+                let rest = &page[i + 3..];
+                let name: String = rest.chars().take_while(|c| c.is_ascii_lowercase()).collect();
+                (!name.is_empty() && rest[name.len()..].starts_with('=')).then(|| format!("on{name}"))
+            })
+            .collect()
+    }
 
     #[test]
     fn project_from_log_and_file() {

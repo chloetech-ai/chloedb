@@ -45,8 +45,9 @@
 //! | `POST /v1/spaces/:s/apps`, `GET` | `{title, description, kinds, exclude?, confirm}` | a build by the app engine, loaded with the approved notes; the builds |
 //! | `POST /v1/spaces/:s/apps/:build/open` | | a one-time link into the studio, at the built app |
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -141,6 +142,8 @@ pub struct Options {
     pub key: Option<String>,
     /// The token callers must send (chloedb-server sends its app token).
     pub token: Option<String>,
+    /// Serve any caller on an address other than loopback, with no token.
+    pub insecure: bool,
     /// Embedder spec ([`crate::embed::open`]).
     pub embedder: String,
 }
@@ -148,12 +151,33 @@ pub struct Options {
 /// Distillations in the background, for `/v1/info`.
 #[derive(Default)]
 struct Jobs {
+    /// Workers running (at most [`DISTILLERS`]).
     running: usize,
+    /// Exchanges waiting for a worker (at most [`DISTILL_QUEUE`]).
+    queue: VecDeque<Distill>,
     done: u64,
     notes: u64,
     failed: u64,
+    /// Exchanges stored but not distilled: the queue was full.
+    skipped: u64,
     last_error: Option<String>,
 }
+
+/// An exchange to write notes down from.
+struct Distill {
+    space: String,
+    first: Record,
+    user: String,
+    assistant: String,
+}
+
+/// Distillations at once: each is a model call, billed to the app's key.
+const DISTILLERS: usize = 4;
+/// Exchanges that may wait for one; past that an exchange is stored and
+/// not distilled, and `/v1/info` counts it under `skipped`.
+const DISTILL_QUEUE: usize = 256;
+/// Requests served at once; one more is answered 503.
+const CONNECTIONS: usize = 64;
 
 pub struct App {
     pub cluster: Arc<Cluster>,
@@ -465,26 +489,57 @@ impl App {
         }
         let stored = self.append(&store, b, drafts)?;
         let wants = b["distill"].as_bool().unwrap_or(true) && !matches!(self.model, Model::Off);
-        if wants {
-            let (me, space, first) = (self.clone(), space.to_string(), stored[0].clone());
-            self.jobs.lock().unwrap_or_else(|e| e.into_inner()).running += 1;
-            std::thread::spawn(move || {
-                let r = me.distill(&space, &first, &user, &assistant);
-                let mut j = me.jobs.lock().unwrap_or_else(|e| e.into_inner());
-                j.running -= 1;
-                match r {
-                    Ok(n) => {
-                        j.done += 1;
-                        j.notes += n as u64;
-                    }
-                    Err(e) => {
-                        j.failed += 1;
-                        j.last_error = Some(e.0);
+        let distilling = wants && self.queue_distill(Distill { space: space.to_string(), first: stored[0].clone(), user, assistant });
+        let mut out = json!({"stored": stored.iter().map(record_json).collect::<Vec<_>>(), "distilling": distilling});
+        if wants && !distilling {
+            out["skipped"] = json!(format!("{DISTILL_QUEUE} exchanges are already waiting to be distilled: this one is stored, and no notes are written from it"));
+        }
+        Ok(out)
+    }
+
+    /// Queues an exchange for a distiller, starting one if fewer than
+    /// [`DISTILLERS`] run; false when the queue is full.
+    fn queue_distill(self: &Arc<Self>, d: Distill) -> bool {
+        let mut j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        if j.queue.len() >= DISTILL_QUEUE {
+            j.skipped += 1;
+            return false;
+        }
+        j.queue.push_back(d);
+        if j.running < DISTILLERS {
+            j.running += 1;
+            let me = self.clone();
+            std::thread::spawn(move || me.distiller());
+        }
+        true
+    }
+
+    /// One distiller: takes exchanges off the queue until it is empty.
+    fn distiller(&self) {
+        loop {
+            let d = {
+                let mut j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+                match j.queue.pop_front() {
+                    Some(d) => d,
+                    None => {
+                        j.running -= 1;
+                        return;
                     }
                 }
-            });
+            };
+            let r = self.distill(&d.space, &d.first, &d.user, &d.assistant);
+            let mut j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            match r {
+                Ok(n) => {
+                    j.done += 1;
+                    j.notes += n as u64;
+                }
+                Err(e) => {
+                    j.failed += 1;
+                    j.last_error = Some(e.0);
+                }
+            }
         }
-        Ok(json!({"stored": stored.iter().map(record_json).collect::<Vec<_>>(), "distilling": wants}))
     }
 
     /// Writes down an exchange's notes, as the daemon does after a turn.
@@ -816,7 +871,7 @@ impl App {
             "version": env!("CARGO_PKG_VERSION"),
             "server": {"url": self.cluster.url, "ok": health.is_ok(), "error": health.err().map(|e| e.to_string())},
             "embedder": self.embedder.name(), "dim": self.embedder.dim(), "model": self.model.json(),
-            "distill": {"running": j.running, "done": j.done, "notes": j.notes, "failed": j.failed, "last_error": j.last_error},
+            "distill": {"running": j.running, "waiting": j.queue.len(), "done": j.done, "notes": j.notes, "failed": j.failed, "skipped": j.skipped, "last_error": j.last_error},
             "tables": {"spaces": SPACES, "space": "ctx_<space>"},
         })
     }
@@ -948,8 +1003,28 @@ fn handle(app: &Arc<App>, mut stream: std::net::TcpStream) {
     }
 }
 
+/// Whether `host` (as given to `--host`) is a loopback address, which only
+/// this machine reaches.
+pub fn loopback(host: &str) -> bool {
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Refuses to serve every caller of a network with no token: anyone who
+/// reaches the port could read and write every space and start model calls
+/// billed to the app's key.
+pub fn check_exposure(host: &str, token: Option<&str>, insecure: bool) -> Result<()> {
+    if token.is_none() && !insecure && !loopback(host) {
+        return Err(err(format!(
+            "chloectx app would serve anyone who reaches {host} with no token: set --token (CHLOECTX_APP_TOKEN; chloedb-server sends its CHLOEDB_APP_TOKEN), listen on 127.0.0.1, or pass --insecure"
+        )));
+    }
+    Ok(())
+}
+
 /// Serves the app until the process ends.
 pub fn run(opts: Options) -> Result<()> {
+    check_exposure(&opts.host, opts.token.as_deref(), opts.insecure)?;
     let cluster = Arc::new(Cluster::new(&opts.server, opts.key.clone()));
     let embedder: Arc<dyn Embedder> = Arc::from(crate::embed::open(&opts.embedder)?);
     // The cluster may still be starting: wait for it, up to a minute.
@@ -975,10 +1050,20 @@ pub fn run(opts: Options) -> Result<()> {
         embedder.name(),
         app.model.json()["how"].as_str().unwrap_or("off")
     );
+    let busy = Arc::new(AtomicUsize::new(0));
     for conn in listener.incoming() {
-        let Ok(stream) = conn else { continue };
-        let a = app.clone();
-        std::thread::spawn(move || handle(&a, stream));
+        let Ok(mut stream) = conn else { continue };
+        if busy.fetch_add(1, Ordering::SeqCst) >= CONNECTIONS {
+            busy.fetch_sub(1, Ordering::SeqCst);
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+            respond_json(&mut stream, "503 Service Unavailable", &json!({"error": format!("chloectx app is serving {CONNECTIONS} requests: try again")}));
+            continue;
+        }
+        let (a, b) = (app.clone(), busy.clone());
+        std::thread::spawn(move || {
+            handle(&a, stream);
+            b.fetch_sub(1, Ordering::SeqCst);
+        });
     }
     Ok(())
 }
@@ -986,6 +1071,19 @@ pub fn run(opts: Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_token_is_refused_off_loopback() {
+        for host in ["127.0.0.1", "::1", "[::1]", "localhost", "127.0.0.2"] {
+            assert!(check_exposure(host, None, false).is_ok(), "{host} is this machine only");
+        }
+        for host in ["0.0.0.0", "::", "10.0.0.7", "chloectx.example.com"] {
+            let e = check_exposure(host, None, false).unwrap_err().to_string();
+            assert!(e.contains("--token") && e.contains("--insecure"), "{host}: {e}");
+            assert!(check_exposure(host, Some("t"), false).is_ok());
+            assert!(check_exposure(host, None, true).is_ok(), "--insecure is the caller's choice");
+        }
+    }
 
     #[test]
     fn incidents_read_back_their_fields() {
