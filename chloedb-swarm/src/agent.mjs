@@ -1,16 +1,16 @@
 // One simulated person doing one task: a tool-use loop in which the model
 // plays the persona, acts only through the surface's tools (each call with
-// a sentence of thought), and ends by calling `finish` with its answer, or
+// a short note of what it is doing), and ends by calling `finish` with its answer, or
 // with what stopped it. Then it answers a short exit interview in
 // character. Every step is handed to `onStep` as it happens.
 
 import { ask, modelId } from './model.mjs';
 
-const RULES = `You are taking part in a usability study of ChloeDB, a database with search and SQL, and its tools. You play one person, described below, doing one task. The makers will read what you did and what you thought, step by step, to find what works and what does not. Nobody will answer questions: there is no one on the other end of the chat.
+const RULES = `You are taking part in a usability study of ChloeDB, a database with search and SQL, and its tools. You play one person, described below, doing one task. The makers will read what you did and the notes you left, step by step, to find what works and what does not. Nobody will answer questions: there is no one on the other end of the chat.
 
 How to play:
 - Be this person. Use the knowledge, habits, patience and vocabulary they have, and not more. If they would not read a reference first, do not. If they would give up after a few failed tries, give up.
-- Act only through the tools. Every call has a "thought": a short note of what you are doing, as this person would say it aloud in a usability study ("Looking for a Keys page, where I'd expect access settings").
+- Act only through the tools. Every call has a "note": what you are doing, in a few words, as this person would say it aloud in a usability study ("Looking for a Keys page, where I'd expect access settings").
 - Look at what each step shows before the next one. Do not invent results, pages or rows you have not seen.
 - When you are done, call finish with outcome "done" and your answer to the task, in your own words, with the facts you found (ids, numbers, names, keys) exactly as the product showed them.
 - If you are stuck and this person would stop, call finish with outcome "gave_up" and say what stopped you.
@@ -24,9 +24,9 @@ const FINISH = {
     properties: {
       outcome: { type: 'string', enum: ['done', 'gave_up'] },
       answer: { type: 'string', description: 'Your answer to the task, or what stopped you.' },
-      thought: { type: 'string', description: 'A short note on how it went, as you would say it aloud.' },
+      note: { type: 'string', description: 'How it went, in a few words, as you would say it aloud.' },
     },
-    required: ['outcome', 'answer', 'thought'],
+    required: ['outcome', 'answer', 'note'],
   },
 };
 
@@ -59,17 +59,19 @@ const OLD_PAGE = '[an earlier view, removed to keep this short; look again if yo
 /**
  * Keep the last `keep` large tool results whole and shorten the ones
  * before them, so a long browser session does not carry every page it saw.
+ * It shortens in batches, once `slack` more pages have piled up: each
+ * shortening changes the conversation's prefix, which the prompt cache then
+ * writes again, so between batches every step reads the cache instead.
  */
-function trim(messages, keep) {
-  let seen = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
+export function trim(messages, keep, slack = 4) {
+  const whole = [];
+  for (const m of messages) {
     if (m.role !== 'user' || !Array.isArray(m.content)) continue;
-    for (const b of m.content) {
-      if (b.type !== 'tool_result' || typeof b.content !== 'string' || b.content.length < 1500) continue;
-      if (++seen > keep && b.content !== OLD_PAGE) b.content = OLD_PAGE;
-    }
+    for (const b of m.content) if (b.type === 'tool_result' && typeof b.content === 'string' && b.content.length >= 1500) whole.push(b);
   }
+  if (whole.length <= keep + slack) return false;
+  for (const b of whole.slice(0, whole.length - keep)) b.content = OLD_PAGE;
+  return true;
 }
 
 /**
@@ -114,7 +116,7 @@ export async function runSession({ persona, task, surface, model, spend, effort 
           out.outcome = u.input.outcome === 'done' ? 'done' : 'gave_up';
           out.answer = String(u.input.answer || '');
           out.steps++;
-          await onStep({ step: out.steps, tool: 'finish', input: { outcome: u.input.outcome }, thought: u.input.thought || said, result: out.answer, ok: true, ms: 0, cost: share });
+          await onStep({ step: out.steps, tool: 'finish', input: { outcome: u.input.outcome }, thought: u.input.note || said, result: out.answer, ok: true, ms: 0, cost: share });
           results.push({ type: 'tool_result', tool_use_id: u.id, content: 'Thank you. The task is over.' });
           continue;
         }
@@ -122,8 +124,8 @@ export async function runSession({ persona, task, surface, model, spend, effort 
         const s0 = Date.now();
         const r = await surface.call(u.name, u.input);
         out.steps++;
-        const { thought, ...input } = u.input || {};
-        await onStep({ step: out.steps, tool: u.name, input, thought: thought || said, result: r.text.slice(0, 2000), ok: r.ok, error: r.error, http: r.http, url: r.url, events: r.events, ms: Date.now() - s0, cost: share });
+        const { note, ...input } = u.input || {};
+        await onStep({ step: out.steps, tool: u.name, input, thought: note || said, result: r.text.slice(0, 2000), ok: r.ok, error: r.error, http: r.http, url: r.url, events: r.events, ms: Date.now() - s0, cost: share });
         share = 0;
         results.push({ type: 'tool_result', tool_use_id: u.id, content: r.text || '(no output)', ...(r.ok ? {} : { is_error: true }) });
       }

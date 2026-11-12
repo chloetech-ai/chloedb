@@ -14,7 +14,7 @@ Every session runs against a sandbox of its own: a fresh `chloedb-server` on
 a free port, with a random root token, the task's fixture loaded and an API
 key of the task's scope (`read`, `write` or `admin`). Nothing a session does
 reaches any other server. At each step the person writes a short note of
-what they are doing (`thought`), which is what makes a failure readable
+what they are doing (`note`, kept as the step's `thought`), which makes a failure readable
 afterwards. When they finish (or give up, or run out of steps or time), the
 task's checks read the sandbox and the answer to decide success, and the
 person answers a short exit interview.

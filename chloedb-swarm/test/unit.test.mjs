@@ -105,9 +105,9 @@ test('expand: personas × tasks × seeds, a model per seed, filters and limits',
 
 test('agent: acts through the surface, finishes, answers the interview', async () => {
   const model = scripted([
-    { tool: 'look', input: { thought: 'Let me see the page.' } },
-    { tool: 'press', input: { thought: 'Try Enter.', key: 'Enter' } },
-    { tool: 'finish', input: { outcome: 'done', answer: 'It is t-11.', thought: 'Found it.' } },
+    { tool: 'look', input: { note: 'Let me see the page.' } },
+    { tool: 'press', input: { note: 'Try Enter.', key: 'Enter' } },
+    { tool: 'finish', input: { outcome: 'done', answer: 'It is t-11.', note: 'Found it.' } },
     { tool: 'interview', input: { ease: 5, hardest: 'none', expected: 'search', one_change: 'a search box', would_use: 'yes' } },
   ]);
   useClient(model);
@@ -136,7 +136,7 @@ test('agent: acts through the surface, finishes, answers the interview', async (
 });
 
 test('agent: stops at the step limit, and nudges a model that only talks', async () => {
-  useClient(scripted(Array.from({ length: 10 }, () => ({ tool: 'look', input: { thought: 'again' } })).concat([{ text: 'done?' }])));
+  useClient(scripted(Array.from({ length: 10 }, () => ({ tool: 'look', input: { note: 'again' } })).concat([{ text: 'done?' }])));
   const r = await runSession({ persona, task, surface: new FakeSurface(), model: 'haiku', spend: new Spend(5), maxSteps: 3 });
   assert.equal(r.outcome, 'out_of_steps');
   assert.equal(r.steps, 3);
@@ -148,7 +148,7 @@ test('agent: stops at the step limit, and nudges a model that only talks', async
 });
 
 test('agent: a spent budget ends the session as "budget"', async () => {
-  useClient(scripted([{ tool: 'look', input: { thought: 'x' } }]));
+  useClient(scripted([{ tool: 'look', input: { note: 'x' } }]));
   const spend = new Spend(0.000001);
   spend.usd = 1;
   const r = await runSession({ persona, task, surface: new FakeSurface(), model: 'haiku', spend });
@@ -172,4 +172,16 @@ test('report: a run as Markdown', () => {
   assert.match(md, /### 1\. Dates/);
   assert.match(md, /s2 step 2: refused/);
   assert.match(md, /\$1\.50/);
+});
+
+test('agent: old pages are shortened in batches, so the prompt cache holds between them', async () => {
+  const { trim } = await import('../src/agent.mjs');
+  const page = (i) => ({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: `page ${i} `.repeat(300) }] });
+  const msgs = [];
+  const changed = [];
+  for (let i = 1; i <= 12; i++) { msgs.push(page(i)); changed.push(trim(msgs, 2)); }
+  // Shortened at the 7th page and the 12th (2 kept + 4 slack), not at every step.
+  assert.deepEqual(changed.map((c, i) => (c ? i + 1 : 0)).filter(Boolean), [7, 12]);
+  const whole = msgs.filter((m) => m.content[0].content.startsWith('page'));
+  assert.deepEqual(whole.map((m) => m.content[0].tool_use_id), ['t11', 't12']);
 });

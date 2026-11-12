@@ -22,7 +22,7 @@ export class FakeSurface {
   constructor(answers = {}) { this.answers = answers; this.calls = []; }
   async open() { return this; }
   toolDefs() {
-    const t = (name) => ({ name, description: name, input_schema: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] } });
+    const t = (name) => ({ name, description: name, input_schema: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] } });
     return [t('look'), t('press')];
   }
   async start() { return 'A page with a search box.'; }

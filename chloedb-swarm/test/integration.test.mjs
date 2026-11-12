@@ -48,9 +48,9 @@ function pick(params) {
   }
   if (tools.includes('interview')) return { tool: 'interview', input: { ease: 6, hardest: 'none', expected: 'a count', one_change: 'counts', would_use: 'yes' } };
   const turn = params.messages.filter((m) => m.role === 'assistant').length;
-  if (turn === 0) return { tool: 'list_tables', input: { thought: 'What is here?' } };
-  if (turn === 1) return { tool: 'query', input: { thought: 'Count them.', sql: 'SELECT COUNT(*) AS n FROM tickets' } };
-  return { tool: 'finish', input: { thought: 'Got it.', outcome: 'done', answer: 'There are 3 tickets.' } };
+  if (turn === 0) return { tool: 'list_tables', input: { note: 'What is here?' } };
+  if (turn === 1) return { tool: 'query', input: { note: 'Count them.', sql: 'SELECT COUNT(*) AS n FROM tickets' } };
+  return { tool: 'finish', input: { note: 'Got it.', outcome: 'done', answer: 'There are 3 tickets.' } };
 }
 
 test('a run plays each session in its own sandbox and lands in both stores', { skip, timeout: 120_000 }, async () => {
@@ -105,13 +105,13 @@ test('browser: the command center as an accessibility tree, acted on by referenc
     assert.ok(!first.includes(key), 'the key stays out of what the agent reads');
     const link = first.match(/link "Queries" \[ref=(e\d+)\]/);
     assert.ok(link, first.slice(0, 800));
-    const r = await s.call('click', { thought: 'Open queries.', ref: link[1] });
+    const r = await s.call('click', { note: 'Open queries.', ref: link[1] });
     assert.ok(r.ok, r.error);
     assert.match(r.url, /#\/queries/);
-    const bad = await s.call('click', { thought: 'x', ref: 'e99999' });
+    const bad = await s.call('click', { note: 'x', ref: 'e99999' });
     assert.equal(bad.ok, false);
     assert.match(bad.error, /no element has that reference/);
-    const away = await s.call('go', { thought: 'x', path: 'https://example.com/' });
+    const away = await s.call('go', { note: 'x', path: 'https://example.com/' });
     assert.match(away.error, /only pages of this site/);
   } finally {
     await s.close();

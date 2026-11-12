@@ -2,7 +2,7 @@
 // agent does, through the server's Model Context Protocol tools (POST
 // /v1/mcp), with the sandbox key the session was given. Every tool the
 // server lists becomes a tool of the agent, with one more required field,
-// `thought`: what the person is trying and why, which is what makes a
+// `note`: what the person is trying, in a few words, which is what makes a
 // failure readable afterwards.
 
 const MAX_RESULT = 6000;
@@ -37,13 +37,13 @@ export class McpSurface {
     return this;
   }
 
-  /** The tools as the Messages API takes them, each with `thought` added. */
+  /** The tools as the Messages API takes them, each with `note` added. */
   toolDefs() {
     return this.tools.map((t) => {
       const schema = structuredClone(t.inputSchema || { type: 'object', properties: {} });
       schema.type = 'object';
-      schema.properties = { thought: { type: 'string', description: 'A short note of what you are doing now, as you would say it aloud.' }, ...(schema.properties || {}) };
-      schema.required = ['thought', ...(schema.required || []).filter((r) => r !== 'thought')];
+      schema.properties = { note: { type: 'string', description: 'What you are doing now, in a few words, as you would say it aloud.' }, ...(schema.properties || {}) };
+      schema.required = ['note', ...(schema.required || []).filter((r) => r !== 'note')];
       return { name: t.name, description: (t.description || '').slice(0, 1024), input_schema: schema };
     });
   }
@@ -56,7 +56,7 @@ export class McpSurface {
    * kind of thing the swarm is there to see.
    */
   async call(name, input) {
-    const { thought, ...args } = input || {};
+    const { note, ...args } = input || {};
     try {
       const { result, http } = await this.rpc('tools/call', { name, arguments: args });
       const text = (result.content || []).map((c) => (c.type === 'text' ? c.text : `[${c.type}]`)).join('\n');

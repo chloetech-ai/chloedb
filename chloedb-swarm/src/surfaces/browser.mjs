@@ -38,9 +38,9 @@ export async function closeBrowser() {
   if (shared) { const b = await shared; shared = null; await b.close(); }
 }
 
-const thought = { thought: { type: 'string', description: 'A short note of what you are doing now, as you would say it aloud.' } };
+const NOTE = { note: { type: 'string', description: 'What you are doing now, in a few words, as you would say it aloud.' } };
 const tool = (name, description, props = {}, required = []) => ({
-  name, description, input_schema: { type: 'object', properties: { ...thought, ...props }, required: ['thought', ...required] },
+  name, description, input_schema: { type: 'object', properties: { ...NOTE, ...props }, required: ['note', ...required] },
 });
 const ref = { ref: { type: 'string', description: 'The element\'s reference from the page, such as e12.' } };
 
