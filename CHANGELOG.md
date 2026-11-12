@@ -6,10 +6,20 @@ package (`chloedb`), the JavaScript package (`chloedb`), the Java package,
 ChloeCtx. [docs/compatibility.md](docs/compatibility.md) says what a version
 promises about the file format, the shard protocol and the old names.
 
-Version numbers are not yet bumped per change: every crate and package is
-still 0.1.0, and the next release will name its version here.
+Every crate and package carries the release's version; between releases
+changes collect under "Unreleased".
 
 ## Unreleased
+
+## 0.2.0
+
+The first release under the new names: `chloedb-server-v0.2.0`,
+`chloedb-py-v0.2.0` and `chloedb-js-v0.2.0` (the Java package and ChloeCtx
+are built from source). It has breaking changes, each marked below: a
+memory budget on embedded queries, writes that need a model which is not
+open, short pages past a fused ranking's candidates, model endpoints'
+`key_env` names, and stored SVG and HTML served as downloads. The shard
+protocol is 20; servers of protocols 18 and 19 still talk to it.
 
 ### Security
 
