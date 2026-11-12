@@ -343,6 +343,17 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
   a `SHA256SUMS`.
 - [docs/compatibility.md](docs/compatibility.md): the file formats this
   code reads and writes, the shard protocol, and what a version promises.
+- A release tag builds and publishes nothing unless its commit is on main
+  and CI's whole matrix (the nightly run, or one started by hand) passed
+  on it (`release-gate.yml`); the release workflows check that the binary
+  starts and leave the tests to CI. The server's image publishes `latest`
+  only after CI passed on this repository's main, and `<version>` from a
+  release tag.
+- A nightly run that fails opens an issue (`nightly-failure`); the fuzz
+  targets build again and run every night on a kept corpus.
+- Dependabot watches every lockfile, and `cargo deny` checks advisories
+  and licenses daily (`deny.toml`); zstd and its crates moved to versions
+  without the open advisories.
 
 ## Since the 0.1.0 releases
 
