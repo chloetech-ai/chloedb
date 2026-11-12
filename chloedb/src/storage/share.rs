@@ -220,15 +220,17 @@ fn flock_wait(f: &File, op: libc::c_int) -> std::io::Result<bool> {
 /// lock on, far past any page: a record lock of the file itself, so that
 /// a writer that reaches it by another name (a symlink, a hard link, a
 /// second mount, or after its `-readers` directory was deleted) finds it
-/// held. Readers take none, and it does not meet `flock`.
+/// held. Readers take none, and on Linux it does not meet `flock`. Only
+/// on Linux: on macOS and the BSDs `flock` and `fcntl` locks are one
+/// kind, so the shared `flock` every reader and the writer itself hold on
+/// the file would refuse it, and every open for writing would be `Busy`.
+#[cfg(target_os = "linux")]
 const WRITER_BYTE: libc::off_t = 0x3fff_ffff_ffff_fff0;
 
 /// One non-blocking write lock on [`WRITER_BYTE`] of `f`: whether it was
-/// taken. On Linux an open file description's lock (`F_OFD_SETLK`), which
-/// a second open of the file in the same process also meets; elsewhere a
-/// process's lock (`F_SETLK`), which only other processes meet, and which
-/// closing any descriptor of the file in this process lets go of (the
-/// `WRITER` lock still keeps a second writer of this process out).
+/// taken. An open file description's lock (`F_OFD_SETLK`), which a second
+/// open of the file in the same process also meets.
+#[cfg(target_os = "linux")]
 fn try_writer_byte(f: &File) -> std::io::Result<bool> {
     // SAFETY: a zeroed flock is a valid argument, filled in below.
     let mut l: libc::flock = unsafe { std::mem::zeroed() };
@@ -236,12 +238,8 @@ fn try_writer_byte(f: &File) -> std::io::Result<bool> {
     l.l_whence = libc::SEEK_SET as _;
     l.l_start = WRITER_BYTE;
     l.l_len = 1;
-    #[cfg(target_os = "linux")]
-    let cmd = libc::F_OFD_SETLK;
-    #[cfg(not(target_os = "linux"))]
-    let cmd = libc::F_SETLK;
     // SAFETY: fcntl on a valid descriptor with a valid flock.
-    if unsafe { libc::fcntl(f.as_raw_fd(), cmd, &l) } == 0 {
+    if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_OFD_SETLK, &l) } == 0 {
         return Ok(true);
     }
     let e = std::io::Error::last_os_error();
@@ -249,6 +247,13 @@ fn try_writer_byte(f: &File) -> std::io::Result<bool> {
         Some(libc::EAGAIN) | Some(libc::EACCES) => Ok(false),
         _ => Err(e),
     }
+}
+
+/// Elsewhere no byte is locked (see `WRITER_BYTE`): the writer is the one
+/// that holds `WRITER`, found by the path, as before.
+#[cfg(not(target_os = "linux"))]
+fn try_writer_byte(_: &File) -> std::io::Result<bool> {
+    Ok(true)
 }
 
 /// [`try_writer_byte`], retried for [`LOCK_WAIT`] as [`flock_wait`] is.
@@ -291,7 +296,7 @@ pub fn lock_shared(main: &File) -> Result<()> {
 }
 
 /// The writer's hold on a database: `main` shared, a write lock on a byte
-/// of `main` ([`WRITER_BYTE`]), and `WRITER` exclusive.
+/// of `main` (`WRITER_BYTE`, on Linux), and `WRITER` exclusive.
 pub struct WriterLock {
     file: File,
     session: u64,

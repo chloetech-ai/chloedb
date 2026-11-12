@@ -87,9 +87,11 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
 - A failed sync of the database file poisons the handle, as a failed log
   append already did, so no later commit or merge can claim pages that
   never reached the disk.
-- The writer's lock is held on the file itself, so a symbolic link, a
-  hard link or a deleted `-readers` directory no longer lets a second
-  writer open it.
+- On Linux the writer's lock is held on the file itself, so a symbolic
+  link, a hard link or a deleted `-readers` directory no longer lets a
+  second writer open it. Not on macOS, where `flock` and `fcntl` locks
+  are one kind and the readers' shared lock would refuse it: there the
+  writer is still the one holding `-readers/WRITER`.
 - `close()` flushes, so after a clean close the file alone is a complete
   copy of the database. Python adds `flush()` and `checkpoint(dest)`;
   docs/chloedb/python.md and index.md say how to back a database up.
