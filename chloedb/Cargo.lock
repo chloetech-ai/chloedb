@@ -654,6 +654,7 @@ dependencies = [
  "icu_segmenter_data",
  "image",
  "libc",
+ "libsais-sys",
  "lz4_flex 0.11.6",
  "memmap2",
  "object_store",
@@ -2760,6 +2761,15 @@ name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "libsais-sys"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ec495a2918bacd868428951b45b9b3fb9464840e2ac559462c4370d6fa2c404"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "libsqlite3-sys"

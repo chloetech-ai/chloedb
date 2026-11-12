@@ -44,6 +44,12 @@ pub trait Estimator {
     fn path_count(&self, _field: usize, _path: &str, _test: &crate::query::logical::PathTest) -> f64 {
         self.n_docs()
     }
+    /// Documents whose field matches a `LIKE` pattern ([`Pred::Like`]), at
+    /// most, and the nanoseconds to find them all: without a substring
+    /// index to ask, a tenth of the documents and a test of each value.
+    fn like_estimate(&self, _field: usize, _pattern: &str, _ci: bool) -> (f64, f64) {
+        (self.n_docs() / 10.0, self.n_docs() * LIKE_SCAN)
+    }
     /// Nanoseconds to materialise a prefix, if the index can estimate it
     /// (otherwise its matches' postings).
     fn prefix_cost(&self, _field: usize, _prefix: &str, _edits: u8) -> Option<f64> {
@@ -139,6 +145,19 @@ pub struct PredEstimate {
     pub probeable: bool,
 }
 
+/// Nanoseconds a [`Pred::Like`] takes, as measured on Loghub's SSH and
+/// Android logs (`results/substring/`, a 2.1 GHz Xeon): to walk a row of a
+/// substring index to its sample; to read and test the value of a
+/// candidate the index found; to test a document's value in a scan of
+/// them all, block after block; and to read and test the value of one
+/// document on its own, which decompresses its block (what a conjunction
+/// pays for each row its other conditions left, where that is less than
+/// the whole segment's).
+pub const LIKE_LOCATE: f64 = 1_500.0;
+pub const LIKE_READ: f64 = 6_000.0;
+pub const LIKE_SCAN: f64 = 200.0;
+pub const LIKE_PROBE: f64 = 10_000.0;
+
 pub struct Planner<'a, E: Estimator> {
     pub est: &'a E,
     pub costs: &'a CostModel,
@@ -183,6 +202,18 @@ impl<E: Estimator> Planner<'_, E> {
                 let card = self.est.prefix_count(*field, prefix, *edits).min(n);
                 let cost = self.est.prefix_cost(*field, prefix, *edits).unwrap_or(card * (c.posting + c.emit));
                 PredEstimate { card, mat_cost: c.leaf + cost, probe_cost: c.probe_keyword, probeable: true }
+            }
+            // From a substring index or a scan of the values, for the
+            // whole segment. A probe of it would be that set too (a
+            // filter's test of a document cannot fail, and a read of a
+            // stored value can), so it is never probed: a conjunction
+            // tests the rows its other conditions left by their stored
+            // values instead, as it is materialised.
+            Pred::Like { field, pattern, ci, negated } => {
+                let (hits, ns) = self.est.like_estimate(*field, pattern, *ci);
+                let hits = hits.min(n);
+                let card = if *negated { n - hits } else { hits };
+                PredEstimate { card, mat_cost: c.leaf + ns + n * c.emit / 64.0, probe_cost: LIKE_PROBE, probeable: false }
             }
             // Terms' lists, as IN and a prefix read them.
             Pred::Path { field, path, test } => {

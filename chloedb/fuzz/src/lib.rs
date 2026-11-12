@@ -7,7 +7,7 @@
 //! ones rather than noise that fails the first check. Every target must
 //! return without undefined behaviour, a hang or a runaway allocation.
 //! Beyond that:
-//! - `loom`, `wal`, `manifest`, `sql`, `text_query`, `analyzer` and `media` must not panic: a damaged input is
+//! - `loom`, `wal`, `manifest`, `sql`, `text_query`, `analyzer`, `media` and `substring` must not panic: a damaged input is
 //!   an error, and a list that passes [`Loom::validate`] decodes, seeks and
 //!   combines like its docIDs.
 //! - `segment` must open without panicking (a damaged segment is an error)
@@ -34,7 +34,9 @@ use chloedb::query::Params;
 use chloedb::storage::freelist::FreeList;
 use chloedb::storage::manifest::Manifest;
 use chloedb::storage::pager::{read_extent, read_metas};
+use chloedb::segment::{FieldIndexBuilder, SegmentFile, SegmentWriter};
 use chloedb::storage::DbOptions;
+use chloedb::substring::{self, Like, SubstringBuilder, SubstringIndex};
 use chloedb::{Field, FieldType, Schema, Value, VectorIndexKind};
 
 /// `seed` with the damage `data` describes, in 5-byte steps: a
@@ -490,6 +492,80 @@ pub fn media(data: &[u8]) {
 }
 
 thread_local!(static QUIET: Cell<bool> = const { Cell::new(false) });
+
+/// The seed of [`substring`]: a segment image with a substring index of
+/// field `f1` in several parts (one with a `docs` section), its values by
+/// docID, and the byte ranges of its sections.
+struct SubSeed {
+    image: Vec<u8>,
+    values: Vec<Option<String>>,
+    sections: Vec<Range<usize>>,
+}
+
+/// What [`substring`] writes values and patterns in: letters with their
+/// capitals, the characters whose lowercase is special (`İ`, `Σ`, `ς`,
+/// U+0307), two and three byte characters, and LIKE's own.
+const SUBSTRING_CHARS: [char; 24] = ['a', 'A', 'b', 'B', 'n', 'N', 'i', 'I', 'İ', '\u{307}', 'σ', 'ς', 'Σ', 'é', 'É', '東', '京', ' ', '-', '0', '1', '%', '_', '\u{0}'];
+
+fn sub_seed() -> &'static SubSeed {
+    static S: OnceLock<SubSeed> = OnceLock::new();
+    S.get_or_init(|| {
+        let mut r = Lcg(29);
+        let values: Vec<Option<String>> = (0..260)
+            .map(|i| {
+                if i % 9 == 4 {
+                    return None;
+                }
+                let len = [0, 1, 3, 12, 40][(r.next() % 5) as usize] + r.next() % 5;
+                Some((0..len).map(|_| SUBSTRING_CHARS[((r.next() % 24) * (r.next() % 24) / 24) as usize]).collect())
+            })
+            .collect();
+        let mut b = Box::new(SubstringBuilder::new("f1", 4, 900));
+        for (d, v) in values.iter().enumerate() {
+            b.add(d as u32, &v.clone().map_or(Value::Null, Value::Str)).unwrap();
+        }
+        let mut w = SegmentWriter::new(values.len());
+        b.finish(&mut w).unwrap();
+        let image = w.finish();
+        let seg = SegmentFile::from_vec(image.clone()).unwrap();
+        let sections: Vec<Range<usize>> = seg.section_sizes().iter().filter(|(name, _)| name.starts_with("sub.")).map(|(name, _)| seg.section_range(name).unwrap()).collect();
+        assert!(sections.len() >= 8, "{} sections", sections.len());
+        SubSeed { image, values, sections }
+    })
+}
+
+/// A pattern, as `LIKE` or `ILIKE`, against a substring index: intact, it
+/// selects the documents a test of every value selects; with damaged
+/// sections it is an error or some answer. Must not panic.
+/// The first byte says how the rest is read: bit 0 `ILIKE`, bit 1 the
+/// pattern as UTF-8 rather than characters of [`SUBSTRING_CHARS`], bit 2
+/// whether damage follows, and its upper four bits the pattern's bytes.
+pub fn substring(data: &[u8]) {
+    let Some((&how, rest)) = data.split_first() else { return };
+    let s = sub_seed();
+    let (pattern, damaged) = rest.split_at(rest.len().min((how >> 4) as usize));
+    let pattern: String = if how & 2 != 0 { String::from_utf8_lossy(pattern).into_owned() } else { pattern.iter().map(|&b| SUBSTRING_CHARS[b as usize % SUBSTRING_CHARS.len()]).collect() };
+    let like = Like::new(&pattern, how & 1 != 0);
+    let n = s.values.len() as u32;
+    let mut value = |d: u32| Ok(s.values.get(d as usize).cloned().flatten());
+    if how & 4 == 0 {
+        let seg = SegmentFile::from_vec(s.image.clone()).unwrap();
+        let ix = SubstringIndex::open(&seg, "f1").unwrap().expect("the seed's index");
+        let want = substring::like::scan(&like, n, &mut value).unwrap().to_sorted();
+        // Listed whatever the count, and under the query's own rule.
+        for locate_bytes in [0, substring::like::LOCATE_BYTES] {
+            let got = substring::like::eval(&ix, &like, n, &mut value, locate_bytes, &mut Default::default()).unwrap().to_sorted();
+            assert_eq!(got, want, "{pattern:?} (ILIKE: {})", how & 1 != 0);
+        }
+        return;
+    }
+    let Ok(seg) = SegmentFile::from_vec(damage(&s.image, damaged, &s.sections)) else { return };
+    let Ok(Some(ix)) = SubstringIndex::open(&seg, "f1") else { return };
+    let _ = ix.count(pattern.as_bytes());
+    for locate_bytes in [0, substring::like::LOCATE_BYTES] {
+        let _ = substring::like::eval(&ix, &like, n, &mut value, locate_bytes, &mut Default::default());
+    }
+}
 
 /// Runs `f`, catching a panic without reporting it. Other panics still go
 /// to the hook that was set before (cargo fuzz's aborts the process).

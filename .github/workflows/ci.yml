@@ -483,8 +483,8 @@ jobs:
           # the first part.
           - part: bit vectors
             tests: "postings::bits --skip postings::bits::tests::next_one_and_ones"
-          - part: bytes, loom, bit vector ones, query pool
-            tests: "postings::bytes postings::codecs::loom::tests::miri_ postings::bits::tests::next_one_and_ones query::pool"
+          - part: bytes, loom, bit vector ones, query pool, substring
+            tests: "postings::bytes postings::codecs::loom::tests::miri_ postings::bits::tests::next_one_and_ones query::pool substring::tests::miri_"
           - part: columns, graph, keys, text codec
             tests: "forward:: graph:: storage::pk::tests::collisions storage::pk::tests::section_written storage::live storage::updates::tests::round_trip text::codec --skip many_int_keys"
     steps:
