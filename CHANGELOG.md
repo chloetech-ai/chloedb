@@ -11,25 +11,6 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-### Apps
-
-- chloedb-server: a server of its own or a coordinator starts the crawler,
-  Sheets and ChloeCtx itself, as child processes, when `chloedb-crawl`,
-  `chloedb-sheets` and `chloectx` are installed beside it
-  (`--start-apps`, default `auto`; `off` starts none). Each listens on a
-  loopback port, takes requests only with a token made for it at each
-  start, and calls the server back with an ephemeral key scoped to its own
-  tables, never with the server's token; it is started again when it
-  exits, and stopped when the server stops. `GET /v1/apps` lists each
-  one's process (pid, restarts, last exit, its last lines).
-- chloedb-crawl: `serve --table-prefix crawl_` names every table a crawl
-  fills with that prefix.
-- ChloeCtx: the app has an **Inspector** page in the command center: the
-  memory that `chloectx sync` copied into the cluster (`chloectx_memory`),
-  by project, each session read as the conversation it recorded, filtered
-  by kind and searched (BM25), as `chloectx ui` shows a local store
-  (`GET /v1/memory`, `/v1/memory/sessions`, `/v1/memory/records`).
-
 ### Added
 
 - ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
