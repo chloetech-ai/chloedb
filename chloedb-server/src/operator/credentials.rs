@@ -1,0 +1,204 @@
+//! A key and a token of its own for each app beside the cluster
+//! (`spec.crawler`, `spec.sheets`, `spec.chloectx`, `spec.apps`), so that
+//! none holds the cluster's admin token.
+//!
+//! For each app the operator keeps a Secret, `<cluster>-<app>-credentials`,
+//! with two entries:
+//!
+//! - `key`: an API key of the cluster limited to the app's tables
+//!   ([`crate::keys::Grant`]; `spec.<app>.tables`, else
+//!   [`default_tables`]), which the app reads and writes the cluster with.
+//!   The operator makes it through the coordinators with the admin token
+//!   (`POST /v1/admin/keys`), named `<app>-app`, and makes it again (the
+//!   old one revoked) when the app's tables change. It does so only once
+//!   the coordinators say they make such keys (`/v1/whoami`'s
+//!   `auth.app_keys`): a server from before limits would take a limited
+//!   key's request as one for a key of every table.
+//! - `token`: what the app's own API requires and the coordinators send
+//!   it, random, made with the key. The coordinators read it from the
+//!   Secret mounted as a folder (`CHLOEDB_APP_TOKEN_DIR`), a file per app,
+//!   as they send it, so a Secret made after they started needs no
+//!   restart.
+//!
+//! Until the Secret holds both, the app runs as it did before there were
+//! such keys: with the admin token for both. The crawler that grows the
+//! cluster (`crawler.grow`, the default) keeps the admin token as its key,
+//! since growing is the server's admin (shards, rebalancing), not a
+//! table's; its token is still its own.
+//!
+//! An app taken out of the spec loses its key (revoked) and its Secret.
+
+use std::collections::BTreeMap;
+
+use serde_json::{json, Value as Json};
+
+use crate::keys::Grant;
+
+/// The Secret's entries.
+pub const KEY: &str = "key";
+pub const TOKEN: &str = "token";
+/// Annotations of the Secret: the key's id (to revoke it), and the hash
+/// of the tables it was made for.
+pub const KEY_ID: &str = "strata.chloetech.ai/key-id";
+pub const TABLES: &str = "strata.chloetech.ai/tables";
+/// Where the coordinators find the apps' tokens, a file per app.
+pub const TOKEN_DIR: &str = "/etc/strata/app-tokens";
+
+/// The tables an app's key may touch when its spec names none: its own.
+pub fn default_tables(app: &str) -> &'static [&'static str] {
+    match app {
+        // Workbooks in sheets_books and sheets_cells; the cluster's tables
+        // open in it as sheets (read).
+        super::sheets::APP => &["sheets_*=admin", "*=read"],
+        // Its spaces, and the memory `chloectx sync` pushes.
+        super::chloectx::APP => &["ctx_*=admin", "chloectx_memory=read"],
+        // The engine's own tables and its apps' rows.
+        super::apps::APP => &["sa_*=admin", "app_*=admin"],
+        // A crawl fills the table it names (by default its first seed's
+        // host): any table, but nothing of the server's.
+        _ => &["*=admin"],
+    }
+}
+
+/// The tables of app `app`'s key: `tables`, else its own.
+pub fn tables_of(app: &str, tables: &[String]) -> Vec<String> {
+    match tables.is_empty() {
+        true => default_tables(app).iter().map(|t| t.to_string()).collect(),
+        false => tables.to_vec(),
+    }
+}
+
+/// What is wrong with `spec.<app>.tables`, if anything.
+pub fn check_tables(app: &str, tables: &[String]) -> Result<(), String> {
+    for t in tables {
+        Grant::parse(t).map_err(|e| format!("{app}.tables: {}", e.message))?;
+    }
+    Ok(())
+}
+
+/// `spec.<app>.tables` in the resource's schema.
+pub fn schema(app: &str) -> Json {
+    json!({
+        "type": "array", "items": {"type": "string"},
+        "description": format!("The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: {}.", default_tables(app).join(", ")),
+    })
+}
+
+/// The Secret of app `app` of cluster `cluster`.
+pub fn secret_name(cluster: &str, app: &str) -> String {
+    format!("{cluster}-{app}-credentials")
+}
+
+/// The name of app `app`'s key in the cluster.
+pub fn key_name(app: &str) -> String {
+    format!("{app}-app")
+}
+
+/// A short hash of the tables a key was made for.
+pub fn tables_hash(tables: &[String]) -> String {
+    super::short_hash(&json!(tables))
+}
+
+/// What a Secret holds, decoded.
+pub fn entries(secret: &Json) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(m) = secret["data"].as_object() {
+        for (k, v) in m {
+            if let Some(b) = v.as_str().and_then(super::kube::base64_decode) {
+                out.insert(k.clone(), String::from_utf8_lossy(&b).trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Whether a Secret holds a key and a token.
+pub fn ready(secret: Option<&Json>) -> bool {
+    secret.is_some_and(|s| {
+        let e = entries(s);
+        e.get(KEY).is_some_and(|k| !k.is_empty()) && e.get(TOKEN).is_some_and(|t| !t.is_empty())
+    })
+}
+
+/// Whether an app runs with a key of its own when its Secret is ready: all
+/// but the crawler that grows the cluster.
+pub fn keyed(spec: &super::Spec, app: &str) -> bool {
+    match app {
+        super::crawler::APP => spec.crawler.as_ref().is_some_and(|c| !c.grow),
+        _ => true,
+    }
+}
+
+/// The tables of app `app` in `spec`.
+pub fn spec_tables(spec: &super::Spec, app: &str) -> Vec<String> {
+    let given: &[String] = match app {
+        super::crawler::APP => spec.crawler.as_ref().map_or(&[], |c| &c.tables),
+        super::sheets::APP => spec.sheets.as_ref().map_or(&[], |c| &c.tables),
+        super::chloectx::APP => spec.chloectx.as_ref().map_or(&[], |c| &c.tables),
+        super::apps::APP => spec.apps.as_ref().map_or(&[], |c| &c.tables),
+        _ => &[],
+    };
+    tables_of(app, given)
+}
+
+/// Makes app `app`'s key through the coordinators (`admin`), limited to
+/// `tables`, in place of any key of its name (and of `old`, by id): its id
+/// and secret. Refuses (and revokes what it made) when the answer does not
+/// show the key limited, as a server from before limits would answer.
+pub async fn make_key(admin: &super::Admin, app: &str, tables: &[String], old: Option<&str>) -> Result<(String, String), String> {
+    let name = key_name(app);
+    let listed = admin.call(reqwest::Method::GET, "/v1/admin/keys", None).await?;
+    let mut stale: Vec<String> = listed["keys"].as_array().into_iter().flatten().filter(|k| k["name"] == name.as_str() && k["revoked_ms"].is_null()).filter_map(|k| k["id"].as_str().map(String::from)).collect();
+    if let Some(o) = old {
+        if !stale.iter().any(|s| s == o) && listed["keys"].as_array().into_iter().flatten().any(|k| k["id"] == o && k["revoked_ms"].is_null()) {
+            stale.push(o.to_string());
+        }
+    }
+    for id in &stale {
+        admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await?;
+    }
+    let made = admin
+        .post("/v1/admin/keys", json!({"name": name, "tables": tables, "owner": "operator", "note": format!("the key of the app {app} beside this cluster, made by the operator")}))
+        .await?;
+    let id = made["key"]["id"].as_str().ok_or_else(|| format!("the coordinators made a key with no id: {made}"))?.to_string();
+    if made["key"]["tables"].as_object().is_none_or(|t| t.is_empty()) {
+        let _ = admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await;
+        return Err("the coordinators made a key of every table for an app: they are from before keys limited to tables, so the app keeps the admin token".into());
+    }
+    let secret = made["secret"].as_str().ok_or("the coordinators' answer has no secret")?.to_string();
+    Ok((id, secret))
+}
+
+/// Whether the coordinators make keys limited to tables, as `/v1/whoami`
+/// says.
+pub async fn supported(admin: &super::Admin) -> bool {
+    admin.call(reqwest::Method::GET, "/v1/whoami", None).await.is_ok_and(|j| j["auth"]["app_keys"] == true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apps_get_their_own_tables() {
+        assert_eq!(tables_of("sheets", &[]), ["sheets_*=admin", "*=read"]);
+        assert_eq!(tables_of("chloectx", &["ctx_*=write".into()]), ["ctx_*=write"]);
+        for app in ["crawler", "sheets", "chloectx", "apps"] {
+            assert!(check_tables(app, &tables_of(app, &[])).is_ok(), "{app}");
+        }
+        assert!(check_tables("sheets", &["sheets_*=root".into()]).unwrap_err().contains("sheets.tables"));
+        assert!(check_tables("sheets", &["a.b=read".into()]).is_err());
+        assert_ne!(tables_hash(&["a=read".into()]), tables_hash(&["a=write".into()]));
+        assert_eq!(secret_name("shop", "sheets"), "shop-sheets-credentials");
+    }
+
+    #[test]
+    fn a_secret_is_ready_with_a_key_and_a_token() {
+        let b64 = |s: &str| super::super::kube::base64_encode(s.as_bytes());
+        assert!(!ready(None));
+        assert!(!ready(Some(&json!({"data": {"token": b64("t")}}))));
+        let s = json!({"data": {"token": b64("t"), "key": b64("sk_1_2")}});
+        assert!(ready(Some(&s)));
+        assert_eq!(entries(&s)["key"], "sk_1_2");
+    }
+}

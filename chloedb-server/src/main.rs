@@ -540,9 +540,16 @@ struct Args {
     /// $CHLOEDB_APPS): the server forwards /v1/apps/<name>/... to it.
     #[arg(long = "app", env = "CHLOEDB_APPS", value_delimiter = ',')]
     apps: Vec<String>,
-    /// The token the server sends its apps (Authorization: Bearer).
+    /// The token the server sends its apps (Authorization: Bearer), to
+    /// each that has no token of its own ($CHLOEDB_APP_TOKEN_<NAME>, or a
+    /// file of --app-token-dir).
     #[arg(long, env = "CHLOEDB_APP_TOKEN", hide_env_values = true)]
     app_token: Option<String>,
+    /// A folder that holds each app's own token in a file of the app's
+    /// name, read as it is sent (so a token written there later, as a
+    /// Kubernetes Secret mounted there is, needs no restart).
+    #[arg(long, env = "CHLOEDB_APP_TOKEN_DIR")]
+    app_token_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -1175,6 +1182,7 @@ async fn run() {
         trust_proxy: a.trust_proxy.clone(),
         apps: a.apps.clone(),
         app_token: a.app_token.clone(),
+        app_token_dir: a.app_token_dir.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
         image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {

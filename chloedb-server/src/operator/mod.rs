@@ -34,6 +34,7 @@
 pub mod apps;
 pub mod autoscale;
 pub mod chloectx;
+pub mod credentials;
 pub mod crawler;
 pub mod follow;
 pub mod kube;
@@ -414,6 +415,9 @@ impl Spec {
         let apps = self.apps();
         if !apps.is_empty() {
             j["apps"] = json!(apps);
+            // Each app's own token, a file of a folder mounted from its
+            // credentials ([`credentials`]).
+            j["appTokens"] = json!(credentials::TOKEN_DIR);
         }
         short_hash(&j)
     }
@@ -666,6 +670,13 @@ pub trait Platform {
     /// Deployment of one, its Service and its volume on Kubernetes.
     /// Applied once the coordinators are there.
     async fn apps(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
+    /// Gives each app beside the cluster a key limited to its tables and a
+    /// token of its own, made through the coordinators (`admin`), and
+    /// takes them from an app that went ([`credentials`]). Before the
+    /// apps are applied, which use them once they are there.
+    async fn app_credentials(&self, _spec: &Spec, _admin: &Admin) -> Result<(), String> {
         Ok(())
     }
 }
@@ -1078,6 +1089,11 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
         return Ok(Outcome::new(Phase::Creating, "starting the coordinator, which lays the cluster out"));
     };
     p.follow(spec).await?;
+    // An app without a key of its own yet runs with the admin token, as
+    // before such keys: a failure here is told, and holds nothing up.
+    if let Err(e) = p.app_credentials(spec, admin).await {
+        tracing::warn!(error = %e, "the apps' own keys");
+    }
     p.crawler(spec).await?;
     p.sheets(spec).await?;
     p.chloectx(spec).await?;
@@ -2215,6 +2231,7 @@ mod tests {
         let mut j = json!({"image": none.image, "imagePullPolicy": null, "resources": null, "args": [], "tokenSecret": "t", "clusterTokenSecret": null});
         assert_eq!(none.coordinator_config(), short_hash(&j));
         j["apps"] = json!(["apps"]);
+        j["appTokens"] = json!(credentials::TOKEN_DIR);
         assert_eq!(new.coordinator_config(), short_hash(&j));
         assert!(!serde_json::to_value(&none).unwrap().as_object().unwrap().contains_key("apps"));
     }
