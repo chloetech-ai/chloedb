@@ -1,0 +1,30 @@
+{
+  "analyzer": "telugu",
+  "collections": {
+    "miracl-te": {
+      "db_bytes": 296509480,
+      "docs": 518079,
+      "load_s": 22.527553112,
+      "queries": 828,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 0.7974034746376808,
+          "ms_p50": 0.569813,
+          "ms_p99": 2.9198589999999998,
+          "ndcg10": 0.37964120516657734,
+          "recall10": 0.5440821256038647,
+          "recall100": 0.7626811594202898
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "te_telugu"
+}

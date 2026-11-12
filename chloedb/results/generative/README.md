@@ -146,6 +146,40 @@ and [`toys.json`](toys.json).
   TIGER's full recipe on a GPU (a model four times the size and 200,000
   steps), which may close the gap on Toys; and a cheaper walk.
 
+## Balanced codebooks
+
+`strata.train.codebook(..., balanced=True)` trains each level with every
+centroid given the same number of the training vectors.
+[`codebooks.py`](codebooks.py) trains Beauty's codebook both ways on the
+12,101 items' text vectors (384 dimensions, 3 levels of 256, seed 0) and
+reads `strata.train.codebook_report` of each
+([`codebooks-beauty.json`](codebooks-beauty.json)). Measured on a cloud
+container (Intel Xeon @ 2.30GHz, 4 cores, 16.5 GB), 2026-11-12:
+
+| codebook | distinct codes | items sharing a code | most items under one code | perplexity, levels 1 / 2 / 3 | left after levels 1 / 2 / 3 | training |
+|---|---|---|---|---|---|---|
+| plain | 10,126 | 3,288 | 12 | 202.5 / 90.0 / 56.7 | 0.185 / 0.154 / 0.135 | 6.4 s |
+| balanced | 10,555 | 2,601 | 17 | 251.3 / 250.4 / 251.1 | 0.186 / 0.152 / 0.132 | 16.9 s |
+
+Perplexity is how many of a level's 256 numbers the items are spread over,
+weighed by use; "left" is the share of the vectors' squared length the
+code so far does not say.
+
+- **Plain k-means uses the later levels' numbers unevenly**: the third
+  level spreads the items over 57 numbers' worth, and its fullest number
+  holds 630 items. What a level leaves of the vectors points every way
+  alike, and there most centroids end on one far vector each while a few
+  near the middle take the rest. Balanced, every level uses all its
+  numbers (250 to 251 of 256).
+- **Fewer items share a code** (2,601 against 3,288, a fifth fewer), and a
+  little less of the vectors is left after the third level (0.132 against
+  0.135), though the first level alone leaves a little more (0.186 against
+  0.185): it gives up the nearest centroid for some items.
+- **Text alone still leaves 2,601 items sharing a code.** Vectors that
+  tell the items apart better do more than balancing: with co-occurrence
+  vectors beside the text's, balanced, 643 items shared a code (a Python
+  prototype of the same training, 2026-11-12).
+
 ## The decoder, and how it differs from TIGER's
 
 TIGER's architecture, made to train on a CPU:

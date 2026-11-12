@@ -12,8 +12,13 @@
 //!   chloectx redact [--all] [--dry-run]            redact secrets a store recorded before
 //!   chloectx fetch-model [static|bert]             download the embedding model
 //!   chloectx sync setup --url URL [--token-stdin]  copy the memory to a ChloeDB server (status|push|pull)
+//!   chloectx blame path[:line]                     the edit behind a line, and what memory had recalled before it
+//!   chloectx receipts | receipt ID                 what each recall showed and why, replayed
+//!   chloectx snapshot keep NAME | list | drop NAME snapshots of the store that receipts replay on
 //!   chloectx doctor                                check the install and the project's store
 //!   chloectx ui [--port N] [--home DIR]            browse every local store in the inspector
+//!   chloectx pack OUT [--kinds ..] [--since-days N] cut a capsule another agent can mount
+//!   chloectx mount DIR...                          serve capsules as MCP tools (stdio)
 //!   chloectx rpc '{"op": ...}'                     send one raw request to the daemon
 //!   chloectx serve --dir D --project P             (the daemon; started on demand)
 
@@ -98,6 +103,45 @@ enum Cmd {
     Sql { sql: String },
     /// Store a decision, preference, fact, todo or note.
     Remember { kind: String, text: String },
+    /// The edit behind a line of code (`path:line`) or a file: its session,
+    /// prompt and tool calls, the notes written from its turn, the records
+    /// memory had recalled into the agent's context before it (with their
+    /// scores and what became of them), and that recall replayed on the
+    /// snapshot kept at the time and on today's store.
+    Blame {
+        target: String,
+        /// Do not replay the recall.
+        #[arg(long)]
+        no_replay: bool,
+        /// Print the JSON result.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The newest receipts: one for every recall and memory search.
+    Receipts {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// One receipt: every candidate's scores, tokens and decision, and the
+    /// recall replayed on the snapshot kept at its commit and on today's store.
+    Receipt {
+        id: String,
+        #[arg(long)]
+        no_replay: bool,
+        /// Also print the text the agent was shown.
+        #[arg(long)]
+        text: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Snapshots of the store kept by name, which receipts replay on
+    /// (others are kept after recalls and pruned by age).
+    Snapshot {
+        #[command(subcommand)]
+        what: SnapCmd,
+    },
     /// Counts and sizes.
     Stats,
     /// Copy the project's store to a new directory while ChloeCtx runs: a
@@ -163,9 +207,56 @@ enum Cmd {
         /// sends its CHLOEDB_APP_TOKEN); none: any caller ($CHLOECTX_APP_TOKEN).
         #[arg(long, env = "CHLOECTX_APP_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Serve any caller with no token on an address other than loopback
+        /// (without it, the app refuses to start that way).
+        #[arg(long)]
+        insecure: bool,
         /// The embedder (static, or hash:<dim> for tests; $CHLOECTX_EMBEDDER).
         #[arg(long, env = "CHLOECTX_EMBEDDER", default_value = "static")]
         embedder: String,
+        /// Also show this machine's Claude Code stores in the command
+        /// center (Receipts and Blame pages; $CHLOECTX_APP_LOCAL=1). Their
+        /// records are transcripts: turn it on only where the command
+        /// center's users may read them.
+        #[arg(long, env = "CHLOECTX_APP_LOCAL", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
+        local_stores: bool,
+    },
+    /// Cut a capsule from the project's memory: a read-only ChloeDB file of
+    /// the selected records (default: distilled notes, entities and the
+    /// conversation, no raw tool output), redacted again, with a manifest.
+    /// Another agent mounts it with `chloectx mount`.
+    Pack {
+        /// The capsule's directory (must not exist).
+        out: PathBuf,
+        /// Record kinds to include (default: decision, preference, fact, todo,
+        /// note, entity, prompt, answer, episode, summary, error; `all` for every kind).
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+        /// Only records from the last N days.
+        #[arg(long)]
+        since_days: Option<f64>,
+        /// At most this many records (the oldest first).
+        #[arg(long, default_value_t = 200_000)]
+        max_records: usize,
+        /// The capsule's title (default: the project's folder name).
+        #[arg(long)]
+        title: Option<String>,
+        /// Print the manifest as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Serve capsules to Claude Code as an MCP server on stdio
+    /// (capsule_ask, capsule_search, capsule_timeline, capsule_sql).
+    Mount {
+        /// Capsule directories.
+        #[arg(required = true)]
+        dirs: Vec<PathBuf>,
+        /// Append one JSON line per tool call (and the open) to this file ($CHLOECTX_CAPSULE_LOG).
+        #[arg(long)]
+        log: Option<PathBuf>,
+        /// Embedder spec, instead of the one each manifest names.
+        #[arg(long)]
+        embedder: Option<String>,
     },
     /// Send one raw JSON request to the daemon and print its JSON response
     /// (the demo inspector's transport).
@@ -186,6 +277,16 @@ enum Cmd {
         #[arg(default_value = "static")]
         which: String,
     },
+}
+
+#[derive(Subcommand)]
+enum SnapCmd {
+    /// Keep a snapshot of the store now, under NAME, until it is dropped.
+    Keep { name: String },
+    /// The kept snapshots.
+    List,
+    /// Drop a kept snapshot.
+    Drop { name: String },
 }
 
 #[derive(Subcommand)]
@@ -300,6 +401,31 @@ fn main() {
             }
         }
         Cmd::Sql { sql } => text(&send(&project, json!({"op": "sql", "sql": sql}), 30)),
+        Cmd::Blame { target, no_replay, json: as_json } => {
+            let r = send(&project, json!({"op": "blame", "target": target, "replay": !no_replay}), 120);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
+        Cmd::Receipts { session, limit } => text(&send(&project, json!({"op": "receipts", "session": session, "limit": limit}), 30)),
+        Cmd::Receipt { id, no_replay, text: show, json: as_json } => {
+            let r = send(&project, json!({"op": "receipt", "id": id, "replay": !no_replay, "text": show}), 120);
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                text(&r);
+            }
+        }
+        Cmd::Snapshot { what } => {
+            let req = match what {
+                SnapCmd::Keep { name } => json!({"op": "snapshot", "what": "keep", "name": name}),
+                SnapCmd::List => json!({"op": "snapshot", "what": "list"}),
+                SnapCmd::Drop { name } => json!({"op": "snapshot", "what": "drop", "name": name}),
+            };
+            text(&send(&project, req, 600));
+        }
         Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t}), 30)),
         Cmd::Stats => println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "stats"}), 30)).unwrap()),
         Cmd::Backup { dest } => {
@@ -365,8 +491,54 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
-        Cmd::App { server, key, host, port, token, embedder } => {
-            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), embedder }) {
+        Cmd::Pack { out, kinds, since_days, max_records, title, json: as_json } => {
+            let t0 = std::time::Instant::now();
+            let out = std::path::absolute(&out).unwrap_or(out);
+            let kinds: Vec<chloectx::record::Kind> = if kinds.iter().any(|k| k == "all") {
+                chloectx::record::Kind::ALL.to_vec()
+            } else if kinds.is_empty() {
+                chloectx::capsule::DEFAULT_KINDS.to_vec()
+            } else {
+                kinds.iter().map(|k| chloectx::record::Kind::parse(k).unwrap_or_else(|| {
+                    eprintln!("chloectx pack: unknown kind {k}");
+                    std::process::exit(2)
+                })).collect()
+            };
+            // A consistent copy of the store, which no daemon writes while it is cut.
+            let tmp = std::env::temp_dir().join(format!("chloectx-pack-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::create_dir_all(&tmp);
+            let backup = tmp.join("backup");
+            send(&project, json!({"op": "backup", "dest": backup}), 3600);
+            let backup_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let spec = daemon::Config::load(&backup.join("config.json")).embedder;
+            let fail = |e: chloectx::Error| -> ! {
+                let _ = std::fs::remove_dir_all(&tmp);
+                eprintln!("chloectx pack: {e}");
+                std::process::exit(1)
+            };
+            let embedder: std::sync::Arc<dyn embed::Embedder> = std::sync::Arc::from(embed::open(&spec).unwrap_or_else(|e| fail(e)));
+            let store = chloectx::store::Store::open(&backup.join("memory.strata"), embedder, chloectx::store::StoreOptions { sync: false, ..Default::default() }).unwrap_or_else(|e| fail(e));
+            let opts = chloectx::capsule::PackOptions { kinds, since_ts: since_days.map(|d| chloectx::now() - (d * 86_400.0) as i64), max_records, title };
+            let m = chloectx::capsule::pack(&store, &spec, &project.to_string_lossy(), &out, &opts).unwrap_or_else(|e| fail(e));
+            drop(store);
+            let _ = std::fs::remove_dir_all(&tmp);
+            let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            if as_json {
+                let mut j = serde_json::to_value(&m).unwrap();
+                j["backup_ms"] = json!(backup_ms);
+                j["total_ms"] = json!(total_ms);
+                j["dir"] = json!(out);
+                println!("{}", serde_json::to_string_pretty(&j).unwrap());
+            } else {
+                println!("{}: {}", out.display(), chloectx::capsule::describe(&m));
+                println!("{} bytes, sha256 {}, {} redacted, packed in {:.0} ms", m.bytes, m.sha256, m.redacted, total_ms);
+            }
+        }
+        Cmd::Mount { dirs, log, embedder } => std::process::exit(chloectx::capsule::run_mcp(&dirs, log, embedder.as_deref())),
+        Cmd::App { server, key, host, port, token, insecure, embedder, local_stores } => {
+            let local = local_stores.then(paths::home);
+            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder, local }) {
                 eprintln!("chloectx app: {e}");
                 std::process::exit(1);
             }

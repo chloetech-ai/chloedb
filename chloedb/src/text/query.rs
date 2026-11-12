@@ -40,7 +40,7 @@
 //! of 3 to 5 letters, 2 for longer ones; see [`super::fuzzy`]). The
 //! field's [`Analyzer`] analyses them ([`parse_match_with`]).
 
-use super::analyzer::{for_each_word, Analyzer};
+use super::analyzer::Analyzer;
 use crate::error::{Error, Result};
 
 /// A boolean query over analysed terms.
@@ -691,8 +691,8 @@ fn phrase_prefix_head(s: &str) -> Option<&str> {
 /// when the other words analyse to nothing.
 fn phrase_prefix_query(s: &str, analyzer: Analyzer) -> Option<BoolQuery> {
     let mut words = Vec::new();
-    for_each_word(s, |x| words.push(x.to_string()));
-    let prefix = words.pop()?;
+    analyzer.for_each_token(s, |x| words.push(x.to_string()));
+    let prefix = analyzer.prefix_of(&words.pop()?);
     let terms = analyzer.analyze(&words.join(" "));
     Some(if terms.is_empty() { BoolQuery::Prefix(prefix) } else { BoolQuery::PhrasePrefix { terms, prefix } })
 }
@@ -701,10 +701,10 @@ fn phrase_prefix_query(s: &str, analyzer: Analyzer) -> Option<BoolQuery> {
 /// required terms.
 fn prefix_query(w: &str, analyzer: Analyzer) -> Option<BoolQuery> {
     let mut words = Vec::new();
-    for_each_word(w, |x| words.push(x.to_string()));
+    analyzer.for_each_token(w, |x| words.push(x.to_string()));
     let last = words.pop()?;
     let mut parts: Vec<Option<BoolQuery>> = words.iter().map(|x| terms_query(analyzer.analyze(x))).collect();
-    parts.push(Some(BoolQuery::Prefix(last)));
+    parts.push(Some(BoolQuery::Prefix(analyzer.prefix_of(&last))));
     combine(parts, BoolQuery::And)
 }
 

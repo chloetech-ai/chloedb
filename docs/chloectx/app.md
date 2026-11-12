@@ -1,9 +1,10 @@
 # ChloeCtx as an app of a ChloeDB cluster
 
-`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has two pages:
+`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has two pages, and two more for a machine's Claude Code stores:
 
 - **Context.** Memory *spaces* that any agent writes notes and conversations to and asks for context before a task, within a token budget. An answer is found by search alone (BM25 and vectors, no model call), and it says what went in, why, and what was left out.
 - **Seen before.** The cluster's firing alerts, each beside the past incidents it looks like and the fix that worked. One button hands the alert to the cluster's on-call agent with those incidents as its context.
+- **Receipts** and **Blame**, with `--local-stores`: what each recall of a Claude Code session showed and why, replayed on the snapshot kept at the time, and from a line of code to the edit, its prompt and the memory recalled before it ([Receipts and blame](receipts.md#in-the-command-center)). Off by default: they read the stores of the machine the app runs on, which are transcripts.
 
 ![A space's page: a question asked within a 2,000-token budget, the notes that went into the context with their scores, the decision that replaced an older one with what changed, and the note that was left out](../assets/img/chloectx-app-context.png)
 
@@ -24,10 +25,11 @@ CHLOEDB_APP_TOKEN="$APP_TOKEN" chloedb-server --shards ... --app chloectx=http:/
 | `--server` (`CHLOEDB_URL`) | `http://127.0.0.1:7700` | the chloedb-server (a coordinator, or a server on its own) the spaces live in |
 | `--key` (`CHLOEDB_KEY`) | none | its key for the app's reads and writes: an admin key, since a new space is a new table and the on-call agent takes admin calls |
 | `--token` (`CHLOECTX_APP_TOKEN`) | none | the token every caller must send (`Authorization: Bearer`); chloedb-server sends its `CHLOEDB_APP_TOKEN` |
+| `--insecure` | off | serve any caller with no token on an address other than loopback; without it, `chloectx app` refuses to start with `--host 0.0.0.0` (or any non-loopback address) and no token, since whoever reached the port could read and write every space and start model calls billed to its key |
 | `--host`, `--port` | `127.0.0.1`, `7760` | where it listens |
 | `--embedder` (`CHLOECTX_EMBEDDER`) | `static` | `hash:<dim>` for tests without the model |
 
-Model calls (writing a conversation's notes down, drafting an incident from a postmortem) go to Anthropic's API when `ANTHROPIC_API_KEY` is set (model `CHLOECTX_APP_MODEL`, by default Haiku), else to the `claude` CLI when it is on the PATH (`CHLOECTX_DISTILL_MODEL`). `CHLOECTX_APP_MODEL=off` turns them off. Everything else, asking included, works without a model.
+Model calls (writing a conversation's notes down, drafting an incident from a postmortem) go to Anthropic's API when `ANTHROPIC_API_KEY` is set (model `CHLOECTX_APP_MODEL`, by default Haiku), else to the `claude` CLI when it is on the PATH (`CHLOECTX_DISTILL_MODEL`). `CHLOECTX_APP_MODEL=off` turns them off. Everything else, asking included, works without a model. At most four conversations are distilled at once and 256 wait; past that an exchange is stored without notes (its answer says `skipped`, and `/v1/info` counts it under `distill.skipped`). The app serves 64 requests at once and answers one more with 503.
 
 The app refuses requests that carry an `Origin` header: a browser reaches it only through chloedb-server, which checks the signed-in key (reads need a read key, writes an admin key) and forwards with the app's token.
 
@@ -39,7 +41,7 @@ A cluster the [operator](../chloedb/server.md#on-kubernetes) runs gets ChloeCtx 
 kubectl -n strata patch strata demo --type merge -p '{"spec": {"chloectx": {}}}'
 ```
 
-The operator runs `chloectx app` from the cluster's own image (it carries it, as it carries the crawler and the spreadsheets) as a Deployment of one pod, `<cluster>-chloectx`, behind a Service of that name on port 7760, and restarts the coordinators so that they list it: **Apps → ChloeCtx** appears in the command center. It reads and writes with the cluster's admin token (`tokenSecret`), which its API requires too, so the coordinators send it that token and nothing else reaches it, and it calls the model with the cluster's `secretEnv` (`ANTHROPIC_API_KEY`; without one, everything but writing a conversation's notes down and drafting incidents works). The embedding model is not in the image, which every server pulls: an init container downloads it from Hugging Face (125 MB) into the pod's scratch volume each time the pod starts. The spaces are tables of the cluster, so a pod started again (a new image, a node replaced) has them all; the upgrader moves it with the servers, since it runs their image (from the image of 2026-11-10 on: an older one has no `chloectx`).
+The operator runs `chloectx app` from the cluster's own image (it carries it, as it carries the crawler and the spreadsheets) as a Deployment of one pod, `<cluster>-chloectx`, behind a Service of that name on port 7760, and restarts the coordinators so that they list it: **Apps → ChloeCtx** appears in the command center. It reads and writes with the cluster's admin token (`tokenSecret`), which its API requires too, so the coordinators send it that token and nothing else reaches it (a cluster without a `tokenSecret` is open to whoever reaches it, and the operator starts its ChloeCtx with `--insecure` to match), and it calls the model with the cluster's `secretEnv` (`ANTHROPIC_API_KEY`; without one, everything but writing a conversation's notes down and drafting incidents works). The embedding model is not in the image, which every server pulls: an init container downloads it from Hugging Face (125 MB) into the pod's scratch volume each time the pod starts. The spaces are tables of the cluster, so a pod started again (a new image, a node replaced) has them all; the upgrader moves it with the servers, since it runs their image (from the image of 2026-11-10 on: an older one has no `chloectx`).
 
 | `spec.chloectx` | default | |
 |---|---|---|

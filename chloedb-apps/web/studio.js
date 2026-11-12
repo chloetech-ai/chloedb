@@ -5,6 +5,7 @@
 import { drawGraph, nodePanel, GRAPH_HELP } from './graph.js';
 import { designCss, checkDesign, PRESETS } from './design.js';
 import { mountActivity } from './activity.js';
+import { frameCsp, FRAME_SANDBOX, linkToOpen } from './policy.js';
 
 const $ = (sel, el = document) => el.querySelector(sel);
 function h(tag, props, ...children) {
@@ -63,8 +64,9 @@ const EXAMPLES = [
   'A shared grocery list for our home, grouped by aisle, where ticking an item moves it to the bottom.',
 ];
 
-// An app on its own, at /a/<id>: its views, without the studio around them.
-const BARE = (location.pathname.match(/^\/a\/([a-z0-9]+)/) || [])[1] || null;
+// An app on its own, at /a/<id> or at / on a published app's own host (the
+// engine names the app in a meta tag): its views, without the studio around them.
+const BARE = (location.pathname.match(/^\/a\/([a-z0-9]+)/) || [])[1] || document.querySelector('meta[name="sa-app"]')?.content || null;
 if (BARE) document.body.classList.add('bare');
 
 const S = {
@@ -108,7 +110,8 @@ async function assets() {
 // ---- live updates
 
 function connect() {
-  const es = new EventSource('/api/stream');
+  // An app on its own follows only that app (all the public may follow).
+  const es = new EventSource(BARE ? `/api/stream?app=${BARE}` : '/api/stream');
   const dot = $('#status');
   es.addEventListener('hello', (e) => {
     const { feed } = JSON.parse(e.data);
@@ -966,6 +969,10 @@ function compileScreen(text) {
   return { spec: compiled, scripts: scripts.join('\n') };
 }
 
+// The hosts the app's owner let it read from (app.fetch): its frames may
+// show images from them too (web/policy.js).
+const webHosts = () => (S.app?.reach?.on?.fetch ? (S.app.reach.on.hosts || []).map((x) => x.host) : []);
+
 function srcdoc(view, params, components, helpers, design = S.designCss) {
   const screen = view.spec && view.spec.screen ? compileScreen(view.code) : null;
   const code = screen
@@ -980,7 +987,7 @@ ${noClose(c.code)}
 ${noClose(c.code)}
 ;return helper(); });</script>`).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data: blob: ${location.origin}; media-src https: data: blob: ${location.origin}; font-src data:">
+<meta http-equiv="Content-Security-Policy" content="${frameCsp(location.origin, { hosts: webHosts() })}">
 <style>${KIT}</style><style id="__design">${design || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
@@ -1037,16 +1044,27 @@ function renderFrames() {
   }
   box.querySelector('.building')?.remove();
   // drop frames of views that are gone or changed, or whose components changed
-  const compSig = [...(st.components || []), ...(st.helpers || [])].map((c) => c.id).join(',');
+  const compSig = [...(st.components || []), ...(st.helpers || [])].map((c) => c.id).join(',') + `|${webHosts().join(' ')}`;
   for (const [slug, f] of S.frames) {
     const v = st.views.find((x) => x.slug === slug);
     if (!v || v.id !== f.capId || f.comps !== compSig) { f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
   }
   const v = st.views.find((x) => x.slug === S.view);
-  if (v && !S.frames.has(v.slug)) {
+  if (v && !S.frames.has(v.slug) && S.left?.get(v.slug) !== v.id) {
     const params = S.params?.[v.slug] || {};
-    const iframe = h('iframe', { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads', title: v.title, allow: 'clipboard-write' });
+    const iframe = h('iframe', { sandbox: FRAME_SANDBOX, title: v.title, allow: 'clipboard-write' });
     iframe.srcdoc = srcdoc(v, params, st.components, st.helpers);
+    // A frame that navigates away from its page (location.href = ...) has
+    // sent a request out; the view is closed rather than left there.
+    let loads = 0;
+    iframe.addEventListener('load', () => {
+      if (++loads < 2 || S.frames.get(v.slug)?.iframe !== iframe) return;
+      iframe.remove();
+      S.frames.delete(v.slug);
+      (S.left ||= new Map()).set(v.slug, v.id);
+      S.errors.set(v.slug, { message: 'the view left its page (it navigated the frame), so it was closed' });
+      renderApp();
+    });
     box.append(iframe);
     S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
   }
@@ -1637,6 +1655,11 @@ window.addEventListener('message', async (e) => {
     } else if (m.kind === 'track') {
       const kind = m.action === 'abandon' ? 'abandon' : 'action';
       api('POST', `${base}/track${atV()}`, { kind, action: m.action, detail: m.detail, cap: entry.capId, q: m.q, results: m.results, table: m.table, ms: m.ms }, on).catch(() => {});
+    } else if (m.kind === 'link') {
+      // The frame has no popups: its links open from here, and only on a
+      // click (the browser's popup blocker wants one).
+      const url = linkToOpen(m.href);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
     } else if (m.kind === 'open') {
       if (S.app.views.find((v) => v.slug === m.slug)) switchView(m.slug, m.params);
     } else if (m.kind === 'error') {

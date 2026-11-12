@@ -66,5 +66,42 @@
    "recall@50": 0.1689,
    "coverage@10": 0.3113
   }
+ },
+ "semantic_ids": {
+  "tolerance": {
+   "plain": {
+    "codes": 60,
+    "perplexity_1": 12,
+    "residual": 0.06,
+    "next_shares_1": 0.03
+   },
+   "balanced": {
+    "codes": 15,
+    "shared_rows": 15,
+    "perplexity_1": 6,
+    "perplexity_2": 6,
+    "perplexity_3": 6,
+    "residual": 0.01,
+    "next_shares_1": 0.03
+   }
+  },
+  "balanced_shares_no_more_rows": true,
+  "codebooks": {
+   "plain": {
+    "codes": 3659,
+    "perplexity_1": 222.6,
+    "residual": 0.3661,
+    "next_shares_1": 0.0314
+   },
+   "balanced": {
+    "codes": 3677,
+    "shared_rows": 2,
+    "perplexity_1": 253.1,
+    "perplexity_2": 253.5,
+    "perplexity_3": 252.3,
+    "residual": 0.3393,
+    "next_shares_1": 0.0263
+   }
+  }
  }
 }

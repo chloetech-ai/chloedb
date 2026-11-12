@@ -11,6 +11,332 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Added
+
+- ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
+  queries the rank log kept that rank by a rank profile, on one snapshot,
+  with the profile as it is and with the numbers a coordinate-ascent search
+  finds (parameter defaults and the literals of its `ORDER BY`), and
+  reports nDCG@k before and after on queries held out of the search, the
+  queries made better and worse with a sign test, a bootstrap interval and
+  latency, with a verdict. Grades come from the rank log's labels and a
+  judgments table (`relevance_judgments`); the server can have Claude grade
+  the rows no one graded first. A proposal is kept in `relevance_proposals`
+  and applied as `CREATE OR REPLACE RANK PROFILE` only while the profile is
+  the one it was measured against. `POST /v1/relevance/autopilot`,
+  `/v1/relevance/proposals`, `Db::autopilot`, and the command center's
+  Labs > Relevance autopilot.
+- The rank log keeps each request's query and its bound parameters, in a
+  new column `query` of the request's first row. A log table made before
+  it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
+  query KEYWORD OPTIONS(indexed = false)` adds it).
+
+### App engine
+
+- App engine: the app creator is a page of the command center (Apps → App
+  creator) rather than a separate studio: describe an app and build it
+  there, follow each build (its steps, its screens drawn while the rest is
+  written, its timeline), use the app on a phone, a tablet or the whole
+  stage, and read, edit and go back through what it is made of. Its views
+  run in frames with the studio's sandbox and policy, every read and write
+  sent to the page and from there to the engine for that one app. The
+  standalone studio stays, for the engine run on its own and as **Studio**.
+- App engine: **Made of** says how much of an app's code the engine
+  generated from the CREATE TABLE, CREATE SCREEN and CREATE RULE statements
+  the agent wrote, how much the agent wrote from scratch, and how much is
+  the library's, in lines written and lines that run, piece by piece
+  (`GET /api/apps/:id/made`, and `made` in an app's state).
+- App engine: apps can be published, open to everyone with no account
+  here: **Publish** in the app creator, `/a/<id>` at once, and
+  `<name>.<domain>` (or a host of the owner's own) with a domain. The public
+  reaches what the app's screens do and nothing of how it is made, at a
+  rate a minute per visitor. The operator's `spec.apps.publish` (`domain`:
+  your own or `sslip`) adds a load balancer and Caddy for the apps'
+  certificates.
+- App engine: **Usage** in the app creator is the studio's Activity view:
+  each visit step by step, and the paths people take between screens.
+- App engine: `GET /api/events?after=N` gives the studio's live events to a
+  page that cannot hold a stream open (chloedb-server forwards whole
+  answers), and `GET /api/kit` the frames' runtime and policy.
+
+## 0.2.1
+
+Safety fixes from the audit of 12 November 2026, with no change to the file
+format: `chloedb-server-v0.2.1`, `chloedb-py-v0.2.1` and
+`chloedb-js-v0.2.1` (the Java package and ChloeCtx are built from source).
+It has breaking changes, each marked below. The shard protocol stays 20:
+`RestoreChunk` and `VerifyRequest` gain a `config` field, which a server of
+0.2.0 does not send and this one accepts as 0, so a shard can run both
+versions during an upgrade. It also brings the one-line installer, the
+app engine's schedules, sources and reach controls, and a first set of
+additions, none of which changes the file format or the shard protocol:
+`PACK n TOKENS`, set operators on multi-valued fields, ChloeCtx capsules,
+the Python framework adapters and options for training semantic IDs.
+
+### Added
+
+- ChloeDB: `PACK n TOKENS` ends a SELECT and fills a budget of tokens
+  rather than a number of rows: rows too long are cut to the stretch that
+  matches the query (`EXCERPT n`), rows that repeat one taken are skipped
+  (`DEDUPE x`, by words or `ON` a vector field), rows an `EDGES` field
+  links to come with the row that links them (`FOLLOW links 1 HOP`), and
+  `WITH RECEIPT` says why each candidate was taken or skipped. `Db::pack`
+  answers the receipt with the snapshot read. On a file, a server and a
+  coordinator; no change to the file format or the shard protocol.
+- ChloeDB: set operators on a multi-valued field, as PostgreSQL's arrays
+  have them: `tags @> ARRAY['red', 'sale']` (every value of the list),
+  `tags && ARRAY[...]` (any of them) and, on an `INT[]` field,
+  `groups <@ :allowed` (each value of the row is in the list), read from
+  the field's index and usable as a search's filter. A `KEYWORD[]` field
+  does not take `<@` yet.
+- ChloeCtx capsules: `chloectx pack DIR` writes a slice of a project's
+  memory (decisions, rules, facts, open tasks, notes, their entities and
+  the conversation, redacted again, without raw tool calls) to one
+  read-only file and a manifest with its hash, and `chloectx mount DIR`
+  serves it to another agent's Claude Code as the MCP tools
+  `capsule_ask`, `capsule_search`, `capsule_timeline` and `capsule_sql`.
+  With a short handoff note the next agent solved 72% of the follow-up
+  tasks, and 89% with a capsule as well
+  ([docs/chloectx/capsules.md](docs/chloectx/capsules.md)).
+- Python: `chloedb.langchain` (a LangChain vector store),
+  `chloedb.langgraph` (a LangGraph checkpointer and store),
+  `chloedb.llama_index` (a LlamaIndex vector store and embedding) and
+  `chloedb.dbapi`, a DB-API 2.0 driver, with the extras `langchain`,
+  `langgraph` and `llama-index`
+  ([docs/chloedb/frameworks.md](docs/chloedb/frameworks.md)).
+- In the repository: `chloedb-swarm`, simulated users who do tasks with
+  ChloeDB through its MCP tools or the command center, and a review of
+  each session ([chloedb-swarm/README.md](chloedb-swarm/README.md)). It
+  ships in no package.
+
+### Security
+
+- `chloedb-server`: a key rotated on one server ends on every server of
+  its cluster. Merging keys took only the time a key was last used, so the
+  old secret of a key rotated on a coordinator stayed valid on the shards,
+  on other coordinators, and on that coordinator once it started again and
+  took its keys back from the shards. A key's end is now the earlier of
+  the two a merge sees.
+- The OpenSearch listener (`--opensearch-listen`) inflates a gzip body to
+  `--max-body-mb` at most (413 past it), asks a read key for every route
+  but `/` and `_cluster/health` (a feed key read documents before), and
+  keeps refusals and changes of indexes, mappings, settings and aliases
+  in the audit log, as the main listener does.
+- `POST /v1/alerts/peer`, by which coordinators tell each other their
+  alerts, takes the cluster's token (or the server's) only: an admin key
+  could replace rules, routes and silences without an audit entry.
+- Every HTTP answer carries `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin` and a
+  `Content-Security-Policy` with `frame-ancestors 'self'`, unless its
+  handler sets its own, so that another site cannot frame the command
+  center.
+- The HTTP listeners close a connection that takes longer than
+  `--header-timeout-secs` (30) to send a request's headers or a TLS
+  handshake, or that stays idle as long, and hold `--max-connections`
+  at once (by default three quarters of the open-file limit): a client
+  sending a byte a minute on thousands of connections no longer holds
+  the process's file descriptors.
+- A server over TLS that is told to stop finishes the requests under
+  way, as one without TLS did, instead of cutting them; both wait
+  `--stop-grace-ms` (20 s) at most, and a follower's open feed ends when
+  the server stops taking connections, rather than holding it up until
+  it is killed.
+- **Breaking:** `follow-postgres` with no `sslmode` in its URL requires TLS
+  of a database on another machine (`prefer` stays the default for
+  `localhost` and loopback addresses), and warns when a URL asks for
+  `prefer` or `disable` of one.
+- The image `ghcr.io/chloetech-ai/chloedb-server` has a user 10001
+  (`chloedb`) that owns its `/data`; run it as that user
+  (`docker run --user 10001:10001`). Its own user stays root for now, so
+  that an operator installed before 0.2.1, which runs new images on volumes
+  a root image wrote and gives its pods no user, keeps working. The
+  operator of 0.2.1 runs the servers, the coordinators and the pre-flight
+  as user 10001 itself and gives the shards' volumes to its group
+  (`fsGroup`). A Docker volume a root image wrote needs a `chown` once
+  ([the server's page](docs/chloedb/server.md)). The image is built from
+  base images pinned by digest and holds neither the benchmark tools nor
+  `iproute2` (`docker build --target bench` makes an image with
+  `chloedb-server-bench` and `engine-compare`). Images carry build
+  provenance.
+- ChloeCtx: **breaking:** `chloectx app` refuses to start on an address
+  other than loopback (`--host 0.0.0.0`, say) with no `--token`, since
+  whoever reached the port could read and write every space and start
+  model calls billed to the app's key; `--insecure` starts it anyway. The
+  operator passes `--insecure` for a cluster without a `tokenSecret`
+  (which is open itself), and the app's token otherwise, as before. The
+  app also serves 64 requests at once (one more is answered 503) and runs
+  at most four distillations, with 256 waiting; past that an exchange is
+  stored without notes and `/v1/info` counts it under `distill.skipped`.
+  Before, each request and each exchange started a thread, without bound.
+- ChloeCtx: **breaking:** `chloectx sync` refuses a server reached over
+  plain `http://` anywhere but this machine (`127.0.0.1`, `::1`,
+  `localhost`), since it sends transcripts and the server's key;
+  `CHLOECTX_SYNC_ALLOW_HTTP=1` allows it. Each request's header file (the
+  key, owner-only) is its own, so a push every 30 s and an explicit
+  `chloectx sync` no longer remove each other's.
+- ChloeCtx: the inspector (`chloectx ui`) is served with a
+  Content-Security-Policy that runs only its own script (by hash), loads
+  nothing from elsewhere and connects only to itself, and with
+  `X-Frame-Options: DENY`.
+- `install.sh` builds ChloeCtx with `--locked`: the dependency versions in
+  `chloectx/Cargo.lock`, the ones CI tested, not newer ones the registry
+  offers on the day.
+- `chloedb-sheets`: a SQLite file's views are listed but not counted, and
+  come into a workbook only when named (the UI leaves them unticked): a
+  view runs its query as it is read, and a file's can be a query that
+  never ends, which held a server thread for good. Reading a SQLite file
+  stops after 60 s for its list of tables and 180 s for an import, and the
+  file is opened with `trusted_schema` off. An xlsx file is refused when
+  its parts expand past 512 MB (counted by decompressing them, not by the
+  sizes the file declares) or it holds more than 2 million cells, as CSV
+  and SQLite imports were bounded already.
+- App engine: `app.sql` keeps a view to its app's tables. It reads the SQL
+  as ChloeDB's parser does, finds every table it names (a quoted name, a
+  name after a comment and a CTE's name outside its query were not
+  checked), refuses block comments, prefixed and `$$` strings, quoted or
+  qualified table names, `|>`, `INTO` and `TABLE`, and then asks the
+  server's plan (`/v1/explain`) which tables the query reads.
+- App engine: a view's frame takes images and media from the engine and
+  the photo hosts only (and, once the owner turns on "Web pages and APIs",
+  from the hosts allowed there to read from), submits no form and opens no
+  popup; its links open from the studio after a click. A frame that
+  navigates away is closed.
+- Crawler: it reaches the public internet only. An address on its
+  machine, a private network, a link-local range (cloud metadata) or
+  another reserved one is refused, linked, redirected to or resolved to,
+  unless it is started with `--allow-host HOST[:PORT]` or
+  `--allow-private`. Each redirect is checked as a link is (scope,
+  `include`, `exclude`, robots.txt); robots.txt is read to 500 KB and a
+  sitemap to 50 MB.
+- App proxy: a path under `/v1/apps/<name>/` (and the hub's `/c/<name>/`)
+  stays under the app's URL: a dot segment, once or twice encoded, is
+  refused, and a decoded `?` or `#` stays in its segment. `/v1/apps` asks
+  the apps at once and keeps a failure for 15 s, so an app that does not
+  answer no longer empties the command center's list.
+
+### Cluster and operator
+
+- A copy that was removed from a shard while it was down can no longer
+  come back and, with other removed copies, elect itself and fence the
+  live primary: a primary or replica refuses Replicate, Restore and Verify
+  from a primary whose membership version is older than its own (the
+  shard protocol's new `config` fields).
+- **Breaking:** a coordinator refuses (409) a write to a shard whose
+  servers have no roles, which it used to write copy by copy so that the
+  copies drifted apart; `--write-every-copy` writes each one as before.
+- Coordinators run by the operator change the cluster map only while they
+  hold the Lease `<cluster>-map`, and write the map in doubt into it before
+  each change, so two coordinators no longer change the map at once. The
+  operator's ClusterRole (`deploy/k8s/operator/operator.yaml`) gains
+  `coordination.k8s.io` leases; an operator whose ClusterRole is older
+  makes the coordinators' Role without the Lease and logs a warning, and
+  its coordinators change the map as before. Apply `operator.yaml` again
+  to turn the Lease on.
+- `autoscale.volumes` has a ceiling: `maxSize` (default 1Ti) and
+  `maxShards` (default 16), and the rule does not fire again until its last
+  change shows in the reading.
+- Cloud setup: a cluster is created only with `keep: true` or
+  `delete_after_hours`, and a plan has at most 100 nodes. EKS nodes run in
+  private subnets behind one NAT gateway by default (`public_nodes` opts
+  out), `api_cidrs` limits the API endpoint, and spot with fewer than 3
+  copies warns.
+
+### Install
+
+- `curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh`
+  installs `chloedb-server` from the newest release into `~/.local/bin`,
+  checked against its `.sha256` (Linux x86_64 and aarch64 with glibc
+  2.35+, macOS arm64 and x86_64).
+- A Homebrew formula is built and tested for each release and attached to
+  it; it goes to a tap only once the tap is configured.
+- The Python package's Linux wheels are built for manylinux_2_28 (glibc
+  2.28), and a release can upload them to PyPI once trusted publishing is
+  set up.
+- The image runs `--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc
+  0.0.0.0:7701` when given no arguments (it still needs `CHLOEDB_TOKEN`).
+- [docs/quickstart.md](docs/quickstart.md): from install to a first search.
+
+### App engine
+
+- An app reaches only the hosts its owner allowed, each read-only or
+  allowed to send, checked at every redirect; API keys are sealed
+  (AES-256-GCM), bound to hosts and never seen by the app's code. Apps that
+  already had fetch on and no list keep reaching any host.
+- `CREATE RULE ... EVERY ...` runs rules on a schedule, `CREATE SOURCE`
+  reads RSS, Atom or JSON feeds into a table on a schedule, and `PULL`
+  does the same read inside a rule.
+
+### Storage
+
+- A SPARSE value whose term holds the character `\0` is refused when it
+  is written. It was accepted, and the next flush panicked building the
+  field's dictionary: on the flusher thread, which ended for good, and
+  again at each reopen, which replays the row. A term of that kind in a
+  row written before is left out of the index.
+- A panic in background work is that round's error, tried again as an
+  error is, and no longer ends the thread: the build of a background
+  flush, a merge on a merger thread, the cold tier's offload and eviction,
+  and a read-only database's refresh.
+- A checkpoint (a backup, the copy a replica is seeded from) of a database
+  where a column references a table created after its own table
+  (`ALTER TABLE .. ADD COLUMN .. REFERENCES`) failed with "references ..,
+  which is not a table". It copies such a database.
+- Semantic IDs: a background flush keeps the tie numbers of rows deleted
+  before it. It dropped them with the rows, so the next row under the
+  same levels was given a deleted row's whole code again: a code named
+  two rows over time, which the tie exists to prevent. A foreground flush
+  and a merge already kept them.
+
+### Query and indexes
+
+- **Breaking:** on the operators engine, a `LIMIT` over a join, `DISTINCT
+  ON` or `MAX k PER` whose first table holds more than 1,000,000 rows is
+  an error when the rows it wants are not among the first 1,000,000 read,
+  as the same query without its `LIMIT` is. It answered a short page,
+  down to no rows at all, without a word.
+- A plan from elsewhere (`Db::run`, `POST /v1/plan`) with a NOT over a NOT
+  or over `!=` matched the rows whose field is NULL: `not(not(price > 5))`
+  returned rows without a price. Each NOT is SQL's now, as in SQL text,
+  which was not affected.
+- The filter of `json_paths(.., filter => ..)`, `Db::json_paths` and
+  `Db::sid_next` is one condition, parsed by itself. Its text was put
+  into a statement's, so `'x = 1 LIMIT 0'` was taken as a filter.
+- Semantic IDs: `chloedb.train.codebook(balanced=True)` (Rust's
+  `TrainOptions.balance`, JavaScript's and Java's `balanced`) trains each
+  level of a codebook with every centroid given the same number of the
+  training vectors. Plain k-means uses the later levels' numbers
+  unevenly; on Amazon Beauty's 12,101 items, balanced, the third level's
+  256 numbers are all in use alike and the items sharing a code go from
+  3,288 to 2,601. Off by default, and a codebook's file is as before.
+  `chloedb.train.codebook_report` (`Codebook::report`,
+  `Db::codebook_report`) says what a codebook makes of a set of vectors:
+  the distinct codes, the rows sharing one, and each level's use.
+- Sequence models: `chloedb.train.sequence(logq=True, uniform_negatives=n)`
+  for catalogs too large to train against every item. With the other
+  targets of a batch as the negatives the model learns to rank popular
+  items low; `logq` takes that out of each negative's score and
+  `uniform_negatives` adds items drawn evenly. On Yambda-50M's 629,298
+  tracks, held-out Recall@10 after four epochs goes from 0.0229 to
+  0.0334. Both are off by default.
+- CI's recommender gate checks semantic IDs: a plain and a balanced
+  codebook on MovieLens-1M, the codes a table gives against
+  `codebook_report`, and the report against the fixtures.
+
+### Replication
+
+- **Breaking:** a database that numbers its writes (`--seq-no`) refuses a
+  bulk load (`Db::load`, `Database::bulk_load`) and `attach_segments` once
+  it has numbered a write or replicates: they write no log record, so its
+  replicas never got the rows. Before that they still seed it. Imports
+  (`POST /v1/import`, `chloedb-server import`, SQLite, Parquet and Arrow)
+  into such a database upsert in transactions of 10,000 rows, also into an
+  empty table: a bad row then stops the import after the transactions
+  before it, and a key the file holds twice keeps its last row.
+- `chloedb-server follow` and `follow-postgres` no longer stop with
+  "table ... already exists" when a `CREATE TABLE` or `ALTER TABLE` they
+  sent was applied but its answer was lost and they sent it again: a
+  table found as the source has it is taken as made.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

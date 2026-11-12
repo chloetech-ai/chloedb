@@ -329,6 +329,8 @@ pub fn models_dir() -> PathBuf {
 pub const KNOWN_MODELS: &[(&str, &str, &str)] = &[
     ("potion-retrieval-32M", "minishlab/potion-retrieval-32M", "Model2Vec, 512 dimensions, fast (the model ChloeCtx uses)"),
     ("potion-base-8M", "minishlab/potion-base-8M", "Model2Vec, 256 dimensions, smallest"),
+    ("potion-retrieval-32M-int8", "minishlab/potion-retrieval-32M", "potion-retrieval-32M with its table in int8: 4x smaller (30 MB), the same ranking"),
+    ("potion-base-8M-int8", "minishlab/potion-base-8M", "potion-base-8M with its table in int8: 4x smaller (8 MB)"),
     ("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "BERT, 384 dimensions (feature bert)"),
     ("snowflake-arctic-embed-m-v1.5", "Snowflake/snowflake-arctic-embed-m-v1.5", "BERT, 768 dimensions (feature bert)"),
     ("siglip-base-patch16-224", "google/siglip-base-patch16-224", "SigLIP, images and text, 768 dimensions (feature vision)"),
@@ -345,7 +347,7 @@ pub fn known_dim(model: &str) -> Option<usize> {
     if let Some(k) = crate::hosted::known_model(model) {
         return Some(k.dim);
     }
-    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
+    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
     dims.iter().find(|(m, _)| m.eq_ignore_ascii_case(model)).map(|&(_, d)| d)
 }
 
@@ -442,7 +444,7 @@ pub fn catalog(models: &Path) -> Vec<Listed> {
             if config["architectures"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str().is_some_and(|s| s.contains("SequenceClassification")))) {
                 continue;
             }
-            let dim = if sparse { None } else { config["hidden_size"].as_u64().or_else(|| config["dim"].as_u64()).map(|d| d as usize) };
+            let dim = if sparse { None } else { config["hidden_size"].as_u64().or(config["hidden_dim"].as_u64()).or_else(|| config["dim"].as_u64()).map(|d| d as usize) };
             let ready = match onnx && !cfg!(feature = "onnx") {
                 true => Err("built without the `onnx` feature".to_string()),
                 false => Ok(()),
@@ -451,6 +453,86 @@ pub fn catalog(models: &Path) -> Vec<Listed> {
         }
     }
     out
+}
+
+/// How a model makes its vectors, for a listing ([`describe`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Described {
+    /// `static` (Model2Vec: a table of token vectors, averaged),
+    /// `transformer` (BERT), `late-interaction` (ColBERT: a vector a
+    /// token, for a multi-vector field), `image-text` (SigLIP),
+    /// `sound-text` (CLAP), `hosted` (behind an API), `hash` (a test
+    /// model) or `unknown`.
+    pub technique: &'static str,
+    /// A static model's table: `F32`, `F16`, `BF16` or `I8`.
+    pub precision: Option<String>,
+    /// The bytes of its files here, when it is here.
+    pub bytes: Option<u64>,
+    /// The model a converted copy was made of (`potion-base-8M` of
+    /// `potion-base-8M-int8`), from [`quantized_of`] or its directory.
+    pub made_of: Option<String>,
+}
+
+/// What [`Described`] says of model `name` under `models`: from its files
+/// when it is here, else from its name.
+pub fn describe(name: &str, models: &Path) -> Described {
+    let none = |technique| Described { technique, precision: None, bytes: None, made_of: None };
+    if name.starts_with("hash:") {
+        return none("hash");
+    }
+    if crate::hosted::known_model(name).is_some() {
+        return none("hosted");
+    }
+    let dir = models.join(name);
+    let made_of = quantized_of(name).map(|(base, _)| base.to_string()).or_else(|| {
+        // A copy `quantize-model` wrote, by the name it suggests.
+        let base = name.strip_suffix("-int8").or_else(|| name.strip_suffix("-f16"))?;
+        models.join(base).join("model.safetensors").exists().then(|| base.to_string())
+    });
+    let bytes = std::fs::read_dir(&dir).ok().map(|d| d.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum());
+    if dir.join("endpoint.json").exists() {
+        return Described { technique: "hosted", precision: None, bytes, made_of };
+    }
+    let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    let technique = match config["model_type"].as_str() {
+        Some("bert") if dir.join("artifact.metadata").exists() => "late-interaction",
+        Some("bert") => "transformer",
+        Some("siglip") => "image-text",
+        Some("clap") => "sound-text",
+        Some("model2vec") => "static",
+        Some(_) => "unknown",
+        // Not here: by its name.
+        None if lower.contains("colbert") => "late-interaction",
+        None if lower.starts_with("potion") => "static",
+        None if lower.starts_with("bge") || lower.starts_with("snowflake") => "transformer",
+        None if lower.starts_with("siglip") => "image-text",
+        None if lower.starts_with("clap") => "sound-text",
+        None if dir.join("model.safetensors").exists() => "static",
+        None => "unknown",
+    };
+    let precision = match technique {
+        "static" => safetensors_dtype(&dir.join("model.safetensors"), "embeddings").or_else(|| quantized_of(name).map(|(_, e)| e.to_string())),
+        _ => None,
+    };
+    Described { technique, precision, bytes, made_of }
+}
+
+/// The dtype of tensor `tensor` in safetensors file `path`, from its
+/// header alone.
+fn safetensors_dtype(path: &Path, tensor: &str) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut len = [0u8; 8];
+    f.read_exact(&mut len).ok()?;
+    let n = u64::from_le_bytes(len);
+    if n > 100 << 20 {
+        return None;
+    }
+    let mut head = vec![0u8; n as usize];
+    f.read_exact(&mut head).ok()?;
+    let j: serde_json::Value = serde_json::from_slice(&head).ok()?;
+    j.get(tensor)?.get("dtype")?.as_str().map(str::to_string)
 }
 
 /// The files the model directory of `name` needs: CLAP's repository
@@ -709,7 +791,7 @@ impl Embedder for StaticEmbedder {
 /// The element types a static table can hold.
 #[cfg(feature = "embed")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Elem {
+pub enum Elem {
     F32,
     F16,
     BF16,
@@ -726,6 +808,15 @@ impl Elem {
             "I8" => Elem::I8,
             _ => return None,
         })
+    }
+    /// Its name in a safetensors header.
+    pub fn dtype(self) -> &'static str {
+        match self {
+            Elem::F32 => "F32",
+            Elem::F16 => "F16",
+            Elem::BF16 => "BF16",
+            Elem::I8 => "I8",
+        }
     }
     fn bytes(self) -> usize {
         match self {
@@ -860,6 +951,168 @@ impl Table {
 }
 
 
+/// Single precision to IEEE half, rounded to nearest even; past half's
+/// range, infinity.
+#[cfg(feature = "embed")]
+fn f32_to_f16(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let frac = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if frac != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        // subnormal, or zero
+        if e < -10 {
+            return sign;
+        }
+        let m = frac | 0x80_0000;
+        let shift = (14 - e) as u32;
+        let half = 1u32 << (shift - 1);
+        let r = m >> shift;
+        let rest = m & ((1 << shift) - 1);
+        let r = if rest > half || (rest == half && r & 1 == 1) { r + 1 } else { r };
+        return sign | r as u16;
+    }
+    let r = frac >> 13;
+    let rest = frac & 0x1fff;
+    let mut out = ((e as u32) << 10) | r;
+    if rest > 0x1000 || (rest == 0x1000 && r & 1 == 1) {
+        out += 1; // may carry into the exponent, as it should
+    }
+    sign | out as u16
+}
+
+/// What [`quantize_static`] wrote.
+#[cfg(feature = "embed")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Quantized {
+    /// The table's rows and dimensions.
+    pub rows: usize,
+    pub dim: usize,
+    /// The weights file's size before and after.
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+}
+
+/// The name of a model [`KNOWN_MODELS`] lists that is another one of them
+/// with its table written in fewer bits (`potion-retrieval-32M-int8`): the
+/// model fetched, and the element type [`quantize_static`] writes.
+pub fn quantized_of(name: &str) -> Option<(&'static str, &'static str)> {
+    let &(known, _, _) = KNOWN_MODELS.iter().find(|m| m.0.eq_ignore_ascii_case(name))?;
+    let base = known.strip_suffix("-int8")?;
+    let &(base, _, _) = KNOWN_MODELS.iter().find(|m| m.0 == base)?;
+    Some((base, "I8"))
+}
+
+/// Writes the static (Model2Vec) model in directory `from` into `to` (the
+/// same directory, or a new one) with its table in `elem`, `I8` or `F16`:
+/// an int8 table is 4 times smaller than F32, and Model2Vec's own format
+/// (one scale for the whole table, which the vector's unit length cancels);
+/// on BEIR its vectors rank within 0.001 nDCG@10 of F32's (SciFact,
+/// NFCorpus and ArguAna, potion-retrieval-32M). Its other tensors
+/// (`weights`, `mapping`) and files are kept as they are. The output is a
+/// function of the input alone, so that every machine that converts a
+/// model gets the same file, and the same [`fingerprint`].
+///
+/// A table embedded by a model keeps the fingerprint of the weights it was
+/// made with, so a converted model is a model of its own name: its vectors
+/// differ from the original's in the third decimal.
+#[cfg(feature = "embed")]
+pub fn quantize_static(from: &Path, to: &Path, elem: &str) -> Result<Quantized> {
+    let elem = match Elem::parse(&elem.to_ascii_uppercase()).or(match elem.to_ascii_lowercase().as_str() {
+        "int8" => Some(Elem::I8),
+        "f16" | "float16" => Some(Elem::F16),
+        _ => None,
+    }) {
+        Some(e @ (Elem::I8 | Elem::F16)) => e,
+        _ => return Err(model_err(format!("a static model's table is written as I8 or F16, not {elem}"))),
+    };
+    let src = from.join("model.safetensors");
+    // Opening it checks it is a model this reads, tokenizer and all.
+    StaticEmbedder::open(from)?;
+    let bytes_before = std::fs::metadata(&src).map(|m| m.len()).map_err(|e| model_err(format!("{}: {e}", src.display())))?;
+    let table = Table::open(&src, "embeddings")?;
+    let (rows, dim) = (table.rows, table.dim);
+    let mut values = vec![0f32; rows * dim];
+    for (r, row) in values.chunks_exact_mut(dim).enumerate() {
+        table.add_row(r, 1.0, row);
+    }
+    if values.iter().any(|x| !x.is_finite()) {
+        return Err(model_err(format!("{}: the table has a value that is not a finite number", src.display())));
+    }
+    // An int8 table stores what the F32 one would times one scale.
+    let bytes: Vec<u8> = match elem {
+        Elem::I8 => {
+            let max = values.iter().fold(0f32, |m, x| m.max(x.abs()));
+            let scale = if max > 0.0 { 127.0 / max } else { 1.0 };
+            values.iter().map(|x| (x * scale).round().clamp(-127.0, 127.0) as i8 as u8).collect()
+        }
+        _ => values.iter().flat_map(|&x| f32_to_f16(x).to_le_bytes()).collect(),
+    };
+    drop(values);
+    drop(table);
+    // The other tensors, as they are.
+    let (map, header, base) = Table::header(&src)?;
+    let mut tensors: Vec<(String, String, serde_json::Value, Vec<u8>)> = vec![("embeddings".into(), elem.dtype().into(), serde_json::json!([rows, dim]), bytes)];
+    let mut names: Vec<&String> = header.as_object().map(|o| o.keys().collect()).unwrap_or_default();
+    names.sort();
+    for name in names {
+        if name == "embeddings" || name == "__metadata__" {
+            continue;
+        }
+        let t = &header[name.as_str()];
+        let (dtype, shape, a, b) = Table::locate(&src, &map, t, base, name)?;
+        tensors.push((name.clone(), dtype, serde_json::json!(shape), map[a..b].to_vec()));
+    }
+    let mut head = serde_json::Map::new();
+    if let Some(m) = header.get("__metadata__") {
+        head.insert("__metadata__".into(), m.clone());
+    }
+    let mut at = 0usize;
+    for (name, dtype, shape, data) in &tensors {
+        head.insert(name.clone(), serde_json::json!({"dtype": dtype, "shape": shape, "data_offsets": [at, at + data.len()]}));
+        at += data.len();
+    }
+    // serde_json's map is ordered by key: the header is the same text on
+    // every machine. Padded with spaces to 8 bytes, as safetensors does.
+    let mut h = serde_json::Value::Object(head).to_string().into_bytes();
+    while h.len() % 8 != 0 {
+        h.push(b' ');
+    }
+    let mut out = Vec::with_capacity(8 + h.len() + at);
+    out.extend_from_slice(&(h.len() as u64).to_le_bytes());
+    out.extend_from_slice(&h);
+    for (_, _, _, data) in &tensors {
+        out.extend_from_slice(data);
+    }
+    drop(map);
+    let io = |p: &Path, e: std::io::Error| model_err(format!("{}: {e}", p.display()));
+    std::fs::create_dir_all(to).map_err(|e| io(to, e))?;
+    let same = to.canonicalize().ok() == from.canonicalize().ok();
+    if !same {
+        for entry in std::fs::read_dir(from).map_err(|e| io(from, e))? {
+            let entry = entry.map_err(|e| io(from, e))?;
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if entry.file_type().map_err(|e| io(&entry.path(), e))?.is_file() && n != "model.safetensors" && !n.ends_with(".sha256") && !n.ends_with(".part") {
+                std::fs::copy(entry.path(), to.join(&name)).map_err(|e| io(&entry.path(), e))?;
+            }
+        }
+    }
+    let dst = to.join("model.safetensors");
+    // Written aside and renamed: a process that has the model open keeps
+    // its mapping of the old file.
+    let tmp = to.join("model.safetensors.part");
+    std::fs::write(&tmp, &out).and_then(|_| std::fs::rename(&tmp, &dst)).map_err(|e| io(&dst, e))?;
+    Ok(Quantized { rows, dim, bytes_before, bytes_after: out.len() as u64 })
+}
+
 #[cfg(all(test, feature = "embed"))]
 mod static_table_tests {
     use super::*;
@@ -889,6 +1142,92 @@ mod static_table_tests {
         let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;
         let frac = ((b & 0x7f_ffff) + 0x1000) >> 13;
         sign | ((exp as u16) << 10) + frac as u16
+    }
+
+    /// A static model of a few words, its table F32, in a new directory.
+    pub(crate) fn tiny_model(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        let words = ["[UNK]", "cat", "dog", "fish", "bird", "car", "bus"];
+        let vocab: serde_json::Map<String, serde_json::Value> = words.iter().enumerate().map(|(i, w)| (w.to_string(), serde_json::json!(i))).collect();
+        let tok = serde_json::json!({"version": "1.0", "truncation": null, "padding": null, "added_tokens": [], "normalizer": {"type": "Lowercase"}, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null, "decoder": null, "model": {"type": "WordLevel", "vocab": vocab, "unk_token": "[UNK]"}});
+        std::fs::write(dir.join("tokenizer.json"), tok.to_string()).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type": "model2vec", "hidden_size": 4}"#).unwrap();
+        // animals near each other, vehicles near each other
+        let rows: [[f32; 4]; 7] = [[0.0; 4], [1.0, 0.2, 0.0, 0.01], [0.9, 0.3, 0.1, 0.0], [0.8, 0.1, 0.2, 0.0], [0.7, 0.4, 0.0, 0.1], [0.0, 0.1, 1.0, 0.3], [0.1, 0.0, 0.9, 0.5]];
+        let bytes: Vec<u8> = rows.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
+        write(&dir.join("model.safetensors"), &[("embeddings", "F32", vec![7, 4], bytes), ("weights", "F32", vec![7], [1.0f32, 1.0, 2.0, 1.0, 1.0, 1.0, 0.5].iter().flat_map(|x| x.to_le_bytes()).collect())]);
+    }
+
+    #[test]
+    fn half_precision_rounds_to_nearest_even() {
+        for x in [0.0f32, -0.0, 1.0, -2.5, 0.333, 65504.0, -1e-3, 6.1e-5, 3e-7, 1e-9] {
+            let back = f16_to_f32(f32_to_f16(x));
+            assert!((back - x).abs() <= x.abs() * 1e-3 + 6e-8, "{x}: {back}");
+        }
+        assert_eq!(f32_to_f16(1.0), 0x3c00);
+        assert_eq!(f32_to_f16(65520.0), 0x7c00); // past half's largest: infinity
+        assert_eq!(f32_to_f16(2f32.powi(-24)), 0x0001);
+        assert!(f16_to_f32(f32_to_f16(f32::NAN)).is_nan());
+        // halfway between 1 and the next half rounds to the even one
+        assert_eq!(f32_to_f16(1.0 + 2f32.powi(-11)), 0x3c00);
+        assert_eq!(f32_to_f16(1.0 + 3.0 * 2f32.powi(-11)), 0x3c02);
+    }
+
+    #[test]
+    fn a_quantized_model_embeds_as_the_original_does() {
+        let dir = std::env::temp_dir().join(format!("chloedb-quantize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (f32_dir, i8_dir, f16_dir) = (dir.join("tiny"), dir.join("tiny-int8"), dir.join("tiny-f16"));
+        tiny_model(&f32_dir);
+        let q = quantize_static(&f32_dir, &i8_dir, "I8").unwrap();
+        assert_eq!((q.rows, q.dim), (7, 4));
+        assert!(q.bytes_after < q.bytes_before, "{q:?}");
+        quantize_static(&f32_dir, &f16_dir, "f16").unwrap();
+        assert!(quantize_static(&f32_dir, &dir.join("x"), "I4").is_err());
+        assert!(i8_dir.join("tokenizer.json").exists() && i8_dir.join("config.json").exists());
+        let texts = ["cat dog", "the bus and the car", "fish bird cat", "nothing known"];
+        let base = StaticEmbedder::open(&f32_dir).unwrap().embed(&texts).unwrap();
+        for d in [&i8_dir, &f16_dir] {
+            let e = StaticEmbedder::open(d).unwrap();
+            assert_eq!(e.table.elem, if d == &i8_dir { Elem::I8 } else { Elem::F16 });
+            assert!(e.weights.is_some(), "the weights are kept");
+            for (a, b) in base.iter().zip(e.embed(&texts).unwrap()) {
+                let cos: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+                assert!(a.iter().all(|x| *x == 0.0) && b.iter().all(|x| *x == 0.0) || cos > 0.999, "{}: {a:?} vs {b:?}", d.display());
+            }
+        }
+        // the same input writes the same bytes: the same fingerprint everywhere
+        let again = dir.join("again");
+        quantize_static(&f32_dir, &again, "I8").unwrap();
+        assert_eq!(std::fs::read(again.join("model.safetensors")).unwrap(), std::fs::read(i8_dir.join("model.safetensors")).unwrap());
+        // what a listing says of each
+        let d = describe("tiny-int8", &dir);
+        assert_eq!((d.technique, d.precision.as_deref(), d.made_of.as_deref()), ("static", Some("I8"), Some("tiny")));
+        assert!(d.bytes.unwrap() > 0);
+        assert_eq!(describe("tiny", &dir).precision.as_deref(), Some("F32"));
+        assert_eq!(describe("tiny-f16", &dir).precision.as_deref(), Some("F16"));
+        assert_eq!(describe("answerai-colbert-small-v1", &dir).technique, "late-interaction");
+        assert_eq!(describe("potion-base-8M-int8", &dir).precision.as_deref(), Some("I8"));
+        assert_eq!(describe("openai/text-embedding-3-small", &dir).technique, "hosted");
+        // in place
+        let inplace = dir.join("inplace");
+        tiny_model(&inplace);
+        quantize_static(&inplace, &inplace, "I8").unwrap();
+        assert_eq!(std::fs::read(inplace.join("model.safetensors")).unwrap(), std::fs::read(i8_dir.join("model.safetensors")).unwrap());
+        // an int8 table again in int8 is the same table
+        let twice = dir.join("twice");
+        quantize_static(&i8_dir, &twice, "I8").unwrap();
+        assert_eq!(std::fs::read(twice.join("model.safetensors")).unwrap(), std::fs::read(i8_dir.join("model.safetensors")).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_int8_copies_of_known_models_name_their_originals() {
+        assert_eq!(quantized_of("potion-retrieval-32M-int8"), Some(("potion-retrieval-32M", "I8")));
+        assert_eq!(quantized_of("POTION-BASE-8M-INT8"), Some(("potion-base-8M", "I8")));
+        assert_eq!(quantized_of("potion-base-8M"), None);
+        assert_eq!(quantized_of("mine-int8"), None);
+        assert_eq!(known_dim("potion-retrieval-32M-int8"), Some(512));
     }
 
     #[test]

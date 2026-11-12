@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.2.0). The
+(November 2026, every crate and package at version 0.2.1). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which

@@ -22,6 +22,9 @@
 //! pod's own scratch volume at each start. `embedder: hash:<dim>` needs no
 //! download (vectors from hashed words: for a cluster that cannot reach
 //! Hugging Face).
+//!
+//! Once the coordinators make keys limited to tables, it holds a key and a
+//! token of its own instead ([`super::credentials`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -41,6 +44,11 @@ pub struct ChloectxSpec {
     /// coordinators still list it, as an app that does not answer; the
     /// spaces stay in their tables).
     pub paused: bool,
+    /// The tables its key may touch, as `table=scope` (`crawl_*=admin`,
+    /// `*=read`; [`crate::keys::Grant`]); none: the app's own
+    /// ([`super::credentials::default_tables`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<String>,
     /// The embedder: `static` (the default; its model downloaded at each
     /// start) or `hash:<dim>` (no model). A space keeps the vectors it was
     /// written with, so changing it makes earlier notes match by words only.
@@ -59,6 +67,7 @@ const SET: &[&str] = &["--server", "--key", "--token", "--host", "--port", "--em
 impl ChloectxSpec {
     /// What is wrong with it, if anything.
     pub fn check(&self) -> Result<(), String> {
+        super::credentials::check_tables(APP, &self.tables)?;
         for a in &self.args {
             let flag = a.split('=').next().unwrap_or_default();
             if SET.contains(&flag) {
@@ -100,6 +109,7 @@ pub fn schema() -> Json {
         "description": "ChloeCtx beside the cluster: a chloectx app Deployment of one, which the command center shows under Apps (Context: memory spaces agents write to and ask for context; Seen before: firing alerts beside the past incidents they look like). Its spaces are tables of the cluster.",
         "properties": {
             "paused": {"type": "boolean", "description": "No ChloeCtx pod for now (the spaces stay)."},
+            "tables": super::credentials::schema(APP),
             "embedder": {"type": "string", "description": "static (default: its 125 MB model is downloaded from Hugging Face at each start) or hash:<dim> (no model, vectors from hashed words)."},
             "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments of chloectx app."},
             "resources": {"type": "object", "x-kubernetes-preserve-unknown-fields": true, "description": "Resources of its container."},

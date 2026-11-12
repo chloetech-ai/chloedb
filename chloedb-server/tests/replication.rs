@@ -1233,7 +1233,7 @@ async fn a_replica_whose_rows_differ_is_sent_a_copy() {
     // A replica answers the primary it follows, at the version pinned.
     let id = p.health().await["replication"]["id"].as_str().unwrap().to_string();
     let mut c = pb::strata_client::StrataClient::connect(su.clone()).await.unwrap();
-    let ask = |primary: &str, term: u64, seq_no: u64| pb::VerifyRequest { term, primary: primary.into(), seq_no };
+    let ask = |primary: &str, term: u64, seq_no: u64| pb::VerifyRequest { term, primary: primary.into(), seq_no, config: 0 };
     for (req, says) in [
         (ask("someone", 1, last(&pdb)), "this replica follows primary"),
         (ask(&id, 2, last(&pdb)), "not primary"),
@@ -1484,7 +1484,7 @@ async fn a_key_s_promotion_calls_only_the_shard_s_known_copies() {
     let x = grpc(xs).await;
     let r = server::service(&server::Options { replica: true, replicas: vec![x.clone()], ..opts("r.strata") }).await.unwrap();
     assert_eq!(r.known_copies(), vec![x.clone()]);
-    let key = |scope| Principal { name: "ops".into(), key: Some("0a1b2c3d".into()), scope, root: false };
+    let key = |scope| Principal { name: "ops".into(), key: Some("0a1b2c3d".into()), scope, root: false, tables: None };
     let admin = key(chloedb_server::keys::Scope::Admin);
     for asked in [vec![fake_url.clone()], vec![x.clone(), fake_url.clone()]] {
         let e = r.promote(&admin, asked, Acks::All, false).await.unwrap_err();
@@ -1598,7 +1598,7 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     let a = restore(&u1, 1, &old_id, image.len() as u64, &image).await.unwrap();
     assert_eq!((a.matched, a.replica_term), (false, 2));
     let mut c = pb::strata_client::StrataClient::connect(u1.clone()).await.unwrap();
-    let e = c.verify(pb::VerifyRequest { term: 1, primary: old_id.clone(), seq_no: 5 }).await.unwrap_err();
+    let e = c.verify(pb::VerifyRequest { term: 1, primary: old_id.clone(), seq_no: 5, config: 0 }).await.unwrap_err();
     assert!(e.message().contains("this server is a primary"), "{e}");
     assert_eq!(r1.replaced_by(), 0, "an older term replaces nothing");
     assert_eq!(last(&r1db), 7);
@@ -1861,7 +1861,7 @@ async fn a_replaced_primary_is_fenced_and_starts_again_only_when_promoted() {
     assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "role": "primary", "replicas": [], "write_acks": "all", "config": {"version": 1, "copies": 3}}));
     // Replaced again, and started as a replica: it no longer counts as
     // replaced once it follows.
-    assert_eq!(p.shipped_to("q", 5).unwrap_err().status, 409);
+    assert_eq!(p.shipped_to("q", 5, 0).unwrap_err().status, 409);
     // It keeps the part it has to take up: a replica of the new primary.
     assert_eq!(kept(dir.path(), "p.strata"), json!({"id": id, "member": true, "replaced_by": 5, "role": "replica", "config": {"version": 1, "copies": 3}}));
     drop(p);

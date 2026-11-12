@@ -1,0 +1,30 @@
+{
+  "analyzer": "hindi",
+  "collections": {
+    "miracl-hi": {
+      "db_bytes": 287625256,
+      "docs": 506264,
+      "load_s": 15.219489614,
+      "queries": 350,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 3.2077003657142864,
+          "ms_p50": 2.5929019999999996,
+          "ms_p99": 14.050043,
+          "ndcg10": 0.42838040497660684,
+          "recall10": 0.5594285714285715,
+          "recall100": 0.8368707482993198
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "hi_hindi"
+}

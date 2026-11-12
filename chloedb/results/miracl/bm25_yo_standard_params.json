@@ -1,0 +1,39 @@
+{
+  "analyzer": "standard",
+  "collections": {
+    "miracl-yo": {
+      "db_bytes": 9695272,
+      "docs": 49043,
+      "load_s": 0.701469558,
+      "queries": 119,
+      "variants": {
+        "k09b04_r100": {
+          "failed": 0,
+          "ms_mean": 0.4929183781512604,
+          "ms_p50": 0.473792,
+          "ms_p99": 0.865306,
+          "ndcg10": 0.722983551612898,
+          "recall10": 0.876750700280112,
+          "recall100": 0.9621848739495799
+        },
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 0.5614386722689075,
+          "ms_p50": 0.5254679999999999,
+          "ms_p99": 1.199021,
+          "ndcg10": 0.6491582737631038,
+          "recall10": 0.8067226890756303,
+          "recall100": 0.9621848739495799
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "yo_standard_params"
+}

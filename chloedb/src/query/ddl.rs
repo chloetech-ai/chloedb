@@ -29,8 +29,9 @@
 //! makes the database format 3 ([`crate::storage::manifest`]). `OPTIONS(...)` takes the options of
 //! the schema's short JSON form ([`crate::schema::Schema::from_json`]):
 //! `positions`, `stored` and `indexed` (true or false), `from` (the fields
-//! a generated TEXT field joins), `analyzer` (`'english'`, the default, or
-//! `'simple'`; another than `english` makes the database format 3), `index` (`'hnsw'` with `m` and
+//! a generated TEXT field joins), `analyzer` (`'english'`, the default,
+//! `'simple'`, `'standard'` for text in any script, `'cjk'`, or a language such as
+//! `'french'`; another than `english` makes the database format 3), `index` (`'hnsw'` with `m` and
 //! `ef_construction`, `'flat'`, or `'ivf'` with `nlist`), `codes` (`'sq8'`,
 //! `'binary'`, `'rabitq1'`, `'rabitq2'` or `'rabitq4'`), `dim`, and `embed` with `model` (the fields a VECTOR
 //! field is the model's embedding of, or a SPARSE field a learned sparse

@@ -1890,9 +1890,10 @@ impl Schema {
     /// (`"stored": false`, `"indexed": false`), except that vectors and
     /// generated text (`from`) are not stored. Text keeps positions (for
     /// phrases) unless `"positions": false`, and is analysed by
-    /// `"analyzer"`: `"english"` (the default) or `"simple"`, version 1, or
-    /// `{"name": .., "version": ..}` ([`Analyzer`]; another than `english`
-    /// makes the database format 3). A vector's `index` is
+    /// `"analyzer"`: `"english"` (the default), `"simple"`, `"standard"`
+    /// (any script), `"cjk"` or a language (`"french"`, `"arabic"`, `"hindi"`, ...),
+    /// version 1, or `{"name": .., "version": ..}` ([`Analyzer`]; another
+    /// than `english` makes the database format 3). A vector's `index` is
     /// `"hnsw"` (the default, m 16 and ef_construction 200), `"flat"`,
     /// `{"hnsw": {"m": .., "ef_construction": ..}}` or
     /// `{"ivf": {"nlist": ..}}`, and its `codes` `"sq8"` (default) or
@@ -2287,7 +2288,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
         None | Some(J::Null) => None,
         Some(J::String(n)) => Some(Analyzer::of(&n.to_ascii_lowercase(), 1).map_err(|e| bad(&e))?),
         Some(a @ J::Object(_)) => Some(serde_json::from_value(a.clone()).map_err(|e| bad(&e.to_string()))?),
-        Some(_) => return Err(bad("analyzer is a name (\"english\" or \"simple\") or {\"name\": .., \"version\": ..}")),
+        Some(_) => return Err(bad("analyzer is a name (\"english\", \"simple\", \"standard\", \"cjk\" or a language such as \"french\") or {\"name\": .., \"version\": ..}")),
     };
     match j.get("semantic_id") {
         None | Some(J::Null) => {}

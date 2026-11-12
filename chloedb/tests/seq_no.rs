@@ -490,10 +490,11 @@ fn attached_rows_have_number_0() {
         let exported = dir.path().join("seg");
         from.storage().export_segment(from.snapshot().segments()[0].id, &exported).unwrap();
 
+        // Attached to a seed, before its first numbered write.
         let db = Db::create(&path_for(dir.path(), "db", layout), schema(), options(layout)).unwrap();
         db.storage().start_seq_no().unwrap();
-        assert_eq!(upsert(&db, &mut model, 10, 10), Some(1));
         let ids = db.storage().attach_segments(&[exported]).unwrap();
+        assert_eq!(upsert(&db, &mut model, 10, 10), Some(1));
         model.extend(other);
         assert_eq!(rows(&db), model);
         for i in 0..5 {
@@ -579,5 +580,63 @@ fn seq_no_is_a_column_of_numbered_tables() {
     ] {
         let e = db.query(sql, &Params::new()).unwrap_err().to_string();
         assert!(e.contains(says), "{sql}: {e}");
+    }
+}
+
+/// A bulk load and attached segments write no log record, take no number
+/// and are not shipped, so a database that has numbered a write or whose
+/// commits are followed (a primary, a replica) refuses them: the other
+/// copies would never see the rows (audit A-B7). Before that, both still
+/// work, as a seed.
+#[test]
+fn a_numbered_database_refuses_writes_it_cannot_ship() {
+    for layout in [Layout::SingleFile, Layout::Directory] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = path_for(dir.path(), "db", layout);
+        let db = Db::create(&path, schema(), options(layout)).unwrap();
+        let image = |name: &str, from: u64| {
+            let p = dir.path().join(name);
+            Db::write_segment(&schema(), (from..from + 10).map(|i| doc(i, 1)).collect(), &Default::default(), &p).unwrap();
+            p
+        };
+        // A seed: before numbering, and once it starts, before a write.
+        db.load((0..10).map(|i| doc(i, 0))).unwrap();
+        db.storage().start_seq_no().unwrap();
+        db.attach_segments(&[image("seed.seg", 100)]).unwrap();
+        let mut model = rows(&db);
+        assert_eq!(upsert(&db, &mut model, 20, 3), Some(1));
+        let before = (rows(&db), db.storage().seq_no());
+        let e = db.load((30..40).map(|i| doc(i, 0))).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("not shipped to replicas"), "{layout:?}: a load into a numbered database: {e:?}");
+        let e = db.attach_segments(&[image("later.seg", 200)]).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("not shipped to replicas"), "{layout:?}: segments attached to a numbered database: {e:?}");
+        assert_eq!((rows(&db), db.storage().seq_no()), before, "{layout:?}");
+        // An import into an empty table is upserted, numbered and shipped.
+        db.sql("CREATE TABLE side (id KEYWORD PRIMARY KEY, n INT)", &Params::new()).unwrap();
+        let side_schema = db.storage().table("side").unwrap();
+        let lines: String = (0..5).map(|i| format!("{{\"id\": \"s{i}\", \"n\": {i}}}\n")).collect();
+        let rows_in = chloedb::ingest::Rows::new(&side_schema, std::io::Cursor::new(lines.into_bytes()), chloedb::ingest::Format::Jsonl).unwrap();
+        let r = chloedb::ingest::import_into(&db, "side", rows_in).unwrap();
+        assert!(!r.bulk && r.rows == 5, "{layout:?}: {r:?}");
+        assert!(db.storage().seq_no().unwrap().seq > before.1.unwrap().seq);
+        // So is one into a table without a key, whose rows are inserted.
+        db.sql("CREATE TABLE lines (line KEYWORD)", &Params::new()).unwrap();
+        let lines_schema = db.storage().table("lines").unwrap();
+        let rows_in = chloedb::ingest::Rows::new(&lines_schema, std::io::Cursor::new(b"{\"line\": \"a\"}\n{\"line\": \"b\"}\n".to_vec()), chloedb::ingest::Format::Jsonl).unwrap();
+        let r = chloedb::ingest::import_into(&db, "lines", rows_in).unwrap();
+        assert!(!r.bulk && r.rows == 2, "{layout:?}: {r:?}");
+        assert_eq!(db.snapshot().table("lines").unwrap().n_live_docs(), 2);
+        // Transactions go on as before.
+        assert_eq!(upsert(&db, &mut model, 21, 3), db.storage().seq_no().map(|s| s.seq));
+
+        // A database whose commits are followed (a primary or a replica)
+        // refuses a seed even before its first numbered write.
+        let db = Db::create(&path_for(dir.path(), "followed", layout), schema(), options(layout)).unwrap();
+        db.storage().start_seq_no().unwrap();
+        db.storage().on_commit(|_| {});
+        let e = db.load((0..10).map(|i| doc(i, 0))).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("not shipped to replicas"), "{layout:?}: a load into a followed database: {e:?}");
+        assert!(db.attach_segments(&[image("followed.seg", 300)]).is_err(), "{layout:?}");
+        assert!(rows(&db).is_empty());
     }
 }

@@ -100,6 +100,23 @@
                         "pattern": "^https?://[^?# ]+$",
                         "type": "string"
                       },
+                      "publish": {
+                        "description": "Open the apps their owners publish to everyone, at <name>.<domain>, with certificates from Let's Encrypt, behind a load balancer of their own (<cluster>-apps-public).",
+                        "properties": {
+                          "domain": {
+                            "description": "apps.example.com, with a DNS record *.apps.example.com pointing at the load balancer; or sslip: its address as a name of sslip.io, with no record.",
+                            "type": "string"
+                          },
+                          "email": {
+                            "description": "Who Let's Encrypt writes to about the certificates.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "domain"
+                        ],
+                        "type": "object"
+                      },
                       "resources": {
                         "description": "Resources of its container.",
                         "type": "object",
@@ -131,6 +148,13 @@
                           }
                         },
                         "type": "object"
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: sa_*=admin, app_*=admin.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
@@ -245,6 +269,15 @@
                             "maximum": 1,
                             "minimum": 0,
                             "type": "number"
+                          },
+                          "maxShards": {
+                            "description": "addShard: the shards the cluster grows to at most (default 16).",
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "maxSize": {
+                            "description": "grow: the size a volume grows to at most, as 500Gi (default 1Ti).",
+                            "type": "string"
                           }
                         },
                         "type": "object"
@@ -274,6 +307,13 @@
                         "description": "Resources of its container.",
                         "type": "object",
                         "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: ctx_*=admin, chloectx_memory=read.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
@@ -331,6 +371,13 @@
                         "description": "Rows of a crawl's table on a shard past which the cluster gets one more shard (0: never; default 100000).",
                         "minimum": 0,
                         "type": "integer"
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: *=admin.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
@@ -539,6 +586,13 @@
                         "description": "Resources of its container.",
                         "type": "object",
                         "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: sheets_*=admin, *=read.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"
