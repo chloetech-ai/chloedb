@@ -107,6 +107,15 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
         Err(unconditional(self.describe(), prefix))
     }
+    /// The names directly under `prefix` (empty, or ending in `/`) that
+    /// keys continue past, as directories of a file system, in order. A
+    /// store may name one that no key is under any more.
+    fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut names: Vec<String> = self.list(prefix)?.iter().filter_map(|k| k.get(prefix.len()..)?.split_once('/').map(|(d, _)| d.to_string())).collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
     /// Writes the whole of object `key` to the file at `dest`, replacing
     /// one there; an error if the object is missing.
     fn get_file(&self, key: &str, dest: &Path) -> Result<()> {
@@ -271,6 +280,28 @@ impl ObjectStore for DirStore {
     fn get_file(&self, key: &str, dest: &Path) -> Result<()> {
         std::fs::copy(self.path(key)?, dest).map_err(|e| missing(self, key, e))?;
         Ok(())
+    }
+
+    fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
+        let dir = match prefix.trim_end_matches('/') {
+            "" => self.root.clone(),
+            p => self.path(p)?,
+        };
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name != LOCKS && entry.file_type()?.is_dir() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
     }
 }
 
@@ -1202,6 +1233,9 @@ mod tests {
         assert_eq!(keys, ["t/HEAD", "t/i/base/1", "t/i/log/1"]);
         assert_eq!(s.list("t/i/l").unwrap(), ["t/i/log/1"]);
         assert!(s.list("nowhere/").unwrap().is_empty());
+        assert_eq!(s.list_dirs("").unwrap(), ["t", "t2"]);
+        assert_eq!(s.list_dirs("t/i/").unwrap(), ["base", "log"]);
+        assert!(s.list_dirs("nowhere/").unwrap().is_empty());
         let dest = dir.join("copy");
         s.get_file("t/i/base/1", &dest).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"b");

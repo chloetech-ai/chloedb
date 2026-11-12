@@ -53,10 +53,10 @@
 //! ([`crate::storage::Database::start_seq_no`]), so they are **not**
 //! committed by [`Tenant::write`]: write rows with SQL or transactions.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::Db;
 use crate::error::{corrupt, Error, Result};
 use crate::storage::arc::{Entry, LogObject, SEQ_NO};
-use crate::storage::{Applied, CheckpointOptions, DbOptions, LogRead, ObjectStore};
+use crate::storage::{Applied, CheckpointOptions, DbOptions, LogRead, ObjectStore, SeqNo};
 
 const MAGIC: &[u8; 8] = b"STRHEAD1";
 /// The layout this module writes: 0, which is experimental.
@@ -178,6 +178,8 @@ pub struct BaseRef {
     /// Its key under the tenant's prefix.
     pub key: String,
     pub seq: u64,
+    /// The term of transaction `seq` (0 when `seq` is 0).
+    pub term: u64,
 }
 
 /// A log object `HEAD` names: the transactions `first` to `last`.
@@ -393,6 +395,21 @@ pub fn check_store(store: &dyn ObjectStore) -> Result<()> {
     checked
 }
 
+/// The ids of `store`'s tenants, in order: one listing of its root, and
+/// a short read of each `HEAD`, which is what makes a tenant exist. (A
+/// fleet keeps a directory rather than ask this of a large store.)
+pub fn list(store: &dyn ObjectStore) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for id in store.list_dirs("")?.into_iter().filter(|id| valid_id(id)) {
+        match store.get_range(&format!("{id}/{HEAD}"), 0..MAGIC.len() as u64) {
+            Ok(_) => ids.push(id),
+            Err(e) if not_found(&e) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(ids)
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -412,7 +429,9 @@ fn not_found(e: &Error) -> bool {
 /// A tenant as this handle holds it: its local copy, and the `HEAD` the
 /// copy is at.
 struct Loaded {
-    db: Db,
+    /// Shared with the writers of a commit while they take their turns
+    /// ([`Tenant::write`]), and with nobody otherwise.
+    db: Arc<Db>,
     head: Head,
     /// The store's version of `head`, which the next commit replaces.
     version: String,
@@ -445,6 +464,109 @@ pub struct Tenant {
     /// `None`: to be loaded from the store before the next use (a write
     /// failed after it changed the local copy, and loading failed too).
     state: RwLock<Option<Loaded>>,
+    /// The lock on the cache directory, held while the handle lives.
+    _cache: std::fs::File,
+    /// The writers waiting to commit, and whose turn it is.
+    group: Mutex<Group>,
+    turn: Condvar,
+}
+
+/// The writes of one handle that wait to be committed, and those being
+/// committed together ([`Tenant::write`]).
+#[derive(Default)]
+struct Group {
+    /// The next writer's ticket.
+    next: u64,
+    /// The writers no commit has taken yet, in the order they came.
+    waiting: VecDeque<u64>,
+    /// Whether one of them is committing (the leader).
+    leading: bool,
+    /// The writer whose statements run now, and the database they run on.
+    turn: Option<(u64, Arc<Db>)>,
+    /// The writer whose statements have just run,
+    ran: Option<u64>,
+    /// and whether they ended in a panic.
+    panicked: bool,
+    /// What became of the commits of writers that did not lead them.
+    done: HashMap<u64, Outcome>,
+}
+
+/// What became of a commit, for the writers in it that did not lead it.
+#[derive(Clone, Debug)]
+enum Outcome {
+    Committed,
+    NotWriter,
+    Missing,
+    InDoubt(String),
+    Failed(String),
+}
+
+impl Outcome {
+    fn of(r: &TResult<()>) -> Outcome {
+        match r {
+            Ok(()) => Outcome::Committed,
+            Err(TenantError::NotWriter) => Outcome::NotWriter,
+            Err(TenantError::Missing) => Outcome::Missing,
+            Err(TenantError::InDoubt(m)) => Outcome::InDoubt(m.clone()),
+            Err(e) => Outcome::Failed(e.to_string()),
+        }
+    }
+
+    fn result(self) -> TResult<()> {
+        match self {
+            Outcome::Committed => Ok(()),
+            Outcome::NotWriter => Err(TenantError::NotWriter),
+            Outcome::Missing => Err(TenantError::Missing),
+            Outcome::InDoubt(m) => Err(TenantError::InDoubt(m)),
+            Outcome::Failed(m) => Err(TenantError::Db(Error::Io(std::io::Error::other(m)))),
+        }
+    }
+}
+
+/// A writer's turn: says that its statements have run when dropped,
+/// by a panic too, so that the commit's leader does not wait for ever.
+struct Turn<'a> {
+    tenant: &'a Tenant,
+    ticket: u64,
+    returned: bool,
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let mut q = self.tenant.queue();
+        q.ran = Some(self.ticket);
+        q.panicked |= !self.returned;
+        self.tenant.turn.notify_all();
+    }
+}
+
+/// A commit's leader: when it is dropped, by a panic too, the writers
+/// it took learn what became of the commit, or wait for the next one
+/// when their statements have not run, and another writer may lead.
+struct Lead<'a> {
+    tenant: &'a Tenant,
+    /// The writers of this commit after the leader, in order, and how
+    /// many of them have run.
+    members: Vec<u64>,
+    ran: usize,
+    /// What the writers that ran are told: a failure until the commit's
+    /// end is known.
+    outcome: Outcome,
+}
+
+impl Drop for Lead<'_> {
+    fn drop(&mut self) {
+        let mut q = self.tenant.queue();
+        for (i, m) in self.members.iter().enumerate().rev() {
+            match i < self.ran {
+                true => drop(q.done.insert(*m, self.outcome.clone())),
+                false => q.waiting.push_front(*m),
+            }
+        }
+        q.turn = None;
+        q.leading = false;
+        self.tenant.turn.notify_all();
+    }
 }
 
 impl fmt::Debug for Tenant {
@@ -454,6 +576,18 @@ impl fmt::Debug for Tenant {
 }
 
 impl Tenant {
+    /// A handle with nothing loaded, holding its cache directory: an
+    /// error when another handle, of any process, holds it.
+    fn handle(store: Arc<dyn ObjectStore>, id: &str, opts: TenantOptions) -> Result<Tenant> {
+        std::fs::create_dir_all(&opts.cache_dir)?;
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(opts.cache_dir.join("lock"))?;
+        // SAFETY: `lock` is an open file, whose descriptor the call only locks.
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(Error::Busy(format!("{}: another handle of a tenant uses this cache directory", opts.cache_dir.display())));
+        }
+        Ok(Tenant { store, id: id.to_string(), opts, state: RwLock::new(None), _cache: lock, group: Mutex::default(), turn: Condvar::new() })
+    }
+
     /// Creates tenant `id` in `store`, which must have none of that id
     /// ([`TenantError::Exists`]): an empty database on which `init` has
     /// run (its tables, say), uploaded as the tenant's first base, then
@@ -461,7 +595,7 @@ impl Tenant {
     /// fails without an answer, the tenant may exist all the same.
     pub fn create(store: Arc<dyn ObjectStore>, id: &str, opts: TenantOptions, init: impl FnOnce(&Db) -> Result<()>) -> TResult<Tenant> {
         check_id(id)?;
-        let t = Tenant { store, id: id.to_string(), opts, state: RwLock::new(None) };
+        let t = Tenant::handle(store, id, opts)?;
         if t.store.get(&t.key(HEAD))?.is_some() {
             return Err(TenantError::Exists);
         }
@@ -471,8 +605,8 @@ impl Tenant {
         let db = Db::create_empty(&work, t.opts.db.clone())?;
         db.storage().start_seq_no()?;
         init(&db)?;
-        let seq = numbering(&db)?.last().seq;
-        let base = BaseRef { key: format!("{incarnation}/base/{seq:020}-{:010}.chloedb", 1), seq };
+        let SeqNo { term, seq } = numbering(&db)?.last();
+        let base = BaseRef { key: format!("{incarnation}/base/{seq:020}-{:010}.chloedb", 1), seq, term };
         let image = t.cached(&base.key)?;
         let _ = std::fs::remove_file(&image);
         db.storage().checkpoint(&image, &CheckpointOptions::default())?;
@@ -481,7 +615,8 @@ impl Tenant {
         match t.store.put_if_absent(&t.key(HEAD), &head.encode()?) {
             Ok(Some(version)) => {
                 t.keep_cached(&head.base.key);
-                *t.state.write().unwrap_or_else(|e| e.into_inner()) = Some(Loaded { db, head, version, me });
+                t.mark_work(&head)?;
+                *t.state.write().unwrap_or_else(|e| e.into_inner()) = Some(Loaded { db: Arc::new(db), head, version, me });
                 Ok(t)
             }
             Ok(None) => {
@@ -499,7 +634,7 @@ impl Tenant {
     /// nothing to the store.
     pub fn open(store: Arc<dyn ObjectStore>, id: &str, opts: TenantOptions) -> TResult<Tenant> {
         check_id(id)?;
-        let t = Tenant { store, id: id.to_string(), opts, state: RwLock::new(None) };
+        let t = Tenant::handle(store, id, opts)?;
         let loaded = t.load()?;
         *t.state.write().unwrap_or_else(|e| e.into_inner()) = Some(loaded);
         Ok(t)
@@ -571,38 +706,140 @@ impl Tenant {
     }
 
     /// Runs `f` on the local copy and commits the transactions it made,
-    /// as one replacement of `HEAD`. When this returns `Ok`, they are in
+    /// by a replacement of `HEAD`. When this returns `Ok`, they are in
     /// the store and visible to readers of this handle; until then no
     /// reader sees them.
+    ///
+    /// Writes of several threads are committed together: those that
+    /// arrive while a commit is on its way to the store run one after
+    /// the other when it is back, and share the next replacement of
+    /// `HEAD`. So a handle commits as many transactions as were asked of
+    /// it during one round trip, not one.
     ///
     /// A handle that is not the tenant's writer becomes it first, with a
     /// commit of its own that raises the epoch. Then, if another node
     /// commits before this one does, the write fails with
-    /// [`TenantError::NotWriter`]: nothing of it was committed, and the
-    /// handle has loaded the tenant again.
+    /// [`TenantError::NotWriter`]: nothing of it was committed (nor of
+    /// the writes it shared the commit with), and the handle has loaded
+    /// the tenant again.
     ///
     /// When `f` fails, the transactions it committed before failing are
     /// committed all the same (each statement is a transaction of its
-    /// own), and `f`'s error is returned.
+    /// own), and `f`'s error is returned. `f` must not call the handle.
     pub fn write<T>(&self, f: impl FnOnce(&Db) -> Result<T>) -> TResult<T> {
+        let mut q = self.queue();
+        let me = q.next;
+        q.next += 1;
+        q.waiting.push_back(me);
+        let mut f = Some(f);
+        let mut out = None;
+        loop {
+            if let Some(outcome) = q.done.remove(&me) {
+                outcome.result()?;
+                return Ok(out.expect("a writer whose commit is done has run")?);
+            }
+            if let Some((_, db)) = q.turn.as_ref().filter(|(t, _)| *t == me) {
+                // A leader took this write into its commit: its statements
+                // run here, on this thread, while the leader waits.
+                let db = db.clone();
+                q.turn = None;
+                drop(q);
+                let mut turn = Turn { tenant: self, ticket: me, returned: false };
+                out = Some({
+                    let db = db;
+                    (f.take().expect("one turn"))(&db)
+                });
+                turn.returned = true;
+                drop(turn);
+                q = self.queue();
+                continue;
+            }
+            if !q.leading && q.waiting.front() == Some(&me) {
+                q.leading = true;
+                q.waiting.pop_front();
+                drop(q);
+                return self.lead(f.take().expect("not run yet"));
+            }
+            q = self.turn.wait(q).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// The writes waiting for a commit to take them (for tests).
+    #[doc(hidden)]
+    pub fn waiting_writers(&self) -> usize {
+        self.queue().waiting.len()
+    }
+
+    fn queue(&self) -> MutexGuard<'_, Group> {
+        self.group.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Commits `f`'s write and those of the writers waiting behind it.
+    fn lead<T>(&self, f: impl FnOnce(&Db) -> Result<T>) -> TResult<T> {
+        let mut lead = Lead { tenant: self, members: Vec::new(), ran: 0, outcome: Outcome::Failed("the write it shared a commit with failed".into()) };
         let mut g = self.exclusive();
         self.become_writer(&mut g)?;
         let l = g.as_mut().expect("loaded by become_writer");
         let before = l.last_seq()?;
-        let storage = l.db.storage();
-        let hold = storage.hold_log(before + 1);
-        let out = f(&l.db);
-        let made = storage.log_from(before + 1, usize::MAX);
-        storage.release_log(hold);
+        let db = l.db.clone();
+        let hold = db.storage().hold_log(before + 1);
+        // Those that came while the commit before this one was away.
+        lead.members = {
+            let mut q = self.queue();
+            q.waiting.drain(..).collect()
+        };
+        let out = f(&db);
+        let mut panicked = false;
+        for i in 0..lead.members.len() {
+            let m = lead.members[i];
+            let mut q = self.queue();
+            (q.turn, q.ran, q.panicked) = (Some((m, db.clone())), None, false);
+            self.turn.notify_all();
+            while q.ran != Some(m) {
+                q = self.turn.wait(q).unwrap_or_else(|e| e.into_inner());
+            }
+            panicked |= q.panicked;
+            lead.ran = i + 1;
+        }
+        let made = db.storage().log_from(before + 1, usize::MAX);
+        db.storage().release_log(hold);
+        drop(db);
+        let committed = match panicked {
+            // The local copy holds part of a write that did not end.
+            true => {
+                self.reload(&mut g);
+                Err(Error::Io(std::io::Error::other("a write of the same commit panicked: nothing of the commit was written")).into())
+            }
+            false => self.commit(&mut g, before, made),
+        };
+        lead.outcome = Outcome::of(&committed);
+        // The others learn of it now, not after the base.
+        drop(lead);
+        committed?;
+        if g.as_ref().is_some_and(|l| l.is_writer() && head_due(&self.opts, &l.head)) {
+            // The write is committed whatever becomes of the base.
+            if let Err(e) = self.make_base_locked(&mut g) {
+                tracing::warn!(tenant = %self.id, error = %e, "a tenant's new base was not made");
+            }
+        }
+        Ok(out?)
+    }
+
+    /// Commits the transactions the local copy holds after `before`,
+    /// which `made` read from its log: one replacement of `HEAD`. On an
+    /// error nothing of them is committed, unless the error says that it
+    /// cannot tell, and the local copy is loaded again.
+    fn commit(&self, g: &mut RwLockWriteGuard<'_, Option<Loaded>>, before: u64, made: LogRead) -> TResult<()> {
+        let l = g.as_mut().expect("loaded");
         let after = match l.last_seq() {
             Ok(after) => after,
             Err(e) => {
-                *g = None;
+                **g = None;
                 return Err(e.into());
             }
         };
         if after == before {
-            return Ok(out?);
+            return Ok(());
         }
         let entries: Vec<Entry> = match made {
             LogRead::Txns(t) if t.len() as u64 == after - before => {
@@ -611,7 +848,7 @@ impl Tenant {
             }
             _ => {
                 // The local copy holds what cannot be committed.
-                self.reload(&mut g);
+                self.reload(g);
                 return Err(Error::Schema(format!("a write of {} transactions is too large to commit at once (TenantOptions::db.ship_log_bytes)", after - before)).into());
             }
         };
@@ -622,14 +859,14 @@ impl Tenant {
         if head.tail.iter().map(|e| e.bytes.len()).sum::<usize>() > self.opts.tail_max {
             if let Err(e) = self.seal(&mut head) {
                 // Nothing reached HEAD: not committed.
-                self.reload(&mut g);
+                self.reload(g);
                 return Err(e.into());
             }
         }
         let bytes = match head.encode() {
             Ok(b) => b,
             Err(e) => {
-                self.reload(&mut g);
+                self.reload(g);
                 return Err(e.into());
             }
         };
@@ -637,27 +874,20 @@ impl Tenant {
             Ok(Some(version)) => {
                 l.head = head;
                 l.version = version;
+                Ok(())
             }
             Ok(None) => {
-                self.reload(&mut g);
-                return Err(match &*g {
+                self.reload(g);
+                Err(match &**g {
                     Some(_) => TenantError::NotWriter,
                     None => self.gone_or(TenantError::NotWriter),
-                });
+                })
             }
             Err(e) => {
                 let (epoch, incarnation, version) = (l.head.epoch, l.head.incarnation.clone(), l.version.clone());
-                self.settle(&mut g, after, epoch, &incarnation, &version, e)?;
-                return Ok(out?);
+                self.settle(g, after, epoch, &incarnation, &version, e)
             }
         }
-        if head_due(&self.opts, &g.as_ref().expect("loaded").head) {
-            // The write is committed whatever becomes of the base.
-            if let Err(e) = self.make_base_locked(&mut g) {
-                tracing::warn!(tenant = %self.id, error = %e, "a tenant's new base was not made");
-            }
-        }
-        Ok(out?)
     }
 
     /// Makes a new base now, whatever the log's size: the database up to
@@ -727,7 +957,7 @@ impl Tenant {
                 return Err(corrupt(format!("the HEAD of tenant {:?} is that of {:?}", self.id, head.tenant)).into());
             }
             match self.build(&head) {
-                Ok(db) => return Ok(Loaded { db, head, version, me: format!("{:032x}", rand::random::<u128>()) }),
+                Ok(db) => return Ok(Loaded { db: Arc::new(db), head, version, me: format!("{:032x}", rand::random::<u128>()) }),
                 Err(e) if not_found(&e) => last = Some(e),
                 Err(e) => return Err(e.into()),
             }
@@ -735,9 +965,24 @@ impl Tenant {
         Err(last.expect("tried").into())
     }
 
-    /// A local database at `head`: its base, fetched unless cached, with
-    /// its logs and its tail applied.
+    /// Where the working database's directory says whose copy it is.
+    fn mark(&self) -> PathBuf {
+        self.opts.cache_dir.join("work").join("incarnation")
+    }
+
+    /// Says that the working database is a copy of `head`'s tenant.
+    fn mark_work(&self, head: &Head) -> Result<()> {
+        Ok(std::fs::write(self.mark(), &head.incarnation)?)
+    }
+
+    /// A local database at `head`: the working copy an earlier load or
+    /// process left, when it is still a copy of the tenant, brought up
+    /// to date; else the base, fetched unless cached, with its logs and
+    /// its tail applied.
     fn build(&self, head: &Head) -> Result<Db> {
+        if let Some(db) = self.resume(head) {
+            return Ok(db);
+        }
         let image = self.cached(&head.base.key)?;
         if !image.exists() {
             let part = image.with_extension("part");
@@ -748,22 +993,53 @@ impl Tenant {
         let work = self.fresh_work()?;
         std::fs::copy(&image, &work)?;
         let db = Db::open(&work, self.opts.db.clone())?;
-        let at = numbering(&db)?.last().seq;
-        if at != head.base.seq {
+        let at = numbering(&db)?.last();
+        if (at.seq, at.term) != (head.base.seq, head.base.term) {
             // Not the base HEAD names: do not trust the cached file again.
             let _ = std::fs::remove_file(&image);
-            return Err(corrupt(format!("tenant {:?}: base {} ends at transaction {at}, not {}", self.id, head.base.key, head.base.seq)));
+            return Err(corrupt(format!("tenant {:?}: base {} ends at transaction {} of term {}, not {} of term {}", self.id, head.base.key, at.seq, at.term, head.base.seq, head.base.term)));
         }
         self.apply(&db, head, at)?;
+        self.mark_work(head)?;
         Ok(db)
     }
 
+    /// The working database the cache directory holds, brought to
+    /// `head`, when it is a copy of this incarnation whose last
+    /// transaction `head`'s history has ([`Tenant::apply`]). It may hold
+    /// transactions that were never committed (a write was cut short, by
+    /// a failure or the process's end): then it is not used.
+    fn resume(&self, head: &Head) -> Option<Db> {
+        let work = work_path(&self.opts.cache_dir);
+        if !work.exists() || std::fs::read_to_string(self.mark()).ok()? != head.incarnation {
+            return None;
+        }
+        let db = Db::open(&work, self.opts.db.clone()).ok()?;
+        let at = numbering(&db).ok()?.last();
+        self.apply(&db, head, at).ok()?;
+        Some(db)
+    }
+
     /// Applies to `db`, whose last transaction is `at`, those of `head`
-    /// after it: from its log objects, fetched, and its tail.
-    fn apply(&self, db: &Db, head: &Head, at: u64) -> Result<()> {
+    /// after it: from its log objects, fetched, and its tail. An error,
+    /// with nothing applied, unless `at` is a transaction of `head`'s
+    /// history: its base's last, or one of its logs or tail with the same
+    /// number and term. A term is one handle's, and each handle builds on
+    /// the history `HEAD` had, so two histories that share a transaction
+    /// share all before it: the database is then a copy of the tenant as
+    /// it was at `at`.
+    fn apply(&self, db: &Db, head: &Head, at: SeqNo) -> Result<()> {
+        let apart = |why: String| corrupt(format!("tenant {:?}: the local copy is not a copy of the tenant: {why}", self.id));
+        if at.seq < head.base.seq || at.seq > head.last_seq {
+            return Err(apart(format!("its last transaction is {}, the tenant's are {} to {}", at.seq, head.base.seq, head.last_seq)));
+        }
+        if at.seq == head.base.seq && at.term != head.base.term {
+            return Err(apart(format!("transaction {} is of term {} here and of term {} in the base", at.seq, at.term, head.base.term)));
+        }
         let stream = head.stream()?;
         let mut entries: Vec<Entry> = Vec::new();
-        for l in head.logs.iter().filter(|l| l.last > at) {
+        // The log that holds `at` too, to compare its term.
+        for l in head.logs.iter().filter(|l| l.last >= at.seq) {
             let (bytes, _) = self.store.get(&self.key(&l.key))?.ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{}: log object {} is missing", self.store.describe(), l.key))))?;
             let o = LogObject::decode(&bytes)?;
             if o.stream != stream || o.range() != Some((l.first, l.last)) {
@@ -772,14 +1048,20 @@ impl Tenant {
             entries.extend(o.entries);
         }
         entries.extend(head.tail.iter().cloned());
-        entries.retain(|e| e.seq.seq > at);
-        let Some(first) = entries.first() else { return Ok(()) };
-        if first.seq.seq != at + 1 {
-            return Err(corrupt(format!("tenant {:?}: transaction {} does not follow the local copy's last, {at}", self.id, first.seq.seq)));
+        if at.seq > head.base.seq {
+            match entries.iter().find(|e| e.seq.seq == at.seq) {
+                Some(e) if e.seq.term == at.term => {}
+                Some(e) => return Err(apart(format!("transaction {} is of term {} here and of term {} in the tenant", at.seq, at.term, e.seq.term))),
+                None => return Err(corrupt(format!("tenant {:?}: HEAD's logs lack transaction {}", self.id, at.seq))),
+            }
         }
-        let prev = numbering(db)?.last();
+        entries.retain(|e| e.seq.seq > at.seq);
+        let Some(first) = entries.first() else { return Ok(()) };
+        if first.seq.seq != at.seq + 1 {
+            return Err(corrupt(format!("tenant {:?}: transaction {} does not follow the local copy's last, {}", self.id, first.seq.seq, at.seq)));
+        }
         let txns: Vec<&[u8]> = entries.iter().map(|e| &*e.bytes).collect();
-        match db.storage().apply_shipped(prev, &txns)? {
+        match db.storage().apply_shipped(at, &txns)? {
             Applied::At(now) if now.seq == head.last_seq => Ok(()),
             other => Err(corrupt(format!("tenant {:?}: applying its log up to transaction {} gave {other:?}", self.id, head.last_seq))),
         }
@@ -834,7 +1116,7 @@ impl Tenant {
         let head = Head::decode(&bytes)?;
         // The local copy is at an earlier HEAD of the same history: the
         // transactions since are applied when HEAD still has them as logs.
-        let followed = head.incarnation == l.head.incarnation && head.tenant == self.id && l.last_seq().and_then(|at| if at >= head.base.seq && at <= head.last_seq { self.apply(&l.db, &head, at) } else { Err(corrupt("behind the base")) }).is_ok();
+        let followed = head.incarnation == l.head.incarnation && head.tenant == self.id && numbering(&l.db).and_then(|n| self.apply(&l.db, &head, n.last())).is_ok();
         if followed {
             l.head = head;
             l.version = version;
@@ -947,7 +1229,8 @@ impl Tenant {
         if seq == l.head.base.seq {
             return Ok(());
         }
-        let base = BaseRef { key: format!("{}/base/{seq:020}-{:010}.chloedb", l.head.incarnation, l.head.epoch), seq };
+        let term = numbering(&l.db)?.last().term;
+        let base = BaseRef { key: format!("{}/base/{seq:020}-{:010}.chloedb", l.head.incarnation, l.head.epoch), seq, term };
         let image = self.cached(&base.key)?;
         let _ = std::fs::remove_file(&image);
         l.db.storage().checkpoint(&image, &CheckpointOptions::default())?;
@@ -1032,7 +1315,7 @@ mod tests {
             epoch: 2,
             writer: "w".into(),
             commit: 9,
-            base: BaseRef { key: "i/base/x".into(), seq: 3 },
+            base: BaseRef { key: "i/base/x".into(), seq: 3, term: 1 },
             logs: vec![LogRef { key: "i/log/y".into(), first: 4, last: 6, bytes: 10 }],
             last_seq: 8,
             kept: vec![Kept { base: "i/base/old".into(), logs: vec!["i/log/old".into()], until_ms: 77 }],
@@ -1066,7 +1349,7 @@ mod tests {
     #[test]
     fn a_head_that_disagrees_with_itself_is_not_written() {
         assert!(Head { last_seq: 9, ..head() }.encode().is_err());
-        assert!(Head { base: BaseRef { key: "b".into(), seq: 2 }, ..head() }.encode().is_err());
+        assert!(Head { base: BaseRef { key: "b".into(), seq: 2, term: 1 }, ..head() }.encode().is_err());
         assert!(Head { tail: Vec::new(), ..head() }.encode().is_err());
         assert!(Head { incarnation: "short".into(), ..head() }.encode().is_err());
     }

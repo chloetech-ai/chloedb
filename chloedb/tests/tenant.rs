@@ -335,6 +335,84 @@ fn a_write_that_panics_commits_nothing() {
     assert_eq!(ids(&Tenant::open(s, "t", node(&dir, "b")).unwrap()), set([1, 3]));
 }
 
+#[test]
+fn a_working_copy_is_taken_up_again_only_when_it_is_a_copy_of_the_tenant() {
+    let dir = tmp("resume");
+    let s = store(&dir);
+    let a = Tenant::create(s.clone(), "t", node(&dir, "a"), notes).unwrap();
+    for id in 1..=3 {
+        insert(&a, id).unwrap();
+    }
+    // Two handles do not share a cache directory.
+    assert!(matches!(Tenant::open(s.clone(), "t", node(&dir, "a")), Err(TenantError::Db(Error::Busy(_)))));
+    let head = a.head().unwrap();
+    drop(a);
+
+    // With neither the base in the store nor the one in its cache, the
+    // node opens the tenant from the working copy it left, and applies
+    // what another node wrote since.
+    let base = s.get(&format!("t/{}", head.base.key)).unwrap().unwrap().0;
+    let b = Tenant::open(s.clone(), "t", node(&dir, "b")).unwrap();
+    insert(&b, 4).unwrap();
+    s.delete(&format!("t/{}", head.base.key)).unwrap();
+    std::fs::remove_dir_all(dir.join("a").join("base")).unwrap();
+    let a = Tenant::open(s.clone(), "t", node(&dir, "a")).unwrap();
+    assert_eq!(ids(&a), set(1..=4));
+    assert!(Tenant::open(s.clone(), "t", node(&dir, "c")).is_err(), "a node with nothing needs the base");
+    s.put(&format!("t/{}", head.base.key), &base).unwrap();
+
+    // A write is cut short after it reached the working copy and before
+    // it was committed; the handle is gone with its process.
+    insert(&a, 5).unwrap();
+    let cut = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.write(|db| -> Result<()> {
+            sql(db, "INSERT INTO notes VALUES (6, 'never committed')")?;
+            panic!("the process ends here");
+        })
+    }));
+    assert!(cut.is_err());
+    drop(a);
+    // Opened again on that cache: row 6 is not there,
+    let a = Tenant::open(s.clone(), "t", node(&dir, "a")).unwrap();
+    assert_eq!(ids(&a), set(1..=5));
+    // nor when another node has since written a transaction of the same
+    // number, which the working copy must not be taken to hold.
+    let cut = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.write(|db| -> Result<()> {
+            sql(db, "INSERT INTO notes VALUES (7, 'never committed either')")?;
+            panic!("and here");
+        })
+    }));
+    assert!(cut.is_err());
+    drop(a);
+    // (B has not heard of A's fifth row: its first try is refused.)
+    assert!(matches!(insert(&b, 8), Err(TenantError::NotWriter)));
+    insert(&b, 8).unwrap();
+    let a = Tenant::open(s.clone(), "t", node(&dir, "a")).unwrap();
+    assert_eq!(ids(&a), set([1, 2, 3, 4, 5, 8]));
+    assert_eq!(ids(&a), ids(&Tenant::open(s.clone(), "t", node(&dir, "c")).unwrap()));
+
+    // A tenant deleted and created again is not the one the cache holds.
+    drop((a, b));
+    Tenant::delete(&*s, "t").unwrap();
+    drop(Tenant::create(s.clone(), "t", node(&dir, "d"), notes).unwrap());
+    assert!(ids(&Tenant::open(s, "t", node(&dir, "a")).unwrap()).is_empty());
+}
+
+#[test]
+fn a_stores_tenants_are_listed() {
+    let dir = tmp("list");
+    let s = store(&dir);
+    assert!(chloedb::tenant::list(&*s).unwrap().is_empty());
+    for id in ["b", "a", "c.d"] {
+        drop(Tenant::create(s.clone(), id, node(&dir, id), notes).unwrap());
+    }
+    s.put("_templates/x", b"not a tenant").unwrap();
+    assert_eq!(chloedb::tenant::list(&*s).unwrap(), ["a", "b", "c.d"]);
+    Tenant::delete(&*s, "b").unwrap();
+    assert_eq!(chloedb::tenant::list(&*s).unwrap(), ["a", "c.d"]);
+}
+
 /// What a [`Faulty`] store does to a conditional put of `HEAD`.
 const TAKES: u32 = 0;
 /// Fails it, having written nothing.
@@ -526,6 +604,194 @@ fn a_damaged_head_or_base_is_an_error_not_other_rows() {
     assert_eq!(ids(&Tenant::open(s, "t", node(&dir, "a")).unwrap()), set([1]));
 }
 
+/// A store whose replacements of `HEAD` take a while, or wait to be let
+/// through.
+#[derive(Debug)]
+struct Slow {
+    inner: DirStore,
+    delay: Duration,
+    /// Whether a replacement of `HEAD` waits, and how many of those
+    /// waiting are let through all the same.
+    held: std::sync::Mutex<(bool, u64)>,
+    let_go: std::sync::Condvar,
+    /// The replacements of `HEAD` asked for.
+    puts: AtomicU64,
+}
+
+impl Slow {
+    fn new(dir: &Path, delay: Duration) -> Arc<Slow> {
+        Arc::new(Slow { inner: DirStore::new(dir.join("store")).unwrap(), delay, held: std::sync::Mutex::new((false, 0)), let_go: std::sync::Condvar::new(), puts: AtomicU64::new(0) })
+    }
+
+    fn hold(&self, held: bool) {
+        *self.held.lock().unwrap() = (held, 0);
+        self.let_go.notify_all();
+    }
+
+    /// Lets one of the replacements that wait through.
+    fn let_one(&self) {
+        self.held.lock().unwrap().1 += 1;
+        self.let_go.notify_all();
+    }
+
+    /// Holds the replacements until the guard is dropped, by a failed
+    /// assertion too: the threads that wait must end for the test to.
+    fn holding(&self) -> Holding<'_> {
+        self.hold(true);
+        Holding(self)
+    }
+}
+
+struct Holding<'a>(&'a Slow);
+
+impl Drop for Holding<'_> {
+    fn drop(&mut self) {
+        self.0.hold(false);
+    }
+}
+
+impl ObjectStore for Slow {
+    fn put_file(&self, key: &str, path: &Path) -> Result<()> {
+        self.inner.put_file(key, path)
+    }
+    fn put(&self, key: &str, bytes: &[u8]) -> Result<()> {
+        self.inner.put(key, bytes)
+    }
+    fn get_range(&self, key: &str, range: Range<u64>) -> Result<Vec<u8>> {
+        self.inner.get_range(key, range)
+    }
+    fn delete(&self, key: &str) -> Result<()> {
+        self.inner.delete(key)
+    }
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+    fn get(&self, key: &str) -> Result<Option<(Vec<u8>, String)>> {
+        self.inner.get(key)
+    }
+    fn put_if_absent(&self, key: &str, bytes: &[u8]) -> Result<Option<String>> {
+        self.inner.put_if_absent(key, bytes)
+    }
+    fn put_if_version(&self, key: &str, bytes: &[u8], version: &str) -> Result<Option<String>> {
+        self.puts.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(self.delay);
+        let mut held = self.held.lock().unwrap();
+        while held.0 && held.1 == 0 {
+            held = self.let_go.wait(held).unwrap();
+        }
+        held.1 = held.1.saturating_sub(1);
+        drop(held);
+        self.inner.put_if_version(key, bytes, version)
+    }
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+fn wait_for(what: &str, done: impl Fn() -> bool) {
+    let t0 = std::time::Instant::now();
+    while !done() {
+        assert!(t0.elapsed() < Duration::from_secs(60), "waited a minute for {what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn writes_that_wait_for_a_commit_share_the_next() {
+    let dir = tmp("group");
+    let s = Slow::new(&dir, Duration::from_millis(15));
+    let t = Tenant::create(s.clone(), "t", node(&dir, "a"), notes).unwrap();
+    insert(&t, 0).unwrap();
+    let (commit, puts) = (t.head().unwrap().commit, s.puts.load(Ordering::SeqCst));
+    std::thread::scope(|scope| {
+        for n in 1..=6i64 {
+            let t = &t;
+            scope.spawn(move || {
+                for i in 0..10 {
+                    insert(t, n * 100 + i).unwrap();
+                }
+            });
+        }
+    });
+    let want: BTreeSet<i64> = (1..=6).flat_map(|n| (0..10).map(move |i| n * 100 + i)).chain([0]).collect();
+    assert_eq!(ids(&t), want);
+    let head = t.head().unwrap();
+    assert_eq!(head.last_seq, 62, "the table, row 0 and sixty rows, each a transaction");
+    // Sixty writes from six threads, each waiting for its own to be
+    // committed: a commit takes the five that waited while the one
+    // before it was away.
+    let (commits, puts) = (head.commit - commit, s.puts.load(Ordering::SeqCst) - puts);
+    assert!(commits < 40 && puts < 40, "{commits} commits, {puts} puts for 60 writes");
+    assert_eq!(ids(&Tenant::open(s, "t", node(&dir, "b")).unwrap()), want);
+}
+
+#[test]
+fn a_commit_is_all_of_its_writes_or_none() {
+    let dir = tmp("group-fail");
+    let s = Slow::new(&dir, Duration::ZERO);
+    let t = Tenant::create(s.clone(), "t", node(&dir, "a"), notes).unwrap();
+    insert(&t, 0).unwrap();
+
+    // One write is on its way to the store; two more arrive meanwhile,
+    // and the second of them panics in the middle of its statements.
+    let puts = s.puts.load(Ordering::SeqCst);
+    let (first, second, third) = std::thread::scope(|scope| {
+        let held = s.holding();
+        let first = scope.spawn(|| insert(&t, 1));
+        wait_for("the first write to reach the store", || s.puts.load(Ordering::SeqCst) > puts);
+        let second = scope.spawn(|| insert(&t, 2));
+        wait_for("the second write to wait", || t.waiting_writers() == 1);
+        let third = scope.spawn(|| {
+            t.write(|db| -> Result<()> {
+                sql(db, "INSERT INTO notes VALUES (3, 'half a write')")?;
+                panic!("in the middle of a write that shares a commit");
+            })
+        });
+        wait_for("the third write to wait", || t.waiting_writers() == 2);
+        drop(held);
+        (first.join(), second.join(), third.join())
+    });
+    first.unwrap().unwrap();
+    // The second led the commit the third was part of: none of it is
+    // written, and it is told so.
+    let e = second.unwrap().unwrap_err();
+    assert!(matches!(&e, TenantError::Db(e) if e.to_string().contains("panicked")), "{e}");
+    assert!(third.is_err());
+    assert_eq!(ids(&t), set([0, 1]));
+    // The handle loaded the tenant again: its next write takes it back.
+    insert(&t, 4).unwrap();
+
+    // Another node takes the tenant while a commit of two writes is on
+    // its way to the store: both are refused, and neither is anywhere.
+    let puts = s.puts.load(Ordering::SeqCst);
+    let (first, second, third) = std::thread::scope(|scope| {
+        let held = s.holding();
+        let first = scope.spawn(|| insert(&t, 5));
+        wait_for("the first write to reach the store", || s.puts.load(Ordering::SeqCst) == puts + 1);
+        let second = scope.spawn(|| insert(&t, 6));
+        wait_for("the second write to wait", || t.waiting_writers() == 1);
+        let third = scope.spawn(|| insert(&t, 7));
+        wait_for("the third write to wait", || t.waiting_writers() == 2);
+        s.let_one();
+        wait_for("the commit of the two to reach the store", || s.puts.load(Ordering::SeqCst) == puts + 2);
+        assert_eq!(t.waiting_writers(), 0);
+        // B's own puts go to the directory behind the store's back.
+        let direct: Arc<dyn ObjectStore> = Arc::new(DirStore::new(dir.join("store")).unwrap());
+        let b = Tenant::open(direct, "t", node(&dir, "b")).unwrap();
+        insert(&b, 8).unwrap();
+        drop(held);
+        (first.join().unwrap(), second.join().unwrap(), third.join().unwrap())
+    });
+    first.unwrap();
+    assert!(matches!(second, Err(TenantError::NotWriter)), "{second:?}");
+    assert!(matches!(third, Err(TenantError::NotWriter)), "{third:?}");
+    assert_eq!(ids(&t), set([0, 1, 4, 5, 8]));
+    // Asked again, they are committed.
+    insert(&t, 6).unwrap();
+    insert(&t, 7).unwrap();
+    assert_eq!(ids(&Tenant::open(s, "t", node(&dir, "c")).unwrap()), set([0, 1, 4, 5, 6, 7, 8]));
+}
+
 /// A store that takes every put, whatever the condition: what a tenant
 /// must not be kept in.
 #[derive(Debug)]
@@ -633,7 +899,9 @@ fn tenants_on_s3() {
     let have: BTreeSet<String> = s.list(&format!("t/{}/", head.incarnation)).unwrap().into_iter().map(|k| k["t/".len()..].to_string()).collect();
     assert_eq!(have, named(&head));
     assert_eq!(ids(&Tenant::open(s.clone(), "t", small("c")).unwrap()), set(1..=41));
+    assert_eq!(chloedb::tenant::list(&*s).unwrap(), ["t"]);
     assert!(Tenant::delete(&*s, "t").unwrap());
+    assert!(chloedb::tenant::list(&*s).unwrap().is_empty());
     assert!(s.list("t/").unwrap().is_empty() && !Tenant::exists(&*s, "t").unwrap());
     assert!(matches!(insert(&b, 50), Err(TenantError::Missing)));
 }

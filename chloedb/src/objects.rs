@@ -456,6 +456,20 @@ impl crate::storage::cold::ObjectStore for Bucket {
         })
     }
 
+    fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
+        let (s3, url, full) = self.at(prefix);
+        self.call(async move {
+            let dir = match full.trim_end_matches('/') {
+                "" => None,
+                d => Some(key(&url, d)?),
+            };
+            let listed = s3.list_with_delimiter(dir.as_ref()).await.map_err(|e| failed_at(&url, &full, e))?;
+            let mut names: Vec<String> = listed.common_prefixes.iter().filter_map(|p| p.filename().map(str::to_string)).collect();
+            names.sort();
+            Ok(names)
+        })
+    }
+
     fn get_file(&self, k: &str, dest: &Path) -> Result<()> {
         let (s3, url, full) = self.at(k);
         let dest = dest.to_path_buf();
