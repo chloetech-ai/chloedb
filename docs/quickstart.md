@@ -6,7 +6,7 @@ You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch
 
 ## 1. Install the server
 
-Pick one. Each gives you a `chloedb-server` program, prebuilt, in under a minute.
+Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of about 50 MB), in under a minute.
 
 **The install script** puts it in `~/.local/bin` (it says what to add to your `PATH` if that folder is not on it yet). It checks the download against the release's SHA-256 and changes nothing else. [Read it](install.sh) first if you like.
 
@@ -95,6 +95,8 @@ sql <<'EOF'
 {"sql": "SELECT id, title, score() FROM products WHERE MATCH(body, 'waterproof') ORDER BY bm25(body, 'waterproof') DESC LIMIT 5"}
 EOF
 ```
+
+The answer's `rows` are the matches, in the order of its `columns` (`"objects": true` beside `"sql"` gives each row as an object instead); `stats` says how the planner ran the statement, step by step.
 
 Full text and structured filters in one statement, which the planner runs together: waterproof things under 100 that are not shoes.
 

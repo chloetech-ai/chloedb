@@ -88,10 +88,11 @@ class Chloedb < Formula
   test do
     assert_match version.to_s, shell_output("#{bin}/chloedb-server --version")
     port = free_port
-    pid = spawn "#{bin}/chloedb-server", "--db", "#{testpath}/t.chloedb", "--listen", "127.0.0.1:#{port}", "--grpc", "off"
+    pid = spawn bin/"chloedb-server", "--db", testpath/"t.chloedb", "--listen", "127.0.0.1:#{port}", "--grpc", "off"
     api = "http://127.0.0.1:#{port}"
     (testpath/"create.json").write '{"sql": "CREATE TABLE notes (id KEYWORD PRIMARY KEY, body TEXT)"}'
-    (testpath/"write.json").write '{"ops": [{"op": "upsert", "table": "notes", "doc": {"id": "a", "body": "rivers and mountains"}}]}'
+    (testpath/"write.json").write '{"ops": [{"op": "upsert", "table": "notes", ' \\
+                                  '"doc": {"id": "a", "body": "rivers and mountains"}}]}'
     (testpath/"query.json").write '{"sql": "SELECT id FROM notes WHERE MATCH(body, \'rivers\')"}'
     begin
       30.times do
@@ -102,7 +103,8 @@ class Chloedb < Formula
       json = ["-H", "content-type: application/json"]
       system "curl", "-sf", "#{api}/v1/sql", *json, "-d", "@#{testpath}/create.json"
       system "curl", "-sf", "#{api}/v1/write", *json, "-d", "@#{testpath}/write.json"
-      assert_match '"a"', shell_output("curl -sf #{api}/v1/query -H 'content-type: application/json' -d @#{testpath}/query.json")
+      answer = shell_output("curl -sf #{api}/v1/query -H 'content-type: application/json' -d @#{testpath}/query.json")
+      assert_match '"a"', answer
     ensure
       Process.kill("TERM", pid)
       Process.wait(pid)
