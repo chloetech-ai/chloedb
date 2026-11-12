@@ -38,6 +38,20 @@ fn seeded_runs_keep_the_protocols_promises() {
     assert!(failed.is_empty(), "{} of seeds {seeds:?} broke a promise:{}", failed.len(), explain(&failed));
 }
 
+/// Seeds the nightly run found breaking a promise on `main`, kept here
+/// once fixed. 624036738 (the night of 10 November 2026, main at
+/// 768197e0): the primary elected for term 2 lacked 34 writes that the
+/// primary of term 1 had acknowledged. It fails so on 768197e0 and keeps
+/// its promises since release 0.2.0's replication fixes (which change of
+/// them fixed it was not bisected).
+const FOUND: &[u64] = &[624036738];
+
+#[test]
+fn seeds_the_nightly_run_found_keep_the_protocols_promises() {
+    let failed: Vec<sim::Report> = FOUND.iter().flat_map(|&s| sim::run_seeds(s..s + 1, &Config::of, 1)).collect();
+    assert!(failed.is_empty(), "{} of the seeds found before broke a promise again:{}", failed.len(), explain(&failed));
+}
+
 #[test]
 fn a_seed_replays_exactly() {
     for seed in 0..4 {
