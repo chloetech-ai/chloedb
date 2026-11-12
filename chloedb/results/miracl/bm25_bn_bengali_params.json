@@ -1,0 +1,39 @@
+{
+  "analyzer": "bengali",
+  "collections": {
+    "miracl-bn": {
+      "db_bytes": 182399016,
+      "docs": 297265,
+      "load_s": 18.726583733,
+      "queries": 411,
+      "variants": {
+        "k09b04_r100": {
+          "failed": 0,
+          "ms_mean": 1.030741824817518,
+          "ms_p50": 0.8831829999999999,
+          "ms_p99": 3.249872,
+          "ndcg10": 0.5106489950031378,
+          "recall10": 0.6477069092032596,
+          "recall100": 0.9164648746765537
+        },
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 1.2250848223844275,
+          "ms_p50": 1.025452,
+          "ms_p99": 3.813141,
+          "ndcg10": 0.4548868243265304,
+          "recall10": 0.5859778704669215,
+          "recall100": 0.8794008033059132
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "bn_bengali_params"
+}

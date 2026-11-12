@@ -1,0 +1,30 @@
+{
+  "analyzer": "english",
+  "collections": {
+    "miracl-ar": {
+      "db_bytes": 962170920,
+      "docs": 2061414,
+      "load_s": 46.126723772,
+      "queries": 2896,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 2.545152292472371,
+          "ms_p50": 1.8911259999999999,
+          "ms_p99": 10.286601,
+          "ndcg10": 0.35084766761239217,
+          "recall10": 0.46092831930193784,
+          "recall100": 0.721521200561256
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "ar_english"
+}
