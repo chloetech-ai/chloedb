@@ -286,7 +286,7 @@ pub fn lock_shared(main: &File) -> Result<()> {
     if flock_wait(main, libc::LOCK_SH)? {
         Ok(())
     } else {
-        Err(Error::Busy("the database is open elsewhere, by a version of Strata that does not let other processes read it".into()))
+        Err(Error::Busy("the database is open elsewhere, by a version of ChloeDB that does not let other processes read it".into()))
     }
 }
 

@@ -1,4 +1,4 @@
-//! Bytes a log line takes in Strata: loads a file of log records (one
+//! Bytes a log line takes in ChloeDB: loads a file of log records (one
 //! JSON object a line: ts in microseconds, host, service, severity, pid,
 //! body; `results/log-bytes/parse.py` makes them from Loghub's logs) into
 //! a table shaped like an OpenTelemetry log record, merges it as the

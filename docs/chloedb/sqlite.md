@@ -9,10 +9,10 @@ Parquet files go in and out the same way, and a SQLite file may be an `s3://` UR
 From the command line, into a database no server has open:
 
 ```sh
-chloedb-server import --db shop.strata shop.sqlite              # a new database from every table
-chloedb-server import --db shop.strata --tables orders,customers shop.sqlite
-chloedb-server import --db shop.strata --plan shop.sqlite > plan.json   # what it would do; writes nothing
-chloedb-server import --db shop.strata --schema plan.json shop.sqlite   # with the plan, edited
+chloedb-server import --db shop.chloedb shop.sqlite             # a new database from every table
+chloedb-server import --db shop.chloedb --tables orders,customers shop.sqlite
+chloedb-server import --db shop.chloedb --plan shop.sqlite > plan.json  # what it would do; writes nothing
+chloedb-server import --db shop.chloedb --schema plan.json shop.sqlite  # with the plan, edited
 ```
 
 A SQLite file is recognised by its first bytes (or `--format sqlite`), and can be mixed with JSON and CSV files in one command (`--table` names the table of those files' rows). A database that does not exist is created from the first SQLite file's tables. Each SQLite table goes into the ChloeDB table of its name, spelled as a ChloeDB identifier (`Order Details` becomes `Order_Details`, and column names likewise; a name that is already an identifier keeps it, and a respelled one that meets another takes a suffix, so `x-y` beside `x_y` is `x_y_2`):
@@ -20,7 +20,7 @@ A SQLite file is recognised by its first bytes (or `--format sqlite`), and can b
 - **A table ChloeDB has** keeps its schema: each column fills the field of its name, the others are left out and listed. The rows are upserted by key (inserted, in a table without one), 10,000 a transaction, or bulk-loaded when the table is empty.
 - **A table ChloeDB lacks** is created, with the schema `--schema` gives for it, or the one an [export](#export) kept for it, or else one made from the SQLite table, and its rows are bulk-loaded in one commit: a value that does not fit is reported with its table and row, and nothing of that table is written.
 
-Tables are created referenced tables first. In Python, `strata.from_sqlite("shop.sqlite", "shop.strata")` creates a database, `db.import_sqlite("shop.sqlite", tables=["orders"])` imports into an open one, and `strata.plan_sqlite("shop.sqlite")` returns the plan ([Python](python.md)). From Rust it is `chloedb::sqlite` (feature `sqlite`): `import_new`, `import`, `plan` and `Source` for each step.
+Tables are created referenced tables first. In Python, `chloedb.from_sqlite("shop.sqlite", "shop.chloedb")` creates a database, `db.import_sqlite("shop.sqlite", tables=["orders"])` imports into an open one, and `chloedb.plan_sqlite("shop.sqlite")` returns the plan ([Python](python.md)). From Rust it is `chloedb::sqlite` (feature `sqlite`): `import_new`, `import`, `plan` and `Source` for each step.
 
 ### How SQLite columns become fields
 
@@ -53,7 +53,7 @@ Left out, and listed in the plan's notes: `UNIQUE` constraints other than the ke
 
 ### The plan
 
-`--plan` (`strata.plan_sqlite` in Python, `chloedb::sqlite::plan` in Rust) prints what an import would do without writing anything:
+`--plan` (`chloedb.plan_sqlite` in Python, `chloedb::sqlite::plan` in Rust) prints what an import would do without writing anything:
 
 ```json
 {
@@ -101,8 +101,8 @@ In the query console (`/classic`), the **Schema and import** tab has both: a SQL
 ## Export
 
 ```sh
-chloedb-server export --db shop.strata shop.sqlite                  # every table
-chloedb-server export --db shop.strata --tables orders --no-fts orders.sqlite
+chloedb-server export --db shop.chloedb shop.sqlite                 # every table
+chloedb-server export --db shop.chloedb --tables orders --no-fts orders.sqlite
 ```
 
 In Python, `db.export_sqlite("shop.sqlite")`; in Rust, `chloedb::sqlite::export`. The rows of every table come from one snapshot, and the file is written under another name and renamed into place when complete; an existing file is not overwritten. Each table becomes a SQLite table of the same name:

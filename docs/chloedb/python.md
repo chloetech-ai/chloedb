@@ -1,6 +1,6 @@
 # ChloeDB from Python
 
-The `strata` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [chloedb-server](server.md). Both have the same methods, so a script written against a local file works against a server.
+The `chloedb` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [chloedb-server](server.md). Both have the same methods, so a script written against a local file works against a server.
 
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
@@ -10,22 +10,22 @@ The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-py-v<version>` release (`strata-py-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
 
 ```sh
-pip install strata-db -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 ```
 
-**With release 0.1.0, write `import strata as chloedb` in the examples on this page.** 0.1.0 was made before the rename, as `strata-db`, and its module is `strata` only: `import chloedb` fails on it with `ModuleNotFoundError`, and its error class is `StrataError`. It also predates [frames](frames.md), which need a build from source until the next release. Releases after it are `chloedb` (`pip install chloedb -f <its assets page>`) and import as `chloedb`, as the examples here do; there `import strata` goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`. A build from source ([below](#from-source)) is today's package.
+The package imports as `chloedb`, as the examples here do. `import strata`, its old name, goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`. Release 0.1.0, from before the rename, was published as `strata-db` (tag `strata-py-v0.1.0`) and imports as `strata` only.
 
 | platform | wheel |
 |---|---|
-| macOS 11+ on Apple silicon | `strata_db-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
-| macOS 11+ on Intel | `strata_db-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
-| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata_db-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
-| Linux aarch64, glibc 2.35+ | `strata_db-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
+| macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
+| macOS 11+ on Intel | `chloedb-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
+| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
+| Linux aarch64, glibc 2.35+ | `chloedb-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
 
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
 ### Only the client, with no build
 
@@ -62,7 +62,7 @@ The package includes [DataFusion](query-language.md#subqueries-with-and-joins), 
 ```python
 import chloedb
 
-db = chloedb.open("books.strata", schema={
+db = chloedb.open("books.chloedb", schema={
     "table": "books",
     "key": "id",
     "fields": [
@@ -98,7 +98,7 @@ One process at a time can have a database open to write it. Others can open it w
 
 A database is its file plus `<path>-wal`, the write-ahead log, which holds the rows written since the last flush; copying the file alone while the database is open loses them. To back up a database:
 
-- while it is open and in use: `db.checkpoint("backup.strata")` writes a consistent copy (the destination must not exist), checks every segment against its checksum first, so that a damaged database fails the checkpoint instead of being copied, checks the copy, and only then gives it its name. Restore by opening the copy, or renaming it into place while nothing has the database open;
+- while it is open and in use: `db.checkpoint("backup.chloedb")` writes a consistent copy (the destination must not exist), checks every segment against its checksum first, so that a damaged database fails the checkpoint instead of being copied, checks the copy, and only then gives it its name. Restore by opening the copy, or renaming it into place while nothing has the database open;
 - after `close()` (or a `with` block): `close()` writes the rows still in memory into the file and leaves the log empty, so the file alone is then a complete copy; `db.flush()` does the same at any moment, until the next write.
 
 Copying a database's files while it is written is not a backup, even with its `-wal`.
@@ -126,7 +126,7 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 | `export_parquet(path, tables=None)` | writes the tables to Parquet: a `.parquet` file for one table, else a directory of them, each keeping its ChloeDB schema |
 | `import_arrow(data, table=None)` | writes the rows of a pyarrow Table or RecordBatchReader, a polars DataFrame, a DuckDB relation or anything with `__arrow_c_stream__`, columns into the fields of their names; bulk-loaded into an empty table, else upserted |
 
-`chloedb.from_sqlite("shop.sqlite", "shop.strata")` creates a database from a SQLite file's tables, and `chloedb.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `chloedb.from_parquet("events.parquet", "lake.strata")` and `chloedb.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
+`chloedb.from_sqlite("shop.sqlite", "shop.chloedb")` creates a database from a SQLite file's tables, and `chloedb.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `chloedb.from_parquet("events.parquet", "lake.chloedb")` and `chloedb.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
 
 `insert`, `upsert`, `delete` and `import_file` write the database's first table, the one `schema` describes, or the one `table=` names (`db.insert(rows, table="events")`); `sql` names the table it writes, and `tables()` lists every table's schema. Through a coordinator, `delete` on a table placed by a column takes that column's value as `routing=` ([tables on shards](server.md#tables-on-shards)). A key a row leaves out gets its field's `default`, and a field with `not_null` refuses a row without a value ([schema options](server.md#schemas)); a `timestamp` defaulting to `"now"` takes one time for all the rows of a call.
 
@@ -201,7 +201,7 @@ A query runs in your process, so what it builds up (its groups, the rows it orde
 A query has no deadline unless it is given one. `timeout_ms` (to `query`, `query_arrow`, `scroll`, `sql`, `search` and `run`, as a `Client`'s query takes it) stops it once it has run that long: it raises `DeadlineError`, naming the `timeout_ms`. `memory=` gives a query a budget of its own, in bytes (`memory=0`: none). A database's own limits, for every query that does not give its own, are set when it opens or later:
 
 ```python
-db = chloedb.open("books.strata", timeout_ms=5_000, memory=512 << 20)   # 5 s, and 512 MiB its queries share
+db = chloedb.open("books.chloedb", timeout_ms=5_000, memory=512 << 20)  # 5 s, and 512 MiB its queries share
 db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", timeout_ms=200)
 db.query("SELECT * FROM books", memory=0)                               # this one counts nothing
 db.set_limits(timeout_ms=None, memory=None)                             # back to the defaults
@@ -282,7 +282,7 @@ A [semantic-ID field](server.md#semantic-ids) gives each row a code from its vec
 h = chloedb.train.codebook(db, "items-rq", field="emb")       # a table's vectors
 h = chloedb.train.codebook(vectors, "items-rq")               # a list of lists, or a 2-D numpy array
 
-items = chloedb.open("items.strata", schema={
+items = chloedb.open("items.chloedb", schema={
     "table": "items", "key": "id",
     "fields": [
         {"name": "id", "type": "keyword"},
@@ -304,7 +304,7 @@ It returns the SHA-256 of the file, which the table records. The options are `le
 ```python
 from chloedb import ngrams
 
-db = chloedb.open("next.strata", ngrams.schema())
+db = chloedb.open("next.chloedb", ngrams.schema())
 db.write(ngrams.ops(["a", "b"], "c"))       # after each event: "c" after [..., "a", "b"]
 chloedb.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
 ```
@@ -315,7 +315,7 @@ chloedb.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
 
 ```python
 import chloedb.train
-db = chloedb.Database.open("shop.strata", models="models")
+db = chloedb.Database.open("shop.chloedb", models="models")
 out = chloedb.train.sequence(db, "next", table="items", field="emb",
                             events={"table": "events", "user": "usr", "item": "item", "action": "action", "time": "ts"},
                             learn_items=True, negatives="all", holdout=True, models="models")
@@ -435,7 +435,7 @@ def click(e):                                   # an ingest.Event: topic, partit
         {"op": "add", "table": "users", "key": c["usr"], "field": "n_events", "value": 1},
     ]
 
-ingest.kafka(chloedb.connect("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092", group="strata")
+ingest.kafka(chloedb.connect("http://127.0.0.1:7700"), "clicks", click, brokers="127.0.0.1:9092", group="chloedb")
 ```
 
 The function gives an event's operations, which commit together with its offset; None writes the offset alone (for events to leave out). Without one, each value is JSON: an operation, or `{"ops": [...]}`. The consumer runs until interrupted, or until `max_events=` events were read or none came for `idle=` seconds, and returns counts (`events`, `written`, `skipped`, `streams`, `retries`). It keeps a stream open for `seconds_per_stream=` (1 by default), then commits the stream's offsets to Kafka for Kafka's own lag tools and opens the next. When the server cannot be reached, or answers 429 or 5xx, it waits and reads every partition again from the server's offsets, for up to `retry_for=` seconds (60). An event the function fails on stops it after the events before it are written, so a restart begins with that event. `config=` adds librdkafka settings, and consumers of one `group` share the partitions. `ingest.consume(client, log, to_ops)` runs the same loop over another log, through the small `ingest.Log` interface.

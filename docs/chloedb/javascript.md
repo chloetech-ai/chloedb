@@ -1,6 +1,6 @@
 # ChloeDB from JavaScript
 
-The `chloedb` package (`strata-db` before the rename) opens a ChloeDB file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [chloedb-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
+The `chloedb` package opens a ChloeDB file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [chloedb-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
 
 ## Install
 
@@ -8,13 +8,13 @@ The package is in [`chloedb-js/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-js-v<version>` release (`strata-js-v<version>` before the rename) on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
+Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/strata-js-v0.1.0/strata-db-0.1.0-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.2.0/chloedb-0.2.0-darwin-arm64.tgz
 ```
 
-**With release 0.1.0, import from `"strata-db"` in the examples on this page** (`import { open } from "strata-db"`): 0.1.0 was made before the rename, its tarballs are `strata-db-0.1.0-<platform>.tgz`, and `from "chloedb"` fails on it as a missing package. Releases after it are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do.
+The tarballs are `chloedb-<version>-<platform>.tgz`, imported as `"chloedb"`, as the examples here do; release 0.1.0, from before the rename, was published as `strata-db` (tag `strata-js-v0.1.0`) and imports as `"strata-db"`.
 
 | platform | tarball |
 |---|---|
@@ -45,7 +45,7 @@ The client alone (`chloedb/client`) is plain JavaScript with no addon: a bundler
 ```js
 import { open } from "chloedb";
 
-const db = await open("books.strata", {
+const db = await open("books.chloedb", {
   schema: {
     table: "books",
     key: "id",
@@ -92,7 +92,7 @@ A query runs in your process, so what it builds up (its groups, the rows it orde
 A query has no deadline unless it is given one. `db.query`, `db.sql`, `db.run` and `db.search` take a last argument of options: `timeoutMs` (its deadline, as a `Client`'s `query` takes it: it rejects with `DeadlineError` naming it), `memory` (a budget of its own in bytes; `0`: none) and `signal`, an `AbortSignal` that stops it when it aborts (it rejects with the signal's reason, as an aborted `fetch` does). A database's own limits, for every query that does not give its own, are set when it opens or later; `db.interrupt()` stops every query of the database running now, and returns how many there were:
 
 ```js
-const db = await open("books.strata", { timeoutMs: 5000, memory: 512 * 2 ** 20 });  // 5 s, and 512 MiB its queries share
+const db = await open("books.chloedb", { timeoutMs: 5000, memory: 512 * 2 ** 20 });  // 5 s, and 512 MiB its queries share
 await db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", null, { timeoutMs: 200 });
 await db.query("SELECT * FROM books", null, { memory: 0, signal: AbortSignal.timeout(1000) });
 db.setLimits({});                 // back to the defaults: no deadline, the process's budget

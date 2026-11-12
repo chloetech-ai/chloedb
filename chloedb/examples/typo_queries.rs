@@ -12,9 +12,9 @@
 //! dictionary walks alone, per word of one edit and of two.
 //!
 //! ```text
-//! cargo run --release --example typo_queries -- build passages.jsonl docs.strata
-//! cargo run --release --example typo_queries -- quality docs.strata queries.tsv [n]
-//! cargo run --release --example typo_queries -- walk docs.strata queries.tsv [n]
+//! cargo run --release --example typo_queries -- build passages.jsonl docs.chloedb
+//! cargo run --release --example typo_queries -- quality docs.chloedb queries.tsv [n]
+//! cargo run --release --example typo_queries -- walk docs.chloedb queries.tsv [n]
 //! ```
 
 use std::io::BufRead;

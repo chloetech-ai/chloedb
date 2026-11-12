@@ -9,7 +9,7 @@
 //!
 //! `--partition` gives each row a random rating from 0 to 5 and partitions
 //! the field by it at 1, 2, 3 and 4, as the engine comparison builds
-//! Strata's vectors: a merge then also builds a graph per partition, and
+//! ChloeDB's vectors: a merge then also builds a graph per partition, and
 //! recall is that of the five partition graphs searched together.
 //!
 //! With a number, the vectors are unit vectors around 100 random centres;

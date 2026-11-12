@@ -33,7 +33,7 @@ table has changed since the build it asks the cloud for every search. It
 reports its counts every 5 searches (`POST /v1/slices/places/usage`,
 named by `--device NAME`), which the command center's Slices view
 (http://127.0.0.1:7700/#/slices) shows with the tiles each device
-downloaded. Apps do the same with `strata.nearby` (Python) and
+downloaded. Apps do the same with `chloedb.nearby` (Python) and
 `openNearby` (JavaScript): [Search on the device](../../../docs/chloedb/slices.md).
 
 ## Run it
@@ -53,11 +53,11 @@ The pieces, one at a time:
 
 ```bash
 python3 chloedb-server/demo/nearby/places.py --city nyc --out ~/nearby/nyc.jsonl
-chloedb-server import --db ~/nearby/nyc.strata --schema chloedb-server/demo/nearby/schema.json ~/nearby/nyc.jsonl
-chloedb-server --db ~/nearby/nyc.strata --slices ~/nearby/slices &
+chloedb-server import --db ~/nearby/nyc.chloedb --schema chloedb-server/demo/nearby/schema.json ~/nearby/nyc.jsonl
+chloedb-server --db ~/nearby/nyc.chloedb --slices ~/nearby/slices &
 curl -X POST localhost:7700/v1/admin/slices -H 'content-type: application/json' -d '{"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -73.98}'
 chloedb-nearby --cloud http://127.0.0.1:7700 --lat 40.7 --lon -73.98
 ```
 
-`chloedb-slice` (in the strata crate) writes the same files from a database
+`chloedb-slice` (in the chloedb crate) writes the same files from a database
 file without a server, for any web server or CDN to serve.

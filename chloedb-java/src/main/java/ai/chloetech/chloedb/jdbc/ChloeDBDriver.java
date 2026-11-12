@@ -24,7 +24,7 @@ import java.util.logging.Logger;
  * does a SQLite file. No server is involved.
  *
  * <pre>{@code
- * try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.strata");
+ * try (Connection c = DriverManager.getConnection("jdbc:chloedb:books.chloedb");
  *      PreparedStatement ps = c.prepareStatement("SELECT id, title FROM books ORDER BY bm25(title, ?) DESC LIMIT 5")) {
  *     ps.setString(1, "dragon");
  *     try (ResultSet rs = ps.executeQuery()) {
@@ -33,7 +33,7 @@ import java.util.logging.Logger;
  * }
  * }</pre>
  *
- * <p>Options follow a {@code ?} in the URL ({@code jdbc:chloedb:books.strata?threads=4})
+ * <p>Options follow a {@code ?} in the URL ({@code jdbc:chloedb:books.chloedb?threads=4})
  * or come as connection properties:
  * <ul>
  *   <li>{@code schema}: the path of a schema's JSON file, with which a
@@ -96,7 +96,7 @@ public final class ChloeDBDriver implements Driver {
             rest = rest.substring("file:".length());
         }
         if (rest.isEmpty()) {
-            throw new SQLException("a ChloeDB URL names a database: jdbc:chloedb:/path/to/file.strata", "08001");
+            throw new SQLException("a ChloeDB URL names a database: jdbc:chloedb:/path/to/file.chloedb", "08001");
         }
         for (String k : options.keySet()) {
             if (!k.equals("schema") && !k.equals("models") && !k.equals("threads") && !k.equals("readonly") && !k.equals("user") && !k.equals("password")) {

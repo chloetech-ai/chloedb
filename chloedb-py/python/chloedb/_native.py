@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0"
+WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0"
 
 
 class _Missing:
@@ -22,7 +22,7 @@ class _Missing:
         raise ImportError(
             f"chloedb's compiled extension is not installed ({self._error}), and {name} needs it: "
             "build it (pip install ./chloedb-py from the repository's root, or maturin develop in chloedb-py), "
-            f"or install release 0.1.0's wheel (pip install strata-db -f {WHEELS}), which predates the rename and imports as strata. "
+            f"or install a release's wheel (pip install chloedb -f {WHEELS}). "
             "chloedb.Client and chloedb.connect, which talk to a chloedb-server, work without it."
         )
 

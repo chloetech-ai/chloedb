@@ -21,7 +21,7 @@ So a device answers short searches for common things near its user (pizza, a pha
 Slices exist only on a server started with `--slices DIR`. Build one from the command center (**Data → Slices → Build a slice**) or over HTTP:
 
 ```bash
-chloedb-server --db places.strata --slices ./slices --slices-rebuild-s 300 &
+chloedb-server --db places.chloedb --slices ./slices --slices-rebuild-s 300 &
 curl -X POST localhost:7700/v1/admin/slices -H 'content-type: application/json' \
   -d '{"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -73.98, "tile_m": 1000}'
 ```
@@ -119,4 +119,4 @@ For a vector slice the map is a grid of its clusters, busiest first:
 | `GET /v1/slices/<table>/status` | version, built, fresh, changed |
 | `POST /v1/slices/<table>/usage` | a device's counts |
 
-`chloedb-slice` (in the strata crate) writes the same files from a database file without a server, for any web server or CDN to serve. `chloedb-server/demo/nearby` is a demo over New York's places.
+`chloedb-slice` (in the chloedb crate) writes the same files from a database file without a server, for any web server or CDN to serve. `chloedb-server/demo/nearby` is a demo over New York's places.

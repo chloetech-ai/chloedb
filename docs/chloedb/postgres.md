@@ -9,8 +9,8 @@ Postgres writes what logical replication needs once `wal_level` is `logical` (a 
 ```sql
 ALTER SYSTEM SET wal_level = logical;   -- then restart Postgres
 CREATE PUBLICATION strata FOR TABLE products, reviews;   -- or FOR ALL TABLES
-CREATE ROLE strata LOGIN REPLICATION PASSWORD '...';
-GRANT SELECT ON products, reviews TO strata;
+CREATE ROLE chloedb LOGIN REPLICATION PASSWORD '...';
+GRANT SELECT ON products, reviews TO chloedb;
 ```
 
 The role signs in by SCRAM-SHA-256 (Postgres's default), MD5 or a password, and needs `REPLICATION` and `SELECT` on the tables. On managed Postgres, logical replication is a setting (`rds.logical_replication` on RDS and Aurora, `cloudsql.logical_decoding` on Cloud SQL; Supabase and Neon have it on). Since Postgres 15 a publication can leave columns out (`FOR TABLE users (id, name, bio)`) and rows (`WHERE (published)`); the follower copies and follows what it publishes.
@@ -21,7 +21,7 @@ Each table needs a key: its primary key, or a unique index named as its replica 
 
 ```sh
 chloedb-server follow-postgres \
-  --source 'postgres://strata:...@db.example:5432/shop?sslmode=verify-full' \
+  --source 'postgres://chloedb:...@db.example:5432/shop?sslmode=verify-full' \
   --target http://localhost:7700 --name shop
 ```
 

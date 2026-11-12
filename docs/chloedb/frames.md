@@ -10,7 +10,7 @@ Frames are part of the `chloedb` package ([Python](python.md#install)) and need 
 pip install "./chloedb-py[frame]" polars pandas    # from the repository's root; needs Rust
 ```
 
-Frames came after release 0.1.0: its wheel (`strata-db`, imported as `strata`) has no frames and no `frame` extra, so they need a build from source ([Python](python.md#from-source)) until the next release.
+Frames came in release 0.2.0: release 0.1.0's wheel (`strata-db`, from before the rename) has no frames and no `frame` extra.
 
 ## A first frame
 
@@ -19,7 +19,7 @@ import polars as pl
 import chloedb as st
 from chloedb import col
 
-shop = st.connect("shop.strata")              # a file; st.connect("https://...") for a server
+shop = st.connect("shop.chloedb")             # a file; st.connect("https://...") for a server
 orders = shop.create_table("orders", pl.read_parquet("orders.parquet"), key="id", text=["note"])
 # or, once the table exists: orders = shop["orders"]
 

@@ -2,7 +2,7 @@
 //!
 //! ```no_run
 //! # use chloedb::{db::Db, query::Params, storage::DbOptions, data};
-//! let db = Db::open(std::path::Path::new("papers.strata"), DbOptions::default()).unwrap();
+//! let db = Db::open(std::path::Path::new("papers.chloedb"), DbOptions::default()).unwrap();
 //! let rows = db.query("SELECT id, score() FROM docs ORDER BY bm25(body, 'mrna vaccine') DESC LIMIT 10", &Params::new()).unwrap();
 //! ```
 //!

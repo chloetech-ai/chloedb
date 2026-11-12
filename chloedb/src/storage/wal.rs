@@ -180,7 +180,7 @@ fn header(buf: &[u8], db_id: u64, path: &Path) -> Result<Option<(bool, bool, u64
     let Some(names) = buf.get(20..20 + n) else { return Ok(None) };
     let names = std::str::from_utf8(names).map_err(|_| corrupt(format!("{}: the header's features are not text", path.display())))?;
     if let Some(x) = names.split(',').find(|x| !FEATURES.contains(x)) {
-        return Err(Error::Schema(format!("the write-ahead log {} uses feature {x:?}, which this version of Strata does not have: open it with a newer one", path.display())));
+        return Err(Error::Schema(format!("the write-ahead log {} uses feature {x:?}, which this version of ChloeDB does not have: open it with a newer one", path.display())));
     }
     let has = |f: &str| names.split(',').any(|x| x == f);
     Ok(Some((has(SEQ_NO), has(RANK_PROFILES), 20 + n as u64)))

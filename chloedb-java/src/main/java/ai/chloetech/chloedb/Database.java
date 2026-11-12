@@ -18,7 +18,7 @@ import java.util.Map;
  *     Map.of("name", "id", "type", "keyword"),
  *     Map.of("name", "title", "type", "text"),
  *     Map.of("name", "year", "type", "int")));
- * try (Database db = Database.create("books.strata", schema)) {
+ * try (Database db = Database.create("books.chloedb", schema)) {
  *     db.upsert(Map.of("id", "b1", "title", "The river and the dragon", "year", 1999));
  *     for (Map<String, Object> row : db.search("dragon")) {
  *         System.out.println(row.get("id") + " " + row.get("title"));

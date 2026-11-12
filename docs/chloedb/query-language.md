@@ -140,7 +140,7 @@ SELECT * FROM events ORDER BY hash(id, 7) LIMIT 1000;
 It is the 64-bit FNV-1a of the seed's 8 bytes (little-endian) and then the value's, through SplitMix64's finalizer, shifted right by one. A text's bytes are its UTF-8; an `INT`, a `BOOL` (1 or 0) and a `TIMESTAMP` (microseconds since 1970) are their integer's 8 bytes, little-endian; a `FLOAT` is its IEEE 754 bits, little-endian (-0 as 0). So it is the same value elsewhere, in Python for instance:
 
 ```python
-def strata_hash(data: bytes, seed: int = 0) -> int:      # data: "u42".encode(), (42).to_bytes(8, "little", signed=True)
+def chloedb_hash(data: bytes, seed: int = 0) -> int:     # data: "u42".encode(), (42).to_bytes(8, "little", signed=True)
     m, h = (1 << 64) - 1, 0xcbf29ce484222325
     for b in seed.to_bytes(8, "little", signed=True) + data:
         h = ((h ^ b) * 0x100000001b3) & m
@@ -770,8 +770,8 @@ LIMIT 10;
 - **Training** is `chloedb.train.sequence` in Python, with PyTorch (`pip install torch`), from a table of events, the rank log's export, or lists of `(item, action, time)`:
 
   ```python
-  import strata, chloedb.train
-  db = chloedb.Database.open("shop.strata")
+  import chloedb, chloedb.train
+  db = chloedb.Database.open("shop.chloedb")
   out = chloedb.train.sequence(db, "next", table="items", field="emb",
                               events={"table": "events", "user": "usr", "item": "item", "action": "action", "time": "ts"},
                               learn_items=True)
@@ -1185,12 +1185,12 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 
 ## Running SQL
 
-The `chloedb` shell runs one statement, or reads statements from standard input. It opens a database that exists and does not create one; these lines read the demo catalogue that `chloedb-server --demo 20000 --db products.strata` makes:
+The `chloedb` shell runs one statement, or reads statements from standard input. It opens a database that exists and does not create one; these lines read the demo catalogue that `chloedb-server --demo 20000 --db products.chloedb` makes:
 
 ```sh
 cd chloedb && cargo build --release
-target/release/chloedb products.strata "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-target/release/chloedb products.strata --param t='waterproof tent' < queries.sql
+target/release/chloedb products.chloedb "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+target/release/chloedb products.chloedb --param t='waterproof tent' < queries.sql
 ```
 
 | flag | effect |

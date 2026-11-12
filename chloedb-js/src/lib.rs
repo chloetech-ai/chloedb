@@ -906,7 +906,7 @@ fn dispatch_static(op: &str, a: Args) -> Result<Json> {
 fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|p| {
         let what = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
-        Err(Error::Query(format!("strata panicked: {what}")))
+        Err(Error::Query(format!("chloedb panicked: {what}")))
     })
 }
 

@@ -7,12 +7,12 @@ ChloeDB reads Parquet files, and directories of them as Spark, DuckDB, polars an
 From the command line, into a database no server has open:
 
 ```sh
-chloedb-server import --db lake.strata events.parquet                    # a new database, its table named events
-chloedb-server import --db lake.strata --table clicks out/clicks/        # a directory: every part file, one table
-chloedb-server import --db lake.strata s3://lake/raw/events/             # every object under the prefix
-chloedb-server import --db lake.strata --key event_id events.parquet     # the key of a table it creates
-chloedb-server import --db lake.strata --plan events.parquet > plan.json # what it would do; writes nothing
-chloedb-server import --db lake.strata --schema plan.json events.parquet # with the plan, edited
+chloedb-server import --db lake.chloedb events.parquet                   # a new database, its table named events
+chloedb-server import --db lake.chloedb --table clicks out/clicks/       # a directory: every part file, one table
+chloedb-server import --db lake.chloedb s3://lake/raw/events/            # every object under the prefix
+chloedb-server import --db lake.chloedb --key event_id events.parquet    # the key of a table it creates
+chloedb-server import --db lake.chloedb --plan events.parquet > plan.json  # what it would do; writes nothing
+chloedb-server import --db lake.chloedb --schema plan.json events.parquet  # with the plan, edited
 ```
 
 A Parquet file is recognised by its name (`.parquet`), its first bytes or `--format parquet`, and a directory by the Parquet files in it, at any depth; names starting with `_` or `.`, such as Spark's `_SUCCESS` and its `.crc` checksums, are passed over. The files of a directory make one table, read in the order of their paths, and may differ in columns: each file's columns fill the fields of their names. Parquet and SQLite files, and JSON and CSV files, can be mixed in one command. The rows go into the table `--table` names, else the one an [export](#export) kept in the file, else a table named for the file or directory (`events.snappy.parquet` and `events/` make `events`):
@@ -20,7 +20,7 @@ A Parquet file is recognised by its name (`.parquet`), its first bytes or `--for
 - **A table ChloeDB has** keeps its schema: each column fills the field of its name (in any case), the others are left out and listed. The rows are upserted by key (inserted, in a table without one), 10,000 a transaction, or bulk-loaded when the table is empty.
 - **A table ChloeDB lacks** is created, with the schema `--schema` gives, or the one an export kept in the file, or else one made from the columns, and its rows are bulk-loaded in one commit: a value that does not fit is reported with its file and row, and nothing is written.
 
-A database that does not exist is created with the first Parquet file's table. In Python, `strata.from_parquet("events.parquet", "lake.strata")` creates a database, `db.import_parquet("out/clicks/", table="clicks")` imports into an open one, and `strata.plan_parquet("events.parquet")` returns the plan ([Python](python.md)). From Rust it is `chloedb::parquet` (feature `parquet`): `import_new`, `import`, `plan` and `Source` for each step.
+A database that does not exist is created with the first Parquet file's table. In Python, `chloedb.from_parquet("events.parquet", "lake.chloedb")` creates a database, `db.import_parquet("out/clicks/", table="clicks")` imports into an open one, and `chloedb.plan_parquet("events.parquet")` returns the plan ([Python](python.md)). From Rust it is `chloedb::parquet` (feature `parquet`): `import_new`, `import`, `plan` and `Source` for each step.
 
 ### How Parquet columns become fields
 
@@ -52,10 +52,10 @@ A directory Spark writes with `partitionBy` holds its files under `key=value` di
 ## Export
 
 ```sh
-chloedb-server export --db lake.strata --tables events events.parquet    # one table, one file
-chloedb-server export --db lake.strata out/                              # every table: out/<table>.parquet
-chloedb-server export --db lake.strata --format parquet --tables events s3://lake/exports/events.parquet
-chloedb-server export --db lake.strata --no-schemas events.parquet       # without the kept schema
+chloedb-server export --db lake.chloedb --tables events events.parquet   # one table, one file
+chloedb-server export --db lake.chloedb out/                             # every table: out/<table>.parquet
+chloedb-server export --db lake.chloedb --format parquet --tables events s3://lake/exports/events.parquet
+chloedb-server export --db lake.chloedb --no-schemas events.parquet      # without the kept schema
 ```
 
 An export reads the rows of one snapshot. It writes a `.parquet` file when the name says so (one table), and otherwise a new directory with a `<table>.parquet` file a table (`--format parquet`, or a name ending in `/`; without either, the export is a [SQLite file](sqlite.md#export)). The files are compressed with Zstandard, in row groups of about 128 MB, and written under another name and renamed into place when complete; an existing file or directory is an error, but for an empty directory. In Python it is `db.export_parquet("events.parquet", tables="events")`, from Rust `chloedb::parquet::export`.

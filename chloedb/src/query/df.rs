@@ -2318,7 +2318,7 @@ fn firsts(a: &ArrayRef, cap: usize) -> Option<Vec<usize>> {
 /// The values of the arguments, row by row.
 fn arg_values(args: &[ColumnarValue], rows: usize) -> datafusion::error::Result<Vec<Vec<Value>>> {
     let arrays = ColumnarValue::values_to_arrays(args)?;
-    let cols: Vec<Vec<Value>> = arrays.iter().map(|a| values_of(a).map_err(|_| DataFusionError::Execution(format!("strata: no values of {}", a.data_type())))).collect::<datafusion::error::Result<_>>()?;
+    let cols: Vec<Vec<Value>> = arrays.iter().map(|a| values_of(a).map_err(|_| DataFusionError::Execution(format!("chloedb: no values of {}", a.data_type())))).collect::<datafusion::error::Result<_>>()?;
     Ok((0..rows).map(|i| cols.iter().map(|c| c.get(i).cloned().unwrap_or(Value::Null)).collect()).collect())
 }
 
@@ -2474,7 +2474,7 @@ impl ScalarUDFImpl for ListOf {
                 Arc::new(a.with_precision_and_scale(*p, *sc).map_err(DataFusionError::from)?)
             }
             (t, _) => {
-                let a = arrow::column_of(values).map_err(|e| DataFusionError::Execution(format!("strata: {}", e.0)))?;
+                let a = arrow::column_of(values).map_err(|e| DataFusionError::Execution(format!("chloedb: {}", e.0)))?;
                 datafusion::arrow::compute::cast(&a, t)?
             }
         };
@@ -2533,10 +2533,10 @@ impl ScalarUDFImpl for StrataCond {
                 crate::query::ir::eval::Ref::Output(i) => Ok(r.get(i as usize).cloned().unwrap_or(Value::Null)),
                 x => Err(Error::Query(format!("{x:?} is not a column of a condition's arguments"))),
             };
-            match crate::query::ir::eval::eval(&self.cond, &read).map_err(|e| DataFusionError::Execution(format!("strata: {e}")))? {
+            match crate::query::ir::eval::eval(&self.cond, &read).map_err(|e| DataFusionError::Execution(format!("chloedb: {e}")))? {
                 Value::Bool(x) => b.append_value(x),
                 Value::Null => b.append_null(),
-                v => return Err(DataFusionError::Execution(format!("strata: a condition gave {v:?}"))),
+                v => return Err(DataFusionError::Execution(format!("chloedb: a condition gave {v:?}"))),
             }
         }
         Ok(ColumnarValue::Array(Arc::new(b.finish())))
@@ -2582,7 +2582,7 @@ impl ScalarUDFImpl for StrataCall {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
         let rows = arg_values(&args.args, args.number_rows)?;
-        let fail = |e: Error| DataFusionError::Execution(format!("strata: {e}"));
+        let fail = |e: Error| DataFusionError::Execution(format!("chloedb: {e}"));
         let out: ArrayRef = match self.ret {
             DataType::Int64 => {
                 let mut b = Int64Builder::with_capacity(rows.len());
@@ -2590,7 +2590,7 @@ impl ScalarUDFImpl for StrataCall {
                     match crate::query::ir::eval::call(self.func, r).map_err(fail)? {
                         Value::Null => b.append_null(),
                         Value::Int(x) => b.append_value(x),
-                        v => return Err(DataFusionError::Execution(format!("strata: {} gave {v:?} for an INT column", self.func.name()))),
+                        v => return Err(DataFusionError::Execution(format!("chloedb: {} gave {v:?} for an INT column", self.func.name()))),
                     }
                 }
                 Arc::new(b.finish())
@@ -2601,7 +2601,7 @@ impl ScalarUDFImpl for StrataCall {
                     match crate::query::ir::eval::call(self.func, r).map_err(fail)? {
                         Value::Null => b.append_null(),
                         Value::Float(x) => b.append_value(x),
-                        v => return Err(DataFusionError::Execution(format!("strata: {} gave {v:?} for a FLOAT column", self.func.name()))),
+                        v => return Err(DataFusionError::Execution(format!("chloedb: {} gave {v:?} for a FLOAT column", self.func.name()))),
                     }
                 }
                 Arc::new(b.finish())
@@ -2652,7 +2652,7 @@ impl ScalarUDFImpl for IntArith {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
-        let [a, b] = &args.args[..] else { return Err(DataFusionError::Execution("strata: arithmetic of two values".into())) };
+        let [a, b] = &args.args[..] else { return Err(DataFusionError::Execution("chloedb: arithmetic of two values".into())) };
         let (a, b) = (a.to_array(args.number_rows)?, b.to_array(args.number_rows)?);
         let out = match self.op {
             ArithOp::Add => numeric::add(&a, &b)?,

@@ -135,7 +135,7 @@ target/release/chloedb-graph-bench load                  # holds out 1,000 paper
 target/release/chloedb-graph-bench latency --sqlite /home/user/data/graph/arxiv/edges.sqlite
 target/release/chloedb-graph-bench quality --seeds 1,2,3,5,10,20,50
 python3 scripts/graph_quality_stats.py results/graph/quality_arxiv.rows.jsonl.gz --out results/graph/quality_stats.json
-target/release/chloedb-graph-bench synthetic --nodes 1000000 --db /tmp/synthetic.strata --sqlite /tmp/synthetic.sqlite --out /tmp/graph
+target/release/chloedb-graph-bench synthetic --nodes 1000000 --db /tmp/synthetic.chloedb --sqlite /tmp/synthetic.sqlite --out /tmp/graph
 python3 scripts/build_graph_report.py                   # report/graph.html
 ```
 

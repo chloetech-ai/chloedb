@@ -10,7 +10,7 @@ a file in this process (`Database`) or on a chloedb-server or a coordinator
 
     import chloedb as st
 
-    shop = st.connect("shop.strata")          # or st.connect("https://...")
+    shop = st.connect("shop.chloedb")         # or st.connect("https://...")
     orders = shop["orders"]
     top = (orders
            .filter(st.col("status") == "paid")

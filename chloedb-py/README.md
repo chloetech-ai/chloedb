@@ -1,6 +1,6 @@
 # chloedb: ChloeDB from Python
 
-`import strata` (or `import chloedb`, the same package by its new name) runs a ChloeDB database in your process (`chloedb.open`,
+`import chloedb` runs a ChloeDB database in your process (`chloedb.open`,
 `chloedb.Database`), or talks to a running `chloedb-server` (`chloedb.connect`,
 `chloedb.Client`), with the same methods: `insert`, `upsert`, `delete`,
 `import_file`, `query`, `sql`, `search`, and `table()` for queries built
@@ -10,19 +10,18 @@ read without copying them.
 
 ```sh
 # a release's prebuilt wheel (Linux glibc 2.35+, macOS 11+); no Rust needed
-pip install strata-db -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/strata-py-v0.1.0
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 pip install ./chloedb-py          # or from source, from the repository's root; needs Rust
 ```
 
-Release 0.1.0, the only prebuilt wheel so far, predates the rename: its module
-is `strata` only, so write `import strata as chloedb` in the examples below
-(`import chloedb` fails on it), and it has no frames. A build from source is
-today's package, and imports as both.
+`import strata`, ChloeDB's old name, imports the same package for a release,
+with a `DeprecationWarning`; release 0.1.0, from before the rename, was
+published as `strata-db` and imports as `strata` only.
 
 ```python
 import chloedb
 
-db = chloedb.open("books.strata", schema={
+db = chloedb.open("books.chloedb", schema={
     "table": "books", "key": "id",
     "fields": [
         {"name": "id", "type": "keyword"},
@@ -46,7 +45,7 @@ has no frames):
 import chloedb
 from chloedb import col
 
-shop = chloedb.connect("shop.strata")       # or a server: chloedb.connect("https://...")
+shop = chloedb.connect("shop.chloedb")      # or a server: chloedb.connect("https://...")
 (shop["orders"].filter(col("status") == "paid")
      .group_by("country").agg(revenue=col("amount").sum(), n=chloedb.len())
      .sort("revenue", descending=True).to_polars())

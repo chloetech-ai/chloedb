@@ -10,7 +10,7 @@
 //
 //   import { open } from "chloedb";
 //
-//   const db = await open("books.strata", { schema: {
+//   const db = await open("books.chloedb", { schema: {
 //     table: "books", key: "id",
 //     fields: [
 //       { name: "id", type: "keyword" },

@@ -1,19 +1,19 @@
 //! `chloedb-server`: ChloeDB over HTTP JSON and gRPC, with a query UI.
 //!
 //! ```text
-//! chloedb-server --demo 20000 --db products.strata      # a demo catalogue, UI at http://127.0.0.1:7700
-//! chloedb-server --db my.strata                         # an existing database, or a new one with no tables yet
-//! CHLOEDB_TOKEN=... chloedb-server --db my.strata --listen 0.0.0.0:7700   # beyond loopback: a token
+//! chloedb-server --demo 20000 --db products.chloedb     # a demo catalogue, UI at http://127.0.0.1:7700
+//! chloedb-server --db my.chloedb                        # an existing database, or a new one with no tables yet
+//! CHLOEDB_TOKEN=... chloedb-server --db my.chloedb --listen 0.0.0.0:7700  # beyond loopback: a token
 //! chloedb-server --shards http://a:7701,http://b:7701   # a coordinator over shard servers
 //! chloedb-server --shards 'http://a0:7701|http://a1:7701,http://b0:7701|http://b1:7701'   # two replicas each
-//! chloedb-server --db a0.strata --seq-no --replicas http://a1:7701   # a primary shipping its writes to a replica
-//! chloedb-server --db a1.strata --seq-no --replica                    # and that replica
-//! chloedb-server --db new.strata --schema new.json --copy-from my.strata   # re-embed into a new schema
+//! chloedb-server --db a0.chloedb --seq-no --replicas http://a1:7701  # a primary shipping its writes to a replica
+//! chloedb-server --db a1.chloedb --seq-no --replica                   # and that replica
+//! chloedb-server --db new.chloedb --schema new.json --copy-from my.chloedb  # re-embed into a new schema
 //! chloedb-server fetch-model potion-retrieval-32M       # download an embedding model
-//! chloedb-server import --db my.strata --schema my.json rows.jsonl more.csv   # load files
-//! chloedb-server import --db shop.strata shop.sqlite    # a SQLite database's tables
-//! chloedb-server export --db shop.strata shop-copy.sqlite   # and back to SQLite
-//! chloedb-server upgrade my.strata                      # copy a database from before field ids into this version's format
+//! chloedb-server import --db my.chloedb --schema my.json rows.jsonl more.csv  # load files
+//! chloedb-server import --db shop.chloedb shop.sqlite   # a SQLite database's tables
+//! chloedb-server export --db shop.chloedb shop-copy.sqlite  # and back to SQLite
+//! chloedb-server upgrade my.chloedb                     # copy a database from before field ids into this version's format
 //! ```
 
 use std::path::PathBuf;
@@ -495,7 +495,7 @@ struct Args {
     #[arg(long, env = "CHLOEDB_ENVIRONMENT")]
     environment: Option<String>,
     /// Where people reach this server's command center
-    /// (https://strata.example.com), for links in alerts' webhooks.
+    /// (https://chloedb.example.com), for links in alerts' webhooks.
     #[arg(long, env = "CHLOEDB_PUBLIC_URL")]
     public_url: Option<String>,
     /// The address other coordinators reach this coordinator's HTTP API at
