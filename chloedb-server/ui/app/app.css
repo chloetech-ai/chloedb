@@ -3387,3 +3387,31 @@ textarea.input.oc-ask { font-family: inherit; font-size: 14px; line-height: 1.45
 .sl-ramp { display: inline-block; width: 90px; height: 10px; border-radius: 3px; background: linear-gradient(90deg, color-mix(in srgb, var(--s1) 12%, transparent), var(--s1)); }
 .sl-none { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--line-2); border-radius: 2px; vertical-align: -1px; }
 .sl-code { margin: 0; white-space: pre; overflow-x: auto; font-size: 12.5px; }
+
+/* Query understanding (views/understand.js) */
+.qu { padding: 14px 18px 30px; display: flex; flex-direction: column; gap: 14px; }
+.qu-top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.qu-spacer { flex: 1; }
+.qu-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .qu-grid { grid-template-columns: minmax(0, 1fr); } }
+.qu-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.qu-q { flex: 1; font-size: 16px; padding: 9px 12px; }
+.qu-uf { flex: 1; min-width: 160px; max-width: 420px; }
+.qu-dym { font-size: 15px; }
+.qu-cls { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.qu-bars { display: flex; flex-direction: column; gap: 4px; }
+.qu-bar { display: grid; grid-template-columns: minmax(80px, 180px) 1fr 44px; gap: 8px; align-items: center; font-size: 12.5px; }
+.qu-bar-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qu-bar-v { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--accent) var(--w), var(--surface-2) var(--w)); }
+.qu-cmp { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 560px) { .qu-cmp { grid-template-columns: minmax(0, 1fr); } }
+.qu-rows { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 3px; }
+.qu-rows li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qu-rows li.new { background: var(--accent-soft); border-radius: 4px; }
+.qu-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.qu-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; max-height: 260px; overflow: auto; }
+.qu-derived { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.qu-chunks { display: flex; flex-direction: column; gap: 8px; }
+.qu-chunk { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 9px; display: flex; flex-direction: column; gap: 3px; }
+.qu-area { min-height: 140px; width: 100%; resize: vertical; font-size: 12.5px; }
+.qu-sep { border-top: 1px solid var(--line); margin: 4px 0; }

@@ -75,6 +75,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/recsys.js", JS, include_str!("../ui/app/views/recsys.js")),
     ("views/sid.js", JS, include_str!("../ui/app/views/sid.js")),
     ("views/autocomplete.js", JS, include_str!("../ui/app/views/autocomplete.js")),
+    ("views/understand.js", JS, include_str!("../ui/app/views/understand.js")),
     ("views/media.js", JS, include_str!("../ui/app/views/media.js")),
     ("views/graph.js", JS, include_str!("../ui/app/views/graph.js")),
     ("views/classic.js", JS, include_str!("../ui/app/views/classic.js")),
