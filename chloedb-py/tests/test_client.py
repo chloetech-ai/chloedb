@@ -349,7 +349,7 @@ try:
     chloedb.open(sys.argv[2], schema={"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}]})
     raise AssertionError("a database in this process needs the extension")
 except ImportError as e:
-    assert "pip install strata-db" in str(e) and "chloedb.Client" in str(e), e
+    assert "pip install chloedb -f" in str(e) and "chloedb.Client" in str(e), e
 print("ok")
 '''
 

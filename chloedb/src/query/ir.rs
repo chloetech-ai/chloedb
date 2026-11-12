@@ -2295,10 +2295,10 @@ impl Plan {
     /// older version of Strata knows fewer.
     pub fn readable_by(version: u64, features: &[&str], known: &[&str]) -> Result<()> {
         if version == 0 || version > VERSION as u64 {
-            return Err(err(format!("plan version {version} is not one this version of Strata reads (it reads version {VERSION}): it may be newer")));
+            return Err(err(format!("plan version {version} is not one this version of ChloeDB reads (it reads version {VERSION}): it may be newer")));
         }
         match features.iter().find(|f| !known.contains(f)) {
-            Some(name) => Err(err(format!("the plan needs feature {name:?}, which this version of Strata does not have: it may be newer"))),
+            Some(name) => Err(err(format!("the plan needs feature {name:?}, which this version of ChloeDB does not have: it may be newer"))),
             None => Ok(()),
         }
     }

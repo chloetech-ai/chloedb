@@ -328,7 +328,7 @@ impl Manifest {
                 if f == 3 {
                     let features: Features = serde_json::from_value(v.get("features").cloned().unwrap_or_default()).map_err(bad)?;
                     if let Some(x) = features.required.iter().find(|x| !known_feature(x)) {
-                        return Err(Error::Schema(format!("the database uses feature {x:?}, which this version of Strata does not have: open it with a newer one")));
+                        return Err(Error::Schema(format!("the database uses feature {x:?}, which this version of ChloeDB does not have: open it with a newer one")));
                     }
                     ids = features.required.iter().any(|x| x == FIELD_IDS);
                 }
@@ -341,7 +341,7 @@ impl Manifest {
                 }
                 Manifest { txn: m.txn, wal_txn: m.wal_txn, next_segment_id: m.next_segment_id, next_table_id: m.next_table_id, tables: m.tables, seq_no: m.seq_no }.checked(ids)
             }
-            Some(f) => Err(corrupt(format!("manifest format {f} is newer than this version of Strata reads"))),
+            Some(f) => Err(corrupt(format!("manifest format {f} is newer than this version of ChloeDB reads"))),
         }
     }
 

@@ -2,7 +2,7 @@
   "name": "chloedb-apps",
   "version": "0.1.0",
   "private": true,
-  "description": "A prototype: apps that are built from a description, changed by asking, and extend themselves, with Strata as the backbone",
+  "description": "A prototype: apps that are built from a description, changed by asking, and extend themselves, with ChloeDB as the backbone",
   "type": "module",
   "engines": { "node": ">=20" },
   "scripts": {

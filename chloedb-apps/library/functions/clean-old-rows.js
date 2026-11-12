@@ -64,7 +64,7 @@ function run(input, app) {
 
   var matched, ids;
   try {
-    // Timestamp column: Strata filters the range itself.
+    // Timestamp column: ChloeDB filters the range itself.
     var p = Object.assign({}, params, { cutoff: cutoff });
     var older = base + ' AND ' + column + ' < :cutoff';
     var count = app.sql('SELECT COUNT(*) AS n' + older, p);

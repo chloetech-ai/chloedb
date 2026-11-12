@@ -7,7 +7,7 @@ can move from one to the other::
 
     import chloedb
 
-    db = chloedb.open("books.strata", schema={
+    db = chloedb.open("books.chloedb", schema={
         "table": "books", "key": "id",
         "fields": [
             {"name": "id", "type": "keyword"},

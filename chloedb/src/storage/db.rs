@@ -1708,7 +1708,7 @@ impl Database {
         let mut wal = self.try_writer()?;
         self.check_poisoned()?;
         if lock(&self.state).manifest.is_legacy() {
-            return Err(Error::Schema("this database was written before field ids, and keeps no functions: upgrade it first (strata upgrade)".into()));
+            return Err(Error::Schema("this database was written before field ids, and keeps no functions: upgrade it first (chloedb-server upgrade)".into()));
         }
         self.add_system(&mut wal, FUNCTIONS_ID)
     }
