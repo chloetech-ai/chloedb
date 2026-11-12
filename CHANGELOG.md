@@ -11,6 +11,23 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- App engine: the app creator is a page of the command center (Apps → App
+  creator) rather than a separate studio: describe an app and build it
+  there, follow each build (its steps, its screens drawn while the rest is
+  written, its timeline), use the app on a phone, a tablet or the whole
+  stage, and read, edit and go back through what it is made of. Its views
+  run in frames with the studio's sandbox and policy, every read and write
+  sent to the page and from there to the engine for that one app. The
+  standalone studio stays, for the engine run on its own and as **Studio**.
+- App engine: **Made of** says how much of an app's code the engine
+  generated from the CREATE TABLE, CREATE SCREEN and CREATE RULE statements
+  the agent wrote, how much the agent wrote from scratch, and how much is
+  the library's, in lines written and lines that run, piece by piece
+  (`GET /api/apps/:id/made`, and `made` in an app's state).
+- App engine: `GET /api/events?after=N` gives the studio's live events to a
+  page that cannot hold a stream open (chloedb-server forwards whole
+  answers), and `GET /api/kit` the frames' runtime and policy.
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,

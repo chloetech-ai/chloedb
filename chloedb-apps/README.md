@@ -265,6 +265,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/checks.mjs` | a build's tests, run on its new tables, and opening each view in a headless browser |
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
 | `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
+| `web/cc-view.js`, `engine/provenance.mjs` | the app creator, a page of a cluster's command center (Apps → App creator): describe and build apps, the live app on a phone, tablet or desktop, and **Made of**, how much of the code that runs the engine generated from CREATE statements and how much the agent wrote from scratch, piece by piece (`GET /api/apps/:id/made`); it gets the frame's runtime from `GET /api/kit` and live updates from long polls of `GET /api/events` ([On a cluster](../docs/chloedb/apps.md#on-a-cluster)) |
 
 In ChloeDB:
 

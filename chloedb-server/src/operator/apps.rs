@@ -3,7 +3,7 @@
 //! Node, Playwright's Chromium and Claude Code) as a Deployment of one
 //! (strategy Recreate, `<cluster>-apps`) behind a Service of that name, and
 //! the coordinators list it as the app `apps` (`STRATA_APPS`), so that the
-//! command center shows **Apps → App engine**.
+//! command center shows **Apps → App creator**.
 //!
 //! It keeps the apps it builds in the cluster, as rows of its own tables,
 //! through the coordinators' Service with the admin token (`tokenSecret`),

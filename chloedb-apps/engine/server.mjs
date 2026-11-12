@@ -21,6 +21,7 @@ import { MODEL, spend, useSpendFile } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
+import { provenance } from './provenance.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
@@ -196,9 +197,37 @@ async function rawBody(req, limit) {
 // ---- live updates: one stream per open studio page
 
 const clients = new Set();
+// The same events kept for a while, numbered, for a page that cannot hold a
+// stream open: the command center reaches the engine through chloedb-server,
+// which forwards whole answers, so it asks GET /api/events?after=N and the
+// answer waits (up to ~20 s) for the next event.
+const EVENTS_KEPT = 500;
+const events = [];
+let eventSeq = 0;
+const eventWaiters = new Set();
 function broadcast(type, payload) {
   const line = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const res of clients) res.write(line);
+  events.push({ seq: ++eventSeq, type, data: payload });
+  if (events.length > EVENTS_KEPT) events.splice(0, events.length - EVENTS_KEPT);
+  for (const w of eventWaiters) w();
+}
+function eventsAfter(after, app) {
+  const from = after > eventSeq ? 0 : after; // the engine restarted: start again
+  return events.filter((e) => e.seq > from && (!app || !e.data || !e.data.app || e.data.app === app));
+}
+async function waitEvents(after, app, ms) {
+  let list = eventsAfter(after, app);
+  if (!list.length && ms > 0) {
+    await new Promise((ok) => {
+      const done = () => { clearTimeout(t); eventWaiters.delete(check); ok(); };
+      const check = () => { if (eventsAfter(after, app).length) done(); };
+      const t = setTimeout(done, ms);
+      eventWaiters.add(check);
+    });
+    list = eventsAfter(after, app);
+  }
+  return { seq: eventSeq, feed: engine.feed, events: list };
 }
 // Data changes come in bursts (a trigger's writes, a batch); send each app's at most every 150 ms.
 const pending = new Map();
@@ -399,14 +428,14 @@ const STATIC = {
   '/design.js': ['web/design.js', 'text/javascript; charset=utf-8'],
   '/policy.js': ['web/policy.js', 'text/javascript; charset=utf-8'],
   '/activity.js': ['web/activity.js', 'text/javascript; charset=utf-8'],
-  // The engine's page in a cluster's command center (Apps -> App engine).
+  // The app creator, the engine's page in a cluster's command center (Apps -> App creator).
   '/cc/view.js': ['web/cc-view.js', 'text/javascript; charset=utf-8'],
 };
 
 // What chloedb-server shows of the engine (its apps, GET /v1/apps).
 const MANIFEST = {
   name: 'apps',
-  title: 'App engine',
+  title: 'App creator',
   description: 'Apps built from a description: written by a model, checked, kept in this cluster as rows, and changed by asking',
   icon_svg: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/>',
   view: 'cc/view.js',
@@ -494,6 +523,8 @@ async function appState(appId) {
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
     drawn: drawnOf.get(appId) || null,
     reach: await reachOf(appId, view),
+    // Where its code came from: CREATE statements, the agent's own code, the library (provenance.mjs).
+    made: provenance(view, appId),
   };
 }
 
@@ -511,6 +542,19 @@ const routes = [
     login: login.on ? { publicUrl: login.publicUrl } : null,
     spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
   ['GET', /^\/api\/apps$/, async () => ({ apps: await engine.store.listApps() })],
+  // The events since ?after=N (see broadcast), for one app with ?app=.
+  ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
+    Math.min(25000, Math.max(0, Number(url.searchParams.get('wait') ?? 20000) || 0)))],
+  // What a view's frame is made of, for a page that builds frames itself
+  // (the command center's app creator): the stylesheet, the runtime, the
+  // screen renderer, and the design tokens and the frame's policy as the
+  // modules the studio imports (web/design.js, web/policy.js).
+  ['GET', /^\/api\/kit$/, async () => {
+    const read = (f) => readFile(path.join(ROOT, 'web', f), 'utf8');
+    const [kit, frontCss, frame, screen, front, design, policy] = await Promise.all(['kit.css', 'front.css', 'frame.js', 'screen.js', 'front.js', 'design.js', 'policy.js'].map(read));
+    return { kit: `${kit}\n${frontCss}`, frame, screen, front, design, policy, publicUrl: login.publicUrl || null, login: login.on };
+  }],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/made$/, async (b, [id]) => provenance(await engine.view(id), id)],
   ['POST', /^\/api\/apps$/, async (b) => {
     const description = String(b.description || '').trim();
     if (description.length < 5) throw Object.assign(new Error('describe the app in a sentence or more'), { status: 400 });
