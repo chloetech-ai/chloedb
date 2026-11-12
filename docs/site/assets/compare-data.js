@@ -132,7 +132,7 @@ window.STRATA_COMPARE = {
       title: "Recommendations",
       rows: [
         ["Sequence models in the query (the next item from a history)", {
-          strata: "y:encode() runs a SASRec-style model trained with strata.train", vespa: "p?:ONNX models in ranking" }],
+          strata: "y:encode() runs a SASRec-style model trained with chloedb.train", vespa: "p?:ONNX models in ranking" }],
         ["Items like a user's recent history", {
           strata: "y:maxsim() over the history's vectors, or ppr() over co-occurrence edges", postgres: "p:Hand-written SQL", lancedb: "p",
           elastic: "p", opensearch: "p", vespa: "y", qdrant: "y:The recommend API", weaviate: "p?", milvus: "p?" }],

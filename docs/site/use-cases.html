@@ -108,7 +108,7 @@ ORDER BY rrf(bm25(caption, :q), similarity(emb, :v)) DESC LIMIT 12;</pre>
       <div><span class="ico cols"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg></span><h2>Search over your Postgres</h2><p>The app keeps writing to Postgres. ChloeDB copies the tables of a publication, then applies every change a moment after it commits, each once, so search, vectors and facets run on the same rows.</p>
         <dl class="kv"><dt>Replaces</dt><dd>Debezium, Kafka and a sync job into a search engine</dd><dt>Read</dt><dd><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/postgres.md">Following Postgres</a></dd></dl></div>
       <pre data-lang="sh">chloedb-server follow-postgres \
-  --source 'postgres://strata:...@db.example:5432/shop' \
+  --source 'postgres://chloedb:...@db.example:5432/shop' \
   --target http://localhost:7700 --name shop
 
 curl -s localhost:7700/v1/sql -H 'content-type: application/json' -d '{"params": {"q": "trail shoes"},
@@ -120,9 +120,9 @@ curl -s localhost:7700/v1/sql -H 'content-type: application/json' -d '{"params":
     <div class="uc2">
       <div><span class="ico vec"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></span><h2>Near me, on the phone</h2><p>The app keeps a slice of the places around its user and searches it on the device, scored as the server scores them. When it cannot prove its answer is the server's, it asks the server.</p>
         <dl class="kv"><dt>Replaces</dt><dd>A search request on every keystroke, and a separate offline index</dd><dt>Read</dt><dd><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/slices.md">Slices</a></dd></dl></div>
-      <pre data-lang="python">import strata
+      <pre data-lang="python">import chloedb
 
-near = strata.nearby("https://api.example", "places", "./slice")
+near = chloedb.nearby("https://api.example", "places", "./slice")
 near.move_to(40.7484, -73.9857)   # fetches the tiles around the user
 r = near.search("pizza", k=10, d0=1000)
 print(r.where, r.why)             # "device" or "server", and why
@@ -164,7 +164,7 @@ ORDER BY hops(), id LIMIT 20;</pre>
       <h2>Try it</h2>
     </div>
     <div class="deploy pair">
-      <a class="dcard a" href="command-center.html#try" style="text-decoration:none"><span class="eyebrow">On your laptop</span><h3>The command center</h3><p>A demo catalogue served with its console, in one command.</p><pre>chloedb-server --demo 20000 --db products.strata</pre></a>
+      <a class="dcard a" href="command-center.html#try" style="text-decoration:none"><span class="eyebrow">On your laptop</span><h3>The command center</h3><p>A demo catalogue served with its console, in one command.</p><pre>chloedb-server --demo 20000 --db products.chloedb</pre></a>
       <a class="dcard b" href="examples.html" style="text-decoration:none"><span class="eyebrow">Read</span><h3>Every query</h3><p>One shop, every kind of query, from a search box to window functions.</p></a>
     </div>
   </div></section>
