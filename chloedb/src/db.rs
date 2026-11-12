@@ -205,6 +205,10 @@ pub struct Db {
     /// Held while a `CREATE FUNCTION` or `DROP FUNCTION` reads the
     /// versions and writes the next one.
     function_ddl: std::sync::Mutex<()>,
+    /// The gazetteers of keyword fields query understanding read
+    /// ([`crate::query::understand`]), by table, field and analyzer, with
+    /// the stamp of the table's snapshot they were read from.
+    gazetteers: std::sync::Mutex<HashMap<(String, String, crate::text::Analyzer), (u64, Arc<crate::query::understand::Gazetteer>)>>,
 }
 
 /// The model of an embedded VECTOR field, and the field it was set for: it
@@ -288,6 +292,7 @@ impl Db {
             writes: writes::Writes::default(),
             functions: std::sync::Mutex::new(None),
             function_ddl: std::sync::Mutex::new(()),
+            gazetteers: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1230,6 +1235,19 @@ impl Db {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
         let q = qsql::parse_query_cached(sql)?;
+        // Understood words (`bm25(.., understand => 'boost')`): the
+        // dictionaries of the table's keyword fields, then the query with
+        // the conditions the words name.
+        if crate::query::understand::may_understand(sql) {
+            if let Some(u) = crate::query::understand::plan(&q.query, params)? {
+                let catalog: Vec<Arc<Schema>> = snap.schemas().map(|s| Arc::new(s.clone())).collect();
+                let gaz = self.gazetteers_at(snap, &u.needs(&catalog)?, opts)?;
+                let (rewritten, made) = u.finish(&catalog, &gaz, params, |c| Ok(crate::query::understand::count_of(&self.query_at(snap, c, &Params::new(), opts)?)))?;
+                let mut rs = self.query_at(snap, &rewritten.to_string(), params, opts)?;
+                rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                return Ok(rs);
+            }
+        }
         // Expanded ranking (`bm25(.., expand => n)`): its rows first, then
         // the query with the terms they hold.
         if crate::query::prf::may_expand(sql) {
@@ -1261,6 +1279,49 @@ impl Db {
         }
         let plan = plan_of_parsed(snap, &q, params, &functions)?;
         self.run_on(snap, &plan, opts)
+    }
+
+    /// The gazetteers `needs` names ([`crate::query::understand`]), read
+    /// once per version of their table.
+    fn gazetteers_at(&self, snap: &Snapshot, needs: &[(String, String, crate::text::Analyzer)], opts: &ExecOptions) -> Result<crate::query::understand::Gazetteers> {
+        let mut out = crate::query::understand::Gazetteers::new();
+        for key in needs {
+            let stamp = snap.table(&key.0).map_or(0, |t| t.stamp());
+            if let Some((s, g)) = self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+                if *s == stamp {
+                    out.insert(key.clone(), g.clone());
+                    continue;
+                }
+            }
+            let sql = crate::query::understand::dictionary_sql(&key.0, &key.1);
+            let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..opts.clone() })?;
+            let g = Arc::new(crate::query::understand::Gazetteer::build(&key.1, &rs, key.2));
+            self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), (stamp, g.clone()));
+            out.insert(key.clone(), g);
+        }
+        Ok(out)
+    }
+
+    /// The gazetteers `needs` names, as of now: what a server that runs
+    /// plans rather than SQL passes [`crate::query::understand::Understanding::finish`].
+    pub fn gazetteers(&self, needs: &[(String, String, crate::text::Analyzer)]) -> Result<crate::query::understand::Gazetteers> {
+        self.gazetteers_at(&self.snapshot(), needs, &self.exec)
+    }
+
+    /// What the words of `text` say for `field` (a TEXT field) of `table`:
+    /// the values of its keyword fields they name and the ranges of numbers
+    /// ([`crate::query::understand`]), as `bm25(field, text, understand =>
+    /// ..)` would take them. For previews and for applications that show
+    /// the filters a search took.
+    pub fn understand(&self, table: &str, field: &str, text: &str, opts: &crate::query::understand::Options) -> Result<crate::query::understand::Understood> {
+        let snap = self.snapshot();
+        let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(table)).cloned().ok_or_else(|| Error::Query(format!("no table {table}")))?;
+        let needs = crate::query::understand::needs_of(&schema, field, opts)?;
+        let gaz = self.gazetteers_at(&snap, &needs, &self.exec)?;
+        let mut u = crate::query::understand::understand_in(&schema, field, text, opts, &gaz)?;
+        let counts = u.checks().iter().map(|c| Ok(crate::query::understand::count_of(&self.query_at(&snap, c, &Params::new(), &self.exec)?))).collect::<Result<Vec<_>>>()?;
+        u.confirm(&counts);
+        Ok(u)
     }
 
     /// Where this database's models are: the directory

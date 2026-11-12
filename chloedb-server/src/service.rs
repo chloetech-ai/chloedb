@@ -184,6 +184,10 @@ pub enum Backend {
     Cluster(Arc<Coordinator>),
 }
 
+/// How long a coordinator keeps the gazetteers of query understanding
+/// before it reads them from its shards again.
+pub const GAZETTEER_TTL: Duration = Duration::from_secs(60);
+
 /// The most expired rows one transaction of the expirer deletes
 /// ([`Service::expire_due`]).
 pub const EXPIRE_BATCH: usize = 10_000;
@@ -597,6 +601,9 @@ pub struct Service {
     idempotency: Arc<idem::Keys>,
     /// The synonym list `synonyms => 1` searches use, and its file.
     synonyms: RwLock<Option<Arc<Synonyms>>>,
+    /// A coordinator's gazetteers for query understanding
+    /// ([`Service::gazetteers`]), with when they were read.
+    gazetteers: std::sync::Mutex<HashMap<(String, String, chloedb::text::Analyzer), (Instant, Arc<chloedb::query::understand::Gazetteer>)>>,
     synonyms_file: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     backup_dir: Option<PathBuf>,
@@ -750,6 +757,7 @@ impl Service {
             writer_state,
             idempotency,
             synonyms: RwLock::new(None),
+            gazetteers: std::sync::Mutex::new(HashMap::new()),
             synonyms_file: None,
             backup_dir: None,
             slices: None,
@@ -2349,6 +2357,56 @@ impl Service {
         Err(ApiError { status: 404, message: format!("no row names a file of sha256 {sha256}") })
     }
 
+    /// The gazetteers of keyword fields that query understanding reads: a
+    /// server's from its database, read once per version of the table; a
+    /// coordinator's by a query of its shards, kept for
+    /// [`GAZETTEER_TTL`].
+    pub async fn gazetteers(self: &Arc<Self>, needs: &[(String, String, chloedb::text::Analyzer)], like: Option<&QueryReq>) -> Result<chloedb::query::understand::Gazetteers, ApiError> {
+        if let Backend::Local(db) = &self.backend {
+            let (db, needs) = (db.clone(), needs.to_vec());
+            return Ok(tokio::task::spawn_blocking(move || db.gazetteers(&needs)).await.map_err(ApiError::internal)??);
+        }
+        let mut out = chloedb::query::understand::Gazetteers::new();
+        for key in needs {
+            if let Some((at, g)) = self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+                if at.elapsed() < GAZETTEER_TTL {
+                    out.insert(key.clone(), g.clone());
+                    continue;
+                }
+            }
+            let mut r = like.cloned().unwrap_or_default();
+            (r.sql, r.params, r.scroll, r.hold) = (chloedb::query::understand::dictionary_sql(&key.0, &key.1), Params::new(), None, false);
+            let rs = Box::pin(self.query(r)).await?.rs;
+            let g = Arc::new(chloedb::query::understand::Gazetteer::build(&key.1, &rs, key.2));
+            self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), (Instant::now(), g.clone()));
+            out.insert(key.clone(), g);
+        }
+        Ok(out)
+    }
+
+    /// What the words of `text` say for `field` of `table`
+    /// ([`chloedb::db::Db::understand`]), on a server or a coordinator.
+    pub async fn understand(self: &Arc<Self>, table: &str, field: &str, text: &str, opts: &chloedb::query::understand::Options) -> Result<chloedb::query::understand::Understood, ApiError> {
+        let catalog = self.catalog();
+        let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(table)).ok_or_else(|| ApiError::bad(format!("no table {table}")))?;
+        let gaz = self.gazetteers(&chloedb::query::understand::needs_of(schema, field, opts)?, None).await?;
+        let mut u = chloedb::query::understand::understand_in(schema, field, text, opts, &gaz)?;
+        let counts = self.understanding_counts(&u, None).await?;
+        u.confirm(&counts);
+        Ok(u)
+    }
+
+    /// The answers of [`chloedb::query::understand::Understood::checks`]'s queries.
+    async fn understanding_counts(self: &Arc<Self>, u: &chloedb::query::understand::Understood, like: Option<&QueryReq>) -> Result<Vec<u64>, ApiError> {
+        let mut out = Vec::new();
+        for c in u.checks() {
+            let mut r = like.cloned().unwrap_or_default();
+            (r.sql, r.params, r.scroll, r.hold) = (c, Params::new(), None, false);
+            out.push(chloedb::query::understand::count_of(&Box::pin(self.query(r)).await?.rs));
+        }
+        Ok(out)
+    }
+
     /// Runs a query, or its plan when it has one. A coordinator plans a
     /// query by a rank profile with the profile its shards held when it
     /// last asked; when a shard refuses the plan because its profile has
@@ -2361,6 +2419,28 @@ impl Service {
         // ([`chloedb::query::llm`]): the rows first, as any query finds them
         // (a coordinator's from its shards, merged), then the questions,
         // here.
+        // Understood words (`bm25(.., understand => 'boost')`,
+        // [`chloedb::query::understand`]): the table's keyword values the
+        // words name become conditions, then the query runs as any does
+        // (and may still expand).
+        if req.plan.is_none() && !req.shard {
+            if let Some(u) = chloedb::query::understand::plan_sql(&req.sql, &req.params)? {
+                let t0 = Instant::now();
+                let catalog = self.catalog();
+                let gaz = self.gazetteers(&u.needs(&catalog)?, Some(&req)).await?;
+                let mut made = u.understood(&catalog, &gaz, &req.params)?;
+                for m in &mut made {
+                    let counts = self.understanding_counts(m, Some(&req)).await?;
+                    m.confirm(&counts);
+                }
+                let mut second = req.clone();
+                second.sql = u.rewrite(&made)?.to_string();
+                let mut a = Box::pin(self.query(second)).await?;
+                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
         // Expanded ranking (`bm25(.., expand => n)`, [`chloedb::query::prf`]):
         // the rows of each expanded call first, as any query finds them (a
         // coordinator's from its shards, merged), then the query rewritten

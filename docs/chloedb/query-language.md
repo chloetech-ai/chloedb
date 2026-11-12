@@ -849,6 +849,27 @@ ORDER BY bm25(body, :q, expand => :n, expand_terms => 10, expand_weight => 0.7) 
 - **Cost.** A second query and the analysis of `n` rows' text: on BEIR's SciFact, NFCorpus and ArguAna the median query took 1.8, 1.7 and 2.9 ms against 0.09, 0.03 and 0.77 ms for plain `bm25` (one core of a 4-core cloud VM, Intel Xeon @ 2.10GHz).
 - **Quality.** The defaults (10 rows, 20 terms, 0.85) were chosen on SciFact's train and NFCorpus's dev judgements (`chloedb/results/text/bm25_rm3_tuning_*.json`). On the test judgements, nDCG@10 went from 0.691 to 0.693 on SciFact (p = 0.55), 0.329 to 0.346 on NFCorpus (p = 0.0001) and 0.362 to 0.369 on ArguAna (p = 0.0006) (`chloedb/results/text/bm25_rm3.json`, `chloedb-bm25-eval --variants plain,rm3`). Expansion helps most where queries are short and documents use a field's own vocabulary; a setting that keeps less of the query (0.5) lowered SciFact to 0.646, so measure before lowering `expand_weight`.
 
+## Understanding a query's words: `understand`
+
+`bm25(field, :q, understand => 'boost')` reads the words of a search for the values of the table's `KEYWORD` fields they name (`white`, a colour; `coffee table`, a class) and for ranges of numbers (`under $300`), and ranks by the text and by them:
+
+```sql
+SELECT id, name FROM products
+ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'class, color, price') DESC LIMIT 10;
+-- :q = 'white coffee table under $300' ranks as
+-- bm25(body, 'white coffee table') * (1 + 0.25 * (CASE WHEN color = 'white' THEN 1 ELSE 0 END
+--   + CASE WHEN class IN ('Coffee Tables', 'Coffee & Cocktail Tables') THEN 1 ELSE 0 END
+--   + CASE WHEN price < 300 THEN 1 ELSE 0 END))
+```
+
+- **What names a value.** A field's values are read with a query (`SELECT color, COUNT(*) ... GROUP BY color`, once per version of the table, or on a coordinator once a minute) and analysed as the text field is. Words name a value when they are a run of its words, in its order, that ends with its last word, its head: `coffee table` names `Coffee Tables` and `Coffee & Cocktail Tables`, and `chair` every value that ends in chairs, but `table` does not name `Table Lamps`. A run inside a longer one of another field is that one's (`coffee` of `coffee table` is not the colour coffee). Values of several fields named by the same words are one condition, any of them.
+- **A check against the rows.** A run counts only when, of the rows whose text holds its words, at least `understand_share` (0.05) hold one of its values: `up` is not the brand Up when almost no row that says up is of it. That is two counts a run, about a millisecond on a table of 165,000 rows.
+- **Ranges.** `under`, `below`, `less than`, `up to`, `over`, `above`, `more than`, `at least`, `between .. and ..`, `since`, `after` and `before` followed by a number (`$1,500`, `2.5`, `10k`) are a range of a numeric field named in `understand_fields`: the one named next to them (`over 10 citations`), a field named for years for a year (`since 2020`), or the only one. Their words leave the ranked text.
+- **Modes.** `'boost'` multiplies the text score by `1 + understand_weight` (0.25) for each condition a row meets, a [rank-safe boost](#rank-safe-boosts). `'filter'` also puts each run that names a value in full, and each range, in the `WHERE` (a row without a value of the field is kept). `'off'` is the call as written. Each option may be a parameter (`understand => :mode`).
+- **Fields.** Without `understand_fields`, every `KEYWORD` field of the table but its key, and a field of more than 20,000 values is left out as a name rather than a facet; a listed field reads up to 200,000. A call that understands ranks the rows of one table, without a join, and goes with `expand` (it understands first).
+- `Db::understand(table, field, text, options)` (chloedb-server's [`POST /v1/understand`](server.md)) returns what a text says without ranking: its runs, the values each names, their shares, the ranges and the conditions.
+- **Measured.** On Wayfair's WANDS (42,994 products, 480 queries; name and description as the text, class, category, colour, style, material, shape and product type as keyword fields) `'boost'` moved nDCG@10 from 0.707 to 0.731 on the odd-numbered queries (p = 0.002), and the classes its words named held the class the query asks for in 262 of 343 queries; `'filter'` lowered it to 0.631, since a product judged relevant often lacks the value or holds another. On Amazon's ESCI (its 8,956 US test queries of the small version and the 164,900 products judged for them; brand and colour listed) `'boost'` moved it from 0.394 to 0.396 (p = 0.007): its titles already hold their brands. Without the check against the rows, ESCI's ranking fell to 0.391. The weight and share were chosen on the even-numbered queries of both. A query took 0.9 to 1.0 ms at the median, against 0.07 to 0.12 ms for `bm25` alone (`chloedb-understand-eval`, `chloedb/results/text/understand_wands.json` and `understand_esci.json`, Intel Xeon @ 2.10GHz, 4 cores).
+
 ## Did you mean: correcting a query's words
 
 `Db::correct(table, field, text)` (chloedb-server's [`POST /v1/correct`](server.md)) returns the text with the words that look like typos of a TEXT field's terms replaced, for a search box to offer as "did you mean":

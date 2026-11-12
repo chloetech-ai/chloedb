@@ -38,6 +38,7 @@
 //! | `GET /v1/media/<sha256>` | | the bytes of the file a row's MEDIA value names, by its hash, read as writes read files (`--media-store`, `--media-fetch`), served inert ([`media_headers`]); 404 when no row names it, 400 from a coordinator |
 //! | `GET /v1/synonyms`, `PUT /v1/synonyms` | `{text}` (Solr format) | the synonym list |
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
+//! | `POST /v1/understand` | `{table, field, text, mode?, fields?, weight?}` | `{spans, ranges, ranked, filters, boosts, line, ...}`: the values of the table's keyword fields the words name, and ranges of numbers, as `bm25(.., understand => ..)` takes them |
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
@@ -242,6 +243,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/synonyms", get(synonyms).merge(put(put_synonyms)))
         .route("/v1/term_stats", post(term_stats))
         .route("/v1/correct", post(correct))
+        .route("/v1/understand", post(understand))
         .route("/v1/sid/next", post(sid_next))
         .route("/v1/rank_log/export", post(export_rank_log))
         .route("/v1/rank_log/interleaving", post(interleaving))
@@ -2723,6 +2725,31 @@ async fn correct(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     };
     let c = tokio::task::spawn_blocking(move || db.correct(&table, &field, &text)).await.map_err(ApiError::internal)??;
     Ok(AxJson(serde_json::to_value(c).map_err(ApiError::internal)?))
+}
+
+/// `{table, field, text, mode?, fields?, weight?}`: what the words say for
+/// the table's keyword and numeric fields, as `bm25(.., understand => ..)`
+/// takes them.
+async fn understand(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let (table, field, text) = (body_str(&b, "table")?, body_str(&b, "field")?, body_str(&b, "text")?);
+    let mut opts = chloedb::query::understand::Options::default();
+    if let Some(m) = b.get("mode").and_then(Json::as_str) {
+        opts.mode = chloedb::query::understand::Mode::of(m)?;
+    }
+    match b.get("fields") {
+        Some(Json::String(f)) => opts.fields = Some(f.split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect()),
+        Some(Json::Array(fs)) => opts.fields = Some(fs.iter().filter_map(|f| f.as_str().map(str::to_string)).collect()),
+        _ => {}
+    }
+    if let Some(w) = b.get("weight").and_then(Json::as_f64) {
+        opts.weight = w;
+    }
+    let u = app.svc.understand(table, field, text, &opts).await?;
+    let mut v = serde_json::to_value(&u).map_err(ApiError::internal)?;
+    v["filters"] = json!(u.filters());
+    v["boosts"] = json!(u.boosts());
+    v["line"] = json!(u.line());
+    Ok(AxJson(v))
 }
 
 async fn snapshot(State(app): State<App>) -> Res {

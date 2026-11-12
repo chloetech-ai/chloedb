@@ -107,3 +107,99 @@ fn correct_says_what_a_typed_query_meant() {
     assert!(db.correct("nope", "body", "x").is_err());
 
 }
+
+fn shop(dir: &tempfile::TempDir) -> Db {
+    let schema = Schema::new(
+        "products",
+        vec![
+            Field::new("id", FieldType::Keyword),
+            Field::new("body", FieldType::Text { positions: false }),
+            Field::new("class", FieldType::Keyword),
+            Field::new("color", FieldType::Keyword).multi(),
+            Field::new("price", FieldType::Float),
+        ],
+        Some("id"),
+    )
+    .unwrap();
+    let db = Db::create(&dir.path().join("shop.strata"), schema, DbOptions::default()).unwrap();
+    let mut rows = Vec::new();
+    let colors = ["white", "black", "oak"];
+    for i in 0..60 {
+        let (class, noun) = match i % 3 {
+            0 => ("Coffee Tables", "table"),
+            1 => ("Dining Tables", "table"),
+            _ => ("Table Lamps", "lamp"),
+        };
+        let color = colors[(i / 3) % 3];
+        // The words of a class are in some of its rows' text, and "white"
+        // in one row whatever its colour.
+        let body = match i {
+            1 => format!("a white coffee {noun} for the dining room, {i}"),
+            _ if class == "Coffee Tables" && i % 2 == 0 => format!("a sturdy coffee table with legs, model {i}"),
+            _ => format!("a sturdy {noun} with legs, model {i}"),
+        };
+        rows.push(vec![Value::Str(format!("p{i}")), Value::Str(body), Value::Str(class.into()), Value::List(vec![Value::Str(color.into())]), Value::Float(50.0 + 10.0 * i as f64)]);
+    }
+    db.load(rows.into_iter()).unwrap();
+    db
+}
+
+#[test]
+fn understand_names_values_and_ranges() {
+    use chloedb::query::understand::{Mode, Options};
+    let dir = tempfile::tempdir().unwrap();
+    let db = shop(&dir);
+    let opts = Options { fields: Some(vec!["class".into(), "color".into(), "price".into()]), ..Options::default() };
+    let u = db.understand("products", "body", "white coffee table under $300", &opts).unwrap();
+    let said: Vec<(&str, String)> = u.spans.iter().map(|s| (s.words.as_str(), s.condition())).collect();
+    assert_eq!(said, vec![("white", "color = 'white'".to_string()), ("coffee table", "class = 'Coffee Tables'".to_string())], "{u:?}");
+    assert_eq!(u.ranges.iter().map(|r| r.condition()).collect::<Vec<_>>(), vec!["price < 300"]);
+    assert_eq!(u.ranked, "white coffee table");
+    assert!(u.spans.iter().all(|s| s.share.is_some()));
+    // Without a list, the keyword fields but the key, and no ranges.
+    let u = db.understand("products", "body", "lamp under 300", &Options::default()).unwrap();
+    assert_eq!(u.read, vec!["class", "color"]);
+    assert!(u.ranges.is_empty());
+    assert_eq!(u.spans[0].condition(), "class = 'Table Lamps'");
+    assert!(db.understand("products", "class", "x", &opts).is_err());
+    assert!(db.understand("products", "body", "x", &Options { fields: Some(vec!["nope".into()]), ..opts.clone() }).is_err());
+    let _ = Mode::Filter;
+}
+
+#[test]
+fn understand_boosts_and_filters_a_ranking() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = shop(&dir);
+    let p = Params::new().set("q", Value::Str("white coffee table under 300".into()));
+    let run = |opts: &str| {
+        let sql = format!("SELECT id, class, price FROM products ORDER BY bm25(body, :q{opts}) DESC LIMIT 20");
+        db.query(&sql, &p).unwrap_or_else(|e| panic!("{sql}: {e}"))
+    };
+    // A boost: more coffee tables in the top rows; the text still ranks.
+    let coffee = |r: &chloedb::query::exec::ResultSet| r.rows.iter().filter(|row| row[1].as_str() == Some("Coffee Tables")).count();
+    let plain = run("");
+    let r = run(", understand => 'boost', understand_fields => 'class, color, price', understand_weight => 2");
+    assert!(coffee(&r) > coffee(&plain), "{:?} against {:?}", r.rows, plain.rows);
+    assert!(coffee(&r) >= 15, "{:?}", r.rows);
+    assert!(r.stats.plan[0].starts_with("bm25(body) understood 'white coffee table under 300' with boost of products: boost 2 for each of color = 'white', class = 'Coffee Tables', price < 300"), "{:?}", r.stats.plan);
+    // A filter: only those, and none at 300 or more.
+    let r = run(", understand => 'filter', understand_fields => 'class, price'");
+    assert!(!r.rows.is_empty());
+    assert!(r.rows.iter().all(|row| row[1].as_str() == Some("Coffee Tables") && row[2].as_f64().unwrap() < 300.0), "{:?}", r.rows);
+    assert!(r.stats.plan[0].contains("WHERE (class = 'Coffee Tables' OR class IS NULL); WHERE price < 300"), "{:?}", r.stats.plan);
+    // off is the call as written; understand and expand go together.
+    let plain = db.query("SELECT id FROM products ORDER BY bm25(body, :q) DESC LIMIT 10", &p).unwrap();
+    let off = db.query("SELECT id FROM products ORDER BY bm25(body, :q, understand => 'off') DESC LIMIT 10", &p).unwrap();
+    assert_eq!(plain.rows, off.rows);
+    let both = db.query("SELECT id FROM products ORDER BY bm25(body, :q, understand => 'boost', expand => 3) DESC LIMIT 10", &p).unwrap();
+    assert!(both.stats.plan.iter().any(|l| l.contains("understood")) && both.stats.plan.iter().any(|l| l.contains("expanded")), "{:?}", both.stats.plan);
+    for (sql, says) in [
+        ("SELECT id FROM products ORDER BY bm25(body, :q, understand => 'guess') DESC", "understand is one of"),
+        ("SELECT id FROM products ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'body') DESC", "neither"),
+        ("SELECT id FROM products ORDER BY bm25(body, :q, understand => 'boost', understand_share => 2) DESC", "from 0 to 1"),
+        ("SELECT a.id FROM products a JOIN products b ON a.id = b.id ORDER BY bm25(a.body, :q, understand => 'boost') DESC", "one table"),
+    ] {
+        let e = db.query(sql, &p).unwrap_err().to_string();
+        assert!(e.contains(says), "{sql}: {e}");
+    }
+}

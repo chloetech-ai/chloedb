@@ -189,6 +189,12 @@ async fn http_answers_like_the_embedded_database() {
     assert_eq!(status, 200, "{fixed}");
     assert_eq!((fixed["text"].as_str(), fixed["changed"].as_bool()), (Some("waterproof hiking boots"), Some(true)), "{fixed}");
     assert_eq!(fixed["words"][0]["word"], "waterprof", "{fixed}");
+    // What a search's words say for the table's fields.
+    let (status, u) = post(&c, &format!("{base}/v1/understand"), json!({"table": "products", "field": "body", "text": "leather boots under 300", "fields": "category, brand, price"})).await;
+    assert_eq!(status, 200, "{u}");
+    assert_eq!(u["ranked"], "leather boots", "{u}");
+    assert_eq!(u["ranges"][0]["field"], "price", "{u}");
+    assert!(u["line"].as_str().unwrap().starts_with("bm25(body) understood 'leather boots under 300' with boost of products"), "{u}");
 }
 
 /// Writes over HTTP: operations, SQL, counters, versions; then reads.
@@ -624,6 +630,9 @@ async fn coordinator_answers_like_one_database() {
         // Expansion: the coordinator reads the feedback rows from every
         // shard, and every shard ranks by the same terms.
         "SELECT id, score() FROM products WHERE price < 400 ORDER BY bm25(body, 'waterproof hiking', expand => 5) DESC LIMIT 10",
+        // Understanding: the coordinator reads the keyword values of its
+        // shards and counts the rows that say the words on them.
+        "SELECT id, score() FROM products ORDER BY bm25(body, 'leather boots under 300', understand => 'filter', understand_fields => 'category, brand, price') DESC LIMIT 10",
     ] {
         let want = js::result(&whole.query(sql, &Params::new()).unwrap(), 0.0);
         assert!(!want["rows"].as_array().unwrap().is_empty(), "{sql}");
@@ -631,6 +640,9 @@ async fn coordinator_answers_like_one_database() {
         same(sql, &want, &js::result(&got.rs, 0.0));
         if sql.contains("features()") {
             assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("fetch: ")), "{sql}: {:?}", got.rs.stats.plan);
+        }
+        if sql.contains("understand") {
+            assert!(got.rs.stats.plan[0].starts_with("bm25(body) understood 'leather boots under 300' with filter of products"), "{sql}: {:?}", got.rs.stats.plan);
         }
         if sql.contains("expand") {
             assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("bm25(body) expanded from 5 rows of products")), "{sql}: {:?}", got.rs.stats.plan);
