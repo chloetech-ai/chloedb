@@ -14,6 +14,13 @@
 //   #/app/chloectx/inspector/<project>[/<session>]
 //                               a project's sessions, kinds and search; a session
 //                               read as the conversation it recorded
+//   #/app/chloectx/receipts[/<store>[/<id>]]
+//                               Receipts: what each recall of a Claude Code
+//                               store showed and why, replayed on its snapshot
+//   #/app/chloectx/blame[/<store>[/<path:line>]]
+//                               Blame: from a line to the edit, its prompt and
+//                               the records recalled before it
+// (Receipts and Blame read this machine's stores: chloectx app --local-stores.)
 
 export default { render };
 
@@ -118,6 +125,23 @@ const CSS = `
 .cx-kinds { display: flex; gap: 6px 14px; flex-wrap: wrap; font-size: 12.5px; }
 .cx-kinds label { display: inline-flex; gap: 6px; align-items: center; color: var(--text); }
 .cx-kinds input { accent-color: var(--accent); }
+.cx-pickrow { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; margin: -4px 0 14px; font-size: 12.5px; color: var(--text-2); }
+.cx-pickrow select.input { min-width: 260px; max-width: 100%; }
+.cx-dec { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 11.5px; white-space: nowrap; background: var(--surface-3); color: var(--text-2); }
+.cx-dec.shown { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.cx-dec.know { background: color-mix(in srgb, var(--s7) 18%, transparent); color: var(--text); font-weight: 600; }
+.cx-bar { display: inline-block; width: 56px; height: 5px; border-radius: 3px; background: var(--surface-3); overflow: hidden; vertical-align: middle; margin-left: 6px; }
+.cx-bar > i { display: block; height: 100%; background: var(--accent); }
+.cx-flag { color: var(--bad, #c0392b); font-size: 12px; }
+.cx-verdict { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.cx-verdict:first-child { border-top: 0; padding-top: 2px; }
+.cx-verdict ul { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); font-size: 12.5px; }
+.cx-kv { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 6px 12px; font-size: 13px; line-height: 1.45; }
+.cx-kv dt { color: var(--muted); }
+.cx-kv dd { margin: 0; overflow-wrap: anywhere; }
+.cx-blameq { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.cx-blameq input.input { flex: 1 1 320px; font-family: var(--mono); }
+.cx-causes { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
 .cx-cost { padding: 10px 12px; border-radius: var(--r-sm); background: var(--accent-soft); font-size: 13px; line-height: 1.45; }
 .cx-insp { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 16px; align-items: start; }
 .cx-sess { list-style: none; margin: 0; padding: 0; max-height: 70vh; overflow: auto; }
@@ -169,6 +193,8 @@ function render(el, ctx) {
     if (main) main.scrollTop = 0;
     stop = path[0] === "seen" ? seenPage(root, ctx)
       : path[0] === "inspector" ? (path[1] ? projectPage(root, ctx, path[1], path[2]) : inspectorPage(root, ctx))
+      : path[0] === "receipts" ? receiptsPage(root, ctx, path[1], path[2])
+      : path[0] === "blame" ? blamePage(root, ctx, path[1], path[2])
       : path[0] === "space" && path[1] ? spacePage(root, ctx, path[1]) : homePage(root, ctx);
   };
   ctx.onPath(show);
@@ -180,7 +206,8 @@ function render(el, ctx) {
 
 function tabs(ctx, on) {
   const { seg } = ctx.core;
-  return seg([["context", "Context"], ["inspector", "Inspector"], ["seen", "Seen before"]], on, (v) => { location.hash = v === "context" ? ctx.href() : ctx.href(v); });
+  return seg([["context", "Context"], ["inspector", "Inspector"], ["seen", "Seen before"], ["receipts", "Receipts", "What each recall showed and why, replayed"], ["blame", "Blame", "From a line of code to the memory behind it"]], on,
+    (v) => { location.hash = v === "context" ? ctx.href() : v === "receipts" || v === "blame" ? ctx.href(v, ...(pickedStore() ? [pickedStore()] : [])) : ctx.href(v); });
 }
 
 function header(ctx, on, title, lede, tools, crumbs) {
@@ -865,4 +892,261 @@ function recordDrawer(ctx, project, r) {
         row("Links", r.links?.length ? r.links.map((l) => `${l.label} ${l.to}`).join(", ") : null)),
       r.context ? [h("div", { class: "cx-sub" }, "Context"), h("pre", { class: "cx-full", style: { color: "var(--text-2)", fontSize: "12px" } }, r.context)] : null),
   });
+}
+
+// ---------------------------------------------------------------- Receipts and Blame (local stores)
+
+const STORE_KEY = "chloectx.store";
+function pickedStore() { try { return localStorage.getItem(STORE_KEY) || ""; } catch { return ""; } }
+function pickStore(id) { try { localStorage.setItem(STORE_KEY, id); } catch { /* private window */ } }
+const short = (s, n = 8) => (s || "").slice(0, n);
+const SHOWN = new Set(["take", "excerpt", "knowledge", "listed", "briefing"]);
+const DEC_TITLE = {
+  take: "Shown whole", excerpt: "Shown as a snippet", knowledge: "A rule, decision or fact shown on its own text, ahead of the gate",
+  listed: "Named by id (under Further candidates, or a search result)", briefing: "Shown in the session's briefing",
+};
+
+function decBadge(ctx, d) {
+  const cls = d === "knowledge" ? "know" : SHOWN.has(d) ? "shown" : "";
+  return ctx.core.h("span", { class: "cx-dec " + cls, title: DEC_TITLE[d] || "Left out" }, d);
+}
+
+/**
+ * The local store picker. Calls draw(store) with the chosen one, or shows
+ * why there is none. Returns the row to put on the page.
+ */
+function storeRow(ctx, wanted, onPick) {
+  const { h, empty, failure } = ctx.core;
+  const row = h("div", { class: "cx-pickrow" }, h("span", { class: "muted small" }, "Loading this machine's stores…"));
+  (async () => {
+    let j;
+    try { j = await ctx.api("/v1/local"); }
+    catch (e) {
+      row.replaceChildren(e.status === 404
+        ? empty("lock", "No local stores here", "Receipts and Blame read the Claude Code stores of the machine chloectx app runs on. Start it with --local-stores (or CHLOECTX_APP_LOCAL=1) there; the stores are transcripts, so only where this command center's users may read them.")
+        : failure(e, "The local stores"));
+      row.style.display = "block";
+      onPick(null);
+      return;
+    }
+    const ss = (j.stores || []).sort((a, b) => (b.modified || 0) - (a.modified || 0));
+    if (!ss.length) {
+      row.replaceChildren(empty("layers", "No ChloeCtx store yet", `Nothing under ${j.home}/projects: install ChloeCtx and run a Claude Code session.`));
+      row.style.display = "block";
+      onPick(null);
+      return;
+    }
+    const id = ss.some((s) => s.id === wanted) ? wanted : ss.some((s) => s.id === pickedStore()) ? pickedStore() : ss[0].id;
+    const sel = h("select", { class: "input", "aria-label": "Store" }, ss.map((s) => h("option", { value: s.id, selected: s.id === id }, `${s.project || s.id}${s.running ? "" : " (daemon stopped)"}`)));
+    sel.onchange = () => { pickStore(sel.value); onPick(sel.value, true); };
+    row.replaceChildren(h("span", {}, "Project"), sel, h("span", { class: "muted" }, "Reading a stopped store starts its daemon."));
+    pickStore(id);
+    onPick(id, false);
+  })();
+  return row;
+}
+
+function receiptsPage(root, ctx, store, id) {
+  if (store && id) return receiptPage(root, ctx, store, id);
+  const { h, card, table, failure, empty, fmt } = ctx.core;
+  root.append(header(ctx, "receipts", "Receipts",
+    "Every time memory put records in a Claude Code session's context (a prompt's recall, the briefing, the recall after a compaction, a memory_search) it wrote a receipt: the store's commit it read, each candidate's scores, tokens and why it was taken or left out, and the text the agent was shown. Open one to replay it on the snapshot kept at that commit, and on today's store."));
+  const session = h("input", { class: "input", placeholder: "session id (optional)", style: { maxWidth: "220px" } });
+  const listBody = h("div");
+  const snapBody = h("div");
+  let current = null;
+  const load = async () => {
+    if (!current) { listBody.replaceChildren(); snapBody.replaceChildren(); return; }
+    listBody.replaceChildren(h("div", { class: "muted small" }, "Loading…"));
+    let j;
+    try { j = await ctx.api(`/v1/local/${encodeURIComponent(current)}/receipts?limit=100&session=${encodeURIComponent(session.value.trim())}`); }
+    catch (e) { listBody.replaceChildren(failure(e, "The receipts")); return; }
+    const rs = j.receipts || [];
+    if (!rs.length) { listBody.replaceChildren(empty("note", "No receipts yet", "A receipt is written with each recall once ChloeCtx 0.3 runs; start a new Claude Code session in the project.")); }
+    else {
+      listBody.replaceChildren(table([
+        { key: "ts", label: "When", num: true, render: (r) => when(r.ts) },
+        { key: "session", label: "Session", render: (r) => h("span", { class: "mono" }, short(r.session)) },
+        { key: "turn", label: "Turn", num: true },
+        { key: "source", label: "Recall" },
+        { key: "decision", label: "Gate", render: (r) => r.decision || "–" },
+        { key: "shown", label: "Shown", num: true, sort: (r) => r.shown.length, render: (r) => fmt.n(r.shown.length) },
+        { key: "tokens", label: "Tokens", num: true, render: (r) => fmt.n(r.tokens) },
+        { key: "txn", label: "Commit", num: true },
+      ], { rows: rs, sortKey: "ts", desc: true, compact: true, onRow: (r) => { location.hash = ctx.href("receipts", current, r.id); } }));
+    }
+    drawSnapshots(ctx, snapBody, current);
+  };
+  session.onchange = load;
+  const picker = storeRow(ctx, store, (s, changed) => { current = s; if (changed) location.hash = ctx.href("receipts", s); else load(); });
+  root.append(picker,
+    card({ title: "Receipts", sub: "newest first; open one to replay it", tools: session, body: listBody }),
+    h("div", { style: { height: "16px" } }),
+    card({ title: "Kept snapshots", sub: "copies of the store that receipts replay on", body: snapBody }));
+  return null;
+}
+
+async function drawSnapshots(ctx, el, store) {
+  const { h, table, failure, toast, confirm, fmt } = ctx.core;
+  el.replaceChildren(h("div", { class: "muted small" }, "Loading…"));
+  let j;
+  try { j = await ctx.api(`/v1/local/${encodeURIComponent(store)}/snapshots`); }
+  catch (e) { el.replaceChildren(failure(e, "The snapshots")); return; }
+  const name = h("input", { class: "input", placeholder: "before-release", style: { maxWidth: "220px" } });
+  const keep = h("button", { class: "btn sm primary" }, "Keep one now");
+  keep.onclick = async () => {
+    const n = name.value.trim();
+    if (!n) { name.focus(); return; }
+    keep.disabled = true;
+    try { const r = await ctx.api(`/v1/local/${encodeURIComponent(store)}/snapshots`, { body: { name: n } }); toast(r.text, "good"); drawSnapshots(ctx, el, store); }
+    catch (e) { toast(e.message, "bad"); keep.disabled = false; }
+  };
+  const ks = (j.snapshots || []).slice().reverse();
+  const auto = ks.filter((k) => k.auto).length;
+  el.replaceChildren(
+    h("div", { class: "cx-hint", style: { marginBottom: "8px" } },
+      `${fmt.plural(auto, "automatic snapshot")}, kept after recalls that showed records and pruned by age; named ones stay until dropped. Each hard-links the files of the one before it, so it costs about what changed.`),
+    h("div", { class: "cx-blameq", style: { marginBottom: "10px" } }, name, keep),
+    ks.length ? table([
+      { key: "name", label: "Name", render: (k) => h("span", { class: "mono" }, k.name) },
+      { key: "at", label: "Commit", num: true },
+      { key: "ts", label: "Kept", num: true, render: (k) => when(k.ts) },
+      { key: "records", label: "Records", num: true, render: (k) => fmt.n(k.records) },
+      { key: "auto", label: "", sortable: false, render: (k) => k.auto ? h("span", { class: "muted small" }, "automatic") : h("button", { class: "btn sm ghost", onclick: async (ev) => {
+        ev.stopPropagation();
+        if (!(await confirm({ title: `Drop ${k.name}?`, body: "Receipts read at its commit can then replay only on later snapshots and today's store.", ok: "Drop", danger: true }))) return;
+        try { await ctx.api(`/v1/local/${encodeURIComponent(store)}/snapshots/${encodeURIComponent(k.name)}`, { method: "DELETE" }); drawSnapshots(ctx, el, store); }
+        catch (e) { toast(e.message, "bad"); }
+      } }, "Drop") },
+    ], { rows: ks, sortKey: "at", desc: true, compact: true, maxHeight: "320px" }) : h("div", { class: "muted small" }, "None kept yet."));
+}
+
+function rowsTable(ctx, rows, now, texts) {
+  const { h, table, fmt } = ctx.core;
+  const max = Math.max(1e-9, ...rows.map((r) => r.score || 0));
+  return table([
+    { key: "rank", label: "#", num: true, render: (r) => (r.rank === 0 ? "k" : r.rank) },
+    { key: "kind", label: "Kind" },
+    { key: "id", label: "Record", render: (r) => h("div", { style: { minWidth: "220px" } }, h("span", { class: "mono" }, r.id), texts?.[r.id] ? h("div", { class: "muted small", style: { whiteSpace: "normal", lineHeight: "1.35" } }, texts[r.id]) : null) },
+    { key: "score", label: "Score", num: true, render: (r) => h("span", {}, (r.score || 0).toFixed(3), h("span", { class: "cx-bar" }, h("i", { style: { width: `${Math.round(100 * (r.score || 0) / max)}%` } }))) },
+    { key: "bm25", label: "BM25", num: true, render: (r) => (r.bm25 == null ? "–" : r.bm25.toFixed(2)) },
+    { key: "cos", label: "Cosine", num: true, render: (r) => (r.cos == null ? "–" : r.cos.toFixed(3)) },
+    { key: "tokens", label: "Tokens", num: true, render: (r) => fmt.n(r.tokens) },
+    { key: "decision", label: "Decision", render: (r) => decBadge(ctx, r.decision) },
+    ...(now ? [{ key: "now", label: "Now", sortable: false, render: (r) => (now[r.id]?.length ? h("span", { class: "cx-flag" }, now[r.id].join(", ")) : "") }] : []),
+  ], { rows, sortKey: "rank", desc: false, compact: true });
+}
+
+function replayCard(ctx, replays) {
+  const { h, card, pill } = ctx.core;
+  if (!replays?.length) return null;
+  return card({
+    title: "Replay", sub: "the same retrieval, run again with the receipt's inputs",
+    body: h("div", {}, replays.map((r) => {
+      const v = r.verdict || {};
+      const on = r.on === "kept snapshot" ? `On the snapshot kept at commit ${r.txn}` : r.on === "later snapshot" ? `On the nearest later snapshot (commit ${r.txn}; none was kept at the receipt's)` : `On today's store (commit ${r.txn})`;
+      const state = v.identical ? pill("good", "identical") : v.same_shown ? pill("warn", "same records") : pill("bad", "different");
+      return h("div", { class: "cx-verdict" }, state, h("div", {}, h("b", {}, on),
+        h("div", { class: "muted small" }, v.identical ? "The same rows, scores and decisions." : v.same_shown ? "The same records shown with the same decisions; scores or lower ranks moved." : "What it shows now differs:"),
+        !v.identical && v.changes?.length ? h("ul", {}, v.changes.map((c) => h("li", {}, c))) : null));
+    })),
+  });
+}
+
+function receiptPage(root, ctx, store, id) {
+  const { h, card, failure } = ctx.core;
+  root.append(header(ctx, "receipts", "Receipt", null, null, [h("a", { href: ctx.href("receipts", store) }, "Receipts"), " / ", h("span", { class: "mono" }, id)]));
+  const body = h("div", {}, h("div", { class: "muted small" }, "Loading the receipt and replaying it…"));
+  root.append(body);
+  (async () => {
+    let j;
+    try { j = await ctx.api(`/v1/local/${encodeURIComponent(store)}/receipts/${encodeURIComponent(id)}`, { timeout: 120000 }); }
+    catch (e) { body.replaceChildren(failure(e, "The receipt")); return; }
+    const r = j.receipt;
+    const ev = r.evidence || {};
+    const facts = card({
+      title: `${r.source} recall`, sub: `${when(r.ts)} · session ${short(r.session)} turn ${r.turn}`,
+      body: h("dl", { class: "cx-kv" },
+        h("dt", {}, "Query"), h("dd", {}, r.inputs?.query || "–"),
+        h("dt", {}, "Store"), h("dd", {}, `commit ${r.snapshot.txn}${r.snapshot.seq_no != null ? ` (seq_no ${r.snapshot.seq_no})` : ""} · ${r.snapshot.records} records · embedder ${r.embedder}`),
+        r.decision ? [h("dt", {}, "Gate"), h("dd", {}, `${r.decision} at ${r.gate.toFixed(3)} · ${r.candidates} candidates · best cosine ${(ev.max_cos || 0).toFixed(3)}`)] : null,
+        h("dt", {}, "Shown"), h("dd", {}, `${r.shown.length} records, about ${r.tokens} tokens`),
+        h("dt", {}, "Already shown"), h("dd", {}, r.inputs?.skip?.length ? `${r.inputs.skip.length} records shown to the session before, left out` : "none")),
+    });
+    const rows = card({ title: "Candidates", sub: "every record ranked, with why it was taken or left out", flush: true, body: rowsTable(ctx, r.rows || [], null, Object.fromEntries(Object.entries(j.records || {}).map(([k, v]) => [k, v.text]))) });
+    const text = h("details", { class: "cx-context" }, h("summary", {}, "What the agent was shown"), h("pre", { class: "code" }, r.text || "(nothing)"));
+    body.replaceChildren(h("div", { class: "cx-stack" },
+      h("div", { class: "cx-split" }, facts, replayCard(ctx, j.replays) || h("div")),
+      rows, card({ body: text })));
+  })();
+  return null;
+}
+
+function blamePage(root, ctx, store, target) {
+  const { h, card, failure, empty } = ctx.core;
+  root.append(header(ctx, "blame", "Blame",
+    "Name a line of code (path:line, relative to the project) or a file. Blame finds the recorded edit that wrote it, the prompt and tool calls behind it, and what memory had put in the agent's context before, each record checked against the store today, with the recall replayed."));
+  const input = h("input", { class: "input", placeholder: "src/payments/retry.rs:88", value: target || "", spellcheck: "false", autocomplete: "off" });
+  const go = h("button", { class: "btn primary" }, "Blame");
+  const out = h("div");
+  let current = null;
+  const run = async () => {
+    const t = input.value.trim();
+    if (!current) return;
+    if (!t) { input.focus(); return; }
+    if (t !== (target || "")) { location.hash = ctx.href("blame", current, t); return; }
+    go.disabled = true;
+    out.replaceChildren(h("div", { class: "muted small" }, "Looking for the edit and replaying its recall…"));
+    let b;
+    try { b = await ctx.api(`/v1/local/${encodeURIComponent(current)}/blame?target=${encodeURIComponent(t)}`, { timeout: 120000 }); }
+    catch (e) { out.replaceChildren(failure(e, "Blame")); go.disabled = false; return; }
+    go.disabled = false;
+    drawBlame(ctx, out, b, current);
+  };
+  go.onclick = run;
+  input.onkeydown = (e) => { if (e.key === "Enter") run(); };
+  const picker = storeRow(ctx, store, (s, changed) => {
+    current = s;
+    if (!s) return;
+    if (changed) { location.hash = ctx.href("blame", s, ...(target ? [target] : [])); return; }
+    if (target) run();
+    else out.replaceChildren(empty("search", "Name a line", "For example src/lib.rs:120. Lines written outside a recorded Claude Code session have no edit to find."));
+  });
+  root.append(picker, card({ body: h("div", { class: "cx-blameq" }, input, go) }), h("div", { style: { height: "16px" } }), out);
+  return null;
+}
+
+function drawBlame(ctx, out, b, store) {
+  const { h, card, empty } = ctx.core;
+  const g = b.git;
+  const head = card({
+    title: b.file + (b.line ? `:${b.line}` : ""), sub: b.how || "",
+    body: h("dl", { class: "cx-kv" },
+      b.line_text != null ? [h("dt", {}, "Line"), h("dd", {}, h("code", {}, b.line_text))] : null,
+      g ? [h("dt", {}, "Commit"), h("dd", {}, g.uncommitted ? "not committed yet" : `${(g.commit || "").slice(0, 10)} · ${g.summary || ""}${g.time ? ` · ${when(g.time)}` : ""}`)] : null,
+      b.edit ? [h("dt", {}, "Edit"), h("dd", {}, `${when(b.edit.ts)} · session ${short(b.edit.session)} turn ${b.edit.turn} · `, h("span", { class: "mono" }, b.edit.id))] : null,
+      b.prompt ? [h("dt", {}, "Prompt"), h("dd", {}, b.prompt.text)] : null,
+      b.calls?.length ? [h("dt", {}, "Before it"), h("dd", {}, h("ul", { class: "cx-causes" }, b.calls.slice(-8).map((c) => h("li", {}, h("code", {}, c.text.split("\n")[0].slice(0, 160))))))] : null,
+      b.notes?.length ? [h("dt", {}, "From the turn"), h("dd", {}, h("ul", { class: "cx-causes" }, b.notes.map((n) => h("li", {}, kindBadge(ctx, n.kind), " ", n.text))))] : null),
+  });
+  if (!b.edit) {
+    out.replaceChildren(head, h("div", { style: { height: "16px" } }), empty("search", "No recorded edit", `ChloeCtx recorded no edit of ${b.file}: it was written outside a recorded session, or before ChloeCtx was installed.`));
+    return;
+  }
+  const parts = [head];
+  if (b.causes?.length) parts.push(card({ title: "Worth a look", body: h("ul", { class: "cx-causes" }, b.causes.map((c) => h("li", {}, c))) }));
+  for (const rc of b.receipts || []) {
+    const now = Object.fromEntries(rc.rows.map((x) => [x.row.id, x.now]));
+    parts.push(card({
+      title: rc.turn === b.edit.turn ? "Recalled in the edit's turn" : `Recalled earlier in the session (turn ${rc.turn})`,
+      sub: `${rc.source} · receipt ${rc.receipt}`,
+      tools: h("a", { class: "btn sm", href: ctx.href("receipts", store, rc.receipt) }, "Open the receipt"),
+      flush: true,
+      body: rowsTable(ctx, rc.rows.map((x) => x.row), now, Object.fromEntries(rc.rows.map((x) => [x.row.id, x.text]))),
+    }));
+  }
+  if (!(b.receipts || []).length) parts.push(card({ body: h("div", { class: "muted small" }, "Memory recalled nothing into the session before the edit (no receipt shows a record).") }));
+  const rp = replayCard(ctx, b.replays);
+  if (rp) parts.push(rp);
+  out.replaceChildren(h("div", { class: "cx-stack" }, parts));
 }

@@ -1,10 +1,11 @@
 # ChloeCtx as an app of a ChloeDB cluster
 
-`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has three pages:
+`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has three pages, and two more for a machine's Claude Code stores:
 
 - **Context.** Memory *spaces* that any agent writes notes and conversations to and asks for context before a task, within a token budget. An answer is found by search alone (BM25 and vectors, no model call), and it says what went in, why, and what was left out.
 - **Inspector.** What Claude Code sessions remembered, as `chloectx sync` copies each machine's memory into the cluster (table `chloectx_memory`): by project, each session read as the conversation it recorded (prompts, answers, tool calls, and the decisions, rules and facts the distiller wrote down), filtered by kind and searched with BM25, as `chloectx ui` shows a local store. It only reads. ([below](#inspector))
 - **Seen before.** The cluster's firing alerts, each beside the past incidents it looks like and the fix that worked. One button hands the alert to the cluster's on-call agent with those incidents as its context.
+- **Receipts** and **Blame**, with `--local-stores`: what each recall of a Claude Code session showed and why, replayed on the snapshot kept at the time, and from a line of code to the edit, its prompt and the memory recalled before it ([Receipts and blame](receipts.md#in-the-command-center)). Off by default: they read the stores of the machine the app runs on, which are transcripts.
 
 ![A space's page: a question asked within a 2,000-token budget, the notes that went into the context with their scores, the decision that replaced an older one with what changed, and the note that was left out](../assets/img/chloectx-app-context.png)
 

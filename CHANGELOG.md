@@ -31,6 +31,34 @@ changes collect under "Unreleased".
   it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
   query KEYWORD OPTIONS(indexed = false)` adds it).
 
+### App engine
+
+- App engine: the app creator is a page of the command center (Apps → App
+  creator) rather than a separate studio: describe an app and build it
+  there, follow each build (its steps, its screens drawn while the rest is
+  written, its timeline), use the app on a phone, a tablet or the whole
+  stage, and read, edit and go back through what it is made of. Its views
+  run in frames with the studio's sandbox and policy, every read and write
+  sent to the page and from there to the engine for that one app. The
+  standalone studio stays, for the engine run on its own and as **Studio**.
+- App engine: **Made of** says how much of an app's code the engine
+  generated from the CREATE TABLE, CREATE SCREEN and CREATE RULE statements
+  the agent wrote, how much the agent wrote from scratch, and how much is
+  the library's, in lines written and lines that run, piece by piece
+  (`GET /api/apps/:id/made`, and `made` in an app's state).
+- App engine: apps can be published, open to everyone with no account
+  here: **Publish** in the app creator, `/a/<id>` at once, and
+  `<name>.<domain>` (or a host of the owner's own) with a domain. The public
+  reaches what the app's screens do and nothing of how it is made, at a
+  rate a minute per visitor. The operator's `spec.apps.publish` (`domain`:
+  your own or `sslip`) adds a load balancer and Caddy for the apps'
+  certificates.
+- App engine: **Usage** in the app creator is the studio's Activity view:
+  each visit step by step, and the paths people take between screens.
+- App engine: `GET /api/events?after=N` gives the studio's live events to a
+  page that cannot hold a stream open (chloedb-server forwards whole
+  answers), and `GET /api/kit` the frames' runtime and policy.
+
 ## 0.2.1
 
 Safety fixes from the audit of 12 November 2026, with no change to the file
