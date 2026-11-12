@@ -64,6 +64,7 @@
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
       <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html" aria-current="page">App engine (prototype)</a>
     </nav>
   </details>
@@ -99,10 +100,16 @@ cd chloedb-apps &amp;&amp; npm ci
 kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {
   &quot;secretEnv&quot;: [{&quot;name&quot;: &quot;ANTHROPIC_API_KEY&quot;, &quot;secret&quot;: &quot;anthropic&quot;}],
   &quot;apps&quot;: {&quot;serviceType&quot;: &quot;NodePort&quot;, &quot;nodePort&quot;: 30731, &quot;publicUrl&quot;: &quot;http://203.0.113.5:30731&quot;}}}&#x27;</pre>
-<p>The operator runs the engine's own image (<code>ghcr.io/chloetech-ai/chloedb-apps</code>: Node, Playwright's Chromium for the drawn checks, and Claude Code) as a Deployment of one pod, <code>&lt;cluster&gt;-apps</code>, behind a Service of that name, and restarts the coordinators so that they list it: <strong>Apps → App engine</strong> appears in the command center, with the engine's apps, what the model has cost and <strong>Open the studio</strong>.</p>
+<p>The operator runs the engine's own image (<code>ghcr.io/chloetech-ai/chloedb-apps</code>: Node, Playwright's Chromium for the drawn checks, and Claude Code) as a Deployment of one pod, <code>&lt;cluster&gt;-apps</code>, behind a Service of that name, and restarts the coordinators so that they list it: <strong>Apps → App creator</strong> appears in the command center.</p>
 <ul>
-<li><strong>Its apps are rows of the cluster.</strong> It keeps them through the coordinators with the cluster's admin token (<code>tokenSecret</code>, which it needs). A coordinator over shards walks no graphs, so the engine walks its own (<code>engine/walk.mjs</code>), and it tells the model that an app reads its links a step at a time.</li>
-<li><strong>The studio has an address of its own.</strong> It runs code a model wrote, so the command center does not serve it: browsers reach it at <code>publicUrl</code>, through a node's port, a load balancer, or an Ingress of your own in front of the Service. <strong>Open the studio</strong> asks the engine, through chloedb-server and so only with an admin key, for a link that signs the browser in once, within two minutes, for 30 days. Anything else that reaches the studio's address gets a page that says where to sign in.</li>
+<li>
+<p><strong>The app creator is a page of the command center.</strong> Describe an app and build it there: the conversation of changes and builds (each build's progress, its screens drawn while the model writes the rest, its timeline), the app itself on a phone, a tablet or the whole stage, and what it is made of: <strong>Made of</strong> measures how much of the code that runs the engine generated from the CREATE TABLE, CREATE SCREEN and CREATE RULE statements the agent wrote, how much the agent wrote from scratch (JavaScript, or a screen written out as JSON), and how much is the library's, piece by piece (<code>GET /api/apps/&lt;id&gt;/made</code>, <code>engine/provenance.mjs</code>); <strong>Code</strong> reads each piece's SQL and edits a CREATE SCREEN with no model; <strong>Time</strong> is where its builds' time and cost went; <strong>Data</strong>, <strong>Versions</strong>, <strong>Design</strong> and <strong>Reach</strong> are the app's tables, versions, looks and switches. <strong>Usage</strong>, beside the app's screens, is the studio's Activity view over the whole stage: each visit step by step, the paths people take between screens, how easy the app is to use and what needs a look. The app's screens run as they do in the studio: in frames with the studio's sandbox and policy (no same origin, so a view reads nothing of the command center's, its key included, and no network), each read and write sent to the page as a message, which calls the engine for that one app. People's sign-in does not pass through chloedb-server, so the creator shows an app as a visitor sees it; with <code>publicUrl</code>, <strong>Its own page</strong> opens the app as people use it, and <strong>Studio</strong> opens the standalone studio. Live updates come by long polls of <code>GET /api/events</code>, since chloedb-server forwards whole answers.</p>
+</li>
+<li>
+<p><strong>Its apps are rows of the cluster.</strong> It keeps them through the coordinators with the cluster's admin token (<code>tokenSecret</code>, which it needs). A coordinator over shards walks no graphs, so the engine walks its own (<code>engine/walk.mjs</code>), and it tells the model that an app reads its links a step at a time.</p>
+</li>
+<li><strong>The studio and each app's own page have an address of their own</strong>, <code>publicUrl</code>, through a node's port, a load balancer, or an Ingress of your own in front of the Service. Files and map tiles the creator's frames show are loaded from there too (without it, through chloedb-server, which needs the key the frames cannot send). <strong>Studio</strong> asks the engine, through chloedb-server and so only with an admin key, for a link that signs the browser in once, within two minutes, for 30 days. Anything else that reaches the studio's address gets a page that says where to sign in.</li>
+<li><strong>Apps their owners publish are open to everyone.</strong> <strong>Publish</strong> in the app creator switches an app open (<code>POST /api/apps/&lt;id&gt;/publish {on, name, hosts}</code>, <code>engine/publish.mjs</code>): it is then reached at <code>/a/&lt;id&gt;</code> on the engine's address, at <code>&lt;name&gt;.&lt;domain&gt;</code> when the engine has a domain (<code>spec.apps.publish</code>, below), and at hosts of the owner's own (a CNAME to <code>&lt;name&gt;.&lt;domain&gt;</code>). The public reaches the app as it runs and nothing of how it is made: its page and the runtime's files, its state without its requests, versions, people or outbox, and the calls its screens make (reads and writes of its own tables, its functions, signing up and in, files, and <code>app.ask</code>, <code>app.fetch</code> and <code>app.email</code> under the app's Reach switches and its model calls a day). Building and changing it, other apps, versions built to try, the library and the studio stay behind the studio's login. Each visitor is held to 240 calls a minute and 20 of the dear ones (model, web, mail, accounts, uploads); <code>STRATA_APPS_PUBLIC_RATE</code> and <code>STRATA_APPS_PUBLIC_DEAR_RATE</code> change that. Anyone with the address can do what the screens do, edits and deletes included: an app strangers use asks for sign-in, and each person sees only their own rows.</li>
 <li><strong>The model's key is the cluster's</strong> (<code>secretEnv</code>'s <code>ANTHROPIC_API_KEY</code>, as the agents use), and <code>spendCapUsd</code> stops every model call once the engine has spent that much (25 US dollars unless set; 0 for no limit).</li>
 <li><strong>What it keeps outside the cluster</strong> (files people gave its apps, map tiles, what the model has cost, Claude Code's home) is on a volume of its own, <code>&lt;cluster&gt;-apps</code>, kept when <code>spec.apps</code> goes and deleted with the cluster.</li>
 </ul>
@@ -118,7 +125,12 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {
 <tr>
 <td><code>publicUrl</code></td>
 <td></td>
-<td>where browsers reach the studio; without it the command center lists the apps but cannot open the studio</td>
+<td>where browsers reach the studio and each app's own page; without it the creator works in the command center, but cannot open the studio or an app's own page, and its frames show no files</td>
+</tr>
+<tr>
+<td><code>publish</code></td>
+<td></td>
+<td>open published apps to everyone, at <code>&lt;name&gt;.&lt;domain&gt;</code>: <code>domain</code> is your own (<code>apps.example.com</code>, with a DNS record <code>*.apps.example.com</code> pointing at the load balancer) or <code>sslip</code> (the load balancer's address as a name of sslip.io, <code>kids-reading.203-0-113-5.sslip.io</code>, with no record); <code>email</code> for Let's Encrypt. The operator adds a load balancer, <code>&lt;cluster&gt;-apps-public</code> (ports 80 and 443; most clouds bill for one), and Caddy beside the engine, which gets a published app's certificate the first time someone opens it, after asking the engine whether the host is one of its apps (<code>GET /api/tls/ask</code>), and keeps the certificates on the engine's volume</td>
 </tr>
 <tr>
 <td><code>serviceType</code>, <code>nodePort</code></td>
@@ -211,7 +223,7 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/apps.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="chloectx-capsules.html">← Context capsules</a></span>
+      <span class="pager"><a href="chloectx-receipts.html">← Blame and receipts</a></span>
     </footer>
   </article>
 </div></main>

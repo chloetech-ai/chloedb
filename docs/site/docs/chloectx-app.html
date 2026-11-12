@@ -64,6 +64,7 @@
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
       <a href="chloectx-app.html" aria-current="page">ChloeCtx on a cluster</a>
       <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
@@ -76,10 +77,11 @@
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#start-it">Start it</a></li><li><a href="#where-the-memory-is">Where the memory is</a></li><li><a href="#the-api">The API</a></li><li><a href="#seen-before">Seen before</a></li><li><a href="#create-an-app-from-a-space">Create an app from a space</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
 
-<p><code>chloectx app</code> runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has two pages:</p>
+<p><code>chloectx app</code> runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has two pages, and two more for a machine's Claude Code stores:</p>
 <ul>
 <li><strong>Context.</strong> Memory <em>spaces</em> that any agent writes notes and conversations to and asks for context before a task, within a token budget. An answer is found by search alone (BM25 and vectors, no model call), and it says what went in, why, and what was left out.</li>
 <li><strong>Seen before.</strong> The cluster's firing alerts, each beside the past incidents it looks like and the fix that worked. One button hands the alert to the cluster's on-call agent with those incidents as its context.</li>
+<li><strong>Receipts</strong> and <strong>Blame</strong>, with <code>--local-stores</code>: what each recall of a Claude Code session showed and why, replayed on the snapshot kept at the time, and from a line of code to the edit, its prompt and the memory recalled before it (<a href="chloectx-receipts.html#in-the-command-center">Receipts and blame</a>). Off by default: they read the stores of the machine the app runs on, which are transcripts.</li>
 </ul>
 <p><img alt="A space's page: a question asked within a 2,000-token budget, the notes that went into the context with their scores, the decision that replaced an older one with what changed, and the note that was left out" src="../../assets/img/chloectx-app-context.png" /></p>
 <p><em>A space in the command center. The context for "a customer wants a refund of 700 EUR, who approves it?" holds the current refund decision with what it changed (the 500 EUR limit it replaced is shown struck through) and leaves the old version out. 307 of 2,000 tokens, 23.6 ms, no model call.</em></p>

@@ -84,6 +84,7 @@ NAV = [
         ("chloectx-inspector", "ChloeCtx inspector", "docs/chloectx/inspector.md", "reference"),
         ("chloectx-app", "ChloeCtx on a cluster", "docs/chloectx/app.md", "reference"),
         ("chloectx-capsules", "Context capsules", "docs/chloectx/capsules.md", "reference"),
+        ("chloectx-receipts", "Blame and receipts", "docs/chloectx/receipts.md", "reference"),
         ("app-engine", "App engine (prototype)", "docs/chloedb/apps.md", "reference"),
     ]),
 ]
