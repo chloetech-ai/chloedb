@@ -1,0 +1,77 @@
+name: Release gate
+
+# What a release tag must have before anything is built or published for it,
+# called by the release workflows (server-release.yml, py-release.yml,
+# js-release.yml) and by image.yml for its version tags:
+#
+# - the tagged commit is on main (main is at it or past it), so a tag on a
+#   branch or on a commit that never merged releases nothing;
+# - CI's full matrix passed on that commit: a run of CI for it, started by
+#   the nightly schedule or by hand (both run every job, macOS included,
+#   and test the whole tree, whatever changed), concluded `success`. A
+#   push's run is not enough: it runs ChloeDB's tests only on macOS and its
+#   summary does not wait for them.
+#
+# When no such run exists yet, the gate fails and says how to start one:
+#   gh workflow run ci.yml --repo chloetech-ai/chloedb --ref <tag>
+# and, when it has passed, re-run the release's failed jobs.
+#
+# Any run that is not for a tag (a pull request changing a release workflow,
+# a run by hand, main's image after CI) passes at once: those publish no
+# version.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  gate:
+    name: release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The tag is on main and CI's full matrix passed on it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            echo "Not a tag ($GITHUB_REF): nothing to gate."
+            exit 0
+          fi
+          echo "Tag $GITHUB_REF_NAME is commit $SHA."
+
+          # On main: comparing the commit with main, main is "ahead" of it
+          # or "identical" to it.
+          status=$(gh api "repos/$REPO/compare/$SHA...main" --jq .status)
+          case "$status" in
+            ahead|identical) echo "On main ($status)." ;;
+            *)
+              echo "::error::$GITHUB_REF_NAME ($SHA) is not on main: main is '$status' of it. Tag a commit of main."
+              exit 1 ;;
+          esac
+
+          # A full-matrix CI run on the commit that passed.
+          runs=$(gh api --paginate "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&status=success&per_page=100" \
+            --jq '.workflow_runs[] | select(.event == "schedule" or .event == "workflow_dispatch") | "\(.id) \(.event) \(.html_url)"')
+          if [ -n "$runs" ]; then
+            echo "CI's full matrix passed on $SHA:"
+            echo "$runs"
+            exit 0
+          fi
+          {
+            echo "### No full CI run passed on $GITHUB_REF_NAME"
+            echo
+            echo "A release needs a run of CI's whole matrix (the nightly run or one started by hand) that passed on $SHA. Start one:"
+            echo
+            echo '```'
+            echo "gh workflow run ci.yml --repo $REPO --ref $GITHUB_REF_NAME"
+            echo '```'
+            echo
+            echo "When it has passed, re-run this run's failed jobs: \`gh run rerun $GITHUB_RUN_ID --failed --repo $REPO\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::No CI run of the full matrix passed on $SHA. Run: gh workflow run ci.yml --ref $GITHUB_REF_NAME, then re-run this release's failed jobs."
+          exit 1
