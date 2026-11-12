@@ -83,11 +83,28 @@ still 0.1.0, and the next release will name its version here.
 - `close()` flushes, so after a clean close the file alone is a complete
   copy of the database. Python adds `flush()` and `checkpoint(dest)`;
   docs/chloedb/python.md and index.md say how to back a database up.
-- Not yet: a log deleted outright cannot be detected (the file is not
-  written between versions, so nothing in it says the log held
-  transactions); nor can a zeroed slot 1 that held the only version made
-  since creation beside an empty log, which looks like a crash during
-  that first commit; there is no point-in-time recovery.
+- A write-ahead log deleted outright while it held acknowledged
+  transactions is refused at open (read-only too), naming the log, the
+  transactions committed after the version on disk and `recover`, where
+  the database used to open at that version without a word. The file is
+  not written between versions, so the writer keeps a log record at byte
+  24 of `<path>-readers/WRITER` (`WRITER` in the directory layout): the
+  database's id and the version's txn, written and synced before the
+  first append after a version, after a version made while the log holds
+  transactions it does not, and at an open that replays a log. Versions
+  before it read and write only the first 24 bytes, so it is compatible
+  both ways. Only a missing log file beside no sealed log is refused; a
+  clean close empties the log, so deleting it afterwards still opens, and
+  so does a checkpoint renamed into place (its database id is its own).
+  `recover` opens the version on disk, `damaged()` says what was lost, and
+  the record is cleared. A tool that deletes a log on purpose deletes
+  `-readers` with it (`chloectx-bench` does).
+- Not yet: a log deleted together with `-readers` (or `WRITER`), a copy of
+  the file opened elsewhere without its log, or a log deleted while a
+  background flush holds a sealed one, cannot be detected; nor can a
+  zeroed slot 1 that held the only version made since creation beside an
+  empty log, which looks like a crash during that first commit; there is
+  no point-in-time recovery.
 
 ### Query and indexes
 
