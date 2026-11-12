@@ -32,6 +32,7 @@ pub mod function;
 pub mod fusion;
 pub mod hint;
 pub mod llm;
+pub mod prf;
 pub mod ir;
 pub mod logical;
 pub mod memory;

@@ -11,7 +11,7 @@ memmap2 = "0.9"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 csv = "1"
-sqlparser = "0.59"
+sqlparser = { version = "0.59", features = ["visitor"] }
 crc32fast = "1"
 # SHA-256 of codebook files (semantic IDs, `sid`) and of MEDIA files.
 sha2 = "0.10"

@@ -258,7 +258,7 @@ fn integer_weights_are_repeated_words_and_plain_syntax_reads_words() {
     same(&query(&db, &sql(", syntax => 'plain'"), q), &query(&db, &sql(""), "topic even w0z w1z 2 sub3 0"), "plain");
     same(&query(&db, &sql(", syntax => 'query'"), q), &query(&db, &sql(""), q), "query is the default");
     let e = db.query(&sql(", syntax => 'lucene'"), &Params::new().set("q", Value::Str(q.into()))).unwrap_err().to_string();
-    assert!(e.contains("bm25's syntax is 'query' or 'plain'"), "{e}");
+    assert!(e.contains("bm25's syntax is 'query', 'plain' or 'terms'"), "{e}");
     // A weight of 0 scores nothing; a required word with it still filters.
     let only_zero = query(&db, &sql(""), "topic^0");
     assert!(only_zero.keys.is_empty());

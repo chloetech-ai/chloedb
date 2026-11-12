@@ -1230,6 +1230,26 @@ impl Db {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
         let q = qsql::parse_query_cached(sql)?;
+        // Expanded ranking (`bm25(.., expand => n)`): its rows first, then
+        // the query with the terms they hold.
+        if crate::query::prf::may_expand(sql) {
+            if let Some(x) = crate::query::prf::plan(&q.query, params)? {
+                let mut rows = Vec::new();
+                let schemas: Vec<&Schema> = snap.schemas().collect();
+                for f in x.feedback(&schemas) {
+                    rows.push(self.query_at(snap, &f.to_string(), params, opts)?);
+                }
+                let analyzers = x.fields().iter().map(|(t, f)| {
+                    let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| Error::Query(format!("no table {t}")))?;
+                    Ok(schema.field(f).ok_or_else(|| Error::Query(format!("{t} has no field {f}")))?.text_analyzer())
+                }).collect::<Result<Vec<_>>>()?;
+                let (rewritten, made) = x.finish(&rows, &analyzers, params)?;
+                let mut rs = self.query_at(snap, &rewritten.to_string(), params, opts)?;
+                let lines: Vec<String> = made.iter().map(|m| m.line()).collect();
+                rs.stats.plan.splice(0..0, lines);
+                return Ok(rs);
+            }
+        }
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
         if crate::query::llm::may_call(sql, &functions) {
@@ -2111,6 +2131,22 @@ impl Db {
         Executor::new(snap, &readers, opts).term_stats(select)
     }
 
+    /// The words of `text` that look like typos of the terms of TEXT field
+    /// `field` of `table`, and the text with each replaced by the word it
+    /// most likely meant: "did you mean" ([`Executor::corrections`]).
+    pub fn correct(&self, table: &str, field: &str, text: &str) -> Result<Corrected> {
+        let all = self.snapshot();
+        let snap = all.table(table).ok_or_else(|| Error::Query(format!("no table {table}")))?;
+        let schema = snap.shared_schema().clone();
+        let f = schema.field_index(field).ok_or_else(|| Error::Query(format!("{table} has no field {field}")))?;
+        if !matches!(schema.fields[f].ty, FieldType::Text { .. }) {
+            return Err(Error::Query(format!("{table}.{field} is not a TEXT field: only text is corrected")));
+        }
+        let readers = self.readers(&snap)?;
+        let words = Executor::new(&snap, &readers, &self.exec).corrections(f, text)?;
+        Ok(Corrected { text: crate::query::exec::corrected_text(text, &words), changed: !words.is_empty(), words })
+    }
+
     /// The loosest level of `select`'s guard (`min_rows`, `max_rows`) and
     /// each level's rows on snapshot `snap`, from it to the strictest
     /// ([`Executor::guard_counts`]): what a coordinator sums over its
@@ -2968,4 +3004,14 @@ fn opened_step(stats: &mut crate::query::exec::ExecStats, t0: std::time::Instant
 /// tables, if any.
 pub fn default_table(catalog: &[Arc<Schema>]) -> Option<Arc<Schema>> {
     catalog.iter().find(|t| !t.is_placeholder()).cloned()
+}
+
+/// A text corrected by [`Db::correct`].
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Corrected {
+    /// The text with its typos replaced.
+    pub text: String,
+    /// Whether any word was replaced.
+    pub changed: bool,
+    pub words: Vec<crate::query::exec::Correction>,
 }

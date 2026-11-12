@@ -333,8 +333,9 @@ BM25 of the analysed terms of `text`, disjunctively: a row scores if it contains
 | `stopwords` | 1 (0 on a `simple` field) | `0` keeps English function words in the query, `1` drops them |
 | `fuzzy` | 0 | `1`, `2` or `'auto'`: also score the indexed terms that many edits from each word; `'auto'` corrects only the words that look like typos ([typos](#typos-and-synonyms)) |
 | `synonyms` | 0 | `1`: also score each word's synonyms |
-| `syntax` | `'query'` | `'plain'` reads `+`, `-`, quotes and `^` as punctuation: the text is words alone |
+| `syntax` | `'query'` | `'plain'` reads `+`, `-`, quotes and `^` as punctuation: the text is words alone; `'terms'` reads analysed terms, each weighted by `^w`, as they are written ([query expansion](#query-expansion-expand)) |
 | `min` | none | `n` or `'p%'`: rank only the rows with at least that many of the text's optional words and phrases |
+| `expand` | 0 | `n`: also rank by the terms the query's top `n` rows hold most ([query expansion](#query-expansion-expand)), with `expand_terms` (20) and `expand_weight` (0.85) |
 
 Keeping function words is better for short questions: on Quora it gains 0.055 nDCG@10, while on TREC-COVID, whose queries are full questions, dropping them gains the same amount.
 
@@ -831,6 +832,36 @@ SELECT id FROM papers WHERE MATCH(body, 'gnn', synonyms => 1) LIMIT 10;
 
   On 500,477 passages, half of MS MARCO's first million, with the first 300 dev queries, each given a typo as the engine comparison does (two letters of its longest word swapped; 271 queries take one), the typed query's top 10 holds 0.685 of the top 10 that plain `bm25` gives the query as written, against 0.346 widening every word and 0.383 without typo tolerance. On the queries as written, `'auto'` keeps 0.946 of plain `bm25`'s top 10, against 0.340 widening every word. The median typed query takes 10.0 ms, against 48.5 ms before this change and 20.6 ms widening every word on its faster walk and scoring, and the median query as written 0.35 ms (19 ms widening every word), since it walks no dictionary. Through a coordinator over two shards of the million passages (both halves, on the same machine), the median typed query takes 15.8 ms against 112 ms before (p99 30 against 287 ms), and four clients get 137 typed queries a second against 17.7: a shard also walks once per query rather than twice, its statistics round and its query sharing the walk. On BEIR's SciFact and NFCorpus, whose queries are spelled right, nDCG@10 with `'auto'` went from 0.673 and 0.294 widening every word to 0.693 and 0.331, level with plain `bm25` (0.691 and 0.329). The thresholds were chosen on MS MARCO's dev queries, not BEIR's test queries. One segment on a 4-core cloud VM, Intel Xeon @ 2.10GHz; `cargo run --release --example typo_queries`.
 - **`synonyms => 1`** also matches what the server's synonym list says a word or phrase means. The list is in Solr's format: `laptop, notebook, portable computer` makes each find the others, and `tv => television` makes `tv` find `television` but not the reverse. Both sides are analysed like documents, so `laptops` finds `notebook`. A one-word synonym of a word shares that word's document frequency, as Lucene's synonym queries do; the words of a longer synonym score on their own. [chloedb-server](server.md) loads it from `--synonyms FILE` and edits it at `/v1/synonyms`; from Rust, set `ExecOptions::synonyms`. Without a list, `synonyms => 1` is an error that says so.
+
+## Query expansion: `expand`
+
+`bm25(body, :q, expand => 10)` ranks by the query's words and by the words its first ranking's top 10 rows hold most: pseudo-relevance feedback (RM3). It finds rows that use other words for what the query asks, such as `antibodies` for `vaccines`.
+
+```sql
+SELECT id, title FROM papers ORDER BY bm25(body, :q, expand => 10) DESC LIMIT 10;
+SELECT id, title FROM papers WHERE year >= 2023
+ORDER BY bm25(body, :q, expand => :n, expand_terms => 10, expand_weight => 0.7) DESC LIMIT 10;
+```
+
+- **How.** The query runs in two steps. The first ranks the rows as the call would without `expand`, through the query's `WHERE`, and reads the field's text of the top `n` (`SELECT body, score() FROM papers WHERE year >= 2023 ORDER BY bm25(body, :q) DESC LIMIT 10`). Each of those rows weighs its terms by its share of the scores and each term's share of the row; the `expand_terms` best terms over all of them share `1 − expand_weight` of the weight, and the query's own terms share `expand_weight`. The second step is the query with the call rewritten to those analysed, weighted terms (`bm25(body, 'vaccin^0.85 antibodi^0.03 immun^0.03 ...', syntax => 'terms')`), and the answer's plan lines start with what was added: `bm25(body) expanded from 10 rows of papers with 20 terms: antibodi 0.031, immun 0.029, ...`.
+- **Options.** `expand` is the rows read, from 0 (no expansion, the call as written) to 100; `expand_terms` the terms added, up to 100; `expand_weight` the query's own share, from 0 to 1. Each may be a parameter (`expand => :n`). A call that expands takes no `min`, `min_rows` or `max_rows`.
+- **Where.** In a `SELECT` of one table, in its columns, `WHERE` or `ORDER BY`, and in a `WITH` or a subquery of one table. A join is refused, and so is `expand` in a rank profile or a stored function. On a coordinator over shards the first step is an ordinary query of the shards, merged, and the coordinator rewrites the query, so every shard ranks by the same terms.
+- **Cost.** A second query and the analysis of `n` rows' text: on BEIR's SciFact, NFCorpus and ArguAna the median query took 1.8, 1.7 and 2.9 ms against 0.09, 0.03 and 0.77 ms for plain `bm25` (one core of a 4-core cloud VM, Intel Xeon @ 2.10GHz).
+- **Quality.** The defaults (10 rows, 20 terms, 0.85) were chosen on SciFact's train and NFCorpus's dev judgements (`chloedb/results/text/bm25_rm3_tuning_*.json`). On the test judgements, nDCG@10 went from 0.691 to 0.693 on SciFact (p = 0.55), 0.329 to 0.346 on NFCorpus (p = 0.0001) and 0.362 to 0.369 on ArguAna (p = 0.0006) (`chloedb/results/text/bm25_rm3.json`, `chloedb-bm25-eval --variants plain,rm3`). Expansion helps most where queries are short and documents use a field's own vocabulary; a setting that keeps less of the query (0.5) lowered SciFact to 0.646, so measure before lowering `expand_weight`.
+
+## Did you mean: correcting a query's words
+
+`Db::correct(table, field, text)` (chloedb-server's [`POST /v1/correct`](server.md)) returns the text with the words that look like typos of a TEXT field's terms replaced, for a search box to offer as "did you mean":
+
+```json
+{"text": "mRNA vaccines for neural networks", "changed": true,
+ "words": [{"word": "vacines", "term": "vacin", "to": "vaccin", "to_word": "vaccines", "edits": 1, "chance": 0.86}, ...]}
+```
+
+- A word is corrected only when no row holds it: a word some document uses is a word of the collection. Words with digits or capitals inside (`p150n`, `dLNs`) are names and codes, and stay.
+- Its neighbours are the field's terms one edit away (up to 5 letters) or two (longer), as `fuzzy => 'auto'` finds them, and it takes the one most likely meant if that chance is at least 0.5: the noisy channel of [typos](#typos-and-synonyms), with an unseen word counted as in 0.05 documents, so that a neighbour one edit away must be in 5 or more documents. The word shown keeps the typed word's ending on the corrected term (`ifnlammation` gives `inflammation`).
+- On BEIR's queries with a typo typed in (two letters of the longest word swapped), it corrected 0.73, 0.66 and 0.85 of them back to the words as written on SciFact, NFCorpus and ArguAna; of the queries it changed, 0.91, 0.90 and 0.98 were corrected back; and it changed 4.0%, 2.8% and 0% of the queries as written (`chloedb/results/text/bm25_did_you_mean.json`, variant `typed_corrected`). For ranking, `fuzzy => 'auto'` stays better than ranking the corrected text: nDCG@10 0.692 against 0.675 on SciFact, as it widens each word with its likely neighbours rather than choosing one.
+- A coordinator does not correct yet: ask one of its shards.
 
 ## Aggregates
 

@@ -2361,6 +2361,38 @@ impl Service {
         // ([`chloedb::query::llm`]): the rows first, as any query finds them
         // (a coordinator's from its shards, merged), then the questions,
         // here.
+        // Expanded ranking (`bm25(.., expand => n)`, [`chloedb::query::prf`]):
+        // the rows of each expanded call first, as any query finds them (a
+        // coordinator's from its shards, merged), then the query rewritten
+        // to the terms they hold, which every shard ranks by alike.
+        if req.plan.is_none() && !req.shard {
+            if let Some(x) = chloedb::query::prf::plan_sql(&req.sql, &req.params)? {
+                let t0 = Instant::now();
+                let mut rows = Vec::new();
+                let catalog = self.catalog();
+                let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
+                for f in x.feedback(&schemas) {
+                    let mut fr = req.clone();
+                    (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
+                    rows.push(Box::pin(self.query(fr)).await?.rs);
+                }
+                let analyzers = x
+                    .fields()
+                    .iter()
+                    .map(|(t, f)| {
+                        let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| ApiError::bad(format!("no table {t}")))?;
+                        Ok(schema.field(f).ok_or_else(|| ApiError::bad(format!("{t} has no field {f}")))?.text_analyzer())
+                    })
+                    .collect::<Result<Vec<_>, ApiError>>()?;
+                let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
+                let mut second = req.clone();
+                second.sql = rewritten.to_string();
+                let mut a = Box::pin(self.query(second)).await?;
+                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
         if req.plan.is_none() && !req.shard {
             if let Some(split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
                 if req.scroll.is_some() {

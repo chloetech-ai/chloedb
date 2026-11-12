@@ -184,6 +184,11 @@ async fn http_answers_like_the_embedded_database() {
     assert!(metrics.contains("chloedb_queries_total{kind=\"invalid\",outcome=\"client_error\"} 1"), "{metrics}");
     let cores = std::thread::available_parallelism().unwrap().get();
     assert!(metrics.contains(&format!("chloedb_query_pool_threads {cores}\n")) && metrics.contains("chloedb_query_pool_queued 0\n"), "{metrics}");
+    // "Did you mean": the words in no row, taken for typos of the field's terms.
+    let (status, fixed) = post(&c, &format!("{base}/v1/correct"), json!({"table": "products", "field": "body", "text": "waterprof hiking boots"})).await;
+    assert_eq!(status, 200, "{fixed}");
+    assert_eq!((fixed["text"].as_str(), fixed["changed"].as_bool()), (Some("waterproof hiking boots"), Some(true)), "{fixed}");
+    assert_eq!(fixed["words"][0]["word"], "waterprof", "{fixed}");
 }
 
 /// Writes over HTTP: operations, SQL, counters, versions; then reads.
@@ -616,6 +621,9 @@ async fn coordinator_answers_like_one_database() {
         "SELECT id, title, features() FROM products ORDER BY bm25(body, 'waterproof hiking') * (1 + 0.1 * coalesce(rating, 0)) DESC LIMIT 10",
         "SELECT id, bm25(body, 'boots') AS b, ln(1 + bm25(body, 'leather')) - 0.01 * price AS x FROM products ORDER BY price DESC LIMIT 12",
         "WITH top AS (SELECT * FROM products ORDER BY bm25(body, 'waterproof hiking') DESC LIMIT 60) SELECT id, score(), features() FROM top ORDER BY bm25(body, 'boots') + coalesce(rating, 0) DESC LIMIT 10",
+        // Expansion: the coordinator reads the feedback rows from every
+        // shard, and every shard ranks by the same terms.
+        "SELECT id, score() FROM products WHERE price < 400 ORDER BY bm25(body, 'waterproof hiking', expand => 5) DESC LIMIT 10",
     ] {
         let want = js::result(&whole.query(sql, &Params::new()).unwrap(), 0.0);
         assert!(!want["rows"].as_array().unwrap().is_empty(), "{sql}");
@@ -623,6 +631,9 @@ async fn coordinator_answers_like_one_database() {
         same(sql, &want, &js::result(&got.rs, 0.0));
         if sql.contains("features()") {
             assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("fetch: ")), "{sql}: {:?}", got.rs.stats.plan);
+        }
+        if sql.contains("expand") {
+            assert!(got.rs.stats.plan.iter().any(|l| l.starts_with("bm25(body) expanded from 5 rows of products")), "{sql}: {:?}", got.rs.stats.plan);
         }
     }
     let h = coord.health().await;

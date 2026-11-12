@@ -38,6 +38,7 @@
 //! | `GET /v1/media/<sha256>` | | the bytes of the file a row's MEDIA value names, by its hash, read as writes read files (`--media-store`, `--media-fetch`), served inert ([`media_headers`]); 404 when no row names it, 400 from a coordinator |
 //! | `GET /v1/synonyms`, `PUT /v1/synonyms` | `{text}` (Solr format) | the synonym list |
 //! | `POST /v1/term_stats` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{stats, snapshot}` |
+//! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
@@ -240,6 +241,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/media/:sha256", get(media_file))
         .route("/v1/synonyms", get(synonyms).merge(put(put_synonyms)))
         .route("/v1/term_stats", post(term_stats))
+        .route("/v1/correct", post(correct))
         .route("/v1/sid/next", post(sid_next))
         .route("/v1/rank_log/export", post(export_rank_log))
         .route("/v1/rank_log/interleaving", post(interleaving))
@@ -2710,6 +2712,17 @@ async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let params = app.svc.params(b.get("params")).await?;
     let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
     Ok(AxJson(json!({"stats": stats, "snapshot": snapshot, "version": version})))
+}
+
+/// `{table, field, text}`: "did you mean", the text with the words that
+/// look like typos of the field's terms replaced ([`chloedb::db::Db::correct`]).
+async fn correct(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let (table, field, text) = (body_str(&b, "table")?.to_string(), body_str(&b, "field")?.to_string(), body_str(&b, "text")?.to_string());
+    let Some(db) = app.svc.local_db().cloned() else {
+        return Err(ApiError::bad("a coordinator does not correct text yet: ask one of its shards' /v1/correct"));
+    };
+    let c = tokio::task::spawn_blocking(move || db.correct(&table, &field, &text)).await.map_err(ApiError::internal)??;
+    Ok(AxJson(serde_json::to_value(c).map_err(ApiError::internal)?))
 }
 
 async fn snapshot(State(app): State<App>) -> Res {
