@@ -654,14 +654,14 @@ mod tests {
         let e = Endpoint::from_config("openai/bge-m3", None, &env(&[("OPENAI_BASE_URL", "http://gpu:8000/v1/")])).unwrap();
         assert_eq!((e.url.as_str(), e.key.as_deref(), e.native_dim), ("http://gpu:8000/v1/embeddings", None, None));
         // A key_env that is not set is an error, whatever the URL.
-        let c = json!({"api": "openai", "url": "http://gpu/v1/embeddings", "key_env": "GPU_KEY"});
-        assert!(Endpoint::from_config("gpu", Some(&c), &env(&[])).unwrap_err().to_string().contains("$GPU_KEY is not set"));
+        let c = json!({"api": "openai", "url": "http://gpu/v1/embeddings", "key_env": "CHLOEDB_MODEL_KEY_GPU"});
+        assert!(Endpoint::from_config("gpu", Some(&c), &env(&[])).unwrap_err().to_string().contains("$CHLOEDB_MODEL_KEY_GPU is not set"));
     }
 
     #[test]
     fn endpoint_files() {
-        let c = json!({"api": "openai", "base_url": "https://res.openai.azure.com/openai/deployments/emb", "model": "text-embedding-3-small", "key_env": "AZURE_KEY", "key_header": "api-key", "headers": {"x-team": "search"}, "batch": 16, "query_prefix": "q: "});
-        let e = Endpoint::from_config("azure-small", Some(&c), &env(&[("AZURE_KEY", "az")])).unwrap();
+        let c = json!({"api": "openai", "base_url": "https://res.openai.azure.com/openai/deployments/emb", "model": "text-embedding-3-small", "key_env": "CHLOEDB_MODEL_KEY_AZURE", "key_header": "api-key", "headers": {"x-team": "search"}, "batch": 16, "query_prefix": "q: "});
+        let e = Endpoint::from_config("azure-small", Some(&c), &env(&[("CHLOEDB_MODEL_KEY_AZURE", "az")])).unwrap();
         assert_eq!((e.url.as_str(), e.key.as_deref(), e.key_header.as_str(), e.batch, e.query_prefix.as_str()), ("https://res.openai.azure.com/openai/deployments/emb/embeddings", Some("az"), "api-key", 16, "q: "));
         assert_eq!(e.headers, [("x-team".to_string(), "search".to_string())]);
         // Strata knows the model by the provider's name.
@@ -671,9 +671,13 @@ mod tests {
         let c = json!({"api": "openai", "url": "http://x/embed", "batchsize": 4});
         assert!(Endpoint::from_config("custom", Some(&c), &env(&[])).unwrap_err().to_string().contains("unknown key \"batchsize\""));
         // The secret stays out of what is printed.
-        let c = json!({"api": "openai", "url": "http://x/embed", "key_env": "K", "dim": 8});
-        let e = Endpoint::from_config("custom", Some(&c), &env(&[("K", "sekrit")])).unwrap();
+        let c = json!({"api": "openai", "url": "http://x/embed", "key_env": "CHLOEDB_MODEL_KEY_K", "dim": 8});
+        let e = Endpoint::from_config("custom", Some(&c), &env(&[("CHLOEDB_MODEL_KEY_K", "sekrit")])).unwrap();
         assert!(!format!("{e:?}").contains("sekrit"));
+        // key_env names a model's key: never another of the server's variables.
+        let c = json!({"api": "openai", "url": "http://x/embed", "key_env": "AWS_SECRET_ACCESS_KEY", "dim": 8});
+        let e = Endpoint::from_config("custom", Some(&c), &env(&[("AWS_SECRET_ACCESS_KEY", "aws")])).unwrap_err().to_string();
+        assert!(e.contains("is not a model's key variable") && !e.contains("aws\""), "{e}");
     }
 
     #[test]
@@ -707,8 +711,8 @@ mod tests {
         let c = json!({"api": "tei", "url": "http://gpu:8080/rerank"});
         let e = RerankEndpoint::from_config("bge-reranker-v2-m3", Some(&c), &env(&[("COHERE_API_KEY", "c")])).unwrap();
         assert_eq!((e.api, e.url.as_str(), e.key.as_deref(), e.batch, e.model.as_str()), (RerankApi::Tei, "http://gpu:8080/rerank", None, 32, "bge-reranker-v2-m3"));
-        let c = json!({"api": "tei", "base_url": "http://gpu:8080/", "key_env": "TEI_KEY", "batch": 64, "timeout_s": 3});
-        let e = RerankEndpoint::from_config("team/bge", Some(&c), &env(&[("TEI_KEY", "t")])).unwrap();
+        let c = json!({"api": "tei", "base_url": "http://gpu:8080/", "key_env": "CHLOEDB_MODEL_KEY_TEI", "batch": 64, "timeout_s": 3});
+        let e = RerankEndpoint::from_config("team/bge", Some(&c), &env(&[("CHLOEDB_MODEL_KEY_TEI", "t")])).unwrap();
         assert_eq!((e.url.as_str(), e.key.as_deref(), e.batch, e.timeout, e.model.as_str()), ("http://gpu:8080/rerank", Some("t"), 64, Duration::from_secs(3), "bge"));
         assert!(!format!("{e:?}").contains("\"t\""));
         let c = json!({"api": "tei"});
