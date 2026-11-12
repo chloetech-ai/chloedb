@@ -1259,7 +1259,8 @@ impl Db {
     /// the clause. Every slice of candidates, and every row followed, is
     /// read from `snap`.
     pub fn pack_at(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Option<crate::query::pack::Packed>> {
-        let Some(mut p) = crate::query::pack::Packer::of_sql(sql, params)? else { return Ok(None) };
+        let key_of = |t: &str| snap.table(t).and_then(|v| v.schema().primary_key.map(|k| v.schema().fields[k].name.clone()));
+        let Some(mut p) = crate::query::pack::Packer::of_sql(sql, params, &key_of)? else { return Ok(None) };
         while let Some(q) = p.next_query()? {
             p.feed(self.query_at(snap, &q, params, opts)?)?;
         }

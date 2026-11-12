@@ -25,7 +25,8 @@
 //!
 //! With `FOLLOW edges n HOP`, each row taken brings the rows its `EDGES`
 //! field reaches within n hops (one by default) right after it, if they pass
-//! the query's `WHERE`, decided the same way (**linked from k**). Reading
+//! the query's `WHERE`, decided the same way (**linked from k**). They are
+//! read by key, a hop a query, as a walk through a coordinator reads them. Reading
 //! stops once what is left of the budget is too small for any row, so a
 //! query whose first rows fill the budget reads one slice.
 //!
@@ -333,8 +334,16 @@ pub struct Receipt {
 enum Pending {
     /// Rows `offset..offset + n` of the query.
     Slice { n: usize },
-    /// The rows the row with this key links to.
-    Follow { from: String },
+    /// The rows of `targets`, linked from the row labelled `from`, `hop`
+    /// hops away.
+    Follow { from: String, targets: Vec<Value>, hop: usize },
+}
+
+/// Rows to follow to: the keys an `EDGES` value names.
+struct Follow {
+    from: String,
+    targets: Vec<Value>,
+    hop: usize,
 }
 
 /// A candidate waiting for its decision.
@@ -342,6 +351,8 @@ struct Candidate {
     row: Vec<Value>,
     key: Value,
     score: f64,
+    /// The keys its `EDGES` field links to, with FOLLOW.
+    edges: Vec<Value>,
 }
 
 /// What a taken row is compared with for `DEDUPE`.
@@ -358,9 +369,13 @@ pub struct Packer {
     spec: Spec,
     /// The query without its `PACK` clause, `LIMIT` and `OFFSET`.
     query: sql::Query,
-    /// The VECTOR column `DEDUPE x ON` reads, added after the query's
-    /// columns.
+    /// The columns added after the query's: the VECTOR column `DEDUPE x
+    /// ON` reads, then the EDGES field FOLLOW reads.
     hidden: usize,
+    vector_at: Option<usize>,
+    edges_at: Option<usize>,
+    /// The primary key's column, which FOLLOW reads rows by.
+    key_column: Option<String>,
     /// The words of the query's search texts, which excerpts are cut around.
     terms: Vec<String>,
     next_offset: usize,
@@ -369,7 +384,7 @@ pub struct Packer {
     exhausted: bool,
     pending: Option<Pending>,
     buffer: VecDeque<Candidate>,
-    follows: VecDeque<(Value, String)>,
+    follows: VecDeque<Follow>,
     seen: HashSet<String>,
     columns: Option<Vec<String>>,
     text_cols: Vec<usize>,
@@ -385,14 +400,16 @@ pub struct Packer {
 
 impl Packer {
     /// The packer of `sql_text`, `None` when it has no `PACK` clause.
-    pub fn of_sql(sql_text: &str, params: &Params) -> Result<Option<Packer>> {
+    /// `key_of` names a table's primary key column, which FOLLOW reads the
+    /// rows linked to by.
+    pub fn of_sql(sql_text: &str, params: &Params, key_of: &dyn Fn(&str) -> Option<String>) -> Result<Option<Packer>> {
         let Some((rest, spec)) = split(sql_text)? else { return Ok(None) };
         let q = *super::sql::parse_query(&rest)?;
-        Packer::new(q, spec, params).map(Some)
+        Packer::new(q, spec, params, key_of).map(Some)
     }
 
     /// The packer of query `q` (without its `PACK` clause) by `spec`.
-    pub fn new(mut q: sql::Query, spec: Spec, params: &Params) -> Result<Packer> {
+    pub fn new(mut q: sql::Query, spec: Spec, params: &Params, key_of: &dyn Fn(&str) -> Option<String>) -> Result<Packer> {
         let number = |e: &sql::Expr, what: &str| -> Result<usize> {
             let v = match e {
                 sql::Expr::Value(v) => match &v.value {
@@ -419,20 +436,36 @@ impl Packer {
             return Err(err("PACK reads the rows up to LIMIT n: not with FETCH"));
         }
         let candidates = limit.unwrap_or(DEFAULT_CANDIDATES);
-        let mut hidden = 0;
+        let (mut hidden, mut vector_at, mut edges_at, mut key_column) = (0, None, None, None);
         if let Some((_, Some(on))) = &spec.dedupe {
             let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("PACK ... DEDUPE x ON column reads the column from a SELECT of one table")) };
             s.projection.push(sql::SelectItem::ExprWithAlias { expr: sql::Expr::Identifier(sql::Ident::new(on)), alias: sql::Ident::new("__pack_vector") });
-            hidden = 1;
+            vector_at = Some(hidden);
+            hidden += 1;
         }
-        if spec.follow.is_some() && !matches!(q.body.as_ref(), sql::SetExpr::Select(_)) {
-            return Err(err("PACK ... FOLLOW follows the edges of a SELECT of one table"));
+        if let Some((field, _)) = &spec.follow {
+            let one_table = |s: &sql::Select| match &s.from[..] {
+                [t] if t.joins.is_empty() => match &t.relation {
+                    sql::TableFactor::Table { name, .. } => Some(name.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("PACK ... FOLLOW follows the edges of a SELECT of one table")) };
+            let table = one_table(s).ok_or_else(|| err("PACK ... FOLLOW follows the edges of a SELECT of one table"))?;
+            key_column = Some(key_of(&table).ok_or_else(|| err(format!("PACK ... FOLLOW reads the rows linked to by their keys: table {table} needs a PRIMARY KEY")))?);
+            s.projection.push(sql::SelectItem::ExprWithAlias { expr: sql::Expr::Identifier(sql::Ident::new(field)), alias: sql::Ident::new("__pack_edges") });
+            edges_at = Some(hidden);
+            hidden += 1;
         }
         let terms = search_terms(&q, params);
         Ok(Packer {
             spec,
             query: q,
             hidden,
+            vector_at,
+            edges_at,
+            key_column,
             terms,
             next_offset: offset,
             end: offset.saturating_add(candidates),
@@ -469,26 +502,34 @@ impl Packer {
         if self.pending.is_some() {
             return Err(err("PACK: the answer of the last query was not given"));
         }
-        self.drive()?;
-        if self.full() {
-            return Ok(None);
-        }
-        if let Some((key, from)) = self.follows.pop_front() {
-            let (field, hops) = self.spec.follow.clone().expect("follows come from FOLLOW");
+        loop {
+            self.drive()?;
+            if self.full() {
+                return Ok(None);
+            }
+            let Some(Follow { from, targets, hop }) = self.follows.pop_front() else { break };
+            let targets: Vec<Value> = targets.into_iter().filter(|k| !self.seen.contains(&key_label(k, 0))).take(FOLLOWED).collect();
+            if targets.is_empty() {
+                continue;
+            }
+            let key = self.key_column.clone().expect("FOLLOW has a key column");
             let mut q = self.query.clone();
             let sql::SetExpr::Select(s) = q.body.as_mut() else { unreachable!("checked in new") };
-            let reach = format!("REACHABLE({}, {}, hops => {hops})", sql::Ident::new(&field), literal(&key)?);
-            let reach = sqlparser::parser::Parser::new(&GenericDialect {}).try_with_sql(&reach).and_then(|mut p| p.parse_expr()).map_err(|e| err(format!("PACK ... FOLLOW: {e}")))?;
+            let keys: Vec<String> = targets.iter().map(literal).collect::<Result<_>>()?;
+            // By key, as a walk through a coordinator reads a hop: the
+            // query's WHERE still holds.
+            let by_key = format!("{} IN ({})", sql::Ident::with_quote('"', &key), keys.join(", "));
+            let by_key = sqlparser::parser::Parser::new(&GenericDialect {}).try_with_sql(&by_key).and_then(|mut p| p.parse_expr()).map_err(|e| err(format!("PACK ... FOLLOW: {e}")))?;
             s.selection = Some(match s.selection.take() {
-                Some(w) => sql::Expr::BinaryOp { left: Box::new(sql::Expr::Nested(Box::new(w))), op: sql::BinaryOperator::And, right: Box::new(reach) },
-                None => reach,
+                Some(w) => sql::Expr::BinaryOp { left: Box::new(sql::Expr::Nested(Box::new(w))), op: sql::BinaryOperator::And, right: Box::new(by_key) },
+                None => by_key,
             });
             // Not in the query's order: a ranking by bm25 would keep only
             // the linked rows that match its words, and the link is the
-            // reason to take them.
+            // reason to take them. They come in the order of the edges.
             q.order_by = None;
             q.limit_clause = Some(limit_offset(FOLLOWED, 0));
-            self.pending = Some(Pending::Follow { from });
+            self.pending = Some(Pending::Follow { from, targets, hop });
             self.queries += 1;
             return Ok(Some(q.to_string()));
         }
@@ -512,10 +553,21 @@ impl Packer {
         }
         let n_rows = rs.rows.len();
         let mut cands: Vec<Candidate> = Vec::with_capacity(n_rows);
-        for (i, row) in rs.rows.into_iter().enumerate() {
+        let int_keys = rs.keys.iter().any(|k| matches!(k, Value::Int(_)));
+        for (i, mut row) in rs.rows.into_iter().enumerate() {
             let key = rs.keys.get(i).cloned().unwrap_or(Value::Null);
             let score = rs.scores.get(i).copied().unwrap_or(0.0);
-            cands.push(Candidate { row, key, score });
+            let shown = row.len().saturating_sub(self.hidden);
+            let extra = row.split_off(shown);
+            let mut edges = Vec::new();
+            if let Some(at) = self.edges_at {
+                let v = extra.get(at).cloned().unwrap_or(Value::Null);
+                edges = crate::graph::parse_edges(&v, int_keys)?.into_iter().map(|e| e.to).collect();
+            }
+            if let Some(at) = self.vector_at {
+                row.push(extra.get(at).cloned().unwrap_or(Value::Null));
+            }
+            cands.push(Candidate { row, key, score, edges });
         }
         match pending {
             Pending::Slice { n } => {
@@ -526,12 +578,28 @@ impl Packer {
                 self.slice = self.slice.saturating_mul(4);
                 self.buffer.extend(cands);
             }
-            Pending::Follow { from } => {
+            Pending::Follow { from, targets, hop } => {
+                let place = |k: &Value| targets.iter().position(|t| t == k).unwrap_or(usize::MAX);
+                cands.sort_by_key(|c| place(&c.key));
+                let hops = self.spec.follow.as_ref().map_or(1, |f| f.1);
+                let mut next: Vec<Value> = Vec::new();
+                if hop < hops {
+                    for c in &cands {
+                        for t in &c.edges {
+                            if !next.contains(t) && !targets.contains(t) {
+                                next.push(t.clone());
+                            }
+                        }
+                    }
+                }
                 for c in cands {
                     if self.full() {
                         break;
                     }
                     self.decide(c, Some(&from))?;
+                }
+                if !next.is_empty() {
+                    self.follows.push_front(Follow { from, targets: next, hop: hop + 1 });
                 }
             }
         }
@@ -578,10 +646,10 @@ impl Packer {
         if !matches!(c.key, Value::Null) && !self.seen.insert(label.clone()) {
             return Ok(());
         }
-        let Candidate { mut row, key, score } = c;
-        let vector = match self.hidden {
-            0 => None,
-            _ => match row.pop() {
+        let Candidate { mut row, key, score, edges } = c;
+        let vector = match self.vector_at {
+            None => None,
+            Some(_) => match row.pop() {
                 Some(Value::Vector(v)) => Some(v.to_vec()),
                 Some(Value::Null) | None => None,
                 Some(_) => return Err(err("PACK ... DEDUPE x ON column compares vectors: name a VECTOR column")),
@@ -634,7 +702,9 @@ impl Packer {
                 if matches!(key, Value::Null) {
                     return Err(err("PACK ... FOLLOW follows the edges of rows by their keys: the table needs a PRIMARY KEY"));
                 }
-                self.follows.push_back((key.clone(), label.clone()));
+                if !edges.is_empty() {
+                    self.follows.push_back(Follow { from: label.clone(), targets: edges, hop: 1 });
+                }
             }
         }
         self.decisions.push(Decision { key: key.clone(), score, tokens: spent, full_tokens: full, used: self.used, decision: decision.clone(), taken });

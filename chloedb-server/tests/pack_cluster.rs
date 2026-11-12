@@ -71,6 +71,7 @@ async fn packs_through_a_coordinator_as_one_database() {
     for q in [
         "SELECT id, text FROM memory WHERE MATCH(text, 'retry') ORDER BY rank DESC PACK 200 TOKENS DEDUPE 0.9 WITH RECEIPT",
         "SELECT id, text FROM memory WHERE rank % 2 = 0 ORDER BY rank DESC PACK 120 TOKENS FOLLOW links 1 HOP WITH RECEIPT",
+        "SELECT id, text FROM memory WHERE rank % 3 = 0 ORDER BY rank DESC PACK 150 TOKENS FOLLOW links 2 HOPS WITH RECEIPT",
         "SELECT id, text FROM memory ORDER BY rank DESC PACK 100000 TOKENS LIMIT 70 OFFSET 3",
     ] {
         let want = one.query(q, &Params::new()).unwrap_or_else(|e| panic!("{q}: {e}"));

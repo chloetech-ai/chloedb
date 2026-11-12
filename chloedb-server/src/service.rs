@@ -2366,7 +2366,9 @@ impl Service {
         // it follows, each a query as any other (a coordinator's merged
         // from its shards), and the choice here.
         if req.plan.is_none() && !req.shard && chloedb::query::pack::may_pack(&req.sql) {
-            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params)? {
+            let catalog = self.catalog();
+            let key_of = |t: &str| catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).and_then(|s| s.primary_key.map(|k| s.fields[k].name.clone()));
+            if let Some(mut p) = chloedb::query::pack::Packer::of_sql(&req.sql, &req.params, &key_of)? {
                 if req.scroll.is_some() {
                     return Err(ApiError::bad("a query that packs its rows is not scrolled: PACK n TOKENS reads what fills the budget"));
                 }
