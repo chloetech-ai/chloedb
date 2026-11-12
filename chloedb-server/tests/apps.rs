@@ -199,4 +199,122 @@ async fn apps_that_do_not_answer_do_not_hold_up_the_listing() {
     let (s, _) = call(&base, "GET", "/v1/apps", Some("root-token"), None).await;
     assert_eq!(s, 200);
     assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
+
+/// A stand-in for chloedb-sheets: serves `--listen`, asks for its token,
+/// and answers `/env` with the names of the settings it was given.
+const FAKE_SHEETS: &str = r#"#!/usr/bin/env python3
+import http.server, json, os, sys
+args = sys.argv[1:]
+listen = args[args.index("--listen") + 1]
+host, port = listen.rsplit(":", 1)
+token = os.environ.get("CHLOEDB_SHEETS_TOKEN")
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        if self.headers.get("authorization") != "Bearer " + str(token):
+            self.send_response(401); self.end_headers(); return
+        if self.path == "/app.json":
+            body = {"name": "sheets", "title": "Sheets", "view": "ui/view.js"}
+        else:
+            body = {"env": sorted(os.environ), "args": args, "start_apps": os.environ.get("CHLOEDB_START_APPS")}
+        b = json.dumps(body).encode()
+        self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(b)
+print("fake sheets up on " + listen, file=sys.stderr, flush=True)
+http.server.HTTPServer((host, int(port)), H).serve_forever()
+"#;
+
+fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only asks whether the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// `--start-apps`: the server starts the app as a child with a token of its
+/// own and none of the server's credentials, starts it again when it
+/// exits, and stops it when the server stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_starts_its_apps_and_keeps_them_running() {
+    use std::os::unix::fs::PermissionsExt;
+    if std::process::Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped: no python3 for the stand-in app");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("chloedb-sheets");
+    std::fs::write(&fake, FAKE_SHEETS).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let log = std::fs::File::create(dir.path().join("server.log")).unwrap();
+    let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_chloedb-server"))
+        .args(["--db", &dir.path().join("a.strata").to_string_lossy(), "--listen", &format!("127.0.0.1:{port}"), "--grpc", "off", "--log-store", "off", "--start-apps", "sheets"])
+        .env("PATH", path)
+        // Credentials the app must not see.
+        .env("AWS_SECRET_ACCESS_KEY", "not-for-apps")
+        .env("CHLOEDB_APP_TOKEN", "not-for-apps")
+        .env_remove("CHLOEDB_TOKEN")
+        .env_remove("CHLOEDB_CLUSTER_TOKEN")
+        .stdout(std::process::Stdio::null())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    let logs = || std::fs::read_to_string(dir.path().join("server.log")).unwrap_or_default();
+    let listing = || async {
+        let (s, b) = call(&base, "GET", "/v1/apps", None, None).await;
+        assert_eq!(s, 200, "{b}");
+        let j: Json = serde_json::from_str(&b).unwrap();
+        j["apps"].as_array().unwrap().iter().find(|a| a["name"] == "sheets").cloned().unwrap_or(Json::Null)
+    };
+    let t0 = std::time::Instant::now();
+    let up = loop {
+        if chloedb_server::http_client().build().unwrap().get(format!("{base}/v1/health")).send().await.is_ok() {
+            let a = listing().await;
+            if a["up"] == true {
+                break a;
+            }
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "the app did not come up: {}", logs());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(up["title"], "Sheets");
+    assert_eq!(up["process"]["running"], true, "{up}");
+    assert!(up["url"].as_str().unwrap().starts_with("http://127.0.0.1:"), "{up}");
+    // Forwarded with the app's own token (the stand-in refuses any other).
+    let (s, b) = call(&base, "GET", "/v1/apps/sheets/env", None, None).await;
+    assert_eq!(s, 200, "{b}");
+    let env: Json = serde_json::from_str(&b).unwrap();
+    let names: Vec<&str> = env["env"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+    for leak in ["AWS_SECRET_ACCESS_KEY", "CHLOEDB_APP_TOKEN", "CHLOEDB_TOKEN", "CHLOEDB_CLUSTER_TOKEN"] {
+        assert!(!names.contains(&leak), "{leak} reached the app: {names:?}");
+    }
+    assert!(names.contains(&"CHLOEDB_SHEETS_TOKEN") && names.contains(&"PATH"), "{names:?}");
+    assert_eq!(env["start_apps"], "off");
+    assert!(env["args"].as_array().unwrap().iter().any(|a| a == &json!(base)), "it calls this server back: {env}");
+    // Its output is the server's log, and the listing's tail.
+    assert!(up["process"]["tail"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("fake sheets up")), "{up}");
+    // Killed, it is started again.
+    let pid = up["process"]["pid"].as_i64().unwrap() as i32;
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let t0 = std::time::Instant::now();
+    let again = loop {
+        let a = listing().await;
+        if a["up"] == true && a["process"]["pid"].as_i64().is_some_and(|p| p as i32 != pid) {
+            break a;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "the app was not started again: {a} {}", logs());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(again["process"]["restarts"], 1, "{again}");
+    assert!(again["process"]["last_exit"].as_str().unwrap().contains("exited"), "{again}");
+    // The server stopped, the app stops too.
+    let pid = again["process"]["pid"].as_i64().unwrap() as i32;
+    unsafe { libc::kill(server.id() as i32, libc::SIGTERM) };
+    let _ = server.wait();
+    let t0 = std::time::Instant::now();
+    while alive(pid) {
+        assert!(t0.elapsed() < Duration::from_secs(15), "the app outlived the server: {}", logs());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

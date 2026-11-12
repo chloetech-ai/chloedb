@@ -138,6 +138,8 @@ impl Local {
         let err = log.try_clone().map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&bin);
         cmd.args(["--db", &dir.join("sheets.strata").to_string_lossy(), "--listen", listen, "--grpc", "off"]);
+        // Sheets is this server's app: it starts none of its own.
+        cmd.env("CHLOEDB_START_APPS", "off");
         if let Some((url, token)) = &app {
             cmd.args(["--app", &format!("sheets={url}")]);
             if let Some(t) = token {
