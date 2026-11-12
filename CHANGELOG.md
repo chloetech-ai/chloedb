@@ -30,33 +30,25 @@ changes collect under "Unreleased".
   by kind and searched (BM25), as `chloectx ui` shows a local store
   (`GET /v1/memory`, `/v1/memory/sessions`, `/v1/memory/records`).
 
-### Security
+### Added
 
-- `chloedb-server`: keys limited to tables, and no app holds the cluster's
-  admin token (audit A1, A2, D-B10). `POST /v1/admin/keys` takes
-  `"tables": {"crawl_*": "admin", "*": "read"}`: such a key reads, writes
-  and creates only the tables its grants name, at their scope, never has
-  the server's own admin, and is refused on every route that does not
-  check tables (gRPC, OpenSearch and `/v1/mcp` too). Statements are
-  checked by every table they name, with ChloeDB's own parser, and what
-  names cannot show (table functions, `llm()`, `encode()`) is refused.
-  Its digest is marked in the keys file, so a server from before limits
-  never admits it. A server can make such a key for an app it starts,
-  in memory only (`Keys::app_key`).
-- The app proxy sends each app its own token (`--app-token-dir`, or
-  `CHLOEDB_APP_TOKEN_<NAME>`; `CHLOEDB_APP_TOKEN` stays the fallback) and
-  tells it who called: `x-chloedb-principal`, `x-chloedb-key`,
-  `x-chloedb-scope`, `x-chloedb-tables`, set by the server alone.
-- The operator gives each app beside a cluster (`spec.crawler`,
-  `spec.sheets`, `spec.chloectx`, `spec.apps`) a key limited to its tables
-  (`spec.<app>.tables`, with defaults per app) and a token of its own, in
-  a Secret `<cluster>-<app>-credentials`, once the coordinators make such
-  keys. The crawler that grows the cluster (`grow`, the default) keeps the
-  admin token as its key. The operator's role may now create, change and
-  delete Secrets, and the coordinators restart once to mount the apps'
-  tokens. An operator whose ClusterRole is older (it upgrades neither
-  itself nor its role) makes no such keys: its apps keep the admin token,
-  and it logs that `operator.yaml` should be applied again.
+- ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
+  queries the rank log kept that rank by a rank profile, on one snapshot,
+  with the profile as it is and with the numbers a coordinate-ascent search
+  finds (parameter defaults and the literals of its `ORDER BY`), and
+  reports nDCG@k before and after on queries held out of the search, the
+  queries made better and worse with a sign test, a bootstrap interval and
+  latency, with a verdict. Grades come from the rank log's labels and a
+  judgments table (`relevance_judgments`); the server can have Claude grade
+  the rows no one graded first. A proposal is kept in `relevance_proposals`
+  and applied as `CREATE OR REPLACE RANK PROFILE` only while the profile is
+  the one it was measured against. `POST /v1/relevance/autopilot`,
+  `/v1/relevance/proposals`, `Db::autopilot`, and the command center's
+  Labs > Relevance autopilot.
+- The rank log keeps each request's query and its bound parameters, in a
+  new column `query` of the request's first row. A log table made before
+  it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
+  query KEYWORD OPTIONS(indexed = false)` adds it).
 
 ## 0.2.1
 
