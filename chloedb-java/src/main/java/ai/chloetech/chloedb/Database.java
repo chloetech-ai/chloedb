@@ -370,6 +370,17 @@ public final class Database implements AutoCloseable {
         call("setLimits", "timeoutMs", timeoutMs == null ? null : QueryOptions.whole("timeoutMs", timeoutMs), "memory", memory == null ? null : QueryOptions.whole("memory", memory));
     }
 
+    /**
+     * Lets writes store rows without the vector of an embedded field whose
+     * model is not open here ({@code false}, the default: such a write
+     * throws, since a similarity search would never find the row). Fill
+     * the vectors in later, once the model opens, with the engine's
+     * backfill; chloedb-server does this for the rows it is sent.
+     */
+    public void setEmbedLater(boolean on) {
+        call("setEmbedLater", "on", on);
+    }
+
     /** The deadline every query gets unless it gives its own, in ms ({@code null}: none). */
     @SuppressWarnings("unchecked")
     public Long timeoutMs() {

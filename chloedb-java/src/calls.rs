@@ -178,6 +178,7 @@ fn takes(method: &str) -> Option<&'static [&'static str]> {
         "query" | "sql" => &["sql", "params", "timeoutMs", "memory", "tag"],
         "plan" => &["sql", "params"],
         "setLimits" => &["timeoutMs", "memory"],
+        "setEmbedLater" => &["on"],
         "limits" => &[],
         "interrupt" => &["tag"],
         "queryLogged" => &["sql", "params", "log"],
@@ -823,6 +824,10 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
             let timeout = a.opt_count("timeoutMs")?.filter(|&ms| ms > 0).map(|ms| Duration::from_millis(ms as u64));
             let memory = a.opt_count("memory")?.map(|b| qmemory::budget_of(b as u64, "this database's queries may hold at once (its memory option)"));
             *h.limits.write().unwrap_or_else(|e| e.into_inner()) = Limits { timeout, memory };
+            null()
+        }
+        "setEmbedLater" => {
+            db.set_embed_later(a.bool("on", true)?);
             null()
         }
         "limits" => {
