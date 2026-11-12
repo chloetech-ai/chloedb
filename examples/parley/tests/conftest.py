@@ -70,7 +70,7 @@ def _native_ok() -> bool:
     try:
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            db = chloedb.open(os.path.join(d, "x.strata"), schema={"table": "t", "key": "k", "fields": [{"name": "k", "type": "keyword"}]})
+            db = chloedb.open(os.path.join(d, "x.chloedb"), schema={"table": "t", "key": "k", "fields": [{"name": "k", "type": "keyword"}]})
             db.close()
         return True
     except ImportError:
@@ -86,11 +86,11 @@ def backend(request, tmp_path):
         if kind == "embedded":
             if not have_native():
                 pytest.skip("chloedb's extension is not built (maturin develop in chloedb-py)")
-            yield kind, str(tmp_path / "parley.strata"), []
+            yield kind, str(tmp_path / "parley.chloedb"), []
         elif kind == "server":
             if not have_server():
                 pytest.skip(f"no chloedb-server at {SERVER}")
-            p, url, _ = start_server(tmp_path, "server", "--db", str(tmp_path / "s.strata"), "--seq-no", "--media-store", str(tmp_path / "media"))
+            p, url, _ = start_server(tmp_path, "server", "--db", str(tmp_path / "s.chloedb"), "--seq-no", "--media-store", str(tmp_path / "media"))
             procs.append(p)
             yield kind, url, [url]
         else:
@@ -98,7 +98,7 @@ def backend(request, tmp_path):
                 pytest.skip(f"no chloedb-server at {SERVER}")
             shards = []
             for i in range(2):
-                p, url, grpc = start_server(tmp_path, f"shard{i}", "--db", str(tmp_path / f"shard{i}.strata"), "--seq-no", "--media-store", str(tmp_path / f"media{i}"))
+                p, url, grpc = start_server(tmp_path, f"shard{i}", "--db", str(tmp_path / f"shard{i}.chloedb"), "--seq-no", "--media-store", str(tmp_path / f"media{i}"))
                 procs.append(p)
                 shards.append((url, grpc))
             p, url, _ = start_server(tmp_path, "coord", "--shards", ",".join(g for _, g in shards))

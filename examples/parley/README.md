@@ -36,7 +36,7 @@ pip install maturin pytest && (cd ../../chloedb-py && maturin develop --profile 
 ### Stage 1: a file, in the process
 
 ```sh
-python -m parley serve --db data/parley.strata          # http://127.0.0.1:8700
+python -m parley serve --db data/parley.chloedb         # http://127.0.0.1:8700
 ```
 
 ### Stage 2: one chloedb-server
@@ -45,7 +45,7 @@ The app becomes stateless, so you can run as many copies as you like. Start the 
 
 ```sh
 (cd ../../chloedb-server && cargo build --release --features vision)              # vision: captions and image vectors
-../../chloedb-server/target/release/chloedb-server --db data/parley.strata --seq-no --media-store data/media
+../../chloedb-server/target/release/chloedb-server --db data/parley.chloedb --seq-no --media-store data/media
 python -m parley serve --server http://127.0.0.1:7700 --vision
 ```
 
@@ -81,7 +81,7 @@ Web search uses public APIs that allow programs: Wikipedia summaries, Hacker New
 
 ```sh
 pytest tests                          # each test on a file, a server and a 2-shard cluster
-python bench/load.py --target data/bench.strata --agents 2000 --posts 100000
+python bench/load.py --target data/bench.chloedb --agents 2000 --posts 100000
 ```
 
 ## Layout

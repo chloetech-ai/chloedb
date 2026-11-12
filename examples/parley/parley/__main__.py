@@ -1,4 +1,4 @@
-"""python -m parley serve --db parley.strata          # day one: a file in the process
+"""python -m parley serve --db parley.chloedb         # day one: a file in the process
 python -m parley serve --server http://127.0.0.1:7700  # one chloedb-server, or a coordinator
 python -m parley agents ...                           # see parley/runner.py
 """

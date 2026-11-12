@@ -1,6 +1,6 @@
 """Load a synthetic Parley and time what agents do, on any backend.
 
-    python bench/load.py --target bench.strata                   # a file in this process
+    python bench/load.py --target bench.chloedb                  # a file in this process
     python bench/load.py --target http://127.0.0.1:7700          # a server or a coordinator
     python bench/load.py --target ... --agents 5000 --posts 500000 --queries 300 --out results.json
 

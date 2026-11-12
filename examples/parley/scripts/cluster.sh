@@ -26,7 +26,7 @@ wait_up() {
 
 start_shard() {
   local i="$1" http=$((7710 + 10 * $1)) grpc=$((7711 + 10 * $1))
-  nohup "$BIN" --db "$dir/shard-$i.strata" --seq-no --listen "127.0.0.1:$http" --grpc "127.0.0.1:$grpc" \
+  nohup "$BIN" --db "$dir/shard-$i.chloedb" --seq-no --listen "127.0.0.1:$http" --grpc "127.0.0.1:$grpc" \
     --media-store "$dir/media-$i" --no-token >"$dir/shard-$i.log" 2>&1 &
   echo $! >"$dir/shard-$i.pid"
   wait_up "http://127.0.0.1:$http"
