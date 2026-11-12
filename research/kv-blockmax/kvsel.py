@@ -25,6 +25,7 @@ GQA: a KV head is read once for its group of query heads, so selection is
 per KV head; scores are max-pooled (mass: summed) over the group.
 """
 import math
+import time
 import torch
 from transformers import AttentionInterface
 from transformers.integrations.sdpa_attention import sdpa_attention_forward
@@ -52,6 +53,8 @@ class Ctl:
         self.exact_ks = [16, 64]
         self.tchunk = 64
         self.seed = 0
+        self.meta_time = 0.0   # seconds spent building metadata (k-means, codes)
+        self.meta_key = None
 
     def reset_prefix(self, L):
         assert L % self.page == 0
@@ -82,6 +85,7 @@ def build_meta(layer, k):
     """k (Hkv, L, d) prefix keys of one layer."""
     if layer in ctl.meta:
         return ctl.meta[layer]
+    t_build = time.time()
     H, L, d = k.shape
     P = ctl.page
     kp = k.view(H, L // P, P, d)
@@ -111,6 +115,7 @@ def build_meta(layer, k):
     e = nrm * (1 - ip * ip).clamp(min=0).sqrt() / (ip * math.sqrt(d - 1))
     m.update(rq_rot=Q, rq_c=c, rq_code=ybar, rq_f=(nrm / ip), rq_e=e.squeeze(-1))
     ctl.meta[layer] = m
+    ctl.meta_time += time.time() - t_build
     return m
 
 
@@ -205,26 +210,35 @@ def _attend(S, sel_pre, v, T0, L):
 def kvsel_attention(module, query, key, value, attention_mask, scaling=None, **kw):
     Tq, N = query.shape[2], key.shape[2]
     layer = module.layer_idx
-    if Tq == N or ctl.L == 0:
+    if Tq == N:
         # prefill of the prefix: plain causal attention
         return sdpa_attention_forward(module, query, key, value, attention_mask, scaling=scaling, **kw)
+    if ctl.mode == "dense" or ctl.L == 0:
+        # plain attention over the cache, the new tokens causal among themselves
+        allow = torch.arange(N)[None, :] <= (N - Tq + torch.arange(Tq))[:, None]
+        o = torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask=allow, scale=scaling, enable_gqa=True)
+        return o.transpose(1, 2).contiguous(), None
     L = ctl.L
     T = N - L
-    assert Tq == T and query.shape[0] == 1, (Tq, N, L)
+    # the queries are the last Tq of the T tokens after the prefix (a chunk, or one
+    # generated token at a time)
+    assert 0 < Tq <= T and query.shape[0] == 1, (Tq, N, L)
+    off = T - Tq
     scale = scaling if scaling is not None else 1 / math.sqrt(query.shape[-1])
     qf = query[0].float() * scale
     kf, vf = key[0].float(), value[0].float()
     H, d = kf.shape[0], kf.shape[-1]
     g = qf.shape[0] // H
-    qf = qf.view(H, g, T, d)
+    qf = qf.view(H, g, Tq, d)
     m = build_meta(layer, kf[:, :L].contiguous())
     outs = []
-    for t0 in range(0, T, ctl.tchunk):
-        t1 = min(T, t0 + ctl.tchunk)
+    for t0 in range(0, Tq, ctl.tchunk):
+        t1 = min(Tq, t0 + ctl.tchunk)
         qc = qf[:, :, t0:t1]
         S = torch.einsum("hgtd,hnd->hgtn", qc, kf)
         # causal mask inside the chunk: query t (absolute L+t) sees keys <= L+t
-        tt = torch.arange(t0, t1).unsqueeze(-1)
+        tt = torch.arange(t0, t1).unsqueeze(-1) + off
         jj = torch.arange(T).unsqueeze(0)
         S[..., L:] = S[..., L:].masked_fill((jj > tt), float("-inf"))
         dense_layer = layer in ctl.dense_layers
@@ -240,7 +254,7 @@ def kvsel_attention(module, query, key, value, attention_mask, scaling=None, **k
                 sel = select(ctl.method, ctl.budget, qc, m, S[..., :L], probs)
                 o, _ = _attend(S, sel, vf, t0, L)
             outs.append(o)
-    o = torch.cat(outs, dim=2).reshape(H * g, T, d)   # (Hq,T,d)
+    o = torch.cat(outs, dim=2).reshape(H * g, Tq, d)   # (Hq,Tq,d)
     return o.transpose(0, 1).unsqueeze(0).to(query.dtype).contiguous(), None
 
 

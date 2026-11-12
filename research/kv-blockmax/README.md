@@ -150,3 +150,25 @@ python -c "from huggingface_hub import hf_hub_download as d; d('emozilla/pg19-te
 ./queue.sh   # about 3.5 hours on 4 cores
 python analyze.py results/ppl_8k.json results/ppl_16k.json results/ppl_32k.json results/passkey_*.json results/qwen3_ppl_8k.json > results/summary.md
 ```
+
+## Three uses, measured (Qwen2.5-1.5B-Instruct)
+
+LongBench comes from `THUDM/LongBench`'s `data.zip` on Hugging Face, unzipped
+into `longbench/`. Results in [results/uses.md](results/uses.md)
+(`python analyze_uses.py`), from `queue_uses.sh` against a local chloedb-server started with
+`--media-store DIR --media-max-bytes 100000000 --max-body-mb 512`.
+
+- `run_tier.py` (use 2): one process prefills a prefix and writes its KV cache
+  to chloedb-server, a row per layer with the layer's K and V in a `MEDIA`
+  field; another process looks the rows up by the prefix's hash, fetches the
+  bytes from `/v1/media/<sha256>` and answers. At 32k tokens: 172 s cold,
+  5.8 s from the server, 3.4 s from a local file, the same answer.
+- `run_ctx.py` (use 3): ChloeCtx's docs (18k tokens) as one stored cache, read
+  densely or sparsely, against ChloeDB BM25 retrieval of chunks, as text or as
+  stored chunk caches; 26 questions in `ctx/questions.json`. Stored cache
+  23/26, BM25 text 23/26, no context 1/26.
+- `run_rag.py` (use 1): LongBench-E HotpotQA and 2WikiMQA, 40 questions, each
+  passage's cache computed once (after the shared instruction) and stitched
+  with its keys re-rotated to their new positions (`kvrag.py`). Stitching
+  loses 19 F1 against a joint prefill (37.0 vs 55.7) and 6 against BM25 text
+  retrieval: passages cached alone never attended to each other.
