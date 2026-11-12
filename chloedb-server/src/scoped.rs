@@ -127,10 +127,16 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
         if walk.ctes.contains(r) || made.iter().any(|m| m.eq_ignore_ascii_case(r)) {
             continue;
         }
-        if !catalog.contains(r) {
-            return Err(refuse(format!("{r} is not a table of this database (a table function's body names tables its call does not)")));
-        }
         who.may_table(Scope::Read, r, "a query")?;
+        // A name its grants cover that is not a table: as the engine says it
+        // (a client tells a missing table by these words), but without the
+        // engine's list of the database's tables, which names tables the
+        // key may not see. It is refused rather than run, since a name of
+        // no table may be a table function's, whose body names tables its
+        // call does not.
+        if !catalog.contains(r) {
+            return Err(ApiError::bad(format!("no such table: {r}")));
+        }
     }
     for a in walk.arguments.iter().filter(|a| catalog.contains(*a)) {
         who.may_table(Scope::Read, a, "a walk over an edge table")?;
@@ -248,6 +254,12 @@ mod tests {
         assert!(reads(&k, "SELECT d.id FROM crawl_docs d JOIN crawl_links l ON l.src = d.id").is_ok());
         assert!(reads(&k, "SELECT * FROM CRAWL_DOCS").is_ok());
         assert!(reads(&k, "WITH x AS (SELECT * FROM crawl_docs) SELECT * FROM x").is_ok());
+        // A missing table its grants cover is missing, as for any key, and
+        // the answer lists no other table; one they do not cover is refused
+        // whether or not it exists.
+        let missing = reads(&k, "SELECT * FROM crawl_pages").unwrap_err();
+        assert_eq!((missing.status, missing.message.as_str()), (400, "no such table: crawl_pages"));
+        assert_eq!(reads(&k, "SELECT * FROM nowhere").unwrap_err().status, 403);
         for bad in [
             "SELECT * FROM secrets",
             "SELECT * FROM \"secrets\"",

@@ -3776,8 +3776,10 @@ impl Service {
         if plan_only {
             return Ok(plan.to_json());
         }
-        for t in &plan.tables {
-            who.may_table(if t.exists { Scope::Write } else { Scope::Admin }, &t.schema.table, "an import")?;
+        if who.limited() {
+            for t in &plan.tables {
+                who.may_table(if t.exists { Scope::Write } else { Scope::Admin }, &t.schema.table, "an import")?;
+            }
         }
         let creates: Vec<&str> = plan.tables.iter().filter(|t| !t.exists).map(|t| t.schema.table.as_str()).collect();
         if !creates.is_empty() {
@@ -3882,7 +3884,9 @@ impl Service {
         if plan_only {
             return Ok(plan.to_json());
         }
-        who.may_table(if plan.exists { Scope::Write } else { Scope::Admin }, &plan.schema.table, "an import")?;
+        if who.limited() {
+            who.may_table(if plan.exists { Scope::Write } else { Scope::Admin }, &plan.schema.table, "an import")?;
+        }
         if !plan.exists {
             who.may(Scope::Admin, &format!("an import that creates a table ({})", plan.schema.table))?;
             keys::note(format!("Parquet import created table {}", plan.schema.table));
