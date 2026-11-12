@@ -115,8 +115,8 @@ print(len(list(site.rglob(&quot;*.html&quot;))), &quot;pages&quot;)</pre>
 <pre data-lang="sh">python3 -m http.server 8099 --bind 127.0.0.1 --directory shop &gt; shop.log 2&gt;&amp;1 &amp;
 until curl -sf http://127.0.0.1:8099/ &gt; /dev/null; do sleep 0.2; done</pre>
 <h2 id="look-before-you-crawl">Look before you crawl<a class="anchor" href="#look-before-you-crawl" aria-label="Link to this section">#</a></h2>
-<p><code>preview</code> reads a few pages and prints, as JSON, the table it would make and why, writing nothing. Its <code>sql</code> is the table:</p>
-<pre data-lang="sh">chloedb-crawl preview http://127.0.0.1:8099/ --pages 7 &gt; preview.json
+<p><code>preview</code> reads a few pages and prints, as JSON, the table it would make and why, writing nothing. Its <code>sql</code> is the table. The crawler fetches the public internet only, so a site on your own machine or network has to be named with <code>--allow-host</code> (<a href="crawler.html#what-it-does-with-a-page">reach</a>):</p>
+<pre data-lang="sh">chloedb-crawl preview http://127.0.0.1:8099/ --pages 7 --allow-host 127.0.0.1:8099 &gt; preview.json
 python3 -c &#x27;import json; p = json.load(open(&quot;preview.json&quot;)); print(len(p[&quot;pages&quot;]), &quot;pages read&quot;); print(p[&quot;sql&quot;])&#x27;</pre>
 <pre data-lang="text" data-title="Output" class="output">7 pages read
 CREATE TABLE IF NOT EXISTS site_127_0_0_1 (
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS site_127_0_0_1 (
 )</pre>
 <h2 id="crawl">Crawl<a class="anchor" href="#crawl" aria-label="Link to this section">#</a></h2>
 <p><code>crawl --local DIR</code> starts a cluster of its own in <code>DIR</code> (a coordinator on <code>127.0.0.1:7700</code> and a shard), crawls into it, prints its progress and then the table it made, and stops the cluster. <code>--table</code> names the table, which is otherwise named after the site's host. On a site you don't run, keep the defaults, which space the requests out and obey robots.txt; this one is ours, so it can go faster:</p>
-<pre data-lang="sh">chloedb-crawl crawl http://127.0.0.1:8099/ --local ./crawl-cluster \
+<pre data-lang="sh">chloedb-crawl crawl http://127.0.0.1:8099/ --local ./crawl-cluster --allow-host 127.0.0.1:8099 \
   --table shop --per-host 4 --delay-ms 0 --max-pages 50</pre>
 <pre data-lang="text" data-title="Output" class="output">...
 CREATE TABLE IF NOT EXISTS shop (

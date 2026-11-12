@@ -59,10 +59,10 @@ until curl -sf http://127.0.0.1:8099/ > /dev/null; do sleep 0.2; done
 
 ## Look before you crawl
 
-`preview` reads a few pages and prints, as JSON, the table it would make and why, writing nothing. Its `sql` is the table:
+`preview` reads a few pages and prints, as JSON, the table it would make and why, writing nothing. Its `sql` is the table. The crawler fetches the public internet only, so a site on your own machine or network has to be named with `--allow-host` ([reach](../chloedb/crawler.md#what-it-does-with-a-page)):
 
 ```sh
-chloedb-crawl preview http://127.0.0.1:8099/ --pages 7 > preview.json
+chloedb-crawl preview http://127.0.0.1:8099/ --pages 7 --allow-host 127.0.0.1:8099 > preview.json
 python3 -c 'import json; p = json.load(open("preview.json")); print(len(p["pages"]), "pages read"); print(p["sql"])'
 ```
 
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS site_127_0_0_1 (
 `crawl --local DIR` starts a cluster of its own in `DIR` (a coordinator on `127.0.0.1:7700` and a shard), crawls into it, prints its progress and then the table it made, and stops the cluster. `--table` names the table, which is otherwise named after the site's host. On a site you don't run, keep the defaults, which space the requests out and obey robots.txt; this one is ours, so it can go faster:
 
 ```sh
-chloedb-crawl crawl http://127.0.0.1:8099/ --local ./crawl-cluster \
+chloedb-crawl crawl http://127.0.0.1:8099/ --local ./crawl-cluster --allow-host 127.0.0.1:8099 \
   --table shop --per-host 4 --delay-ms 0 --max-pages 50
 ```
 
