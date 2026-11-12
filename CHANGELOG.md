@@ -11,6 +11,17 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+## 0.2.1
+
+Safety fixes from the audit of 12 November 2026, with no change to the file
+format: `chloedb-server-v0.2.1`, `chloedb-py-v0.2.1` and
+`chloedb-js-v0.2.1` (the Java package and ChloeCtx are built from source).
+It has breaking changes, each marked below. The shard protocol stays 20:
+`RestoreChunk` and `VerifyRequest` gain a `config` field, which a server of
+0.2.0 does not send and this one accepts as 0, so a shard can run both
+versions during an upgrade. It also brings the one-line installer and the
+app engine's schedules, sources and reach controls.
+
 ### Security
 
 - `chloedb-server`: a key rotated on one server ends on every server of
@@ -110,6 +121,58 @@ changes collect under "Unreleased".
   refused, and a decoded `?` or `#` stays in its segment. `/v1/apps` asks
   the apps at once and keeps a failure for 15 s, so an app that does not
   answer no longer empties the command center's list.
+
+### Cluster and operator
+
+- A copy that was removed from a shard while it was down can no longer
+  come back and, with other removed copies, elect itself and fence the
+  live primary: a primary or replica refuses Replicate, Restore and Verify
+  from a primary whose membership version is older than its own (the
+  shard protocol's new `config` fields).
+- **Breaking:** a coordinator refuses (409) a write to a shard whose
+  servers have no roles, which it used to write copy by copy so that the
+  copies drifted apart; `--write-every-copy` writes each one as before.
+- Coordinators run by the operator change the cluster map only while they
+  hold the Lease `<cluster>-map`, and write the map in doubt into it before
+  each change, so two coordinators no longer change the map at once. The
+  operator's ClusterRole (`deploy/k8s/operator/operator.yaml`) gains
+  `coordination.k8s.io` leases; an operator whose ClusterRole is older
+  makes the coordinators' Role without the Lease and logs a warning, and
+  its coordinators change the map as before. Apply `operator.yaml` again
+  to turn the Lease on.
+- `autoscale.volumes` has a ceiling: `maxSize` (default 1Ti) and
+  `maxShards` (default 16), and the rule does not fire again until its last
+  change shows in the reading.
+- Cloud setup: a cluster is created only with `keep: true` or
+  `delete_after_hours`, and a plan has at most 100 nodes. EKS nodes run in
+  private subnets behind one NAT gateway by default (`public_nodes` opts
+  out), `api_cidrs` limits the API endpoint, and spot with fewer than 3
+  copies warns.
+
+### Install
+
+- `curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh`
+  installs `chloedb-server` from the newest release into `~/.local/bin`,
+  checked against its `.sha256` (Linux x86_64 and aarch64 with glibc
+  2.35+, macOS arm64 and x86_64).
+- A Homebrew formula is built and tested for each release and attached to
+  it; it goes to a tap only once the tap is configured.
+- The Python package's Linux wheels are built for manylinux_2_28 (glibc
+  2.28), and a release can upload them to PyPI once trusted publishing is
+  set up.
+- The image runs `--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc
+  0.0.0.0:7701` when given no arguments (it still needs `CHLOEDB_TOKEN`).
+- [docs/quickstart.md](docs/quickstart.md): from install to a first search.
+
+### App engine
+
+- An app reaches only the hosts its owner allowed, each read-only or
+  allowed to send, checked at every redirect; API keys are sealed
+  (AES-256-GCM), bound to hosts and never seen by the app's code. Apps that
+  already had fetch on and no list keep reaching any host.
+- `CREATE RULE ... EVERY ...` runs rules on a schedule, `CREATE SOURCE`
+  reads RSS, Atom or JSON feeds into a table on a schedule, and `PULL`
+  does the same read inside a rule.
 
 ### Storage
 
