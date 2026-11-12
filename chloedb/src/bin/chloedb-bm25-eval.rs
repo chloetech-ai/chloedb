@@ -33,7 +33,8 @@
 //! `words`. `min2` and `min50` rank the rows with at least 2, or half, of
 //! the query's words (`min => 2`, `min => '50%'`). The `_r100` variants
 //! take 100 rows, with their recall@100 beside nDCG@10: `plain_r100` any
-//! of the words, `all_r100` all of them (`min => '100%'`), and
+//! of the words (`k09b04_r100` the same with `k1 => 0.9, b => 0.4`, the
+//! parameters of Anserini's and Pyserini's published baselines), `all_r100` all of them (`min => '100%'`), and
 //! `guard_r100` all of them while 100 rows have them, else as many as do
 //! (`min => 1, min_rows => 100`); with `all_r100`, the recalls are given
 //! again over the queries fewer than 100 rows match all the words of.
@@ -120,6 +121,11 @@ struct Args {
     /// (`pool_factor`).
     #[arg(long)]
     colbert_pool: Option<f32>,
+    /// The analyzer of the documents and the queries (`standard`, a
+    /// language such as `french`, `simple`): for collections in other
+    /// languages, such as MIRACL's (`tests/fixtures/miracl/fetch.sh`).
+    #[arg(long, default_value = "english")]
+    analyzer: String,
 }
 
 /// A variant's query on collection `coll` and whether it ranks rank-safe.
@@ -152,9 +158,10 @@ fn query(variant: &str, coll: &str, cross_encoder: &str) -> (String, bool) {
         "min2" => (top10("bm25(body, :q, syntax => 'plain', min => 2)"), true),
         "min50" => (top10("bm25(body, :q, syntax => 'plain', min => '50%')"), true),
         "plain_r100" => (top100("bm25(body, :q, syntax => 'plain')"), true),
+        "k09b04_r100" => (top100("bm25(body, :q, syntax => 'plain', k1 => 0.9, b => 0.4)"), true),
         "all_r100" => (top100("bm25(body, :q, syntax => 'plain', min => '100%')"), true),
         "guard_r100" => (top100("bm25(body, :q, syntax => 'plain', min => 1, min_rows => 100)"), true),
-        v => panic!("unknown variant {v}: plain, fuzzy, boost, strong_boost, either boost with _top100, boost_rerank100, minmax_rerank100, gbdt, gbdt_top100, gbdt_rerank100, ce_rerank<N>, colbert_rerank<N>, words, weight_first, require_first, exclude_last, min2, min50, plain_r100, all_r100 or guard_r100"),
+        v => panic!("unknown variant {v}: plain, fuzzy, boost, strong_boost, either boost with _top100, boost_rerank100, minmax_rerank100, gbdt, gbdt_top100, gbdt_rerank100, ce_rerank<N>, colbert_rerank<N>, words, weight_first, require_first, exclude_last, min2, min50, plain_r100, k09b04_r100, all_r100 or guard_r100"),
     }
 }
 
@@ -257,7 +264,8 @@ fn main() {
         let path = tmp.join(format!("strata-bm25-eval-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
-        let mut fields = vec![Field::new("id", FieldType::Keyword), Field::new("body", FieldType::Text { positions: false }), Field::new("importance", FieldType::Float)];
+        let analyzer = Analyzer::of(&args.analyzer, 1).unwrap_or_else(|e| panic!("{e}"));
+        let mut fields = vec![Field::new("id", FieldType::Keyword), Field::new("body", FieldType::Text { positions: false }).analyzer(analyzer), Field::new("importance", FieldType::Float)];
         let colbert = args.variants.iter().any(|v| v.starts_with("colbert_rerank"));
         if colbert {
             let models = args.models.as_ref().expect("the colbert variants need --models");
@@ -387,7 +395,7 @@ fn main() {
         drop(db);
         let _ = std::fs::remove_dir_all(&path);
         // Written after each collection, so a stopped run keeps what it measured.
-        let out = json!({ "tag": args.tag, "split": args.split, "machine": machine(), "collections": report });
+        let out = json!({ "tag": args.tag, "split": args.split, "analyzer": args.analyzer, "machine": machine(), "collections": report });
         std::fs::write(&file, serde_json::to_string_pretty(&out).unwrap() + "\n").unwrap();
     }
     if args.features.is_none() {

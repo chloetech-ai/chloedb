@@ -1,0 +1,30 @@
+{
+  "analyzer": "simple",
+  "collections": {
+    "miracl-fi": {
+      "db_bytes": 783724584,
+      "docs": 1883509,
+      "load_s": 28.823810716,
+      "queries": 1271,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 1.479746953579858,
+          "ms_p50": 1.198169,
+          "ms_p99": 5.205699999999999,
+          "ndcg10": 0.42411382872210796,
+          "recall10": 0.5326739350342813,
+          "recall100": 0.7489784321806352
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "fi_simple"
+}

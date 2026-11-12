@@ -19,6 +19,9 @@ let pick = null;
 function onParams(r) { if (pick) pick(r); }
 
 const W = 256, HD = 44, ROW = 22, FT = 22;
+// The analyzers of a text field (chloedb/src/text/analyzer.rs).
+const ANALYZERS = ["english", "simple", "standard", "cjk", "arabic", "bengali", "chinese", "danish", "dutch", "finnish", "french", "german", "greek", "hindi", "hungarian", "italian", "norwegian", "persian", "portuguese", "romanian", "russian", "spanish", "swedish", "tamil", "telugu", "turkish"];
+const ANALYZER_HINT = "english: stopwords dropped, words stemmed; simple: every word as written; standard: any language and script; cjk: pairs of characters for Chinese and Japanese; a language: standard with its stemmer";
 const KIND = {
   ref: { color: "var(--s1)", label: "references" },
   edges: { color: "var(--s8)", label: "links to (EDGES)" },
@@ -510,7 +513,7 @@ function designer(host, bar, { seed, onCreated }) {
     if (["text", "keyword", "int", "float", "bool", "timestamp"].includes(f.type) && !f.multi && d.key !== f.name) out.push(lab("Default", f.type === "timestamp" ? "now: the time of the write" : "the value a write that leaves the field out gets", def));
     if ((f.type === "keyword" || f.type === "int") && !f.multi) out.push(lab("References", "This field holds keys of that table (not enforced; joins follow it)", sel(f, "references", [d.table, ...cached().map((t) => t.table)].filter((v, i, a) => v && a.indexOf(v) === i))));
     if (f.type === "text") {
-      out.push(lab("Analyzer", "english: stopwords dropped, words stemmed; simple: every word as written", sel(f, "analyzer", ["english", "simple"], "english")));
+      out.push(lab("Analyzer", ANALYZER_HINT, sel(f, "analyzer", ANALYZERS, "english")));
       out.push(lab("Made from", "A generated field: the text of these fields joined, searched as one", multiSel(f, "from", others((x) => x.type === "text"))));
       out.push(lab("Phrases", "Keep word positions, for \"quoted phrases\"", tog(f, "positions", true)));
       out.push(lab("Searchable", "Index the words; off keeps the text only to show", tog(f, "indexed", true)));
@@ -531,7 +534,7 @@ function designer(host, bar, { seed, onCreated }) {
     if (f.type === "json") {
       out.push(lab("Text", "Index the objects' strings as text too, for MATCH and bm25 (long strings included)",
         h("input", { type: "checkbox", checked: !!f.text, onchange: (e) => { if (e.target.checked) f.text = true; else { delete f.text; delete f.analyzer; } changed(); } })));
-      if (f.text) out.push(lab("Analyzer", "english: stopwords dropped, words stemmed; simple: every word as written", sel(f, "analyzer", ["english", "simple"], "english")));
+      if (f.text) out.push(lab("Analyzer", ANALYZER_HINT, sel(f, "analyzer", ANALYZERS, "english")));
     }
     if (!out.length) out.push(h("div", { class: "small muted" }, `${typeMeta(f).label} has no options.`));
     return h("div", { class: "sch-grid" }, out);

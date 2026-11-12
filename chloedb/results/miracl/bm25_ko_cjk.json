@@ -1,0 +1,30 @@
+{
+  "analyzer": "cjk",
+  "collections": {
+    "miracl-ko": {
+      "db_bytes": 650063912,
+      "docs": 1486752,
+      "load_s": 26.916072701,
+      "queries": 213,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 4.522827276995308,
+          "ms_p50": 3.820345,
+          "ms_p99": 17.569228,
+          "ndcg10": 0.37330948889750337,
+          "recall10": 0.4654262273980584,
+          "recall100": 0.7647839901361027
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "ko_cjk"
+}

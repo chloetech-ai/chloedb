@@ -1,0 +1,30 @@
+{
+  "analyzer": "finnish",
+  "collections": {
+    "miracl-fi": {
+      "db_bytes": 715952168,
+      "docs": 1883509,
+      "load_s": 28.43889131,
+      "queries": 1271,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 2.037048570416992,
+          "ms_p50": 1.599528,
+          "ms_p99": 7.538844999999999,
+          "ndcg10": 0.475263395868778,
+          "recall10": 0.6159229702896105,
+          "recall100": 0.8613733717982338
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "fi_finnish"
+}

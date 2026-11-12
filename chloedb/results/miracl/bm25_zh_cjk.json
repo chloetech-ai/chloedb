@@ -1,0 +1,30 @@
+{
+  "analyzer": "cjk",
+  "collections": {
+    "miracl-zh": {
+      "db_bytes": 2607255592,
+      "docs": 4934368,
+      "load_s": 152.844572034,
+      "queries": 393,
+      "variants": {
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 4.408310694656489,
+          "ms_p50": 3.439443,
+          "ms_p99": 13.132813,
+          "ndcg10": 0.13870066419767624,
+          "recall10": 0.19382042893493287,
+          "recall100": 0.5117957106506724
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "zh_cjk"
+}
