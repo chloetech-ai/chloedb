@@ -1351,7 +1351,8 @@ impl Db {
         // the rows it reads, split.
         if let Some(c) = crate::query::chunks::of_sql(sql, params)? {
             let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| Error::Query(format!("no table {}", c.table)))?.clone();
-            let rs = self.query_at(snap, &c.source_sql(&schema)?, params, opts)?;
+            // Its own read: not held to the answer's `max_rows`.
+            let rs = self.query_at(snap, &c.source_sql(&schema)?, params, &ExecOptions { max_rows: None, ..opts.clone() })?;
             return Ok(c.finish(&rs));
         }
         let q = qsql::parse_query_cached(sql)?;
@@ -1391,7 +1392,10 @@ impl Db {
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
         if crate::query::llm::may_call(sql, &functions) {
-            if let Some(split) = crate::query::llm::split(&q.query, &functions, params)? {
+            if let Some(mut split) = crate::query::llm::split(&q.query, &functions, params)? {
+                if let Some(m) = opts.max_rows {
+                    split.cap_rows(m);
+                }
                 let plan = plan_of(snap, &split.first, params, &functions)?;
                 let rs = self.run_on(snap, &plan, opts)?;
                 return split.finish(rs, params, &self.models_dir());
@@ -1643,7 +1647,7 @@ impl Db {
         // then their INSERTs.
         if let Some(ins) = crate::query::chunks::insert_of_sql(sql, params)? {
             let schema = self.table(&ins.query.table)?;
-            let rs = self.query_with(&ins.query.source_sql(&schema)?, params, opts)?;
+            let rs = self.query_with(&ins.query.source_sql(&schema)?, params, &ExecOptions { max_rows: None, ..opts.clone() })?;
             let mut n = 0;
             for (statement, p) in ins.inserts(&ins.query.finish(&rs)) {
                 if let SqlResult::Written(w) = self.sql_with(&statement, &p, opts)? {
@@ -1756,7 +1760,7 @@ impl Db {
                 if !c.replace && self.functions()?.current(&c.name).is_some() {
                     return Err(Error::Query(format!("function {} exists: CREATE OR REPLACE CLASSIFIER {} makes its next version", c.name, c.name)));
                 }
-                let rs = self.query_with(&c.training_sql(), &Params::new(), opts)?;
+                let rs = self.query_with(&c.training_sql(), &Params::new(), &ExecOptions { max_rows: None, ..opts.clone() })?;
                 let trained = c.train(&schema, &rs)?;
                 self.sql_with(&trained.function_sql(c), &Params::new(), opts)?;
                 Ok(SqlResult::Rows(trained.result_set()))

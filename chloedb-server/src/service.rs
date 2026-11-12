@@ -237,6 +237,11 @@ pub struct QueryReq {
     /// statistics: a run of a CPU profile's query ([`crate::profiler`]),
     /// which runs it thousands of times. Still counted in the metrics.
     pub quiet: bool,
+    /// A read of the server's own, not a client's: the rows a classifier
+    /// trains on, `chunks_of` splits or mining reads. Not held to
+    /// `--max-rows` (through a coordinator, a shard still holds a leaf to
+    /// [`compound::MAX_ROWS`]).
+    pub own_read: bool,
     /// A leaf of a compound query that DataFusion runs: its rows as Arrow
     /// columns when there are more than this many ([`Leaf`]), which a
     /// coordinator asks its shards for (protocol 10,
@@ -2426,7 +2431,7 @@ impl Service {
             if let Some(c) = chloedb::query::chunks::of_sql(&req.sql, &req.params)? {
                 let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", c.table)))?;
                 let mut source = req.clone();
-                (source.sql, source.scroll, source.hold) = (c.source_sql(&schema)?, None, false);
+                (source.sql, source.scroll, source.hold, source.own_read) = (c.source_sql(&schema)?, None, false, true);
                 let mut a = Box::pin(self.query(source)).await?;
                 let t0 = Instant::now();
                 a.rs = c.finish(&a.rs);
@@ -2489,7 +2494,11 @@ impl Service {
             }
         }
         if req.plan.is_none() && !req.shard {
-            if let Some(split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
+            if let Some(mut split) = chloedb::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
+                // The calls read no more rows than a query answers.
+                if let Some(m) = self.max_rows {
+                    split.cap_rows(m);
+                }
                 // Calls of a classifier on a parameter, computed: the query
                 // runs as any does.
                 if split.is_folded() {
@@ -2504,6 +2513,9 @@ impl Service {
                 }
                 let mut first = req.clone();
                 first.sql = split.first.to_string();
+                // It reads one row past what the calls take, to say there
+                // are more: the second step answers within --max-rows.
+                first.own_read = true;
                 let mut a = self.query_admitted(first).await?;
                 let rs = std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
                 let (params, models) = (req.params.clone(), self.models_dir());
@@ -2733,7 +2745,7 @@ impl Service {
                         synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()),
                         // A coordinator's compound queries ask a shard for
                         // as many rows as a compound query's leaf may hold.
-                        max_rows: if req.shard { self.max_rows.map(|m| m.max(compound::MAX_ROWS + 1)) } else { self.max_rows },
+                        max_rows: if req.own_read { None } else if req.shard { self.max_rows.map(|m| m.max(compound::MAX_ROWS + 1)) } else { self.max_rows },
                         max_groups: self.max_groups,
                         memory: self.query_memory.clone(),
                         profile: req.profile,
@@ -2793,7 +2805,7 @@ impl Service {
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
                     let permit = permit.ok_or_else(too_many)?;
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
-                    let r = match (&req.scroll, self.max_rows.filter(|&m| reach > m)) {
+                    let r = match (&req.scroll, self.max_rows.filter(|&m| reach > m && !req.own_read)) {
                         // The shards' scrolls, their pages merged as they come.
                         (Some(ask), _) if chloedb::cluster::streams(&select) => {
                             let keep_alive = self.keep_alive(ask.keep_alive, false) + crate::coord::SHARD_KEEP_ALIVE_MARGIN;
@@ -2852,7 +2864,7 @@ impl Service {
             }
         }
         // A shard's answer to a coordinator is not a client's.
-        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), &meta, res);
+        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard && !req.own_read), req.shard, (profiled, req.quiet), &meta, res);
         // A lease made for a query that failed holds nothing to fetch.
         let made = (lease != req.snapshot).then_some(lease).filter(|_| a.is_err());
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
@@ -3388,7 +3400,7 @@ impl Service {
             who.may(Scope::Write, "a write statement")?;
             let t0 = Instant::now();
             let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&ins.query.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", ins.query.table)))?;
-            let a = self.query(QueryReq { sql: ins.query.source_sql(&schema)?, params: params.clone(), timeout_ms, after, ..Default::default() }).await?;
+            let a = self.query(QueryReq { sql: ins.query.source_sql(&schema)?, params: params.clone(), timeout_ms, after, own_read: true, ..Default::default() }).await?;
             let mut total = Written::default();
             for (statement, p) in ins.inserts(&ins.query.finish(&a.rs)) {
                 if let SqlAnswer::Written { w, .. } = Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await? {
@@ -3487,7 +3499,7 @@ impl Service {
         if !c.replace && self.functions().current(&c.name).is_some() {
             return Err(ApiError::bad(format!("query error: function {} exists: CREATE OR REPLACE CLASSIFIER {} makes its next version", c.name, c.name)));
         }
-        let read = self.query(QueryReq { sql: c.training_sql(), timeout_ms, ..Default::default() }).await?;
+        let read = self.query(QueryReq { sql: c.training_sql(), timeout_ms, own_read: true, ..Default::default() }).await?;
         let (c2, schema2) = (c.clone(), schema.clone());
         let trained = tokio::task::spawn_blocking(move || c2.train(&schema2, &read.rs)).await.map_err(ApiError::internal)??;
         let sql = trained.function_sql(c);

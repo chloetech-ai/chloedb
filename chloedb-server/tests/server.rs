@@ -168,7 +168,9 @@ async fn http_answers_like_the_embedded_database() {
         want.push(js::result(&db.query(sql, &p).unwrap(), 0.0));
     }
     let want_chunks = js::result(&db.query(CHUNKS, &Params::new()).unwrap(), 0.0);
-    let base = http(service(db, "http://unused"), None).await;
+    // A server's own reads (a classifier's rows, the rows chunks_of
+    // splits) are not held to --max-rows.
+    let base = http(service_with(Arc::new(db), |s| s.max_rows = Some(1000)), None).await;
     let c = chloedb_server::http_client().build().unwrap();
     for ((sql, params), want) in queries().into_iter().zip(&want) {
         let (status, got) = post(&c, &format!("{base}/v1/query"), json!({"sql": sql, "params": params})).await;
@@ -207,6 +209,11 @@ async fn http_answers_like_the_embedded_database() {
     let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id, cat(emb) FROM products ORDER BY id LIMIT 3"})).await;
     assert_eq!(status, 200, "{q}");
     assert!(q["rows"][0][1].is_string(), "{q}");
+    // A row's class in a query with no LIMIT: the calls read no more rows
+    // than the server answers (--max-rows).
+    let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id, cat(emb), cat(emb, 'score') FROM products WHERE id = 'p0000042'"})).await;
+    assert_eq!(status, 200, "{q}");
+    assert!(q["rows"][0][1].is_string() && q["rows"][0][2].is_number(), "{q}");
     let (status, e) = post(&c, &format!("{base}/v1/classify"), json!({"name": "nope", "text": "x"})).await;
     assert_eq!(status, 400, "{e}");
     // The chunks of a row's text, by SQL and as a query, as the embedded
@@ -217,6 +224,11 @@ async fn http_answers_like_the_embedded_database() {
         assert_eq!(got["rows"], want_chunks["rows"], "{got}");
         assert_eq!(got["rows"][0][0], "p0000042#0", "{got}");
     }
+    // What a built-in content model makes of a text.
+    let (status, d) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "builtin:lang", "text": "Der schnelle braune Fuchs springt über den faulen Hund"})).await;
+    assert_eq!((status, d["values"][0].as_str()), (200, Some("de")), "{d}");
+    let (status, e) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "builtin:nope", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
     // A table's own synonym list, by SQL; listed; used by synonyms => 1.
     let rainproof = json!({"sql": "SELECT COUNT(*) FROM products WHERE MATCH(body, 'rainproof', synonyms => 1)"});
     let (status, e) = post(&c, &format!("{base}/v1/query"), rainproof.clone()).await;

@@ -274,9 +274,26 @@ pub struct Split {
     offset: usize,
     limit: Option<usize>,
     rows: usize,
+    /// Whether the first step's LIMIT is [`Split::rows`] + 1, set here.
+    past: bool,
     /// Calls of a classifier computed before the first step
     /// ([`super::classify::fold`]).
     folded: usize,
+}
+
+impl Split {
+    /// Holds the rows the calls read to `max` at most (a server's
+    /// `--max-rows`, the most a query answers): the first step then
+    /// fetches `max` + 1 rows, one more to say there are more.
+    pub fn cap_rows(&mut self, max: usize) {
+        if max >= self.rows {
+            return;
+        }
+        self.rows = max;
+        if self.past {
+            self.first.limit_clause = Some(sql::LimitClause::LimitOffset { limit: Some(Expr::Value(sql::Value::Number((max + 1).to_string(), false).into())), offset: None, limit_by: Vec::new() });
+        }
+    }
 }
 
 /// Whether `f` calls [`NAME`].
@@ -688,13 +705,16 @@ pub fn split(q: &sql::Query, functions: &FunctionSet, params: &Params) -> Result
     let (offset, limit) = compound::limits(&q.limit_clause, params)?;
     // Rows past the limit are not fetched: one more says there are more.
     let past = || Some(sql::LimitClause::LimitOffset { limit: Some(Expr::Value(sql::Value::Number((limits.rows + 1).to_string(), false).into())), offset: None, limit_by: Vec::new() });
+    let mut set_past = false;
     if late_order {
         first.order_by = None;
         first.limit_clause = past();
+        set_past = true;
     } else if limit.is_none() && offset == 0 {
         first.limit_clause = past();
+        set_past = true;
     }
-    Ok(Some(Split { first, hidden: b.hidden.len(), calls: b.calls, items: out, order: order_keys, offset, limit, rows: limits.rows, folded }))
+    Ok(Some(Split { first, hidden: b.hidden.len(), calls: b.calls, items: out, order: order_keys, offset, limit, rows: limits.rows, past: set_past, folded }))
 }
 
 /// [`split`] of the query of text `sql`: `None` when it calls no model.
@@ -879,7 +899,7 @@ impl Split {
     /// A query whose classifier calls were all of values of no row, `q`
     /// with them computed: its first step is the whole query.
     fn folded(q: sql::Query, folded: usize) -> Split {
-        Split { first: q, hidden: 0, calls: Vec::new(), items: Vec::new(), order: Vec::new(), offset: 0, limit: None, rows: usize::MAX, folded }
+        Split { first: q, hidden: 0, calls: Vec::new(), items: Vec::new(), order: Vec::new(), offset: 0, limit: None, rows: usize::MAX, past: false, folded }
     }
 
     /// Whether the query called a classifier on values of no row alone,
