@@ -33,9 +33,10 @@ This document is the design. `report/` holds the evaluation of the prototype.
   personalized PageRank) and combine the result with text, structured and
   vector search in one statement (§5.4, §6.1).
 
-Non-goals for the prototype: joins, writers in several processes (one
-process writes a database and others may read it, `DbOptions::read_only`:
-`storage/share.rs`), distribution.
+Non-goals: writers in several processes (one process writes a database
+and others may read it, `DbOptions::read_only`: `storage/share.rs`).
+Joins across tables (§3.7) and distribution (chloedb-server's shards and
+replicas) were non-goals of the first prototype and came later.
 
 ## 2. Architecture
 
@@ -307,7 +308,8 @@ need no table.
   writer lock, checks that its table was not dropped and created again
   meanwhile, and reads the rows it changes at that version. `CREATE TABLE`
   binds to the schema's short JSON form, so both take the same options.
-  chloedb-server binds statements against the first table only.
+  chloedb-server binds each statement against the tables it names, and a
+  request that names no table against the first.
 * **Later format changes.** Readers refuse a newer format number in a meta
   slot, `CURRENT` or a manifest, but ignore keys they do not know inside a
   schema. So a change that an older version must not ignore (stable field

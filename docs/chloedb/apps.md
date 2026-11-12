@@ -60,15 +60,22 @@ The image runs alone as well, with a chloedb-server of its own on its volume: `d
 
 ## A model and the web, per app
 
-An app's code can ask a model and reach the web, each only once the app's owner has switched it on in the studio, under **Model and web**:
+An app's code can ask a model, reach the web and run on a schedule, each only once the app's owner has switched it on in the studio, under **Model and web**:
 
 | | what the app calls | limits |
 |---|---|---|
 | A model | `app.ask(prompt, {json, system})`: a small model (Haiku; `STRATA_APPS_ASK_MODEL`) summarizes, sorts, extracts or drafts | the same question gets the kept answer (`sa_asks`) at no cost; 200 questions a day per app by default (the owner can change it; `STRATA_APPS_ASKS_PER_DAY`), 20 a minute |
 | Web search | `app.ask(prompt, {web: true})`: the model searches the web before it answers | kept answers expire after 6 hours; a call stops at $0.25 |
-| Web pages and APIs | `app.fetch(url, {method, json, headers})`: JSON parsed, an HTML page's readable text and title | public addresses only (below); 2 MB and 10 seconds a request; GET answers kept 10 minutes; 1000 a day per app |
+| Web pages and APIs | `app.fetch(url, {method, json, headers, secret})`: JSON parsed, an HTML page's readable text and title; `CREATE SOURCE` and `PULL` read feeds and JSON lists into tables | the hosts the owner allowed, on public addresses only (below); 2 MB and 10 seconds a request; GET answers kept 10 minutes; 1000 a day per app |
+| Schedules | `EVERY ...` on a rule or function, and `CREATE SOURCE` | at most every 15 minutes; stops after 5 failures in a row |
 
-Until the owner switches it on, the call answers that it is off, and the app shows that instead of failing (it is not sent to the repair). A build says which of the three the code uses and which are still off. In a build's tests the calls answer empty and reach nothing.
+Until the owner switches it on, the call answers that it is off, and the app shows that instead of failing (it is not sent to the repair). A build says which of these the code uses, which are still off, and which hosts and secrets it needs that the owner has not given it. In a build's tests the calls answer empty and reach nothing.
+
+Under the web, the owner also allows each **host** an app reads from (GET, HEAD) and, separately, each host it may send to (POST); a host covers its subdomains. Hosts the code names, or tried and was refused, are listed for the owner to allow, and every hop of a redirect must be allowed too, so a change (asked for, built from use, or a repair) never widens what an app reaches by itself. Apps switched on before host lists keep "any public host" until the owner replaces it.
+
+An API key is a **secret**: the owner pastes it once, binds it to the hosts it may go to, and says where it goes (`Authorization: Bearer`, a header of its own, or a query parameter). Code names it, `app.fetch(url, {secret: 'weather'})`, and never holds it. Secrets are sealed with AES-256-GCM in ChloeDB, apart from the app's code, with `STRATA_APPS_SECRET_KEY` (or a key the engine keeps in `DATA/secret.key`), sent only to their hosts, never shown again, and replaced by `[secret]` in an answer that echoes them. A key written into code fails the build's checks.
+
+A fourth switch, **Schedules**, lets rules and functions run on their own: `CREATE RULE brief EVERY DAY AT '07:00' TZ 'Europe/Madrid' AS ...`, or a source that fills a table from a feed or a JSON API, `CREATE SOURCE news FROM FEED 'https://news.example.com/rss' EVERY 1 HOUR INTO stories (title, link, published, summary) KEY link` (each item added once, by its key). A schedule runs at most every 15 minutes, under the app's daily limits, and stops after 5 failures in a row; the studio lists each with its next run, its last result, Run now and Pause.
 
 `app.fetch` refuses addresses on the machine or its networks: loopback, private and link-local ranges, carrier-grade NAT, unique-local and link-local IPv6, and IPv4 inside IPv6. Every address a name resolves to is checked when the connection is made, and again after every redirect, so a name that points inside the network is refused too. Only ports 80, 443, 8080 and 8443 are open, and a URL may not carry a name or password.
 

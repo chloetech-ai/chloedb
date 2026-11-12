@@ -8,14 +8,14 @@ compiles to one SQL statement with its values as parameters, which runs on
 a file in this process (`Database`) or on a chloedb-server or a coordinator
 (`Client`), and the answer comes back as Arrow::
 
-    import chloedb as st
+    import chloedb as cdb
 
-    shop = st.connect("shop.chloedb")         # or st.connect("https://...")
+    shop = cdb.connect("shop.chloedb")         # or cdb.connect("https://...")
     orders = shop["orders"]
     top = (orders
-           .filter(st.col("status") == "paid")
+           .filter(cdb.col("status") == "paid")
            .group_by("country")
-           .agg(revenue=st.col("amount").sum(), n=st.len())
+           .agg(revenue=cdb.col("amount").sum(), n=cdb.len())
            .sort("revenue", descending=True)
            .head(10))
     print(top.sql())                          # the SQL it runs

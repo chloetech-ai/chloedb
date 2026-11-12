@@ -1,10 +1,19 @@
 # chloedb-server
 
-`chloedb-server` serves a ChloeDB database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Run several of them as shards and one more as a coordinator, and the coordinator answers like one database.
+`chloedb-server` serves a ChloeDB database over HTTP JSON and gRPC. Every server has a command center in the browser, with a query console and an agent that answers questions by writing SQL. Run several servers as shards behind one more as a coordinator, and the coordinator answers like one database.
 
-New to it? [Build an app](build-an-app.md) is one page from an empty server to search, stock, holds, events counted once and a cluster; this page is the reference.
+New to it? [Build an app](build-an-app.md) goes from an empty server to search, stock, holds, events counted once and a cluster in one page. This page is the reference:
 
-**Old and new names.** ChloeDB was called Strata, and the names on this page are the new ones. The old ones go on working for a release, so that a deployment can move one piece at a time: the server image and the release archives also run the programs as `strata-server`, `strata-crawl` and `strata-sheets`; every `CHLOEDB_*` setting can be set as `STRATA_*` (`STRATA_TOKEN` for `CHLOEDB_TOKEN`; when both are set, the new one wins); a client may send the headers it sets (`x-chloedb-client`, `-app`, `-reason`, `-confirm`, `-table`) as `x-strata-*`, over HTTP and as gRPC metadata; and an answer carries its headers under both names (`x-chloedb-took-ms` and `x-strata-took-ms`). The metrics are renamed outright, from `strata_*` to `chloedb_*` (a dashboard over servers from before and after the rename matches `{__name__=~"(chloedb|strata)_.*"}`), and so are the alert messages, which begin `[chloedb FIRING ...]` rather than `[strata FIRING ...]`. The browser UI moves what it saved under `strata.*` to `chloedb.*` the first time it loads, the MCP server introduces itself as `chloedb`, and the OpenSearch API's cluster is named `chloedb`. The container image is `ghcr.io/chloetech-ai/chloedb-server`, and every version is also published as `ghcr.io/chloetech-ai/strata-server`, the same image under its old name, so that a cluster that follows the old name keeps getting new versions. The Kubernetes operator's resources keep the old name (the `StrataCluster` kind, the `strata-system` namespace), and its pods start the programs by their old names, with `STRATA_*` settings, which every image understands, those from before the rename too.
+| part | sections |
+|---|---|
+| Start it | [Run it](#run-it) (every flag), [Schemas](#schemas), [Loading rows](#loading-rows) |
+| Models and media | [Embedded vector fields](#embedded-vector-fields), [Media fields](#media-fields), [Semantic IDs](#semantic-ids) |
+| The API | [HTTP API](#http-api), [Security](#security), [gRPC](#grpc) |
+| A cluster | [Sharding](#sharding-one-coordinator-many-shards), [Replication](#replication-a-primary-and-its-replicas), [On Kubernetes](#on-kubernetes) |
+| Running it | [Deadlines, admission and metrics](#deadlines-admission-and-metrics): limits, health, logs, alerts |
+| The command center | [The UI](#the-ui), [The agent](#the-agent), [The on-call agent](#the-on-call-agent), [Agents over MCP](#agents-over-mcp) |
+
+**Old names.** ChloeDB was called Strata until November 2026. The names on this page are the new ones, and the old ones (`strata-server`, `STRATA_*` settings, `x-strata-*` headers) still work for a release: [Compatibility](../compatibility.md#old-names) lists them.
 
 ## Run it
 
@@ -53,6 +62,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--failover-after-ms N` | 0 | in a cluster: a replica that hears nothing from its primary for this long asks its shard's copies to [elect](#failover) it primary, and a primary that does not hear from a majority of its copies for most of it serves no reads (0: failover by hand only) |
 | `--ship-log-mb N` | 64 | with `--replicas` or `--replica`: the latest transactions kept in memory to ship; a replica further behind is sent a copy of the primary |
 | `--scrub-every-s N` | 86400 | on a database server: how often it reads every segment against its checksum while it serves, at `--scrub-mib-s` (64 MiB/s) at most, to find data [damaged on disk](#replication-a-primary-and-its-replicas) (0: only when asked, `POST /v1/admin/scrub`); the first scrub starts within ten minutes |
+| `--merge-nice N` | 10 | on Linux, the nice value (0 to 19) merges run at, so that a merge gets the cores reads and writes leave idle; 0 runs them at the priority of reads and writes |
 | `--verify-every-s N` | 600 | with `--replicas`: how often each replica's rows are [compared](#replication-a-primary-and-its-replicas) with the primary's; a replica whose rows differ is sent a copy of the primary (0: only when asked, `POST /v1/admin/verify`) |
 | `--verify-checksums` | off | check every segment against its checksum before serving (reads the whole database once); a damaged newest version is skipped for the one before it |
 | `--shards URL,URL,…` | | run as a coordinator over these shard servers' gRPC addresses |
@@ -61,6 +71,8 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--peer-url URL` | `$CHLOEDB_PEER_URL`, else `$CHLOEDB_POD_IP` and the `--listen` port, else the `--listen` address | on a coordinator: the address other coordinators reach its HTTP API at; it names itself so to its shards |
 | `--contain FILE` | `contain.json` beside `--alerts`; in memory without either | on a coordinator: where its Contain rules and their removals are kept across a restart |
 | `--slot-map FILE` | equal runs, epoch 1 | with `--shards`: the [slot map](#slots) to route writes by, which the shards are given |
+| `--shard-timeout-ms N` | 0 | with `--shards`: give up on a shard after this many milliseconds (0: at the query's deadline) |
+| `--partial` | off | with `--shards`: answer without the shards that have no copy answering, flagged `"partial"`; a request's own `"partial"` overrides it |
 | `--listen ADDR` | `127.0.0.1:7700` | HTTP: the API, `/metrics` and the UI |
 | `--grpc ADDR` | `127.0.0.1:7701` | gRPC (`off` to disable) |
 | `--opensearch-listen ADDR` | off | also answer [OpenSearch's REST API](opensearch.md) here, for applications written for OpenSearch or Elasticsearch; `--opensearch-version V` is the version it reports (`2.11.0`; `7.10.2` for clients of Elasticsearch 7) |
@@ -106,6 +118,8 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--log-queries N` | 200 | the queries a second the log store keeps of those that ended well and took less than `--slow-ms`; every slow or failed one is kept |
 | `--no-read-stats` | off | do not count the documents queries return and the keys reads ask for (the [index inspector](#the-index-inspector)'s reads); its statistics of each table still work |
 | `--node-name NAME` | `$CHLOEDB_NODE_NAME`, else `HOST:PORT` (the host name and the HTTP port) | what the log store calls this server, in its `node` column |
+| `--app NAME=URL` | `$CHLOEDB_APPS` | an [app](#apps) the command center shows as a view (repeatable, or comma-separated): the server forwards `/v1/apps/NAME/...` to it |
+| `--app-token T` | `$CHLOEDB_APP_TOKEN` | the token the server sends its apps (`Authorization: Bearer T`) |
 
 `chloedb-server import`, `chloedb-server fetch-model` and `chloedb-server promote` are subcommands: [loading rows](#loading-rows), [embedded vector fields](#embedded-vector-fields) and [promotion](#replication-a-primary-and-its-replicas).
 
@@ -115,7 +129,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 
 ## Schemas
 
-A database starts with one table, whose schema is set when the database is created (`--schema FILE`, `chloedb-server import --schema FILE`, the query console's schema designer, or `chloedb.Database.create` in [Python](python.md)). [`CREATE TABLE`](query-language.md#tables) and `DROP TABLE` over `POST /v1/sql` add and drop more, [`ALTER TABLE`](query-language.md#changing-a-tables-columns) adds, drops and renames the columns of any table while it serves, and the server serves every table: SQL names its tables, write operations and imports name theirs (`"table"`, `?table=`; the first table when they name none), `GET /v1/tables` lists the schemas and `GET /v1/schema?table=` gives one. [`CREATE RANK PROFILE`](query-language.md#rank-profiles-a-ranking-kept-with-its-table) and `DROP RANK PROFILE` keep rankings with a table the same way. A [primary](#replication-a-primary-and-its-replicas) takes all five and ships them to its replicas as it ships writes, and answers once the copies its acks name hold them. A schema is JSON: the table's name, its key, and its fields by type, with options only where they differ from the defaults.
+A database starts with the table its schema names, or with none, and the schema is set when the database is created (`--schema FILE`, `chloedb-server import --schema FILE`, the query console's schema designer, or `chloedb.Database.create` in [Python](python.md)). [`CREATE TABLE`](query-language.md#tables) and `DROP TABLE` over `POST /v1/sql` add and drop more, [`ALTER TABLE`](query-language.md#changing-a-tables-columns) adds, drops and renames the columns of any table while it serves, and the server serves every table: SQL names its tables, write operations and imports name theirs (`"table"`, `?table=`; the first table when they name none), `GET /v1/tables` lists the schemas and `GET /v1/schema?table=` gives one. [`CREATE RANK PROFILE`](query-language.md#rank-profiles-a-ranking-kept-with-its-table) and `DROP RANK PROFILE` keep rankings with a table the same way. A [primary](#replication-a-primary-and-its-replicas) takes all five and ships them to its replicas as it ships writes, and answers once the copies its acks name hold them. A schema is JSON: the table's name, its key, and its fields by type, with options only where they differ from the defaults.
 
 ```json
 {
@@ -550,6 +564,8 @@ curl -s localhost:7700/v1/query -H 'content-type: application/json' -d '{
   "params": {"c": "kitchen", "t": "quiet espresso", "v": {"vector_of": "p0011051"}}
 }'
 ```
+
+<a id="writes"></a>
 
 `/v1/write` takes a batch of operations, applied in one transaction:
 
@@ -1148,6 +1164,8 @@ Prices are DigitalOcean's: a node costs its size's hourly price up to its monthl
 | `GET /v1/admin/cloud/clusters/{id}` | one of them |
 | `POST /v1/admin/cloud/clusters/{id}/delete` | `{"confirm": "<the cluster's name>"}`: deletes it; 202 |
 | `DELETE /v1/admin/cloud/clusters/{id}` | takes it off the list, once it is deleted or failed before the cloud made anything; a 409 while it may still be billed |
+| `GET /v1/admin/cloud/found?provider=digitalocean` (or `?provider=aws&region=`) | the ChloeDB clusters the account holds that this server's list does not follow, made from another server or forgotten here: DOKS clusters tagged `strata` or named `strata-*` (every region), or a region's CloudFormation stacks tagged `strata.chloetech.ai/cluster`, each with its cloud id, state, nodes and owner, and `here` for the one this server runs on |
+| `POST /v1/admin/cloud/found/delete` | `{"provider", "cloud_id", "region"?, "confirm": "<the cluster's name>"}`: puts it on the list (`found: true`) and deletes it as **Delete** does, its volumes first; 202. A 400 unless `confirm` is its name, a 404 when the account no longer has it, a 409 for the cluster this server runs on (deleting it from here would stop the server halfway) |
 
 ![The Cloud view's Clusters made here card: a cluster on AWS on its way, its stack 7 of 19 resources made, and one on DigitalOcean ready, with every step it went through (against stand-ins for the clouds)](../assets/img/strata-command-center-cloud-clusters.png)
 

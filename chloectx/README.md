@@ -28,8 +28,9 @@ model remembering to save. The design is in [DESIGN.md](DESIGN.md).
 | end of a turn | stores the answer, the commentary written between tool calls, and an episode card (prompt, files changed, commands, errors, outcome); then a small model writes down the decisions, rules, planned work and facts the turn stated, updating or closing earlier ones |
 | compaction | stores the summary by section; the live window restarts |
 
-The model also gets five MCP tools:
-- `memory_search`: hybrid search;
+The model also gets six MCP tools:
+- `memory_ask`: answer a question about earlier work, from several searches at once (the one to use first);
+- `memory_search`: one hybrid search;
 - `memory_timeline`: what surrounded a record;
 - `memory_sql`: read-only SQL over the `memory` table;
 - `memory_remember` and `memory_forget`.
@@ -137,11 +138,11 @@ against the store. `--embedder hash:256` runs without the embedding model.
 
 ```sh
 python3 scripts/download_memory_benchmarks.py && python3 scripts/convert_memory_benchmarks.py
-target/release/chloectx-bench retrieval --data /home/user/data/memory/longmemeval_s.jsonl --embedder static --ctx request
-target/release/chloectx-bench retrieval --data /home/user/data/memory/locomo.jsonl --embedder static --ctx request
+target/release/chloectx-bench retrieval --data ~/data/memory/longmemeval_s.jsonl --embedder static --ctx request
+target/release/chloectx-bench retrieval --data ~/data/memory/locomo.jsonl --embedder static --ctx request
 target/release/chloectx-bench probes --transcript <session.jsonl> --probes probes/lost_probes.json --points 1952:4632,4633:5392
-target/release/chloectx-bench scale --data /home/user/data/memory/longmemeval_s.jsonl --sizes 10000,100000,1000000
-target/release/chloectx-bench latency --data /home/user/data/memory/longmemeval_s.jsonl --sizes 10000,100000,1000000
+target/release/chloectx-bench scale --data ~/data/memory/longmemeval_s.jsonl --sizes 10000,100000,1000000
+target/release/chloectx-bench latency --data ~/data/memory/longmemeval_s.jsonl --sizes 10000,100000,1000000
 python3 scripts/fit_gate.py results/retrieval/longmemeval_s_static_request_c400.rows.jsonl --out results/gate_static_c400.json
 ```
 
@@ -149,11 +150,11 @@ What a record should be (keys, values, presentation, model-written facts)
 and whether it changes the answers a model gives:
 
 ```sh
-target/release/chloectx-structure --data /home/user/data/memory/longmemeval_s.jsonl --out results/structure
+target/release/chloectx-structure --data ~/data/memory/longmemeval_s.jsonl --out results/structure
 target/release/chloectx-structure --transcript <session.jsonl> --probes probes/session_probes.json,probes/lost_probes.json \
     --points 1952:4632,4633:5392 --out results/structure
-python3 scripts/extract_facts.py --data /home/user/data/memory/longmemeval_s.jsonl --every 5 --out facts.jsonl
-python3 scripts/reader_eval.py --data /home/user/data/memory/longmemeval_s.jsonl --judge <model> \
+python3 scripts/extract_facts.py --data ~/data/memory/longmemeval_s.jsonl --every 5 --out facts.jsonl
+python3 scripts/reader_eval.py --data ~/data/memory/longmemeval_s.jsonl --judge <model> \
     --config today=results/structure/context_<...>.jsonl --config oracle=oracle --out results/reader
 ```
 
@@ -176,8 +177,8 @@ transcripts, claude-mem, mem0, ChloeCtx) on the same scenarios; the
 competitors' setup is in `eval/competitors`:
 
 ```sh
-target/release/chloectx-bench deep --data /home/user/data/memory/longmemeval_s.jsonl --out results/v2/deep --tag haiku
-target/release/chloectx-bench deep --data /home/user/data/memory/longmemeval_s.jsonl --every 5 --hard-model sonnet --tag haiku_sonnet_hard
+target/release/chloectx-bench deep --data ~/data/memory/longmemeval_s.jsonl --out results/v2/deep --tag haiku
+target/release/chloectx-bench deep --data ~/data/memory/longmemeval_s.jsonl --every 5 --hard-model sonnet --tag haiku_sonnet_hard
 python3 scripts/memory_bench.py all --scenario bakehouse --repeats 3   # every lane; see eval/competitors/README.md
 python3 scripts/v2_charts.py
 ```
