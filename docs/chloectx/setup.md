@@ -64,7 +64,7 @@ chloectx doctor
 
 ```console
 $ chloectx doctor
-ChloeCtx 0.1.0 for /home/you/code/app
+ChloeCtx 0.2.0 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
   ok    Claude Code CLI: 2.1.299 (Claude Code)
   ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)

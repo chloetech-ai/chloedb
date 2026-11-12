@@ -13,6 +13,11 @@ name: chloedb-server release
 # full matrix passed on its commit (release-gate.yml). A change to this workflow builds every platform
 # as a release does, without releasing.
 #
+# The same release job writes the Homebrew formula from the archives'
+# checksums (packaging/homebrew/formula.sh), attaches it to the release, and
+# commits it to a tap once one is configured (the step says how). The
+# one-line installer, docs/install.sh, downloads these archives too.
+#
 # The image (image.yml) is the other way to run it without building:
 # docker run ghcr.io/chloetech-ai/chloedb-server (or strata-server, its
 # old name, for a release).
@@ -23,6 +28,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/server-release.yml
+      - docs/install.sh
+      - packaging/homebrew/**
 
 permissions:
   contents: read
@@ -102,15 +109,68 @@ jobs:
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           ls -la dist
+      # The one-line installer (docs/install.sh, which GitHub Pages serves)
+      # picks this platform's archive, checks its SHA-256 and installs it,
+      # here from a folder laid out as the release will be; a damaged
+      # archive is refused.
+      - name: The installer installs it
+        shell: bash
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
+          rel="$RUNNER_TEMP/releases/chloedb-server-v$v"
+          mkdir -p "$rel"
+          cp dist/chloedb-server-${{ matrix.platform }}.tar.gz* "$rel/"
+          export CHLOEDB_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOEDB_VERSION="$v"
+          CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh
+          "$RUNNER_TEMP/bin/chloedb-server" --version | grep -F "$v"
+          echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$rel/chloedb-server-${{ matrix.platform }}.tar.gz.sha256"
+          if CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin2" sh docs/install.sh; then echo "::error::installed an archive whose SHA-256 is wrong"; exit 1; fi
+          test ! -e "$RUNNER_TEMP/bin2/chloedb-server"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chloedb-server-${{ matrix.platform }}
           path: dist/chloedb-server-*.tar.gz*
           if-no-files-found: error
 
+  # The Homebrew formula, written from the archives just built, installs
+  # and passes its test on a Mac, from a tap on this machine whose formula
+  # downloads them from a folder laid out as the release will be.
+  homebrew:
+    name: Homebrew formula
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: chloedb-server-*
+          path: dist
+          merge-multiple: true
+      - name: Install with brew and test
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
+          mkdir -p "$RUNNER_TEMP/releases/chloedb-server-v$v"
+          cp dist/*.tar.gz "$RUNNER_TEMP/releases/chloedb-server-v$v/"
+          CHLOEDB_RELEASES_URL="file://$RUNNER_TEMP/releases" sh packaging/homebrew/formula.sh "$v" dist > chloedb.rb
+          cat chloedb.rb
+          brew tap-new --no-git chloedb-ci/local
+          cp chloedb.rb "$(brew --repository chloedb-ci/local)/Formula/chloedb.rb"
+          brew install chloedb-ci/local/chloedb
+          brew test chloedb-ci/local/chloedb
+          "$(brew --prefix)/bin/chloedb-server" --version | grep -F "$v"
+          brew audit --strict chloedb-ci/local/chloedb || echo "::warning::brew audit has remarks (above)"
+          brew uninstall chloedb-ci/local/chloedb
+
   release:
     name: GitHub release
-    needs: build
+    needs: [build, homebrew]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -133,3 +193,45 @@ jobs:
             gh release create "$TAG" --repo "$REPO" --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.strata\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it."
           fi
           gh release upload "$TAG" dist/* --repo "$REPO" --clobber
+      # The Homebrew formula of this release, from the archives' checksums:
+      # attached to the release, and committed to the tap when the
+      # repository variable CHLOEDB_HOMEBREW_TAP names one (owner/name, the
+      # tap chloetech-ai/homebrew-tap for `brew install chloetech-ai/tap/chloedb`)
+      # and the secret HOMEBREW_TAP_TOKEN can push to it. Until both are
+      # set, nothing leaves this repository. Only for the new tag name: the
+      # formula downloads from chloedb-server-v<version>.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: startsWith(github.ref_name, 'chloedb-server-v')
+        with:
+          path: src
+          sparse-checkout: packaging/homebrew
+          persist-credentials: false
+      - name: Homebrew formula
+        if: startsWith(github.ref_name, 'chloedb-server-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir formula
+          sh src/packaging/homebrew/formula.sh "${TAG#chloedb-server-v}" dist > formula/chloedb.rb
+          cat formula/chloedb.rb
+          gh release upload "$TAG" formula/chloedb.rb --repo "$REPO" --clobber
+      - name: Commit the formula to the tap
+        if: startsWith(github.ref_name, 'chloedb-server-v') && vars.CHLOEDB_HOMEBREW_TAP != ''
+        env:
+          TAP: ${{ vars.CHLOEDB_HOMEBREW_TAP }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          test -n "$TAP_TOKEN" || { echo "::error::CHLOEDB_HOMEBREW_TAP is set but the secret HOMEBREW_TAP_TOKEN is not"; exit 1; }
+          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/$TAP.git" tap
+          mkdir -p tap/Formula
+          cp formula/chloedb.rb tap/Formula/chloedb.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/chloedb.rb
+          if git diff --cached --quiet; then echo "The tap already has this formula."; exit 0; fi
+          git commit -m "chloedb ${TAG#chloedb-server-v}"
+          git push origin HEAD
