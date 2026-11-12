@@ -137,6 +137,8 @@ def sequence(
     actions: list | None = None,
     learn_items: bool = False,
     negatives: str = "in_batch",
+    logq: bool = False,
+    uniform_negatives: int = 0,
     temperature: float = 0.05,
     epochs: int = 50,
     batch: int = 128,
@@ -172,6 +174,14 @@ def sequence(
     the model's unit vector with the item's vector, over `temperature`, and
     the loss is cross-entropy against the other items of the batch
     (`negatives="in_batch"`) or every item (`"all"`, for catalogs that fit).
+    In a batch a popular item is a negative far more often than a rare
+    one, which teaches the model to rank popular items low: `logq` lowers
+    each candidate's score by the log of how likely a batch is to hold it
+    (Yi et al., RecSys 2019), a row's own target left as it is (Khrylchenko
+    et al., RecSys 2025), and `uniform_negatives` adds that many items
+    drawn evenly from all of them to each batch's candidates (mixed
+    negative sampling), so that items no batch would hold are negatives
+    too. Both are for `"in_batch"`.
     With `learn_items` the item vectors are trained too (from the field's,
     or from `vectors`) and returned normalized: the model then ranks like
     SASRec, but a new item needs a vector before it can be found. Either
@@ -189,6 +199,10 @@ def sequence(
 
     if negatives not in ("in_batch", "all"):
         raise ValueError("negatives is 'in_batch' or 'all'")
+    if uniform_negatives < 0:
+        raise ValueError("uniform_negatives is 0 or more")
+    if negatives == "all" and (logq or uniform_negatives):
+        raise ValueError("logq and uniform_negatives are for negatives='in_batch': with 'all' every item is a candidate of every batch")
     if sum(x is not None for x in (sequences, events, records)) != 1:
         raise TypeError("give one of sequences, events or records")
     if vectors is None:
@@ -220,6 +234,7 @@ def sequence(
     model, items, learned, history = S.train(
         sequences or {}, records, vectors, cfg, learn_items=learn_items, negatives=negatives, temperature=temperature,
         epochs=epochs, batch=batch, lr=lr, dropout=dropout, holdout=holdout, patience=patience, seed=seed, log=log, max_seconds=max_seconds,
+        logq=logq, uniform_negatives=uniform_negatives,
     )
     path = os.path.join(_models_dir(models), name)
     S.save(model, cfg, path, items=items)
