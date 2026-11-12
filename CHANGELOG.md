@@ -11,31 +11,6 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-### Security
-
-- ChloeCtx: `memory_sql` and the inspector's query box run one parsed
-  `SELECT`, not any text that begins with `select`, and refuse `llm()` and
-  `cross_encoder()`, which send the rows they read to a model with the
-  daemon's keys. Each runs with a deadline (2 s for the tool, 10 s for the
-  inspector), a memory budget and a row cap (1,000 and 50,000). The query
-  engine's model-written conditions refuse the same functions.
-- ChloeCtx: the distiller's `claude -p` runs in `distill/` in the stores'
-  folder, private to the user, instead of `/tmp/chloectx-distill`, from
-  which another local user's project settings (a hook) would have run as
-  this one. Its answer is read while it is written, so one over 64 KB no
-  longer blocks the call until its timeout.
-- ChloeCtx: the short socket path is used only in a directory of the
-  user's own that no one else can open: a `/tmp/engram-<uid>` another user
-  made first, or a link, is skipped for `~/.cache/chloectx`.
-- ChloeCtx: `fetch-model` downloads the commit ChloeDB pins and checks each
-  file's SHA-256 before it is renamed into place; a download cut short is
-  fetched again by the next `install.sh`, which now always runs it.
-- ChloeCtx: `install` quotes the binary's path in hook commands (a path
-  with a space ran something else), and `doctor` runs the program as the
-  hook command spells it. Settings files are written beside and renamed
-  into place, keep their keys' order and their links, and a project
-  install backs up the files it changes.
-
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,
@@ -76,6 +51,28 @@ protocol is 20; servers of protocols 18 and 19 still talk to it.
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
   An SVG in an image field is no longer shown inline by the command
   center's media views.
+- ChloeCtx: `memory_sql` and the inspector's query box run one parsed
+  `SELECT`, not any text that begins with `select`, and refuse `llm()` and
+  `cross_encoder()`, which send the rows they read to a model with the
+  daemon's keys. Each runs with a deadline (2 s for the tool, 10 s for the
+  inspector), a memory budget and a row cap (1,000 and 50,000). The query
+  engine's model-written conditions refuse the same functions.
+- ChloeCtx: the distiller's `claude -p` runs in `distill/` in the stores'
+  folder, private to the user, instead of `/tmp/chloectx-distill`, from
+  which another local user's project settings (a hook) would have run as
+  this one. Its answer is read while it is written, so one over 64 KB no
+  longer blocks the call until its timeout.
+- ChloeCtx: the short socket path is used only in a directory of the
+  user's own that no one else can open: a `/tmp/engram-<uid>` another user
+  made first, or a link, is skipped for `~/.cache/chloectx`.
+- ChloeCtx: `fetch-model` downloads the commit ChloeDB pins and checks each
+  file's SHA-256 before it is renamed into place; a download cut short is
+  fetched again by the next `install.sh`, which now always runs it.
+- ChloeCtx: `install` quotes the binary's path in hook commands (a path
+  with a space ran something else), and `doctor` runs the program as the
+  hook command spells it. Settings files are written beside and renamed
+  into place, keep their keys' order and their links, and a project
+  install backs up the files it changes.
 
 ### Storage
 
