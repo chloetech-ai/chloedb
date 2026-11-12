@@ -141,10 +141,6 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .top-links a { color: var(--ink); text-decoration: none; }
 .top-links a:hover { color: var(--accent); }
 .top-links a.btn { color: var(--accent-ink); padding: 8px 14px; }
-.sample-banner { background: var(--night); color: var(--night-dim); font-size: 0.84rem; }
-.sample-banner .wrap { padding-block: 7px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: center; text-align: center; }
-.sample-banner b { font: 600 0.7rem/1 var(--body); letter-spacing: 0.12em; text-transform: uppercase; color: var(--fam-graph); }
-.sample-banner a { color: var(--night-ink); }
 @media (max-width: 760px) {
   .nav { order: 3; flex-basis: 100%; gap: 2px 18px; font-size: 0.9rem; }
   .top-links { margin-left: auto; }

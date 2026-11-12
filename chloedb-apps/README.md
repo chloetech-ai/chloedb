@@ -1,7 +1,6 @@
 # chloedb-apps: apps that are built from a description and grow
 
-A prototype of the idea in the doc
-[Strata as a self-extending app engine](https://claude.ai/artifact/K7nVdw9VKT4d9u9QGDb35e):
+A prototype app engine, introduced in [the guide](../docs/chloedb/apps.md):
 an app is data in ChloeDB, made of capabilities (tables, views, server
 functions) that a model writes and the engine checks, stores and runs, and of
 shared components and helpers that every app uses from one library, linked to
