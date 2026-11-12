@@ -2,12 +2,13 @@
 
 ChloeDB is an embedded search database with SQL. One file holds full text, structured columns, vectors and graph edges over the same rows, and one query can use all of them. These pages cover ChloeDB, the server and cluster around it, the apps built on it, and ChloeCtx, its memory for Claude Code.
 
-New here? Start with the [README](../README.md), then [build an app](chloedb/build-an-app.md). The [website](https://chloetech-ai.github.io/chloedb/) has the features, the benchmarks and a tour of the command center.
+New here? Start with the [quickstart](quickstart.md), a first search in five minutes, then [build an app](chloedb/build-an-app.md). The [website](https://chloetech-ai.github.io/chloedb/) has the features, the benchmarks and a tour of the command center.
 
 ## Get started
 
 | I want to | read |
 |---|---|
+| Install ChloeDB and run a first search | [Quickstart](quickstart.md) |
 | Try a server with demo data in a minute | [Run the server](chloedb/server.md#run-it) |
 | Build a small shop on the HTTP API: tables, search, stock, holds, events | [Build an app](chloedb/build-an-app.md) |
 | Use ChloeDB inside a Python program | [Python](chloedb/python.md), and [DataFrames](chloedb/frames.md) for Polars-style frames |

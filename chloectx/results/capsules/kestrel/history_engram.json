@@ -1,0 +1,583 @@
+{
+ "lane": "engram",
+ "scenario": "kestrel",
+ "model": "haiku",
+ "meta": {
+  "lane": "engram",
+  "def": {
+   "kind": "engram",
+   "binary": "/home/user/bench/bin/chloectx-capsule",
+   "mcp": [
+    "mcp__chloectx",
+    "mcp__engram"
+   ]
+  },
+  "env": {},
+  "engram": {
+   "source": "/home/user/bench/bin/chloectx-capsule",
+   "sha256": "0b744b3a2419c2eb8ffc13dad2d1fb5712b56440624a3c792f3df105e6acbf6d",
+   "version": "chloectx 0.2.0",
+   "source_rev": "",
+   "source_dirty": false,
+   "model_log": "/home/user/bench/work/kestrel/engram/home/.engram-bench/model-results.jsonl"
+  },
+  "claude_version": "2.1.322 (Claude Code)"
+ },
+ "sessions": [
+  "26d7e653-20b6-4744-878f-844e820ef460",
+  "d914a35a-9cbe-4969-ace9-bbac316ee808",
+  "e67120e3-cc96-43d0-80ba-62e01e94b431",
+  "c29997d2-b217-4de1-8299-0bec4ae682bc",
+  "5d866240-c9ee-4bfb-a239-3c7289a75e5d",
+  "10708234-bc6c-4912-a625-977276af62b7",
+  "604092d7-25de-42d8-8354-81e2fd5bd267"
+ ],
+ "session": "604092d7-25de-42d8-8354-81e2fd5bd267",
+ "turns": [
+  {
+   "block": 1,
+   "session": "26d7e653-20b6-4744-878f-844e820ef460",
+   "prompt": "Hi! This is kestrel, the booking library we're building for Kestrel Physio, a physiotherapy practice with three clinics in Auckland: Northgate (NG), Harbour (HB) and Westwick (WK). Could you run the tests first? I think something in the calendar is off.",
+   "result": "The suite now passes (8 tests, OK), after one fix in the calendar.\n\n**What was wrong:** `Calendar.all()` in `src/kestrel/calendar.py` sorted appointments by `a.id`, not by start time. Its docstring says \"in start order\", and `test_all_in_start_order` expects that. Ids are unrelated to time, so the list came back in the wrong order: `['a1', 'a2', 'a3']` instead of `['a3', 'a2', 'a1']`.\n\n**The change:** I changed the sort key to `lambda a: a.start`. That is the only edit. `for_therapist`, `for_patient` and `booked` all go through `all()`, so they now return start-ordered results as well. Starts are timezone-aware (the model enforces this), so the comparison is safe. Appointments with identical start times keep their insertion order.\n\nI haven't committed anything. The working tree also has untracked `__pycache__/` directories from the test runs.\n\nYour message said \"something in the calendar is off\", so the sort may not be the only problem. The suite doesn't cover clinic filtering or the Northgate/Harbour/Westwick data in `data/legacy_appointments.csv`. If you're seeing a specific calendar symptom, tell me what it is and I'll look at that next.",
+   "cost_usd": 0.004201809999999999,
+   "session_cost_usd": 0.004201809999999999,
+   "steps": 8,
+   "error": false,
+   "wall_s": 12.5,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 1,
+   "session": "26d7e653-20b6-4744-878f-844e820ef460",
+   "prompt": "Please read through models.py and calendar.py and give me a short overview of how a booking flows through them. Then add `Calendar.for_day(therapist_id, day)` that returns that therapist's appointments on a given date, sorted by start. Appointment times are stored in UTC, but `day` is the local Auckland date (Pacific/Auckland), so convert before comparing. Tests too, please, including one across midnight UTC.",
+   "result": "Added `Calendar.for_day(therapist_id, day)`, and the suite passes: 10 tests, OK.\n\n**How a booking flows**\n\n- `models.py` defines the data. An `Appointment` takes an `id`, patient, therapist, clinic code, a timezone-aware `start`, a `kind` (assessment or followup) and a `status` (booked, cancelled, attended, no_show). `__post_init__` rejects unknown kinds and statuses and naive datetimes. `Clinic`, `Therapist` and `Patient` are plain dataclasses.\n- There is no separate booking function. A booking is an `Appointment` handed to `Calendar.add()`, which rejects duplicate ids.\n- `calendar.py` keeps appointments in a dict keyed by id. Its queries (`all`, `for_therapist`, `for_patient`, `booked`, and now `for_day`) build on `all()`, which returns start order.\n- `storage.py` saves and loads the lists as JSON. Starts are written with `isoformat()` and read back with `fromisoformat()`, so the timezone is kept.\n\nOne gap I noticed: `Calendar.add()` checks only for duplicate ids. It does not check whether a therapist is already booked at that time, so double-booking is possible. That may be part of what's \"off\", so tell me if you want a conflict check.\n\n**What `for_day` does**\n\n- It converts each appointment's UTC start to `Pacific/Auckland` with `zoneinfo` and compares the local date to `day`. That handles the midnight boundary in both directions.\n- It reuses `for_therapist`, so results are in start order.\n- It includes cancelled and other non-booked statuses, as `for_therapist` does. Filter with `booked()` if you only want live bookings.\n- `day` must be a `datetime.date`, not a datetime.\n\n**Tests added** in `tests/test_calendar.py`:\n\n- `test_for_day_uses_local_date_and_sorts_by_start`: checks the local date conversion, excludes another therapist and an appointment on the previous local day, and checks start ordering.\n- `test_for_day_across_utc_midnight`: local midnight on 2 March 2027 is 11:00 UTC on 1 March. The test covers the 23:59 and 00:00 boundaries on both days, and the ",
+   "cost_usd": 0.005542340000000001,
+   "session_cost_usd": 0.00974415,
+   "steps": 10,
+   "error": false,
+   "wall_s": 22.4,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 1,
+   "session": "26d7e653-20b6-4744-878f-844e820ef460",
+   "prompt": "Patient IDs are 'KP-' plus six digits, like KP-004211, but reception types them every which way: 'kp4211', ' KP-004211 ', 'Kp-4211'. Please add `normalize_patient_id` in a new ids.py (trim, upper case, zero-pad to six digits, add the dash) and make `Calendar.for_patient` go through it. Tests for the messy forms.",
+   "result": "I added `normalize_patient_id` in a new `src/kestrel/ids.py`, and `Calendar.for_patient` now runs its input through it. The suite passes: 15 tests, OK.\n\n**The function**\n\n- It trims whitespace, upper-cases, and accepts an optional `KP` prefix and optional dash. It then zero-pads the digits to six and returns `KP-004211` form.\n- `'kp4211'`, `' KP-004211 '`, `'Kp-4211'`, `'kp-004211'`, `'KP004211'` and `'4211'` all normalise to `KP-004211`.\n- Anything else raises `ValueError`. That covers empty input, `KP-` with no digits, letters in the number, more than six digits, `XX-4211`, a space inside the number, and a double dash.\n\n**Calendar change**\n\n- `for_patient` normalises its argument before comparing. A typo raises `ValueError` instead of silently returning no appointments. Tell me if reception would rather see an empty list.\n\n**Tests**\n\n- `tests/test_ids.py` checks the messy forms, the canonical form, and rejected inputs directly.\n- `tests/test_calendar.py` has two new tests: one checks that `for_patient` finds the right appointments for the messy forms, and one checks that it rejects non-ids.\n\nI haven't touched stored data. If `appointments` in the JSON or the legacy CSV contains non-canonical `patient_id` values, `for_patient` will not match them, because it normalises only the query and not the stored values. Normalising on load would fix that, but I haven't changed storage. I also haven't committed anything.",
+   "cost_usd": 0.00531628,
+   "session_cost_usd": 0.01506043,
+   "steps": 11,
+   "error": false,
+   "wall_s": 18.0,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 1,
+   "session": "26d7e653-20b6-4744-878f-844e820ef460",
+   "prompt": "While you're in there, the opening hours, which we'll need when we build slot search: all three clinics are open 07:30 to 18:00 on weekdays. On Saturdays only Northgate opens, 08:00 to 12:00. Sundays everything is closed. No code for that today.",
+   "result": "Noted, and I haven't written any code. I'll keep these hours in mind for slot search:\n\n- **Monday to Friday:** Northgate, Harbour and Westwick are all open 07:30 to 18:00.\n- **Saturday:** only Northgate is open, 08:00 to 12:00.\n- **Sunday:** all three clinics are closed.\n\nTwo things to settle when we build slot search:\n\n- The hours are local Auckland time, so the search should convert them with the existing `CLINIC_TZ` (Pacific/Auckland). That keeps them right across daylight saving changes.\n- The hours don't say whether an appointment can run up to 18:00 or has to finish by then. I'd treat \"open until 18:00\" as the appointment must end by 18:00, but tell me if that's wrong.\n\nShall I save the hours to memory now so they carry into the next session?",
+   "cost_usd": 0.0010220899999999998,
+   "session_cost_usd": 0.01608252,
+   "steps": 1,
+   "error": false,
+   "wall_s": 6.8,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 1,
+   "session": "26d7e653-20b6-4744-878f-844e820ef460",
+   "prompt": "Great, please commit all of this with a sensible message.",
+   "result": "I committed the work as `1adc815` on a new branch, `calendar-queries`, which I created because `main` is the default branch. The suite passed (15 tests) before the commit.\n\nThe commit covers the four source and test files:\n- The `Calendar.all()` ordering fix.\n- `Calendar.for_day`, with its tests.\n- `ids.normalize_patient_id` and `for_patient` using it, with tests.\n\nIt was a single commit, so the three changes aren't separable. I left out the `__pycache__/` directories. Nothing is pushed.",
+   "cost_usd": 0.002513089999999999,
+   "session_cost_usd": 0.01859561,
+   "steps": 3,
+   "error": false,
+   "wall_s": 7.9,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 2,
+   "session": "d914a35a-9cbe-4969-ace9-bbac316ee808",
+   "prompt": "Morning! Today: cancellations. Add `Calendar.cancel(appointment_id, at)` that sets the status to cancelled and records when (`cancelled_at`, a new optional field on Appointment, also saved and loaded by storage). Tests please. For later, not today: the clinic's policy is that cancelling less than 24 hours before the start costs 50% of the session price, and a no-show pays the full price.",
+   "result": "`Calendar.cancel(appointment_id, at)` is in place, along with the `cancelled_at` field and its save/load support. The full suite passes: 22 tests, OK (`PYTHONPATH=src python -m unittest discover -s tests -v`). I haven't committed anything.\n\n**What changed**\n- **`models.py`**: `Appointment` has a new optional `cancelled_at` field, default `None`. If it is set, `__post_init__` rejects a naive datetime.\n- **`calendar.py`**: `cancel(appointment_id, at)` sets the status to `cancelled` and records `at` as `cancelled_at`. It returns the appointment.\n- **`storage.py`**: `cancelled_at` is written with `isoformat()` (or `null`) and read back with `fromisoformat()`. Files saved before this change have no such key, and they still load with `cancelled_at=None`.\n- **Tests**: `tests/test_calendar.py` covers the status and time being set, other appointments being untouched, an unknown id, a naive time, and the status checks. `tests/test_storage.py` covers the round trip with and without `cancelled_at`, and the timezone check.\n\n**Choices I made that you may want to change**\n- `cancel` only works on `booked` appointments. Cancelling an `attended` or `no_show` appointment raises `ValueError`, and so does cancelling an already-cancelled one. That keeps the original cancellation time from being overwritten.\n- An unknown id raises `KeyError`, the same as `get()`.\n- `at` must be timezone-aware. This matches how starts are handled.\n\n**Not done (as you asked)**\n- The 24-hour policy: the 50% charge for late cancellation and the full charge for a no-show are not implemented. The new `cancelled_at` field gives the fee calculation what it needs: the time of cancellation to compare with `start`.",
+   "cost_usd": 0.0102289,
+   "session_cost_usd": 0.0102289,
+   "steps": 12,
+   "error": false,
+   "wall_s": 25.4,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 2,
+   "session": "d914a35a-9cbe-4969-ace9-bbac316ee808",
+   "prompt": "Please run the whole test suite verbosely and fix anything that warns or fails.",
+   "result": "The suite passes, and nothing I found changes my previous answer.\n\nThe memory records describe a failure in `test_all_in_start_order` from an earlier run. I re-ran the suite this session. `test_all_in_start_order` passes, along with the other 21 tests. `Calendar.all()` now sorts by `a.start` rather than `a.id`, so the earlier diagnosis no longer applies. The records also note that a passing suite does not cover clinic filtering or the legacy CSV data. That is still true, and I did not check those.\n\nThe full suite is clean:\n\n- **Normal run**, `PYTHONPATH=src python -m unittest discover -s tests -v`: 22 tests, OK.\n- **With warnings on** (`-W default`): same result, no warnings.\n- **Dev mode** (`-X dev -W always`): 22 tests, OK, no warnings.\n\nI made no changes in this pass, and nothing is committed.",
+   "cost_usd": 0.0037969400000000004,
+   "session_cost_usd": 0.014025840000000001,
+   "steps": 4,
+   "error": false,
+   "wall_s": 16.1,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 2,
+   "session": "d914a35a-9cbe-4969-ace9-bbac316ee808",
+   "prompt": "Our privacy officer, Aroha Ngata, went through the plans with me. Two rules from her. Any file that leaves the system, like exports, reports or anything we email, must never contain patient names, only the patient ID. And the SMS reminders must not say what the appointment is for: no treatment, just the date, the time and the clinic's name. Nothing to build for either yet, just keep them in mind.",
+   "result": "The records match what I noted, and they add two details I'll keep in mind. Nothing changes in the code.\n\nAroha Ngata's two privacy rules are saved to project memory. Nothing is built yet, and I changed no code.\n\n1. **Outgoing files** (exports, reports, anything emailed) must never contain patient names. They carry only the patient ID. Stored IDs can be non-canonical, so an export must normalise each ID to `KP-######` first. The `Patient` model holds `name` and `phone`, so exports must leave those out.\n2. **SMS reminders** must not say what the appointment is for. They contain only the date, the time (converted to Pacific/Auckland) and the clinic's name. They must also leave out the appointment kind and the treatment.",
+   "cost_usd": 0.0034933599999999974,
+   "session_cost_usd": 0.0175192,
+   "steps": 4,
+   "error": false,
+   "wall_s": 15.1,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 2,
+   "session": "d914a35a-9cbe-4969-ace9-bbac316ee808",
+   "prompt": "Add a `csc` flag to Patient (Community Services Card holders), default False, and make storage save and load it, with old files without the field still loading. CSC holders get 20% off follow-ups, but not off initial assessments; we'll apply that when we do pricing.",
+   "result": "These records match what I did, so nothing changes.\n\nI added a `csc` flag to `Patient`, defaulting to `False`, and storage saves and loads it. Files saved before the field existed still load, with `csc` set to `False`. The full suite passes in dev mode with warnings on: 24 tests, OK.\n\n**Changes**\n- **`models.py`**: `Patient` has `csc: bool = False`.\n- **`storage.py`**: no change needed. Saving already writes every `Patient` field, and loading builds `Patient(**p)`, so the default covers old files.\n- **`tests/test_storage.py`**: three new tests cover a `csc=True` round trip alongside a `False` patient, and an old file with no `csc` key loading as `False`.\n\n**Not done**\n- The 20% follow-up discount is not applied anywhere, since pricing comes later.\n- Nothing is committed.",
+   "cost_usd": 0.005231860000000001,
+   "session_cost_usd": 0.02275106,
+   "steps": 6,
+   "error": false,
+   "wall_s": 13.8,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 2,
+   "session": "d914a35a-9cbe-4969-ace9-bbac316ee808",
+   "prompt": "Thanks, please commit.",
+   "result": "I committed the work as `97afb5b` on the `calendar-queries` branch, which is not `main`. The suite passes in dev mode with warnings on: 24 tests, OK.\n\nThe commit covers the cancellation work and the CSC flag, touching five files: `calendar.py`, `models.py`, `storage.py`, and the two test files. The message notes that the follow-up discount is not applied yet and waits for pricing. The commit carries your name and the Haiku co-author line, as requested.\n\nTwo untracked `__pycache__/` directories are still in the working tree and are not committed. The repo has no `.gitignore`, so you may want to add one.",
+   "cost_usd": 0.0033091300000000004,
+   "session_cost_usd": 0.02606019,
+   "steps": 3,
+   "error": false,
+   "wall_s": 6.9,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 3,
+   "session": "e67120e3-cc96-43d0-80ba-62e01e94b431",
+   "prompt": "Let's start on pricing. Add pricing.py with `session_price(kind)` returning the price in cents: an initial assessment is $95 and a follow-up is $70. Tests too.",
+   "result": "The memory records don't change the pricing change. I ran the stricter check they mention (developer mode with warnings forced on), and all 27 tests pass.\n\nI added `session_price(kind)` in `src/kestrel/pricing.py`. It returns 9500 cents for `assessment` and 7000 for `followup`, and raises `ValueError` for any other kind. The tests are in `tests/test_pricing.py`.\n\nStill not in this change:\n\n- **CSC discount (20% off follow-ups):** it needs the patient's `csc` flag, and your signature doesn't take a patient. It belongs in a later change, or in this one if you change the signature.\n- **Late-cancellation and no-show charges:** deferred, as the notes say.\n\nNothing is committed.",
+   "cost_usd": 0.005644830000000001,
+   "session_cost_usd": 0.005644830000000001,
+   "steps": 9,
+   "error": false,
+   "wall_s": 16.8,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 3,
+   "session": "e67120e3-cc96-43d0-80ba-62e01e94b431",
+   "prompt": "A couple of things for the reminders work. The SMS gateway we signed with, Bulkie, takes at most 50 messages per API call and rejects the whole call if there are more. And keep the code boring: the reception PCs are stuck on Python 3.9 because of the practice-management software, so nothing that needs a newer Python, anywhere in this codebase.",
+   "result": "I changed the SMS client so it splits sends into batches of at most 50 messages, one Bulkie call per batch. I also removed the one place that needed a newer Python. All 33 tests pass, including under developer mode with warnings on.\n\n- **Bulkie batching (`src/kestrel/sms.py`):** `send_batch` now makes one call per 50 messages, in order, and returns one response per call. An empty list makes no calls. Tests are in `tests/test_sms.py`, including a 120-message batch that goes out as 50, 50 and 20 with nothing lost or reordered.\n- **Python 3.9 (`src/kestrel/models.py`):** `cancelled_at` was annotated `datetime.datetime | None`. That syntax is evaluated when the class is defined, so the module would fail to import on 3.9. It now uses `Optional[datetime.datetime]`. I found nothing else in the codebase that needs 3.10+.\n\nI couldn't run the tests on 3.9 because it isn't installed here. Instead I parsed every source and test file with Python's `ast` module set to the 3.9 grammar, and it passes. The only 3.9-sensitive runtime change is the annotation above. `zoneinfo`, which the calendar code uses, is in the 3.9 standard library.\n\nStill to do for the reminders work:\n\n- The reminder text is not built yet. Aroha Ngata's rule is that an SMS may contain only the date, the time (in Pacific/Auckland) and the clinic name, with no appointment kind or treatment. `BulkieClient` sends whatever text it's given, so that rule belongs in the reminder builder when we write it.\n- I didn't commit anything.",
+   "cost_usd": 0.007288980000000001,
+   "session_cost_usd": 0.012933810000000002,
+   "steps": 10,
+   "error": false,
+   "wall_s": 21.3,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 3,
+   "session": "e67120e3-cc96-43d0-80ba-62e01e94b431",
+   "prompt": "Have a look at data/legacy_appointments.csv, an export from the old booking system, and write `import_legacy(path)` in legacy.py returning Appointment objects. The old system wrote local Auckland times as DD/MM/YYYY HH:MM, type A is an assessment and F a follow-up, and its states map as done->attended, noshow->no_show, cancelled->cancelled, booked->booked. Tests with a small sample file. Then tell me how many rows each clinic has.",
+   "result": "I wrote `import_legacy(path)` in `src/kestrel/legacy.py`. It returns one `Appointment` per row, in file order. All 40 tests pass, including under developer mode with warnings on.\n\n**Rows per clinic** (420 rows in total, checked against the file with `cut` and again through the importer):\n\n| Clinic | Rows |\n|---|---|\n| Northgate (NG) | 140 |\n| Harbour (HB) | 153 |\n| Westwick (WK) | 127 |\n\nOther counts from the import: 314 follow-ups and 106 assessments; 214 attended, 77 no-show, 65 cancelled, 64 booked. Dates run from 01/09/2026 to 31/10/2026.\n\nHow the import handles the data:\n\n- **Times:** each local Auckland time is read in `Pacific/Auckland` and converted to UTC, matching the convention for stored starts. All 420 dates parse, and none fall in a daylight-saving gap or overlap.\n- **Codes:** `A` maps to assessment and `F` to follow-up. `done`, `noshow`, `cancelled` and `booked` map to attended, no_show, cancelled and booked. An unknown clinic, type, state, or date raises a `ValueError` that names the file, line number and row id.\n- **Patient IDs:** each goes through `normalize_patient_id`. All 420 IDs in this file were already in canonical form, so this changed nothing here.\n- **Privacy:** the file has no patient names, and the importer doesn't read any.\n\nThe tests use a four-row sample in `tests/data/legacy_sample.csv`. They check the code mappings, the UTC conversion on both sides of the clocks going forward, and the error messages for bad rows.\n\nI didn't commit anything. The `__pycache__/` directories are still untracked.",
+   "cost_usd": 0.007921910000000002,
+   "session_cost_usd": 0.020855720000000005,
+   "steps": 8,
+   "error": false,
+   "wall_s": 26.0,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 3,
+   "session": "e67120e3-cc96-43d0-80ba-62e01e94b431",
+   "prompt": "Please commit.",
+   "result": "I committed the pending work on the `calendar-queries` branch as three commits, on top of `97afb5b`. Nothing is pushed.\n\n- `9612014` Add session_price for assessments and follow-ups (`pricing.py` and its tests)\n- `bfc08fa` Split Bulkie sends into batches of 50; drop Python 3.10 syntax (`sms.py`, `models.py`, and `test_sms.py`)\n- `974f7ea` Add import_legacy for the old booking system's CSV export (`legacy.py`, its tests, and the sample CSV)\n\nThe author is Dana, and each message ends with the Haiku co-author line. The two `__pycache__/` directories are still untracked and left out, as before. The repo has no `.gitignore`, so you may want to add one.\n\nThe suite passes in developer mode with warnings on (40 tests, OK).",
+   "cost_usd": 0.004045420000000001,
+   "session_cost_usd": 0.024901140000000006,
+   "steps": 3,
+   "error": false,
+   "wall_s": 8.7,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 4,
+   "session": "c29997d2-b217-4de1-8299-0bec4ae682bc",
+   "prompt": "Invoices today. Add `make_invoice(appointment, patient, number, amount_cents)` in invoices.py that builds an Invoice dated the appointment's local date, with a short description. Tests. For when we generate the numbers ourselves: Mere at Tui Accounting wants INV-<clinic code>-<year>-<sequence>, with the sequence five digits, counted separately per clinic and restarting at 00001 every year, e.g. INV-HB-2027-00042.",
+   "result": "`make_invoice` is in `src/kestrel/invoices.py`, with tests in `tests/test_invoices.py`. The full suite passes: 50 tests, including 10 new ones.\n\n```python\nmake_invoice(appointment, patient, number, amount_cents) -> Invoice\n```\n\n- **Date:** `issued` is the appointment start converted to Pacific/Auckland, then its date. The tests cover a UTC date that differs from the local date, the minute before local midnight, and the switch to NZST in April.\n- **Description:** \"Initial assessment\" or \"Follow-up session\", chosen by kind. I left the treatment out because the invoice goes to Tui Accounting.\n- **Patient name:** `patient_name` is set to `\"\"`. Invoices leave the system, and Aroha Ngata's rule says patient names must not appear in them. The `Invoice` dataclass still has the field, so you may want to remove it later.\n- **Wrong patient:** if the appointment's patient ID doesn't match `patient.id` after normalisation, it raises `ValueError`. Say if you'd rather it didn't check.\n- **Number:** passed through as given. I didn't build the per-clinic yearly sequence, since you said that's for when we generate numbers ourselves.\n\nThe code uses no syntax newer than Python 3.9. The sandbox only has 3.13, so I checked for newer syntax by reading and grepping rather than running it on 3.9. I haven't committed anything.",
+   "cost_usd": 0.010848960000000001,
+   "session_cost_usd": 0.010848960000000001,
+   "steps": 10,
+   "error": false,
+   "wall_s": 28.4,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 4,
+   "session": "c29997d2-b217-4de1-8299-0bec4ae682bc",
+   "prompt": "Another heads-up from Mere for the monthly export, which we'll build later: she imports it into Xero, so it has to be a CSV with commas and a header row, dates as DD/MM/YYYY, amounts as plain numbers with two decimals and no dollar sign, and the file must be called kestrel-invoices-YYYY-MM.csv.",
+   "result": "I've noted the Xero export requirements in project memory, but I haven't built the export or changed any code, since you said it's for later.\n\nThe requirements are:\n- **Format:** a CSV with commas and a header row.\n- **Dates:** DD/MM/YYYY.\n- **Amounts:** plain numbers with two decimals and no dollar sign, so 70.00 rather than $70.\n- **File name:** `kestrel-invoices-YYYY-MM.csv`.\n\nTwo things to keep in mind when we build it:\n- The export leaves the system, so it must carry only the patient ID. `make_invoice` already leaves `patient_name` empty, so the export can use the `Invoice` fields directly.\n- Amounts are stored in cents, so the export will need to convert them to dollars with two decimals.\n\nXero's invoice import has its own column names, such as `*ContactName` and `*InvoiceNumber`. I haven't checked them against Xero's current template, so we should confirm them with Mere before writing the export. Ask me when you want the export built.",
+   "cost_usd": 0.0028696599999999996,
+   "session_cost_usd": 0.01371862,
+   "steps": 3,
+   "error": false,
+   "wall_s": 12.0,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 4,
+   "session": "c29997d2-b217-4de1-8299-0bec4ae682bc",
+   "prompt": "Add `Calendar.move(appointment_id, new_start)` that reschedules a booked appointment and refuses to move a cancelled one. Tests please.",
+   "result": "I added `Calendar.move(appointment_id, new_start)` in `src/kestrel/calendar.py`, with tests in `tests/test_calendar.py`. The full suite passes: 57 tests, run with warnings as errors.\n\n- **Booked appointments:** the start is changed and the status stays `booked`. Other appointments are untouched, and day queries see the new time.\n- **Cancelled appointments:** refused with `ValueError`, and the original start and status are kept.\n- **Attended and no-show appointments:** also refused. You asked only about cancelled ones, but moving a past visit made no sense to me. It matches how `cancel` only accepts booked appointments. Say if you want those allowed.\n- **Naive times:** `ValueError`, matching `cancel`.\n- **Unknown ids:** `KeyError`, matching `get` and `cancel`.\n\n`move` does not check for a double-booking at the new time. `Calendar.add()` doesn't check that either, so it's the same gap as before. I haven't committed anything.",
+   "cost_usd": 0.00557237,
+   "session_cost_usd": 0.01929099,
+   "steps": 6,
+   "error": false,
+   "wall_s": 19.0,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 4,
+   "session": "c29997d2-b217-4de1-8299-0bec4ae682bc",
+   "prompt": "Something the booking form will need: assessments take 45 minutes and follow-ups 30, and every appointment starts on a quarter hour. After an assessment the therapist needs 15 minutes to write notes before the next patient; after a follow-up there's no gap. Also, the therapists' union agreement caps everyone at 8 patient appointments per day. Not today, I'm only writing it down while I remember.",
+   "result": "I've saved these booking-form rules to project memory and haven't changed any code:\n\n- **Durations:** assessments take 45 minutes and follow-ups 30.\n- **Start times:** every appointment starts on a quarter hour.\n- **Gaps:** after an assessment the therapist needs 15 minutes for notes before the next patient; after a follow-up there's no gap.\n- **Daily cap:** the therapists' union agreement limits each therapist to 8 patient appointments per day.\n\nWhen we build the booking form, the overlap check I mentioned earlier will need these gaps, since `Calendar.add()` and `move()` don't check for double-booking yet.",
+   "cost_usd": 0.0032901800000000037,
+   "session_cost_usd": 0.022581170000000005,
+   "steps": 3,
+   "error": false,
+   "wall_s": 17.9,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 4,
+   "session": "c29997d2-b217-4de1-8299-0bec4ae682bc",
+   "prompt": "Please commit.",
+   "result": "I committed the work on the `calendar-queries` branch as two commits, on top of `974f7ea`. Nothing is pushed.\n\n- `ca5ed88` Add make_invoice for appointments (`invoices.py`, `tests/test_invoices.py`)\n- `33157d8` Add Calendar.move to reschedule booked appointments (`calendar.py`, `tests/test_calendar.py`)\n\nThe suite passes (57 tests, warnings as errors) before the commits. The commits carry Dana as author and the Haiku co-author trailer. The two `__pycache__/` directories are still untracked and were left out. The repo has no `.gitignore`, so you may want to add one.",
+   "cost_usd": 0.0038071800000000003,
+   "session_cost_usd": 0.026388350000000005,
+   "steps": 3,
+   "error": false,
+   "wall_s": 7.4,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 5,
+   "session": "5d866240-c9ee-4bfb-a239-3c7289a75e5d",
+   "prompt": "Update from last night's board meeting: the late-cancellation window is now 48 hours, not 24. The fee is still 50% of the session price, and no-shows still pay in full. Nothing to change yet since we haven't built the fee.",
+   "result": "Noted. The late-cancellation window is now 48 hours before the start, not 24. The fee is still 50% of the session price, and a no-show still pays the full price.\n\nI haven't changed any code, since the fee isn't built yet. I also saved the update to project memory as a decision, so future sessions won't pick up the old 24-hour rule. Earlier notes still say 24 hours, and the memory record I saved supersedes them.",
+   "cost_usd": 0.00338004,
+   "session_cost_usd": 0.00338004,
+   "steps": 4,
+   "error": false,
+   "wall_s": 12.6,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 5,
+   "session": "5d866240-c9ee-4bfb-a239-3c7289a75e5d",
+   "prompt": "Please add a reports.py with `therapist_load(calendar, week_start)` that returns, per therapist, the number of booked appointments on each day of that week (local dates). Tests.",
+   "result": "I added `therapist_load(calendar, week_start)` in `src/kestrel/reports.py` with tests in `tests/test_reports.py`. The full suite passes: 64 tests, run with `PYTHONPATH=src python -m unittest discover -s tests -v`.\n\nIt returns `{therapist_id: {date: count}}`, counting only booked appointments by their Pacific/Auckland date. The output has therapist IDs and counts only, with no patient names.\n\nChoices I made that you may want to change:\n- **Week:** the seven dates starting at `week_start`. I did not require it to be a Monday.\n- **Therapists listed:** any therapist with at least one appointment in the calendar, including those with no bookings that week, who show zeros. The calendar has no therapist list to draw from.\n- **Excluded statuses:** cancelled, attended and no-show appointments are not counted.\n\nThe code avoids `X | None` annotations, so it stays Python 3.9-compatible. Nothing is committed.",
+   "cost_usd": 0.006970790000000002,
+   "session_cost_usd": 0.010350830000000002,
+   "steps": 7,
+   "error": false,
+   "wall_s": 19.7,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 5,
+   "session": "5d866240-c9ee-4bfb-a239-3c7289a75e5d",
+   "prompt": "By the way, Harbour once tried double-booking the 07:30 slots to make up for no-shows, and the physiotherapy board got a complaint from a patient who waited 40 minutes and told us off. So whatever anyone suggests later, we don't overbook, ever.",
+   "result": "Understood: Kestrel will never overbook, and that applies to any suggestion from anyone. I've saved this to project memory as a decision, with the Harbour 07:30 incident as the reason.\n\nThe code doesn't enforce this yet. `Calendar.add` only rejects duplicate ids, and `Calendar.move` has no overlap check, so overlapping bookings for the same therapist are currently accepted. I haven't changed that, since you only set the policy. Should I add an overlap check to both, with tests? It would reject any booking that overlaps another live appointment for the same therapist.",
+   "cost_usd": 0.0025587100000000005,
+   "session_cost_usd": 0.012909540000000002,
+   "steps": 3,
+   "error": false,
+   "wall_s": 12.5,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 5,
+   "session": "5d866240-c9ee-4bfb-a239-3c7289a75e5d",
+   "prompt": "Run the tests and commit, please.",
+   "result": "I ran the tests and committed the report as `3ed8bb0` on `calendar-queries`, authored by Dana with the Haiku co-author trailer.\n\n- **Tests:** all 64 pass, both with the plain run and with warnings treated as errors (`-W error -X dev`).\n- **Committed:** `src/kestrel/reports.py` and `tests/test_reports.py`, the `therapist_load` report from earlier.\n- **Not committed:** the two `__pycache__/` directories, which are still untracked because the repo has no `.gitignore`. I left them out by hand.\n\nNothing is pushed.",
+   "cost_usd": 0.00404522,
+   "session_cost_usd": 0.016954760000000003,
+   "steps": 4,
+   "error": false,
+   "wall_s": 14.3,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 6,
+   "session": "10708234-bc6c-4912-a625-977276af62b7",
+   "prompt": "Let's add a waitlist: waitlist.py with a `WaitlistEntry(patient_id, kind, requested_at, urgent=False)` dataclass and a `Waitlist` class with `add(entry)`, `remove(patient_id)` and `entries()`. Tests. The logic for offering a freed slot comes later, but so you know: entries a therapist flagged urgent go first, and after those everyone in the order they asked.",
+   "result": "I added the waitlist in `src/kestrel/waitlist.py` with tests in `tests/test_waitlist.py`. The full suite passes (81 tests, including the new 17), and it also passes under `-X dev -W always`. I did not commit.\n\n- **`WaitlistEntry`** has the fields you specified. It rejects kinds other than `assessment` and `followup`, and rejects a naive `requested_at`, matching how `Appointment` works.\n- **`Waitlist.add`** normalises the patient ID, so `kp4211` and `KP-004211` are the same patient. It raises `ValueError` if that patient is already on the list.\n- **`Waitlist.remove`** normalises the ID the same way and raises `ValueError` if the patient isn't on the list.\n- **`Waitlist.entries()`** returns urgent entries first, then everyone by `requested_at`. Ties keep insertion order. This is the only ordering logic I added, since you said the offering logic comes later.\n\nChoices I made that you may want to change:\n- **One entry per patient.** `remove(patient_id)` takes only the ID, so a patient can't hold two waitlist places (for example, one for an assessment and one for a follow-up).\n- **Unknown or duplicate IDs raise `ValueError`,** following the existing `Calendar` convention.\n- **The code avoids Python 3.9-incompatible syntax.** Python 3.9 isn't installed here, so that is checked by reading the code, not by running it.",
+   "cost_usd": 0.008149430000000001,
+   "session_cost_usd": 0.008149430000000001,
+   "steps": 7,
+   "error": false,
+   "wall_s": 24.5,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 6,
+   "session": "10708234-bc6c-4912-a625-977276af62b7",
+   "prompt": "Pricing news: prices go up on 1 April 2027, an assessment to $105 and a follow-up to $78. Appointments before 1 April keep the old prices. Don't touch pricing.py yet, the board wants to announce it first.",
+   "result": "The memory notes change one part of my answer. They don't change the file.\n\nI still haven't touched `src/kestrel/pricing.py` or any other file, and the current prices are still $95 for an initial assessment and $70 for a follow-up.\n\nWhen you give the go-ahead, `session_price(kind)` will need a new signature. It takes only the kind, so it can't pick a price by appointment date. The change will need to pass the appointment's date (or booking date) too, and every caller will need updating. The CSC discount for follow-ups is a separate change. It needs the patient's CSC flag, so it's a further signature change or a separate function. I'll leave it out of the price change unless you want it in.\n\nThe date rule is still open. \"Before 1 April\" could mean the appointment's start, converted to Pacific/Auckland local time, or the date the appointment was booked. Tell me which you want, and whether the CSC discount should go in the same change, and I'll make the change when you say so.",
+   "cost_usd": 0.00248401,
+   "session_cost_usd": 0.010633440000000001,
+   "steps": 2,
+   "error": false,
+   "wall_s": 18.6,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 6,
+   "session": "10708234-bc6c-4912-a625-977276af62b7",
+   "prompt": "Add a small command line: `python -m kestrel day THERAPIST_ID DATE --data kestrel.json` prints that therapist's appointments on that local date, one per line with local time, kind and patient ID.",
+   "result": "The command is in place: `python -m kestrel day THERAPIST_ID DATE --data FILE`. It prints each of that therapist's appointments on the local date, one per line, as local time, kind and patient ID. Checked against a sample JSON file, it prints `09:00  assessment  KP-004211` and `15:45  followup  KP-000007` for a 2 March date (NZDT, +13). The full suite passes (89 tests), including under `-X dev -W always`. I haven't committed anything.\n\nThe new files are `src/kestrel/cli.py`, `src/kestrel/__main__.py` and `tests/test_cli.py`. `pricing.py` is untouched.\n\nChoices I made that you may want to change:\n- **Cancelled appointments are left out.** The spec didn't say, and an unlabelled cancelled line on a reception list would mislead. Attended and no-show appointments are still shown, since they happened.\n- **An empty day prints `No appointments.`** and exits 0.\n- **Errors go to stderr with exit 1.** That covers an unreadable or non-JSON data file. A bad DATE is an argparse usage error (exit 2).\n- **The date must be `YYYY-MM-DD`.**",
+   "cost_usd": 0.010871830000000002,
+   "session_cost_usd": 0.021505270000000003,
+   "steps": 8,
+   "error": false,
+   "wall_s": 30.9,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 6,
+   "session": "10708234-bc6c-4912-a625-977276af62b7",
+   "prompt": "Please commit.",
+   "result": "I committed the work on `calendar-queries` as two commits, both authored by Dana with the Haiku co-author trailer:\n\n- `cf59c17` Add Waitlist for patients waiting for a slot (`waitlist.py` and its tests)\n- `9555525` Add `python -m kestrel day` to print a therapist's day (`cli.py`, `__main__.py` and `test_cli.py`)\n\nThe suite passes (89 tests, warnings as errors) on the committed tree. The two `__pycache__/` directories are still untracked and were left out. The repo has no `.gitignore`, so adding one would stop them showing up. Nothing is pushed, and `pricing.py` is untouched.",
+   "cost_usd": 0.0037034300000000006,
+   "session_cost_usd": 0.025208700000000004,
+   "steps": 3,
+   "error": false,
+   "wall_s": 7.9,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 7,
+   "session": "604092d7-25de-42d8-8354-81e2fd5bd267",
+   "prompt": "Storage should write atomically so a crash can't leave a half-written file: write to a temporary file in the same directory, then rename it over the old one. Tests please.",
+   "result": "`save` in `src/kestrel/storage.py` now writes atomically. It writes to a temp file in the same directory, fsyncs it, then `os.replace`s it over the target. The full suite passes (94 tests) under `-X dev -W always`, and the source and tests parse under Python 3.9 grammar.\n\n**What changed**\n- **`src/kestrel/storage.py`**: `save` uses `tempfile.mkstemp` in the target's directory. If anything fails, the temp file is removed and the exception re-raised, so the old file is untouched.\n- **`tests/test_storage.py`**: five new tests:\n  - Replacing an existing file leaves no temp files behind.\n  - A write that fails partway (a non-serialisable field) leaves the old file byte-identical, with no temp file.\n  - A failure at the rename step does the same.\n  - The temp file is created in the target's directory, so the rename stays on one filesystem.\n  - An existing file's permissions (0640) survive a save.\n\n**Choices I made that you may want to change**\n- **Permissions on new files**: `mkstemp` creates files as 0600, so a newly created data file is owner-only. Existing files keep their mode. I think 0600 suits patient data, but it differs from the old `open(\"w\")`, which respected the umask.\n- **No directory fsync**: I fsync the file but not the containing directory, so after a power cut the rename itself could in principle be lost. The file is never half-written either way. Adding a directory fsync is a few lines if you want it.\n\nNothing is committed. The `__pycache__` directories were already untracked before I started, and I didn't touch them.",
+   "cost_usd": 0.007332130000000001,
+   "session_cost_usd": 0.007332130000000001,
+   "steps": 8,
+   "error": false,
+   "wall_s": 22.0,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 7,
+   "session": "604092d7-25de-42d8-8354-81e2fd5bd267",
+   "prompt": "Also add `python -m kestrel patients --data kestrel.json` listing patient IDs and names, sorted by ID.",
+   "result": "`python -m kestrel patients --data FILE` now lists each patient as `KP-000001  Ana Silva`, sorted by ID. The full suite passes (99 tests, run with `-X dev -W always`), and the new code parses under Python 3.9 grammar.\n\n**Changes**\n- **`src/kestrel/cli.py`**: added the `patients` subcommand. The file-loading and error handling that `day` already had moved into a shared `_load` helper, so both commands report unreadable files the same way.\n- **`tests/test_cli.py`**: four new tests cover sorting by ID, the empty case (`No patients.`), a missing file, a non-JSON file, and `--data` being required.\n\n**Choices I made**\n- **Empty output**: with no patients it prints `No patients.`, matching the `day` command's `No appointments.`.\n- **Names on screen**: this output prints names, as you asked. The privacy rule in the notes covers files that leave the system, and this goes only to the terminal. If you pipe it into a file that is shared, names would go with it.\n\n**Checked against the notes**\n- Data-file errors go to stderr with exit 1, and bad arguments exit 2. The new command follows both.\n- No `X | None` or other 3.9-incompatible syntax was added.\n\n**Not done**\n- Nothing is committed. The notes suggest keeping this command in its own commit, separate from the storage change, so you can commit the two separately. I can do that if you want.\n- The `__pycache__` directories were untracked before I started, and I didn't touch them.",
+   "cost_usd": 0.006340210000000001,
+   "session_cost_usd": 0.013672340000000002,
+   "steps": 4,
+   "error": false,
+   "wall_s": 18.8,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  {
+   "block": 7,
+   "session": "604092d7-25de-42d8-8354-81e2fd5bd267",
+   "prompt": "Please update CHANGELOG.md for everything we added this week and commit.",
+   "result": "The CHANGELOG now covers everything added since the initial version, and I've made three commits on `calendar-queries`, all authored by Dana with the Haiku co-author trailer. The suite passes (99 tests).\n\n**Commits**\n- `b7795df` Write storage atomically via temp file and rename (`storage.py`, `test_storage.py`)\n- `006e0f3` Add `python -m kestrel patients` to list patient IDs and names (`cli.py`, `test_cli.py`)\n- `09978f4` Update CHANGELOG for this week's work\n\nThe `day` command and the other earlier work were already committed, so they are not in these commits. I staged files by name, so the `__pycache__` directories are still untracked and were not committed.\n\n**CHANGELOG `Unreleased`**\n- **Added**: `day` and `patients` commands, `Calendar.cancel`, `Calendar.move`, `Calendar.for_day`, the `therapist_load` report, `Waitlist`, `make_invoice`, `import_legacy`, `BulkieClient.send_batch`, `session_price`, the `Patient.csc` flag, and `normalize_patient_id`.\n- **Changed**: `Calendar.all()` sorts by start time, `for_patient` normalises IDs, and `storage.save` writes atomically.\n- **Fixed**: the `X | None` annotation that broke imports on Python 3.9.\n\n**Left out on purpose**\n- The planned work that isn't built: the April 2027 price rise, the CSC discount, the cancellation and no-show fees, and offering freed slots to the waitlist. The changelog lists only what exists.\n- The `day` command leaves out cancelled appointments. That behaviour is not in the entry, and I can add it if you want it documented.",
+   "cost_usd": 0.0062785900000000006,
+   "session_cost_usd": 0.019950930000000002,
+   "steps": 4,
+   "error": false,
+   "wall_s": 20.6,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  }
+ ],
+ "settles": [
+  {
+   "engram_stop_s": 8.0
+  },
+  {
+   "engram_stop_s": 7.0
+  },
+  {
+   "engram_stop_s": 14.0
+  },
+  {
+   "engram_stop_s": 10.0
+  },
+  {
+   "engram_stop_s": 7.0
+  },
+  {
+   "engram_stop_s": 7.0
+  },
+  {
+   "engram_stop_s": 9.0
+  },
+  {
+   "engram_stop_s": 1.1
+  }
+ ],
+ "teammate_commits": [],
+ "cost_usd": 0.15805968,
+ "final_session_cost_usd": 0.019950930000000002,
+ "agent_wall_s": 504.8,
+ "wall_s": 568.8,
+ "errors": 0,
+ "memory": {
+  "cost_usd": 0.08315309999999998,
+  "engram": {
+   "injected_chars": 49770,
+   "recalls": 30,
+   "decisions": [
+    "Skip",
+    "Skip",
+    "Skip",
+    "Skip",
+    "Skip",
+    "Skip",
+    "Brief",
+    "Skip",
+    "Skip",
+    "Brief",
+    "Brief",
+    "Skip",
+    "Brief",
+    "Inject",
+    "Skip",
+    "Skip",
+    "Brief",
+    "Skip",
+    "Inject",
+    "Brief",
+    "Brief",
+    "Skip",
+    "Inject",
+    "Skip",
+    "Brief",
+    "Inject",
+    "Inject",
+    "Skip",
+    "Inject",
+    "Skip"
+   ],
+   "briefing_chars": 162676,
+   "distills": 30,
+   "distill_errors": 0,
+   "events": {
+    "SessionStart": 30,
+    "recall": 30,
+    "ask": 4,
+    "deep": 25,
+    "distill": 30,
+    "fix": 1,
+    "deep_recheck": 12
+   },
+   "cost_by_event": {
+    "deep": 0.042690700000000005,
+    "distill": 0.04046240000000001
+   },
+   "errors": {},
+   "deep": {
+    "runs": 25,
+    "with_picks": 21,
+    "ms": 278975,
+    "modes": {
+     "async": 25
+    }
+   }
+  },
+  "engram_calls": {
+   "calls": 76,
+   "sessions": 76,
+   "cost_usd": 0.08315309999999998,
+   "models": {
+    "claude-haiku-5-5": 76
+   },
+   "tokens": {
+    "input": 339081,
+    "cache_read": 0,
+    "cache_write": 0,
+    "output": 98490
+   }
+  },
+  "tokens": {
+   "input": 339081,
+   "cache_read": 0,
+   "cache_write": 0,
+   "output": 98490
+  }
+ },
+ "memory_state": {
+  "auto_memory_files": {},
+  "engram_stats": "{\n  \"by_kind\": {\n    \"answer\": 242,\n    \"decision\": 27,\n    \"entity\": 178,\n    \"episode\": 30,\n    \"error\": 28,\n    \"fact\": 32,\n    \"note\": 2,\n    \"preference\": 12,\n    \"prompt\": 33,\n    \"todo\": 8,\n    \"tool_call\": 119,\n    \"tool_result\": 296\n  },\n  \"embedder\": \"static:potion-retrieval-32M\",\n  \"file_bytes\": 3674112,\n  \"last_seq\": 1007,\n  \"memtable_docs\": 0,\n  \"records\": 1007,\n  \"segments\": 8,\n  \"sessions\": 7,\n  \"store\": \"/home/user/bench/work/kestrel/engram/home/engram/projects/kestrel-2ab45db7/memory.strata\",\n  \"wal_bytes\": 16\n}\n"
+ },
+ "last_session_compactions": 0,
+ "last_session_context_tokens": 56848,
+ "git_log": "09978f4 Dana: Update CHANGELOG for this week's work\n006e0f3 Dana: Add `python -m kestrel patients` to list patient IDs and names\nb7795df Dana: Write storage atomically via temp file and rename\n9555525 Dana: Add `python -m kestrel day` to print a therapist's day\ncf59c17 Dana: Add Waitlist for patients waiting for a slot\n3ed8bb0 Dana: Add therapist_load report for booked appointments per day\n33157d8 Dana: Add Calendar.move to reschedule booked appointments\nca5ed88 Dana: Add make_invoice for appointments\n974f7ea Dana: Add import_legacy for the old booking system's CSV export\nbfc08fa Dana: Split Bulkie sends into batches of 50; drop Python 3.10 syntax\n9612014 Dana: Add session_price for assessments and follow-ups\n97afb5b Dana: Add appointment cancellation and patient CSC flag\n1adc815 Dana: Fix calendar ordering; add for_day and patient id normalisation\nad53175 Dana: initial version\n",
+ "git_status": "?? src/kestrel/__pycache__/\n?? tests/__pycache__/\n",
+ "transcripts": null
+}

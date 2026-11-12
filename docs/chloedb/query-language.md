@@ -51,6 +51,7 @@ FROM <table> [JOIN <table> ON ...] | <WITH name> | (SELECT ...) AS t
 [WINDOW name AS (<window>), ...]
 [{UNION | INTERSECT | EXCEPT} [ALL] SELECT ...]
 [ORDER BY <score, column or aggregate> [ASC | DESC] [NULLS FIRST | LAST] [, <more keys> [ASC | DESC]] [MAX k PER <field>]]
+[PACK n TOKENS [OF <columns>] [EXCERPT n] [DEDUPE x [ON <vector field>]] [FOLLOW <edges field> [n HOP]] [WITH RECEIPT]]
 [LIMIT n [OFFSET m]]
 ```
 
@@ -95,6 +96,16 @@ A `BOOL` is `TRUE` or `FALSE`; a write also takes 1 and 0 and the text `'true'`,
 A `TIMESTAMP` is a moment, kept to the microsecond in UTC and written as ISO 8601 text: a date (`'2026-10-01'`, midnight UTC) or a date and time (`'2026-10-01T12:30:00Z'`, `'2026-10-01 14:30:05.25+02:00'`), with an offset or none (UTC). A number is refused, so seconds are not mistaken for microseconds. Comparisons, `BETWEEN`, `IN`, `ORDER BY`, `MIN`, `MAX` and `COUNT` work on it (`SUM` and `AVG` do not), and answers are ISO 8601 text in UTC, such as `2026-10-01T12:30:05.250Z`. In `decay(at, origin, scale)` on a `TIMESTAMP`, the origin is a time or `now()`, and the scale and offset are seconds: `decay(published, now(), 2592000)` halves a row's weight for each 30 days of age. `date_trunc`, `EXTRACT` and `strftime` take [parts of times](#parts-of-times-date_trunc-extract-and-strftime), for `GROUP BY` a day, a week or a month. A database whose tables use `BOOL` or `TIMESTAMP` is written in [file format 3](index.md#wal-memtable-and-snapshots), which versions of ChloeDB before these types refuse.
 
 `KEYWORD` and `INT` fields may be multi-valued (`"multi": true` in the schema): a row holds a list, such as `ARRAY['red', 'blue']`, and a filter matches a row if any of its values matches. A facet counts each distinct value once per row.
+
+A multi-valued field also compares with a list of values as a set, by PostgreSQL's array operators. The list is `ARRAY[...]` of values or a list parameter (`:groups`), and its values are written as the field's are:
+
+| condition | holds where | read from the index as |
+|---|---|---|
+| `tags @> ARRAY['red', 'sale']` | the row has every value of the list (contains all) | an `AND` of equalities; every row for an empty list |
+| `tags && ARRAY['red', 'sale']` | the row has a value of the list (overlaps) | `IN` the values; no row for an empty list |
+| `groups <@ :allowed` | each value of the row is in the list (contained by), on an `INT[]` field | `NOT` of the ranges between the list's values |
+
+The list may come first: `ARRAY['red'] <@ tags` is `tags @> ARRAY['red']`. A row without values is the empty set, so `@>` an empty list and `<@` any list hold for it, and `NOT` of a set operator holds where the set operator does not, as for other conditions on a multi-valued field. `<@` is how a row lists what it needs and a query what it has: with `required INT[]` holding the groups a reader must belong to, `WHERE required <@ :user_groups` keeps the documents whose every required group is one of the user's (and those that require none), and it filters a vector or text search as any condition does. A `KEYWORD[]` field does not take `<@` yet, since its index cannot list the values outside a list; an `INT[]` of ids does. Over rows in memory (a `WITH` result), `&&` compares any two lists, and `@>` a list column with a list written out.
 
 A `KEYWORD[]` field may hold the [semantic ID](server.md#semantic-ids) of a vector field: every prefix of a code such as `12.7.201.0`, filled in by the writer, so `sid = '12.7'` finds the rows under a prefix. `sid_at(sid, n)` is the first `n` numbers of a code (`sid_at(sid, 2)` is `'12.7'`), in `SELECT`, `WHERE` and `GROUP BY`.
 
@@ -780,7 +791,7 @@ LIMIT 10;
   chloedb.train.write_vectors(db, "next")   # with learn_items, the items' learned vectors into items.emb
   ```
 
-  It trains next-item prediction over each user's events, with every item in the field (`negatives="all"`) or the other targets of a batch (`"in_batch"`, for many items) as the negatives, and writes the model where `models=` says (the models directory by default), with the item vectors it was trained with. With `learn_items=True` the item vectors are trained too, starting from the field's: `chloedb.train.write_vectors` writes them into the field, changing nothing else of each row, and until then `encode` refuses the model. Otherwise the field's vectors are kept as they are and only the model learns.
+  It trains next-item prediction over each user's events, with every item in the field (`negatives="all"`) or the other targets of a batch (`"in_batch"`, for many items; with `logq=True` and `uniform_negatives=n` it no longer learns to rank popular items low) as the negatives, and writes the model where `models=` says (the models directory by default), with the item vectors it was trained with. With `learn_items=True` the item vectors are trained too, starting from the field's: `chloedb.train.write_vectors` writes them into the field, changing nothing else of each row, and until then `encode` refuses the model. Otherwise the field's vectors are kept as they are and only the model learns.
 - **Equal to PyTorch's**: ChloeDB's vector is the one the PyTorch module gives for the same history, within 2·10⁻⁵ (`chloedb/tests/sequence.rs`), and the items a query ranks are the ones PyTorch's vector ranks.
 - **How well it ranks**: on MovieLens-1M and Amazon Beauty, leave-one-out over every item as SASRec is measured, a model of two layers that reads items only has Recall@10 0.278 and 0.066 (NDCG@10 0.159 and 0.041). That is above the original SASRec's published 0.250 and 0.061, but below SASRec trained the same way as this model, with cross-entropy over every item (SASRec+, 0.315 on MovieLens), and on Beauty below counted transitions from the same events ([`chloedb.next_items`](next-items.md), 0.069): good, not the best published. Reading times too, it has 0.319 and 0.077. Both MovieLens runs stopped at a time limit while still improving. ChloeDB's answers equal PyTorch's on every user ([`results/sequence`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/sequence), with the protocol and the published numbers), and CI checks ranking quality on MovieLens-1M against popularity and item-kNN baselines and ChloeDB's other sources (`chloedb/results/sequence/gate.py`): there a model trained for an hour has Recall@10 0.306, `ppr` over what came after what 0.242, counted transitions 0.211 and item-kNN 0.069.
 - **What it costs**: the model alone, on one thread of a cloud VM's Xeon at 2.80 GHz, takes 0.09 ms for 10 events, 0.28 ms for 50 and 1.5 ms for 200 (p50); the whole query, reading the history and searching the field, 0.6 to 0.7 ms on Beauty's 50 events and 2 to 3 ms on MovieLens's 200. Keep `max_len` as short as the ranking allows.
@@ -1052,6 +1063,34 @@ On ArguAna (BEIR's 8,674 arguments from 592 debates on 15 topics; a document's d
 Debates and topics are the mean number of each in a query's answer. Each segment keeps the cap as it scores, so a cap costs about 1.5 times the uncapped query whatever the field: BM25 can skip fewer rows, since the 20th row kept scores lower than the 20th of all. One row of each of the 15 topics cannot fill 20 rows, so that query scores every argument that matches, once, and returns 15. Before the scan kept the cap, the same queries read growing slices of the ranking: 6.0 to 6.1 ms by debate, 7.1 and 18.8 ms for three and two per topic, and 549 ms for one per topic, which read every row again at each slice (with the uncapped query at 3.3 ms in that run).
 
 Caps trade relevance for spread. ArguAna's answer to a query is the argument against it, in the query's own debate, so a cap on debates also caps how many of the right debate's arguments the ranking can show: nDCG@10 falls from 0.489 to 0.307 with one per debate, and to 0.419 with three. The run is `chloedb-per-cap-bench` ([`results/text/per_cap.json`](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/text/per_cap.json)).
+
+## As much as fits: `PACK n TOKENS`
+
+A query's answer is often the context a language model is given, and the model has a budget of tokens, not of rows. `PACK n TOKENS` at the end of a SELECT fills that budget: it reads the query's rows in its order and decides each once, so that a long row, a row that repeats one already taken and a row linked to one taken are weighed inside the query rather than by the application after a top k.
+
+```sql
+-- what memory says about the task, in at most 4,000 tokens
+SELECT id, kind, text FROM memory
+WHERE superseded = false
+ORDER BY rrf(bm25(text, :task), similarity(emb, :q)) DESC
+PACK 4000 TOKENS DEDUPE 0.85 FOLLOW links 1 HOP WITH RECEIPT;
+```
+
+Each row, in the query's order, is:
+
+- **taken** whole when its text fits what is left of the budget;
+- **excerpted** when it is longer than one row may be (`EXCERPT n`; a quarter of the budget by default) or than what is left: the stretch of its longest text column with the most words of the query's `bm25` and `MATCH` texts (or its start, when it has none), marked `… ` where it was cut;
+- **skipped as a near-duplicate** of a row taken before it, with `DEDUPE x`: at least the share x of the shorter one's words are in the other, or, with `DEDUPE x ON emb`, the cosine of their vectors is at least x;
+- **skipped as over budget** when not even an excerpt of 32 tokens fits.
+
+With `FOLLOW edges n HOP` (1 to 3 hops, 1 by default), each row taken brings the rows its [`EDGES`](#graphs) field reaches, up to 16, right after it in the order of its edges, if they pass the query's `WHERE`, decided the same way (`linked from k`). The rows are read by key, a hop at a time, so `FOLLOW` works through a coordinator, where graph walks do not: a decision a file note links to is taken with the note, though it shares no word with the task.
+
+The answer is the rows taken, in that order, with two more columns: `pack_tokens`, the tokens the row spends, and `pack_decision` (`take`, `excerpt`, `linked from k`). `WITH RECEIPT` adds the rows skipped (`skip: near-duplicate of k`, `skip: over budget`) and the columns `pack_score`, the query's score of the row, and `pack_used`, the tokens spent up to and with it. In Rust, `Db::pack` answers the rows and a receipt with every decision and the snapshot read (`txn` and `seq_no`).
+
+- **The text counted** is every text column but the key's, or the columns `OF a, b` names. Tokens are an estimate (`chloedb::query::pack::count_tokens`), as the real count depends on the model's tokenizer: a run of letters is a token per six letters, a run of digits a token per three, a CJK character or a punctuation mark one each.
+- **Reads.** The rows are read in slices, 64 and then four times as many, and reading stops once what is left of the budget is too small for any row: a query whose first rows fill the budget reads one slice. `LIMIT` is the most candidates read (1,000 without one), and `OFFSET` where they start. Every slice, and every row followed, is a query of its own on the same snapshot.
+- **Choosing** is greedy in the query's order. A row that does not fit whole is excerpted rather than skipped, so that one long log cannot spend the budget, and a smaller row after one over the budget is still taken.
+- **Where.** On a file, a server and a coordinator alike: a coordinator merges each slice from its shards, and packs. `PACK` inside a subquery is not the clause (`pack` stays a name there, and anywhere it is not followed by a number and `TOKENS`).
 
 ## Graphs
 

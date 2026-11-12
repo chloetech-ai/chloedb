@@ -51,6 +51,13 @@ shop = chloedb.connect("shop.chloedb")      # or a server: chloedb.connect("http
      .sort("revenue", descending=True).to_polars())
 ```
 
+LangChain, LangGraph and LlamaIndex take ChloeDB as their vector store,
+checkpointer and memory store (`chloedb.langchain`, `chloedb.langgraph`,
+`chloedb.llama_index`, with the extras `[langchain]`, `[langgraph]` and
+`[llama-index]`), and `chloedb.dbapi` is a DB-API 2.0 driver, for
+`pandas.read_sql` and other tools: see
+[the frameworks page](../docs/chloedb/frameworks.md).
+
 The guide is [docs/chloedb/python.md](../docs/chloedb/python.md), and frames
 have [their own page](../docs/chloedb/frames.md). Tests:
 `maturin develop --release && pytest tests` in a virtualenv (the client

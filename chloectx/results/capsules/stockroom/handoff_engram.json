@@ -1,0 +1,90 @@
+{
+ "capsule": {
+  "backup_ms": 77.961349,
+  "by_kind": {
+   "answer": 103,
+   "decision": 15,
+   "entity": 96,
+   "episode": 13,
+   "error": 21,
+   "fact": 11,
+   "preference": 5,
+   "prompt": 15,
+   "todo": 4
+  },
+  "bytes": 983040,
+  "created_ts": 1794477881,
+  "dim": 512,
+  "dir": "/home/user/bench/work/stockroom/engram/capsule",
+  "embedder": "static",
+  "embedder_name": "static:potion-retrieval-32M",
+  "format": "chloectx-capsule/1",
+  "kinds": [
+   "decision",
+   "preference",
+   "fact",
+   "todo",
+   "note",
+   "entity",
+   "prompt",
+   "answer",
+   "episode",
+   "summary",
+   "error"
+  ],
+  "pack_ms": 30.415785,
+  "project": "/home/user/bench/work/stockroom/engram/stockroom",
+  "records": 283,
+  "redacted": 0,
+  "sha256": "c7ae6e928547cb70d0c9169a21557c7a7d128b9454fa93b58b078bd38255437b",
+  "since_ts": null,
+  "source_last_seq": 475,
+  "title": "stockroom",
+  "topics": [
+   "storage.py",
+   "items.py",
+   "movements.csv",
+   "src/stockroom/inventory.py",
+   "src/stockroom/storage.py",
+   "stockroom CLI",
+   "Catalog",
+   "load_movements",
+   "reorder.py",
+   "src/stockroom/cli.py",
+   "tests/test_cli.py",
+   "tests/test_reorder.py",
+   "tests/test_storage.py",
+   "movements CSV",
+   "reason column",
+   "receive command",
+   "src/stockroom/items.py",
+   "src/stockroom/reorder.py",
+   "Item",
+   "Movement"
+  ],
+  "total_ms": 187.01394,
+  "wall_s": 0.19
+ },
+ "note": {
+  "chars": 5792,
+  "transcript_chars": 76026,
+  "cost_usd": 0.00890957,
+  "wall_s": 22.3,
+  "input_tokens": 34588,
+  "output_tokens": 4880,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ },
+ "note_short": {
+  "chars": 1906,
+  "transcript_chars": 76026,
+  "cost_usd": 0.007375970000000001,
+  "wall_s": 8.7,
+  "input_tokens": 34625,
+  "output_tokens": 1798,
+  "model": [
+   "claude-haiku-5-5"
+  ]
+ }
+}
