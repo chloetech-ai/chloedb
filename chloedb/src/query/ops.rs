@@ -1111,7 +1111,8 @@ impl<'a> Ops<'a, '_> {
     /// growing number of rows (twice the rows wanted, four times for
     /// groups, at least 32, then four times as many) until enough rows join
     /// or groups have a row, or it runs out: rows keep its order through
-    /// joins, filters, projections and the first rows of groups.
+    /// joins, filters, projections and the first rows of groups. A scan
+    /// cut at [`MAX_ROWS`] that leaves the page short is an error.
     fn limit(&mut self, input: &Node, offset: usize, limit: Option<usize>, what: &str) -> Result<Rows> {
         let cut = |rows: Rows| {
             let idx: Vec<usize> = (offset..rows.rows.len()).take(limit.unwrap_or(usize::MAX)).collect();
@@ -1138,10 +1139,18 @@ impl<'a> Ops<'a, '_> {
                 Err(e) => break Err(e),
             };
             let read = self.driver.map_or(0, |(_, _, read)| read);
-            if rows.rows.len() >= want || read < lim || lim >= MAX_ROWS {
+            if rows.rows.len() >= want || read < lim {
                 break Ok(cut(rows));
             }
-            lim = (lim * 4).min(MAX_ROWS);
+            // The scan read past the most rows it may read, and too few
+            // came out: the rest lie past the cut, so a short page would be
+            // a wrong answer. Refused, as the same query without its LIMIT
+            // is. (The last slice asks for one row more than the most, so
+            // that a table of exactly that many rows is read whole.)
+            if lim > MAX_ROWS {
+                break Err(err(format!("the first table of the query would read more than {MAX_ROWS} rows to find the rows of its LIMIT; add conditions on it")));
+            }
+            lim = (lim * 4).min(MAX_ROWS + 1);
         };
         self.driver = saved;
         self.per = saved_per;

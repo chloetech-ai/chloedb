@@ -905,7 +905,7 @@ impl Service {
                 self.tables_shipped(&before);
                 r
             }
-            Replication::Primary(p) => p.shipped_to(&r.primary, r.term),
+            Replication::Primary(p) => p.shipped_to(&r.primary, r.term, r.config),
             Replication::None => Err(conflict("this server is not a replica (--replica): it takes no shipped transactions".into())),
         }
     }
@@ -938,7 +938,7 @@ impl Service {
         match &self.replication() {
             Replication::Replica(f) => f.verify(r).await,
             Replication::Primary(p) => {
-                p.shipped_to(&r.primary, r.term)?;
+                p.shipped_to(&r.primary, r.term, r.config)?;
                 Err(conflict("this server is a primary: it has no rows of another primary's to compare".into()))
             }
             Replication::None => Err(conflict("this server is not a replica (--replica): it has no rows of a primary's to compare".into())),

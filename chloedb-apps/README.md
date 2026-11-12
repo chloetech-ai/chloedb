@@ -1,7 +1,6 @@
 # chloedb-apps: apps that are built from a description and grow
 
-A prototype of the idea in the doc
-[Strata as a self-extending app engine](https://claude.ai/artifact/K7nVdw9VKT4d9u9QGDb35e):
+A prototype app engine, introduced in [the guide](../docs/chloedb/apps.md):
 an app is data in ChloeDB, made of capabilities (tables, views, server
 functions) that a model writes and the engine checks, stores and runs, and of
 shared components and helpers that every app uses from one library, linked to
@@ -176,6 +175,8 @@ cd chloedb-apps
 | `STRATA_APPS_PHOTOS=builtin` | photos from the built-in set only (no Openverse) |
 | `STRATA_APPS_SPEND_CAP_USD` | stop every model call (builds, checks and apps' own questions) once the engine has spent this much, in US dollars, counted from what Claude Code reports and kept in `DATA/spend.json` across restarts |
 | `STRATA_APPS_ASK_MODEL`, `STRATA_APPS_ASKS_PER_DAY`, `STRATA_APPS_FETCHES_PER_DAY` | apps' own model (`app.ask`, default `claude-haiku-5-5`), the questions an app may ask it each day unless its owner sets another number (default 200), and the pages an app may fetch each day (default 1000); see [A model and the web](../docs/chloedb/apps.md#a-model-and-the-web-per-app) |
+| `STRATA_APPS_SECRET_KEY` | what apps' secrets (API keys) are sealed with; without it the engine makes a key in `DATA/secret.key` (mode 0600) on first start. Beside a cluster, set it from a Kubernetes secret so a new pod can open them |
+| `STRATA_APPS_SCHEDULES=off` | do not run apps' schedules (sources included) in this engine |
 | `STRATA_APPS_EMBED_MODEL` | the embedding model of meaning columns and of the library's search (default `potion-retrieval-32M`); a ChloeDB that cannot load it searches the library by words alone |
 | `STRATA_APPS_MEANING_MIN` | the least cosine at which a piece found by meaning alone is offered (default 0.2) |
 
@@ -225,6 +226,25 @@ CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS
 
 Statements: `REQUIRE cond ELSE 'message'` (stops the rule, writes nothing, shows the message), `LET`, `INSERT ... [ON CONFLICT (cols) DO UPDATE SET ... | DO NOTHING] [AS name]`, `UPDATE` and `DELETE` (`WHERE id = ...` for one row, any other condition for each row it selects), `CALL fn(name => value)`, `FOR row IN (SELECT ...) DO ... END`, `IF ... THEN ... [ELSE ...] END` and `RETURN`; a rule that is one SELECT is a query (`RETURNS ROW | VALUE`). `SEND EMAIL TO :to SUBJECT 'New this week' [TEXT '...'] [ROWS (SELECT ...)] [NONE '...']` emails a line per row; the engine holds it until the rule's writes are stored, so a rule that stops sends nothing (an email step in the JSON form). The statement is kept as the rule's source: the model sees it and changes it with edits, and the studio shows it. A test's `"do"` is written the same way. `STRATA_APPS_RULE_SQL=off` has the model write the JSON steps instead (`{"query": ...}` or `{"steps": [...]}`). A query rule has the shape of a SQL function with named parameters, so it can become one when ChloeDB has them.
 
+**Schedules, sources, hosts and secrets.** An app can reach the web on a clock, and only where its owner said:
+
+```sql
+CREATE SOURCE news FROM FEED 'https://news.example.com/rss' EVERY 1 HOUR
+  INTO stories (title, link, published, summary, image) KEY link;
+
+CREATE RULE morning_brief EVERY DAY AT '07:00' TZ 'Europe/Madrid' AS
+  SEND EMAIL TO (SELECT email FROM readers) SUBJECT 'Your morning brief'
+    ROWS (SELECT title, summary, link FROM stories WHERE days_between(published, :today) <= 1 ORDER BY published DESC LIMIT 15)
+    NONE 'Nothing new today.';
+```
+
+- `EVERY ...` on a rule (or `"every": "day at 07:00"` on a JavaScript function's plan entry) runs it on its own: every N minutes (15 at least) or hours, every day or N days at a time, on days of the week (`EVERY MONDAY`, `EVERY WEEKDAY`, `EVERY WEEK ON MONDAY, THURSDAY`), in a time zone (`TZ 'Area/City'`, UTC without one), with `:today` the day there (`engine/schedule.mjs`). A run missed while the engine was down runs once when it is back. A schedule stops itself after 5 failures in a row; a refusal (a switch off, a limit) is said but not counted.
+- `CREATE SOURCE` reads an RSS, Atom or RDF feed (`FROM FEED`) or a JSON list (`FROM JSON 'url' AT 'data.items'`, fields by path: `rate = value.mid`) on a schedule and adds each new item to a table once, by its `KEY` (`engine/feeds.mjs`). A feed item's fields are title, link, guid, published, updated, summary, content, author, categories and image, whatever the format called them. Inside any rule, `PULL FEED | JSON 'url' (or :row.url) INTO t (...) KEY col AS got` does the same and gives `{added, items}`, so a rule can go through feeds kept in a table. The fetch is an `app.fetch`, under the same switches, hosts and limits. A trigger on the table (in JavaScript, with `app.ask`) can then summarize or sort each new item.
+- **Hosts.** Under "Web pages and APIs", the owner allows each host an app reads from (GET, HEAD) and, separately, each it may send to (POST). A host covers its subdomains. A host the code names (an address in a function or rule, or a view's `app.fetch('https://...')`) or tried and was refused is listed for the owner to allow, with one tap, and every hop of a redirect must be allowed too. So a change, whether asked for, built from use or a repair, never widens what an app reaches by itself. Apps switched on before host lists keep "any public host" until the owner replaces it.
+- **Secrets.** An API key is pasted once by the owner, bound to the hosts it may be sent to, and put in `Authorization: Bearer`, a header of its own or a query parameter. Code names it, `app.fetch(url, {secret: 'weather'})` or `PULL JSON ... SECRET 'weather'`, and never holds it. It is sealed with AES-256-GCM (`STRATA_APPS_SECRET_KEY`) in `sa_settings`, outside the app's pieces, so the model, the studio's SQL and the exports never show it. It goes on a request only to one of its hosts (a redirect elsewhere goes without it), and an answer that echoes it back has it replaced by `[secret]`. A key, token or password written into code fails the build's checks.
+- **Schedules** is a fourth switch beside the model, web search and the web, off until the owner switches it on. The studio lists each schedule with its next run and how the last one went, with Run now and Pause (`GET /api/apps/:id/schedules`, `POST .../schedules/:slug/run`, `.../pause`, `.../resume`); secrets are `GET/POST /api/apps/:id/secrets` and `POST .../secrets/:name/delete`; hosts are `POST /api/apps/:id/reach` with `allow: {host, send}`, `forget: host` or `hosts: [...]`, and `GET` answers what the code `wants` that is not allowed yet.
+- One engine runs the schedules of the apps in its ChloeDB; two engines on one database would each run them (there is no lease between them yet).
+
 **Tests as data.** A plan may carry `"tests"`: steps as in rules, then SELECTs and the value or row count each must give (`engine/checks.mjs`). They run once the version is live, on the tables it creates while they are still empty, and those tables are emptied again before the example rows go in. A failing test goes to repair like an error a person saw. After each build, every view is also opened in a headless browser (when Playwright is installed), and errors there are reported the same way.
 
 **Small changes to code.** A change to a view or function written in JavaScript can be `"edits": [{"old": "...", "new": "..."}]` in its plan entry instead of the whole code: each `old` must occur exactly once. "Make the heading pink" is one line, not a rewrite.
@@ -251,6 +271,9 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/library.mjs`, `library/` | the built-in library, one file each (`components/`, `helpers/`, and the starters in `views/` and `functions/`), seeded into ChloeDB at start-up; `library/examples/` holds each piece's example (props, calls with their results, rows) |
 | `engine/sql.mjs` | rewrites `FROM tasks` to the app's physical table and refuses anything but one `SELECT` over the app's own tables |
 | `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
+| `engine/schedule.mjs` | schedules: `EVERY ...` read and said back, the next time in a time zone, and the scheduler that runs what is due |
+| `engine/feeds.mjs` | RSS, Atom and RDF feeds, and JSON lists, as the items CREATE SOURCE and PULL add |
+| `engine/reach.mjs` | a model, web search and the web for apps: the owner's switches, hosts and secrets, the cache and the daily limits, and the guard against addresses that are not the public internet |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
 | `engine/rules.mjs` | functions and triggers written as data: their checks and their runtime |
 | `engine/ask.mjs` | questions about the graph ("which screens use the calendar"), answered from `sa_graph` |

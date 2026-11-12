@@ -95,7 +95,7 @@ impl Kept {
     /// It was sent membership `version` of `copies` copies: kept when newer
     /// than the one it knows.
     fn heard_config(&self, version: u64, copies: u32) -> Option<Kept> {
-        (version > self.config_version()).then(|| Kept { config: Some((version, copies as u64)), ..self.clone() })
+        (version > self.config_version() && copies > 0).then(|| Kept { config: Some((version, copies as u64)), ..self.clone() })
     }
 
     /// As `<db>.replication` holds it.
@@ -279,6 +279,25 @@ pub fn sign(r: &mut pb::ReplicateRequest, log: LogRead, digest: &dyn Fn(&[u8]) -
     r.prev_digest = held_digest(log, SeqNo { term: r.prev_term, seq: r.prev_seq }, digest);
 }
 
+/// Refuses (409) a call from primary `primary` of `term` that numbers the
+/// shard's membership `config`, older than the one a copy keeping `kept`
+/// knows (finding E-1): copies removed from the shard while they were
+/// down come back holding the membership before, elect one of themselves
+/// in a newer term (they are a majority of it), and its calls would
+/// otherwise depose the shard's serving primary, or take a replica of it
+/// away. The copy answers as for no call: neither follows the caller nor
+/// is fenced by its term. A caller that numbers none (0, a server from
+/// before memberships were numbered) is not refused.
+pub fn stale_membership(kept: &Kept, primary: &str, term: u64, config: u64) -> Result<(), ApiError> {
+    let mine = kept.config_version();
+    if config == 0 || config >= mine {
+        return Ok(());
+    }
+    Err(conflict(format!(
+        "primary {primary} of term {term} ships version {config} of the shard's membership, and this copy holds version {mine}: the copies that elected it are no longer all the shard's (removed, or cut off while its copies changed), so it is not followed; start it on a new database, or add it to the shard again"
+    )))
+}
+
 /// What a replica does with a call from a primary, before it applies
 /// anything ([`Replica::take`]).
 #[derive(Debug)]
@@ -374,6 +393,7 @@ impl Replica {
             let last = n.last();
             return Ok(Take::Answer(pb::ReplicateResponse { matched: false, seq: last.seq, term: last.term, replica_term: newest, ..Default::default() }));
         }
+        stale_membership(kept, primary, term, config.0)?;
         let mut next = match &kept.follows {
             Some((id, t)) if *t == term && id != primary => {
                 return Err(conflict(format!("this replica follows primary {id} in term {t}, and primary {primary} ships in the same term: a shard has one primary in a term")));
@@ -1156,15 +1176,22 @@ impl Primary {
         Ok(())
     }
 
-    /// Answers a primary's call to ship to this one, of `term`, while this
-    /// one is at `n`: an older term is answered with this one's (which
-    /// fences that primary), a newer one fences this primary and is
+    /// Answers a primary's call to ship to this one, of `term` and
+    /// numbering the shard's membership `config`, while this one is at
+    /// `n`: an older term is answered with this one's (which fences that
+    /// primary), one of an older membership is refused (409,
+    /// [`stale_membership`]), a newer term fences this primary and is
     /// refused (409), and so is one of the same term. Returns what to keep
     /// when fenced.
-    pub fn shipped_to(&mut self, primary: &str, term: u64, n: &Numbering) -> (Result<pb::ReplicateResponse, ApiError>, Option<Kept>) {
+    pub fn shipped_to(&mut self, primary: &str, term: u64, config: u64, n: &Numbering) -> (Result<pb::ReplicateResponse, ApiError>, Option<Kept>) {
         let (mine, last) = (n.term, n.last());
         if term < mine {
             return (Ok(pb::ReplicateResponse { matched: false, seq: last.seq, term: last.term, replica_term: mine, ..Default::default() }), None);
+        }
+        // A primary of copies no longer all the shard's does not fence
+        // this one, however new its term (finding E-1).
+        if let Err(e) = stale_membership(&self.kept, primary, term, config) {
+            return (Err(e), None);
         }
         if term > mine {
             let kept = self.fence(term, mine);
@@ -1786,12 +1813,58 @@ mod tests {
         assert!(p.readable(t0 + Duration::from_millis(700), 1).is_ok());
         assert!(p.readable(t0 + Duration::from_millis(750), 1).is_err());
         // Fenced by a newer term: no reads, no writes.
-        let (a, kept) = p.shipped_to("q", 3, &n(2, 9, &[(1, 1), (2, 5)]));
+        let (a, kept) = p.shipped_to("q", 3, 1, &n(2, 9, &[(1, 1), (2, 5)]));
         assert!(a.is_err() && kept.as_ref().is_some_and(|k| k.replaced_by == Some(3) && k.role == Some(KeptRole::Replica)));
         assert!(p.admit(2, t0).is_err() && p.readable(t0, 2).is_err() && matches!(p.acked(5), Some(Err(_))));
         // The refusals' codes, which a coordinator reads.
         assert_eq!(Primary::write_outcome(&p.admit(2, t0).unwrap_err()), Some(NOT_APPLIED));
         assert_eq!(Primary::write_outcome(&p.acked(5).unwrap().unwrap_err()), Some(IN_DOUBT));
+    }
+
+    /// Finding E-1: shard {p, b, c}, p its primary. b and c stop, and p
+    /// is given no replicas (two removals, with accept_data_loss): p
+    /// serves alone under membership 3. b and c come back holding
+    /// membership 1, which names them; b is elected by c in a newer term.
+    /// Its calls neither fence p nor take a replica of p's away, however
+    /// new their term; a call of p's own membership, or of a newer one,
+    /// still does, and so does a server that numbers no membership.
+    #[test]
+    fn a_primary_of_removed_copies_neither_fences_the_primary_nor_takes_its_replicas() {
+        let (mut p, _) = Primary::new(Kept::new("p".into()), &["b".into(), "c".into()], opts(), false);
+        assert_eq!(p.kept.config_version(), 1);
+        p.reconfigure(vec!["c".into()], Acks::Majority).unwrap();
+        p.reconfigure(Vec::new(), Acks::Majority).unwrap();
+        assert_eq!(p.kept.config, Some((3, 1)));
+        let at = n(2, 40, &[(1, 1), (2, 5)]);
+        // b, elected by c in term 3, under membership 1.
+        let (a, kept) = p.shipped_to("b", 3, 1, &at);
+        let e = a.unwrap_err();
+        assert!(e.status == 409 && e.message.contains("version 1 of the shard's membership") && e.message.contains("holds version 3"), "{}", e.message);
+        assert!(kept.is_none() && p.replaced_by() == 0 && p.admit(2, Instant::now()).is_ok(), "p still serves");
+        // Its copy (Restore) and its comparison (Verify) go through the
+        // same check, with the membership their first chunk carries.
+        assert!(p.shipped_to("b", 9, 2, &at).0.is_err() && p.replaced_by() == 0);
+        // A primary of p's membership, or a newer one, replaces it.
+        let (a, kept) = p.shipped_to("d", 4, 3, &at);
+        assert!(a.is_err() && kept.is_some() && p.replaced_by() == 4);
+
+        // A replica of the serving primary, which knows membership 3, is
+        // not taken by b either: it would leave its primary, whose next
+        // call it refuses for its term, which fences that primary.
+        let kept = Kept { id: "d".into(), member: true, follows: Some(("p".into(), 2)), role: Some(KeptRole::Replica), config: Some((3, 2)), ..Kept::default() };
+        let (r, _) = Replica::open(kept, Instant::now(), false);
+        let e = r.take(5, "b", true, (1, 3), &at).unwrap_err();
+        assert!(e.status == 409 && e.message.contains("is not followed"), "{}", e.message);
+        assert!(matches!(r.take(5, "e", true, (3, 2), &at), Ok(Take::Apply { kept: Some(k) }) if k.follows == Some(("e".into(), 5))));
+        assert!(matches!(r.take(5, "e", true, (4, 3), &at), Ok(Take::Apply { kept: Some(k) }) if k.config == Some((4, 3))));
+        // A primary that numbers no membership (0), and a replica that
+        // knows none, are as before.
+        assert!(matches!(r.take(5, "old", true, (0, 0), &at), Ok(Take::Apply { .. })));
+        let (fresh, _) = Replica::open(Kept::new("f".into()), Instant::now(), false);
+        assert!(matches!(fresh.take(5, "b", true, (1, 3), &at), Ok(Take::Apply { .. })));
+        // A copy's first chunk names no copies: the version alone is not
+        // kept from it.
+        assert!(matches!(fresh.take(5, "b", false, (7, 0), &at), Ok(Take::Apply { kept: Some(k) }) if k.config.is_none()));
     }
 
     #[test]

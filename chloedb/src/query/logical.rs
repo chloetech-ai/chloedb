@@ -333,6 +333,15 @@ impl Pred {
                         p => out.push(p),
                     }
                 }
+                // A condition twice is once (`x IS NOT NULL` that SQL's
+                // NOT adds beside one already there).
+                let mut once: Vec<Pred> = Vec::with_capacity(out.len());
+                for p in out {
+                    if !once.contains(&p) {
+                        once.push(p);
+                    }
+                }
+                let mut out = once;
                 match out.len() {
                     0 => Pred::True,
                     1 => out.pop().unwrap(),
