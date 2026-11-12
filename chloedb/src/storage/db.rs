@@ -1766,8 +1766,10 @@ impl Database {
     /// It cannot be undone: the database then requires feature `seq_no`
     /// (format 3), so versions of Strata from before it refuse to open it
     /// rather than lose its numbers. Bulk loads and attached segments,
-    /// which skip the WAL, take no sequence number. Starting again is a
-    /// no-op.
+    /// which skip the WAL, take no sequence number and reach no replica:
+    /// they seed a database until its first numbered write or until its
+    /// commits are followed ([`Database::on_commit`]), and are refused
+    /// after. Starting again is a no-op.
     pub fn start_seq_no(&self) -> Result<()> {
         // No background flush may seal the log in between.
         let _one = lock(&self.background);
@@ -2765,7 +2767,9 @@ impl Database {
 
     /// Loads documents into the first table straight into segments of
     /// `segment_max_docs`, in one commit and without the WAL. Keys must be
-    /// new (as with `insert`).
+    /// new (as with `insert`). A database that numbers its writes refuses
+    /// it once it has written or replicates, since a load is not shipped
+    /// to replicas ([`Database::start_seq_no`]).
     pub fn bulk_load(&self, docs: impl IntoIterator<Item = Document>) -> Result<()> {
         self.try_bulk_load(docs.into_iter().map(Ok))
     }
@@ -2788,6 +2792,7 @@ impl Database {
 
     fn bulk_load_table(&self, table: Option<&str>, docs: impl IntoIterator<Item = Result<Document>>) -> Result<()> {
         let mut wal = self.try_writer()?;
+        self.refuse_unshipped("a bulk load")?;
         let t = self.table_ref(table)?;
         // WAL deletes are replayed against the on-disk version; segments
         // written behind the WAL's back must not hold keys it touches.
@@ -2836,6 +2841,28 @@ impl Database {
         })
     }
 
+    /// Refuses `what`, a write that commits segments without a log record
+    /// (a bulk load, attached segments), in a database that numbers its
+    /// writes once it has numbered one or something follows its commits
+    /// ([`Database::on_commit`], which a primary and a replica set): such
+    /// a write takes no number and is not shipped, so the other copies of
+    /// this database would never have its rows. Until then it is a seed,
+    /// which every copy loads the same (a server's `--demo` rows) and a
+    /// replica that joins is sent whole. Later, write the rows in
+    /// transactions, as [`crate::ingest::import`] does in a numbered
+    /// database.
+    fn refuse_unshipped(&self, what: &str) -> Result<()> {
+        let Some(n) = self.numbering() else { return Ok(()) };
+        let followed = self.commit_hook.read().unwrap_or_else(|e| e.into_inner()).is_some();
+        if n.seq > 0 || followed {
+            return Err(Error::Schema(format!(
+                "{what} writes no log record and is not shipped to replicas, and this database numbers its writes ({}): seed it before its first write and before it replicates, or insert the rows in transactions",
+                if followed { "and its commits are followed".to_string() } else { format!("{} so far", n.seq) }
+            )));
+        }
+        Ok(())
+    }
+
     /// Adds a segment of bulk-loaded rows, ordered by the table's
     /// cluster_by field. Rows past its retention stay until a merge.
     fn add_loaded(&self, vw: &mut VersionWriter, t: &TableRef, chunk: Vec<Document>) -> Result<()> {
@@ -2870,9 +2897,11 @@ impl Database {
     /// schema) to the first table in one commit, after flushing the
     /// memtables. Their primary keys must be new. Their rows take no
     /// sequence number: they have number 0, whatever an exported image
-    /// held ([`rowseq`]). Returns the new segments' ids.
+    /// held ([`rowseq`]). Returns the new segments' ids. A database that
+    /// numbers its writes refuses them when it refuses a bulk load.
     pub fn attach_segments(&self, images: &[PathBuf]) -> Result<Vec<u64>> {
         let mut wal = self.try_writer()?;
+        self.refuse_unshipped("attaching segments")?;
         // As for bulk loads: WAL deletes are replayed against the on-disk
         // version, so segments added behind the WAL's back must follow it.
         self.flush_locked(&mut wal)?;
