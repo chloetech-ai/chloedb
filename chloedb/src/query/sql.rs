@@ -224,6 +224,15 @@ pub fn bind_write(sql_text: &str, schema: &Schema, params: &Params) -> Result<Op
 /// RANK PROFILE` ([`crate::query::profile`]), or `CREATE FUNCTION` or
 /// `DROP FUNCTION` ([`crate::query::function`]).
 pub fn bind_command(sql_text: &str, tables: &[&Schema], params: &Params) -> Result<Command> {
+    // `SELECT ... PACK n TOKENS` is a query: the SELECT without the clause.
+    if super::pack::may_pack(sql_text) {
+        if let Some((rest, _)) = super::pack::split(sql_text)? {
+            return match bind_command(&rest, tables, params)? {
+                Command::Query => Ok(Command::Query),
+                _ => Err(err("PACK n TOKENS ends a SELECT")),
+            };
+        }
+    }
     if let Some(f) = super::function::parse_statement(sql_text)? {
         return Ok(Command::Function(f));
     }
@@ -2181,6 +2190,7 @@ impl<'a> Binder<'a> {
             Expr::BinaryOp { left, op: BinaryOperator::And, right } => Pred::And(vec![self.pred(left)?, self.pred(right)?]),
             Expr::BinaryOp { left, op: BinaryOperator::Or, right } => Pred::Or(vec![self.pred(left)?, self.pred(right)?]),
             Expr::UnaryOp { op: sql::UnaryOperator::Not, expr } => Pred::Not(Box::new(self.pred(expr)?)),
+            Expr::BinaryOp { left, op: op @ (BinaryOperator::AtArrow | BinaryOperator::ArrowAt | BinaryOperator::PGOverlap), right } => self.set_op(left, op, right)?,
             Expr::BinaryOp { left, op, right } if self.subs.is_some() && (subquery_of(left).is_some() || subquery_of(right).is_some()) => self.sub_comparison(left, op, right)?,
             Expr::BinaryOp { left, op, right } if outer_field(left).is_some() || outer_field(right).is_some() => self.outer_comparison(left, op, right)?,
             Expr::BinaryOp { left, op, right } => self.comparison(left, op, right)?,
@@ -2356,6 +2366,96 @@ impl<'a> Binder<'a> {
                 }
             }
             _ => return Err(err(format!("unsupported predicate: {e}"))),
+        })
+    }
+
+    /// A set operator between a multi-valued KEYWORD or INT field and a
+    /// list of values (`tags @> ARRAY['a', 'b']`, `:ids <@ owners`), as
+    /// conditions on the field's values that its index answers:
+    ///
+    /// * `@>` (contains all): an `AND` of equalities, one per value; TRUE
+    ///   for every row when the list is empty.
+    /// * `&&` (overlaps): `IN` the values; FALSE for an empty list.
+    /// * `<@` (contained by, on INT[]): no value outside the list, which is
+    ///   `NOT` of the ranges between the list's values. A row without
+    ///   values holds no value outside it, so it matches, as an empty set
+    ///   is contained in every set.
+    fn set_op(&self, left: &Expr, op: &BinaryOperator, right: &Expr) -> Result<Pred> {
+        let usage = "@>, <@ and && compare a multi-valued KEYWORD or INT field (KEYWORD[], INT[]) with a list of values, ARRAY[...] or a list parameter (:ids)";
+        // `list <@ field` is `field @> list`, and the other way round.
+        let (field_e, list_e, op) = match (self.field_of(left).is_ok(), self.field_of(right).is_ok()) {
+            (true, false) => (left, right, op.clone()),
+            (false, true) => (
+                right,
+                left,
+                match op {
+                    BinaryOperator::AtArrow => BinaryOperator::ArrowAt,
+                    BinaryOperator::ArrowAt => BinaryOperator::AtArrow,
+                    o => o.clone(),
+                },
+            ),
+            (true, true) => return Err(err(format!("{left} {op} {right}: {usage}, not another field"))),
+            (false, false) => return Err(err(format!("{left} {op} {right}: {usage}"))),
+        };
+        let f = self.field_of(field_e)?;
+        let field = &self.schema.fields[f];
+        if !field.multi || !matches!(field.ty, FieldType::Keyword | FieldType::Int) || field.is_multi_vector() || !field.indexed {
+            let one = if matches!(field.ty, FieldType::Keyword | FieldType::Int | FieldType::Float) && !field.multi { " (a field of one value compares with = and IN)" } else { "" };
+            return Err(err(format!("{} is not an indexed KEYWORD[] or INT[] field: {usage}{one}", field.name)));
+        }
+        let items: Vec<Value> = match list_e {
+            Expr::Array(a) => a.elem.iter().map(|x| self.literal(x)).collect::<Result<_>>()?,
+            Expr::Nested(x) if matches!(x.as_ref(), Expr::Array(_)) => return self.set_op(field_e, &op, x),
+            e => match as_list(self.literal(e)?) {
+                Ok(xs) => xs,
+                Err(Value::Null) => return Err(err(format!("{list_e} is NULL: {usage}"))),
+                Err(v) => return Err(err(format!("{op} takes a list of values, not {} (one value: {}{} ARRAY[...])", hint::sql_value(&v), field.name, op))),
+            },
+        };
+        let mut values: Vec<Value> = Vec::with_capacity(items.len());
+        for v in items {
+            if v == Value::Null {
+                return Err(err(format!("{op}'s list holds a NULL, which no value of {} equals", field.name)));
+            }
+            let v = self.compared(f, v)?;
+            if !values.contains(&v) {
+                values.push(v);
+            }
+        }
+        Ok(match op {
+            BinaryOperator::AtArrow => match values.len() {
+                0 => Pred::True,
+                1 => Pred::In { field: f, values },
+                _ => Pred::And(values.into_iter().map(|v| Pred::In { field: f, values: vec![v] }).collect()),
+            },
+            BinaryOperator::PGOverlap if values.is_empty() => Pred::False,
+            BinaryOperator::PGOverlap => Pred::In { field: f, values },
+            _ if field.ty == FieldType::Int => {
+                let mut xs: Vec<i128> = values.iter().map(|v| v.as_i64().map(i128::from).ok_or_else(|| err(format!("{} is an INT[] field: its list holds whole numbers", field.name)))).collect::<Result<_>>()?;
+                xs.sort_unstable();
+                // The ranges between the values, each value left out.
+                let mut gaps = Vec::with_capacity(xs.len() + 1);
+                let mut from = i64::MIN as i128;
+                for x in xs {
+                    if from < x {
+                        gaps.push(int_range(f, from, x - 1));
+                    }
+                    from = x + 1;
+                }
+                gaps.push(int_range(f, from, i64::MAX as i128));
+                gaps.retain(|g| *g != Pred::False);
+                match gaps.len() {
+                    0 => Pred::True,
+                    1 => Pred::Not(Box::new(gaps.pop().expect("a range"))),
+                    _ => Pred::Not(Box::new(Pred::Or(gaps))),
+                }
+            }
+            _ => {
+                return Err(err(format!(
+                    "{} <@ a list is not supported on a KEYWORD[] field yet: its index cannot list the values outside the list; an INT[] field of ids answers it",
+                    field.name
+                )))
+            }
         })
     }
 
@@ -2760,7 +2860,7 @@ impl<'a> Binder<'a> {
             Expr::Identifier(id) => Err(err(format!("no such column: {} (a string is quoted: '{}')", id.value, id.value))),
             Expr::Subquery(_) => Err(err(format!("{e}: a subquery works in a condition (IN, EXISTS, a comparison with a field) or as graph seeds, not as a value here"))),
             Expr::Array(_) => Err(err(format!(
-                "{e} is not a value here: a value is a quoted string, a number, TRUE, FALSE, NULL or a parameter (:name); a multi-valued field matches a row when one of its values does, so write tags = 'new', or tags IN ('a', 'b') for any of several"
+                "{e} is not a value here: a value is a quoted string, a number, TRUE, FALSE, NULL or a parameter (:name); a multi-valued field matches a row when one of its values does, so write tags = 'new', tags IN ('a', 'b') or tags && ARRAY['a', 'b'] for any of several, and tags @> ARRAY['a', 'b'] for all of them"
             ))),
             _ => Err(err(format!("{e} is not a value here: a value is a quoted string, a number, TRUE, FALSE, NULL or a parameter (:name)"))),
         }

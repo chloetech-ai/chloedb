@@ -109,6 +109,12 @@ pub fn run() -> i32 {
 /// request's id) are written as they finish; at the end of the input the
 /// calls still running are waited for.
 pub fn serve<W: Write + Send>(input: impl BufRead, out: &Mutex<W>, call: impl Fn(&str, &Json) -> (String, bool) + Sync) {
+    serve_with(input, out, "chloectx", INSTRUCTIONS, &tools(), call)
+}
+
+/// [`serve`] for another server: its name, instructions and tools
+/// (`chloectx mount` serves capsules with it).
+pub fn serve_with<W: Write + Send>(input: impl BufRead, out: &Mutex<W>, server: &str, instructions: &str, tools: &Json, call: impl Fn(&str, &Json) -> (String, bool) + Sync) {
     let call = &call;
     std::thread::scope(|sc| {
         for line in input.lines() {
@@ -125,12 +131,12 @@ pub fn serve<W: Write + Send>(input: impl BufRead, out: &Mutex<W>, call: impl Fn
                     Some(json!({
                         "protocolVersion": version,
                         "capabilities": {"tools": {"listChanged": false}},
-                        "serverInfo": {"name": "chloectx", "version": env!("CARGO_PKG_VERSION")},
-                        "instructions": INSTRUCTIONS
+                        "serverInfo": {"name": server, "version": env!("CARGO_PKG_VERSION")},
+                        "instructions": instructions
                     }))
                 }
                 "ping" => Some(json!({})),
-                "tools/list" => Some(json!({"tools": tools()})),
+                "tools/list" => Some(json!({"tools": tools})),
                 "tools/call" => {
                     let name = msg.pointer("/params/name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));

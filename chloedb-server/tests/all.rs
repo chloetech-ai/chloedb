@@ -48,6 +48,7 @@ mod local_shard;
 mod map_lease;
 mod mcp;
 mod oncall;
+mod pack_cluster;
 mod opensearch;
 mod operator_kube;
 mod otlp;

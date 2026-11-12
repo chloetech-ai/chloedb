@@ -1,0 +1,865 @@
+{
+ "scenario": "kestrel",
+ "lanes": {
+  "engram": {
+   "runs": 56,
+   "solved": 51,
+   "solved_rate": 0.9107142857142857,
+   "score": 0.9446428571428571,
+   "cost_usd": 0.007800605,
+   "memory_cost_usd": 0.0019258196428571428,
+   "steps": 7.267857142857143,
+   "wall_s": 24.396428571428572,
+   "memory_tool_calls": 0.2857142857142857,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.15805968,
+    "memory_cost_usd": 0.08315309999999998,
+    "wall_s": 568.8,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 39,
+     "score": 0.9295454545454546
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {}
+  },
+  "full": {
+   "runs": 56,
+   "solved": 52,
+   "solved_rate": 0.9285714285714286,
+   "score": 0.9642857142857143,
+   "cost_usd": 0.00947278,
+   "memory_cost_usd": 0.0,
+   "steps": 2.267857142857143,
+   "wall_s": 15.751785714285715,
+   "memory_tool_calls": 0.0,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.08649389000000002,
+    "memory_cost_usd": 0.0,
+    "wall_s": 271.2,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 40,
+     "score": 0.9545454545454546
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {}
+  },
+  "engram+none": {
+   "runs": 56,
+   "solved": 29,
+   "solved_rate": 0.5178571428571429,
+   "score": 0.6607142857142857,
+   "cost_usd": 0.005148685357142857,
+   "memory_cost_usd": 0.0,
+   "steps": 7.392857142857143,
+   "wall_s": 17.62857142857143,
+   "memory_tool_calls": 0.0,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.15805968,
+    "memory_cost_usd": 0.08315309999999998,
+    "wall_s": 568.8,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 17,
+     "score": 0.5681818181818182
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {
+    "engram": {
+     "all": {
+      "tasks": 14,
+      "runs": [
+       56,
+       56
+      ],
+      "solved": [
+       29,
+       51
+      ],
+      "fisher_solved_p": 5.9579090423535115e-06,
+      "score_diff": -0.2839285714285714,
+      "perm_score_p": 0.0004997501249375312,
+      "solved_diff": -0.3928571428571428,
+      "perm_solved_p": 0.0004997501249375312
+     },
+     "control": {
+      "tasks": 2,
+      "runs": [
+       8,
+       8
+      ],
+      "solved": [
+       8,
+       8
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "conversation": {
+      "tasks": 11,
+      "runs": [
+       44,
+       44
+      ],
+      "solved": [
+       17,
+       39
+      ],
+      "fisher_solved_p": 1.6241384911763595e-06,
+      "score_diff": -0.36136363636363633,
+      "perm_score_p": 0.0004997501249375312,
+      "solved_diff": -0.5,
+      "perm_solved_p": 0.0004997501249375312
+     },
+     "repo": {
+      "tasks": 1,
+      "runs": [
+       4,
+       4
+      ],
+      "solved": [
+       4,
+       4
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     }
+    }
+   }
+  },
+  "engram+summary": {
+   "runs": 56,
+   "solved": 51,
+   "solved_rate": 0.9107142857142857,
+   "score": 0.9339285714285713,
+   "cost_usd": 0.005586494821428571,
+   "memory_cost_usd": 0.0,
+   "steps": 5.803571428571429,
+   "wall_s": 21.614285714285717,
+   "memory_tool_calls": 0.0,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.15805968,
+    "memory_cost_usd": 0.08315309999999998,
+    "wall_s": 568.8,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 39,
+     "score": 0.9159090909090909
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {
+    "engram": {
+     "all": {
+      "tasks": 14,
+      "runs": [
+       56,
+       56
+      ],
+      "solved": [
+       51,
+       51
+      ],
+      "fisher_solved_p": 0.9999999999999931,
+      "score_diff": -0.010714285714285787,
+      "perm_score_p": 0.6796601699150425,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "control": {
+      "tasks": 2,
+      "runs": [
+       8,
+       8
+      ],
+      "solved": [
+       8,
+       8
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "conversation": {
+      "tasks": 11,
+      "runs": [
+       44,
+       44
+      ],
+      "solved": [
+       39,
+       39
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": -0.013636363636363669,
+      "perm_score_p": 0.6646676661669165,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "repo": {
+      "tasks": 1,
+      "runs": [
+       4,
+       4
+      ],
+      "solved": [
+       4,
+       4
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     }
+    }
+   }
+  },
+  "engram+both": {
+   "runs": 56,
+   "solved": 52,
+   "solved_rate": 0.9285714285714286,
+   "score": 0.9428571428571428,
+   "cost_usd": 0.00682252,
+   "memory_cost_usd": 0.0,
+   "steps": 6.625,
+   "wall_s": 23.28392857142857,
+   "memory_tool_calls": 0.6607142857142857,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.15805968,
+    "memory_cost_usd": 0.08315309999999998,
+    "wall_s": 568.8,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 40,
+     "score": 0.9272727272727272
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {
+    "engram": {
+     "all": {
+      "tasks": 14,
+      "runs": [
+       56,
+       56
+      ],
+      "solved": [
+       52,
+       51
+      ],
+      "fisher_solved_p": 0.9999999999999553,
+      "score_diff": -0.0017857142857142794,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.017857142857142905,
+      "perm_solved_p": 1.0
+     },
+     "control": {
+      "tasks": 2,
+      "runs": [
+       8,
+       8
+      ],
+      "solved": [
+       8,
+       8
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "conversation": {
+      "tasks": 11,
+      "runs": [
+       44,
+       44
+      ],
+      "solved": [
+       40,
+       39
+      ],
+      "fisher_solved_p": 0.9999999999999689,
+      "score_diff": -0.002272727272727315,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.022727272727272707,
+      "perm_solved_p": 1.0
+     },
+     "repo": {
+      "tasks": 1,
+      "runs": [
+       4,
+       4
+      ],
+      "solved": [
+       4,
+       4
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     }
+    }
+   }
+  },
+  "engram+capsule": {
+   "runs": 56,
+   "solved": 50,
+   "solved_rate": 0.8928571428571429,
+   "score": 0.9053571428571429,
+   "cost_usd": 0.00688082875,
+   "memory_cost_usd": 0.0,
+   "steps": 8.107142857142858,
+   "wall_s": 21.50357142857143,
+   "memory_tool_calls": 0.8214285714285714,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.15805968,
+    "memory_cost_usd": 0.08315309999999998,
+    "wall_s": 568.8,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 38,
+     "score": 0.8795454545454546
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {
+    "engram": {
+     "all": {
+      "tasks": 14,
+      "runs": [
+       56,
+       56
+      ],
+      "solved": [
+       50,
+       51
+      ],
+      "fisher_solved_p": 0.999999999999988,
+      "score_diff": -0.03928571428571426,
+      "perm_score_p": 0.17041479260369816,
+      "solved_diff": -0.017857142857142794,
+      "perm_solved_p": 1.0
+     },
+     "control": {
+      "tasks": 2,
+      "runs": [
+       8,
+       8
+      ],
+      "solved": [
+       8,
+       8
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "conversation": {
+      "tasks": 11,
+      "runs": [
+       44,
+       44
+      ],
+      "solved": [
+       38,
+       39
+      ],
+      "fisher_solved_p": 0.9999999999999918,
+      "score_diff": -0.04999999999999993,
+      "perm_score_p": 0.16541729135432284,
+      "solved_diff": -0.022727272727272707,
+      "perm_solved_p": 1.0
+     },
+     "repo": {
+      "tasks": 1,
+      "runs": [
+       4,
+       4
+      ],
+      "solved": [
+       4,
+       4
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     }
+    }
+   }
+  },
+  "engram+shortcap": {
+   "runs": 56,
+   "solved": 48,
+   "solved_rate": 0.8571428571428571,
+   "score": 0.9142857142857144,
+   "cost_usd": 0.0066111725,
+   "memory_cost_usd": 0.0,
+   "steps": 7.089285714285714,
+   "wall_s": 21.630357142857143,
+   "memory_tool_calls": 0.7142857142857143,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.15805968,
+    "memory_cost_usd": 0.08315309999999998,
+    "wall_s": 568.8,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 36,
+     "score": 0.890909090909091
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {
+    "engram": {
+     "all": {
+      "tasks": 14,
+      "runs": [
+       56,
+       56
+      ],
+      "solved": [
+       48,
+       51
+      ],
+      "fisher_solved_p": 0.5567486946826747,
+      "score_diff": -0.03035714285714275,
+      "perm_score_p": 0.13943028485757122,
+      "solved_diff": -0.0535714285714286,
+      "perm_solved_p": 0.25287356321839083
+     },
+     "control": {
+      "tasks": 2,
+      "runs": [
+       8,
+       8
+      ],
+      "solved": [
+       8,
+       8
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "conversation": {
+      "tasks": 11,
+      "runs": [
+       44,
+       44
+      ],
+      "solved": [
+       36,
+       39
+      ],
+      "fisher_solved_p": 0.5493938850548273,
+      "score_diff": -0.03863636363636358,
+      "perm_score_p": 0.15342328835582209,
+      "solved_diff": -0.06818181818181812,
+      "perm_solved_p": 0.25837081459270367
+     },
+     "repo": {
+      "tasks": 1,
+      "runs": [
+       4,
+       4
+      ],
+      "solved": [
+       4,
+       4
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     }
+    }
+   }
+  },
+  "engram+short": {
+   "runs": 56,
+   "solved": 47,
+   "solved_rate": 0.8392857142857143,
+   "score": 0.8982142857142856,
+   "cost_usd": 0.005399749464285715,
+   "memory_cost_usd": 0.0,
+   "steps": 6.571428571428571,
+   "wall_s": 20.428571428571427,
+   "memory_tool_calls": 0.0,
+   "errors": 0,
+   "history": {
+    "cost_usd": 0.15805968,
+    "memory_cost_usd": 0.08315309999999998,
+    "wall_s": 568.8,
+    "errors": 0
+   },
+   "by_kind": {
+    "control": {
+     "runs": 8,
+     "solved": 8,
+     "score": 1.0
+    },
+    "conversation": {
+     "runs": 44,
+     "solved": 35,
+     "score": 0.8704545454545454
+    },
+    "repo": {
+     "runs": 4,
+     "solved": 4,
+     "score": 1.0
+    }
+   },
+   "vs": {
+    "engram": {
+     "all": {
+      "tasks": 14,
+      "runs": [
+       56,
+       56
+      ],
+      "solved": [
+       47,
+       51
+      ],
+      "fisher_solved_p": 0.3922084374058027,
+      "score_diff": -0.046428571428571486,
+      "perm_score_p": 0.05297351324337831,
+      "solved_diff": -0.0714285714285714,
+      "perm_solved_p": 0.12143928035982009
+     },
+     "control": {
+      "tasks": 2,
+      "runs": [
+       8,
+       8
+      ],
+      "solved": [
+       8,
+       8
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     },
+     "conversation": {
+      "tasks": 11,
+      "runs": [
+       44,
+       44
+      ],
+      "solved": [
+       35,
+       39
+      ],
+      "fisher_solved_p": 0.38266962252515857,
+      "score_diff": -0.059090909090909194,
+      "perm_score_p": 0.047976011994003,
+      "solved_diff": -0.09090909090909094,
+      "perm_solved_p": 0.12843578210894552
+     },
+     "repo": {
+      "tasks": 1,
+      "runs": [
+       4,
+       4
+      ],
+      "solved": [
+       4,
+       4
+      ],
+      "fisher_solved_p": 1.0,
+      "score_diff": 0.0,
+      "perm_score_p": 1.0,
+      "solved_diff": 0.0,
+      "perm_solved_p": 1.0
+     }
+    }
+   }
+  }
+ },
+ "tasks": {
+  "free_slots": {
+   "kind": "conversation",
+   "needs": "opening hours (day 1), appointment lengths, quarter-hour starts and the assessment buffer (day 4)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 0.125,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "can_book": {
+   "kind": "conversation",
+   "needs": "opening hours, lengths, buffer and the 8-per-day cap (days 1 and 4)",
+   "engram": 0.35000000000000003,
+   "full": 0.5,
+   "engram+none": 0.0,
+   "engram+summary": 0.2,
+   "engram+both": 0.2,
+   "engram+capsule": 0.05,
+   "engram+shortcap": 0.30000000000000004,
+   "engram+short": 0.2
+  },
+  "cancellation_fee": {
+   "kind": "conversation",
+   "needs": "the cancellation policy (day 2) as revised to 48 hours (day 5)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 0.25,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "appointment_price": {
+   "kind": "conversation",
+   "needs": "the CSC discount (day 2) and the 1 April 2027 price rise (day 6)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 0.0,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "reminder_text": {
+   "kind": "conversation",
+   "needs": "the privacy rule for SMS (day 2); local time (day 1)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 0.8333333333333333,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "send_reminders": {
+   "kind": "conversation",
+   "needs": "Bulkie's 50-per-call limit and the Python 3.9 constraint (day 3)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 1.0,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 0.75,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "invoice_number": {
+   "kind": "conversation",
+   "needs": "the accountant's numbering scheme (day 4)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 1.0,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "invoice_export": {
+   "kind": "conversation",
+   "needs": "the accountant's export format (day 4) and the privacy rule on names (day 2)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 0.6666666666666666,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "waitlist_offer": {
+   "kind": "conversation",
+   "needs": "the waitlist order: urgent first, then by request time (day 6)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 1.0,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "overbooking_advice": {
+   "kind": "conversation",
+   "needs": "a failed approach and its reason (the board complaint, day 5)",
+   "engram": 0.875,
+   "full": 1.0,
+   "engram+none": 0.5,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 0.875
+  },
+  "python_advice": {
+   "kind": "conversation",
+   "needs": "an environment fact said once (reception PCs on Python 3.9, day 3)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 0.875,
+   "engram+summary": 0.875,
+   "engram+both": 1.0,
+   "engram+capsule": 0.875,
+   "engram+shortcap": 0.5,
+   "engram+short": 0.5
+  },
+  "upcoming": {
+   "kind": "repo",
+   "needs": "the patient ID normalization convention, applied in the code on day 1",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 1.0,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "merge_busy": {
+   "kind": "control",
+   "needs": "nothing (control)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 1.0,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  },
+  "parse_duration": {
+   "kind": "control",
+   "needs": "nothing (control)",
+   "engram": 1.0,
+   "full": 1.0,
+   "engram+none": 1.0,
+   "engram+summary": 1.0,
+   "engram+both": 1.0,
+   "engram+capsule": 1.0,
+   "engram+shortcap": 1.0,
+   "engram+short": 1.0
+  }
+ }
+}

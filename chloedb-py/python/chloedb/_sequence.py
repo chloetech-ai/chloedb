@@ -295,6 +295,8 @@ def train(
     seed: int,
     log,
     max_seconds: float | None = None,
+    logq: bool = False,
+    uniform_negatives: int = 0,
 ):
     torch = _torch()
     torch.manual_seed(seed)
@@ -327,6 +329,15 @@ def train(
     if not len(train_steps):
         raise ValueError("no training examples: each needs at least two events whose items have vectors")
 
+    # How often each item is a target: what in-batch candidates are drawn by.
+    share = torch.zeros(len(keys), dtype=torch.float64)
+    for ts in train_steps.targets:
+        for t in ts:
+            if t >= 0:
+                share[t] += 1
+    share /= share.sum().clamp_min(1)
+    sampler = torch.Generator().manual_seed(seed)
+
     model = _module(torch, dim, cfg)
     model.drop = dropout
     params = list(model.parameters()) + ([learned] if learned is not None else [])
@@ -346,9 +357,28 @@ def train(
             if negatives == "all":
                 logits = h @ E.T / temperature
             else:
-                # The batch's target items, each once, are the candidates.
-                cand, t = torch.unique(t, return_inverse=True)
+                # The batch's target items, each once, are the candidates,
+                # and with them `uniform_negatives` items drawn evenly
+                # from all (mixed negative sampling, Yang et al. 2020).
+                n = len(t)
+                extra = min(uniform_negatives, len(keys))
+                drawn = torch.randperm(len(keys), generator=sampler)[:extra]
+                cand = torch.unique(torch.cat([t, drawn]))
+                t = torch.searchsorted(cand, t)
                 logits = h @ E[cand].T / temperature
+                if logq:
+                    # A candidate that is in most batches (a popular item)
+                    # is a negative more often than its share of the
+                    # catalog: its score is lowered by the log of how
+                    # likely the batch holds it (Yi et al. 2019). A row's
+                    # own target is there whatever the draw, so it keeps
+                    # its score (Khrylchenko et al. 2025).
+                    held = 1 - (1 - share[cand]) ** n * (1 - extra / len(keys))
+                    lq = held.clamp_min(1e-12).log().float()
+                    rows = torch.arange(n)
+                    own = logits[rows, t]
+                    logits = logits - lq
+                    logits[rows, t] = own
             loss = torch.nn.functional.cross_entropy(logits, t)
             opt.zero_grad()
             loss.backward()

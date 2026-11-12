@@ -32,7 +32,7 @@ from typing import Any, Mapping
 
 from ._native import _strata
 
-__all__ = ["codebook", "sequence", "write_vectors"]
+__all__ = ["codebook", "codebook_report", "sequence", "write_vectors"]
 
 
 def codebook(
@@ -47,6 +47,7 @@ def codebook(
     iterations: int = 25,
     sample: int | None = None,
     seed: int = 0,
+    balanced: bool = False,
 ) -> str:
     """Trains a semantic-ID codebook and saves it as `name` under `models`
     (default $CHLOEDB_MODELS or ~/.local/share/strata/models); returns its
@@ -58,16 +59,67 @@ def codebook(
     of `k` centroids (1 to 256), each found by `iterations` rounds of
     k-means on up to `sample` vectors (100 per centroid by default) drawn
     with `seed`, so the same vectors and options give the same codebook. A
-    name holds one codebook: training another under it is an error."""
+    name holds one codebook: training another under it is an error.
+
+    `balanced` gives every centroid of a level the same number of the
+    sampled vectors (to within one) in each round, so no code is crowded and
+    none is empty: fewer items share a whole code, at the price of some
+    items leaving their nearest centroid. It changes training only; codes
+    are still assigned to the nearest centroid."""
     models = None if models is None else os.fspath(models)
     inner = getattr(source, "_db", None)
     if isinstance(inner, _strata.Database):
         if field is None:
             raise TypeError("training on a database needs the VECTOR field: field='emb'")
-        return inner.train_codebook(field, name, table, models, levels, k, iterations, sample, seed)
+        return inner.train_codebook(field, name, table, models, levels, k, iterations, sample, seed, balanced)
     if field is not None or table is not None:
         raise TypeError("field and table name a database's vectors; pass the database")
-    return _strata.train_codebook(source, name, models, levels, k, iterations, sample, seed)
+    return _strata.train_codebook(source, name, models, levels, k, iterations, sample, seed, balanced)
+
+
+
+def codebook_report(
+    source: Any,
+    name: str,
+    *,
+    field: str | None = None,
+    table: str | None = None,
+    models: str | os.PathLike | None = None,
+) -> dict:
+    """What the codebook saved as `name` makes of a set of vectors: how many
+    share a code, and how evenly each level's numbers are used. Read it
+    before a semantic-ID field names the codebook, since a field keeps its
+    codebook.
+
+    `source` is a `Database` (the vectors of its VECTOR `field`, of `table`)
+    or the vectors themselves, as for `codebook`; they need not be the ones
+    the codebook was trained on. The answer:
+
+    - `rows`, the vectors; `codes`, the distinct codes they get;
+      `shared_rows`, those whose code another has too (only the tie number
+      tells them apart, so a decoder cannot); `largest_group`, the most
+      rows under one code.
+    - `levels`, for each level: `used`, the numbers at least one row has;
+      `fullest`, the rows under the level's most used number;
+      `perplexity`, how many numbers the rows are spread over when weighed
+      by use (`k` when even, 1 when one number has every row); and
+      `residual`, the share of the vectors' squared length the code so far
+      leaves unsaid.
+
+    Many shared rows, or a level whose perplexity is far below `k`, say the
+    codes are crowded: try `balanced=True`, more levels, or vectors that
+    tell the rows apart better."""
+    import json
+
+    models = None if models is None else os.fspath(models)
+    inner = getattr(source, "_db", None)
+    if isinstance(inner, _strata.Database):
+        if field is None:
+            raise TypeError("a report on a database needs the VECTOR field: field='emb'")
+        return json.loads(inner.codebook_report(field, name, table, models))
+    if field is not None or table is not None:
+        raise TypeError("field and table name a database's vectors; pass the database")
+    return json.loads(_strata.codebook_report(source, name, models))
 
 
 def _key(source: Any, table: str) -> str:
@@ -137,6 +189,8 @@ def sequence(
     actions: list | None = None,
     learn_items: bool = False,
     negatives: str = "in_batch",
+    logq: bool = False,
+    uniform_negatives: int = 0,
     temperature: float = 0.05,
     epochs: int = 50,
     batch: int = 128,
@@ -172,6 +226,14 @@ def sequence(
     the model's unit vector with the item's vector, over `temperature`, and
     the loss is cross-entropy against the other items of the batch
     (`negatives="in_batch"`) or every item (`"all"`, for catalogs that fit).
+    In a batch a popular item is a negative far more often than a rare
+    one, which teaches the model to rank popular items low: `logq` lowers
+    each candidate's score by the log of how likely a batch is to hold it
+    (Yi et al., RecSys 2019), a row's own target left as it is (Khrylchenko
+    et al., RecSys 2025), and `uniform_negatives` adds that many items
+    drawn evenly from all of them to each batch's candidates (mixed
+    negative sampling), so that items no batch would hold are negatives
+    too. Both are for `"in_batch"`.
     With `learn_items` the item vectors are trained too (from the field's,
     or from `vectors`) and returned normalized: the model then ranks like
     SASRec, but a new item needs a vector before it can be found. Either
@@ -189,6 +251,10 @@ def sequence(
 
     if negatives not in ("in_batch", "all"):
         raise ValueError("negatives is 'in_batch' or 'all'")
+    if uniform_negatives < 0:
+        raise ValueError("uniform_negatives is 0 or more")
+    if negatives == "all" and (logq or uniform_negatives):
+        raise ValueError("logq and uniform_negatives are for negatives='in_batch': with 'all' every item is a candidate of every batch")
     if sum(x is not None for x in (sequences, events, records)) != 1:
         raise TypeError("give one of sequences, events or records")
     if vectors is None:
@@ -220,6 +286,7 @@ def sequence(
     model, items, learned, history = S.train(
         sequences or {}, records, vectors, cfg, learn_items=learn_items, negatives=negatives, temperature=temperature,
         epochs=epochs, batch=batch, lr=lr, dropout=dropout, holdout=holdout, patience=patience, seed=seed, log=log, max_seconds=max_seconds,
+        logq=logq, uniform_negatives=uniform_negatives,
     )
     path = os.path.join(_models_dir(models), name)
     S.save(model, cfg, path, items=items)

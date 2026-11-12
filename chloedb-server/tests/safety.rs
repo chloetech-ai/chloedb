@@ -312,9 +312,12 @@ async fn a_server_with_a_feed_open_stops() {
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
 }
 
-/// H-12: the published image (the Dockerfile's last stage) runs as a user
-/// other than root, from base images pinned by digest, without the
-/// benchmark tools or `tc`; those are the `bench` stage's.
+/// H-12: the published image (the Dockerfile's last stage) has a user
+/// other than root that owns its data, which the operator's pods run as
+/// (operator::kube's `run_as`), from base images pinned by digest, without
+/// the benchmark tools or `tc`; those are the `bench` stage's. Its USER
+/// stays root for now: an operator from before 0.2.1 gives its pods no
+/// user and runs new images on volumes a root image wrote.
 #[test]
 fn the_image_runs_as_a_user_from_pinned_bases() {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("deploy/Dockerfile")).unwrap();
@@ -328,9 +331,8 @@ fn the_image_runs_as_a_user_from_pinned_bases() {
     // The last stage is the default target: the image published.
     let last = lines.iter().rposition(|l| l.starts_with("FROM ")).unwrap();
     let published = &lines[last..];
-    let user = published.iter().rev().find_map(|l| l.strip_prefix("USER ")).unwrap_or_else(|| panic!("the published stage sets no USER"));
-    let uid = user.split(':').next().unwrap();
-    assert!(uid.parse::<u32>().is_ok_and(|u| u != 0), "USER {user}: a number, so that runAsNonRoot can check it, and not root's");
+    assert!(text.contains("useradd --system --uid 10001 --gid 10001") && text.contains("chown 10001:10001 /data"), "the image's user 10001 owns /data");
+    assert!(published.iter().all(|l| !l.starts_with("USER ")), "the published stage keeps root as its user until older operators are gone (they would run it as 10001 on volumes root wrote)");
     let bench = lines.iter().position(|l| l.starts_with("FROM ") && l.ends_with(" AS bench")).expect("a bench stage");
     // What the published stage takes in: from its base stage down.
     let base = published[0].split_whitespace().nth(1).unwrap();
