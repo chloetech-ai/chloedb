@@ -2500,6 +2500,7 @@ impl Service {
                 (a, rank_log::interleave(sa, sb, &p, il)?)
             }
         };
+        rank_log::keep_query(&mut served, &p, &schema);
         a.rs = std::mem::replace(&mut served.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
         let ops: Vec<Json> = served.entries.iter().map(|e| json!({"op": "upsert", "table": log.table, "doc": e.to_json()})).collect();
         let w = match ops.is_empty() {

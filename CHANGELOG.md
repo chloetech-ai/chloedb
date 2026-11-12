@@ -11,6 +11,26 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+### Added
+
+- ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
+  queries the rank log kept that rank by a rank profile, on one snapshot,
+  with the profile as it is and with the numbers a coordinate-ascent search
+  finds (parameter defaults and the literals of its `ORDER BY`), and
+  reports nDCG@k before and after on queries held out of the search, the
+  queries made better and worse with a sign test, a bootstrap interval and
+  latency, with a verdict. Grades come from the rank log's labels and a
+  judgments table (`relevance_judgments`); the server can have Claude grade
+  the rows no one graded first. A proposal is kept in `relevance_proposals`
+  and applied as `CREATE OR REPLACE RANK PROFILE` only while the profile is
+  the one it was measured against. `POST /v1/relevance/autopilot`,
+  `/v1/relevance/proposals`, `Db::autopilot`, and the command center's
+  Labs > Relevance autopilot.
+- The rank log keeps each request's query and its bound parameters, in a
+  new column `query` of the request's first row. A log table made before
+  it keeps working and keeps no query (`ALTER TABLE rank_log ADD COLUMN
+  query KEYWORD OPTIONS(indexed = false)` adds it).
+
 ## 0.2.0
 
 The first release under the new names: `chloedb-server-v0.2.0`,
