@@ -4,20 +4,23 @@ name: Image (app engine)
 # (spec.apps): ghcr.io/chloetech-ai/chloedb-apps, for x86-64 and arm64 in
 # one tag, as image.yml does for chloedb-server.
 #
-# A push to main that changes the engine publishes it as `latest` and as
-# the commit's full sha. A pull request that changes it builds both images
-# and publishes nothing. A run started by hand publishes the branch it runs
-# on, as its sha only.
+# A run of CI on main that passed (CI runs the engine's tests in its
+# server-smoke job) publishes the commit it tested as `latest` and as its
+# full sha, as image.yml does for chloedb-server: a commit whose CI failed
+# is never published, and only CI's runs of this repository's main count,
+# not a fork's pull request from a branch called main. A pull request that
+# changes the engine's image builds both images and publishes nothing. A
+# run started by hand publishes the branch it runs on, as its sha only.
 #
 # The image copies chloedb-server out of chloedb-server's `latest` (for an
 # engine run alone, without a cluster); nothing else in it is Rust, so each
-# architecture builds in minutes.
+# architecture builds in minutes, and it is rebuilt after every green run
+# on main, so that it follows chloedb-server's `latest` too.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - "chloedb-apps/**"
-      - ".github/workflows/image-apps.yml"
   pull_request:
     paths:
       - "chloedb-apps/deploy/Dockerfile"
@@ -28,7 +31,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: image-apps-${{ github.ref }}
+  group: image-apps-${{ github.event_name == 'workflow_run' && format('{0}:{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -37,10 +40,19 @@ permissions:
 env:
   IMAGE: ghcr.io/chloetech-ai/chloedb-apps
   PUSH: ${{ github.event_name != 'pull_request' }}
+  # The commit built: the one CI tested, for a run CI started.
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   build:
     name: app engine image (${{ matrix.arch }})
+    # Only after CI passed on this repository's main (a run CI started), or
+    # for a pull request or a run by hand.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event != 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository)
     strategy:
       matrix:
         include:
@@ -55,6 +67,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.SHA }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - if: env.PUSH == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -70,17 +84,17 @@ jobs:
           push: ${{ env.PUSH == 'true' }}
           load: ${{ env.PUSH != 'true' }}
           provenance: false
-          tags: ${{ env.IMAGE }}:${{ github.sha }}-${{ matrix.arch }}
+          tags: ${{ env.IMAGE }}:${{ env.SHA }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ env.SHA }}
             org.opencontainers.image.description=The app engine (chloedb-apps) that runs beside a ChloeDB cluster
           cache-from: type=gha,scope=image-apps-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-apps-${{ matrix.arch }}
       # The image starts: its browser, its model client and its server.
       - if: env.PUSH != 'true'
         run: |
-          docker run --rm --entrypoint sh "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" -c '
+          docker run --rm --entrypoint sh "$IMAGE:${{ env.SHA }}-${{ matrix.arch }}" -c '
             /opt/node_modules/.bin/claude --version && chloedb-server --version &&
             cd /opt/chloedb-apps && node -e "require(\"/opt/node_modules/playwright\").chromium.launch().then((b) => b.close())"'
 
@@ -100,8 +114,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: One tag for both architectures
+        env:
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tags=(-t "$IMAGE:${{ github.sha }}")
-          if [ "${{ github.event_name }}" = push ]; then tags+=(-t "$IMAGE:latest"); fi
-          docker buildx imagetools create "${tags[@]}" "$IMAGE:${{ github.sha }}-amd64" "$IMAGE:${{ github.sha }}-arm64"
-          docker buildx imagetools inspect "$IMAGE:${{ github.sha }}"
+          tags=(-t "$IMAGE:${{ env.SHA }}")
+          # `latest` moves only forward along main (see image.yml).
+          if [ "$EVENT" = workflow_run ]; then
+            move_latest=true
+            cur=$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{json .Image}}' 2>/dev/null \
+              | jq -r '.["linux/amd64"].config.Labels["org.opencontainers.image.revision"] // empty' || true)
+            if [ -n "$cur" ]; then
+              status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$cur...$SHA" --jq .status || echo unknown)
+              echo "latest is $cur; $SHA is $status of it"
+              case "$status" in ahead|identical) ;; *) move_latest=false ;; esac
+            fi
+            if [ "$move_latest" = true ]; then tags+=(-t "$IMAGE:latest"); fi
+          fi
+          docker buildx imagetools create "${tags[@]}" "$IMAGE:${{ env.SHA }}-amd64" "$IMAGE:${{ env.SHA }}-arm64"
+          docker buildx imagetools inspect "$IMAGE:${{ env.SHA }}"

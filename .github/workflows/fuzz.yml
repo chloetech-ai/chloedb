@@ -1,0 +1,175 @@
+name: Fuzz
+
+# Every night, `cargo fuzz` runs each of ChloeDB's fuzz targets
+# (chloedb/fuzz/fuzz_targets: damaged segments, WALs, manifests and loom
+# lists, arbitrary SQL, text queries and media) under AddressSanitizer for a
+# while, on a corpus kept from night to night, so that each night starts
+# where the last one stopped. CI runs the same targets' bodies over fixed
+# pseudo-random inputs on stable (chloedb/tests/corrupt_input.rs); this is
+# the search for new inputs.
+#
+# A target that crashes, hangs or runs out of memory fails its job, uploads
+# the input that did it (artifact `fuzz-<target>-crash`) and says in the
+# run's summary how to replay it:
+#
+#   cd chloedb/fuzz && cargo +nightly fuzz run <target> <the input>
+#
+# and a failed scheduled run opens an issue (nightly-report.yml). A run
+# started by hand takes the targets and minutes to run. A pull request that
+# changes the fuzz crate or this workflow builds every target and runs each
+# for a minute, so a target that stops compiling shows before it merges (the
+# rename to ChloeDB broke all seven, and nothing ran them).
+on:
+  schedule:
+    - cron: "53 1 * * *"
+  pull_request:
+    paths:
+      - "chloedb/fuzz/**"
+      - .github/workflows/fuzz.yml
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Targets to run, comma-separated; empty: every one"
+        required: false
+        default: ""
+      minutes:
+        description: "Minutes per target"
+        required: false
+        default: "20"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The nightly Miri uses in ci.yml, so that one toolchain is downloaded.
+  NIGHTLY: nightly-2026-10-27
+  CARGO_FUZZ: 0.13.2
+
+jobs:
+  targets:
+    name: targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+      seconds: ${{ steps.list.outputs.seconds }}
+      # The job's limit: the fuzzing, plus the build and the minimizing.
+      timeout: ${{ steps.list.outputs.timeout }}
+    steps:
+      - id: list
+        env:
+          TARGETS: ${{ inputs.targets }}
+          MINUTES: ${{ inputs.minutes }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          all='["loom", "manifest", "media", "segment", "sql", "text_query", "wal"]'
+          if [ -n "$TARGETS" ]; then
+            list=$(python3 -c 'import json, sys; print(json.dumps([t.strip() for t in sys.argv[1].split(",") if t.strip()]))' "$TARGETS")
+          else
+            list="$all"
+          fi
+          case "$EVENT" in
+            pull_request) minutes=1 ;;
+            workflow_dispatch) minutes="${MINUTES:-20}" ;;
+            *) minutes=20 ;;
+          esac
+          case "$minutes" in ''|*[!0-9]*) echo "::error::minutes must be a whole number"; exit 1 ;; esac
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "seconds=$((minutes * 60))" >> "$GITHUB_OUTPUT"
+          echo "timeout=$((minutes + 40))" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    needs: targets
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.targets.outputs.timeout) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.list) }}
+    defaults:
+      run:
+        working-directory: chloedb/fuzz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+      - id: tool
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ env.CARGO_FUZZ }}-${{ runner.os }}
+      - if: steps.tool.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-fuzz --version "$CARGO_FUZZ"
+      # cargo fuzz sets RUSTFLAGS itself (sanitizer, coverage), which
+      # replaces chloedb/.cargo/config.toml's target-cpu=native, so a cached
+      # build runs on any runner.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: chloedb/fuzz
+          key: fuzz
+          save-if: ${{ github.event_name != 'pull_request' }}
+      # The corpus: restored from the newest night's, saved under this
+      # run's id whatever the run found, so that the next night starts from
+      # it. A pull request reads it and saves nothing.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: chloedb/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Build
+        run: cargo +"$NIGHTLY" fuzz build "${{ matrix.target }}"
+      - name: Fuzz
+        id: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS_TO_RUN: ${{ needs.targets.outputs.seconds }}
+        run: |
+          mkdir -p "corpus/$TARGET"
+          echo "corpus/$TARGET holds $(find "corpus/$TARGET" -type f | wc -l) inputs"
+          # A hang is an input that takes 30 s; 4 GB of memory is a runaway
+          # allocation (the runner has 16).
+          cargo +"$NIGHTLY" fuzz run "$TARGET" -- \
+            -max_total_time="$SECONDS_TO_RUN" -timeout=30 -rss_limit_mb=4096 -print_final_stats=1
+      # The corpus grows each night: keep the inputs that add coverage.
+      - name: Minimize the corpus
+        if: always() && steps.fuzz.outcome != 'skipped' && github.event_name != 'pull_request'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          before=$(find "corpus/$TARGET" -type f | wc -l)
+          timeout 600 cargo +"$NIGHTLY" fuzz cmin "$TARGET" -- -timeout=30 -rss_limit_mb=4096 || echo "cmin did not finish; keeping the corpus as it is"
+          echo "corpus/$TARGET: $before inputs, $(find "corpus/$TARGET" -type f | wc -l) after minimizing"
+      - if: always() && steps.fuzz.outcome != 'skipped' && github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: chloedb/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - name: Say how to replay the crash
+        if: failure() && steps.fuzz.outcome == 'failure'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          {
+            echo "### fuzz target \`$TARGET\` failed"
+            echo
+            echo "Download the artifact \`fuzz-$TARGET-crash\` from this run, then:"
+            echo
+            echo '```'
+            for f in artifacts/"$TARGET"/*; do
+              [ -e "$f" ] && echo "cd chloedb/fuzz && cargo +nightly fuzz run $TARGET $f"
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: failure() && steps.fuzz.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: fuzz-${{ matrix.target }}-crash
+          path: chloedb/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

@@ -1,7 +1,15 @@
 # Dependabot's version updates, grouped so that each ecosystem and crate
-# gets at most one pull request per run. Security updates (repository
-# settings, "Dependabot security updates") come as soon as an advisory is
-# published, whatever this schedule says.
+# gets at most one pull request per run, for every lockfile and manifest in
+# the repository: the eight Rust crates that lock their dependencies, the
+# two Node packages, the Java package, the Python package, the two images'
+# base images and the workflows' actions.
+#
+# Security updates (a pull request as soon as an advisory names a locked
+# version, whatever this schedule says) are a repository setting, not this
+# file: Settings > Code security > "Dependabot security updates", with
+# "Secret scanning" and its "Push protection" beside it. They read the same
+# directories listed here. The Supply chain workflow (supply-chain.yml)
+# checks every Cargo.lock against RustSec's advisories each day as well.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -12,17 +20,46 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: cargo
-    directories: [/chloedb, /chloectx, /chloedb-server, /chloedb-py]
+    directories:
+      - /chloedb
+      - /chloectx
+      - /chloedb-server
+      - /chloedb-py
+      - /chloedb-crawl
+      - /chloedb-sheets
+      - /chloedb-java
+      - /chloedb-js
     schedule:
       interval: monthly
-    open-pull-requests-limit: 4
+    open-pull-requests-limit: 8
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+  - package-ecosystem: npm
+    directories: [/chloedb-apps, /chloedb-js]
+    schedule:
+      interval: monthly
+    groups:
+      npm:
+        patterns: ["*"]
+  - package-ecosystem: maven
+    directory: /chloedb-java
+    schedule:
+      interval: monthly
+    groups:
+      maven:
+        patterns: ["*"]
   - package-ecosystem: pip
     directory: /chloedb-py
     schedule:
       interval: monthly
     groups:
       python:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directories: [/chloedb-server/deploy, /chloedb-apps/deploy]
+    schedule:
+      interval: monthly
+    groups:
+      images:
         patterns: ["*"]

@@ -1,0 +1,64 @@
+name: Supply chain
+
+# cargo deny over every crate that locks its dependencies, with the rules in
+# deny.toml: RustSec's advisories (a vulnerable, yanked or unmaintained
+# locked version), licences, and sources (crates.io only).
+#
+# Every day, since an advisory can be published against a lockfile nobody
+# changed (a failed scheduled run opens an issue, nightly-report.yml), and on
+# a pull request or a push to main that changes a manifest, a lockfile,
+# deny.toml or this workflow. It is not part of `CI result`: an advisory
+# published overnight should not turn every unrelated pull request red. A
+# pull request that changes dependencies shows this check beside CI's.
+on:
+  schedule:
+    - cron: "29 5 * * *"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - deny.toml
+      - .github/workflows/supply-chain.yml
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - deny.toml
+      - .github/workflows/supply-chain.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # cargo-deny's version, built from crates.io with its own lockfile.
+  CARGO_DENY: 0.20.2
+
+jobs:
+  deny:
+    name: cargo deny (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [chloedb, chloectx, chloedb-server, chloedb-py, chloedb-crawl, chloedb-sheets, chloedb-java, chloedb-js]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - id: tool
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ env.CARGO_DENY }}-${{ runner.os }}
+      - if: steps.tool.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny --version "$CARGO_DENY"
+      - name: cargo deny check
+        working-directory: ${{ matrix.crate }}
+        run: cargo deny --locked --config ../deny.toml check

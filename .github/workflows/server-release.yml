@@ -5,10 +5,12 @@ name: chloedb-server release
 # server binary, attached to a GitHub release.
 #
 # A tag chloedb-server-v<version> (chloedb-server/Cargo.toml's version;
-# the old name, strata-server-v<version>, works too) builds and tests
-# every platform and attaches the archives and their SHA-256 sums to the
-# tag's release; a run started by hand does the same and keeps them as
-# the run's artifacts. A change to this workflow builds every platform
+# the old name, strata-server-v<version>, works too) builds every
+# platform, checks that the binary starts and answers a query, and
+# attaches the archives and their SHA-256 sums to the tag's release; a run
+# started by hand does the same and keeps them as the run's artifacts.
+# The tests are CI's: a tag builds nothing unless it is on main and CI's
+# full matrix passed on its commit (release-gate.yml). A change to this workflow builds every platform
 # as a release does, without releasing.
 #
 # The image (image.yml) is the other way to run it without building:
@@ -30,8 +32,17 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # A tag releases only a commit of main on which CI's full matrix passed
+  # (release-gate.yml says how to start that run when it is missing).
+  gate:
+    uses: ./.github/workflows/release-gate.yml
+    permissions:
+      contents: read
+      actions: read
+
   build:
     name: ${{ matrix.platform }}
+    needs: gate
     strategy:
       fail-fast: false
       matrix:
