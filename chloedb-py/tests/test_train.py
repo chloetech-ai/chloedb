@@ -60,6 +60,31 @@ def test_a_codebook_from_vectors_gives_a_table_its_codes(tmp_path):
     assert db.query("SELECT sid FROM items WHERE id = 'new'").scalar()[1] == sids["i0"][1]
 
 
+
+def test_a_report_says_how_a_codebook_spreads_vectors(tmp_path):
+    models = tmp_path / "models"
+    chloedb.train.codebook(grid(400), "grid", models=models, levels=2, k=4)
+    r = chloedb.train.codebook_report(grid(400), "grid", models=models)
+    # 16 places of the grid, 25 rows at each: every row shares its code.
+    assert (r["rows"], r["codes"], r["shared_rows"], r["largest_group"]) == (400, 16, 400, 25)
+    assert [lv["used"] for lv in r["levels"]] == [4, 4] and [lv["fullest"] for lv in r["levels"]] == [100, 100]
+    assert all(abs(lv["perplexity"] - 4) < 1e-6 for lv in r["levels"])
+    assert r["levels"][0]["residual"] > r["levels"][1]["residual"] and r["levels"][1]["residual"] < 0.001
+    # A table's vectors, and vectors the codebook was not trained on.
+    src = chloedb.Database.create(tmp_path / "src.strata", {"table": "docs", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": 2}]})
+    src.upsert([{"id": f"d{i}", "emb": v} for i, v in enumerate(grid(8))])
+    r = chloedb.train.codebook_report(src, "grid", field="emb", models=models)
+    assert (r["rows"], r["codes"], r["shared_rows"], r["levels"][0]["used"]) == (8, 8, 0, 4)
+    with pytest.raises(TypeError, match="field"):
+        chloedb.train.codebook_report(src, "grid", models=models)
+    with pytest.raises(chloedb.ChloeDBError, match="nothere"):
+        chloedb.train.codebook_report(grid(8), "nothere", models=models)
+    # Balanced training is seeded too, and finds an even grid as it is.
+    a = chloedb.train.codebook(grid(400), "even", models=models, levels=2, k=4, balanced=True)
+    assert a == chloedb.train.codebook(grid(400), "even", models=models, levels=2, k=4, balanced=True)
+    assert chloedb.train.codebook_report(grid(400), "even", models=models)["codes"] == 16
+
+
 def test_a_codebook_from_a_tables_vectors(tmp_path):
     models = tmp_path / "models"
     src = chloedb.Database.create(tmp_path / "src.strata", {"table": "docs", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": 2}]})

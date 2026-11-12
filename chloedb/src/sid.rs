@@ -75,6 +75,37 @@ pub struct Codebook {
     norms: Vec<Vec<f32>>,
 }
 
+/// What a codebook makes of a set of vectors ([`Codebook::report`]): how
+/// many share a code, and how evenly each level's numbers are used.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Report {
+    pub rows: usize,
+    /// Distinct codes (the levels' numbers, without the tie).
+    pub codes: usize,
+    /// Rows whose code another row has too: the rows only a tie tells
+    /// apart.
+    pub shared: usize,
+    /// The most rows under one code.
+    pub largest: usize,
+    pub levels: Vec<LevelUse>,
+}
+
+/// One level of a [`Report`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct LevelUse {
+    /// Numbers at least one row has, of the codebook's `k`.
+    pub used: usize,
+    /// Rows under the level's fullest number.
+    pub fullest: usize,
+    /// How many numbers the rows are spread over when weighed by use (2
+    /// to the entropy of the level's numbers): `k` when every number has
+    /// as many rows as any other, 1 when one has them all.
+    pub perplexity: f64,
+    /// The share of the vectors' squared length left after this level's
+    /// centroid is taken away: what the code so far does not say.
+    pub residual: f64,
+}
+
 /// How [`Codebook::train`] runs.
 #[derive(Clone, Debug)]
 pub struct TrainOptions {
@@ -86,12 +117,23 @@ pub struct TrainOptions {
     /// fewer).
     pub sample: usize,
     pub seed: u64,
+    /// Each level's centroids are trained with every centroid given the
+    /// same number of the training vectors (balanced k-means, as OneRec
+    /// trains its codebooks). What a level leaves of the vectors points
+    /// every way alike, and plain k-means there keeps most centroids on
+    /// one far vector each and gives the rest to a few near the middle:
+    /// the later levels' numbers are used unevenly, more rows share a
+    /// code, and the outcome swings with the seed. Balanced, every number
+    /// of every level is used alike. Rows are still coded by their
+    /// nearest centroid. Training holds a distance for every vector and
+    /// centroid: 8 bytes times `sample` times `k`.
+    pub balance: bool,
 }
 
 impl Default for TrainOptions {
     /// 3 levels of 256, 25 iterations on up to 100 vectors per centroid.
     fn default() -> Self {
-        TrainOptions { levels: 3, k: MAX_K, iters: 25, sample: 100 * MAX_K, seed: 0 }
+        TrainOptions { levels: 3, k: MAX_K, iters: 25, sample: 100 * MAX_K, seed: 0, balance: false }
     }
 }
 
@@ -127,6 +169,45 @@ impl Codebook {
             out.push(c as u32);
         }
         out
+    }
+
+    /// What the codebook makes of `vectors` (rows of `dim` numbers), which
+    /// need not be the ones it was trained on.
+    pub fn report(&self, vectors: &[f32]) -> Result<Report> {
+        let dim = self.dim;
+        if vectors.is_empty() || vectors.len() % dim != 0 {
+            return Err(bad(format!("{} numbers are not vectors of {dim}, at least one", vectors.len())));
+        }
+        let rows = vectors.len() / dim;
+        let mut counts = vec![vec![0usize; self.k]; self.levels.len()];
+        let mut left = vec![0f64; self.levels.len()];
+        let mut whole = 0f64;
+        let mut groups: HashMap<Vec<u32>, usize> = HashMap::new();
+        let mut rest = vec![0f32; dim];
+        for v in vectors.chunks_exact(dim) {
+            rest.copy_from_slice(v);
+            whole += v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>();
+            let mut code = Vec::with_capacity(self.levels.len());
+            for (l, (cents, norms)) in self.levels.iter().zip(&self.norms).enumerate() {
+                let c = nearest(&rest, cents, norms, dim);
+                for (r, x) in rest.iter_mut().zip(&cents[c * dim..(c + 1) * dim]) {
+                    *r -= x;
+                }
+                counts[l][c] += 1;
+                left[l] += rest.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>();
+                code.push(c as u32);
+            }
+            *groups.entry(code).or_default() += 1;
+        }
+        let levels = counts
+            .iter()
+            .zip(&left)
+            .map(|(c, &left)| {
+                let entropy: f64 = c.iter().filter(|&&n| n > 0).map(|&n| n as f64 / rows as f64).map(|p| -p * p.log2()).sum();
+                LevelUse { used: c.iter().filter(|&&n| n > 0).count(), fullest: c.iter().copied().max().unwrap_or(0), perplexity: entropy.exp2(), residual: if whole > 0.0 { left / whole } else { 0.0 } }
+            })
+            .collect();
+        Ok(Report { rows, codes: groups.len(), shared: groups.values().filter(|&&n| n > 1).sum(), largest: groups.values().copied().max().unwrap_or(0), levels })
     }
 
     /// The safetensors bytes of the codebook ([`FILE`]).
@@ -243,7 +324,7 @@ impl Codebook {
         let mut rest: Vec<f32> = picked.iter().flat_map(|&i| vectors[i * dim..(i + 1) * dim].iter().copied()).collect();
         let mut levels = Vec::with_capacity(opts.levels);
         for _ in 0..opts.levels {
-            let cents = kmeans(&rest, dim, opts.k, opts.iters, &mut rng);
+            let cents = kmeans_with(&rest, dim, opts.k, opts.iters, &mut rng, opts.balance);
             let norms: Vec<f32> = cents.chunks_exact(dim).map(|r| r.iter().map(|x| x * x).sum()).collect();
             let assigned = assign(&rest, &cents, &norms, dim);
             for (r, &c) in rest.chunks_exact_mut(dim).zip(&assigned) {
@@ -327,16 +408,74 @@ fn kmeans_pp(points: &[f32], dim: usize, k: usize, rng: &mut rand::rngs::StdRng)
     chosen
 }
 
+/// Every point's centroid when each centroid takes at most
+/// `ceil(n / k)` points: the pairs of a point and a centroid from the
+/// nearest pair up, each point given the first centroid it meets that has
+/// room. Ties go to the lower point, then the lower centroid, so the
+/// result does not depend on the number of cores.
+fn assign_balanced(points: &[f32], cents: &[f32], norms: &[f32], dim: usize) -> Vec<u32> {
+    let (n, k) = (points.len() / dim, norms.len());
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(n.div_ceil(256)).max(1);
+    let per = n.div_ceil(threads).max(1) * dim;
+    // Squared distance less the point's own length, which orders a
+    // point's centroids as the distance does; the pairs of all points are
+    // ordered by the distance itself.
+    let mut pairs: Vec<(f32, u32)> = std::thread::scope(|s| {
+        let parts: Vec<_> = points
+            .chunks(per)
+            .enumerate()
+            .map(|(t, p)| {
+                s.spawn(move || {
+                    let first = t * (per / dim);
+                    let mut out = Vec::with_capacity(p.len() / dim * k);
+                    for (i, v) in p.chunks_exact(dim).enumerate() {
+                        let own: f32 = v.iter().map(|x| x * x).sum();
+                        for (c, (row, nc)) in cents.chunks_exact(dim).zip(norms).enumerate() {
+                            out.push((own + nc - 2.0 * crate::vector::kernels::dot_f32(v, row), ((first + i) * k + c) as u32));
+                        }
+                    }
+                    out
+                })
+            })
+            .collect();
+        parts.into_iter().flat_map(|p| p.join().expect("assignment thread")).collect()
+    });
+    pairs.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut room = vec![n.div_ceil(k); k];
+    let mut out = vec![u32::MAX; n];
+    let mut left = n;
+    for &(_, pc) in &pairs {
+        let (p, c) = (pc as usize / k, pc as usize % k);
+        if out[p] == u32::MAX && room[c] > 0 {
+            out[p] = c as u32;
+            room[c] -= 1;
+            left -= 1;
+            if left == 0 {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// `k` centroids of `points` by Lloyd's algorithm, started by k-means++. A
 /// cluster left empty takes the point farthest from its centroid. Sums run
 /// in point order, so the result does not depend on the number of cores.
 pub(crate) fn kmeans(points: &[f32], dim: usize, k: usize, iters: usize, rng: &mut rand::rngs::StdRng) -> Vec<f32> {
+    kmeans_with(points, dim, k, iters, rng, false)
+}
+
+/// [`kmeans`], with `balance` each centroid moved to the mean of an equal
+/// share of the points ([`assign_balanced`]) instead of its nearest ones.
+fn kmeans_with(points: &[f32], dim: usize, k: usize, iters: usize, rng: &mut rand::rngs::StdRng, balance: bool) -> Vec<f32> {
     let n = points.len() / dim;
+    // A point and centroid pack into a `u32` of the pairs' order.
+    let balance = balance && n > k && (n as u64) * (k as u64) <= u32::MAX as u64;
     let start = kmeans_pp(points, dim, k, rng);
     let mut cents: Vec<f32> = start.iter().flat_map(|&i| points[i * dim..(i + 1) * dim].iter().copied()).collect();
     for _ in 0..iters {
         let norms: Vec<f32> = cents.chunks_exact(dim).map(|r| r.iter().map(|x| x * x).sum()).collect();
-        let a = assign(points, &cents, &norms, dim);
+        let a = if balance { assign_balanced(points, &cents, &norms, dim) } else { assign(points, &cents, &norms, dim) };
         let mut sums = vec![0f64; k * dim];
         let mut counts = vec![0usize; k];
         for (p, &c) in points.chunks_exact(dim).zip(&a) {
@@ -649,7 +788,7 @@ mod tests {
     #[test]
     fn files_round_trip_and_training_is_seeded() {
         let v = random(2000, 8, 1);
-        let opts = TrainOptions { levels: 3, k: 16, iters: 10, sample: 1000, seed: 7 };
+        let opts = TrainOptions { levels: 3, k: 16, iters: 10, sample: 1000, seed: 7, balance: false };
         let a = Codebook::train(&v, 8, &opts).unwrap();
         assert_eq!(a, Codebook::train(&v, 8, &opts).unwrap());
         assert_ne!(a, Codebook::train(&v, 8, &TrainOptions { seed: 8, ..opts.clone() }).unwrap());
@@ -688,6 +827,45 @@ mod tests {
         let other = Codebook::new(2, 2, vec![vec![0.0, 1.0, 1.0, 0.5]]).unwrap();
         assert!(other.save("toy", dir.path()).unwrap_err().to_string().contains("another codebook"));
         assert!(cb.save("../x", dir.path()).is_err());
+    }
+
+    #[test]
+    fn balanced_training_shares_fewer_codes() {
+        use rand::{Rng, SeedableRng};
+        // Nine in ten vectors are in a small ball, the rest spread wide:
+        // nearest-centroid training spends most centroids on the spread.
+        let mut r = rand::rngs::StdRng::seed_from_u64(3);
+        let (n, dim) = (4000, 8);
+        let v: Vec<f32> = (0..n).flat_map(|i| (0..dim).map(|_| if i % 10 == 0 { r.gen_range(-10.0..10.0) } else { r.gen_range(-0.5..0.5) }).collect::<Vec<f32>>()).collect();
+        let distinct = |balance: bool| {
+            let opts = TrainOptions { levels: 2, k: 16, iters: 20, sample: n, seed: 1, balance };
+            let cb = Codebook::train(&v, dim, &opts).unwrap();
+            assert_eq!(cb, Codebook::train(&v, dim, &opts).unwrap());
+            let codes: std::collections::HashSet<Vec<u32>> = v.chunks_exact(dim).map(|x| cb.code(x)).collect();
+            // The first level's fullest centroid, as a share of the rows.
+            let mut first = [0usize; 16];
+            v.chunks_exact(dim).for_each(|x| first[cb.code(x)[0] as usize] += 1);
+            (codes.len(), *first.iter().max().unwrap())
+        };
+        let ((plain, plain_top), (balanced, balanced_top)) = (distinct(false), distinct(true));
+        assert!(balanced > plain, "{balanced} codes balanced, {plain} not");
+        assert!(balanced_top < plain_top, "the fullest first number holds {balanced_top} rows balanced, {plain_top} not");
+    }
+
+    #[test]
+    fn a_report_counts_shared_codes_and_use() {
+        // Two levels of two centroids on a line: 0 and 10, then -1 and 1.
+        let cb = Codebook::new(1, 2, vec![vec![0.0, 10.0], vec![-1.0, 1.0]]).unwrap();
+        let r = cb.report(&[-1.0, -1.2, 1.0, 11.0]).unwrap();
+        assert_eq!((r.rows, r.codes, r.shared, r.largest), (4, 3, 2, 2));
+        assert_eq!((r.levels[0].used, r.levels[0].fullest), (2, 3));
+        assert_eq!((r.levels[1].used, r.levels[1].fullest), (2, 2));
+        assert!((r.levels[1].perplexity - 2.0).abs() < 1e-9, "{}", r.levels[1].perplexity);
+        assert!(r.levels[0].perplexity > 1.0 && r.levels[0].perplexity < 2.0);
+        // What is left: 1 + 1.44 + 1 + 1 of 1 + 1.44 + 1 + 121, then 0.04.
+        assert!((r.levels[0].residual - 4.44 / 124.44).abs() < 1e-6, "{}", r.levels[0].residual);
+        assert!((r.levels[1].residual - 0.04 / 124.44).abs() < 1e-6, "{}", r.levels[1].residual);
+        assert!(cb.report(&[]).is_err());
     }
 
     #[test]

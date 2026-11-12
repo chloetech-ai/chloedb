@@ -32,7 +32,7 @@ from typing import Any, Mapping
 
 from ._native import _strata
 
-__all__ = ["codebook", "sequence", "write_vectors"]
+__all__ = ["codebook", "codebook_report", "sequence", "write_vectors"]
 
 
 def codebook(
@@ -47,6 +47,7 @@ def codebook(
     iterations: int = 25,
     sample: int | None = None,
     seed: int = 0,
+    balanced: bool = False,
 ) -> str:
     """Trains a semantic-ID codebook and saves it as `name` under `models`
     (default $CHLOEDB_MODELS or ~/.local/share/strata/models); returns its
@@ -58,16 +59,67 @@ def codebook(
     of `k` centroids (1 to 256), each found by `iterations` rounds of
     k-means on up to `sample` vectors (100 per centroid by default) drawn
     with `seed`, so the same vectors and options give the same codebook. A
-    name holds one codebook: training another under it is an error."""
+    name holds one codebook: training another under it is an error.
+
+    `balanced` gives every centroid of a level the same number of the
+    sampled vectors (to within one) in each round, so no code is crowded and
+    none is empty: fewer items share a whole code, at the price of some
+    items leaving their nearest centroid. It changes training only; codes
+    are still assigned to the nearest centroid."""
     models = None if models is None else os.fspath(models)
     inner = getattr(source, "_db", None)
     if isinstance(inner, _strata.Database):
         if field is None:
             raise TypeError("training on a database needs the VECTOR field: field='emb'")
-        return inner.train_codebook(field, name, table, models, levels, k, iterations, sample, seed)
+        return inner.train_codebook(field, name, table, models, levels, k, iterations, sample, seed, balanced)
     if field is not None or table is not None:
         raise TypeError("field and table name a database's vectors; pass the database")
-    return _strata.train_codebook(source, name, models, levels, k, iterations, sample, seed)
+    return _strata.train_codebook(source, name, models, levels, k, iterations, sample, seed, balanced)
+
+
+
+def codebook_report(
+    source: Any,
+    name: str,
+    *,
+    field: str | None = None,
+    table: str | None = None,
+    models: str | os.PathLike | None = None,
+) -> dict:
+    """What the codebook saved as `name` makes of a set of vectors: how many
+    share a code, and how evenly each level's numbers are used. Read it
+    before a semantic-ID field names the codebook, since a field keeps its
+    codebook.
+
+    `source` is a `Database` (the vectors of its VECTOR `field`, of `table`)
+    or the vectors themselves, as for `codebook`; they need not be the ones
+    the codebook was trained on. The answer:
+
+    - `rows`, the vectors; `codes`, the distinct codes they get;
+      `shared_rows`, those whose code another has too (only the tie number
+      tells them apart, so a decoder cannot); `largest_group`, the most
+      rows under one code.
+    - `levels`, for each level: `used`, the numbers at least one row has;
+      `fullest`, the rows under the level's most used number;
+      `perplexity`, how many numbers the rows are spread over when weighed
+      by use (`k` when even, 1 when one number has every row); and
+      `residual`, the share of the vectors' squared length the code so far
+      leaves unsaid.
+
+    Many shared rows, or a level whose perplexity is far below `k`, say the
+    codes are crowded: try `balanced=True`, more levels, or vectors that
+    tell the rows apart better."""
+    import json
+
+    models = None if models is None else os.fspath(models)
+    inner = getattr(source, "_db", None)
+    if isinstance(inner, _strata.Database):
+        if field is None:
+            raise TypeError("a report on a database needs the VECTOR field: field='emb'")
+        return json.loads(inner.codebook_report(field, name, table, models))
+    if field is not None or table is not None:
+        raise TypeError("field and table name a database's vectors; pass the database")
+    return json.loads(_strata.codebook_report(source, name, models))
 
 
 def _key(source: Any, table: str) -> str:

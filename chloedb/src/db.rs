@@ -1066,6 +1066,33 @@ impl Db {
     /// it as `name` under `models`, for semantic-ID fields to name. Returns
     /// the SHA-256 of its file.
     pub fn train_codebook(&self, table: &str, field: &str, name: &str, models: &Path, opts: &crate::sid::TrainOptions) -> Result<String> {
+        let (vectors, dim) = self.field_vectors(table, field)?;
+        if vectors.is_empty() {
+            return Err(Error::Schema(format!("{table}.{field} holds no vectors to train a codebook on")));
+        }
+        crate::sid::Codebook::train(&vectors, dim, opts)?.save(name, models)
+    }
+
+    /// What the codebook saved as `name` under `models` makes of the
+    /// vectors of VECTOR field `field` of the table named `table`
+    /// ([`crate::sid::Codebook::report`]): how many rows share a code and
+    /// how evenly each level's numbers are used, before or after a
+    /// semantic-ID field names it.
+    pub fn codebook_report(&self, table: &str, field: &str, name: &str, models: &Path) -> Result<crate::sid::Report> {
+        let (vectors, dim) = self.field_vectors(table, field)?;
+        let (cb, _) = crate::sid::Codebook::open(name, models)?;
+        if cb.dim != dim {
+            return Err(Error::Schema(format!("codebook {name} is of {} dimensions, {table}.{field} of {dim}", cb.dim)));
+        }
+        if vectors.is_empty() {
+            return Err(Error::Schema(format!("{table}.{field} holds no vectors")));
+        }
+        cb.report(&vectors)
+    }
+
+    /// The live rows' vectors of VECTOR field `field` of the table named
+    /// `table`, one after another, and their dimension.
+    fn field_vectors(&self, table: &str, field: &str) -> Result<(Vec<f32>, usize)> {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Schema(format!("no table {table}")))?;
         let schema = snap.schema();
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
@@ -1079,10 +1106,7 @@ impl Db {
                 }
             }
         }
-        if vectors.is_empty() {
-            return Err(Error::Schema(format!("{table}.{field} holds no vectors to train a codebook on")));
-        }
-        crate::sid::Codebook::train(&vectors, dim, opts)?.save(name, models)
+        Ok((vectors, dim))
     }
 
     /// The primary keys of the live rows of the table named `table` whose

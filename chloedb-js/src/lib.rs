@@ -651,6 +651,7 @@ fn train_options(a: &Args) -> Result<TrainOptions> {
         iters: a.uint("iterations")?.map_or(d.iters, |n| n as usize),
         sample: a.uint("sample")?.map_or(d.sample, |n| n as usize),
         seed: a.uint("seed")?.unwrap_or(d.seed),
+        balance: a.bool("balanced", d.balance)?,
     })
 }
 
