@@ -149,7 +149,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == "/app.json":
             body = {"name": "sheets", "title": "Sheets", "view": "ui/view.js"}
         else:
-            body = {"env": sorted(os.environ), "args": args, "start_apps": os.environ.get("CHLOEDB_START_APPS")}
+            body = {"env": sorted(os.environ), "args": args, "start_apps": os.environ.get("CHLOEDB_START_APPS"), "key_prefix": os.environ.get("CHLOEDB_KEY", "")[:3]}
         b = json.dumps(body).encode()
         self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(b)
 print("fake sheets up on " + listen, file=sys.stderr, flush=True)
@@ -162,8 +162,9 @@ fn alive(pid: i32) -> bool {
 }
 
 /// `--start-apps`: the server starts the app as a child with a token of its
-/// own and none of the server's credentials, starts it again when it
-/// exits, and stops it when the server stops.
+/// own, an ephemeral key scoped to its tables and none of the server's
+/// credentials, starts it again (with a new key) when it exits, and stops
+/// it when the server stops.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_server_starts_its_apps_and_keeps_them_running() {
     use std::os::unix::fs::PermissionsExt;
@@ -187,7 +188,7 @@ async fn the_server_starts_its_apps_and_keeps_them_running() {
         // Credentials the app must not see.
         .env("AWS_SECRET_ACCESS_KEY", "not-for-apps")
         .env("CHLOEDB_APP_TOKEN", "not-for-apps")
-        .env_remove("CHLOEDB_TOKEN")
+        .env("CHLOEDB_TOKEN", "root-of-the-server")
         .env_remove("CHLOEDB_CLUSTER_TOKEN")
         .stdout(std::process::Stdio::null())
         .stderr(log)
@@ -195,7 +196,7 @@ async fn the_server_starts_its_apps_and_keeps_them_running() {
         .unwrap();
     let logs = || std::fs::read_to_string(dir.path().join("server.log")).unwrap_or_default();
     let listing = || async {
-        let (s, b) = call(&base, "GET", "/v1/apps", None, None).await;
+        let (s, b) = call(&base, "GET", "/v1/apps", Some("root-of-the-server"), None).await;
         assert_eq!(s, 200, "{b}");
         let j: Json = serde_json::from_str(&b).unwrap();
         j["apps"].as_array().unwrap().iter().find(|a| a["name"] == "sheets").cloned().unwrap_or(Json::Null)
@@ -215,7 +216,7 @@ async fn the_server_starts_its_apps_and_keeps_them_running() {
     assert_eq!(up["process"]["running"], true, "{up}");
     assert!(up["url"].as_str().unwrap().starts_with("http://127.0.0.1:"), "{up}");
     // Forwarded with the app's own token (the stand-in refuses any other).
-    let (s, b) = call(&base, "GET", "/v1/apps/sheets/env", None, None).await;
+    let (s, b) = call(&base, "GET", "/v1/apps/sheets/env", Some("root-of-the-server"), None).await;
     assert_eq!(s, 200, "{b}");
     let env: Json = serde_json::from_str(&b).unwrap();
     let names: Vec<&str> = env["env"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
@@ -224,6 +225,20 @@ async fn the_server_starts_its_apps_and_keeps_them_running() {
     }
     assert!(names.contains(&"CHLOEDB_SHEETS_TOKEN") && names.contains(&"PATH"), "{names:?}");
     assert_eq!(env["start_apps"], "off");
+    // A key of its own: an API key, not the server's token, scoped to its
+    // tables, in memory only.
+    assert_eq!(env["key_prefix"], "sk_", "{env}");
+    let app_keys = || async {
+        let (s, b) = call(&base, "GET", "/v1/admin/keys", Some("root-of-the-server"), None).await;
+        assert_eq!(s, 200, "{b}");
+        let j: Json = serde_json::from_str(&b).unwrap();
+        j["keys"].as_array().unwrap().iter().filter(|k| k["name"] == "app:sheets" && k["revoked_ms"].is_null()).cloned().collect::<Vec<_>>()
+    };
+    let keys = app_keys().await;
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert_eq!(keys[0]["ephemeral"], true, "{keys:?}");
+    assert!(!dir.path().join("a.strata.keys.json").exists() || !std::fs::read_to_string(dir.path().join("a.strata.keys.json")).unwrap().contains("app:sheets"), "an app's key is not written down");
+    let first_key = keys[0]["id"].clone();
     assert!(env["args"].as_array().unwrap().iter().any(|a| a == &json!(base)), "it calls this server back: {env}");
     // Its output is the server's log, and the listing's tail.
     assert!(up["process"]["tail"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("fake sheets up")), "{up}");
@@ -240,6 +255,8 @@ async fn the_server_starts_its_apps_and_keeps_them_running() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert_eq!(again["process"]["restarts"], 1, "{again}");
+    let keys = app_keys().await;
+    assert!(keys.len() == 1 && keys[0]["id"] != first_key, "started again with a new key, the old one ended: {keys:?}");
     assert!(again["process"]["last_exit"].as_str().unwrap().contains("exited"), "{again}");
     // The server stopped, the app stops too.
     let pid = again["process"]["pid"].as_i64().unwrap() as i32;

@@ -2028,7 +2028,7 @@ mod tests {
         assert_ne!(c.spec.coordinator_config(), sheets.spec.coordinator_config());
         // A cluster without a token: its ChloeCtx is open too, and says so.
         let open = cluster(json!({"chloectx": {}}));
-        let d = open.chloectx_deployment(open.spec.chloectx.as_ref().unwrap());
+        let d = open.chloectx_deployment(open.spec.chloectx.as_ref().unwrap(), Creds::default());
         let args = d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().clone();
         assert_eq!(args.last(), Some(&json!("--insecure")), "{args:?}");
         // No model to download with the hash embedder; paused: no pod.
