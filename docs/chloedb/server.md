@@ -192,7 +192,7 @@ chloedb-server import --db books.chloedb --schema books.json books.jsonl more.cs
 chloedb-server import --db books.chloedb --table reviews reviews.csv                 # another table
 ```
 
-Into an empty table the rows are bulk-loaded straight into segments, in one commit: a bad row is reported with its line or row number, and nothing is written. Into a table that has rows they are upserted, 10,000 rows a transaction. The format comes from each file's extension (`.jsonl`, `.ndjson`, `.json`, `.csv`, `.tsv`) or `--format`.
+Into an empty table the rows are bulk-loaded straight into segments, in one commit: a bad row is reported with its line or row number, and nothing is written. Into a table that has rows they are upserted, 10,000 rows a transaction, and so they are into any table of a database that numbers its writes (`--seq-no`): a bulk load writes no log record, so replicas would never get its rows. The format comes from each file's extension (`.jsonl`, `.ndjson`, `.json`, `.csv`, `.tsv`) or `--format`.
 
 A SQLite database's tables import the same way, each into the table of its name, created from SQLite's declarations when missing, and `chloedb-server export` writes a database to a new SQLite file ([SQLite in and out](sqlite.md)):
 
