@@ -83,14 +83,33 @@ impl App {
             return Ok(json!({"sessions": []}));
         }
         let rs = self.cluster.query(
-            &format!("SELECT session, COUNT(*), MIN(ts), MAX(ts), MAX(turn) FROM {TABLE} WHERE project = :p GROUP BY session LIMIT 5000"),
+            &format!("SELECT session, COUNT(*), MIN(ts), MAX(ts) FROM {TABLE} WHERE project = :p AND kind != 'entity' GROUP BY session LIMIT 5000"),
             &Params::new().set("p", Value::Str(project.to_string())),
         )?;
         let mut sessions: Vec<Json> = rs
             .rows
             .iter()
-            .map(|r| json!({"session": str_of(r.first()), "records": int_of(r.get(1)), "first": int_of(r.get(2)), "last": int_of(r.get(3)), "turns": int_of(r.get(4))}))
+            .map(|r| json!({"session": str_of(r.first()), "records": int_of(r.get(1)), "first": int_of(r.get(2)), "last": int_of(r.get(3))}))
             .collect();
+        // Each session's first prompt, a line of it, as its title.
+        let prompts = self.cluster.query(
+            &format!("SELECT session, seq, content FROM {TABLE} WHERE project = :p AND kind = 'prompt' ORDER BY seq ASC LIMIT 10000"),
+            &Params::new().set("p", Value::Str(project.to_string())),
+        )?;
+        let mut titles: HashMap<String, String> = HashMap::new();
+        let mut turns: HashMap<String, i64> = HashMap::new();
+        for r in &prompts.rows {
+            *turns.entry(str_of(r.first())).or_default() += 1;
+            let line = str_of(r.get(2)).lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(160).collect::<String>();
+            if !line.is_empty() {
+                titles.entry(str_of(r.first())).or_insert(line);
+            }
+        }
+        for s in &mut sessions {
+            let id = s["session"].as_str().unwrap_or("").to_string();
+            s["title"] = json!(titles.get(&id));
+            s["turns"] = json!(turns.get(&id).copied().unwrap_or(0));
+        }
         sessions.sort_by_key(|s| std::cmp::Reverse(s["last"].as_i64().unwrap_or(0)));
         // What each kind of the project counts, for the page's filters.
         let kinds = self.cluster.query(&format!("SELECT kind, COUNT(*) FROM {TABLE} WHERE project = :p GROUP BY kind LIMIT 50"), &Params::new().set("p", Value::Str(project.to_string())))?;
@@ -140,4 +159,116 @@ impl App {
         let records: Vec<Json> = rs.rows.iter().map(|r| record(r)).collect();
         Ok(json!({"project": project, "session": session, "records": records, "more": records.len() == limit}))
     }
+
+    /// `GET /v1/memory/notes?project=&kind=&all=1`: a synced project's
+    /// notes, newest first, as a space's are answered; the current ones
+    /// unless `all`.
+    pub fn memory_notes(&self, project: &str, kind: Option<&str>, all: bool) -> Answer {
+        if project.is_empty() {
+            return Err(bad("which project? (?project=owner/name)"));
+        }
+        if !self.memory_exists()? {
+            return Ok(json!({"notes": []}));
+        }
+        let kinds = match kind.filter(|k| !k.is_empty()) {
+            Some("rule" | "preference") => "'preference'".to_string(),
+            Some(k @ ("decision" | "fact" | "todo" | "note")) => format!("'{k}'"),
+            Some(_) => return Err(bad("kind is decision, rule, fact, todo or note")),
+            None => "'decision', 'preference', 'fact', 'todo', 'note'".to_string(),
+        };
+        let rs = self.cluster.query(
+            &format!("SELECT {COLUMNS} FROM {TABLE} WHERE project = :p AND kind IN ({kinds}) ORDER BY seq DESC LIMIT 2000"),
+            &Params::new().set("p", Value::Str(project.to_string())),
+        )?;
+        let mut notes: Vec<Json> = rs.rows.iter().map(|r| note(r)).collect();
+        // A copy synced before its note was replaced may not say so: the
+        // note that replaced it does.
+        let replaced: std::collections::HashMap<String, String> = notes
+            .iter()
+            .flat_map(|n| n["supersedes"].as_array().into_iter().flatten().filter_map(|v| v.as_str()).map(|o| (o.to_string(), n["id"].as_str().unwrap_or("").to_string())))
+            .collect();
+        for n in &mut notes {
+            if let Some(by) = replaced.get(n["id"].as_str().unwrap_or("")) {
+                n["tag"] = json!("superseded");
+                if n["superseded_by"].as_array().is_none_or(|a| a.is_empty()) {
+                    n["superseded_by"] = json!([by]);
+                }
+            }
+        }
+        if !all {
+            notes.retain(|n| n["tag"] != "superseded" && n["tag"] != "done");
+        }
+        Ok(json!({"notes": notes}))
+    }
+
+    /// `GET /v1/memory/overview?project=`: what a synced project knows now,
+    /// as [`super::view::overview`] answers a space: its counts, current
+    /// rules, decisions, facts and open to-dos, the latest notes that
+    /// replaced others, and its latest sessions.
+    pub fn memory_overview(&self, project: &str) -> Answer {
+        if project.is_empty() {
+            return Err(bad("which project? (?project=owner/name)"));
+        }
+        if !self.memory_exists()? {
+            return Ok(json!({"records": 0, "sessions": 0, "by_kind": {}, "live": {}, "rules": [], "decisions": [], "facts": [], "todos": [], "notes": [], "changes": [], "recent_sessions": []}));
+        }
+        let p = || Params::new().set("p", Value::Str(project.to_string()));
+        let span = self.cluster.query(&format!("SELECT MIN(ts), MAX(ts), COUNT(*) FROM {TABLE} WHERE project = :p AND kind != 'entity'"), &p())?;
+        let (first, last, records) = span.rows.first().map_or((0, 0, 0), |r| (int_of(r.first()), int_of(r.get(1)), int_of(r.get(2))));
+        let rs = self.cluster.query(
+            &format!("SELECT {COLUMNS} FROM {TABLE} WHERE project = :p AND kind IN ('decision', 'preference', 'fact', 'todo', 'note') ORDER BY seq DESC LIMIT 5000"),
+            &p(),
+        )?;
+        let notes: Vec<Json> = rs.rows.iter().map(|r| note(r)).collect();
+        let by_id: HashMap<String, &Json> = notes.iter().map(|n| (n["id"].as_str().unwrap_or("").to_string(), n)).collect();
+        let mut live: HashMap<String, i64> = HashMap::new();
+        let mut lists: HashMap<String, Vec<Json>> = HashMap::new();
+        let mut changes = Vec::new();
+        // A copy synced before its note was replaced may not say so: the
+        // note that replaced it does.
+        let replaced: std::collections::HashSet<&str> = notes.iter().flat_map(|n| n["supersedes"].as_array().into_iter().flatten().filter_map(|v| v.as_str())).collect();
+        for n in &notes {
+            let tag = n["tag"].as_str().unwrap_or("");
+            if tag == "superseded" || tag == "done" || replaced.contains(n["id"].as_str().unwrap_or("")) {
+                continue;
+            }
+            let k = n["kind"].as_str().unwrap_or("note").to_string();
+            *live.entry(k.clone()).or_default() += 1;
+            let l = lists.entry(k).or_default();
+            if l.len() < 12 {
+                l.push(n.clone());
+            }
+            let was: Vec<Json> = n["supersedes"].as_array().into_iter().flatten().filter_map(|id| by_id.get(id.as_str().unwrap_or(""))).map(|o| json!({"id": o["id"], "text": o["text"], "ts": o["ts"]})).collect();
+            if !was.is_empty() && changes.len() < 8 {
+                let mut j = n.clone();
+                j["was"] = json!(was);
+                changes.push(j);
+            }
+        }
+        let ss = self.memory_sessions(project)?;
+        let recent: Vec<Json> = ss["sessions"].as_array().map(|a| a.iter().take(6).cloned().collect()).unwrap_or_default();
+        let list = |k: &str| lists.get(k).cloned().unwrap_or_default();
+        Ok(json!({
+            "project": project, "records": records, "sessions": ss["sessions"].as_array().map_or(0, |a| a.len()), "first": first, "last": last,
+            "by_kind": ss["by_kind"], "live": live,
+            "rules": list("rule"), "decisions": list("decision"), "facts": list("fact"), "todos": list("todo"), "notes": list("note"),
+            "changes": changes, "recent_sessions": recent,
+        }))
+    }
+}
+
+/// A synced note as a space's notes are answered (`kind` as callers name
+/// it: `rule` for a preference), with the notes it replaced and that
+/// replaced it from its links.
+fn note(row: &[Value]) -> Json {
+    let links: Vec<Json> = serde_json::from_str(&str_of(row.get(11))).unwrap_or_default();
+    let linked = |label: &str| -> Vec<Json> { links.iter().filter(|l| l["label"] == label).map(|l| l["to"].clone()).collect() };
+    let kind = match str_of(row.get(2)).as_str() {
+        "preference" => "rule".to_string(),
+        k => k.to_string(),
+    };
+    json!({
+        "id": str_of(row.first()), "kind": kind, "tag": str_of(row.get(3)), "text": str_of(row.get(9)), "ts": int_of(row.get(6)),
+        "session": str_of(row.get(1)), "seq": int_of(row.get(5)), "supersedes": linked("supersedes"), "superseded_by": linked("superseded_by"),
+    })
 }

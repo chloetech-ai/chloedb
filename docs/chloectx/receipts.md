@@ -153,16 +153,19 @@ the person reading its transcript) can ask why a record ranked where it did.
 ## In the command center
 
 ChloeCtx's page in ChloeDB's command center (`chloedb-server --app
-chloectx=URL`, then Apps → ChloeCtx) has two tabs for these, beside Context
-and Seen before:
+chloectx=URL`, then Apps → ChloeCtx) lists every space it can read; a
+Claude Code store of the machine the app runs on opens with three more
+tabs (Receipts, Blame, Snapshots and capsules) beside Overview, Ask, Memories, Sessions and Connect
+(`#/app/chloectx/store/<store>/receipts`, `…/blame/<path:line>`):
 
-- **Receipts**: pick a project's store, then the newest receipts (when, the
-  session and turn, which recall, the gate's decision, records and tokens
-  shown, the commit). Open one for its candidates (rank, score with a bar,
+- **Receipts**: the store's newest receipts (when, which recall, what it
+  was for, records and tokens shown, the gate's decision, the session and
+  turn). Open one for its candidates (rank, score with a bar,
   BM25, cosine, tokens, decision), the query and the gate, the text the
   agent was shown, and the replay on the kept snapshot and on today's
-  store. Below the list, the kept snapshots: keep one by name, drop a named
-  one.
+  store. The kept snapshots are under **Snapshots and capsules**: keep one
+  by name, drop a named one, or cut a capsule (pick the kinds of record)
+  with the `claude mcp add` line that mounts it.
 - **Blame**: type `path:line`. It shows the line, its commit, the edit, the
   prompt and the tool calls before it, the notes from the turn, each
   receipt of what memory had recalled before the edit (with what has become
@@ -183,6 +186,9 @@ behind them, under the app's prefix (`/v1/apps/chloectx`):
 | `GET /v1/local/:store/receipts/:id?replay=0` | one receipt, replayed unless `replay=0` |
 | `GET /v1/local/:store/blame?target=path:line` | blame, as `chloectx blame --json` |
 | `GET`, `POST {name}` `/v1/local/:store/snapshots`, `DELETE /v1/local/:store/snapshots/:name` | the kept snapshots; keep one; drop one |
+| `GET`, `POST {title?, kinds?, since_days?}` `/v1/local/:store/capsules` | the capsules cut from the store, newest first; one cut, its manifest and folder |
+| `GET /v1/local/:store/overview`, `/sessions`, `/records`, `/notes[/:id]`, `POST /v1/local/:store/ask` | what the other tabs read, as a team space's calls of the same names answer ([the app](app.md#spaces-and-what-each-shows)) |
+| `GET /v1/local/:store/stats` | `chloectx stats --json` |
 
 ## How blame finds the edit
 

@@ -364,6 +364,10 @@ impl Daemon {
             "distill_backfill" => self.distill_backfill().map(|(t, n)| (json!({"turns": t, "items": n}), None)),
             "consolidate" => self.op_consolidate().map(|r| (r, None)),
             "ask" => self.op_ask(req).map(|r| (r, None)),
+            // What `chloectx app --local-stores` shows of this store, as it
+            // shows a space of the cluster ([`crate::app::view`]).
+            "view" => crate::app::view::by_name(&self.store.pinned(), req).map(|r| (r, None)),
+            "capsule" => self.op_capsule(req).map(|r| (r, None)),
             "briefing" => {
                 let sid = req.get("session").and_then(|v| v.as_str()).unwrap_or("");
                 let mut ck = self.checker();
@@ -1193,7 +1197,7 @@ impl Daemon {
             return None;
         }
         let book = self.receipts.get()?;
-        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64) + crate::clock_offset() * 1000;
         let r = crate::receipt::Receipt::new(book.next_id(ms), now(), sid, turn, source, store, inputs, out, text);
         let id = r.id.clone();
         self.unsaved.lock().unwrap().push(r);
@@ -1422,7 +1426,7 @@ impl Daemon {
         if text.is_empty() {
             text = "No receipts yet.".into();
         }
-        let list: Vec<Json> = rs.iter().map(|r| json!({"id": r.id, "ts": r.ts, "session": r.session, "turn": r.turn, "source": r.source, "decision": r.decision, "shown": r.shown, "tokens": r.tokens, "txn": r.snapshot.txn})).collect();
+        let list: Vec<Json> = rs.iter().map(|r| json!({"id": r.id, "ts": r.ts, "session": r.session, "turn": r.turn, "source": r.source, "decision": r.decision, "shown": r.shown, "tokens": r.tokens, "txn": r.snapshot.txn, "query": r.inputs.query.chars().take(200).collect::<String>()})).collect();
         Ok(json!({"text": text, "receipts": list}))
     }
 
@@ -1781,6 +1785,44 @@ impl Daemon {
             std::fs::write(dest.join("events.log"), &log[..whole]).map_err(|e| err(format!("write events.log: {e}")))?;
         }
         Ok(json!({"dest": dest, "records": stats.live_docs, "bytes": stats.bytes_written, "txn": stats.txn, "seconds": stats.seconds}))
+    }
+
+    /// `{"op": "capsule", "what": "list" | "cut", "title"?, "kinds"?, "since_days"?}`:
+    /// the capsules cut from this store (under its `capsules/`), or a new
+    /// one cut there from the store as it is now ([`crate::capsule::pack`]).
+    fn op_capsule(&self, req: &Json) -> Result<Json> {
+        let dir = self.paths.dir.join("capsules");
+        if req.get("what").and_then(|v| v.as_str()) == Some("cut") {
+            let kinds: Vec<Kind> = match req.get("kinds").and_then(|v| v.as_array()) {
+                Some(a) if !a.is_empty() => a.iter().filter_map(|k| k.as_str().and_then(Kind::parse)).collect(),
+                _ => crate::capsule::DEFAULT_KINDS.to_vec(),
+            };
+            if kinds.is_empty() {
+                return Err(err("no kind of record to pack"));
+            }
+            let title = req.get("title").and_then(|v| v.as_str()).map(str::trim).filter(|t| !t.is_empty()).map(String::from);
+            let since_ts = req.get("since_days").and_then(|v| v.as_f64()).filter(|d| *d > 0.0).map(|d| now() - (d * 86_400.0) as i64);
+            let slug: String = title.as_deref().unwrap_or("capsule").chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>().split('-').filter(|w| !w.is_empty()).take(6).collect::<Vec<_>>().join("-");
+            let out = dir.join(format!("{}-{}", if slug.is_empty() { "capsule".to_string() } else { slug }, crate::recall::fmt_time(now()).replace([' ', ':'], "-").chars().take(16).collect::<String>()));
+            crate::paths::create_private_dir(&dir)?;
+            let opts = crate::capsule::PackOptions { kinds, since_ts, title, ..Default::default() };
+            let m = crate::capsule::pack(&self.store.pinned(), &self.cfg.embedder, &self.project, &out, &opts)?;
+            let mut j = serde_json::to_value(&m)?;
+            j["dir"] = json!(out);
+            return Ok(j);
+        }
+        let mut list = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                if let Ok(m) = crate::capsule::manifest(&e.path()) {
+                    let mut j = serde_json::to_value(&m)?;
+                    j["dir"] = json!(e.path());
+                    list.push(j);
+                }
+            }
+        }
+        list.sort_by_key(|j| std::cmp::Reverse(j["created_ts"].as_i64().unwrap_or(0)));
+        Ok(json!({"dir": dir, "capsules": list}))
     }
 
     fn op_stats(&self) -> Result<Json> {

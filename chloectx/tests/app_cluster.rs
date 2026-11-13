@@ -391,6 +391,23 @@ fn app_in_a_cluster() {
     assert_eq!(app.get("/v1/info")["distill"]["notes"], 1);
     assert!(texts(&app.get("/v1/spaces/billing/notes")).iter().any(|t| t.contains("day 1, 4 and 10")));
 
+    // What the inspector reads: the space's overview, its sessions, a session's records.
+    let ov = app.get("/v1/spaces/billing/overview");
+    assert_eq!(ov["live"]["rule"], 1, "{ov}");
+    assert!(ov["rules"].as_array().unwrap().iter().any(|n| n["text"].as_str().unwrap().contains("customer's currency")), "{ov}");
+    let changed = ov["changes"].as_array().unwrap();
+    assert!(changed.iter().any(|c| c["id"] == new["id"] && c["was"][0]["text"].as_str().unwrap().contains("500 EUR")), "{ov}");
+    assert!(!ov["decisions"].as_array().unwrap().iter().any(|n| n["id"] == old["id"]), "a replaced decision is not current: {ov}");
+    let ss = app.get("/v1/spaces/billing/sessions");
+    let talk = ss["sessions"].as_array().unwrap().iter().find(|s| s["turns"] == 1).unwrap_or_else(|| panic!("{ss}"));
+    assert!(talk["title"].as_str().unwrap().starts_with("Stop sending dunning emails"), "{ss}");
+    let session = talk["session"].as_str().unwrap();
+    let rs = app.get(&format!("/v1/spaces/billing/records?session={session}"));
+    let kinds: Vec<&str> = rs["records"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"prompt") && kinds.contains(&"answer"), "{rs}");
+    let found = app.get("/v1/spaces/billing/records?q=dunning");
+    assert!(!found["records"].as_array().unwrap().is_empty(), "{found}");
+
     // Incidents: recorded, a better fix replacing one, matched to a text.
     let first = app.post("/v1/incidents", json!({"title": "Search p99 jumped during a large merge", "symptom": "search p99 over 300 ms on one shard", "cause": "a merge of the largest segments took the page cache", "fix": "restarted the shard", "alert": "p99"}));
     let better = app.post("/v1/incidents", json!({"title": "Search p99 jumped during a large merge", "symptom": "search p99 over 300 ms on one shard", "cause": "a merge of the largest segments took the page cache", "fix": "merges throttled while p99 is over its target", "alert": "p99", "replaces": first["id"]}));
@@ -606,6 +623,26 @@ fn local_stores_through_the_app() {
     let b = app.get("/v1/local/proj-test/blame?target=src%2Fretry.rs%3A2");
     assert_eq!(b["edit"]["session"], "s2", "{b}");
     assert!(b["receipts"].as_array().unwrap().iter().any(|r| r["source"] == "briefing"), "{b}");
+
+    // What the inspector reads of a store: its overview, sessions, records, notes and an answer.
+    let ov = app.get("/v1/local/proj-test/overview");
+    assert_eq!(ov["live"]["decision"], 1, "{ov}");
+    assert!(ov["decisions"][0]["text"].as_str().unwrap().contains("fixed 2 second"), "{ov}");
+    let ss = app.get("/v1/local/proj-test/sessions");
+    let titles: Vec<&str> = ss["sessions"].as_array().unwrap().iter().filter_map(|s| s["title"].as_str()).collect();
+    assert!(titles.contains(&"How should payment retries back off?"), "{ss}");
+    let rs = app.get("/v1/local/proj-test/records?session=s2");
+    assert!(rs["records"].as_array().unwrap().iter().any(|r| r["kind"] == "tool_call"), "{rs}");
+    let notes = app.get("/v1/local/proj-test/notes");
+    let id = notes["notes"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(app.get(&format!("/v1/local/proj-test/notes/{id}"))["note"]["id"], json!(id));
+    let a = app.post("/v1/local/proj-test/ask", json!({"question": "how do payment retries back off?", "budget": 1000}));
+    assert!(a["items"].as_array().unwrap().iter().any(|i| i["id"] == json!(id)), "{a}");
+    // A capsule cut from it, then listed.
+    let cut = app.post("/v1/local/proj-test/capsules", json!({"title": "Retries"}));
+    assert!(cut["records"].as_i64().unwrap() >= 1 && cut["title"] == "Retries", "{cut}");
+    let caps = app.get("/v1/local/proj-test/capsules");
+    assert_eq!(caps["capsules"].as_array().unwrap().len(), 1, "{caps}");
 
     let k = app.post("/v1/local/proj-test/snapshots", json!({"name": "before-release"}));
     assert!(k["text"].as_str().unwrap().starts_with("kept before-release"), "{k}");

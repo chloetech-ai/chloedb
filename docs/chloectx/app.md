@@ -1,15 +1,16 @@
 # ChloeCtx as an app of a ChloeDB cluster
 
-`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has three pages, and two more for a machine's Claude Code stores:
+`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context.
 
-- **Context.** Memory *spaces* that any agent writes notes and conversations to and asks for context before a task, within a token budget. An answer is found by search alone (BM25 and vectors, no model call), and it says what went in, why, and what was left out.
-- **Inspector.** What Claude Code sessions remembered, as `chloectx sync` copies each machine's memory into the cluster (table `chloectx_memory`): by project, each session read as the conversation it recorded (prompts, answers, tool calls, and the decisions, rules and facts the distiller wrote down), filtered by kind and searched with BM25, as `chloectx ui` shows a local store. It only reads. ([below](#inspector))
-- **Seen before.** The cluster's firing alerts, each beside the past incidents it looks like and the fix that worked. One button hands the alert to the cluster's on-call agent with those incidents as its context.
-- **Receipts** and **Blame**, with `--local-stores`: what each recall of a Claude Code session showed and why, replayed on the snapshot kept at the time, and from a line of code to the edit, its prompt and the memory recalled before it ([Receipts and blame](receipts.md#in-the-command-center)). Off by default: they read the stores of the machine the app runs on, which are transcripts, and without `--local-stores` their tabs are not shown.
+Its first page lists every memory it can read, as *spaces* to pick from, and a space opens on what it knows now:
 
-![A space's page: a question asked within a 2,000-token budget, the notes that went into the context with their scores, the decision that replaced an older one with what changed, and the note that was left out](../assets/img/chloectx-app-context.png)
+- **Team spaces.** Memory that any agent writes notes and conversations to and asks for context before a task, within a token budget: a table of the cluster each. An answer is found by search alone (BM25 and vectors, no model call), and it says what went in, why, and what was left out.
+- **Claude Code projects.** What Claude Code sessions remembered: a project `chloectx sync` copied into the cluster (table `chloectx_memory`), and, with `--local-stores`, the stores of the machine the app runs on, where Receipts, Blame and capsules are too ([Receipts and blame](receipts.md#in-the-command-center)). A store and its synced copy show as one project.
+- **Seen before**, a page of its own: the cluster's firing alerts, each beside the past incidents it looks like and the fix that worked. One button hands the alert to the cluster's on-call agent with those incidents as its context.
 
-*A space in the command center. The context for "a customer wants a refund of 700 EUR, who approves it?" holds the current refund decision with what it changed (the 500 EUR limit it replaced is shown struck through) and leaves the old version out. 307 of 2,000 tokens, 23.6 ms, no model call.*
+![A team space's Ask tab: the question "Who approves a refund of 1,200 EUR?", answered first by the current refund decision with the 500 EUR version it replaced struck through, then the notes that also bear on it, the past conversations folded, and the context's size](../assets/img/chloectx-app-context.png)
+
+*The demo's team space, asked "Who approves a refund of 1,200 EUR?". The answer leads with the current decision (over 1000 EUR or 900 GBP, a second approver from finance) and what it replaced, then what else bears on it; the scores, what was left out and the context as the agent gets it are below. 14.4 ms, no model call.*
 
 ## Start it
 
@@ -108,17 +109,48 @@ A space's page in the command center has a **Connect Claude Code** card that mak
 
 ### Keys limited to tables
 
-chloedb-server lets a key limited to tables call the app, because the app's manifest says `"limited_keys": true`: it tells the app the key's grants (`x-chloedb-tables`), and the app, which writes with a key of its own, holds the caller to them: a space is its table `ctx_<space>` (read to read and ask it, MCP included, write to add, replace or retire notes and hand over exchanges), the incidents are `ctx_incidents` (read, write to record or draft), the Inspector reads `chloectx_memory`. Creating a space and building apps from one take an unlimited admin's key, and no limited key reads the machine's local stores (Receipts, Blame). `GET /v1/spaces` lists the spaces the key may read. A caller with no such header (an admin's key, the server's token) is not limited.
+chloedb-server lets a key limited to tables call the app, because the app's manifest says `"limited_keys": true`: it tells the app the key's grants (`x-chloedb-tables`), and the app, which writes with a key of its own, holds the caller to them: a space is its table `ctx_<space>` (read to read and ask it, MCP included, write to add, replace or retire notes and hand over exchanges), the incidents are `ctx_incidents` (read, write to record or draft), the Claude Code projects read `chloectx_memory`. Creating a space and building apps from one take an unlimited admin's key, and no limited key reads the machine's local stores (Receipts, Blame). `GET /v1/spaces` lists the spaces the key may read. A caller with no such header (an admin's key, the server's token) is not limited.
 
-## Inspector
+## Spaces and what each shows
 
-The Inspector reads the table `chloectx_memory`, which `chloectx sync` fills from each machine's local store ([keep the memory on a ChloeDB server](setup.md#keep-the-memory-on-a-chloedb-server); a project is its git repository, so every checkout shares one memory). Its first page lists the projects, with their sessions and records; a project's page lists its sessions, the latest first, and its records, the latest first, with a chip per kind; a session's page shows its records in the order they were recorded, turn by turn; a search ranks the project's records by BM25 over their text. A record opens in a drawer with its whole text (up to 4,000 characters), its context, files, links and id. Nothing on the page writes. Until a project is synced, the page is a setup instead: a button (for an admin) makes the table and a key that may write only it, and shows the `chloectx sync setup` command with the key filled in; `sync` needs ChloeCtx 0.2.0 or later.
+`#/app/chloectx` lists the spaces, grouped (team spaces; Claude Code projects) with what each holds, and a filter. A space's page (`#/app/chloectx/space/<name>`, `…/project/<owner/name>`, `…/store/<store>`) has a switcher to another space and these tabs:
+
+- **Overview**: how many rules, decisions, facts and open to-dos it holds now, its sessions and records, the rules (which go into every context), the latest decisions and facts, the open to-dos, *what changed* (notes that replaced an earlier one, with the old text struck through) and the latest sessions.
+- **Ask**: a question, answered as an agent would be: the note that answers it first, the rules that apply, what else bears on it and what past conversations said, then the scores behind each (BM25, cosine, section, tokens), what was left out and why, and the context as the agent gets it. A link carries the question (`…/ask/<question>`). A synced project, which has no store to build a context from, answers with its records ranked by BM25.
+- **Memories**: every note, by kind, current or with its history; a note opens on the versions it replaced and those that replaced it. A team space's notes can be replaced or retired here.
+- **Sessions**: each session titled by its first prompt, read as the conversation it recorded: turn by turn, the prompt, the tool calls (folded), the answer and the notes written down from the turn. *Every record* searches all of them (BM25) and filters by kind. A record opens in a drawer with its whole text (up to 4,000 characters), its context, files, links and id.
+- **Connect**: how to use the space. A team space: the `claude mcp add` line with a key limited to its table, the HTTP calls and the SQL that read it, and apps built from it. A Claude Code project: its MCP tools, its CLI, and how to sync it here.
+- **Receipts**, **Blame**, **Snapshots and capsules**: a store of this machine only ([Receipts and blame](receipts.md#in-the-command-center)).
+
+The older links (`#/app/chloectx/inspector/<project>`, `…/receipts/<store>`, `…/blame/<store>`) open the same space's tab.
+
+Until a project is synced, the projects group offers a setup instead: a button (for an admin) makes the table `chloectx_memory` and a key that may write only it, and shows the `chloectx sync setup` command with the key filled in; `sync` needs ChloeCtx 0.2.0 or later. A project is its git repository, so every checkout shares one memory ([keep the memory on a ChloeDB server](setup.md#keep-the-memory-on-a-chloedb-server)).
+
+What the tabs read, beside the space calls above:
 
 | call | answer |
 |---|---|
+| `GET /v1/spaces/:s/overview` | `{records, sessions, first, last, by_kind, live, rules, decisions, facts, todos, changes, recent_sessions}`: `live` counts the current notes by kind, each list holds the newest 12, `changes` the notes that replaced another with `was` (the older texts) |
+| `GET /v1/spaces/:s/sessions` | `{sessions: [{session, records, first, last, turns, title}], by_kind}`: the latest first; `title` is the first prompt's first line, `turns` its prompts |
+| `GET /v1/spaces/:s/records?session=&kind=&q=&limit=&before=` | `{records, more}`: a session's in order, else the latest first (`before`, a `seq`, pages back), or the best matches for `q` (BM25); at most 500 |
 | `GET /v1/memory` | `{table, exists, projects: [{project, records, sessions, last}], create}` (`create`: the table's `CREATE TABLE`) |
-| `GET /v1/memory/sessions?project=` | `{sessions: [{session, records, first, last, turns}], by_kind}` |
-| `GET /v1/memory/records?project=&session=&kind=&q=&limit=&before=` | `{records, more}`: a session's in order, else the latest first (`before`, a `seq`, pages back), or the best matches for `q`; at most 500 |
+| `GET /v1/memory/overview?project=`, `/v1/memory/notes?project=&kind=&all=1` | a synced project's overview and notes, as a space's |
+| `GET /v1/memory/sessions?project=`, `/v1/memory/records?project=&…` | its sessions and records, as a space's |
+
+A store of this machine answers the same calls under `/v1/local/:store/` ([the list](receipts.md#in-the-command-center)).
+
+## A demo to show it
+
+`chloectx/demo/seed.py` plays a scripted Claude Code history into ChloeCtx, so every page has something to show: twenty sessions over four weeks on *harbor*, a made-up order and payments service (refunds, webhooks, rate limits, migrations, a double-refund incident, a release process), with corrections along the way (a refund limit raised twice, a currency added, a rate limit changed for partners, a debug print that logged a key). It runs the real hooks and daemon, each turn at its date in the story (`CHLOECTX_CLOCK_OFFSET`), with a scripted distiller (`demo/scripted_distill.py`) in place of the model, so it makes no model call and takes about 15 seconds:
+
+```bash
+python3 chloectx/demo/seed.py --dir ~/chloectx-demo                 # a Claude Code store, with receipts and snapshots
+CHLOECTX_HOME=~/chloectx-demo/home chloectx app --server http://127.0.0.1:7700 --local-stores
+python3 chloectx/demo/seed.py --dir ~/chloectx-demo --no-local \
+  --server http://127.0.0.1:7700 --space harbor --sync               # the same story as a team space, and synced
+```
+
+`--space` writes the story into a new team space through the API (`--space-reuse` adds to one that exists), `--sync` copies the store into the cluster's `chloectx_memory` as the project `acme/harbor`, and `--key-env` names the variable holding the server's key. All of it is made up: no transcript of anyone's sessions is in it.
 
 ## Seen before
 
@@ -138,7 +170,7 @@ The cluster's app engine (the app `apps`, [chloedb-apps](../../chloedb-apps)) bu
 
 ## Tests
 
-`chloectx/tests/app_cluster.rs` runs the app against two shard servers and a coordinator of this build, with a stub of Anthropic's API: spaces, notes replaced and retired, contexts within a budget, an exchange distilled, incidents matched to an alert rule that fires, a handoff refused without a key, an app suggested and built from a space against a stub of the app engine (refused without `confirm`), and a restart. CI runs it in its server smoke test:
+`chloectx/tests/app_cluster.rs` runs the app against two shard servers and a coordinator of this build, with a stub of Anthropic's API: spaces, notes replaced and retired, contexts within a budget, an exchange distilled, incidents matched to an alert rule that fires, a handoff refused without a key, an app suggested and built from a space against a stub of the app engine (refused without `confirm`), the inspector's overview, sessions and records of a space and of a local store, a capsule cut, and a restart. CI runs it in its server smoke test:
 
 ```bash
 cd chloedb-server && cargo build --profile ci

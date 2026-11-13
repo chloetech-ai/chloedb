@@ -5,22 +5,26 @@
 // app's API) and ctx.core.api (the server's). It imports nothing, so the app
 // serves it as one file.
 //
-//   #/app/chloectx              Context: the spaces, and how an agent uses them
-//   #/app/chloectx/space/<name> one space: ask it (what went in and why), its notes,
-//                               and apps made from it by the cluster's app engine
-//   #/app/chloectx/seen         Seen before: firing alerts beside past incidents
-//   #/app/chloectx/inspector    Inspector: Claude Code's memory that chloectx sync
-//                               copied here (table chloectx_memory), by project
-//   #/app/chloectx/inspector/<project>[/<session>]
-//                               a project's sessions, kinds and search; a session
-//                               read as the conversation it recorded
-//   #/app/chloectx/receipts[/<store>[/<id>]]
-//                               Receipts: what each recall of a Claude Code
-//                               store showed and why, replayed on its snapshot
-//   #/app/chloectx/blame[/<store>[/<path:line>]]
-//                               Blame: from a line to the edit, its prompt and
-//                               the records recalled before it
-// (Receipts and Blame read this machine's stores: chloectx app --local-stores.)
+// A space is picked first, then inspected. A space is any memory ChloeCtx
+// keeps: a team space of the cluster (table ctx_<name>), a Claude Code
+// project chloectx sync copied into the cluster (table chloectx_memory), or
+// a Claude Code store of the machine the app runs on (chloectx app
+// --local-stores). Each answers the same calls (sourceOf), so its page is
+// drawn alike, with the tabs its kind has.
+//
+//   #/app/chloectx                      Spaces: every space this key reads, to pick one
+//   #/app/chloectx/<kind>/<id>[/<tab>]  one space (kind: space, project or store), on a tab:
+//       overview                        what it knows now: rules, decisions, facts, open to-dos, changes, sessions
+//       ask                             a question answered from its memory, with why and what was left out
+//       memories[/<kind>]               every note, current or with history
+//       sessions[/<session>]            the sessions; one read as its conversation; or every record, searched
+//       receipts[/<id>]                 (store) what each recall showed and why, replayed on its snapshot
+//       blame[/<path:line>]             (store) from a line to the edit, its prompt and the records recalled before it
+//       keep                            (store) kept snapshots, and capsules cut from it
+//       connect                         Claude Code and other agents: the space's MCP command, its API, apps from it
+//   #/app/chloectx/seen                 Seen before: firing alerts beside past incidents
+// (The pages before spaces were picked first, #/app/chloectx/inspector,
+// /receipts and /blame, open the matching tab.)
 
 export default { render };
 
@@ -172,8 +176,64 @@ const CSS = `
 .cx-steps > li.done .cx-n { background: var(--good-soft); color: var(--good-ink); }
 .cx-wrap { position: relative; }
 .cx-wrap .cx-copy { position: absolute; top: 6px; right: 6px; }
-.cx-cmd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; padding-right: 72px; }
+pre.code.cx-cmd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; padding-right: 72px; }
+.cx-sphd { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.cx-sphd h4 { margin: 0; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.cx-path { font-size: 11.5px !important; overflow-wrap: anywhere; }
+.cx-group { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin: 6px 0 10px; }
+.cx-group h3 { margin: 0; font-size: 14px; }
+.cx-none { margin: 0 0 16px; }
+.cx-more { margin: 4px 0 16px; }
+.cx-more > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); margin-bottom: 10px; }
+.cx-badges { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 0; }
+.cx-badges a.badge { text-decoration: none; }
+.cx-switchl { display: grid; gap: 3px; }
+.cx-switch { min-width: 220px; max-width: 320px; }
+.cx-tabs { margin-top: -4px; }
+.cx-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.cx-kpi { text-decoration: none; color: inherit; }
+a.cx-kpi:hover { border-color: var(--line-2); box-shadow: var(--shadow-2); }
+.cx-ov { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.cx-note { cursor: pointer; }
+.cx-note:hover .cx-text { color: var(--accent); }
+.cx-note .cx-text.old { color: var(--muted); }
+.cx-slink { text-decoration: none; color: inherit; display: block; }
+.cx-slink:hover .cx-text { color: var(--accent); }
+.cx-answer { margin-top: 14px; }
+.cx-lead { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 12px 14px; display: grid; gap: 6px; }
+.cx-leadk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
+.cx-leadt { font-size: 16px; line-height: 1.45; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+.cx-leadw { font-size: 12.5px; color: var(--text-2); }
+.cx-leadw s { color: var(--muted); }
+.cx-on { font-variant-numeric: tabular-nums; }
+.cx-cell { white-space: normal; line-height: 1.4; min-width: 240px; max-width: 560px; overflow-wrap: anywhere; }
+.cx-stitle { font-size: 13px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cx-turn { padding: 12px 0; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+.cx-turn:first-child { border-top: 0; padding-top: 0; }
+.cx-turnh { display: flex; gap: 10px; font-size: 11.5px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.cx-turnh .muted { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.cx-msg { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; cursor: pointer; }
+.cx-who { font-size: 11.5px; font-weight: 600; color: var(--muted); padding-top: 2px; }
+.cx-body { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cx-msg.you .cx-body { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; }
+.cx-msg.you .cx-who { color: var(--accent); }
+.cx-tools { margin-left: 66px; font-size: 12px; }
+.cx-tools > summary { cursor: pointer; color: var(--text-2); }
+.cx-tools > div { display: grid; gap: 4px; margin-top: 6px; }
+.cx-tool { font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); padding: 4px 8px; border-left: 2px solid var(--line-2); cursor: pointer; max-height: 4.5em; overflow: hidden; }
+.cx-tool.res { color: var(--muted); border-left-color: var(--line); }
+.cx-tool.err { margin-left: 66px; color: var(--crit-ink, #b42318); border-left-color: var(--crit, #d92d20); }
+.cx-wrote { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; padding: 6px 0 0; }
+.cx-wrote .cx-who { color: var(--s4); }
+.cx-wrote .cx-list > li { padding: 5px 0; }
+.cx-caps { display: grid; gap: 10px; }
+.cx-cap { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; background: var(--surface-2); display: grid; gap: 6px; }
 @media (max-width: 900px) {
+  .cx-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cx-ov { grid-template-columns: minmax(0, 1fr); }
+  .cx-switch { min-width: 0; max-width: 100%; }
+  .cx-tools, .cx-tool.err { margin-left: 0; }
+  .cx-msg, .cx-wrote { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .cx-insp { grid-template-columns: minmax(0, 1fr); }
   .cx-split, .cx-alert { grid-template-columns: minmax(0, 1fr); }
   .cx-form .cx-two { grid-template-columns: minmax(0, 1fr); }
@@ -192,6 +252,14 @@ const LEFT = { superseded: ["Replaced", "A later note replaced it; the context s
 const day = (secs) => (secs ? new Date(secs * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "–");
 
 function render(el, ctx) {
+  // A drawer closes when the page changes under it (Back, or a link inside it).
+  const core = ctx.core;
+  ctx = { ...ctx, core: { ...core, drawer: (o) => {
+    const off = () => d.close();
+    const d = core.drawer({ ...o, onClose: () => { removeEventListener("hashchange", off); o.onClose?.(); } });
+    addEventListener("hashchange", off);
+    return d;
+  } } };
   const { h } = ctx.core;
   el.append(h("style", {}, CSS));
   const root = h("div");
@@ -199,48 +267,47 @@ function render(el, ctx) {
   let stop = null;
   const show = (path) => {
     try { stop?.(); } catch (e) { console.warn(e); }
+    stop = null;
     root.replaceChildren();
     const main = el.closest("main");
     if (main) main.scrollTop = 0;
-    stop = path[0] === "seen" ? seenPage(root, ctx)
-      : path[0] === "inspector" ? (path[1] ? projectPage(root, ctx, path[1], path[2]) : inspectorPage(root, ctx))
-      : path[0] === "receipts" ? receiptsPage(root, ctx, path[1], path[2])
-      : path[0] === "blame" ? blamePage(root, ctx, path[1], path[2])
-      : path[0] === "space" && path[1] ? spacePage(root, ctx, path[1]) : homePage(root, ctx);
+    // The pages before spaces were picked first: each now opens a space's tab.
+    const [a, b, c] = path;
+    if (a === "inspector") { location.replace(b ? ctx.href("project", b, "sessions", ...(c ? [c] : [])) : ctx.href()); return; }
+    if ((a === "receipts" || a === "blame") && (b || pickedStore())) { location.replace(ctx.href("store", b || pickedStore(), a, ...(c ? [c] : []))); return; }
+    if (a === "receipts" || a === "blame") { location.replace(ctx.href()); return; }
+    stop = a === "seen" ? seenPage(root, ctx)
+      : (a === "space" || a === "project" || a === "store") && b ? spacePage(root, ctx, sourceOf(ctx, a, b), path.slice(2))
+      : spacesPage(root, ctx);
   };
   ctx.onPath(show);
   show(ctx.path());
-  ctx.api("/v1/info").then((i) => {
-    const was = LOCAL;
-    LOCAL = !!i.local;
-    if (was !== LOCAL) root.querySelectorAll(".cx-top > .seg").forEach((t) => t.replaceWith(tabs(ctx, t.querySelector("[aria-pressed=true]")?.dataset?.v || "context")));
-  }).catch(() => {});
   return () => stop?.();
 }
 
 // ---------------------------------------------------------------- shared bits
 
 // Whether this chloectx app reads its machine's stores (--local-stores):
-// null until /v1/info says. Without them Receipts and Blame have nothing to
-// show, and their tabs are left out.
+// null until /v1/info says.
 let LOCAL = null;
-
-function tabs(ctx, on) {
-  const { seg } = ctx.core;
-  const all = [["context", "Context"], ["inspector", "Inspector"], ["seen", "Seen before"], ["receipts", "Receipts", "What each recall showed and why, replayed"], ["blame", "Blame", "From a line of code to the memory behind it"]];
-  return seg(all.filter(([v]) => LOCAL !== false || (v !== "receipts" && v !== "blame") || v === on), on,
-    (v) => { location.hash = v === "context" ? ctx.href() : v === "receipts" || v === "blame" ? ctx.href(v, ...(pickedStore() ? [pickedStore()] : [])) : ctx.href(v); });
+let INFO = null;
+function info(ctx) {
+  if (!INFO) INFO = ctx.api("/v1/info").then((i) => { LOCAL = !!i.local; return i; }).catch((e) => { INFO = null; throw e; });
+  return INFO;
 }
 
+/** The page's top: its title, a line of what it is, its tools, and the two pages of the app. */
 function header(ctx, on, title, lede, tools, crumbs) {
-  const { h } = ctx.core;
+  const { h, seg } = ctx.core;
+  const top = seg([["spaces", "Spaces"], ["seen", "Seen before", "Firing alerts beside the past incidents they look like"]], on, (v) => { location.hash = v === "spaces" ? ctx.href() : ctx.href(v); });
   return h("div", { class: "cx-top" },
     h("div", { class: "grow" }, crumbs ? h("div", { class: "cx-crumbs" }, crumbs) : null, h("h2", {}, title), lede ? h("p", { class: "cx-lede" }, lede) : null),
-    tools, tabs(ctx, on));
+    tools, on ? top : null);
 }
 
 function kindBadge(ctx, kind) {
-  return ctx.core.h("span", { class: "badge" + (kind === "rule" ? " accent" : "") }, KIND_LABEL[kind] || kind);
+  const k = kind === "preference" ? "rule" : kind;
+  return ctx.core.h("span", { class: "badge" + (k === "rule" ? " accent" : "") }, KIND_LABEL[k] || k);
 }
 
 function modelLine(core, info) {
@@ -250,86 +317,192 @@ function modelLine(core, info) {
   return "not distilled: start chloectx app with ANTHROPIC_API_KEY, or with the claude CLI on its PATH";
 }
 
-/** A note's history (what it replaced and what replaced it), in a drawer. */
-async function historyDrawer(ctx, space, id) {
-  const { h, drawer, toast } = ctx.core;
-  let j;
-  try { j = await ctx.api(`/v1/spaces/${encodeURIComponent(space)}/notes/${encodeURIComponent(id)}`); }
-  catch (e) { toast(e.message, "bad"); return; }
-  const row = (n, now) => h("li", { class: "plain" },
-    h("div", {}, h("div", { class: "cx-text" + (n.tag === "superseded" && !now ? " old" : "") }, n.text),
-      h("div", { class: "cx-why" }, kindBadge(ctx, n.kind), h("span", {}, day(n.ts)), h("span", { class: "mono" }, n.id), n.tag === "superseded" ? h("span", {}, n.superseded_by?.length ? "replaced" : "retired") : h("span", {}, "current"))),
-    h("span"));
-  drawer({
-    title: "A note's history",
-    sub: "Each version is kept; a context shows only the current one, with what it changed",
-    body: h("div", {},
-      j.later.length ? [h("div", { class: "cx-sub" }, "Replaced by"), h("ul", { class: "cx-list" }, j.later.map((n) => row(n, n.tag !== "superseded")))] : null,
-      h("div", { class: "cx-sub" }, "This note"), h("ul", { class: "cx-list" }, row(j.note, true)),
-      j.earlier.length ? [h("div", { class: "cx-sub" }, "It replaced"), h("ul", { class: "cx-list" }, j.earlier.map((n) => row(n, false)))] : null),
-  });
+const base = (p) => (p || "").replace(/\/+$/, "").split("/").pop() || p;
+const kindOf = (k) => (k === "preference" ? "rule" : k);
+
+/**
+ * A space to inspect, whatever keeps it: a team space of the cluster
+ * (`space`), a Claude Code project chloectx sync copied into the cluster
+ * (`project`), or a Claude Code store on the machine this app runs on
+ * (`store`, with --local-stores). Each answers the same calls, so the
+ * space's page draws them alike; `tabs` are those its kind has.
+ */
+function sourceOf(ctx, type, id) {
+  const e = encodeURIComponent(id);
+  const api = ctx.api;
+  if (type === "space") {
+    const b = `/v1/spaces/${e}`;
+    return {
+      type, id, writes: true, label: "Team space",
+      overview: () => api(`${b}/overview`),
+      notes: (all) => api(`${b}/notes?limit=1000${all ? "&all=1" : ""}`).then((j) => j.notes || []),
+      history: (n) => api(`${b}/notes/${encodeURIComponent(n)}`),
+      sessions: () => api(`${b}/sessions`),
+      records: (qs) => api(`${b}/records?${qs}`),
+      ask: (question, budget) => api(`${b}/ask`, { body: { question, budget } }),
+      tabs: ["overview", "ask", "memories", "sessions", "connect"],
+    };
+  }
+  if (type === "store") {
+    const b = `/v1/local/${e}`;
+    return {
+      type, id, label: "Claude Code store on this machine",
+      overview: () => api(`${b}/overview`, { timeout: 60000 }),
+      notes: (all) => api(`${b}/notes?limit=1000${all ? "&all=1" : ""}`).then((j) => j.notes || []),
+      history: (n) => api(`${b}/notes/${encodeURIComponent(n)}`),
+      sessions: () => api(`${b}/sessions`),
+      records: (qs) => api(`${b}/records?${qs}`),
+      ask: (question, budget) => api(`${b}/ask`, { body: { question, budget } }),
+      tabs: ["overview", "ask", "memories", "sessions", "receipts", "blame", "keep", "connect"],
+    };
+  }
+  const p = `project=${e}`;
+  let cache = null;
+  const notes = (all) => api(`/v1/memory/notes?${p}${all ? "&all=1" : ""}`).then((j) => j.notes || []);
+  return {
+    type, id, label: "Claude Code project, synced to this cluster",
+    overview: () => api(`/v1/memory/overview?${p}`),
+    notes,
+    // The synced copy keeps a note's links: its history is walked here.
+    history: async (n) => {
+      cache = cache || await notes(true);
+      const by = new Map(cache.map((x) => [x.id, x]));
+      const walk = (start, key) => { const out = [], seen = new Set([start.id]); let next = [...(start[key] || [])]; while (next.length && out.length < 50) { const id = next.shift(); const x = by.get(id); if (x && !seen.has(id)) { seen.add(id); out.push(x); next.push(...(x[key] || [])); } } return out; };
+      const note = by.get(n);
+      if (!note) throw new Error(`no note ${n}`);
+      return { note, earlier: walk(note, "supersedes"), later: walk(note, "superseded_by") };
+    },
+    sessions: () => api(`/v1/memory/sessions?${p}`),
+    records: (qs) => api(`/v1/memory/records?${p}&${qs}`),
+    // No store to build a context from: the synced rows, ranked by BM25.
+    ask: async (question) => {
+      const t0 = performance.now();
+      const j = await api(`/v1/memory/records?${p}&q=${encodeURIComponent(question)}&limit=40`);
+      // A note that was replaced or done is history, not an answer.
+      cache = cache || await notes(true);
+      const past = new Set(cache.filter((x) => x.tag === "superseded" || x.tag === "done").map((x) => x.id));
+      const keep = (j.records || []).filter((r) => r.kind !== "entity" && r.kind !== "tool_call" && r.kind !== "tool_result" && !past.has(r.id) && r.tag !== "superseded" && r.tag !== "done");
+      const items = keep.slice(0, 14).map((r, i) => ({ ...r, kind: r.kind === "prompt" ? "user" : r.kind === "answer" ? "assistant" : kindOf(r.kind), section: r.kind === "preference" ? "rule" : r.kind === "prompt" || r.kind === "answer" ? "excerpt" : "note", rank: i, tokens: Math.ceil((r.text || "").length / 4) }));
+      return { question, items, left_out: [], tokens: items.reduce((a, x) => a + x.tokens, 0), budget: null, ms: performance.now() - t0, words_only: true, context: items.map((x) => x.text).join("\n\n"), chars: items.reduce((a, x) => a + x.text.length, 0) };
+    },
+    tabs: ["overview", "ask", "memories", "sessions", "connect"],
+  };
 }
 
-// ---------------------------------------------------------------- Context: the spaces
+const TABS = {
+  overview: ["Overview", "What it knows now"],
+  ask: ["Ask", "A question, answered from its memory"],
+  memories: ["Memories", "Every rule, decision, fact and to-do, with its history"],
+  sessions: ["Sessions", "Each session read as the conversation it recorded"],
+  receipts: ["Receipts", "What each recall showed and why, replayed"],
+  blame: ["Blame", "From a line of code to the memory behind it"],
+  keep: ["Snapshots and capsules", "Copies of the store, and capsules cut from it"],
+  connect: ["Connect", "Use it from Claude Code or another agent"],
+};
 
-function homePage(root, ctx) {
-  const { h, empty, failure, fmt, sqlBlock } = ctx.core;
-  const newBtn = h("button", { class: "btn primary", onclick: () => newSpace(ctx) }, ctx.core.icon("plus"), "New space");
-  root.append(header(ctx, "context", "Context",
-    "Memory spaces any agent writes notes to and asks for context. An answer is found by search alone, within the token budget the agent gives, and says why each note is in it. Each space is a table of this cluster.", newBtn));
+/**
+ * Every space this key can inspect, for the picker and the switcher:
+ * the team spaces, then the Claude Code projects (a store of this machine
+ * and its synced copy are one, by the repository's name).
+ */
+async function catalog(ctx) {
+  const i = await info(ctx).catch(() => null);
+  const [sp, mem, loc] = await Promise.allSettled([ctx.api("/v1/spaces"), ctx.api("/v1/memory"), i?.local ? ctx.api("/v1/local") : Promise.resolve(null)]);
+  const out = { team: [], incidents: [], claude: [], memory: mem.value || null, errors: {} };
+  if (sp.status === "rejected") out.errors.spaces = sp.reason;
+  if (mem.status === "rejected") out.errors.memory = mem.reason;
+  if (loc.status === "rejected") out.errors.local = loc.reason;
+  for (const s of sp.value?.spaces || []) (s.kind === "incidents" ? out.incidents : out.team).push({ type: "space", id: s.name, title: s.title || s.name, s });
+  const synced = (mem.value?.projects || []).map((p) => ({ type: "project", id: p.project, title: p.project, p }));
+  const stores = (loc.value?.stores || []).map((s) => ({ type: "store", id: s.id, title: base(s.project) || s.id, s }));
+  for (const st of stores) {
+    const twin = synced.find((x) => !x.merged && base(x.id) === st.title);
+    if (twin) { twin.merged = true; st.synced = twin.id; }
+  }
+  // Stores whose folder is gone or temporary come last.
+  const tmp = (s) => !s.s.project_exists || /^\/(tmp|var\/folders|private\/var)\//.test(s.s.project || "");
+  stores.sort((a, b) => (tmp(a) - tmp(b)) || (b.s.modified || 0) - (a.s.modified || 0));
+  out.claude = [...stores, ...synced.filter((x) => !x.merged)];
+  out.home = loc.value?.home;
+  return out;
+}
+
+function knows(ctx, by) {
+  const { h, fmt } = ctx.core;
+  const parts = [["preference", "rule"], ["decision", "decision"], ["fact", "fact"], ["todo", "to-do"]].filter(([k]) => by[k]).map(([k, w]) => h("span", {}, h("b", {}, fmt.n(by[k])), " ", by[k] === 1 ? w : w + "s"));
+  return parts.length ? parts : [h("span", {}, "no notes yet")];
+}
+
+// ---------------------------------------------------------------- the spaces
+
+function spacesPage(root, ctx) {
+  const { h, empty, failure, fmt, icon } = ctx.core;
+  const filter = h("input", { class: "input", type: "search", placeholder: "Find a space", style: { width: "200px" } });
+  const newBtn = h("button", { class: "btn primary", onclick: () => newSpace(ctx) }, icon("plus"), "New space");
+  root.append(header(ctx, "spaces", "Context spaces",
+    "Every memory ChloeCtx keeps that this key may read: the cluster's team spaces, and the memory of Claude Code projects. Pick one to see what it knows, ask it a question, read its sessions and, for a Claude Code store, what each recall showed and why.",
+    h("div", { class: "row", style: { gap: "8px" } }, filter, newBtn)));
   const status = h("div", { class: "cx-status" });
-  const list = h("div", { class: "cx-spaces" }, h("div", { class: "muted small" }, "Loading the spaces…"));
-  const how = h("div");
-  root.append(status, list, how);
-  (async () => {
-    let info, spaces;
-    try { [info, spaces] = await Promise.all([ctx.api("/v1/info"), ctx.api("/v1/spaces")]); }
-    catch (e) { list.replaceChildren(failure(e, "The spaces")); return; }
-    status.replaceChildren(
-      h("span", {}, h("b", {}, "Search "), `BM25 and ${info.embedder} vectors (${info.dim} dimensions)`),
-      h("span", {}, h("b", {}, "Conversations "), modelLine(ctx.core, info)),
-      ...(info.distill?.running ? [h("span", {}, `${info.distill.running} distilling now`)] : []));
-    const ss = spaces.spaces || [];
-    if (!ss.length) {
-      list.replaceChildren(empty("layers", "No space yet", "A space holds one team's or one agent's notes: make one, then write to it from an agent.", h("button", { class: "btn sm primary", onclick: () => newSpace(ctx) }, "New space")));
-      list.style.display = "block";
-    } else {
-      list.replaceChildren(...ss.map((s) => {
-        const all = s.by_kind || {};
-        // The notes a context shows: not those replaced, retired or done.
-        const by = s.live_by_kind || all;
-        const NOTE = ["decision", "preference", "fact", "todo", "note"];
-        const notes = NOTE.reduce((a, k) => a + (by[k] || 0), 0);
-        const retired = NOTE.reduce((a, k) => a + (all[k] || 0), 0) - notes;
-        const said = (all.prompt || 0) + (all.answer || 0);
-        const href = s.kind === "incidents" ? ctx.href("seen") : ctx.href("space", s.name);
-        return h("a", { class: "card cx-space", href },
-          h("div", { class: "row", style: { justifyContent: "space-between", gap: "8px" } }, h("h4", {}, s.title || s.name), h("span", { class: "badge mono" }, s.table)),
-          h("p", {}, s.description || ""),
-          h("div", { class: "cx-counts" },
-            s.kind === "incidents" ? h("span", {}, h("b", {}, fmt.n(by.note || 0)), " incidents") : h("span", {}, h("b", {}, fmt.n(notes)), notes === 1 ? " current note" : " current notes"),
-            retired > 0 ? h("span", { title: "Replaced, retired or done: kept in the space's history, left out of every context" }, `${fmt.n(retired)} in history`) : null,
-            said ? h("span", {}, h("b", {}, fmt.n(said)), " messages") : null,
-            by.decision ? h("span", {}, fmt.plural(by.decision, "decision")) : null,
-            by.preference ? h("span", {}, fmt.plural(by.preference, "rule")) : null,
-            s.created ? h("span", {}, "since " + day(s.created)) : null));
-      }));
+  const body = h("div", {}, h("div", { class: "muted small" }, "Loading the spaces…"));
+  root.append(status, body);
+  let cat = null, all = false;
+  const card = (sp) => {
+    const href = sp.type === "space" && sp.s.kind === "incidents" ? ctx.href("seen") : ctx.href(sp.type, sp.id);
+    if (sp.type === "space") {
+      const s = sp.s, all = s.by_kind || {}, by = s.live_by_kind || all;
+      const said = (all.prompt || 0) + (all.answer || 0);
+      return h("a", { class: "card cx-space", href },
+        h("div", { class: "cx-sphd" }, h("h4", {}, sp.title), h("span", { class: "badge mono" }, s.table)),
+        h("p", {}, s.description || ""),
+        h("div", { class: "cx-counts" }, s.kind === "incidents" ? h("span", {}, h("b", {}, fmt.n(by.note || 0)), " incidents") : knows(ctx, by),
+          said ? h("span", {}, fmt.plural(said, "message")) : null, s.created ? h("span", {}, "since " + day(s.created)) : null));
     }
-    const first = ss.find((s) => s.kind !== "incidents")?.name || "billing";
-    const base = `${location.origin}/v1/apps/chloectx/v1/spaces/${first}`;
-    how.replaceChildren(ctx.core.card({
-      title: "From an agent",
-      sub: "through this server, with a key that may write (or straight to chloectx app)",
-      body: h("div", {},
-        h("div", { class: "cx-hint" }, "Write down what it learned (replaces names the note it updates):"),
-        h("pre", { class: "code cx-code" }, `curl -s ${base}/notes -H "authorization: Bearer $KEY" \\\n  -d '{"kind": "decision", "text": "Refunds over 1000 EUR need a second approver.", "entities": ["refunds"]}'`),
-        h("div", { class: "cx-hint" }, "Hand over a conversation; a model writes its notes down when one is set:"),
-        h("pre", { class: "code cx-code" }, `curl -s ${base}/exchanges -H "authorization: Bearer $KEY" \\\n  -d '{"user": "...", "assistant": "..."}'`),
-        h("div", { class: "cx-hint" }, "Ask for context before a task, within a budget in tokens:"),
-        h("pre", { class: "code cx-code" }, `curl -s ${base}/ask -H "authorization: Bearer $KEY" \\\n  -d '{"question": "Who approves a 700 EUR refund?", "budget": 2000}'`),
-        h("div", { class: "cx-hint" }, "The records are rows of the space's table, so SQL reads them too:"),
-        sqlBlock(`SELECT kind, text, ts FROM ctx_${first} WHERE kind IN ('decision', 'preference') AND tag != 'superseded' ORDER BY ts DESC LIMIT 20`)),
-    }));
+    if (sp.type === "store") {
+      const s = sp.s;
+      return h("a", { class: "card cx-space", href },
+        h("div", { class: "cx-sphd" }, h("h4", {}, sp.title), h("span", { class: "badge" }, "this machine"), sp.synced ? h("span", { class: "badge accent", title: `chloectx sync copies it into this cluster as ${sp.synced}` }, "synced") : null),
+        h("p", { class: "mono cx-path" }, s.project || s.dir || s.id),
+        h("div", { class: "cx-counts" }, h("span", {}, "last used ", h("b", {}, s.modified ? fmt.ago(s.modified * 1000) : "–")), h("span", {}, fmt.bytes(s.bytes)),
+          s.running ? null : h("span", { title: "Opening it starts its daemon" }, "daemon stopped"), s.project_exists ? null : h("span", {}, "folder gone")));
+    }
+    const p = sp.p;
+    return h("a", { class: "card cx-space", href },
+      h("div", { class: "cx-sphd" }, h("h4", { class: "mono" }, sp.title), h("span", { class: "badge accent" }, "synced")),
+      h("p", {}, "Claude Code's memory of this repository, as chloectx sync copies it into the table chloectx_memory"),
+      h("div", { class: "cx-counts" }, h("span", {}, h("b", {}, fmt.n(p.sessions)), p.sessions === 1 ? " session" : " sessions"), h("span", {}, fmt.plural(p.records, "record")), p.last ? h("span", {}, "last " + when(p.last)) : null));
+  };
+  const draw = () => {
+    if (!cat) return;
+    const q = filter.value.trim().toLowerCase();
+    const hit = (sp) => !q || `${sp.id} ${sp.title} ${sp.s?.description || ""} ${sp.s?.project || ""}`.toLowerCase().includes(q);
+    const team = [...cat.team, ...cat.incidents].filter(hit);
+    const claude = cat.claude.filter(hit);
+    const shown = all || q ? claude : claude.slice(0, 9);
+    const parts = [];
+    parts.push(h("div", { class: "cx-group" }, h("h3", {}, "Team spaces"), h("span", { class: "muted small" }, "tables of this cluster that agents write notes to and ask for context")));
+    if (cat.errors.spaces) parts.push(failure(cat.errors.spaces, "The spaces"));
+    else if (team.length) parts.push(h("div", { class: "cx-spaces" }, team.map(card)));
+    else if (!q) parts.push(empty("layers", "No team space yet", "A space holds one team's or one agent's notes: make one, then connect Claude Code to it.", h("button", { class: "btn sm primary", onclick: () => newSpace(ctx) }, "New space")));
+    else parts.push(h("div", { class: "muted small cx-none" }, "No team space matches."));
+    parts.push(h("div", { class: "cx-group" }, h("h3", {}, "Claude Code projects"), h("span", { class: "muted small" }, LOCAL ? "the stores of the machine this app runs on, and the projects synced to this cluster" : "the projects chloectx sync copied into this cluster")));
+    if (claude.length) {
+      parts.push(h("div", { class: "cx-spaces" }, shown.map(card)));
+      if (shown.length < claude.length) parts.push(h("button", { class: "btn sm", style: { marginBottom: "16px" }, onclick: () => { all = true; draw(); } }, `Show all ${claude.length}`));
+    } else if (q) parts.push(h("div", { class: "muted small cx-none" }, "No project matches."));
+    else if (cat.errors.memory) parts.push(failure(cat.errors.memory, "The synced projects"));
+    if (!q && cat.memory && (!cat.memory.exists || !cat.memory.projects.length)) parts.push(syncSetup(ctx, cat.memory, location.origin));
+    else if (!q && cat.memory) parts.push(h("details", { class: "cx-more" }, h("summary", {}, "Sync another machine's Claude Code memory here"), syncSetup(ctx, cat.memory, location.origin)));
+    body.replaceChildren(...parts);
+  };
+  filter.oninput = draw;
+  (async () => {
+    const i = await info(ctx).catch(() => null);
+    if (i) status.replaceChildren(
+      h("span", {}, h("b", {}, "Search "), `BM25 and ${i.embedder} vectors (${i.dim} dimensions)`),
+      h("span", {}, h("b", {}, "Conversations "), modelLine(ctx.core, i)),
+      ...(i.distill?.running ? [h("span", {}, `${i.distill.running} distilling now`)] : []));
+    try { cat = await catalog(ctx); } catch (e) { body.replaceChildren(failure(e, "The spaces")); return; }
+    draw();
   })();
   return null;
 }
@@ -352,105 +525,509 @@ function newSpace(ctx) {
     try {
       const s = await ctx.api("/v1/spaces", { body: { name: name.value.trim(), title: title.value.trim(), description: desc.value.trim() } });
       m.close();
-      location.hash = ctx.href("space", s.name);
+      location.hash = ctx.href("space", s.name, "connect");
     } catch (e) { toast(e.message, "bad"); go.disabled = false; }
   };
 }
 
 // ---------------------------------------------------------------- one space
 
-function spacePage(root, ctx, name) {
-  const { h, card, fmt, toast, empty, failure, icon } = ctx.core;
-  const sp = `/v1/spaces/${encodeURIComponent(name)}`;
-  const head = h("div");
-  root.append(head);
-  head.append(header(ctx, "context", name, null, null, [h("a", { href: ctx.href() }, "Context"), " / ", name]));
-  ctx.api("/v1/spaces").then((j) => {
-    const s = (j.spaces || []).find((x) => x.name === name);
-    if (s) head.replaceChildren(header(ctx, "context", s.title || name, s.description || null, null, [h("a", { href: ctx.href() }, "Context"), " / ", h("span", { class: "mono" }, s.table)]));
-  }).catch(() => {});
+/**
+ * A space's page: its header (what it is, a switcher to another space), its
+ * tabs, and the tab `rest[0]` (with what follows it: a session, a receipt,
+ * a line to blame).
+ */
+function spacePage(root, ctx, src, rest) {
+  const { h, icon } = ctx.core;
+  const tab = src.tabs.includes(rest[0]) ? rest[0] : "overview";
+  const arg = rest.slice(1).join("/");
+  const title = h("h2", {}, src.type === "store" ? src.id : src.id);
+  const lede = h("p", { class: "cx-lede" });
+  const badges = h("div", { class: "cx-badges" }, h("span", { class: "badge" }, src.label));
+  const switcher = h("select", { class: "input cx-switch", "aria-label": "Another space" }, h("option", {}, "Loading…"));
+  root.append(h("div", { class: "cx-top" },
+    h("div", { class: "grow" }, h("div", { class: "cx-crumbs" }, h("a", { href: ctx.href() }, "Spaces"), " / ", src.id), title, badges, lede),
+    h("label", { class: "cx-switchl" }, h("span", { class: "muted small" }, "Space"), switcher)));
+  const tabs = h("div", { class: "tabs cx-tabs", role: "tablist" }, src.tabs.map((t) => h("button", {
+    role: "tab", "aria-selected": String(t === tab), title: TABS[t][1],
+    onclick: () => { location.hash = ctx.href(src.type, src.id, ...(t === "overview" ? [] : [t])); },
+  }, TABS[t][0])));
+  const page = h("div");
+  root.append(tabs, page);
+  catalog(ctx).then((cat) => {
+    const all = [...cat.team, ...cat.claude];
+    const me = all.find((x) => x.type === src.type && x.id === src.id) || cat.claude.find((x) => x.type === "project" && src.type === "project" && x.id === src.id);
+    if (me) {
+      title.textContent = me.title;
+      if (me.type === "space") {
+        lede.textContent = me.s.description || "";
+        badges.append(h("span", { class: "badge mono" }, me.s.table));
+      } else if (me.type === "store") {
+        lede.replaceChildren(h("span", { class: "mono" }, me.s.project || me.s.dir));
+        if (me.synced) badges.append(h("a", { class: "badge accent", href: ctx.href("project", me.synced), title: "The copy chloectx sync keeps in this cluster" }, `synced as ${me.synced}`));
+        if (!me.s.running) badges.append(h("span", { class: "badge", title: "Reading it started its daemon" }, "daemon started for this page"));
+      } else {
+        lede.textContent = "Claude Code's memory of this repository, as chloectx sync copies it from each machine into the table chloectx_memory. Read only.";
+      }
+    }
+    const opt = (x) => h("option", { value: `${x.type}/${x.id}`, selected: x.type === src.type && x.id === src.id }, x.type === "store" ? `${x.title} (this machine)` : x.title);
+    switcher.replaceChildren(
+      ...(cat.team.length ? [h("optgroup", { label: "Team spaces" }, cat.team.map(opt))] : []),
+      ...(cat.claude.length ? [h("optgroup", { label: "Claude Code projects" }, cat.claude.slice(0, 60).map(opt))] : []));
+    if (!me) switcher.prepend(h("option", { selected: true }, src.id));
+    switcher.onchange = () => {
+      const [t, ...id] = switcher.value.split("/");
+      const next = sourceOf(ctx, t, id.join("/"));
+      location.hash = ctx.href(t, id.join("/"), ...(next.tabs.includes(tab) && tab !== "overview" ? [tab] : []));
+    };
+  }).catch(() => switcher.replaceChildren(h("option", {}, src.id)));
+  const draw = {
+    overview: () => overviewTab(page, ctx, src),
+    ask: () => askTab(page, ctx, src, arg),
+    memories: () => memoriesTab(page, ctx, src, arg),
+    sessions: () => sessionsTab(page, ctx, src, arg),
+    receipts: () => (arg ? receiptPage(page, ctx, src, arg) : receiptsTab(page, ctx, src)),
+    blame: () => blameTab(page, ctx, src, arg),
+    keep: () => keepTab(page, ctx, src),
+    connect: () => connectTab(page, ctx, src),
+  }[tab];
+  return draw() || null;
+}
 
-  // The playground.
-  const q = h("textarea", { class: "input", placeholder: "What an agent would ask before a task: \"Who approves a 700 EUR refund?\"" });
+/** A note as a line of a list: its text (struck through when replaced), kind, date, and what it replaced. */
+function noteLine(ctx, src, n, opts = {}) {
+  const { h } = ctx.core;
+  const old = n.tag === "superseded";
+  return h("li", { class: "plain cx-note", onclick: () => historyDrawer(ctx, src, n.id) },
+    h("div", {},
+      h("div", { class: "cx-text" + (old ? " old" : "") }, n.text),
+      h("div", { class: "cx-why" }, opts.kind === false ? null : kindBadge(ctx, n.kind), h("span", {}, day(n.ts)),
+        n.was?.length ? h("span", { class: "was" }, "was: ", h("s", {}, n.was[0].text)) : n.supersedes?.length ? h("span", { class: "was" }, "updates an earlier note") : null,
+        old ? h("span", {}, n.superseded_by?.length ? "replaced" : "retired") : n.tag === "done" ? h("span", {}, "done") : null)),
+    opts.tools || h("span"));
+}
+
+function overviewTab(page, ctx, src) {
+  const { h, card, fmt, failure, empty } = ctx.core;
+  page.append(h("div", { class: "muted small" }, src.type === "store" ? "Reading the store (its daemon starts if it is stopped)…" : "Loading…"));
+  (async () => {
+    let o;
+    try { o = await src.overview(); } catch (e) { page.replaceChildren(failure(e, "The space")); return; }
+    const live = o.live || {};
+    const stat = (n, label, href) => h(href ? "a" : "div", { class: "card kpi cx-kpi", href }, h("div", { class: "lbl" }, label), h("div", { class: "val" }, fmt.n(n || 0)));
+    const tab = (t, ...a) => ctx.href(src.type, src.id, t, ...a);
+    const kpis = h("div", { class: "cx-kpis" },
+      stat(live.rule, "Rules", tab("memories", "rule")), stat(live.decision, "Decisions", tab("memories", "decision")), stat(live.fact, "Facts", tab("memories", "fact")),
+      stat(live.todo, "Open to-dos", tab("memories", "todo")), stat(o.sessions, "Sessions", tab("sessions")), stat(o.records, "Records", null));
+    const span = o.first ? h("div", { class: "cx-status" }, h("span", {}, h("b", {}, "Recorded "), `${day(o.first)} to ${day(o.last)}`),
+      Object.values(live).reduce((a, b) => a + b, 0) < Object.entries(o.by_kind || {}).filter(([k]) => NOTE_KINDS.has(k)).reduce((a, [, n]) => a + n, 0) ? h("span", {}, h("b", {}, "History "), "replaced and done notes are kept: Memories shows them") : null) : null;
+    const list = (ns, none, k) => ns.length ? h("ul", { class: "cx-list" }, ns.map((n) => noteLine(ctx, src, n, { kind: k }))) : h("div", { class: "muted small" }, none);
+    const more = (k, n, all) => (all > n ? h("a", { class: "btn xs", href: tab("memories", k) }, `All ${fmt.n(all)}`) : null);
+    if (!o.records) {
+      page.replaceChildren(kpis, empty("note", "Nothing in this space yet", src.type === "space" ? "Connect Claude Code (or any agent) to it, or add a note under Memories." : "It fills as Claude Code sessions run in the project.",
+        h("a", { class: "btn sm primary", href: tab(src.type === "space" ? "connect" : "sessions") }, src.type === "space" ? "Connect Claude Code" : "Sessions")));
+      return;
+    }
+    const sessions = (o.recent_sessions || []).length ? h("ul", { class: "cx-list" }, o.recent_sessions.map((s) => h("li", { class: "plain" },
+      h("a", { class: "cx-slink", href: tab("sessions", s.session) }, h("div", { class: "cx-text" }, s.title || h("span", { class: "mono" }, s.session)),
+        h("div", { class: "cx-why" }, h("span", {}, when(s.last)), h("span", {}, fmt.plural(s.turns, "turn")), h("span", {}, fmt.plural(s.records, "record")))), h("span")))) : h("div", { class: "muted small" }, "No session yet.");
+    const changes = (o.changes || []).length ? h("ul", { class: "cx-list" }, o.changes.map((n) => noteLine(ctx, src, n))) : h("div", { class: "muted small" }, "No note was replaced yet: when one is, the change shows here.");
+    page.replaceChildren(kpis, span || "",
+      h("div", { class: "cx-ov" },
+        h("div", { class: "cx-stack" },
+          card({ title: "Rules", sub: "go into every context, whatever the question", tools: more("rule", o.rules.length, live.rule), body: list(o.rules, "No rule yet.", false) }),
+          card({ title: "Decisions", sub: "the latest first", tools: more("decision", o.decisions.length, live.decision), body: list(o.decisions, "No decision yet.", false) }),
+          card({ title: "Facts", tools: more("fact", o.facts.length, live.fact), body: list(o.facts, "No fact yet.", false) })),
+        h("div", { class: "cx-stack" },
+          card({ title: "Open to-dos", sub: "planned, and not done yet", tools: more("todo", o.todos.length, live.todo), body: list(o.todos, "Nothing open.", false) }),
+          card({ title: "What changed", sub: "notes that replaced an earlier one", body: changes }),
+          card({ title: "Latest sessions", tools: h("a", { class: "btn xs", href: tab("sessions") }, "All sessions"), body: sessions }))));
+  })();
+  return null;
+}
+
+const NOTE_KINDS = new Set(["decision", "preference", "fact", "todo", "note"]);
+
+function askTab(page, ctx, src, asked) {
+  const { h, card, fmt, failure } = ctx.core;
+  const q = h("textarea", { class: "input", placeholder: "What an agent would ask before a task: \"Who approves a refund of 700 EUR?\"" });
   const budget = h("input", { type: "range", min: 500, max: 16000, step: 500, value: 4000, "aria-label": "Token budget" });
   const budLabel = h("span", { class: "cx-bud" });
   const setBud = () => { budLabel.textContent = `budget ${fmt.n(+budget.value)} tokens`; };
   setBud();
   const askBtn = h("button", { class: "btn primary" }, "Ask");
-  const out = h("div", {}, h("div", { class: "cx-hint", style: { marginTop: "6px" } }, "The answer shows what went into the context, why, and what was left out."));
+  const out = h("div", {}, h("div", { class: "cx-hint", style: { marginTop: "6px" } },
+    src.type === "project" ? "The answer comes from the synced copy's records, ranked by their words (BM25)." : "The answer is what an agent gets in its context: found by search alone, within the budget, with no model call."));
+  const examples = h("div", { class: "cx-drafts" });
   let last = "";
   const ask = async () => {
     const question = q.value.trim();
     if (!question) { q.focus(); return; }
     askBtn.disabled = true;
-    try { last = question; drawAnswer(ctx, out, await ctx.api(`${sp}/ask`, { body: { question, budget: +budget.value } }), name); }
-    catch (e) { out.replaceChildren(failure(e, "The context")); }
+    out.replaceChildren(h("div", { class: "muted small", style: { marginTop: "8px" } }, "Asking…"));
+    if (question !== asked) history.replaceState(null, "", ctx.href(src.type, src.id, "ask", question));
+    try { last = question; drawAnswer(ctx, out, await src.ask(question, +budget.value), src); }
+    catch (e) { out.replaceChildren(failure(e, "The answer")); }
     askBtn.disabled = false;
   };
   askBtn.onclick = ask;
-  q.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); ask(); } };
+  q.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); ask(); } };
   budget.oninput = setBud;
   budget.onchange = () => { if (last && q.value.trim() === last) ask(); };
-  const play = card({ title: "Ask for context", sub: "what an agent gets, by search alone", body: h("div", { class: "cx-ask" }, q, h("div", { class: "cx-askrow" }, budget, budLabel, askBtn), out) });
+  // Questions worth asking: what its rules and decisions are about.
+  src.notes(false).then((ns) => {
+    const qs = suggestions(ns);
+    if (qs.length) examples.replaceChildren(h("span", { class: "muted small" }, "Try:"), ...qs.map((t) => h("button", { class: "chip", onclick: () => { q.value = t; ask(); } }, t)));
+  }).catch(() => {});
+  page.append(card({ body: h("div", { class: "cx-ask" }, q, examples, h("div", { class: "cx-askrow" }, src.type === "project" ? h("span", { class: "grow" }) : [budget, budLabel], askBtn)) }), out);
+  // A link can carry the question (#…/ask/<question>), and asking puts it there.
+  if (asked) { q.value = asked; ask(); } else setTimeout(() => q.focus(), 0);
+  return null;
+}
 
-  // The notes.
-  let all = false;
-  const notesBody = h("div", {}, h("div", { class: "muted small" }, "Loading…"));
-  const loadNotes = async () => {
-    let j;
-    try { j = await ctx.api(`${sp}/notes?limit=200${all ? "&all=1" : ""}`); }
-    catch (e) { notesBody.replaceChildren(e.status === 404 ? empty("layers", "No such space", e.message) : failure(e, "The notes")); return; }
-    const ns = j.notes || [];
+/** A few questions from a space's notes: the subjects its decisions and rules name. */
+function suggestions(ns) {
+  const out = [];
+  const seen = new Set();
+  for (const n of ns) {
+    if (out.length >= 4) break;
+    if (n.kind !== "decision" && n.kind !== "rule" && n.kind !== "fact") continue;
+    const m = (n.text || "").match(/\b(refunds?|webhooks?|migrations?|rate limit\w*|retries|currency|logging|tests?|releases?|deploys?|approv\w+|idempoten\w+|timezones?|reports?|flags?|invoices?|payments?|caching|auth\w*)\b/i);
+    const w = m?.[1]?.toLowerCase();
+    if (!w || seen.has(w)) continue;
+    seen.add(w);
+    out.push({ refund: "Who approves a large refund?", refunds: "Who approves a large refund?", webhook: "How do we verify Stripe webhooks?", webhooks: "How do we verify Stripe webhooks?", migration: "What are the rules for database migrations?", migrations: "What are the rules for database migrations?", currency: "How are amounts and currencies stored?", logging: "What may we log?", test: "How do I run the tests?", tests: "How do I run the tests?", release: "How do we cut a release?", releases: "How do we cut a release?" }[w] || `What did we decide about ${w}?`);
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * An answer to a question: the note that answers it best first, the rules
+ * that apply with it, then what else bears on it; why each was picked (its
+ * scores), what was left out and the context as the agent gets it are
+ * folded below.
+ */
+function drawAnswer(ctx, out, a, src) {
+  const { h, fmt, empty, table } = ctx.core;
+  const items = a.items || [];
+  if (!items.length) { out.replaceChildren(empty("search", "Nothing found", "The space has nothing that bears on this: an agent gets an empty context.")); return; }
+  // How well each matched: its words (BM25, scaled to the best) and its
+  // meaning (cosine), together, so a note both find comes first; a to-do is
+  // a plan, so an answer of the same fit goes before it.
+  const maxB = Math.max(1e-9, ...items.map((x) => x.bm25 || 0));
+  const fit = (x) => (x.rank != null ? 1 - x.rank / 100 : (Math.max(0, x.bm25 || 0) / maxB + Math.max(0, x.cos || 0)) / 2 * (x.kind === "todo" ? 0.9 : 1));
+  const notes = items.filter((x) => NOTE_KINDS.has(x.kind) || x.kind === "rule");
+  const ranked = [...notes].sort((x, y) => fit(y) - fit(x));
+  const lead = ranked.find((x) => x.section !== "rule" && (x.bm25 > 0 || x.cos > 0.25 || x.rank != null)) || ranked.find((x) => x.bm25 > 0 || x.cos > 0.3) || ranked[0];
+  const rules = notes.filter((x) => x !== lead && x.section === "rule" && (x.bm25 > 0 || x.cos > 0.3));
+  const others = ranked.filter((x) => x !== lead && !rules.includes(x) && x.section !== "rule").slice(0, 6);
+  const talk = items.filter((x) => x.kind === "user" || x.kind === "assistant" || x.section === "reply" || x.section === "excerpt").filter((x) => !notes.includes(x));
+  const when = (x) => h("span", { class: "cx-on" }, day(x.ts));
+  const line = (x) => h("li", { class: "plain cx-note", onclick: x.id && src.history ? () => historyDrawer(ctx, src, x.id) : null },
+    h("div", {}, h("div", { class: "cx-text" }, x.text), h("div", { class: "cx-why" }, kindBadge(ctx, x.kind), when(x),
+      x.replaced ? h("span", { class: "was" }, "was: ", h("s", {}, x.replaced.replace(/^changed [0-9-]+; was: /, ""))) : null)), h("span"));
+  const leadEl = lead ? h("div", { class: "cx-lead" },
+    h("div", { class: "cx-leadk" }, kindBadge(ctx, lead.kind), h("span", {}, `${lead.kind === "rule" ? "a rule" : "noted"} ${day(lead.ts)}`), lead.session && lead.session !== "-" ? h("a", { class: "mono", href: ctx.href(src.type, src.id, "sessions", lead.session) }, `session ${short(lead.session)}`) : null),
+    h("div", { class: "cx-leadt" }, lead.text),
+    lead.replaced ? h("div", { class: "cx-leadw" }, "This replaced an earlier note: ", h("s", {}, lead.replaced.replace(/^changed [0-9-]+; was: /, ""))) : null,
+    lead.id ? h("a", { href: "javascript:void 0", class: "small", onclick: () => historyDrawer(ctx, src, lead.id) }, "Its history") : null) : null;
+  const facts = h("div", { class: "cx-facts" },
+    a.budget ? h("span", {}, h("b", {}, fmt.n(a.tokens)), `of ${fmt.n(a.budget)} tokens`) : h("span", {}, h("b", {}, fmt.n(a.tokens)), "tokens"),
+    h("span", {}, h("b", {}, fmt.n(items.length)), items.length === 1 ? "record" : "records"),
+    h("span", {}, h("b", {}, fmt.ms(a.ms)), "to build"),
+    h("span", {}, h("b", {}, "0"), "model calls"));
+  // Why: every record with its section and scores, as the context holds them.
+  const why = table([
+    { key: "text", label: "Record", render: (x) => h("div", { class: "cx-cell" }, x.text) },
+    { key: "section", label: "Why it is in", render: (x) => h("span", { title: (SECTION[x.section] || SECTION.note)[2] }, (SECTION[x.section] || SECTION.note)[1]) },
+    { key: "bm25", label: "Words", num: true, render: (x) => (x.bm25 == null ? "–" : x.bm25.toFixed(2)) },
+    { key: "cos", label: "Meaning", num: true, render: (x) => (x.cos == null ? "–" : x.cos.toFixed(2)) },
+    { key: "tokens", label: "Tokens", num: true, render: (x) => fmt.n(x.tokens) },
+  ], { rows: items, compact: true, sortKey: null });
+  const left = (a.left_out || []).length ? h("ul", { class: "cx-list" }, a.left_out.map((r) => {
+    const [label, w] = LEFT[r.why] || [r.why, ""];
+    return h("li", { class: "plain" }, h("div", {}, h("div", { class: "cx-text old" }, r.text), h("div", { class: "cx-why" }, h("span", { title: w }, label + (w ? ": " + w.toLowerCase() : "")), h("span", {}, day(r.ts)))), h("span"));
+  })) : null;
+  out.replaceChildren(h("div", { class: "card cx-answer" }, h("div", { class: "bd" },
+    h("div", { class: "cx-sub", style: { marginTop: 0 } }, "The answer from its memory"),
+    leadEl || h("div", { class: "muted" }, "No note answers it; the context below holds what the searches found."),
+    rules.length ? [h("div", { class: "cx-sub" }, "Rules that apply"), h("ul", { class: "cx-list" }, rules.map(line))] : null,
+    others.length ? [h("div", { class: "cx-sub" }, "Also relevant"), h("ul", { class: "cx-list" }, others.map(line))] : null,
+    talk.length ? h("details", { class: "cx-context" }, h("summary", {}, `From past conversations (${talk.length})`), h("ul", { class: "cx-list" }, talk.map((x) => h("li", { class: "plain" }, h("div", {}, h("div", { class: "cx-text" }, h("span", { class: "muted" }, x.kind === "user" ? "Asked: " : "Answered: "), x.text), h("div", { class: "cx-why" }, when(x))), h("span"))))) : null,
+    facts,
+    a.words_only ? null : h("details", { class: "cx-context" }, h("summary", {}, "Why these, with their scores"), h("div", { class: "cx-hint", style: { margin: "8px 0" } }, "Rules go in first; then the notes the searches found, by their words (BM25) and their meaning (cosine of the vectors), dated and in order until the budget is spent."), why),
+    left ? h("details", { class: "cx-context" }, h("summary", {}, `Left out (${a.left_out.length})`), left) : null,
+    a.context ? h("details", { class: "cx-context" }, h("summary", {}, `The context as the agent gets it (${fmt.n(a.chars)} characters)`), h("pre", { class: "code" }, a.context)) : null)));
+}
+
+/** A note's history (what it replaced and what replaced it), in a drawer. */
+async function historyDrawer(ctx, src, id) {
+  const { h, drawer, toast } = ctx.core;
+  let j;
+  try { j = await src.history(id); }
+  catch (e) { toast(e.message, "bad"); return; }
+  const row = (n, now) => h("li", { class: "plain" },
+    h("div", {}, h("div", { class: "cx-text" + (n.tag === "superseded" && !now ? " old" : "") }, n.text),
+      h("div", { class: "cx-why" }, kindBadge(ctx, n.kind), h("span", {}, day(n.ts)), n.session ? h("a", { class: "mono", href: ctx.href(src.type, src.id, "sessions", n.session) }, `session ${short(n.session)}`) : null, n.tag === "superseded" ? h("span", {}, n.superseded_by?.length ? "replaced" : "retired") : n.tag === "done" ? h("span", {}, "done") : h("span", {}, "current"))),
+    h("span"));
+  drawer({
+    title: "A note's history",
+    sub: "Each version is kept; a context shows only the current one, with what it changed",
+    body: h("div", {},
+      j.later.length ? [h("div", { class: "cx-sub" }, "Replaced by"), h("ul", { class: "cx-list" }, j.later.map((n) => row(n, n.tag !== "superseded")))] : null,
+      h("div", { class: "cx-sub" }, "This note"), h("ul", { class: "cx-list" }, row(j.note, true)),
+      j.earlier.length ? [h("div", { class: "cx-sub" }, "It replaced"), h("ul", { class: "cx-list" }, j.earlier.map((n) => row(n, false)))] : null),
+  });
+}
+
+function memoriesTab(page, ctx, src, only) {
+  const { h, card, fmt, toast, empty, failure, icon } = ctx.core;
+  let kind = KIND_LABEL[only] ? only : "", all = false, notes = [];
+  const q = h("input", { class: "input", type: "search", placeholder: "Filter by words" });
+  const chips = h("div", { class: "cx-kinds" });
+  const body = h("div", {}, h("div", { class: "muted small" }, "Loading…"));
+  const which = ctx.core.seg([["live", "Current"], ["all", "With history"]], "live", (v) => { all = v === "all"; load(); });
+  const tools = [which];
+  if (src.writes) tools.push(h("button", { class: "btn sm", onclick: () => noteForm(ctx, src.id, null, load) }, icon("plus"), "Add"));
+  page.append(card({ title: "Memories", sub: src.type === "space" ? "what agents wrote down, and what was distilled from conversations" : "what the distiller wrote down from each turn, and what was remembered by hand", tools, body: h("div", {}, h("div", { class: "cx-filter" }, q, chips), body) }));
+  const draw = () => {
+    const t = q.value.trim().toLowerCase();
+    const counts = {};
+    for (const n of notes) counts[n.kind] = (counts[n.kind] || 0) + 1;
+    chips.replaceChildren(...[["", "All", notes.length], ...KINDS.filter(([k]) => counts[k]).map(([k, l]) => [k, l, counts[k]])].map(([k, l, n]) =>
+      h("button", { class: "chip", "aria-pressed": String(kind === k), onclick: () => { kind = k; draw(); } }, `${l} ${fmt.n(n)}`)));
+    const ns = notes.filter((n) => (!kind || n.kind === kind) && (!t || n.text.toLowerCase().includes(t)));
     if (!ns.length) {
-      // None current: say whether the history holds some.
-      let old = [];
-      if (!all) try { old = (await ctx.api(`${sp}/notes?limit=1&all=1`)).notes || []; } catch { /* the empty state below */ }
-      notesBody.replaceChildren(old.length
-        ? empty("note", "No current notes", "Every note here was replaced, retired or done: With history shows them. Add one, or write to the space from an agent.", h("button", { class: "btn sm", onclick: () => { which.set("all"); all = true; loadNotes(); } }, "Show the history"))
-        : empty("note", "No notes yet", "Add one here, or write to the space from an agent."));
+      body.replaceChildren(notes.length ? empty("search", "Nothing matches", "No note of this kind has these words.") : empty("note", all ? "No notes yet" : "No current notes", src.writes ? "Add one here, or write to the space from an agent." : "The distiller writes notes down after each turn of a session."));
       return;
     }
-    notesBody.replaceChildren(h("ul", { class: "cx-list" }, ns.map((n) => h("li", { class: "plain" },
-      h("div", {},
-        h("div", { class: "cx-text" + (n.tag === "superseded" ? " old" : "") }, n.text),
-        h("div", { class: "cx-why" }, kindBadge(ctx, n.kind), h("span", {}, day(n.ts)),
-          n.supersedes?.length ? h("span", { class: "was" }, "updates an earlier note") : null,
-          n.tag === "superseded" ? h("span", {}, n.superseded_by?.length ? "replaced" : "retired") : n.tag === "done" ? h("span", {}, "done") : null)),
-      h("div", { class: "cx-acts" },
-        h("button", { class: "btn ghost icon sm", title: "History", "aria-label": "History", onclick: () => historyDrawer(ctx, name, n.id) }, icon("clock")),
-        n.tag === "superseded" ? null : h("button", { class: "btn ghost icon sm", title: "Replace with a new version", "aria-label": "Replace", onclick: () => noteForm(ctx, name, n, loadNotes) }, icon("edit")),
-        n.tag === "superseded" ? null : h("button", { class: "btn ghost icon sm", title: "Retire: leave it out of every context", "aria-label": "Retire", onclick: async () => {
+    body.replaceChildren(h("div", { class: "cx-hint", style: { marginBottom: "4px" } }, `${fmt.plural(ns.length, "note")}, the newest first. Open one for its history.`), h("ul", { class: "cx-list" }, ns.slice(0, 400).map((n) => noteLine(ctx, src, n, {
+      tools: src.writes && n.tag !== "superseded" ? h("div", { class: "cx-acts", onclick: (e) => e.stopPropagation() },
+        h("button", { class: "btn ghost icon sm", title: "Replace with a new version", "aria-label": "Replace", onclick: () => noteForm(ctx, src.id, n, load) }, icon("edit")),
+        h("button", { class: "btn ghost icon sm", title: "Retire: leave it out of every context", "aria-label": "Retire", onclick: async () => {
           if (!(await ctx.core.confirm({ title: "Retire this note?", body: `“${n.text}” stays in the space's history but no context shows it again.`, ok: "Retire", danger: true }))) return;
-          try { await ctx.api(`${sp}/notes/${encodeURIComponent(n.id)}`, { method: "DELETE" }); loadNotes(); } catch (e) { toast(e.message, "bad"); }
-        } }, icon("x")))))));
+          try { await ctx.api(`/v1/spaces/${encodeURIComponent(src.id)}/notes/${encodeURIComponent(n.id)}`, { method: "DELETE" }); load(); } catch (e) { toast(e.message, "bad"); }
+        } }, icon("x"))) : null,
+    }))));
   };
-  const which = ctx.core.seg([["live", "Current"], ["all", "With history"]], "live", (v) => { all = v === "all"; loadNotes(); });
-  const notes = card({ title: "Notes", tools: [which, h("button", { class: "btn sm", onclick: () => noteForm(ctx, name, null, loadNotes) }, icon("plus"), "Add")], body: notesBody });
+  async function load() {
+    try { notes = (await src.notes(all)).map((n) => ({ ...n, kind: kindOf(n.kind) })); }
+    catch (e) { body.replaceChildren(e.status === 404 ? empty("layers", "No such space", e.message) : failure(e, "The notes")); return; }
+    draw();
+  }
+  q.oninput = draw;
+  load();
+  return null;
+}
 
-  // A conversation, handed over.
+// What each kind of record is, and its colour: as `chloectx ui` shows a local store.
+const REC = {
+  prompt: ["var(--s1)", "Prompt"], answer: ["var(--s2)", "Answer"], tool_call: ["var(--line-2)", "Tool call"], tool_result: ["var(--line-2)", "Tool result"],
+  error: ["var(--crit)", "Error"], episode: ["var(--s3)", "Episode"], summary: ["var(--s3)", "Summary"], decision: ["var(--s4)", "Decision"],
+  preference: ["var(--s7)", "Rule"], fact: ["var(--s5)", "Fact"], todo: ["var(--s6)", "To do"], note: ["var(--s5)", "Note"], entity: ["var(--muted)", "Entity"],
+};
+const when = (secs) => (secs ? new Date(secs * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–");
+
+/**
+ * Sessions: the list, the latest first, each titled by its first prompt;
+ * one session read as the conversation it recorded, turn by turn; or, with
+ * none picked, every record, filtered by kind and searched by its words.
+ */
+function sessionsTab(page, ctx, src, session) {
+  const { h, empty, failure, fmt, card } = ctx.core;
+  const list = h("ul", { class: "cx-sess" }, h("li", { class: "muted small" }, "Loading…"));
+  const right = h("div");
+  page.append(h("div", { class: "cx-insp" }, card({ title: "Sessions", sub: "the latest first", body: list }), right));
+  (async () => {
+    let j;
+    try { j = await src.sessions(); }
+    catch (e) { list.replaceChildren(h("li", {}, failure(e, "The sessions"))); return; }
+    const ss = j.sessions || [];
+    list.replaceChildren(
+      h("li", {}, h("a", { href: ctx.href(src.type, src.id, "sessions"), class: session ? "" : "on" }, h("b", {}, "Every record"), h("div", { class: "cx-why" }, fmt.plural(ss.length, "session"), " · search and filter"))),
+      ...ss.map((s) => h("li", {}, h("a", { href: ctx.href(src.type, src.id, "sessions", s.session), class: s.session === session ? "on" : "" },
+        h("span", { class: "cx-stitle" }, s.title || s.session), h("div", { class: "cx-why" }, h("span", {}, when(s.first)), h("span", {}, fmt.plural(s.turns, "turn")), h("span", {}, fmt.plural(s.records, "record")))))));
+    // Side by side, the list keeps the session in view; stacked (a phone), the conversation is what was asked for.
+    const stacked = matchMedia("(max-width: 900px)").matches;
+    if (session && !stacked) list.querySelector("a.on")?.scrollIntoView({ block: "nearest" });
+    // Once it is drawn, so that the page is long enough to scroll to it.
+    if (session) conversation(right, ctx, src, ss.find((s) => s.session === session) || { session }).then(() => { if (stacked) right.scrollIntoView({ block: "start" }); });
+    else everyRecord(right, ctx, src, j.by_kind || {});
+  })();
+  return null;
+}
+
+/** One session as the conversation it recorded: each turn's prompt, the tool calls it made, its answer and the notes written from it. */
+async function conversation(el, ctx, src, s) {
+  const { h, card, failure, fmt, empty } = ctx.core;
+  const body = h("div", {}, h("div", { class: "muted small" }, "Loading the session…"));
+  el.append(card({ title: s.title || `Session ${short(s.session, 12)}`, sub: [h("span", { class: "mono" }, s.session), s.first ? ` · ${when(s.first)}` : "", s.turns ? ` · ${fmt.plural(s.turns, "turn")}` : ""], body }));
+  let rs = [];
+  // Its first 500 records, in the order they were recorded.
+  try { rs = (await src.records(`session=${encodeURIComponent(s.session)}&limit=500`)).records || []; }
+  catch (e) { body.replaceChildren(failure(e, "The session")); return; }
+  if (!rs.length) { body.replaceChildren(empty("note", "Nothing recorded", "This session has no records.")); return; }
+  const turns = new Map();
+  for (const r of rs) {
+    if (r.kind === "entity") continue;
+    if (!turns.has(r.turn)) turns.set(r.turn, []);
+    turns.get(r.turn).push(r);
+  }
+  const out = [];
+  let n = 0, last = null;
+  for (const [t, recs] of turns) {
+    // Notes written after a turn (a team space's, through its API) go with it.
+    if (last && !recs.some((r) => r.kind === "prompt" || r.kind === "answer") && recs.every((r) => NOTE_KINDS.has(r.kind))) {
+      last.append(h("div", { class: "cx-wrote" }, h("div", { class: "cx-who" }, "Written down"), h("ul", { class: "cx-list" }, recs.map((x) => noteLine(ctx, src, { ...x, kind: kindOf(x.kind) })))));
+      continue;
+    }
+    if (recs.some((r) => r.kind === "prompt")) n++;
+    const prompt = recs.filter((r) => r.kind === "prompt");
+    const answer = recs.filter((r) => r.kind === "answer");
+    const tools = recs.filter((r) => r.kind === "tool_call" || r.kind === "tool_result");
+    const errors = recs.filter((r) => r.kind === "error");
+    const notes = recs.filter((r) => NOTE_KINDS.has(r.kind));
+    const other = recs.filter((r) => r.kind === "summary");
+    const at = recs[0]?.ts;
+    last = h("div", { class: "cx-turn" },
+      h("div", { class: "cx-turnh" }, h("span", {}, n ? `Turn ${n}` : "Before the first turn"), h("span", { class: "muted" }, when(at))),
+      prompt.map((r) => h("div", { class: "cx-msg you", onclick: () => recordDrawer(ctx, src, r) }, h("div", { class: "cx-who" }, "You"), h("div", { class: "cx-body" }, r.text))),
+      tools.length ? h("details", { class: "cx-tools" }, h("summary", {}, `${fmt.plural(tools.filter((r) => r.kind === "tool_call").length || tools.length, "tool call")}: ${[...new Set(tools.map((r) => r.tag).filter(Boolean))].slice(0, 5).join(", ")}`),
+        h("div", {}, tools.map((r) => h("div", { class: "cx-tool" + (r.kind === "tool_result" ? " res" : ""), onclick: () => recordDrawer(ctx, src, r) }, r.text.split("\n").slice(0, r.kind === "tool_call" ? 3 : 2).join("\n"))))) : null,
+      errors.map((r) => h("div", { class: "cx-tool err", onclick: () => recordDrawer(ctx, src, r) }, r.text.split("\n").slice(0, 4).join("\n"))),
+      answer.map((r) => h("div", { class: "cx-msg ai", onclick: () => recordDrawer(ctx, src, r) }, h("div", { class: "cx-who" }, "Claude"), h("div", { class: "cx-body" }, r.text))),
+      other.map((r) => h("div", { class: "cx-hint" }, r.text)),
+      notes.length ? h("div", { class: "cx-wrote" }, h("div", { class: "cx-who" }, "Written down"), h("ul", { class: "cx-list" }, notes.map((x) => noteLine(ctx, src, { ...x, kind: kindOf(x.kind) })))) : null);
+    out.push(last);
+  }
+  body.replaceChildren(...out, rs.length >= 500 ? h("div", { class: "cx-hint" }, "Showing its first 500 records.") : "");
+}
+
+/** Every record of the space, the latest first, filtered by kind or ranked by BM25 for some words. */
+function everyRecord(el, ctx, src, by) {
+  const { h, empty, failure, fmt, card } = ctx.core;
+  const q = h("input", { class: "input", type: "search", placeholder: "Search every record (BM25), and press Enter" });
+  const kinds = h("div", { class: "cx-kinds" });
+  const out = h("div", {}, h("div", { class: "muted small" }, "Loading…"));
+  const more = h("div", { style: { marginTop: "8px" } });
+  const title = h("span", {}, "The latest records");
+  let kind = "", oldest = null;
+  el.append(card({ title, body: h("div", {}, h("div", { class: "cx-filter" }, q, kinds), out, more) }));
+  const chip = (k, label) => h("button", { class: "chip", "aria-pressed": String(kind === k), "data-k": k, onclick: () => { kind = k; oldest = null; for (const c of kinds.children) c.setAttribute("aria-pressed", String(c.dataset.k === k)); records(false); } }, label);
+  kinds.replaceChildren(chip("", "All"), ...Object.keys(REC).filter((k) => by[k]).map((k) => chip(k, `${REC[k][1]} ${fmt.n(by[k])}`)));
+  async function records(append) {
+    const text = q.value.trim();
+    title.textContent = text ? `Best matches for “${text}”` : kind ? `The latest ${(REC[kind] || [, kind])[1].toLowerCase()} records` : "The latest records";
+    let j;
+    try { j = await src.records((kind ? `kind=${kind}&` : "") + (text ? `q=${encodeURIComponent(text)}&` : "") + (append && oldest != null ? `before=${oldest}&` : "") + "limit=200"); }
+    catch (e) { out.replaceChildren(failure(e, "The records")); return; }
+    const rs = j.records || [];
+    if (!append) out.replaceChildren();
+    if (!rs.length && !append) out.append(empty("search", "Nothing", text ? "No record matches." : "No record of this kind."));
+    for (const r of rs) {
+      const [color, label] = REC[r.kind] || ["var(--muted)", r.kind];
+      const tool = r.kind === "tool_call" || r.kind === "tool_result";
+      out.append(h("div", { class: "cx-rec" + (tool ? " tool" : ""), onclick: () => recordDrawer(ctx, src, r) },
+        h("i", { class: "cx-sw", style: { background: color } }),
+        h("div", {}, h("div", { class: "cx-text" + (r.tag === "superseded" ? " old" : "") }, r.text),
+          h("div", { class: "cx-why" }, h("span", { class: "badge" }, label), h("span", {}, when(r.ts)), h("a", { href: ctx.href(src.type, src.id, "sessions", r.session), onclick: (e) => e.stopPropagation(), class: "mono" }, short(r.session)),
+            r.tag && r.tag !== "-" ? h("span", {}, r.tag) : null, r.files ? h("span", { class: "mono" }, r.files.split(/[,\n]/)[0]) : null))));
+    }
+    oldest = rs.length ? rs.reduce((m, r) => Math.min(m, r.seq), Infinity) : oldest;
+    more.replaceChildren(j.more && !text ? h("button", { class: "btn sm", onclick: () => records(true) }, "Older records") : j.more ? h("div", { class: "cx-hint" }, "Showing the first 200.") : "");
+  }
+  q.onkeydown = (e) => { if (e.key === "Enter") { oldest = null; records(false); } };
+  q.onsearch = () => { if (!q.value) { oldest = null; records(false); } };
+  records(false);
+}
+
+/** One record in full, in a drawer. */
+function recordDrawer(ctx, src, r) {
+  const { h, drawer } = ctx.core;
+  const [, label] = REC[r.kind] || [null, r.kind];
+  const row = (k, v) => (v || v === 0 ? [h("dt", {}, k), h("dd", {}, v)] : null);
+  drawer({
+    title: label,
+    sub: `${src.id} · ${when(r.ts)}`,
+    body: h("div", {},
+      h("pre", { class: "cx-full" }, r.text + (r.cut ? "\n…" : "")),
+      h("dl", { class: "cx-dl" },
+        row("Session", h("a", { href: ctx.href(src.type, src.id, "sessions", r.session), class: "mono" }, r.session)),
+        row("Turn", `${r.turn} (record ${r.seq})`), row("Tag", r.tag && r.tag !== "-" ? r.tag : null), row("Importance", r.importance ? r.importance.toFixed(2) : null),
+        row("Files", r.files ? h("span", { class: "mono" }, r.files) : null), row("Id", h("span", { class: "mono" }, r.id)),
+        row("Links", r.links?.length ? r.links.map((l) => `${l.label} ${l.to}`).join(", ") : null)),
+      r.context ? [h("div", { class: "cx-sub" }, "Context"), h("pre", { class: "cx-full", style: { color: "var(--text-2)", fontSize: "12px" } }, r.context)] : null),
+  });
+}
+
+/** Connect: how an agent uses the space (team), or how this store reaches Claude Code and the cluster (Claude Code). */
+function connectTab(page, ctx, src) {
+  const { h, card, sqlBlock } = ctx.core;
+  if (src.type === "space") {
+    const name = src.id;
+    const b = `${location.origin}/v1/apps/chloectx/v1/spaces/${name}`;
+    const make = makeApps(ctx, name);
+    page.append(connectAgent(ctx, name), h("div", { class: "cx-split" },
+      card({
+        title: "From any agent", sub: "over HTTP, with a key that may write the space",
+        body: h("div", {},
+          h("div", { class: "cx-hint" }, "Write down what it learned (replaces names the note it updates):"),
+          h("pre", { class: "code cx-code" }, `curl -s ${b}/notes -H "authorization: Bearer $KEY" \\\n  -d '{"kind": "decision", "text": "Refunds over 1000 EUR need a second approver.", "entities": ["refunds"]}'`),
+          h("div", { class: "cx-hint" }, "Ask for context before a task, within a budget in tokens:"),
+          h("pre", { class: "code cx-code" }, `curl -s ${b}/ask -H "authorization: Bearer $KEY" \\\n  -d '{"question": "Who approves a 700 EUR refund?", "budget": 2000}'`),
+          h("div", { class: "cx-hint" }, "The records are rows of the space's table, so SQL reads them too:"),
+          sqlBlock(`SELECT kind, text, ts FROM ctx_${name} WHERE kind IN ('decision', 'preference') AND tag != 'superseded' ORDER BY ts DESC LIMIT 20`)),
+      }),
+      handOver(ctx, src)), make.el);
+    return make.stop;
+  }
+  if (src.type === "store") {
+    page.append(h("div", { class: "cx-split" },
+      card({
+        title: "In Claude Code", sub: "already connected: this store is the project's memory",
+        body: h("div", { class: "stack", style: { gap: "8px" } },
+          h("div", { class: "cx-hint" }, "Every Claude Code session in the project records into it through ChloeCtx's hooks, and gets what bears on each prompt in its context. In a session, the chloectx MCP server's tools (memory_ask, memory_search, memory_remember, memory_forget) ask it directly, or ask in words:"),
+          copyable(ctx, "What did we decide about refund approvals? Ask your memory."),
+          h("div", { class: "cx-hint" }, "From a shell in the project's folder:"),
+          copyable(ctx, "chloectx ask \"who approves a large refund?\"\nchloectx blame app/payments/refunds.py:42\nchloectx receipts")),
+      }),
+      card({
+        title: "Share it", sub: "with the cluster, or as a capsule",
+        body: h("div", { class: "stack", style: { gap: "8px" } },
+          h("div", { class: "cx-hint" }, "Copy it into this cluster, where the Spaces page lists it as a synced project, for teammates and other machines:"),
+          copyable(ctx, `printf %s "$KEY" | chloectx sync setup --url ${location.origin} --token-stdin\nchloectx sync push`),
+          h("div", { class: "cx-hint" }, "Or cut a capsule (under Snapshots and capsules) and mount it in another agent: a read-only copy of the notes and the conversation, redacted again.")),
+      })));
+    return null;
+  }
+  page.append(card({
+    title: "Where it comes from", sub: "chloectx sync, on each machine that records the project",
+    body: h("div", { class: "stack", style: { gap: "8px" } },
+      h("div", { class: "cx-hint" }, `Each machine's ChloeCtx daemon sends what it records to this cluster every 30 seconds. The page only reads; every row of ${src.id} is in the table chloectx_memory:`),
+      sqlBlock(`SELECT session, kind, content, ts FROM chloectx_memory WHERE project = '${src.id.replace(/'/g, "''")}' AND kind IN ('decision', 'preference', 'fact') ORDER BY ts DESC LIMIT 20`)),
+  }));
+  return null;
+}
+
+/** A conversation handed over to a team space: kept as two messages, and distilled into notes when a model is set. */
+function handOver(ctx, src) {
+  const { h, card, toast } = ctx.core;
   const user = h("textarea", { class: "input", rows: 3, placeholder: "What the user said" });
   const asst = h("textarea", { class: "input", rows: 3, placeholder: "What the agent answered" });
   const send = h("button", { class: "btn" }, "Hand it over");
   const said = h("div", { class: "cx-hint" });
-  ctx.api("/v1/info").then((i) => { said.textContent = `Kept as two messages, and ${modelLine(ctx.core, i)}.`; }).catch(() => {});
+  info(ctx).then((i) => { said.textContent = `Kept as two messages, and ${modelLine(ctx.core, i)}.`; }).catch(() => {});
   send.onclick = async () => {
     if (!user.value.trim() && !asst.value.trim()) return;
     send.disabled = true;
     try {
-      const j = await ctx.api(`${sp}/exchanges`, { body: { user: user.value, assistant: asst.value } });
+      const j = await ctx.api(`/v1/spaces/${encodeURIComponent(src.id)}/exchanges`, { body: { user: user.value, assistant: asst.value } });
       user.value = ""; asst.value = "";
       toast(j.distilling ? "Kept; its notes follow in a few seconds" : "Kept as messages", "ok");
-      if (j.distilling) waitDistill(ctx, loadNotes);
     } catch (e) { toast(e.message, "bad"); }
     send.disabled = false;
   };
-  const conv = card({ title: "Hand over a conversation", sub: "a model writes down its decisions, rules and facts", body: h("div", { class: "cx-form" }, user, asst, h("div", { class: "row", style: { justifyContent: "space-between", gap: "10px" } }, said, send)) });
-
-  const make = makeApps(ctx, name);
-  root.append(connectAgent(ctx, name), h("div", { class: "cx-split" }, play, h("div", { class: "cx-stack" }, notes, conv)), make.el);
-  loadNotes();
-  setTimeout(() => q.focus(), 0);
-  return make.stop;
+  return card({ title: "Hand over a conversation", sub: "a model writes down its decisions, rules and facts", body: h("div", { class: "cx-form" }, user, asst, h("div", { class: "row", style: { justifyContent: "space-between", gap: "10px" } }, said, send)) });
 }
 
 /** A command in a code block, with a Copy button on it. */
@@ -618,65 +1195,6 @@ async function buildForm(ctx, space, idea, estimate, done) {
     } catch (e) { toast(e.message, "bad", 8000); go.disabled = false; }
   };
   load();
-}
-
-/** Waits for background distillations to end (up to a minute), then reloads. */
-async function waitDistill(ctx, then) {
-  for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
-    try {
-      const j = await ctx.api("/v1/info");
-      if (!j.distill?.running) {
-        if (j.distill?.last_error && j.distill.failed) ctx.core.toast("Distilling failed: " + j.distill.last_error, "bad", 8000);
-        then();
-        return;
-      }
-    } catch { return; }
-  }
-}
-
-function drawAnswer(ctx, out, a, space) {
-  const { h, fmt, empty } = ctx.core;
-  const items = a.items || [];
-  const used = a.tokens || 0;
-  const meter = h("div", { class: "cx-meter", title: `${fmt.n(used)} of ${fmt.n(a.budget)} tokens` },
-    items.filter((it) => it.tokens).map((it) => h("i", { style: { width: Math.max(0.4, (it.tokens / Math.max(a.budget, used)) * 100) + "%", background: (SECTION[it.section] || SECTION.note)[0] }, title: `${(SECTION[it.section] || SECTION.note)[1]}: ${fmt.n(it.tokens)} tokens` })));
-  const bySection = {};
-  for (const it of items) bySection[it.section] = (bySection[it.section] || 0) + 1;
-  const legend = h("div", { class: "cx-legend" },
-    Object.entries(bySection).map(([s, n]) => h("span", { title: (SECTION[s] || SECTION.note)[2] }, h("i", { style: { background: (SECTION[s] || SECTION.note)[0] } }), `${n} ${(SECTION[s] || SECTION.note)[1]}${n === 1 ? "" : "s"}`)),
-    h("span", {}, h("i", { style: { background: "var(--surface-3)" } }), `${fmt.n(Math.max(0, a.budget - used))} tokens left`));
-  const facts = h("div", { class: "cx-facts" },
-    h("span", {}, h("b", {}, fmt.n(used)), `of ${fmt.n(a.budget)} tokens`),
-    h("span", {}, h("b", {}, fmt.n(items.length)), items.length === 1 ? "record" : "records"),
-    h("span", {}, h("b", {}, fmt.ms(a.ms)), "to build"),
-    h("span", {}, h("b", {}, "0"), "model calls"));
-  const picks = items.length ? h("ul", { class: "cx-list" }, items.map((it) => {
-    const [color, label, why] = SECTION[it.section] || SECTION.note;
-    return h("li", {},
-      h("span", { class: "cx-sw", style: { background: color }, title: why }),
-      h("div", {},
-        h("div", { class: "cx-text" }, it.kind === "user" || it.kind === "assistant" ? h("span", { class: "muted" }, it.kind === "user" ? "User: " : "Reply: ") : null, it.text),
-        h("div", { class: "cx-why" },
-          h("span", { title: why }, label), it.kind && it.kind !== "user" && it.kind !== "assistant" ? kindBadge(ctx, it.kind) : null,
-          it.bm25 != null ? h("span", { title: "Its BM25 score for the question's words" }, `words ${it.bm25.toFixed(2)}`) : null,
-          it.cos != null ? h("span", { title: "Cosine similarity of its vector to the question's" }, `meaning ${it.cos.toFixed(2)}`) : null,
-          it.bm25 == null && it.cos == null && it.section !== "rule" ? h("span", {}, it.section === "timeline" ? "every note" : "in the space's few notes") : null,
-          it.replaced ? h("span", { class: "was" }, "shows the change: ", h("s", {}, it.replaced.replace(/^changed [0-9-]+; was: /, ""))) : null,
-          h("span", { class: "mono" }, day(it.ts)),
-          h("a", { href: "javascript:void 0", onclick: () => historyDrawer(ctx, space, it.id) }, "history"))),
-      h("span", { class: "cx-tok" }, it.tokens ? `${fmt.n(it.tokens)} tok` : ""));
-  })) : empty("search", "Nothing found", "The space has nothing that matches: the agent gets an empty context.");
-  const left = (a.left_out || []).length ? [h("div", { class: "cx-sub" }, "Left out"), h("ul", { class: "cx-list" }, a.left_out.map((r) => {
-    const [label, why] = LEFT[r.why] || [r.why, ""];
-    return h("li", { class: "plain" },
-      h("div", {}, h("div", { class: "cx-text old" }, r.text), h("div", { class: "cx-why" }, h("span", { title: why }, label + ": " + why.toLowerCase()), h("span", {}, day(r.ts)))),
-      h("span"));
-  }))] : null;
-  out.replaceChildren(h("div", { style: { marginTop: "8px" } }, meter, legend), facts,
-    h("div", { class: "cx-sub" }, "In the context"), h("div", { class: "cx-hint", style: { marginBottom: "4px" } }, "Rules first, then the notes the searches found, dated and in order, until the budget is spent; a small space fits whole."),
-    picks, h("div", {}, left),
-    h("details", { class: "cx-context" }, h("summary", {}, `The context as the agent gets it (${fmt.n(a.chars)} characters)`), h("pre", { class: "code" }, a.context || "(empty)")));
 }
 
 function noteForm(ctx, space, old, done) {
@@ -858,40 +1376,7 @@ function incidentForm(ctx, old, done, from) {
   };
 }
 
-// ---------------------------------------------------------------- Inspector: Claude Code's memory
-
-// What each kind of record is, and its colour: as `chloectx ui` shows a local store.
-const REC = {
-  prompt: ["var(--s1)", "Prompt"], answer: ["var(--s2)", "Answer"], tool_call: ["var(--line-2)", "Tool call"], tool_result: ["var(--line-2)", "Tool result"],
-  error: ["var(--crit)", "Error"], episode: ["var(--s3)", "Episode"], summary: ["var(--s3)", "Summary"], decision: ["var(--s4)", "Decision"],
-  preference: ["var(--s7)", "Rule"], fact: ["var(--s5)", "Fact"], todo: ["var(--s6)", "To do"], note: ["var(--s5)", "Note"], entity: ["var(--muted)", "Entity"],
-};
-const when = (secs) => (secs ? new Date(secs * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–");
-
-function inspectorPage(root, ctx) {
-  const { h, empty, failure, fmt, sqlBlock } = ctx.core;
-  root.append(header(ctx, "inspector", "Inspector",
-    "What Claude Code sessions remembered, as chloectx sync copies each machine's memory into this cluster: by project, session by session, with the decisions, rules and facts the distiller wrote down. It only reads."));
-  const list = h("div", { class: "cx-spaces" }, h("div", { class: "muted small" }, "Loading the projects…"));
-  root.append(list);
-  (async () => {
-    let j;
-    try { j = await ctx.api("/v1/memory"); }
-    catch (e) { list.replaceChildren(failure(e, "The memory")); return; }
-    const server = location.origin;
-    if (!j.exists || !j.projects.length) {
-      list.style.display = "block";
-      list.replaceChildren(syncSetup(ctx, j, server));
-      return;
-    }
-    list.replaceChildren(...j.projects.map((p) => h("a", { class: "card cx-space", href: ctx.href("inspector", p.project) },
-      h("div", { class: "row", style: { justifyContent: "space-between", gap: "8px" } }, h("h4", { class: "mono" }, p.project)),
-      h("p", {}, p.last ? "last recorded " + when(p.last) : ""),
-      h("div", { class: "cx-counts" }, h("span", {}, fmt.plural(p.sessions, "session")), h("span", {}, fmt.plural(p.records, "record"))))));
-    root.append(ctx.core.card({ title: "In SQL", sub: `the rows of ${j.table}`, body: sqlBlock(`SELECT project, session, kind, content, ts FROM ${j.table} WHERE kind IN ('decision', 'preference', 'fact') ORDER BY ts DESC LIMIT 20`) }));
-  })();
-  return null;
-}
+// ---------------------------------------------------------------- bringing Claude Code memory here
 
 /**
  * How to fill the Inspector: a key that may write only the memory table,
@@ -928,83 +1413,7 @@ function syncSetup(ctx, j, server) {
   });
 }
 
-function projectPage(root, ctx, project, session) {
-  const { h, empty, failure, fmt, card } = ctx.core;
-  root.append(header(ctx, "inspector", project, null, null, [h("a", { href: ctx.href("inspector") }, "Inspector"), " / ", h("span", { class: "mono" }, project)]));
-  const sessions = h("ul", { class: "cx-sess" }, h("li", { class: "muted small" }, "Loading…"));
-  const q = h("input", { class: "input", type: "search", placeholder: "Search this project's memory (BM25), and press Enter" });
-  const kinds = h("div", { class: "cx-kinds" });
-  const out = h("div", {}, h("div", { class: "muted small" }, "Loading…"));
-  const more = h("div", { style: { marginTop: "8px" } });
-  let kind = "", oldest = null;
-  const title = h("span");
-  root.append(h("div", { class: "cx-insp" },
-    card({ title: "Sessions", sub: "the latest first", body: sessions }),
-    card({ title, body: h("div", {}, h("div", { class: "cx-filter" }, q, kinds), out, more) })));
-  const base = () => `/v1/memory/records?project=${encodeURIComponent(project)}` + (session ? `&session=${encodeURIComponent(session)}` : "") + (kind ? `&kind=${kind}` : "");
-  async function records(append) {
-    const text = q.value.trim();
-    title.textContent = text ? `Best matches for “${text}”` : session ? `Session ${session.slice(0, 12)}, as recorded` : kind ? `The latest ${(REC[kind] || [, kind])[1].toLowerCase()} records` : "The latest records";
-    let j;
-    try { j = await ctx.api(base() + (text ? `&q=${encodeURIComponent(text)}` : "") + (append && oldest != null ? `&before=${oldest}` : "") + "&limit=200"); }
-    catch (e) { out.replaceChildren(failure(e, "The records")); return; }
-    const rs = j.records || [];
-    if (!append) out.replaceChildren();
-    if (!rs.length && !append) out.append(empty("search", "Nothing", text ? "No record matches." : "No record of this kind."));
-    let lastTurn = null;
-    for (const r of rs) {
-      const [color, label] = REC[r.kind] || ["var(--muted)", r.kind];
-      const tool = r.kind === "tool_call" || r.kind === "tool_result";
-      const newTurn = session && !text && lastTurn != null && r.turn !== lastTurn;
-      lastTurn = r.turn;
-      out.append(h("div", { class: "cx-rec" + (tool ? " tool" : "") + (newTurn ? " turn" : ""), onclick: () => recordDrawer(ctx, project, r) },
-        h("i", { class: "cx-sw", style: { background: color } }),
-        h("div", {}, h("div", { class: "cx-text" + (r.tag === "superseded" ? " old" : "") }, r.text),
-          h("div", { class: "cx-why" }, h("span", { class: "badge" }, label), h("span", {}, when(r.ts)), session ? h("span", {}, `turn ${r.turn}`) : h("a", { href: ctx.href("inspector", project, r.session), onclick: (e) => e.stopPropagation(), class: "mono" }, r.session.slice(0, 12)),
-            r.tag && r.tag !== "-" ? h("span", {}, r.tag) : null, r.files ? h("span", { class: "mono" }, r.files.split(/[,\n]/)[0]) : null))));
-    }
-    oldest = rs.length ? rs.reduce((m, r) => Math.min(m, r.seq), Infinity) : oldest;
-    more.replaceChildren(j.more && !text && !session ? h("button", { class: "btn sm", onclick: () => records(true) }, "Older records") : j.more ? h("div", { class: "cx-hint" }, "Showing the first 200.") : "");
-  }
-  q.onkeydown = (e) => { if (e.key === "Enter") { oldest = null; records(false); } };
-  q.onsearch = () => { if (!q.value) { oldest = null; records(false); } };
-  (async () => {
-    let j;
-    try { j = await ctx.api(`/v1/memory/sessions?project=${encodeURIComponent(project)}`); }
-    catch (e) { sessions.replaceChildren(h("li", {}, failure(e, "The sessions"))); return; }
-    const by = j.by_kind || {};
-    const chip = (k, label) => h("button", { class: "chip", "aria-pressed": String(kind === k), onclick: () => { kind = k; oldest = null; for (const c of kinds.children) c.setAttribute("aria-pressed", String(c.dataset.k === k)); records(false); }, "data-k": k }, label);
-    kinds.replaceChildren(chip("", "All"), ...Object.keys(REC).filter((k) => by[k]).map((k) => chip(k, `${REC[k][1]} ${fmt.n(by[k])}`)));
-    const ss = j.sessions || [];
-    sessions.replaceChildren(
-      h("li", {}, h("a", { href: ctx.href("inspector", project), class: session ? "" : "on" }, h("b", {}, "Every session"), h("div", { class: "cx-why" }, fmt.plural(ss.length, "session")))),
-      ...ss.map((s) => h("li", {}, h("a", { href: ctx.href("inspector", project, s.session), class: s.session === session ? "on" : "" },
-        h("span", { class: "mono" }, s.session), h("div", { class: "cx-why" }, h("span", {}, when(s.last)), h("span", {}, fmt.plural(s.turns, "turn")), h("span", {}, fmt.plural(s.records, "record")))))));
-  })();
-  records(false);
-  return null;
-}
-
-/** One record in full, in a drawer. */
-function recordDrawer(ctx, project, r) {
-  const { h, drawer } = ctx.core;
-  const [, label] = REC[r.kind] || [null, r.kind];
-  const row = (k, v) => (v || v === 0 ? [h("dt", {}, k), h("dd", {}, v)] : null);
-  drawer({
-    title: label,
-    sub: `${project} · ${when(r.ts)}`,
-    body: h("div", {},
-      h("pre", { class: "cx-full" }, r.text + (r.cut ? "\n…" : "")),
-      h("dl", { class: "cx-dl" },
-        row("Session", h("a", { href: ctx.href("inspector", project, r.session), class: "mono" }, r.session)),
-        row("Turn", `${r.turn} (record ${r.seq})`), row("Tag", r.tag && r.tag !== "-" ? r.tag : null), row("Importance", r.importance ? r.importance.toFixed(2) : null),
-        row("Files", r.files ? h("span", { class: "mono" }, r.files) : null), row("Id", h("span", { class: "mono" }, r.id)),
-        row("Links", r.links?.length ? r.links.map((l) => `${l.label} ${l.to}`).join(", ") : null)),
-      r.context ? [h("div", { class: "cx-sub" }, "Context"), h("pre", { class: "cx-full", style: { color: "var(--text-2)", fontSize: "12px" } }, r.context)] : null),
-  });
-}
-
-// ---------------------------------------------------------------- Receipts and Blame (local stores)
+// ---------------------------------------------------------------- Receipts, Blame, snapshots and capsules (a store of this machine)
 
 const STORE_KEY = "chloectx.store";
 function pickedStore() { try { return localStorage.getItem(STORE_KEY) || ""; } catch { return ""; } }
@@ -1021,78 +1430,35 @@ function decBadge(ctx, d) {
   return ctx.core.h("span", { class: "cx-dec " + cls, title: DEC_TITLE[d] || "Left out" }, d);
 }
 
-/**
- * The local store picker. Calls draw(store) with the chosen one, or shows
- * why there is none. Returns the row to put on the page.
- */
-function storeRow(ctx, wanted, onPick) {
-  const { h, empty, failure } = ctx.core;
-  const row = h("div", { class: "cx-pickrow" }, h("span", { class: "muted small" }, "Loading this machine's stores…"));
-  (async () => {
-    let j;
-    try { j = await ctx.api("/v1/local"); }
-    catch (e) {
-      row.replaceChildren(e.status === 404
-        ? empty("lock", "No local stores here", "Receipts and Blame read the Claude Code stores of the machine chloectx app runs on. Start it with --local-stores (or CHLOECTX_APP_LOCAL=1) there; the stores are transcripts, so only where this command center's users may read them.")
-        : failure(e, "The local stores"));
-      row.style.display = "block";
-      onPick(null);
-      return;
-    }
-    const ss = (j.stores || []).sort((a, b) => (b.modified || 0) - (a.modified || 0));
-    if (!ss.length) {
-      row.replaceChildren(empty("layers", "No ChloeCtx store yet", `Nothing under ${j.home}/projects: install ChloeCtx and run a Claude Code session.`));
-      row.style.display = "block";
-      onPick(null);
-      return;
-    }
-    const id = ss.some((s) => s.id === wanted) ? wanted : ss.some((s) => s.id === pickedStore()) ? pickedStore() : ss[0].id;
-    const sel = h("select", { class: "input", "aria-label": "Store" }, ss.map((s) => h("option", { value: s.id, selected: s.id === id }, `${s.project || s.id}${s.running ? "" : " (daemon stopped)"}`)));
-    sel.onchange = () => { pickStore(sel.value); onPick(sel.value, true); };
-    row.replaceChildren(h("span", {}, "Project"), sel, h("span", { class: "muted" }, "Reading a stopped store starts its daemon."));
-    pickStore(id);
-    onPick(id, false);
-  })();
-  return row;
-}
+const SOURCE_LABEL = { prompt: "Prompt", briefing: "Session start", compact: "After a compaction", search: "memory_search", ask: "memory_ask" };
 
-function receiptsPage(root, ctx, store, id) {
-  if (store && id) return receiptPage(root, ctx, store, id);
+function receiptsTab(page, ctx, src) {
   const { h, card, table, failure, empty, fmt } = ctx.core;
-  root.append(header(ctx, "receipts", "Receipts",
-    "Every time memory put records in a Claude Code session's context (a prompt's recall, the briefing, the recall after a compaction, a memory_search) it wrote a receipt: the store's commit it read, each candidate's scores, tokens and why it was taken or left out, and the text the agent was shown. Open one to replay it on the snapshot kept at that commit, and on today's store."));
+  pickStore(src.id);
+  const st = `/v1/local/${encodeURIComponent(src.id)}`;
   const session = h("input", { class: "input", placeholder: "session id (optional)", style: { maxWidth: "220px" } });
-  const listBody = h("div");
-  const snapBody = h("div");
-  let current = null;
+  const listBody = h("div", {}, h("div", { class: "muted small" }, "Loading…"));
   const load = async () => {
-    if (!current) { listBody.replaceChildren(); snapBody.replaceChildren(); return; }
-    listBody.replaceChildren(h("div", { class: "muted small" }, "Loading…"));
     let j;
-    try { j = await ctx.api(`/v1/local/${encodeURIComponent(current)}/receipts?limit=100&session=${encodeURIComponent(session.value.trim())}`); }
+    try { j = await ctx.api(`${st}/receipts?limit=200&session=${encodeURIComponent(session.value.trim())}`); }
     catch (e) { listBody.replaceChildren(failure(e, "The receipts")); return; }
     const rs = j.receipts || [];
-    if (!rs.length) { listBody.replaceChildren(empty("note", "No receipts yet", "A receipt is written with each recall once ChloeCtx 0.3 runs; start a new Claude Code session in the project.")); }
-    else {
-      listBody.replaceChildren(table([
-        { key: "ts", label: "When", num: true, render: (r) => when(r.ts) },
-        { key: "session", label: "Session", render: (r) => h("span", { class: "mono" }, short(r.session)) },
-        { key: "turn", label: "Turn", num: true },
-        { key: "source", label: "Recall" },
-        { key: "decision", label: "Gate", render: (r) => r.decision || "–" },
-        { key: "shown", label: "Shown", num: true, sort: (r) => r.shown.length, render: (r) => fmt.n(r.shown.length) },
-        { key: "tokens", label: "Tokens", num: true, render: (r) => fmt.n(r.tokens) },
-        { key: "txn", label: "Commit", num: true },
-      ], { rows: rs, sortKey: "ts", desc: true, compact: true, onRow: (r) => { location.hash = ctx.href("receipts", current, r.id); } }));
-    }
-    drawSnapshots(ctx, snapBody, current);
+    if (!rs.length) { listBody.replaceChildren(empty("note", "No receipts yet", "A receipt is written with each recall once ChloeCtx 0.3 runs; start a new Claude Code session in the project.")); return; }
+    listBody.replaceChildren(table([
+      { key: "ts", label: "When", num: true, render: (r) => when(r.ts) },
+      { key: "source", label: "Recall", render: (r) => SOURCE_LABEL[r.source] || r.source },
+      { key: "query", label: "For", render: (r) => h("div", { class: "cx-cell" }, r.query || r.inputs?.query || (r.source === "briefing" ? "the session's briefing" : "–")) },
+      { key: "shown", label: "Shown", num: true, sort: (r) => r.shown.length, render: (r) => fmt.n(r.shown.length) },
+      { key: "tokens", label: "Tokens", num: true, render: (r) => fmt.n(r.tokens) },
+      { key: "decision", label: "Gate", render: (r) => r.decision || "–" },
+      { key: "session", label: "Session", render: (r) => h("span", { class: "mono" }, `${short(r.session)} · ${r.turn}`) },
+    ], { rows: rs, sortKey: "ts", desc: true, compact: true, onRow: (r) => { location.hash = ctx.href(src.type, src.id, "receipts", r.id); } }));
   };
   session.onchange = load;
-  const picker = storeRow(ctx, store, (s, changed) => { current = s; if (changed) location.hash = ctx.href("receipts", s); else load(); });
-  root.append(picker,
-    card({ title: "Receipts", sub: "newest first; open one to replay it", tools: session, body: listBody }),
-    h("div", { style: { height: "16px" } }),
-    card({ title: "Kept snapshots", sub: "copies of the store that receipts replay on", body: snapBody }));
+  page.append(h("p", { class: "cx-lede", style: { margin: "0 0 12px" } },
+    "Each time memory put records into a Claude Code session's context (a prompt's recall, the briefing at the start, the recall after a compaction, a memory_search), it wrote a receipt: the store's commit it read, each candidate's scores and tokens, why it was taken or left out, and the text the agent was shown. Open one to replay it on the snapshot kept at that commit, and on today's store."),
+    card({ title: "Receipts", sub: "newest first; open one to replay it", tools: session, body: listBody }));
+  load();
   return null;
 }
 
@@ -1115,7 +1481,7 @@ async function drawSnapshots(ctx, el, store) {
   const auto = ks.filter((k) => k.auto).length;
   el.replaceChildren(
     h("div", { class: "cx-hint", style: { marginBottom: "8px" } },
-      `${fmt.plural(auto, "automatic snapshot")}, kept after recalls that showed records and pruned by age; named ones stay until dropped. Each hard-links the files of the one before it, so it costs about what changed.`),
+      `${fmt.plural(auto, "automatic snapshot")}, kept after recalls that showed records (at most one an hour) and pruned by age; named ones stay until dropped. Each hard-links the files of the one before it, so it costs about what changed.`),
     h("div", { class: "cx-blameq", style: { marginBottom: "10px" } }, name, keep),
     ks.length ? table([
       { key: "name", label: "Name", render: (k) => h("span", { class: "mono" }, k.name) },
@@ -1131,13 +1497,62 @@ async function drawSnapshots(ctx, el, store) {
     ], { rows: ks, sortKey: "at", desc: true, compact: true, maxHeight: "320px" }) : h("div", { class: "muted small" }, "None kept yet."));
 }
 
+/** The capsules cut from a store, and a form to cut one. */
+async function drawCapsules(ctx, el, store) {
+  const { h, failure, toast, fmt, empty } = ctx.core;
+  const st = `/v1/local/${encodeURIComponent(store)}`;
+  el.replaceChildren(h("div", { class: "muted small" }, "Loading…"));
+  let j;
+  try { j = await ctx.api(`${st}/capsules`); }
+  catch (e) { el.replaceChildren(failure(e, "The capsules")); return; }
+  const title = h("input", { class: "input", placeholder: "Refunds and payments, for the support agent", style: { flex: "1 1 260px" } });
+  const PACK = [["decision", "Decisions"], ["preference", "Rules"], ["fact", "Facts"], ["todo", "To-dos"], ["note", "Notes"], ["prompt", "Prompts"], ["answer", "Answers"], ["episode", "Episodes"]];
+  const picked = new Set(["decision", "preference", "fact", "todo", "note", "prompt", "answer"]);
+  const kinds = h("div", { class: "cx-kinds" }, PACK.map(([k, l]) => {
+    const box = h("input", { type: "checkbox", checked: picked.has(k) });
+    box.onchange = () => { if (box.checked) picked.add(k); else picked.delete(k); };
+    return h("label", {}, box, l);
+  }));
+  const cut = h("button", { class: "btn sm primary" }, "Cut a capsule");
+  cut.onclick = async () => {
+    cut.disabled = true;
+    try {
+      const m = await ctx.api(`${st}/capsules`, { body: { title: title.value.trim(), kinds: [...picked] }, timeout: 600000 });
+      toast(`Cut: ${fmt.plural(m.records, "record")}, ${fmt.bytes(m.bytes)}`, "good");
+      drawCapsules(ctx, el, store);
+    } catch (e) { toast(e.message, "bad", 8000); cut.disabled = false; }
+  };
+  const cs = j.capsules || [];
+  el.replaceChildren(
+    h("div", { class: "cx-hint", style: { marginBottom: "8px" } }, "A capsule is a read-only ChloeDB file of the records you pick (no raw tool output by default), redacted again, with a manifest. Another agent mounts it as an MCP server with capsule_ask, capsule_search, capsule_timeline and capsule_sql."),
+    h("div", { class: "cx-form", style: { marginBottom: "12px" } }, h("div", { class: "cx-blameq" }, title, cut), kinds),
+    cs.length ? h("div", { class: "cx-caps" }, cs.map((c) => h("div", { class: "cx-cap" },
+      h("div", { class: "cx-sphd" }, h("b", {}, c.title), h("span", { class: "muted small" }, when(c.created_ts))),
+      h("div", { class: "cx-why" }, h("span", {}, fmt.plural(c.records, "record")), h("span", {}, fmt.bytes(c.bytes)), c.redacted ? h("span", {}, `${fmt.n(c.redacted)} redacted`) : null,
+        ...Object.entries(c.by_kind || {}).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, n]) => h("span", {}, `${fmt.n(n)} ${(REC[k] || [, k])[1].toLowerCase()}`))),
+      c.topics?.length ? h("div", { class: "cx-why" }, h("span", {}, "about: " + c.topics.slice(0, 8).join(", "))) : null,
+      copyable(ctx, `claude mcp add ${(c.title || "capsule").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "capsule"} -- chloectx mount ${c.dir}`)))) : empty("box", "No capsule cut yet", "Cut one above: it takes a few seconds."));
+}
+
+/** Snapshots and capsules: what receipts replay on, and what is shared from the store. */
+function keepTab(page, ctx, src) {
+  const { h, card } = ctx.core;
+  const snaps = h("div"), caps = h("div");
+  page.append(h("div", { class: "cx-split" },
+    card({ title: "Kept snapshots", sub: "copies of the store that receipts replay on", body: snaps }),
+    card({ title: "Capsules", sub: "cut from this store, to mount in another agent", body: caps })));
+  drawSnapshots(ctx, snaps, src.id);
+  drawCapsules(ctx, caps, src.id);
+  return null;
+}
+
 function rowsTable(ctx, rows, now, texts) {
   const { h, table, fmt } = ctx.core;
   const max = Math.max(1e-9, ...rows.map((r) => r.score || 0));
   return table([
     { key: "rank", label: "#", num: true, render: (r) => (r.rank === 0 ? "k" : r.rank) },
     { key: "kind", label: "Kind" },
-    { key: "id", label: "Record", render: (r) => h("div", { style: { minWidth: "220px" } }, h("span", { class: "mono" }, r.id), texts?.[r.id] ? h("div", { class: "muted small", style: { whiteSpace: "normal", lineHeight: "1.35" } }, texts[r.id]) : null) },
+    { key: "id", label: "Record", render: (r) => h("div", { style: { minWidth: "220px" } }, texts?.[r.id] ? h("div", { class: "cx-cell" }, texts[r.id]) : null, h("span", { class: "mono muted small" }, r.id)) },
     { key: "score", label: "Score", num: true, render: (r) => h("span", {}, (r.score || 0).toFixed(3), h("span", { class: "cx-bar" }, h("i", { style: { width: `${Math.round(100 * (r.score || 0) / max)}%` } }))) },
     { key: "bm25", label: "BM25", num: true, render: (r) => (r.bm25 == null ? "–" : r.bm25.toFixed(2)) },
     { key: "cos", label: "Cosine", num: true, render: (r) => (r.cos == null ? "–" : r.cos.toFixed(3)) },
@@ -1163,11 +1578,11 @@ function replayCard(ctx, replays) {
   });
 }
 
-function receiptPage(root, ctx, store, id) {
+function receiptPage(page, ctx, src, id) {
   const { h, card, failure } = ctx.core;
-  root.append(header(ctx, "receipts", "Receipt", null, null, [h("a", { href: ctx.href("receipts", store) }, "Receipts"), " / ", h("span", { class: "mono" }, id)]));
+  const store = src.id;
   const body = h("div", {}, h("div", { class: "muted small" }, "Loading the receipt and replaying it…"));
-  root.append(body);
+  page.append(h("div", { class: "cx-crumbs", style: { marginBottom: "10px" } }, h("a", { href: ctx.href(src.type, src.id, "receipts") }, "Receipts"), " / ", h("span", { class: "mono" }, id)), body);
   (async () => {
     let j;
     try { j = await ctx.api(`/v1/local/${encodeURIComponent(store)}/receipts/${encodeURIComponent(id)}`, { timeout: 120000 }); }
@@ -1175,7 +1590,7 @@ function receiptPage(root, ctx, store, id) {
     const r = j.receipt;
     const ev = r.evidence || {};
     const facts = card({
-      title: `${r.source} recall`, sub: `${when(r.ts)} · session ${short(r.session)} turn ${r.turn}`,
+      title: `${SOURCE_LABEL[r.source] || r.source} recall`, sub: [`${when(r.ts)} · `, h("a", { href: ctx.href(src.type, src.id, "sessions", r.session) }, `session ${short(r.session)}`), ` turn ${r.turn}`],
       body: h("dl", { class: "cx-kv" },
         h("dt", {}, "Query"), h("dd", {}, r.inputs?.query || "–"),
         h("dt", {}, "Store"), h("dd", {}, `commit ${r.snapshot.txn}${r.snapshot.seq_no != null ? ` (seq_no ${r.snapshot.seq_no})` : ""} · ${r.snapshot.records} records · embedder ${r.embedder}`),
@@ -1192,41 +1607,45 @@ function receiptPage(root, ctx, store, id) {
   return null;
 }
 
-function blamePage(root, ctx, store, target) {
+function blameTab(page, ctx, src, target) {
   const { h, card, failure, empty } = ctx.core;
-  root.append(header(ctx, "blame", "Blame",
-    "Name a line of code (path:line, relative to the project) or a file. Blame finds the recorded edit that wrote it, the prompt and tool calls behind it, and what memory had put in the agent's context before, each record checked against the store today, with the recall replayed."));
-  const input = h("input", { class: "input", placeholder: "src/payments/retry.rs:88", value: target || "", spellcheck: "false", autocomplete: "off" });
+  pickStore(src.id);
+  const input = h("input", { class: "input", placeholder: "app/payments/refunds.py:42", value: target || "", spellcheck: "false", autocomplete: "off" });
   const go = h("button", { class: "btn primary" }, "Blame");
   const out = h("div");
-  let current = null;
+  const files = h("div", { class: "cx-drafts", style: { marginTop: "8px" } });
   const run = async () => {
     const t = input.value.trim();
-    if (!current) return;
     if (!t) { input.focus(); return; }
-    if (t !== (target || "")) { location.hash = ctx.href("blame", current, t); return; }
+    if (t !== (target || "")) { location.hash = ctx.href(src.type, src.id, "blame", t); return; }
     go.disabled = true;
     out.replaceChildren(h("div", { class: "muted small" }, "Looking for the edit and replaying its recall…"));
     let b;
-    try { b = await ctx.api(`/v1/local/${encodeURIComponent(current)}/blame?target=${encodeURIComponent(t)}`, { timeout: 120000 }); }
+    try { b = await ctx.api(`/v1/local/${encodeURIComponent(src.id)}/blame?target=${encodeURIComponent(t)}`, { timeout: 120000 }); }
     catch (e) { out.replaceChildren(failure(e, "Blame")); go.disabled = false; return; }
     go.disabled = false;
-    drawBlame(ctx, out, b, current);
+    drawBlame(ctx, out, b, src);
   };
   go.onclick = run;
   input.onkeydown = (e) => { if (e.key === "Enter") run(); };
-  const picker = storeRow(ctx, store, (s, changed) => {
-    current = s;
-    if (!s) return;
-    if (changed) { location.hash = ctx.href("blame", s, ...(target ? [target] : [])); return; }
-    if (target) run();
-    else out.replaceChildren(empty("search", "Name a line", "For example src/lib.rs:120. Lines written outside a recorded Claude Code session have no edit to find."));
-  });
-  root.append(picker, card({ body: h("div", { class: "cx-blameq" }, input, go) }), h("div", { style: { height: "16px" } }), out);
+  page.append(h("p", { class: "cx-lede", style: { margin: "0 0 12px" } }, "Name a line of code (path:line, relative to the project) or a file. Blame finds the recorded edit that wrote it, the prompt and tool calls behind it, and what memory had put in the agent's context before, each record checked against the store today, with the recall replayed."),
+    card({ body: h("div", {}, h("div", { class: "cx-blameq" }, input, go), files) }), h("div", { style: { height: "16px" } }), out);
+  // The files sessions edited most, to start from.
+  src.records("kind=tool_call&limit=500").then((j) => {
+    const n = new Map();
+    for (const r of j.records || []) if (/^(Edit|Write|MultiEdit) /.test(r.text)) { const f = r.text.split(/[ :\n]/)[1]; if (f) n.set(f, (n.get(f) || 0) + 1); }
+    const top = [...n.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    if (top.length) files.replaceChildren(h("span", { class: "muted small" }, "Edited most:"), ...top.map(([f]) => {
+      const rel = src.type === "store" ? f.replace(/^.*?\/(?=(app|src|tests|docs|lib|migrations)\/)/, "") : f;
+      return h("button", { class: "chip", onclick: () => { location.hash = ctx.href(src.type, src.id, "blame", rel); } }, rel);
+    }));
+  }).catch(() => {});
+  if (target) run();
+  else out.replaceChildren(empty("search", "Name a line", "For example app/payments/refunds.py:42, or pick a file above. Lines written outside a recorded Claude Code session have no edit to find."));
   return null;
 }
 
-function drawBlame(ctx, out, b, store) {
+function drawBlame(ctx, out, b, src) {
   const { h, card, empty } = ctx.core;
   const g = b.git;
   const head = card({
@@ -1234,7 +1653,7 @@ function drawBlame(ctx, out, b, store) {
     body: h("dl", { class: "cx-kv" },
       b.line_text != null ? [h("dt", {}, "Line"), h("dd", {}, h("code", {}, b.line_text))] : null,
       g ? [h("dt", {}, "Commit"), h("dd", {}, g.uncommitted ? "not committed yet" : `${(g.commit || "").slice(0, 10)} · ${g.summary || ""}${g.time ? ` · ${when(g.time)}` : ""}`)] : null,
-      b.edit ? [h("dt", {}, "Edit"), h("dd", {}, `${when(b.edit.ts)} · session ${short(b.edit.session)} turn ${b.edit.turn} · `, h("span", { class: "mono" }, b.edit.id))] : null,
+      b.edit ? [h("dt", {}, "Edit"), h("dd", {}, `${when(b.edit.ts)} · `, h("a", { href: ctx.href(src.type, src.id, "sessions", b.edit.session) }, `session ${short(b.edit.session)}`), ` turn ${b.edit.turn} · `, h("span", { class: "mono" }, b.edit.id))] : null,
       b.prompt ? [h("dt", {}, "Prompt"), h("dd", {}, b.prompt.text)] : null,
       b.calls?.length ? [h("dt", {}, "Before it"), h("dd", {}, h("ul", { class: "cx-causes" }, b.calls.slice(-8).map((c) => h("li", {}, h("code", {}, c.text.split("\n")[0].slice(0, 160))))))] : null,
       b.notes?.length ? [h("dt", {}, "From the turn"), h("dd", {}, h("ul", { class: "cx-causes" }, b.notes.map((n) => h("li", {}, kindBadge(ctx, n.kind), " ", n.text))))] : null),
@@ -1249,8 +1668,8 @@ function drawBlame(ctx, out, b, store) {
     const now = Object.fromEntries(rc.rows.map((x) => [x.row.id, x.now]));
     parts.push(card({
       title: rc.turn === b.edit.turn ? "Recalled in the edit's turn" : `Recalled earlier in the session (turn ${rc.turn})`,
-      sub: `${rc.source} · receipt ${rc.receipt}`,
-      tools: h("a", { class: "btn sm", href: ctx.href("receipts", store, rc.receipt) }, "Open the receipt"),
+      sub: `${SOURCE_LABEL[rc.source] || rc.source} · receipt ${rc.receipt}`,
+      tools: h("a", { class: "btn sm", href: ctx.href(src.type, src.id, "receipts", rc.receipt) }, "Open the receipt"),
       flush: true,
       body: rowsTable(ctx, rc.rows.map((x) => x.row), now, Object.fromEntries(rc.rows.map((x) => [x.row.id, x.text]))),
     }));

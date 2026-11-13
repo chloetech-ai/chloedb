@@ -80,7 +80,16 @@ pub fn err(m: impl Into<String>) -> Error {
     Error(m.into())
 }
 
-/// Seconds since the Unix epoch.
+/// Seconds since the Unix epoch, moved by `CHLOECTX_CLOCK_OFFSET` seconds
+/// when it is set: for a recording replayed as though it happened earlier
+/// (`demo/seed.py` plays three weeks of sessions in a few minutes, each
+/// with its own daemon and offset). Read once per process.
 pub fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0) + clock_offset()
+}
+
+/// `CHLOECTX_CLOCK_OFFSET`, in seconds (0 when unset or not a number).
+pub fn clock_offset() -> i64 {
+    static OFFSET: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| std::env::var("CHLOECTX_CLOCK_OFFSET").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0))
 }
