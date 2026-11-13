@@ -981,6 +981,9 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // grades, and applying a proposal replaces a rank profile.
         "/v1/relevance/autopilot" | "/v1/relevance/proposals/:id/apply" | "/v1/relevance/proposals/:id/dismiss" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
+        // Mining reads a table's words and compares them pairwise, and
+        // proposes a change to ranking: an admin's, as the list it feeds.
+        "/v1/synonyms/mine" => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
         "/v1/alerts/routes" | "/v1/alerts/routes/:name/test" => Scope::Admin,
         // alerts2: coordinators exchange their alerts as admins.
@@ -3074,11 +3077,11 @@ async fn mine_synonyms(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let d = Options::default();
     let n = |k: &str, d: usize, max: usize| b.get(k).and_then(Json::as_u64).map_or(d, |v| (v as usize).clamp(1, max));
     let options = Options {
-        max_rows: n("max_rows", d.max_rows, 1_000_000),
-        max_words: n("max_words", d.max_words, 20_000),
+        max_rows: n("max_rows", d.max_rows, chloedb::query::mine::MAX_ROWS),
+        max_words: n("max_words", d.max_words, chloedb::query::mine::MAX_WORDS),
         min_df: n("min_df", d.min_df, 1_000_000),
-        min_cos: b.get("min_cos").and_then(Json::as_f64).map_or(d.min_cos, |c| c.clamp(-1.0, 1.0) as f32),
-        per_word: n("per_word", d.per_word, 100),
+        min_cos: b.get("min_cos").and_then(Json::as_f64).map_or(d.min_cos, |c| c.clamp(chloedb::query::mine::MIN_COS as f64, 1.0) as f32),
+        per_word: n("per_word", d.per_word, chloedb::query::mine::MAX_PER_WORD),
         window: b.get("window").and_then(Json::as_i64).map_or(d.window, |w| w.max(0)),
         min_support: n("min_support", d.min_support, 1_000_000),
     };
@@ -6137,6 +6140,17 @@ mod tests {
         let mut seen = steps();
         hide_hosts(&limited, &mut seen);
         assert_eq!(seen[0].detail, "shard 0 query");
+    }
+
+    /// Mining synonyms is an admin's; the routes that only read a search's
+    /// understanding stay a reader's.
+    #[test]
+    fn mining_synonyms_takes_an_admin_key() {
+        let post = axum::http::Method::POST;
+        assert_eq!(route_scope(&post, "/v1/synonyms/mine"), Scope::Admin);
+        for r in ["/v1/correct", "/v1/understand", "/v1/classify", "/v1/derive/preview"] {
+            assert_eq!(route_scope(&post, r), Scope::Read, "{r}");
+        }
     }
 
     /// A read by key's answer, written directly, is the JSON the tree
