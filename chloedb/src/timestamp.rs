@@ -371,6 +371,109 @@ impl Cursor<'_> {
     }
 }
 
+/// A length of time, as SQL's `INTERVAL '15 minutes'` writes it: months
+/// (a month or a year has no fixed length) and microseconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Interval {
+    pub months: i64,
+    pub micros: i64,
+}
+
+impl Interval {
+    /// The interval `text` writes: numbers each followed by a unit
+    /// (`'15 minutes'`, `'1 day 12 hours'`, `'-2 weeks'`, `'90s'`), or a
+    /// number in the unit `leading` names (`INTERVAL '15' MINUTE`). Units
+    /// are microseconds, milliseconds, seconds, minutes, hours, days,
+    /// weeks, months and years, singular or plural, and their short forms
+    /// (`us`, `ms`, `s`, `sec`, `min`, `h`, `hr`, `d`, `w`, `mon`, `y`).
+    pub fn parse(text: &str, leading: Option<&str>) -> Result<Interval, String> {
+        let usage = "an interval is numbers each with a unit, such as '15 minutes', '1 day 12 hours' or '90 seconds' (units: microseconds, milliseconds, seconds, minutes, hours, days, weeks, months, years)";
+        let mut words: Vec<String> = Vec::new();
+        // `90s`, `15min`: a number joined to its unit.
+        for w in text.split_whitespace() {
+            let w = w.trim_end_matches(',');
+            match w.find(|c: char| c.is_ascii_alphabetic()) {
+                Some(i) if i > 0 && w[..i].parse::<f64>().is_ok() => {
+                    words.push(w[..i].to_string());
+                    words.push(w[i..].to_string());
+                }
+                _ => words.push(w.to_string()),
+            }
+        }
+        if let Some(unit) = leading {
+            if words.len() != 1 {
+                return Err(format!("INTERVAL '{text}' {unit}: the text is one number of {unit}s"));
+            }
+            words.push(unit.to_string());
+        }
+        if words.is_empty() || words.len() % 2 != 0 {
+            return Err(format!("INTERVAL '{text}': {usage}"));
+        }
+        let mut out = Interval::default();
+        for pair in words.chunks(2) {
+            let n: f64 = pair[0].parse().map_err(|_| format!("INTERVAL '{text}': {} is not a number; {usage}", pair[0]))?;
+            if !n.is_finite() {
+                return Err(format!("INTERVAL '{text}': {usage}"));
+            }
+            let unit = pair[1].to_ascii_lowercase();
+            let micros_per = match unit.as_str() {
+                "microsecond" | "microseconds" | "us" | "usec" | "usecs" => 1.0,
+                "millisecond" | "milliseconds" | "ms" | "msec" | "msecs" => 1e3,
+                "second" | "seconds" | "s" | "sec" | "secs" => 1e6,
+                "minute" | "minutes" | "m" | "min" | "mins" => 6e7,
+                "hour" | "hours" | "h" | "hr" | "hrs" => 3.6e9,
+                "day" | "days" | "d" => MICROS_PER_DAY as f64,
+                "week" | "weeks" | "w" => 7.0 * MICROS_PER_DAY as f64,
+                "month" | "months" | "mon" | "mons" => {
+                    out.months = out.months.checked_add(whole(n, text)?).ok_or_else(|| format!("INTERVAL '{text}' is too long"))?;
+                    continue;
+                }
+                "year" | "years" | "y" | "yr" | "yrs" => {
+                    out.months = whole(n, text)?.checked_mul(12).and_then(|m| out.months.checked_add(m)).ok_or_else(|| format!("INTERVAL '{text}' is too long"))?;
+                    continue;
+                }
+                u => return Err(format!("INTERVAL '{text}': {u} is not a unit; {usage}")),
+            };
+            let us = (n * micros_per).round();
+            if us.abs() > 9.0e18 {
+                return Err(format!("INTERVAL '{text}' is too long"));
+            }
+            out.micros = out.micros.checked_add(us as i64).ok_or_else(|| format!("INTERVAL '{text}' is too long"))?;
+        }
+        Ok(out)
+    }
+
+    pub fn negated(self) -> Interval {
+        Interval { months: -self.months, micros: -self.micros }
+    }
+
+    /// `micros` plus this interval: its months on the calendar first (a
+    /// day past the new month's end is its last day, as in PostgreSQL:
+    /// January 31 plus a month is February 28 or 29), then its fixed time.
+    /// `None` outside the times a TIMESTAMP holds.
+    pub fn add_to(self, micros: i64) -> Option<i64> {
+        let mut t = micros;
+        if self.months != 0 {
+            let days = t.div_euclid(MICROS_PER_DAY);
+            let within = t.rem_euclid(MICROS_PER_DAY);
+            let (y, m, d) = civil_from_days(days);
+            let total = (y.checked_mul(12)?).checked_add(m - 1)?.checked_add(self.months)?;
+            let (ny, nm) = (total.div_euclid(12), total.rem_euclid(12) + 1);
+            let nd = d.min(days_in_month(ny, nm));
+            t = days_from_civil(ny, nm, nd).checked_mul(MICROS_PER_DAY)?.checked_add(within)?;
+        }
+        t.checked_add(self.micros)
+    }
+}
+
+/// A whole number of months or years.
+fn whole(n: f64, text: &str) -> Result<i64, String> {
+    match n.fract() == 0.0 && n.abs() < 1e12 {
+        true => Ok(n as i64),
+        false => Err(format!("INTERVAL '{text}': months and years are whole numbers (a month has no fixed length); write days or hours for a part")),
+    }
+}
+
 fn is_leap(y: i64) -> bool {
     y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
 }

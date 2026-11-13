@@ -140,7 +140,7 @@ pub fn key_value(schema: &Schema, pk: usize, key: &Value) -> Result<Value> {
     match (&f.ty, key) {
         (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Ok(key.clone()),
         (FieldType::Int, Value::Str(s)) => s.trim().parse::<i64>().map(Value::Int).map_err(|_| Error::Query(format!("{s:?} is not a key of {}: its key {} is an INT", schema.table, f.name))),
-        _ => Err(Error::Query(format!("{key:?} is not a key of {}: its key {} is {}", schema.table, f.name, if f.ty == FieldType::Int { "an INT" } else { "a KEYWORD" }))),
+        _ => Err(Error::Query(format!("{} is not a key of {}: its key {} is {}", crate::query::hint::sql_value(key), schema.table, f.name, if f.ty == FieldType::Int { "an INT" } else { "a KEYWORD" }))),
     }
 }
 
@@ -1946,7 +1946,7 @@ impl Db {
                         let pk = pk()?;
                         let mut seen = HashSet::new();
                         if let Some(d) = docs.iter().find(|d| !seen.insert(Part::of(&d[pk]))) {
-                            return Err(Error::Query(format!("ON CONFLICT DO UPDATE: key {:?} comes twice; a statement updates a row once", d[pk])));
+                            return Err(Error::Query(format!("ON CONFLICT DO UPDATE: key {} comes twice; a statement updates a row once", crate::query::hint::sql_value(&d[pk]))));
                         }
                         let (live, mut new): (Vec<Document>, Vec<Document>) = docs.into_iter().partition(|d| snap.find(&d[pk]).is_some());
                         derive_known(&derivers, schema, &mut new, &p.derived, &files)?;

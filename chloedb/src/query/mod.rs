@@ -43,6 +43,7 @@ pub mod parse;
 pub mod paths;
 pub mod plan;
 pub mod profile;
+pub(crate) mod rewrite;
 pub mod pool;
 pub mod rank;
 pub mod sequence;

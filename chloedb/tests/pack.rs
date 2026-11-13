@@ -181,3 +181,31 @@ fn dedupe_on_a_vector_field_compares_meanings() {
     let p = db.pack("SELECT id, body FROM notes ORDER BY rank DESC PACK 500 TOKENS DEDUPE 0.9", &Params::new()).unwrap();
     assert_eq!(p.rs.rows.len(), 3);
 }
+
+#[test]
+fn a_row_of_several_text_columns_is_not_skipped_while_the_budget_has_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let seed = Schema::new("seed", vec![Field::new("id", FieldType::Keyword)], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("t.strata"), seed, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+    run(&db, "CREATE TABLE items (id INT PRIMARY KEY, title TEXT, description TEXT, rank INT)");
+    // A title of a few tokens and a description of about thirty: past a
+    // quarter of the budget (30 tokens of 120), not past what is left.
+    let values: Vec<String> = (0..4)
+        .map(|i| format!("({i}, 'trail shoe model {i}', '{}', {})", "go ".repeat(28).trim_end(), 10 - i))
+        .collect();
+    run(&db, &format!("INSERT INTO items (id, title, description, rank) VALUES {}", values.join(", ")));
+    let p = db.pack("SELECT id, title, description FROM items ORDER BY rank DESC PACK 120 TOKENS WITH RECEIPT", &Params::new()).unwrap();
+    let summary: Vec<(i64, String, usize, usize)> = p.receipt.rows.iter().map(|d| (d.key.as_i64().unwrap(), d.decision.clone(), d.tokens, d.used)).collect();
+    let full = p.receipt.rows[0].full_tokens;
+    assert!(full > 120 / 4 && full < 60, "{summary:?}");
+    // Each row is taken whole, or excerpted, while an excerpt fits.
+    for d in &p.receipt.rows {
+        let left_before = 120 - (d.used - d.tokens);
+        if left_before >= full {
+            assert!(d.taken, "{summary:?}");
+        }
+        assert!(d.decision != "skip: over budget" || left_before < 32 + 8, "{summary:?}");
+    }
+    assert!(p.receipt.used <= 120);
+    assert!(p.receipt.rows.iter().filter(|d| d.taken).count() >= 2, "{summary:?}");
+}

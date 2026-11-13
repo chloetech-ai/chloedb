@@ -2855,9 +2855,10 @@ impl Database {
             conform(schema, &mut doc)?;
             self.fill_sids(&t, &mut doc, &mut ties, &[])?;
             if let Some(pk) = pk {
-                let dup = !seen.insert(Key::of(&doc[pk]).expect("validated key"))
-                    || (check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some());
-                if dup {
+                if !seen.insert(Key::of(&doc[pk]).expect("validated key")) {
+                    return Err(Error::Schema(crate::query::hint::repeated_key(schema, &doc[pk])));
+                }
+                if check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some() {
                     return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
                 }
             }
@@ -2971,7 +2972,7 @@ impl Database {
                 for d in 0..file.n_docs() as DocId {
                     let k = keys.key(d);
                     if !seen.insert(Key::of(&k).ok_or_else(|| corrupt("bad key"))?) || st.find_live(0, &k).is_some() {
-                        return Err(Error::Schema(format!("{}: duplicate primary key {k:?}", path.display())));
+                        return Err(Error::Schema(format!("{}: duplicate primary key {}", path.display(), crate::query::hint::sql_value(&k))));
                     }
                 }
             }
@@ -4889,7 +4890,7 @@ impl TableRef {
         let pk = self.primary_key()?;
         match (&self.schema.fields[pk].ty, key) {
             (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Ok(Key::of(key).unwrap()),
-            _ => Err(Error::Schema(format!("{key:?} is not a value of primary key {}", self.schema.fields[pk].name))),
+            _ => Err(Error::Schema(format!("{} is not a value of primary key {}", crate::query::hint::sql_value(key), self.schema.fields[pk].name))),
         }
     }
 }
@@ -5096,7 +5097,12 @@ impl<'a> WriteTxn<'a> {
             let key = Key::of(&doc[pk]).expect("validated key");
             self.drop_expired(t, &key, &doc[pk])?;
             if self.is_live(t, &key, &doc[pk]) {
-                return Err(Error::Schema(crate::query::hint::duplicate_key(&t.schema, &doc[pk])));
+                // A key this transaction inserted, which no row had before.
+                let repeated = self.keys.iter().find(|(id, _)| *id == t.id).is_some_and(|(_, k)| k.written.contains_key(&key)) && lock(&self.db.state).find_live(t.pos, &doc[pk]).is_none();
+                return Err(Error::Schema(match repeated {
+                    true => crate::query::hint::repeated_key(&t.schema, &doc[pk]),
+                    false => crate::query::hint::duplicate_key(&t.schema, &doc[pk]),
+                }));
             }
             let doc = Arc::new(doc);
             let k = self.keys(t.id);
@@ -5332,13 +5338,13 @@ impl<'a> WriteTxn<'a> {
                 Op::Insert(doc) => self.insert_as(&t, Arc::unwrap_or_clone(doc), Pooling::None).map_err(|e| differs(format!("inserts a row it cannot ({e})")))?,
                 Op::Delete(key) => {
                     if !self.delete_in(&t, &key)? {
-                        return Err(differs(format!("deletes {key:?}, which no row here has")));
+                        return Err(differs(format!("deletes {}, which no row here has", crate::query::hint::sql_value(&key))));
                     }
                 }
                 Op::Set { key, field, value } => {
                     let name = t.schema.fields.get(field as usize).map(|f| f.name.clone()).ok_or_else(|| differs(format!("sets field #{field}")))?;
                     if !self.set_in(&t, &key, &name, value)? {
-                        return Err(differs(format!("sets {name} of {key:?}, which no row here has")));
+                        return Err(differs(format!("sets {name} of {}, which no row here has", crate::query::hint::sql_value(&key))));
                     }
                 }
                 op @ Op::Profile { .. } => self.ops.push((t.id, op)),

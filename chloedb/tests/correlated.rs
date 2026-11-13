@@ -261,7 +261,7 @@ fn where_it_does_not_work() {
     // A number of each row ranked, not a condition.
     fails("SELECT id FROM items WHERE price > (SELECT AVG(e.price) FROM events e WHERE e.cat = items.cat) LIMIT 5", "not in WHERE");
     fails("SELECT id FROM items WHERE id IN (SELECT e.item FROM events e WHERE e.cat = items.cat) LIMIT 5", "not in WHERE, IN or EXISTS");
-    fails("SELECT id FROM items WHERE EXISTS (SELECT e.item FROM events e WHERE e.cat = items.cat) LIMIT 5", "not in WHERE, IN or EXISTS");
+    fails("SELECT id FROM items WHERE EXISTS (SELECT e.item FROM events e WHERE e.cat = items.cat AND e.item <> items.id) LIMIT 5", "not in WHERE, IN or EXISTS");
     // A column of a table's ranked rows, without phases.
     let rs = db.query("SELECT id, price, (SELECT COUNT(*) FROM events e WHERE e.usr = :u AND e.item = items.id) AS seen FROM items WHERE MATCH(title, :q) ORDER BY bm25(title, :q) DESC LIMIT 8", &p).unwrap();
     let plain = db.query("SELECT id, price FROM items WHERE MATCH(title, :q) ORDER BY bm25(title, :q) DESC LIMIT 8", &p).unwrap();
