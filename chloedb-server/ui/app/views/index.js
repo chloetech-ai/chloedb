@@ -45,8 +45,9 @@ import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
 import connectors from "./connectors.js";
+import feedback from "./feedback.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, understand, media, graph, classic, apps, connectors];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, understand, media, graph, classic, apps, connectors, feedback];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -81,6 +82,7 @@ export const NAV = [
     { id: "connections", title: "Connections", icon: "key", scope: "admin" },
     { id: "clusters", title: "All clusters", icon: "cluster", scope: "admin" },
     { id: "follow", title: "Follow", icon: "share", scope: "admin" },
+    { id: "feedback", title: "Feedback", icon: "feedback", key: "f", scope: "write" },
   ]],
   ["Data", [
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },

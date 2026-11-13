@@ -58,6 +58,10 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         // A connector's push: written with the key, so by its tables.
         "/v1/connectors/:name/push" => method == Method::POST,
         "/v1/models" => get,
+        // The command center's feedback, by its table ([`crate::feedback::may`]).
+        "/v1/feedback" => get || method == Method::POST,
+        "/v1/feedback/:id" => get || method == Method::PATCH || method == Method::DELETE,
+        "/v1/feedback/:id/shot" | "/v1/feedback/:id/thumb" => get,
         _ => false,
     }
 }
