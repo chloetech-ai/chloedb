@@ -22,6 +22,15 @@
 //! hundred of the evaluation (`chloedb-bm25-eval --variants ce_rerank100`),
 //! keep it to minutes on a CPU.
 //!
+//! The analyzers of other languages have a gate too: BM25 on MIRACL's
+//! Yoruba and Swahili passages (dev queries) from `$CHLOEDB_MIRACL_DIR`
+//! (`tests/fixtures/miracl/fetch.sh DIR yo sw`, pinned by hash), with the
+//! `simple` and `standard` analyzers, nDCG@10 and recall@100 against
+//! `tests/fixtures/relevance_gate_miracl.json`. What an analyzer makes of
+//! the scripts written without spaces is pinned by its unit tests
+//! (`src/text/standard.rs`); the larger languages' numbers are in
+//! `results/miracl`.
+//!
 //! After an intended change, write the new baseline and commit it:
 //! `CHLOEDB_RELEVANCE_GATE=update cargo test --release --test relevance_gate`
 //! (with `--features bert` for the cross-encoder's).
@@ -35,6 +44,7 @@ use chloedb::beir::{self, RawCollection};
 use chloedb::db::Db;
 use chloedb::metrics::{mean, ndcg_at_k, paired_randomization, recall_at_k};
 use chloedb::query::Params;
+use chloedb::schema::Analyzer;
 use chloedb::storage::DbOptions;
 use chloedb::{Field, FieldType, Schema, Value};
 
@@ -117,11 +127,17 @@ fn round4(x: f64) -> f64 {
 /// The collections at `$CHLOEDB_BEIR_DIR`, or `None` when the gate is
 /// skipped.
 fn collections(names: &[&str]) -> Option<PathBuf> {
+    collections_at("CHLOEDB_BEIR_DIR", names, "tests/fixtures/beir/fetch.sh")
+}
+
+/// The collections `names` in the directory the variable `var` names
+/// (`fetch` downloads them), or `None` when their gate is skipped.
+fn collections_at(var: &str, names: &[&str], fetch: &str) -> Option<PathBuf> {
     let mode = chloedb::env::var("CHLOEDB_RELEVANCE_GATE").unwrap_or_default();
-    let data = chloedb::env::var_os("CHLOEDB_BEIR_DIR").map(PathBuf::from).filter(|d| names.iter().all(|c| d.join(c).join("corpus.jsonl").exists()));
+    let data = chloedb::env::var_os(var).map(PathBuf::from).filter(|d| names.iter().all(|c| d.join(c).join("corpus.jsonl").exists()));
     if data.is_none() {
-        assert!(mode != "required", "the relevance gate needs $CHLOEDB_BEIR_DIR with {names:?} (tests/fixtures/beir/fetch.sh)");
-        eprintln!("$CHLOEDB_BEIR_DIR not set or incomplete; skipping the relevance gate");
+        assert!(mode != "required", "the relevance gate needs ${var} with {names:?} ({fetch})");
+        eprintln!("${var} not set or incomplete; skipping its relevance gate");
     }
     data
 }
@@ -185,6 +201,53 @@ fn bm25_relevance_holds() {
         report.insert(name.to_string(), json!({ "docs": c.docs.len(), "queries": ids, "variants": measured }));
     }
     finish(file, "BM25 through SQL on BEIR test splits: the baseline of tests/relevance_gate.rs, written by it with CHLOEDB_RELEVANCE_GATE=update; not edited by hand.", update, &report, &failures);
+}
+
+/// The analyzers' gate ([module docs](self)): MIRACL's Yoruba (accents and
+/// tone marks, which `standard` folds) and Swahili with `simple` and
+/// `standard`.
+#[test]
+fn analyzers_hold_on_miracl() {
+    const COLLECTIONS: [&str; 2] = ["miracl-sw", "miracl-yo"];
+    const ANALYZERS: [&str; 2] = ["simple", "standard"];
+    let Some(data) = collections_at("CHLOEDB_MIRACL_DIR", &COLLECTIONS, "tests/fixtures/miracl/fetch.sh DIR yo sw") else { return };
+    let update = chloedb::env::var("CHLOEDB_RELEVANCE_GATE").is_ok_and(|m| m == "update");
+    let file = "relevance_gate_miracl.json";
+    let baseline: Json = if update { Json::Null } else { serde_json::from_str(&std::fs::read_to_string(baseline_path(file)).unwrap()).unwrap() };
+    let tmp = tempfile::tempdir().unwrap();
+    let sql = "SELECT id FROM docs ORDER BY bm25(body, :q, syntax => 'plain') DESC LIMIT 100";
+    let mut report = serde_json::Map::new();
+    let mut failures = Vec::new();
+    for name in COLLECTIONS {
+        let c = beir::load(&data.join(name), "dev").unwrap();
+        let ids: Vec<&str> = c.queries.iter().map(|(id, _)| id.as_str()).collect();
+        let base = &baseline["collections"][name];
+        if !update && base["queries"] != json!(ids) {
+            failures.push(format!("{name}: the judged dev queries differ from the baseline's (another version of the collection?)"));
+            continue;
+        }
+        let mut measured = serde_json::Map::new();
+        for analyzer in ANALYZERS {
+            let dir = tmp.path().join(format!("{name}-{analyzer}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let t = std::time::Instant::now();
+            let body = Field::new("body", FieldType::Text { positions: false }).analyzer(Analyzer::of(analyzer, 1).unwrap());
+            let schema = Schema::new("docs", vec![Field::new("id", FieldType::Keyword), body], Some("id")).unwrap();
+            let db = Db::create(&dir.join("db.strata"), schema, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+            db.load(c.docs.iter().map(|(id, body)| vec![Value::Str(id.clone()), Value::Str(body.clone())])).unwrap();
+            let (mut ndcg10, mut recall100) = (Vec::new(), Vec::new());
+            for (qid, text) in &c.queries {
+                let got = ranked(&db, sql, text);
+                ndcg10.push(ndcg_at_k(&got, &c.qrels[qid], 10));
+                recall100.push(recall_at_k(&got, &c.qrels[qid], 100));
+            }
+            eprintln!("{name} {analyzer}: {} documents, {} queries, {:.1} s", c.docs.len(), c.queries.len(), t.elapsed().as_secs_f64());
+            let metrics: [(&str, &[f64]); 2] = [("ndcg10", &ndcg10), ("recall100", &recall100)];
+            measured.insert(analyzer.to_string(), check(name, analyzer, &metrics, &base["variants"][analyzer], update, &mut failures));
+        }
+        report.insert(name.to_string(), json!({ "docs": c.docs.len(), "queries": ids, "variants": measured }));
+    }
+    finish(file, "BM25 through SQL on MIRACL dev queries, by analyzer: the baseline of tests/relevance_gate.rs, written by it with CHLOEDB_RELEVANCE_GATE=update; not edited by hand.", update, &report, &failures);
 }
 
 /// Writes the baseline when updating, else fails with what moved.

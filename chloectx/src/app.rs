@@ -146,6 +146,11 @@ pub struct Options {
     pub insecure: bool,
     /// Embedder spec ([`crate::embed::open`]).
     pub embedder: String,
+    /// Show this machine's Claude Code stores (under this ChloeCtx home):
+    /// their receipts, kept snapshots and blame. Off unless asked for, since
+    /// a store is a transcript of its sessions and the command center's
+    /// users would read it.
+    pub local: Option<std::path::PathBuf>,
 }
 
 /// Distillations in the background, for `/v1/info`.
@@ -186,6 +191,8 @@ pub struct App {
     pub model: Model,
     token: Option<String>,
     jobs: Mutex<Jobs>,
+    /// The ChloeCtx home whose stores the Receipts and Blame pages read.
+    local: Option<std::path::PathBuf>,
 }
 
 /// An error with the HTTP status it answers with.
@@ -323,7 +330,7 @@ Use only what the text says. Do not invent numbers, names or causes. If the text
 impl App {
     pub fn new(cluster: Arc<Cluster>, embedder: Arc<dyn Embedder>, model: Model, token: Option<String>) -> Result<App> {
         cluster.sql(CREATE_SPACES)?;
-        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()) })
+        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None })
     }
 
     fn space_row(&self, name: &str) -> Result<Option<Json>> {
@@ -864,6 +871,33 @@ impl App {
         Ok(json!({"drafts": drafts, "usage": reply.usage.json()}))
     }
 
+    // ------------------------------------------------------------ local stores
+
+    fn local_home(&self) -> std::result::Result<&std::path::Path, Fail> {
+        self.local.as_deref().ok_or_else(|| {
+            Fail(404, "this chloectx app shows no local stores: start it with --local-stores (or CHLOECTX_APP_LOCAL=1) on the machine whose Claude Code sessions ChloeCtx records".into())
+        })
+    }
+
+    /// This machine's ChloeCtx stores, one per project.
+    pub fn local_stores(&self) -> Answer {
+        let home = self.local_home()?;
+        let ss: Vec<Json> = crate::ui::list_stores(home).iter().map(|s| s.json()).collect();
+        Ok(json!({"home": home, "stores": ss}))
+    }
+
+    /// One request to a local store's daemon (started if it is not running).
+    fn local_rpc(&self, store: &str, req: &Json, secs: u64) -> Answer {
+        let home = self.local_home()?;
+        let s = crate::ui::list_stores(home).into_iter().find(|s| s.id == store).ok_or_else(|| Fail(404, format!("no local store {store}")))?;
+        let r = crate::daemon::request(&s.dir, s.project.as_deref().unwrap_or(""), req, Duration::from_secs(secs)).map_err(|e| Fail(502, format!("the daemon of {store}: {e}")))?;
+        match r.get("error").and_then(|e| e.as_str()) {
+            Some(e) if e.starts_with("no receipt") => Err(Fail(404, e.to_string())),
+            Some(e) => Err(Fail(400, e.to_string())),
+            None => Ok(r),
+        }
+    }
+
     pub fn info(&self) -> Json {
         let health = self.cluster.get("/v1/health");
         let j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -873,6 +907,7 @@ impl App {
             "embedder": self.embedder.name(), "dim": self.embedder.dim(), "model": self.model.json(),
             "distill": {"running": j.running, "waiting": j.queue.len(), "done": j.done, "notes": j.notes, "failed": j.failed, "skipped": j.skipped, "last_error": j.last_error},
             "tables": {"spaces": SPACES, "space": "ctx_<space>"},
+            "local": self.local.is_some(),
         })
     }
 }
@@ -955,6 +990,13 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("POST", ["v1", "spaces", s, "apps", "suggest"]) => app.suggest(s, &body_json(req)?),
         ("POST", ["v1", "spaces", s, "apps", "items"]) => app.build_items(s, &body_json(req)?),
         ("POST", ["v1", "spaces", s, "apps", id, "open"]) => app.open_build(s, id),
+        ("GET", ["v1", "local"]) => app.local_stores(),
+        ("GET", ["v1", "local", st, "receipts"]) => app.local_rpc(st, &json!({"op": "receipts", "session": req.param("session").filter(|s| !s.is_empty()), "limit": num("limit", 50)}), 30),
+        ("GET", ["v1", "local", st, "receipts", id]) => app.local_rpc(st, &json!({"op": "receipt", "id": id, "replay": req.param("replay") != Some("0"), "text": true}), 120),
+        ("GET", ["v1", "local", st, "blame"]) => app.local_rpc(st, &json!({"op": "blame", "target": req.param("target").unwrap_or(""), "replay": req.param("replay") != Some("0")}), 120),
+        ("GET", ["v1", "local", st, "snapshots"]) => app.local_rpc(st, &json!({"op": "snapshot", "what": "list"}), 30),
+        ("POST", ["v1", "local", st, "snapshots"]) => app.local_rpc(st, &json!({"op": "snapshot", "what": "keep", "name": body_json(req)?["name"]}), 600),
+        ("DELETE", ["v1", "local", st, "snapshots", name]) => app.local_rpc(st, &json!({"op": "snapshot", "what": "drop", "name": name}), 60),
         (_, ["v1", ..]) => Err(Fail(404, format!("no {m} {}", req.path))),
         _ => Err(Fail(404, format!("no {}", req.path))),
     }
@@ -1031,7 +1073,10 @@ pub fn run(opts: Options) -> Result<()> {
     let mut tries = 0;
     let app = loop {
         match App::new(cluster.clone(), embedder.clone(), Model::from_env(), opts.token.clone()) {
-            Ok(a) => break Arc::new(a),
+            Ok(mut a) => {
+                a.local = opts.local.clone();
+                break Arc::new(a);
+            }
             Err(e) if tries < 30 => {
                 tries += 1;
                 eprintln!("chloectx app: waiting for {} ({e})", opts.server);

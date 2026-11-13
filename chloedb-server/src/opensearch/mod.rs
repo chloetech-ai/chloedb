@@ -244,6 +244,9 @@ async fn dispatch(State(os): State<Arc<Os>>, peer: Option<ConnectInfo<std::net::
         who = os.svc.keys.resolve(os.token.as_ref(), os.cluster.as_ref(), auth.as_deref());
         match who.clone() {
             None => (Err(OsError::new(401, "security_exception", "missing or wrong credentials: send a key or the token as a Bearer token, or as the password of Basic authentication")), None, crate::keys::Change::default()),
+            // A key limited to tables calls the main listener's routes,
+            // which check its tables ([`crate::scoped`]); this one's do not.
+            Some(who) if who.limited() => (Err(OsError::new(403, "security_exception", format!("the key {:?} is limited to tables: it calls the HTTP API, not the OpenSearch one", who.name))), None, crate::keys::Change::default()),
             Some(who) => {
                 let tc = Arc::new(crate::telemetry::Caller::of(&who, Some(caller.clone())));
                 match unzip(&headers, body, os.svc.max_body) {

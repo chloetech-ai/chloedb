@@ -286,6 +286,10 @@ fn app_in_a_cluster() {
     assert_eq!(info["model"]["how"], "api", "{info}");
     assert_eq!(info["server"]["ok"], true, "{info}");
 
+    // Local stores are off unless asked for.
+    let (s, _) = http.call("GET", &format!("{app_url}/v1/local"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 404, "local stores are shown only with --local-stores");
+
     // Only callers with the token, and never a page in a browser.
     assert_eq!(http.call("GET", &format!("{app_url}/v1/spaces"), None, &[]).0, 401);
     assert_eq!(http.call("GET", &format!("{app_url}/v1/spaces"), None, &[("authorization", &format!("Bearer {TOKEN}")), ("origin", "http://evil.example")]).0, 403);
@@ -454,4 +458,95 @@ fn app_in_a_cluster() {
     assert_eq!(all["notes"].as_array().unwrap().iter().filter(|n| n["id"] == again["id"]).count(), 1, "a new id: {again}");
     assert_eq!(texts(&all).len(), 6, "{all}");
     drop(procs);
+}
+
+/// With `--local-stores`, the app reads this machine's Claude Code stores
+/// for the command center's Receipts and Blame pages: the stores, a store's
+/// receipts, one replayed, blame, and a snapshot kept and dropped by name.
+#[test]
+fn local_stores_through_the_app() {
+    use chloectx::daemon::Daemon;
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("CHLOECTX_NEED_SERVER").is_none(), "CHLOECTX_NEED_SERVER is set but there is no chloedb-server binary");
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let project = proj.canonicalize().unwrap().to_string_lossy().into_owned();
+    let store = home.join("projects").join("proj-test");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("config.json"), r#"{"embedder": "hash:64", "sync": false, "distill": {"enabled": false}}"#).unwrap();
+    std::fs::write(store.join("project.txt"), format!("{project}\n")).unwrap();
+    {
+        let d = Arc::new(Daemon::open(&store, &project).unwrap());
+        let call = |req: Value| {
+            let (r, f) = d.handle(&req);
+            if let Some(f) = f {
+                f();
+            }
+            assert!(r.get("error").is_none(), "{r}");
+            r
+        };
+        let hook = |e: &str, p: Value| call(json!({"op": "hook", "event": e, "payload": p}));
+        hook("SessionStart", json!({"session_id": "s1", "source": "startup"}));
+        hook("UserPromptSubmit", json!({"session_id": "s1", "prompt": "How should payment retries back off?"}));
+        call(json!({"op": "remember", "kind": "decision", "text": "Payment retries back off with a fixed 2 second delay between attempts."}));
+        hook("Stop", json!({"session_id": "s1", "last_assistant_message": "Agreed: a fixed 2 second backoff."}));
+        hook("SessionStart", json!({"session_id": "s2", "source": "startup"}));
+        hook("UserPromptSubmit", json!({"session_id": "s2", "prompt": "Change this: payment retries back off with a fixed 2 second delay."}));
+        hook("PostToolUse", json!({"session_id": "s2", "tool_name": "Edit", "tool_input": {"file_path": format!("{project}/src/retry.rs"), "old_string": "a", "new_string": "sleep(backoff_delay(attempt));"}, "tool_response": {}}));
+        std::fs::write(proj.join("src/retry.rs"), "fn retry() {\n    sleep(backoff_delay(attempt));\n}\n").unwrap();
+    }
+
+    let srv_port = free_port();
+    let srv = format!("http://127.0.0.1:{srv_port}");
+    let _server = spawn(Command::new(&bin).args(["--db", &dir.path().join("s.strata").to_string_lossy(), "--listen", &format!("127.0.0.1:{srv_port}"), "--grpc", "off", "--no-fetch-models"]));
+    let http = Http::new();
+    wait_for("the server", 30, || http.call("GET", &format!("{srv}/v1/health"), None, &[]).0 == 200);
+    let aport = free_port();
+    let app_url = format!("http://127.0.0.1:{aport}");
+    let _app = spawn(
+        Command::new(env!("CARGO_BIN_EXE_chloectx"))
+            .args(["app", "--server", &srv, "--port", &aport.to_string(), "--embedder", "hash:256", "--token", TOKEN, "--local-stores"])
+            .env("CHLOECTX_HOME", &home)
+            .env_remove("ANTHROPIC_API_KEY"),
+    );
+    let app = App { http: &http, url: app_url.clone() };
+    wait_for("the app", 60, || http.call("GET", &format!("{app_url}/v1/info"), None, &[("authorization", &format!("Bearer {TOKEN}"))]).0 == 200);
+    assert_eq!(app.get("/v1/info")["local"], true);
+
+    let stores = app.get("/v1/local");
+    let st = stores["stores"].as_array().unwrap();
+    assert_eq!(st.len(), 1, "{stores}");
+    assert_eq!(st[0]["id"], "proj-test");
+    assert_eq!(st[0]["project"], json!(project));
+
+    let rs = app.get("/v1/local/proj-test/receipts?session=s2");
+    let list = rs["receipts"].as_array().unwrap();
+    let brief = list.iter().find(|r| r["source"] == "briefing").unwrap_or_else(|| panic!("{rs}"));
+    let one = app.get(&format!("/v1/local/proj-test/receipts/{}", brief["id"].as_str().unwrap()));
+    assert!(one["receipt"]["text"].as_str().unwrap().contains("fixed 2 second"), "{one}");
+    assert_eq!(one["replays"][0]["on"], "kept snapshot", "{one}");
+    assert_eq!(one["replays"][0]["verdict"]["identical"], true, "{one}");
+    let (s, _) = http.call("GET", &format!("{app_url}/v1/local/proj-test/receipts/rc-nothere"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 404);
+    let (s, _) = http.call("GET", &format!("{app_url}/v1/local/elsewhere/receipts"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 404);
+
+    let b = app.get("/v1/local/proj-test/blame?target=src%2Fretry.rs%3A2");
+    assert_eq!(b["edit"]["session"], "s2", "{b}");
+    assert!(b["receipts"].as_array().unwrap().iter().any(|r| r["source"] == "briefing"), "{b}");
+
+    let k = app.post("/v1/local/proj-test/snapshots", json!({"name": "before-release"}));
+    assert!(k["text"].as_str().unwrap().starts_with("kept before-release"), "{k}");
+    assert_eq!(app.try_post("/v1/local/proj-test/snapshots", json!({"name": "../x"})).0, 400);
+    let l = app.get("/v1/local/proj-test/snapshots");
+    assert!(l["snapshots"].as_array().unwrap().iter().any(|k| k["name"] == "before-release"), "{l}");
+    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/local/proj-test/snapshots/before-release"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 200);
+    // The daemon the app started for the store.
+    let _ = chloectx::daemon::request(&store, &project, &json!({"op": "shutdown"}), Duration::from_secs(10));
 }

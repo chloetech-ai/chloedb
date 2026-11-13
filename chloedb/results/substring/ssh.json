@@ -1,0 +1,267 @@
+{
+  "body_bytes": 49385633,
+  "input": "ssh.jsonl",
+  "lines": 655147,
+  "plain": {
+    "file_bytes": 35962880,
+    "load_seconds": 1.8,
+    "merge_seconds": 1.5,
+    "segments": 1,
+    "store_bytes": 11454563,
+    "text_body_bytes": 8930221
+  },
+  "queries": [
+    {
+      "count_ms": {
+        "index": 0.045,
+        "scan": 635.22
+      },
+      "first_10_ms": {
+        "index": 0.054,
+        "scan": 671.94
+      },
+      "op": "LIKE",
+      "pattern": "%Accepted password%",
+      "rows": 182
+    },
+    {
+      "count_ms": {
+        "index": 0.033,
+        "scan": 622.23
+      },
+      "first_10_ms": {
+        "index": 0.034,
+        "scan": 721.39
+      },
+      "op": "LIKE",
+      "pattern": "%port 2191 ssh2",
+      "rows": 6
+    },
+    {
+      "count_ms": {
+        "index": 0.031,
+        "scan": 650.39
+      },
+      "first_10_ms": {
+        "index": 0.035,
+        "scan": 692.86
+      },
+      "op": "LIKE",
+      "pattern": "%173.234.31.186%",
+      "rows": 10
+    },
+    {
+      "count_ms": {
+        "index": 44.568,
+        "scan": 560.64
+      },
+      "first_10_ms": {
+        "index": 47.297,
+        "scan": 622.92
+      },
+      "op": "LIKE",
+      "pattern": "%183.62.140.253%",
+      "rows": 32953
+    },
+    {
+      "count_ms": {
+        "index": 34.237,
+        "scan": 653.14
+      },
+      "first_10_ms": {
+        "index": 26.886,
+        "scan": 716.94
+      },
+      "op": "LIKE",
+      "pattern": "%BREAK-IN ATTEMPT%",
+      "rows": 19406
+    },
+    {
+      "count_ms": {
+        "index": 123.309,
+        "scan": 586.38
+      },
+      "first_10_ms": {
+        "index": 133.658,
+        "scan": 700.33
+      },
+      "op": "ILIKE",
+      "pattern": "%break-in attempt%",
+      "rows": 19406
+    },
+    {
+      "count_ms": {
+        "index": 105.293,
+        "scan": 693.17
+      },
+      "first_10_ms": {
+        "index": 107.792,
+        "scan": 774.17
+      },
+      "op": "LIKE",
+      "pattern": "%Failed password for root%",
+      "rows": 176784
+    },
+    {
+      "count_ms": {
+        "index": 102.066,
+        "scan": 649.68
+      },
+      "first_10_ms": {
+        "index": 97.799,
+        "scan": 713.88
+      },
+      "op": "LIKE",
+      "pattern": "%preauth%",
+      "rows": 170481
+    },
+    {
+      "count_ms": {
+        "index": 5.978,
+        "scan": 577.35
+      },
+      "first_10_ms": {
+        "index": 6.052,
+        "scan": 655.08
+      },
+      "op": "LIKE",
+      "pattern": "reverse mapping checking%",
+      "rows": 18909
+    },
+    {
+      "count_ms": {
+        "index": 0.388,
+        "scan": 678.79
+      },
+      "first_10_ms": {
+        "index": 0.053,
+        "scan": 747.87
+      },
+      "op": "LIKE",
+      "pattern": "%Failed password%from 119.4.203.64%",
+      "rows": 8
+    },
+    {
+      "count_ms": {
+        "index": 58.47,
+        "scan": 611.86
+      },
+      "first_10_ms": {
+        "index": 57.546,
+        "scan": 731.74
+      },
+      "op": "LIKE",
+      "pattern": "%invalid user ad_in from%",
+      "rows": 8214
+    },
+    {
+      "count_ms": {
+        "index": 63.785,
+        "scan": 690.88
+      },
+      "first_10_ms": {
+        "index": 69.934,
+        "scan": 717.56
+      },
+      "op": "ILIKE",
+      "pattern": "%Invalid User ADMIN%",
+      "rows": 14419
+    },
+    {
+      "count_ms": {
+        "index": 0.024,
+        "scan": 643.89
+      },
+      "first_10_ms": {
+        "index": 0.018,
+        "scan": 709.94
+      },
+      "op": "LIKE",
+      "pattern": "%no such text anywhere%",
+      "rows": 0
+    },
+    {
+      "count_ms": {
+        "index": 99.241,
+        "scan": 630.33
+      },
+      "first_10_ms": {
+        "index": 102.773,
+        "scan": 720.2
+      },
+      "op": "LIKE",
+      "pattern": "%ssh2",
+      "rows": 161234
+    },
+    {
+      "count_ms": {
+        "index": 102.269,
+        "scan": 807.42
+      },
+      "first_10_ms": {
+        "index": 95.217,
+        "scan": 793.19
+      },
+      "op": "LIKE",
+      "pattern": "%e%",
+      "rows": 655147
+    },
+    {
+      "count_ms": {
+        "index": 0.052,
+        "scan": 0.16
+      },
+      "first_10_ms": {
+        "index": 0.049,
+        "scan": 0.11
+      },
+      "op": "WHERE",
+      "pattern": "pid = 24200 AND body LIKE '%e%'",
+      "rows": 22
+    },
+    {
+      "count_ms": {
+        "index": 0.046,
+        "scan": 0.2
+      },
+      "first_10_ms": {
+        "index": 0.055,
+        "scan": 0.12
+      },
+      "op": "WHERE",
+      "pattern": "ts >= '2017-12-10T06:55:00Z' AND ts < '2017-12-10T07:00:00Z' AND body LIKE '%Failed password%'",
+      "rows": 1
+    },
+    {
+      "count_ms": {
+        "index": 0.055,
+        "scan": 618.38
+      },
+      "first_10_ms": {
+        "index": 0.06,
+        "scan": 735.21
+      },
+      "op": "WHERE",
+      "pattern": "pid > 2 AND body LIKE '%173.234.31.186%'",
+      "rows": 10
+    }
+  ],
+  "substring": {
+    "file_bytes": 82198528,
+    "load_seconds": 4.6,
+    "merge_seconds": 5.4,
+    "segments": 1,
+    "store_bytes": 11454563,
+    "sub_body": {
+      "bwt_bytes": 36825856,
+      "bytes": 46233048,
+      "docs_bytes": 0,
+      "parts": 1,
+      "runs": 1459445,
+      "sa_bytes": 9407000,
+      "samples": 2487181,
+      "text_bytes": 50040781
+    },
+    "text_body_bytes": 8930221
+  }
+}

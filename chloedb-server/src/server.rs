@@ -212,6 +212,9 @@ pub struct Options {
     pub apps: Vec<String>,
     /// What the server sends apps as its token (`CHLOEDB_APP_TOKEN`).
     pub app_token: Option<String>,
+    /// A folder of each app's own token, a file by the app's name
+    /// (`CHLOEDB_APP_TOKEN_DIR`; [`crate::apps`]).
+    pub app_token_dir: Option<std::path::PathBuf>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -424,7 +427,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
-    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
+    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone()).with_token_dir(o.app_token_dir.clone());
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
@@ -702,14 +705,22 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
             return Err(format!("unknown model {name}: one of {}, or a Hugging Face repository owner/name", names.join(", ")));
         }
     };
-    let out = dir.join(&local);
+    // A model of a table in fewer bits (`potion-retrieval-32M-int8`) is
+    // its original fetched aside, then written into its own directory, so
+    // that a fetch cut short never leaves the original under its name.
+    let quantized = chloedb::embed::quantized_of(&local);
+    let model_dir = dir.join(&local);
+    let out = match quantized {
+        Some(_) => dir.join(format!(".{local}.fetch")),
+        None => model_dir.clone(),
+    };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let client = crate::http_client().build().map_err(|e| e.to_string())?;
     // Each file's path in the repository, and its name here.
     let files: Vec<(&str, &str)> = match (derives, cross_encoder::fetch_files(&local)) {
         (true, _) => chloedb::derive::model_files(&local).iter().map(|&f| (f, f)).collect(),
         (false, Some(f)) => f,
-        (false, None) => chloedb::embed::model_files(&local).iter().map(|&f| (f, f)).collect(),
+        (false, None) => chloedb::embed::model_files(quantized.map_or(local.as_str(), |q| q.0)).iter().map(|&f| (f, f)).collect(),
     };
     // A model ChloeDB knows comes from the commit it was pinned at, each
     // file checked against its SHA-256 ([`chloedb::model_pins`]); another
@@ -732,6 +743,13 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
         let tmp = out.join(format!("{file}.part"));
         std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, out.join(file))).map_err(|e| format!("{}: {e}", out.join(file).display()))?;
         tracing::info!(file, bytes = bytes.len(), "downloaded");
+    }
+    if let Some((_, elem)) = quantized {
+        let q = chloedb::embed::quantize_static(&out, &model_dir, elem).map_err(|e| e.to_string())?;
+        tracing::info!(model = %local, bytes = q.bytes_after, was = q.bytes_before, "wrote the table in {elem}");
+        let _ = std::fs::remove_dir_all(&out);
+        chloedb::embed::open(&local, dir).map_err(|e| e.to_string())?;
+        return Ok(model_dir);
     }
     if derives {
         chloedb::derive::open(&local, dir).map_err(|e| e.to_string())?;
@@ -1489,6 +1507,13 @@ impl tonic::service::Interceptor for Check {
         // x-chloedb-* metadata is read as its x-strata-* names (crate::names).
         crate::names::alias_metadata(req.metadata_mut());
         match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
+            // A key limited to tables is an app's, over HTTP: its routes
+            // check the tables they touch ([`crate::scoped`]), gRPC's
+            // methods do not.
+            Some(who) if who.limited() => {
+                self.svc.metrics.grpc("any", "PermissionDenied", 0.0);
+                Err(tonic::Status::permission_denied(format!("the key {:?} is limited to tables: it calls the HTTP API, not gRPC", who.name)))
+            }
             Some(who) => {
                 req.extensions_mut().insert(who);
                 Ok(req)

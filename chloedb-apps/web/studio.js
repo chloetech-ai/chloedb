@@ -64,8 +64,9 @@ const EXAMPLES = [
   'A shared grocery list for our home, grouped by aisle, where ticking an item moves it to the bottom.',
 ];
 
-// An app on its own, at /a/<id>: its views, without the studio around them.
-const BARE = (location.pathname.match(/^\/a\/([a-z0-9]+)/) || [])[1] || null;
+// An app on its own, at /a/<id> or at / on a published app's own host (the
+// engine names the app in a meta tag): its views, without the studio around them.
+const BARE = (location.pathname.match(/^\/a\/([a-z0-9]+)/) || [])[1] || document.querySelector('meta[name="sa-app"]')?.content || null;
 if (BARE) document.body.classList.add('bare');
 
 const S = {
@@ -109,7 +110,8 @@ async function assets() {
 // ---- live updates
 
 function connect() {
-  const es = new EventSource('/api/stream');
+  // An app on its own follows only that app (all the public may follow).
+  const es = new EventSource(BARE ? `/api/stream?app=${BARE}` : '/api/stream');
   const dot = $('#status');
   es.addEventListener('hello', (e) => {
     const { feed } = JSON.parse(e.data);
