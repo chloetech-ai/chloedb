@@ -154,9 +154,8 @@ curl -sS http://127.0.0.1:7710/v1/sql -H &#x27;content-type: application/json&#x
 <h2 id="chloedb-from-python-with-no-server">ChloeDB from Python, with no server<a class="anchor" href="#chloedb-from-python-with-no-server" aria-label="Link to this section">#</a></h2>
 <p>The Python package runs a database inside your process, the way <code>sqlite3</code> runs SQLite. It is a prebuilt wheel for CPython 3.10 and later on the same platforms as the server, plus Linux with glibc 2.28 or later.</p>
 <pre data-lang="sh">python3 -m venv .venv &amp;&amp; . .venv/bin/activate
-pip install chloedb</pre>
-<p>Until the package is on PyPI, install the wheel from the release instead:</p>
-<pre data-lang="sh">pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0</pre>
+<p>The wheels come from the release: <code>chloedb</code> on PyPI is still a placeholder of version 0.0.1 that holds the name, and <code>pip install chloedb</code> alone installs that, which fails at <code>import chloedb</code>.</p>
 <pre data-lang="sh">python3 - &lt;&lt;&#x27;EOF&#x27;
 import chloedb
 
