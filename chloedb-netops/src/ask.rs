@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use axum::extract::{Query, State};
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
 use serde_json::{json, Map, Value};
 
 use crate::api::{bad, Answer, Q, Shared};
@@ -33,7 +33,7 @@ use crate::strata::{Row, RowExt};
 use crate::telemetry::iso;
 
 pub fn routes() -> Router<Shared> {
-    Router::new().route("/v1/map/ask", get(ask)).route("/v1/map/asks", get(asks))
+    Router::new().route("/v1/map/ask", get(ask_read).post(ask_keep)).route("/v1/map/asks", get(asks))
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -832,7 +832,7 @@ pub async fn vocabulary(e: &Engine) -> Vocabulary {
 /// When the model may be asked again after it failed (epoch seconds).
 static MODEL_AFTER: AtomicI64 = AtomicI64::new(0);
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct AskQ {
     q: String,
     /// `rules` to skip the model.
@@ -841,7 +841,19 @@ struct AskQ {
 
 const FOUND: &str = "id, kind, layer, name, state, reason, x, y, latency_ms, base_ms, loss, vendor, os_version, customer, region, metro, hub, asite";
 
-async fn ask(State(svc): State<Shared>, Query(a): Query<AskQ>) -> Answer {
+/// `GET`: a read, as a read key may make. The fixed reader answers and
+/// nothing is written: no search is kept and no model is asked.
+async fn ask_read(State(svc): State<Shared>, Query(a): Query<AskQ>) -> Answer {
+    ask(svc, a, false).await
+}
+
+/// `POST {"q": ...}`: the search is kept in `netops_searches` (the box's
+/// history), and the server's model reads it when there is one.
+async fn ask_keep(State(svc): State<Shared>, Json(a): Json<AskQ>) -> Answer {
+    ask(svc, a, true).await
+}
+
+async fn ask(svc: Shared, a: AskQ, keep: bool) -> Answer {
     let q = Q::new(&svc);
     let e = q.e.clone();
     let asked = a.q.trim().to_string();
@@ -860,12 +872,15 @@ async fn ask(State(svc): State<Shared>, Query(a): Query<AskQ>) -> Answer {
     let known = |x: &str| ids.iter().any(|i| i == x);
     let id = format!("ask-{}-{}", e.st().last_minute / 60, e.next_id());
     let now = crate::sim::now();
-    e.db.upsert("netops_searches", vec![json!({"id": id, "ts": iso(now), "asked": asked, "reader": "", "plan": "", "sql_text": "", "found": 0, "ms": 0.0})]).await?;
+    let save = |row: Value| { let db = e.db.clone(); async move { if keep { db.upsert("netops_searches", vec![row]).await.map(|_| ()) } else { Ok(()) } } };
+    save(json!({"id": id, "ts": iso(now), "asked": asked, "reader": "", "plan": "", "sql_text": "", "found": 0, "ms": 0.0})).await?;
     let mut reader = "rules";
     let mut note = String::new();
     let mut plan = None;
     let model = e.opts.rewrite_model.clone();
-    if model.is_empty() {
+    if !keep {
+        note = "asked with GET, which writes nothing and asks no model (POST does both)".into();
+    } else if model.is_empty() {
         note = "no model is set (--rewrite-model)".into();
     } else if a.reader.as_deref() == Some("rules") {
         note = "the fixed reader was asked for".into();
@@ -899,12 +914,12 @@ async fn ask(State(svc): State<Shared>, Query(a): Query<AskQ>) -> Answer {
     let ignored = unread.ignored.clone();
     let corrected: Vec<Value> = unread.corrected.iter().map(|(a, b)| json!({"from": a, "to": b})).collect();
     if !unread.refused.is_empty() {
-        e.db.upsert("netops_searches", vec![json!({"id": id, "ts": iso(now), "asked": asked, "reader": reader, "plan": plan_json(&plan).to_string(), "sql_text": "", "found": 0, "ms": 0.0})]).await?;
+        save(json!({"id": id, "ts": iso(now), "asked": asked, "reader": reader, "plan": plan_json(&plan).to_string(), "sql_text": "", "found": 0, "ms": 0.0})).await?;
         return q.done(json!({"asked": asked, "reader": reader, "note": note, "understood": false, "refused": true, "read": [], "ignored": ignored, "corrected": corrected, "plan": plan_json(&plan), "rows": [], "places": {}, "total": 0,
             "hint": unread.refused}));
     }
     if plan == Plan::default() {
-        e.db.upsert("netops_searches", vec![json!({"id": id, "ts": iso(now), "asked": asked, "reader": reader, "plan": "{}", "sql_text": "", "found": 0, "ms": 0.0})]).await?;
+        save(json!({"id": id, "ts": iso(now), "asked": asked, "reader": reader, "plan": "{}", "sql_text": "", "found": 0, "ms": 0.0})).await?;
         return q.done(json!({"asked": asked, "reader": reader, "note": note, "understood": false, "read": [], "ignored": ignored, "plan": plan_json(&plan), "rows": [], "places": {}, "total": 0,
             "hint": "Nothing in the sentence was recognised. Name a kind (OLTs, cell sites, hub routers), a place (Frankfurt), a state (down, degraded), a reading (latency above 30 ms), something that happened (changed in the last week about firmware, by m.rossi) or a place in the graph (behind hr1-h03-ams)."}));
     }
@@ -952,7 +967,7 @@ async fn ask(State(svc): State<Shared>, Query(a): Query<AskQ>) -> Answer {
     }
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let shown = display.clone() + &format!("\n-- {}", Value::Object(compile(&plan, at, None).params));
-    e.db.upsert("netops_searches", vec![json!({"id": id, "ts": iso(now), "asked": asked, "reader": reader, "plan": plan_json(&plan).to_string(), "sql_text": shown, "found": total, "ms": ms})]).await?;
+    save(json!({"id": id, "ts": iso(now), "asked": asked, "reader": reader, "plan": plan_json(&plan).to_string(), "sql_text": shown, "found": total, "ms": ms})).await?;
     // Words left unread make the count the answer to part of the question, and it says so.
     let partial = !ignored.is_empty();
     q.done(json!({"asked": asked, "reader": reader, "note": note, "understood": true, "partial": partial, "ignored": ignored, "corrected": corrected, "read": c.read, "plan": plan_json(&plan), "sql": display, "params": compile(&plan, at, None).params, "rows": rows, "why": why, "places": places, "total": total, "ms": ms}))

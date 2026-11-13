@@ -321,24 +321,8 @@ async fn panels(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let e = &svc.engine;
     let inc = load(&q, &id).await?;
     let now = q.last();
-    let mut rows = q.rows("Its panels", "SELECT * FROM netops_panels WHERE incident = :id ORDER BY pos LIMIT 200", json!({"id": id})).await?;
-    // The board is made on first sight, and gains its cause's panels once
-    // the cause is known. A removed panel stays removed.
-    let have: HashSet<String> = rows.iter().map(|r| r.s("tkey")).collect();
-    let mut pos = rows.iter().map(|r| r.i("pos")).max().unwrap_or(0);
-    let mut fresh = Vec::new();
-    for spec in template(e, &inc) {
-        if !have.contains(&spec.key) {
-            pos += 10;
-            let common = ["link:loss", "logs:kinds", "customers"].contains(&spec.key.as_str());
-            fresh.push(panel_row(&inc, &spec, pos, if common { "template" } else { "cause" }, if common { "the room" } else { "root-cause agent" }, "", format!("{id}:{}", spec.key), now));
-        }
-    }
-    if !fresh.is_empty() {
-        e.db.upsert("netops_panels", fresh.clone()).await?;
-        rows.extend(fresh.into_iter().filter_map(|v| v.as_object().cloned()));
-        rows.sort_by_key(|r| r.i("pos"));
-    }
+    // Looking writes nothing: a read key sees the board as it would be.
+    let rows = board(&q, e, &inc, now, false).await?;
     let mut out = Vec::new();
     for p in rows.iter().filter(|p| p.get("removed").and_then(Value::as_bool) != Some(true)) {
         let t = std::time::Instant::now();
@@ -366,6 +350,33 @@ async fn panels(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
         "examples": ["loss on LON-NYC last 2 hours", "cpu on cr1-fra", "logs \"LINK-3-UPDOWN\"", "who sends the most", "customers on ag1-ams", "optical power", "changes last 3 days"]}))
 }
 
+/// The room's panels: those kept, and the template's for its kind and
+/// cause that are not kept yet (a removed panel stays removed). `keep`
+/// writes those, which a change to the board does first, so that every
+/// panel it names is a row.
+async fn board(q: &Q, e: &Engine, inc: &Row, now: i64, keep: bool) -> std::result::Result<Vec<Row>, ApiError> {
+    let id = inc.s("id");
+    let mut rows = q.rows("Its panels", "SELECT * FROM netops_panels WHERE incident = :id ORDER BY pos LIMIT 200", json!({"id": id})).await?;
+    let have: HashSet<String> = rows.iter().map(|r| r.s("tkey")).collect();
+    let mut pos = rows.iter().map(|r| r.i("pos")).max().unwrap_or(0);
+    let mut fresh = Vec::new();
+    for spec in template(e, inc) {
+        if !have.contains(&spec.key) {
+            pos += 10;
+            let common = ["link:loss", "logs:kinds", "customers"].contains(&spec.key.as_str());
+            fresh.push(panel_row(inc, &spec, pos, if common { "template" } else { "cause" }, if common { "the room" } else { "root-cause agent" }, "", format!("{id}:{}", spec.key), now));
+        }
+    }
+    if !fresh.is_empty() {
+        if keep {
+            e.db.upsert("netops_panels", fresh.clone()).await?;
+        }
+        rows.extend(fresh.into_iter().filter_map(|v| v.as_object().cloned()));
+        rows.sort_by_key(|r| r.i("pos"));
+    }
+    Ok(rows)
+}
+
 async fn panel_add(State(svc): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {
     let q = Q::new(&svc);
     let e = &svc.engine;
@@ -380,6 +391,7 @@ async fn panel_add(State(svc): State<Shared>, Path(id): Path<String>, Json(b): J
         spec.title = t.trim().to_string();
     }
     let now = q.last();
+    board(&q, e, &inc, now, true).await?;
     let n = e.next_id();
     let row = panel_row(&inc, &spec, 0, "person", who, ask, format!("{id}:p{now}-{n}"), now);
     // The query has to run before the panel joins the board.
@@ -398,6 +410,8 @@ async fn panel_act(State(svc): State<Shared>, Path((id, panel, action)): Path<(S
     let e = &svc.engine;
     let q = Q::new(&svc);
     let who = body.as_ref().and_then(|b| b["who"].as_str()).unwrap_or("NOC engineer").to_string();
+    let inc = load(&q, &id).await?;
+    board(&q, e, &inc, q.last(), true).await?;
     let rows = q.rows("The panel", "SELECT * FROM netops_panels WHERE id = :p AND incident = :id", json!({"p": panel, "id": id})).await?;
     let Some(p) = rows.into_iter().next() else { return Err(ApiError(StatusCode::NOT_FOUND, format!("no panel {panel}"))) };
     let mut row = Value::Object(p.clone());

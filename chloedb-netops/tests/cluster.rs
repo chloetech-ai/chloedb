@@ -221,7 +221,7 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
 
     // A search in a sentence: every condition it names in one statement.
     let up = node["upstream"].as_array().unwrap().iter().find(|u| u["layer"] == "core").or(node["upstream"].as_array().unwrap().last()).unwrap()["id"].as_str().unwrap().to_string();
-    let ask = |q: String| { let api = &api; async move { let r = api.http.get(format!("{}/v1/map/ask", api.url)).query(&[("q", q.as_str())]).bearer_auth(TOKEN).send().await.unwrap(); assert!(r.status().is_success(), "{q}: {}", r.status()); r.json::<Value>().await.unwrap() } };
+    let ask = |q: String| { let api = &api; async move { let r = api.http.post(format!("{}/v1/map/ask", api.url)).json(&json!({"q": q})).bearer_auth(TOKEN).send().await.unwrap(); assert!(r.status().is_success(), "{q}: {}", r.status()); r.json::<Value>().await.unwrap() } };
     let found = ask(format!("everything behind {up} that is not ok")).await;
     assert!(found["understood"] == true && found["sql"].as_str().unwrap().contains("REACHABLE(") && found["rows"].as_array().unwrap().iter().any(|r| r["id"] == fid), "{fid} is behind {up} and broken: {} matches, {}", found["total"], found["read"]);
     assert!(found["places"][metro].as_i64().unwrap() >= 1, "counted where it is, for the map");
@@ -234,6 +234,11 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     let none = ask("how is the weather today".into()).await;
     assert!(none["understood"] == false && none["total"] == 0);
     assert!(len(&api.get("/v1/map/asks").await["asks"]) >= 2, "the searches are kept");
+    // A GET reads and writes nothing: the history stays as it was, and no model is asked.
+    let kept = api.get("/v1/data").await["tables"].as_array().unwrap().iter().find(|t| t["table"] == "netops_searches").map(|t| t["rows"].clone());
+    let read = api.get(&format!("/v1/map/ask?q={}", "OLTs%20that%20are%20down")).await;
+    assert!(read["understood"] == true && read["reader"] == "rules", "a GET is answered: {}", read["note"]);
+    assert_eq!(api.get("/v1/data").await["tables"].as_array().unwrap().iter().find(|t| t["table"] == "netops_searches").map(|t| t["rows"].clone()), kept, "a GET kept no search");
 
     // The box completes from the tables: an id by PREFIX, the rest of a sentence, a filter's values, and the assistant's questions.
     let q = |s: &str| s.replace(' ', "%20").replace(':', "%3A");
@@ -486,8 +491,11 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
 
     // The incident's board: its cause's panels, one asked for in a sentence,
     // one refused, one removed.
+    let panels = || async { api.get("/v1/data").await["tables"].as_array().unwrap().iter().find(|t| t["table"] == "netops_panels").map(|t| t["rows"].clone()) };
+    let before = panels().await;
     let board = api.get(&format!("/v1/incidents/{fibre}/panels")).await;
     ran_sql(&board, "board");
+    assert_eq!(panels().await, before, "looking at the board writes nothing");
     let titles: Vec<&str> = board["panels"].as_array().unwrap().iter().map(|p| p["title"].as_str().unwrap()).collect();
     assert!(titles.len() >= 5 && titles.iter().any(|t| t.starts_with("Packet loss")) && titles.iter().any(|t| t.starts_with("Link state")), "a fibre cut's board: {titles:?}");
     assert!(board["panels"].as_array().unwrap().iter().all(|p| p["error"] == ""), "every panel's query runs: {}", board["panels"]);

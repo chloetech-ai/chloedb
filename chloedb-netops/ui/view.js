@@ -2677,7 +2677,7 @@ function mapPage(body, app, path) {
     askBtn.disabled = true;
     put(side, h("div", { class: "no-map-head" }, h("h3", {}, "Searching"), h("div", { class: "muted small" }, text)));
     let j;
-    try { j = await app.call(`/v1/map/ask?q=${encodeURIComponent(text)}`); } catch (e) { put(side, C.failure(e, "The search")); askBtn.disabled = false; return; }
+    try { j = await app.call("/v1/map/ask", { body: { q: text } }); } catch (e) { put(side, C.failure(e, "The search")); askBtn.disabled = false; return; }
     askBtn.disabled = false;
     if (dead) return;
     found = { ...j, ids: new Set(j.rows.map((r) => r.id)) };
@@ -3131,7 +3131,7 @@ const ID_RE = /\b((?:[a-z]+\d*-)+[a-z0-9]+(?:--[a-z0-9-]+)?)\b/g;
 async function answer(app, text, hooks) {
   const { h, C } = app;
   const queries = [];
-  const call = async (path) => { const j = await app.ctx.api(path); if (j?.queries) queries.push(...j.queries); return j; };
+  const call = async (path, opts) => { const j = await app.ctx.api(path, opts); if (j?.queries) queries.push(...j.queries); return j; };
   const lower = text.toLowerCase();
   // The object asked about: one named in the question, or the one picked.
   let id = null;
@@ -3245,7 +3245,7 @@ async function answer(app, text, hooks) {
   if (/customers?/.test(lower) && /affected|hurt/.test(lower)) asked = `customer routers${where} that are not ok`;
   else if (/\bchanged?\b/.test(lower) && /\b(last|today|hour|day|week)\b/.test(lower) && !/\b(olt|cell|switch|router|ont|cpe|radio)/i.test(lower)) asked = `everything changed in the last ${/week/.test(lower) ? "week" : "day"}${where}`;
   else if (where && !/\bin [A-Z]/.test(asked)) asked += where;
-  const j = await call(`/v1/map/ask?q=${encodeURIComponent(asked)}`);
+  const j = await call("/v1/map/ask", { body: { q: asked } });
   if (j.refused) return { body: [p(j.hint)], queries };
   if (!j.understood) return { body: [p(`I did not understand that. ${j.hint || ""}`), p("I can answer, about the object picked: what is wrong and why, what changed before it started, who is affected, what to do, how it went before, what depends on it; or search the network in a sentence.")], queries };
   const body = [p(h("b", {}, `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}`), ` for “${j.asked}”, read as: ${j.read.map((r) => r.text).join(", ")}.`)];
