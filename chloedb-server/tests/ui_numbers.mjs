@@ -62,6 +62,21 @@ assert.match(s.body, /bm25\(body, :q\)/);
 // A stored searched field shows itself.
 const docs = { table: "docs", short: { key: "id", fields: [{ name: "id", type: "keyword" }, { name: "title", type: "text" }, { name: "text", type: "text" }, { name: "n", type: "int" }] } };
 assert.deepEqual(tableView.shownFields(docs, [docs.short.fields[2]]), { cols: ["id", "title", "text", "n"], title: "title", text: "text" });
+// LIV-5, PRF-5: the Quality tab's profile of a wide table is a few
+// statements of side-by-side aggregates and one top-3 a keyword field,
+// run a few at a time; the key's distinct count is not asked.
+const wideFields = [{ name: "id", type: "keyword" }, ...Array.from({ length: 30 }, (_, i) => ({ name: `k${i}`, type: "keyword" })),
+  ...Array.from({ length: 30 }, (_, i) => ({ name: `n${i}`, type: "float" })), ...Array.from({ length: 30 }, (_, i) => ({ name: `t${i}`, type: "text" }))];
+const wide = { table: "wide", short: { key: "id", fields: wideFields } };
+const prof = tableView.profileSql(wide, wideFields);
+assert.equal(prof.tops.length, 30);
+assert.ok(prof.batches.length <= 14, `${prof.batches.length} statements of aggregates`);
+assert.ok(prof.batches.every((b) => b.parts.length <= 26));
+assert.ok(!prof.batches.some((b) => /COUNT\(DISTINCT id\)|COUNT\(id\)/.test(b.sql)));
+assert.ok(!prof.batches.some((b) => /IS NOT NULL/.test(b.sql)), "a single field is counted with COUNT(field), which works unindexed");
+let live = 0, peak = 0;
+await tableView.bounded(Array.from({ length: 20 }, () => async () => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 2)); live--; }), 4);
+assert.equal(peak, 4);
 const { isStored } = await import(new URL("catalog.js", app));
 assert.deepEqual(products.short.fields.map(isStored), [true, true, true, false, true, true, false]);
 assert.equal(isStored({ name: "b", type: "text", from: ["a"], stored: true }), true);

@@ -91,6 +91,89 @@ export function searchSql(t, { q, fields, vec, mode, limit = 20 }) {
   return { sql: `${head}\nLIMIT ${limit}`, params, body: `${head}\nLIMIT :k`, fnParams, shown };
 }
 
+// ------------------------------------------------------------ a table's profile
+/**
+ * What each field holds, for the Quality tab: [{filled, more}] in the
+ * order of `fs`. The counts and ranges of many fields go in one statement
+ * (aggregates side by side, a batch of fields at a time), and the top
+ * values of each keyword field in one of their own, a few statements at a
+ * time: a table of 90 fields asks about 30 statements, not 250 at once.
+ * The key is known to be different in every row, so it is not counted.
+ */
+export function profileSql(t, fs, { batch = 24 } = {}) {
+  const tq = quoteName(t.table), key = t.short?.key;
+  const parts = [], tops = [];
+  fs.forEach((f, i) => {
+    const c = quoteName(f.name);
+    const add = (kind, expr) => parts.push({ i, kind, expr });
+    if (f.name !== key) add("filled", f.multi || f.type === "json" ? `COUNT(*) FILTER (WHERE ${c} IS NOT NULL)` : `COUNT(${c})`);
+    if (f.multi) { if (f.type === "keyword") tops.push({ i, sql: `SELECT ${c}, COUNT(*) AS n FROM ${tq} GROUP BY ${c} ORDER BY n DESC LIMIT 3` }); return; }
+    if (/^(date|time)/.test(f.type)) { add("min", `MIN(${c})`); add("max", `MAX(${c})`); }
+    else if (/^(int|float)/.test(f.type)) { add("min", `MIN(${c})`); add("max", `MAX(${c})`); add("avg", `AVG(${c})`); }
+    else if (f.type === "keyword") {
+      if (f.name !== key) { add("distinct", `COUNT(DISTINCT ${c})`); tops.push({ i, sql: `SELECT ${c}, COUNT(*) AS n FROM ${tq} GROUP BY ${c} ORDER BY n DESC LIMIT 3` }); }
+    } else if (f.type === "text") { add("len", `AVG(LENGTH(${c}))`); add("maxlen", `MAX(LENGTH(${c}))`); add("blank", `COUNT(*) FILTER (WHERE ${c} = '')`); }
+  });
+  // Whole fields to a statement, at most `batch` aggregates in each.
+  const batches = [];
+  let cur = [];
+  for (const p of parts) {
+    if (cur.length >= batch && cur[cur.length - 1].i !== p.i) { batches.push(cur); cur = []; }
+    cur.push(p);
+  }
+  if (cur.length) batches.push(cur);
+  return { batches: batches.map((b) => ({ parts: b, sql: `SELECT ${b.map((p) => p.expr).join(", ")} FROM ${tq}` })), tops };
+}
+
+/** Runs `jobs` (functions that return a promise), `limit` at a time. */
+export async function bounded(jobs, limit = 4) {
+  const out = new Array(jobs.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, jobs.length) }, async () => {
+    while (next < jobs.length) { const k = next++; out[k] = await jobs[k](); }
+  }));
+  return out;
+}
+
+const profiles = new Map();
+/** The profile of a table's fields, kept a few minutes per table and row count. */
+async function profile(t, fs, n) {
+  const id = `${t.table}:${n}:${fs.map((f) => f.name).join(",")}`;
+  const kept = profiles.get(id);
+  if (kept && Date.now() - kept.at < 5 * 60e3) return kept.stats;
+  const q = (sql) => api("/v1/query", { body: { sql }, timeout: 15000 }).then((j) => j.rows || []).catch(() => null);
+  const { batches, tops } = profileSql(t, fs);
+  const stats = fs.map(() => ({ filled: null, more: null, agg: {} }));
+  const put = (p, v) => { if (v !== undefined) stats[p.i].agg[p.kind] = v; };
+  const jobs = [
+    ...batches.map((b) => async () => {
+      const rows = await q(b.sql);
+      if (rows) { b.parts.forEach((p, k) => put(p, rows[0]?.[k])); return; }
+      // A batch the server refused: field by field, so one field does not hide the rest.
+      const one = [...new Set(b.parts.map((p) => p.i))];
+      await bounded(one.map((i) => async () => {
+        const ps = b.parts.filter((p) => p.i === i);
+        const r = await q(`SELECT ${ps.map((p) => p.expr).join(", ")} FROM ${quoteName(t.table)}`);
+        if (r) ps.forEach((p, k) => put(p, r[0]?.[k]));
+      }), 2);
+    }),
+    ...tops.map((x) => async () => { stats[x.i].top = await q(x.sql); }),
+  ];
+  await bounded(jobs, 4);
+  // The shapes the tab reads: filled, and `more` as each type's answer was.
+  fs.forEach((f, i) => {
+    const s = stats[i], a = s.agg;
+    s.filled = f.name === t.short?.key ? n : a.filled ?? null;
+    if (f.multi) s.more = s.top || null;
+    else if (/^(date|time)/.test(f.type)) s.more = "min" in a ? [[a.min, a.max]] : null;
+    else if (/^(int|float)/.test(f.type)) s.more = "min" in a ? [[a.min, a.max, a.avg]] : null;
+    else if (f.type === "keyword") s.more = f.name === t.short?.key ? [[[n]], null] : [a.distinct != null ? [[a.distinct]] : null, s.top || null];
+    else if (f.type === "text") s.more = "len" in a ? [[[a.len, a.maxlen]], [[a.blank]]] : null;
+  });
+  profiles.set(id, { at: Date.now(), stats });
+  return stats;
+}
+
 // ------------------------------------------------------------ the page
 function render(page, r) {
   const body = h("div", { class: "stack" });
@@ -392,24 +475,11 @@ function render(page, r) {
     const made = all.filter((f) => f.from && !["vector", "sparse"].includes(f.type));
     const out = h("div", { class: "small muted", style: { padding: "12px" } }, "Counting…");
     pane.append(h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Each field"), h("span", { class: "sub" }, "how filled it is, and what is in it")), h("div", { class: "bd" }, out)));
-    const q = (sql) => api("/v1/query", { body: { sql }, timeout: 8000 }).then((j) => j.rows || []).catch(() => null);
     (async () => {
       const tq = quoteName(t.table);
       const n = (await api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${tq}` } })).rows?.[0]?.[0] || 0;
       if (!n) { clear(out, empty("table", "No rows to judge", "Quality shows once rows are in.")); return; }
-      const stats = await Promise.all(fs.map(async (f) => {
-        const c = quoteName(f.name);
-        const [filled, more] = await Promise.all([
-          q(`SELECT COUNT(*) FROM ${tq} WHERE ${c} IS NOT NULL`).then((r) => r?.[0]?.[0] ?? null),
-          /^(date|time)/.test(f.type) && !f.multi ? q(`SELECT MIN(${c}), MAX(${c}) FROM ${tq}`)
-            : /^(int|float)/.test(f.type) && !f.multi ? q(`SELECT MIN(${c}), MAX(${c}), AVG(${c}) FROM ${tq}`)
-            : f.type === "keyword" && !f.multi ? Promise.all([q(`SELECT COUNT(DISTINCT ${c}) FROM ${tq}`), q(`SELECT ${c}, COUNT(*) AS n FROM ${tq} GROUP BY ${c} ORDER BY n DESC LIMIT 3`)])
-            : f.type === "keyword" ? q(`SELECT ${c}, COUNT(*) AS n FROM ${tq} GROUP BY ${c} ORDER BY n DESC LIMIT 3`)
-            : f.type === "text" ? Promise.all([q(`SELECT AVG(LENGTH(${c})), MAX(LENGTH(${c})) FROM ${tq}`), q(`SELECT COUNT(*) FROM ${tq} WHERE ${c} = ''`)])
-            : Promise.resolve(null),
-        ]);
-        return { filled, more };
-      }));
+      const stats = await profile(t, fs, n);
       const notes = [];
       const num = (v, f) => v == null ? "–" : /date|time/.test(f.type) && typeof v === "number" && v > 1e11 ? new Date(v).toISOString().slice(0, 10) : typeof v === "string" && /^\d{4}-\d\d-\d\dT/.test(v) ? v.replace(/T00:00:00(\.0+)?Z$/, "").replace("T", " ").replace(/(\.\d+)?Z$/, "") : typeof v === "number" ? (Number.isInteger(v) ? fmt.n(v) : fmt.n(Math.round(v * 100) / 100)) : String(v);
       const rowsEl = fs.map((f, i) => {
@@ -435,7 +505,8 @@ function render(page, r) {
           h("span", { class: "small muted ellipsis", title: what }, what));
       });
       const vecs = (t.embeddings || []).map((e) => {
-        const b = e.backfill, miss = b?.missing || 0;
+        // A backfill that is done has embedded what it found missing (CCB-4).
+        const b = e.backfill, miss = b?.state === "done" ? Math.max(0, (b.missing || 0) - (b.embedded || 0)) : b?.missing || 0;
         if (miss) notes.push(`${e.field} has no vector yet for ${fmt.n(miss)} rows (being filled in)`);
         if (e.error) notes.push(`${e.field}: the model did not open (${e.error})`);
         const share = miss ? Math.max(0, 1 - miss / n) : 1;
