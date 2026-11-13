@@ -187,13 +187,18 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 <tbody>
 <tr>
 <td><code>GET /v1/spaces</code>, <code>POST /v1/spaces</code></td>
-<td><code>{name, title?, description?}</code></td>
-<td>the spaces with their counts; the new space (one that exists is left as it is)</td>
+<td><code>{name, title?, description?, kind?}</code></td>
+<td>the spaces with their counts; the new space (one that exists is left as it is); <code>kind</code> is <code>notes</code> (the default) or <code>incidents</code>, a team's own incidents for Seen before</td>
+</tr>
+<tr>
+<td><code>DELETE /v1/spaces/:s</code></td>
+<td></td>
+<td>the space, deleted by an admin of its table: its table <code>ctx_&lt;space&gt;</code> dropped and its row of <code>ctx_spaces</code> removed, <code>{deleted, table, kind}</code>; it cannot be undone</td>
 </tr>
 <tr>
 <td><code>POST /v1/spaces/:s/notes</code></td>
-<td><code>{kind, text, replaces?, entities?, session?, ts?}</code></td>
-<td>the note (<code>kind</code>: <code>decision</code>, <code>rule</code>, <code>fact</code>, <code>todo</code> or <code>note</code>)</td>
+<td><code>{kind, text, replaces?, entities?, session?, when?}</code></td>
+<td>the note (<code>kind</code>: <code>decision</code>, <code>rule</code>, <code>fact</code>, <code>todo</code> or <code>note</code>); <code>when</code> (or <code>ts</code>) is when it happened, for a note written down after the fact: seconds since 1970, or ISO 8601 text (<code>2026-09-14</code>, <code>2026-09-14T03:10:00Z</code>); by default, now</td>
 </tr>
 <tr>
 <td><code>GET /v1/spaces/:s/notes?kind=&amp;limit=&amp;all=1</code></td>
@@ -221,19 +226,24 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 <td><code>{context, tokens, ms, items, left_out}</code></td>
 </tr>
 <tr>
-<td><code>GET /v1/incidents</code>, <code>POST /v1/incidents</code></td>
-<td><code>{title, symptom, cause, fix, alert?, replaces?}</code></td>
-<td>the incidents, each with the fixes it replaced; the new one</td>
+<td><code>GET /v1/incidents?space=</code>, <code>POST /v1/incidents</code></td>
+<td><code>{title, symptom, cause, fix, alert?, replaces?, when?, space?}</code></td>
+<td>the incidents of every incidents space the key reads (or of <code>space</code>), each with its space and the fixes it replaced; the new one, in <code>incidents</code> or the team's <code>space</code>, dated <code>when</code> (the incident's own date)</td>
 </tr>
 <tr>
-<td><code>GET /v1/incidents/firing</code></td>
+<td><code>GET /v1/incidents/firing?space=</code></td>
 <td></td>
 <td>the cluster's firing and pending alerts, each with its closest incidents and the context the on-call agent would get</td>
 </tr>
 <tr>
-<td><code>GET /v1/incidents/match?q=&amp;alert=</code></td>
+<td><code>GET /v1/incidents/match?q=&amp;alert=&amp;space=</code></td>
 <td></td>
 <td>the incidents closest to a description</td>
+</tr>
+<tr>
+<td><code>POST /v1/incidents/match</code></td>
+<td><code>{lines \| text, space?, alert?, n?}</code></td>
+<td>the incidents closest to log lines pasted from an outage (redacted as notes are, at most 4,000 characters)</td>
 </tr>
 <tr>
 <td><code>POST /v1/incidents/draft</code></td>
@@ -305,7 +315,7 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 <h2 id="seen-before">Seen before<a class="anchor" href="#seen-before" aria-label="Link to this section">#</a></h2>
 <p><img alt="Seen before in the command center: four firing alerts of a local cluster, each with the past incidents it looks like; the disk alert's closest incident was recorded for the same alert" src="../../assets/img/chloectx-app-seen-before.png" /></p>
 <p><em>Seen before on a two-shard cluster in the cloud container (the alerts are real: its disk was over 90% full, and a test load raised the p99). "Disk full within 12 hours" finds the incident recorded for the same alert first, and the p99 alert the merge incident, whose first fix (a restart) was replaced by a better one.</em></p>
-<p>An incident is a note in the space <code>incidents</code>: a title, the symptom, the cause, the fix, and the alert rule it fired, if one did. For each firing alert, Seen before searches the incidents with what the alert says (its name, metric, description and the copies it fires on). The incidents recorded for the same rule come first; another must be close in meaning (cosine 0.3, or 0.2 when it shares a word) and at least half as close as the closest. A match shows the fixes it replaced struck through, so an agent does not repeat one that was given up.</p>
+<p>An incident is a note in the space <code>incidents</code>, or in a team's own space of kind <code>incidents</code> (<code>POST /v1/spaces {name, kind: "incidents"}</code>): a title, the symptom, the cause, the fix, and the alert rule it fired, if one did. Seen before reads every incidents space the signed-in key may read, so a team that keeps its own sees its incidents beside the shared ones, and log lines pasted from an outage find the incidents that look like them as an alert does. For each firing alert, it searches the incidents with what the alert says (its name, metric, description and the copies it fires on). The incidents recorded for the same rule come first; another must be close in meaning (cosine 0.3, or 0.2 when it shares a word) and at least half as close as the closest. A match shows the fixes it replaced struck through, so an agent does not repeat one that was given up.</p>
 <p><strong>Hand to the on-call agent</strong> starts the cluster's on-call agent (<code>POST /v1/admin/oncall</code>) on the alert with the closest incidents and the incident space's rules in its question; the server needs a Claude key for it. When the run ends, <strong>keep what it found</strong> drafts an incident from its report for a person to check and record. A postmortem pasted into <strong>Record an incident</strong> is drafted the same way.</p>
 <h2 id="create-an-app-from-a-space">Create an app from a space<a class="anchor" href="#create-an-app-from-a-space" aria-label="Link to this section">#</a></h2>
 <p>A space's page has <strong>Create an app from this context</strong>. <strong>Suggest apps</strong> asks the model for apps the space's notes could become (one call, on at most 150 notes); each says why, and which kinds of notes it reads. <strong>Build this...</strong> opens the build: its name, the request the app engine gets (editable), the kinds of notes, and every note that goes in, each with a tick to leave it out. Before anything is spent it shows what a build costs, the median of the engine's past first builds (<code>sa_requests</code>), and what is left of the engine's cap; the build starts only on <strong>Build it</strong>, which sends <code>confirm: true</code>.</p>
