@@ -72,6 +72,8 @@ function model() {
 }
 const hostOf = (u) => { try { return new URL(u).host; } catch { return String(u || ""); } };
 
+// The server's runbooks, by title (a fleet problem's next.runbook names one).
+const RUNBOOKS = "https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#";
 /** A copy's tone: crit (down, or hurting queries now), warn (needs a look), or "". */
 function copyTone(x) {
   if (!x.up) return "crit";
@@ -502,7 +504,7 @@ function render(page, r0) {
           h("div", { class: "pt" }, p.title),
           p.where?.length ? h("div", { class: "small dim" }, p.where.join(" · ")) : null,
           h("div", { class: "small dim" }, [p.to_ms ? h("span", { title: whenTitle(p.from_ms) }, `${when(p.from_ms)}–${when(p.to_ms)}, answering again for ${durTxt(p.to_ms)}`) : p.since_ms ? h("span", { title: whenTitle(p.since_ms) }, `since ${when(p.since_ms)} (${durTxt(p.since_ms)})`) : null, p.impact].filter(Boolean).flatMap((x, i) => i ? [" · ", x] : [x])),
-          p.next?.text ? h("div", { class: "small home-next" }, icon("right"), p.next.text) : null,
+          p.next?.text ? h("div", { class: "small home-next" }, icon("right"), p.next.text, p.next.runbook ? [" · runbook: ", h("a", { href: RUNBOOKS + p.next.runbook.toLowerCase().replace(/[^a-z0-9 -]/g, "").trim().replace(/\s+/g, "-"), target: "_blank", rel: "noopener" }, p.next.runbook, " ", icon("ext"))] : null) : null,
           h("div", { class: "row home-pacts" }, actions)));
     }), probs.length > 8 ? h("div", { class: "small muted" }, `and ${probs.length - 8} more`) : null);
   }

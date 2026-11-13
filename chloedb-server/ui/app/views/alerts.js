@@ -354,6 +354,7 @@ function listView(page, r) {
 
   function draw() {
     if (state.paused && m) return;
+    loadRunbooks(draw);
     m = current = model(state.alerts);
     if (!m) { clear(firingBox, signInNeeded() ? failure(new ApiError(401, "a key is needed"), "Alerts") : empty("alerts", "Loading the rules…")); return; }
     const adm = can("admin");
@@ -489,7 +490,7 @@ function listView(page, r) {
     else if (filter === "noisy") rows = rows.filter(noisy).sort((a, b) => (fires[b.id] || []).length - (fires[a.id] || []).length);
     else if (filter === "no_data") rows = rows.filter((r) => m.st.get(r.id).state === "no_data");
     else if (filter === "builtin") rows = rows.filter((r) => r.builtin);
-    else if (filter === "norunbook") rows = rows.filter((r) => !r.runbook);
+    else if (filter === "norunbook") rows = rows.filter((r) => !runbookOf(r));
     else if (filter === "off") rows = rows.filter((r) => !r.enabled);
     if (q) rows = rows.filter((r) => [r.name, r.id, r.metric, r.owner, r.description].some((v) => String(v || "").toLowerCase().includes(q)));
     const adm = can("admin");
@@ -499,7 +500,7 @@ function listView(page, r) {
       { key: "name", label: "rule", cls: "al-c-name", render: (r) => { const x = m.st.get(r.id), dt = differsText(x); return h("div", { class: "al-rname" }, h("div", { class: "row nw", style: { gap: "6px" } }, h("button", { class: "al-link al-rlink", title: "Edit the rule", onclick: (e) => { e.stopPropagation(); editRule(r); } }, r.name), r.builtin ? h("span", { class: "badge accent", title: "Built in: watches the cluster state; only its severity, on/off and route change" }, "built-in") : null, dt ? h("span", { class: "badge al-wbadge", title: dt }, `${fmt.n(x.copies.rule_differs)} on the old rule`) : null), h("div", { class: "tiny muted mono" }, cond(r))); } },
       { key: "scope", label: "scope", cls: "al-c-scope", sort: (r) => r.scope || "", render: (r) => { const [a, b] = scopeText(r); return h("div", { class: "small" }, a, h("div", { class: "tiny muted" }, b)); } },
       { key: "owner", label: "owner", cls: "al-c-owner", render: (r) => r.owner ? h("span", { class: "small" }, r.owner) : h("span", { class: "small muted" }, "–") },
-      { key: "runbook", label: "runbook", cls: "al-c-runbook", render: (r) => r.runbook ? h("a", { class: "small", href: r.runbook, target: "_blank", rel: "noopener", title: r.runbook }, runbookName(r.runbook), " ", icon("ext")) : h("span", { class: "small muted" }, "none") },
+      { key: "runbook", label: "runbook", cls: "al-c-runbook", render: (r) => { const rb = runbookOf(r); return rb ? h("a", { class: "small", href: rb.url, target: "_blank", rel: "noopener", title: rb.own ? rb.url : `Built in: ${rb.title}` }, rb.own ? rb.title : rb.title.slice(0, 24), " ", icon("ext")) : h("span", { class: "small muted" }, "none"); } },
       { key: "fires", label: "fires · flaps", num: true, cls: "al-c-fires", title: `times it fired over ${t.label}, and of those how often it resolved within 2 minutes (a flap)`, sort: (r) => (fires[r.id] || []).length, render: (r) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, fireBars(fires[r.id] || [], t), h("b", { class: "num" }, fmt.n((fires[r.id] || []).length)), h("span", { class: "num small " + (flaps[r.id] ? "al-warn" : "muted"), title: `${fmt.plural(flaps[r.id] || 0, "flap")}: resolved within 2 minutes of firing` }, `· ${fmt.n(flaps[r.id] || 0)}`), noisy(r) ? h("span", { class: "badge al-wbadge", title: "Fired 3 times or more, or flapped twice, over the range: raise its threshold, hold it longer or give it a resolve threshold" }, "noisy") : null) },
       { key: "state", label: "state", cls: "al-c-state", sort: (r) => RANK[m.st.get(r.id).state], render: (r) => statePill(r, m.st.get(r.id)) },
       { key: "on", label: "on", cls: "al-c-on", sortable: false, render: (r) => onSwitch(r, !adm, (on) => setEnabled(r, on)) },
@@ -570,6 +571,23 @@ function listView(page, r) {
   return () => { offs.forEach((f) => f()); stop(); openRule = openRoutes = null; };
 }
 
+// The runbooks compiled into the server (GET /v1/runbooks, #482): a rule
+// without one of its own (the built-in rules) is covered by the one for
+// its id, linked to its page of the docs.
+let runbookIndex = null, runbooksAsked = null;
+const RUNBOOK_DOCS = "https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#";
+/** Reads the index once; `then` runs when it is there (a view redraws). */
+function loadRunbooks(then) {
+  if (runbookIndex) return;
+  runbooksAsked ||= api("/v1/runbooks").then((j) => { runbookIndex = j.index || []; }).catch(() => { runbookIndex = []; });
+  runbooksAsked.then(() => then?.());
+}
+/** The compiled runbook for a rule's id: {title, url}, or null. */
+export function builtInRunbook(id, index = runbookIndex) {
+  const r = (index || []).find((x) => (x.for || []).includes(id));
+  return r ? { title: r.title, url: r.docs || RUNBOOK_DOCS + r.title.toLowerCase().replace(/[^a-z0-9 -]/g, "").trim().replace(/\s+/g, "-") } : null;
+}
+const runbookOf = (r) => (r.runbook ? { title: runbookName(r.runbook), url: r.runbook, own: true } : builtInRunbook(r.id));
 const runbookName = (u) => { try { const p = new URL(u); const last = p.pathname.split("/").filter(Boolean).pop(); return last ? decodeURIComponent(last).slice(0, 24) : p.host; } catch { return u.slice(0, 24); } };
 function fireBars(ts, t) {
   const n = 14, bins = new Array(n).fill(0);
@@ -922,6 +940,7 @@ function alertHub(page, id, r) {
   }
 
   function drawKpis() {
+    loadRunbooks(drawKpis);
     // Who is told: the rule's own route, or else every route that takes its severity (as the server sends).
     const takes = (rt) => rt.legacy || !rt.severities?.length || rt.severities.includes(rule.severity);
     const told = rule.route ? m.routes.filter((rt) => rt.name === rule.route) : m.routes.filter(takes);
@@ -936,7 +955,7 @@ function alertHub(page, id, r) {
     const ed = () => editRule(rule, { after: load });
     clear(kpis,
       kp("Owner", rule.owner || h("span", { class: "muted" }, "No owner"), rule.owner ? null : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Set an owner") : "the rule names none"),
-      kp("Runbook", rule.runbook ? h("a", { href: rule.runbook, target: "_blank", rel: "noopener", title: rule.runbook }, runbookName(rule.runbook), " ", icon("ext")) : h("span", { class: "muted" }, "No runbook"), rule.description ? h("span", { title: rule.description }, rule.description) : rule.runbook ? null : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Add one") : null),
+      kp("Runbook", (() => { const rb = runbookOf({ ...rule, id }); return rb ? h("a", { href: rb.url, target: "_blank", rel: "noopener", title: rb.own ? rb.url : `The server's runbook: ${rb.title}` }, rb.title, " ", icon("ext")) : h("span", { class: "muted" }, "No runbook"); })(), rule.description ? h("span", { title: rule.description }, rule.description) : rule.runbook ? null : builtInRunbook(id) ? "built in" : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Add one") : null),
       kp("Notified", told.length > 1 ? told.map((rt) => rt.name).join(", ") : route ? (route.legacy ? "the webhook" : route.name) : h("span", { class: "muted" }, "Nobody"),
         told.length > 1 ? h("span", { title: "Each route's last delivery, of any alert" }, told.map((rt, i) => [i ? " · " : "", failing(rt) ? h("span", { class: "al-bad", title: rt.last_error }, `${rt.name}: last send failed`) : rt.last_ok_ms ? `${rt.name} delivered ${hm(rt.last_ok_ms)}` : `${rt.name}: none sent since this server started`]))
         : !route ? (rule.route ? `route ${rule.route} does not exist` : m.routes.length ? `no route takes ${rule.severity}` : "no route: add one in Routes") : route.legacy ? "--alert-webhook; delivery is not tracked by this server"
