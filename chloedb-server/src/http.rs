@@ -816,12 +816,21 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(_) => None,
     };
     let need = route_scope(&method, route);
+    // An app that holds a key limited to tables to its grants takes such
+    // keys, at any scope that reads ([`crate::apps::Apps::holds_grants`]).
+    let app_grants = route == "/v1/apps/:name/*rest"
+        && who.as_ref().is_some_and(|w| w.limited() && w.scope >= Scope::Read)
+        && match req.uri().path().strip_prefix("/v1/apps/").and_then(|r| r.split('/').next()) {
+            Some(name) => app.svc.apps.holds_grants(name).await,
+            None => false,
+        };
     // A follow process's writes ([`crate::service::FOLLOW`]).
     let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
         // A key limited to tables calls the routes that check them, and no
         // other ([`crate::scoped`]).
+        Some(_) if app_grants => None,
         Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) => w.may_server(&format!("{method} {route}")).err(),
         Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
         Some(w) if follow.is_some() && !w.root => Some(ApiError { status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
@@ -3031,13 +3040,11 @@ async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 }
 
 /// `{table, field, text}`: "did you mean", the text with the words that
-/// look like typos of the field's terms replaced ([`chloedb::db::Db::correct`]).
+/// look like typos of the field's terms replaced ([`chloedb::db::Db::correct`]);
+/// a coordinator's by its shards' counts ([`crate::service::Service::correct`]).
 async fn correct(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let (table, field, text) = (body_str(&b, "table")?.to_string(), body_str(&b, "field")?.to_string(), body_str(&b, "text")?.to_string());
-    let Some(db) = app.svc.local_db().cloned() else {
-        return Err(ApiError::bad("a coordinator does not correct text yet: ask one of its shards' /v1/correct"));
-    };
-    let c = tokio::task::spawn_blocking(move || db.correct(&table, &field, &text)).await.map_err(ApiError::internal)??;
+    let c = app.svc.correct(&table, &field, &text, body_u64(&b, "timeout_ms")).await?;
     Ok(AxJson(serde_json::to_value(c).map_err(ApiError::internal)?))
 }
 

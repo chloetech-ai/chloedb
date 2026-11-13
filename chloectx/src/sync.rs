@@ -45,7 +45,9 @@ const BATCH: usize = 500;
 /// A request's deadline.
 const TIMEOUT_SECS: u64 = 30;
 
-const CREATE: &str = "CREATE TABLE IF NOT EXISTS chloectx_memory (id KEYWORD PRIMARY KEY, project KEYWORD, rid KEYWORD, session KEYWORD, kind KEYWORD, tag KEYWORD, turn INT, seq INT, ts INT, importance FLOAT, files TEXT, content TEXT, context TEXT, links_json TEXT)";
+/// The table [`TABLE`], as `chloectx sync setup` creates it (and the
+/// command center's Inspector, for a key that may only write it).
+pub const CREATE: &str = "CREATE TABLE IF NOT EXISTS chloectx_memory (id KEYWORD PRIMARY KEY, project KEYWORD, rid KEYWORD, session KEYWORD, kind KEYWORD, tag KEYWORD, turn INT, seq INT, ts INT, importance FLOAT, files TEXT, content TEXT, context TEXT, links_json TEXT)";
 const REMOTE_COLUMNS: &str = "rid, session, kind, tag, turn, seq, ts, importance, files, content, context, links_json";
 
 /// Where the sync is set up: `sync.json` (the URL) and `sync.token` (the
