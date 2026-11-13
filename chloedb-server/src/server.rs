@@ -114,6 +114,9 @@ pub struct Options {
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
     pub max_body_mb: usize,
+    /// How long tables OTLP's logs make keep their rows, in seconds
+    /// (`None`: for ever).
+    pub otlp_retain: Option<i64>,
     pub model: String,
     pub api_key: Option<String>,
     pub api_base: String,
@@ -470,6 +473,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);
     }
+    svc.otlp_retain = o.otlp_retain;
     let aws = o.aws_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::aws::Aws::file_of));
     if let Some(file) = aws {
         svc.aws = Arc::new(crate::aws::Aws::open(file)?);
