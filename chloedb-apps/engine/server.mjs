@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Login } from './login.mjs';
+import { callerOf, refusal, sees } from './callers.mjs';
 import { useSelfCookie } from './checks.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions, useCluster } from './forge.mjs';
@@ -454,6 +455,9 @@ const MANIFEST = {
   description: 'Apps built from a description: written by a model, checked, kept in this cluster as rows, and changed by asking',
   icon_svg: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/>',
   view: 'cc/view.js',
+  // It refuses what x-chloedb-scope and x-chloedb-tables do not allow
+  // (callers.mjs): chloedb-server forwards it keys limited to tables.
+  checks_callers: true,
 };
 
 async function body(req) {
@@ -584,9 +588,10 @@ const routes = [
   ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, cluster: ON_CLUSTER, feed: engine.feed, data: child ? DATA : null, autorepair: AUTOREPAIR,
     login: login.on ? { publicUrl: login.publicUrl } : null,
     spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
-  ['GET', /^\/api\/apps$/, async () => {
+  ['GET', /^\/api\/apps$/, async (b, m, url, cx) => {
     const costs = await engine.store.costs();
-    return { apps: (await engine.store.listApps()).map((a) => ({ ...a, cost: costs.get(a.id) || { usd: 0, builds: 0 } })) };
+    // A key limited to tables lists the apps whose tables it reads.
+    return { apps: (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id)).map((a) => ({ ...a, cost: costs.get(a.id) || { usd: 0, builds: 0 } })) };
   }],
   // The events since ?after=N (see broadcast), for one app with ?app=.
   ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
@@ -859,6 +864,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/login' && login.on) return await login.redeem(url, res);
     // Someone not signed in to the studio may still open a published app.
     let refused = await login.check(req, url);
+    // Through chloedb-server: what the caller's key may do (callers.mjs).
+    const caller = login.fromServer(req) ? callerOf(req) : null;
+    const no = refusal(caller, req.method, url);
+    if (no) return send(res, 403, { error: no });
     // The studio's "See it as a stranger": someone who may use the studio
     // asks to be treated as a visitor (never the other way round).
     const stranger = !refused ? strangerOf(req) : null;
@@ -875,7 +884,7 @@ const server = http.createServer(async (req, res) => {
     }
     // What the request is, for the routes: the published app it may use.
     const visitorApp = seen ? seen.app : login.on && open && !open.file ? open.app : null;
-    const cx0 = { public: visitorApp, access: visitorApp ? open.access || null : null, stranger: !!seen };
+    const cx0 = { public: visitorApp, access: visitorApp ? open.access || null : null, stranger: !!seen, caller };
     visiting = !!cx0.public;
     if (refused) {
       if (refused.json) return send(res, refused.status, refused.json);
