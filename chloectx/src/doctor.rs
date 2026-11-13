@@ -111,12 +111,17 @@ pub fn run(project: &Path) -> i32 {
     r.ok("binary", &exe);
     let home = paths::home();
     // Where this build stands against the checkout it was built from.
-    if let Some(v) = crate::version::check(&home, true) {
-        if v.behind > 0 {
+    // The fetch is bounded: a remote that never answers costs 3 s, and a
+    // fetch that failed is said to have failed (CTX-4).
+    if let Some(v) = crate::version::check(&home, Some(crate::version::DOCTOR_FETCH_TIMEOUT)) {
+        if v.behind > 0 || v.fetch_error.is_some() {
             r.warn("version", v.line());
         } else {
             r.ok("version", v.line());
         }
+    } else if crate::version::source_dir().is_none() {
+        // A prebuilt binary: no checkout to compare with (CTX-5).
+        r.ok("version", format!("{} (no checkout on this machine to compare with; to upgrade, run the installer again: {})", env!("CARGO_PKG_VERSION"), crate::version::RELEASE_INSTALL));
     }
     if home.file_name().map_or(false, |n| n == paths::OLD_HOME) {
         r.warn("stores", format!("{} is the folder's name before the rename; `chloectx upgrade` moves it to {}", home.display(), home.with_file_name(paths::HOME).display()));

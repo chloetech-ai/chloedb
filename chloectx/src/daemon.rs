@@ -550,7 +550,7 @@ impl Daemon {
                     me.keep_after_recall();
                     // The checkout is looked at again (no fetch) every few hours.
                     if crate::version::cached(&home, crate::version::CHECK_EVERY).is_none() {
-                        crate::version::check(&home, false);
+                        crate::version::check(&home, None);
                     }
                 }))))
             }
