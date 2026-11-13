@@ -1396,6 +1396,14 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         ..Default::default()
     };
+    // The answer cache knows the query by its SQL and the statistics it
+    // was sent ([`crate::answers`]); its parameters are added after they
+    // are read.
+    let cache_key = (!crate::answers::volatile(&req.sql)).then(|| {
+        let stats = b.get("stats").map(|s| s.to_string()).unwrap_or_default();
+        crate::answers::KeyBuilder::default().part(b"http").part(req.sql.as_bytes()).part(stats.as_bytes()).finish()
+    });
+    let req = QueryReq { cache_key, ..req };
     // A client's answer has its steps when asked for ([`wants_steps`]); a
     // shard's has them for its coordinator.
     let req = QueryReq { skip_steps: !req.shard && !wants_steps(&b), ..req };

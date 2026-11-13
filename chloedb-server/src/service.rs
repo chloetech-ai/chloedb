@@ -271,6 +271,11 @@ pub struct QueryReq {
     /// bytes are its steps, and a coordinator spends a sixth of its CPU
     /// reading its shards' and writing them out again.
     pub skip_steps: bool,
+    /// What names the query for the answer cache ([`crate::answers`]): its
+    /// SQL and what a coordinator sent with it (plan, statistics), made
+    /// where the request arrived; its parameters and this server's
+    /// settings are added here. `None`: not cached.
+    pub cache_key: Option<crate::answers::Key>,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -629,6 +634,8 @@ pub struct Service {
     /// throughput at its peak. A shard's calls from its coordinator always
     /// wait until their deadline: the coordinator's own slots bound them.
     pub admission_wait: Option<Duration>,
+    /// Answers kept between queries ([`crate::answers`]; `None`: none).
+    pub answers: Option<Arc<crate::answers::AnswerCache>>,
     /// Texts embedded at once (one per core): writes' and queries'.
     embedding: Arc<Semaphore>,
     /// Models queries named in `embed('model', ..)`, opened from the models
@@ -796,6 +803,7 @@ impl Service {
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
             admission_wait: None,
+            answers: None,
             embedding: Arc::new(Semaphore::new(cores)),
             named_models: Mutex::new(HashMap::new()),
             cores,
@@ -2644,6 +2652,32 @@ impl Service {
         Ok(a)
     }
 
+    /// The key of `req`'s answer in the answer cache ([`crate::answers`]),
+    /// or `None` when it is not cached: no cache, a request that named no
+    /// query ([`QueryReq::cache_key`]), or one whose answer holds more
+    /// than its rows (a lease, a scroll, Arrow columns, measured steps).
+    fn answer_key(&self, req: &QueryReq, table: &str) -> Option<crate::answers::Key> {
+        let base = req.cache_key?;
+        self.answers.as_ref()?;
+        if req.hold || req.scroll.is_some() || req.profile || req.quiet || req.arrow.is_some() {
+            return None;
+        }
+        // Synonyms set while the server runs are part of what a query reads.
+        let synonyms = self.synonyms().map_or(0, |s| Arc::as_ptr(&s) as *const u8 as usize as u64);
+        let flags = [req.shard as u8, req.own_read as u8, req.boosts_alone as u8];
+        Some(
+            crate::answers::KeyBuilder::default()
+                .key(base)
+                .params(&req.params)
+                .part(table.as_bytes())
+                .part(&flags)
+                .part(&synonyms.to_le_bytes())
+                .part(&req.stats_version.to_le_bytes())
+                .part(&self.max_rows.unwrap_or(0).to_le_bytes())
+                .finish(),
+        )
+    }
+
     /// [`Self::query`], with its steps.
     async fn query_steps(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // alerts agent: Contain rules, at admission ([`crate::contain`]).
@@ -2980,6 +3014,26 @@ impl Service {
                         stale = true;
                         return Ok((no_rows(), Vec::new()));
                     }
+                    // An answer kept for the same query on this version
+                    // ([`crate::answers`]) needs no slot and no executor.
+                    let txn = snap.txn();
+                    let cached = self.answer_key(&req, &schema.table);
+                    if let (Some(k), Some(cache)) = (cached, &self.answers) {
+                        let tc = Instant::now();
+                        if let Some(kept) = cache.get(k, txn) {
+                            let mut rs = (*kept).clone();
+                            rs.stats.steps.push(chloedb::query::steps::Step {
+                                op: "answer cache".into(),
+                                detail: format!("the answer of this query on version {txn}"),
+                                start_us: steps::us_at(tc),
+                                us: steps::tenth(tc.elapsed().as_nanos() as f64 / 1e3),
+                                rows: Some(rs.rows.len() as u64),
+                                ..Default::default()
+                            });
+                            telemetry::record("answer cache", tc, "hit");
+                            return Ok((rs, Vec::new()));
+                        }
+                    }
                     let ta = Instant::now();
                     let permit = self.admit(self.admission_budget(timeout, req.shard)).await.ok_or_else(too_many);
                     telemetry::record("admission", ta, if permit.is_ok() { "ok" } else { "rejected" });
@@ -3044,6 +3098,9 @@ impl Service {
                         Ok((r, started, ended)) => {
                             let (mut rs, ipc, scrolled) = r?;
                             steps::around(&mut rs.stats.steps, te, started, ended, back);
+                            if let (Some(k), Some(cache), true, None) = (cached, &self.answers, ipc.is_empty(), &scrolled) {
+                                cache.put(k, txn, &rs);
+                            }
                             arrow = ipc;
                             if let (Some(s), Some(ask)) = (scrolled, &req.scroll) {
                                 cursor = self.keep_scroll(scroll::Paged::Db(s), Some(snap.clone()), &schema.table, &req.sql, ask, req.shard, scroll_stats)?;
@@ -5070,6 +5127,9 @@ impl Service {
                 }
             }
             Backend::Cluster(c) => more.extend(c.metrics()),
+        }
+        if let Some(a) = &self.answers {
+            more.extend(a.metrics());
         }
         self.metrics.render(&more)
     }

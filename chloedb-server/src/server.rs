@@ -114,6 +114,9 @@ pub struct Options {
     /// Memory for filters kept between queries, in MiB (`None`:
     /// [`chloedb::query::exec::FILTER_CACHE_BYTES`]; 0: none kept).
     pub filter_cache_mb: Option<usize>,
+    /// Memory for answers kept between queries, in MiB (`None`:
+    /// [`crate::answers::DEFAULT_MB`]; 0: none kept).
+    pub answer_cache_mb: Option<usize>,
     /// Write requests held at once before more are refused (0: no limit).
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
@@ -480,6 +483,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     svc.slow = (o.slow_ms > 0).then(|| Duration::from_millis(o.slow_ms));
     svc.max_rows = (o.max_result_window > 0).then_some(o.max_result_window);
     svc.admission_wait = (o.admission_wait_ms > 0).then(|| Duration::from_millis(o.admission_wait_ms));
+    svc.answers = crate::answers::AnswerCache::new(o.answer_cache_mb.unwrap_or(crate::answers::DEFAULT_MB)).map(Arc::new);
     svc.max_scroll_rows = o.max_scroll_rows.unwrap_or(crate::service::MAX_SCROLL_ROWS);
     svc.max_groups = (o.max_groups > 0).then_some(o.max_groups);
     svc.max_rerank = (o.max_rerank > 0).then_some(o.max_rerank);
@@ -1382,8 +1386,10 @@ pub async fn serve_router_until(router: axum::Router, listener: TcpListener, acc
             _ = &mut stop => break,
         };
         let _ = tcp.set_nodelay(true);
-        // Each request knows its peer's address (the audit log's `addr`).
-        let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))));
+        // Each request knows its peer's address (the audit log's `addr`),
+        // set on it as it comes in: layering the router per connection
+        // would copy every route, about 300 KB a connection.
+        let service = hyper_util::service::TowerToHyperService::new(tower::ServiceExt::map_request(router.clone(), with_peer(peer)));
         let (tls, builder, open, mut told) = (tls.clone(), builder.clone(), open.clone(), stopping.subscribe());
         tokio::spawn(async move {
             let (_permit, _open) = (permit, open);
@@ -1422,6 +1428,14 @@ pub async fn serve_router_until(router: axum::Router, listener: TcpListener, acc
     Ok(())
 }
 
+/// Sets a request's peer address (axum's `ConnectInfo`) as it comes in.
+fn with_peer<B>(peer: std::net::SocketAddr) -> impl Fn(axum::http::Request<B>) -> axum::http::Request<B> + Clone {
+    move |mut r| {
+        r.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+        r
+    }
+}
+
 /// That the listener a request came in on stopped taking connections, for
 /// an answer that goes on until told to end (a feed): [`Self::wait`].
 #[derive(Clone)]
@@ -1455,6 +1469,7 @@ fn connections() -> Arc<tokio::sync::Semaphore> {
         let mut n = 65_536;
         #[cfg(unix)]
         {
+            raise_open_files();
             let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
             // SAFETY: getrlimit writes the struct it is given, and nothing else.
             if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } == 0 && r.rlim_cur != libc::RLIM_INFINITY {
@@ -1464,6 +1479,32 @@ fn connections() -> Arc<tokio::sync::Semaphore> {
         Arc::new(tokio::sync::Semaphore::new(n))
     })
     .clone()
+}
+
+/// Raises the process's soft open-file limit to its hard limit (at most
+/// 2^20), once: the soft limit is often 1,024 or 20,000 while the hard one
+/// allows a million, and each connection is a descriptor. A limit that
+/// cannot be raised (macOS caps it below an infinite hard limit) is left
+/// as it was, or set to the most it takes.
+#[cfg(unix)]
+fn raise_open_files() {
+    let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: getrlimit writes the struct it is given, and nothing else.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
+        return;
+    }
+    let want = if r.rlim_max == libc::RLIM_INFINITY { 1 << 20 } else { r.rlim_max.min(1 << 20) };
+    for cur in [want, 1 << 16, 10_240] {
+        if cur <= r.rlim_cur {
+            return;
+        }
+        let n = libc::rlimit { rlim_cur: cur, rlim_max: r.rlim_max };
+        // SAFETY: setrlimit reads the struct it is given, and nothing else.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &n) } == 0 {
+            tracing::debug!(from = r.rlim_cur as u64, to = cur as u64, "raised the open-file limit");
+            return;
+        }
+    }
 }
 
 /// Headers every HTTP answer carries unless its handler set its own: no

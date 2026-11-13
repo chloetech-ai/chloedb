@@ -248,6 +248,19 @@ pub fn hello() -> pb::HelloResponse {
 }
 
 pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
+    // The answer cache knows a coordinator's query by its SQL, the plan
+    // and the statistics it sent ([`crate::answers`]).
+    let cache_key = (!crate::answers::volatile(&r.sql)).then(|| {
+        let plan = r.plan.as_ref().map(prost::Message::encode_to_vec).unwrap_or_default();
+        crate::answers::KeyBuilder::default()
+            .part(b"grpc")
+            .part(&r.protocol.to_le_bytes())
+            .part(r.sql.as_bytes())
+            .part(&plan)
+            .part(&r.plan_json)
+            .part(&r.stats_json)
+            .finish()
+    });
     let plan = request_plan(r.protocol, r.plan, &r.plan_json)?;
     Ok(QueryReq {
         sql: r.sql,
@@ -274,6 +287,7 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         // A scroll's start names its owner ([`Grpc::query`]).
         scroll: None,
         skip_steps: r.skip_steps,
+        cache_key,
         // A client's, held to the server's limits.
         own_read: false,
     })

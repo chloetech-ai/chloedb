@@ -312,6 +312,11 @@ struct Args {
     /// (default: 64; 0: none kept).
     #[arg(long)]
     filter_cache_mb: Option<usize>,
+    /// Memory for answers kept between queries, in MiB: a read query asked
+    /// again on the same version of the data is answered from them, without
+    /// running (default: 64; 0: none kept). Every write moves the version on.
+    #[arg(long)]
+    answer_cache_mb: Option<usize>,
     /// Write requests the server holds at once (embedding, waiting for the
     /// writer, or being applied); more are refused with 429 (0: no limit).
     #[arg(long, default_value_t = 1024)]
@@ -1253,6 +1258,7 @@ async fn run() {
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
         filter_cache_mb: a.filter_cache_mb,
+        answer_cache_mb: a.answer_cache_mb,
         max_queued_writes: a.max_queued_writes,
         max_body_mb: a.max_body_mb,
         model: a.model,
