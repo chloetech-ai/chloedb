@@ -4428,7 +4428,11 @@ impl<'a> Executor<'a> {
         let mut p = self.projecting(q, hits)?;
         let mut rows = Vec::with_capacity(hits.len());
         let mut at: Option<Seg<'a>> = None;
+        // A filter the leaf cannot answer (`LIKE '%x%'` on a KEYWORD
+        // field) projects every row of a segment for the operator above.
+        let mut tick = self.ticker();
         for (r, h) in hits.iter().enumerate() {
+            tick.tick()?;
             if at.as_ref().is_none_or(|s| s.ord != h.seg) {
                 at = Some(self.seg_by_ord(h.seg));
             }
