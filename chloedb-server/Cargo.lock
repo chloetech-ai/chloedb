@@ -787,6 +787,7 @@ dependencies = [
  "futures",
  "hdrhistogram",
  "hmac",
+ "http-body",
  "hyper-util",
  "image",
  "libc",

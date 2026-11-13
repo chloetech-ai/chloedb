@@ -42,6 +42,9 @@ pub struct JudgeReq {
     pub model: Option<String>,
     /// Overrides the server's key for this request (never stored).
     pub api_key: Option<String>,
+    /// Who asked: the server's key's calls take from its model budget
+    /// ([`crate::budget`]).
+    pub who: Option<crate::keys::Principal>,
 }
 
 /// What a judge is asked when its answer holds no grade.
@@ -126,6 +129,9 @@ fn key_literal(k: &Json, ty: &FieldType) -> Result<String, ApiError> {
 }
 
 pub async fn run(svc: &Arc<Service>, req: JudgeReq) -> Result<Json, ApiError> {
+    // The server's own key spends from the caller's budget; a key the
+    // caller brings, its own.
+    let budget = req.api_key.is_none().then(|| (svc.model_budget.clone(), req.who.clone()));
     let key = req.api_key.or_else(|| svc.agent.api_key.clone()).ok_or_else(|| ApiError {
         status: 400,
         message: "no Anthropic API key: start the server with ANTHROPIC_API_KEY set, or enter a key in the UI".into(),
@@ -135,6 +141,10 @@ pub async fn run(svc: &Arc<Service>, req: JudgeReq) -> Result<Json, ApiError> {
     }
     if req.keys.is_empty() || req.keys.len() > MAX_ROWS {
         return Err(ApiError::bad(format!("judge grades 1 to {MAX_ROWS} rows, not {}", req.keys.len())));
+    }
+    // A call a row, at least, before any is sent.
+    if let Some((b, who)) = &budget {
+        b.take(who.as_ref(), req.keys.len() as u64, "/v1/judge")?;
     }
     let model = req.model.unwrap_or_else(|| svc.agent.model.clone());
     let schema = match &req.table {
@@ -191,7 +201,7 @@ pub async fn run(svc: &Arc<Service>, req: JudgeReq) -> Result<Json, ApiError> {
     let base = svc.agent.base_url.clone();
     let done: Vec<_> = futures::stream::iter(jobs)
         .map(|(name, p)| {
-            let (client, key, model, base) = (client.clone(), key.clone(), model.clone(), base.clone());
+            let (client, key, model, base, budget) = (client.clone(), key.clone(), model.clone(), base.clone(), budget.clone());
             async move {
                 let Some(p) = p else { return (name, Err("no such row".to_string()), None) };
                 let mut messages = vec![json!({"role": "user", "content": p})];
@@ -200,6 +210,14 @@ pub async fn run(svc: &Arc<Service>, req: JudgeReq) -> Result<Json, ApiError> {
                 // seventy in the TREC-COVID study) is asked once for its
                 // grade.
                 for turn in 0..2 {
+                    // The follow-up is a call more.
+                    if turn == 1 {
+                        if let Some((b, who)) = &budget {
+                            if let Err(e) = b.take(who.as_ref(), 1, "/v1/judge") {
+                                return (name, Err(e.message), Some(usage));
+                            }
+                        }
+                    }
                     let body = json!({"model": model, "max_tokens": 1024, "messages": messages});
                     let r = match agent::call(&client, &base, &key, &body).await {
                         Ok(r) => r,

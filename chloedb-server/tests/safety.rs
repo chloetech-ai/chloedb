@@ -3,7 +3,10 @@
 //! says to a browser (headers against framing and sniffing), who may
 //! call what on the OpenSearch listener and what its audit log keeps,
 //! which key may post a coordinator's alerts, and how a server stops with
-//! requests under way (over TLS too) and a follower's feed open.
+//! requests under way (over TLS too) and a follower's feed open (over HTTP
+//! and gRPC). And what a connection may hold (`chloedb_server::listener`):
+//! a share of the cap per client, room past it for the probes, HTTP/2
+//! connections closed when idle, slow bodies and slow readers cut off.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -236,24 +239,195 @@ async fn until_closed(s: &mut TcpStream, limit: Duration) -> bool {
     .is_ok()
 }
 
-/// D-B7: past the cap, a connection waits until another closes.
+/// D-B7: past the cap, the probes are still answered (and only they),
+/// a client's further connections are refused, and once one closes a new
+/// connection is served in full.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn connections_past_the_cap_wait_for_one_to_close() {
+async fn past_the_cap_only_the_probes_are_answered() {
     let dir = tempfile::tempdir().unwrap();
-    let access = Access { limits: Limits { max_connections: 2, ..Default::default() }, ..Default::default() };
+    let access = Access { limits: Limits { max_connections: 2, per_client: 100, ..Default::default() }, ..Default::default() };
     let (l, port) = listen().await;
     tokio::spawn(server::serve_http(Arc::new(service(dir.path())), l, access));
     let a = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let _b = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    c.write_all(b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();
-    let mut buf = vec![0u8; 64 << 10];
-    let early = tokio::time::timeout(Duration::from_millis(700), c.read(&mut buf)).await;
-    assert!(early.is_err(), "the third connection was answered at once: {early:?}");
+    // Past the cap: a probe is answered at once, anything else is told to
+    // come back, and both connections close after their answer.
+    for (path, want) in [("/readyz", "HTTP/1.1 200"), ("/v1/health", "HTTP/1.1 200"), ("/v1/tables", "HTTP/1.1 503")] {
+        let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        c.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes()).await.unwrap();
+        let answer = read_all(&mut c, Duration::from_secs(3)).await;
+        assert!(answer.starts_with(want), "{path}: {answer}");
+        assert!(answer.to_ascii_lowercase().contains("connection: close"), "{path}: {answer}");
+    }
+    // Two probes at once from one address are taken; a third is closed
+    // before it is read.
+    let _p1 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let _p2 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut p3 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let _ = p3.write_all(b"GET /readyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await;
+    assert!(read_all(&mut p3, Duration::from_secs(3)).await.is_empty(), "a third probe at once from one address");
+    // Once a connection closes, a new one is served in full.
     drop(a);
-    let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf)).await.expect("answered once a connection closed").unwrap();
-    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"), "{}", String::from_utf8_lossy(&buf[..n]));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    c.write_all(b"GET /v1/tables HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();
+    let answer = read_all(&mut c, Duration::from_secs(5)).await;
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+}
+
+/// What the server sends on `s` until it closes it, or `limit` passes.
+async fn read_all(s: &mut TcpStream, limit: Duration) -> String {
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 64 << 10];
+    let _ = tokio::time::timeout(limit, async {
+        loop {
+            match s.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+            }
+        }
+    })
+    .await;
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// N-8: one client address holds its share of the connections and no
+/// more, and the others still get theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_client_holds_its_share_of_the_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let access = Access { limits: Limits { max_connections: 8, per_client: 2, ..Default::default() }, ..Default::default() };
+    // Every address, so that 127.0.0.2 can call too.
+    let l = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(server::serve_http(Arc::new(service(dir.path())), l, access));
+    let _a = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let _b = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let _ = c.write_all(b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await;
+    let t0 = Instant::now();
+    assert!(read_all(&mut c, Duration::from_secs(3)).await.is_empty(), "a third connection of one client was served");
+    assert!(t0.elapsed() < Duration::from_secs(2), "closed at once, not left waiting: {:?}", t0.elapsed());
+    // Another address (Linux answers on all of 127/8) is served.
+    if cfg!(target_os = "linux") {
+        let sock = tokio::net::TcpSocket::new_v4().unwrap();
+        sock.bind("127.0.0.2:0".parse().unwrap()).unwrap();
+        let mut d = sock.connect(format!("127.0.0.1:{port}").parse().unwrap()).await.unwrap();
+        d.write_all(b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();
+        let answer = read_all(&mut d, Duration::from_secs(5)).await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    }
+}
+
+/// HTTP/2's preface and an empty SETTINGS frame: a client that says it
+/// speaks HTTP/2 and then asks nothing.
+const H2_HELLO: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00";
+
+/// N-8: an HTTP/2 connection that asks nothing is closed after the idle
+/// timeout, though it would answer the server's pings, on the HTTP
+/// listener and on gRPC's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_http2_connection_is_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let limits = Limits { idle: Duration::from_millis(600), ..Default::default() };
+    for grpc in [false, true] {
+        let (l, port) = listen().await;
+        let access = Access { limits, ..Default::default() };
+        match grpc {
+            false => drop(tokio::spawn(server::serve_http(svc.clone(), l, access))),
+            true => drop(tokio::spawn(server::serve_grpc(svc.clone(), l, access))),
+        }
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        s.write_all(H2_HELLO).await.unwrap();
+        let t0 = Instant::now();
+        assert!(until_closed(&mut s, Duration::from_secs(5)).await, "grpc {grpc}: still open after {:?}", t0.elapsed());
+        assert!(t0.elapsed() >= Duration::from_millis(500), "grpc {grpc}: closed before its idle time: {:?}", t0.elapsed());
+    }
+    // With no idle limit it stays open (HTTP/2 has no header timeout).
+    let (l, port) = listen().await;
+    tokio::spawn(server::serve_grpc(svc, l, Access { limits: Limits { idle: Duration::ZERO, ..Default::default() }, ..Default::default() }));
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s.write_all(H2_HELLO).await.unwrap();
+    // The server's pings (every --header-timeout-secs, 30 s) are not
+    // answered here, so it would close the connection once one timed out:
+    // within 1.5 s it is still open.
+    assert!(!until_closed(&mut s, Duration::from_millis(1500)).await, "closed without an idle limit");
+}
+
+/// N-8: a request body that pauses, or trickles a byte at a time, is cut
+/// off rather than holding its connection for as long as the client
+/// likes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_bodies_are_cut_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let limits = Limits { body: Duration::from_millis(500), ..Default::default() };
+    let (l, port) = listen().await;
+    tokio::spawn(server::serve_http(Arc::new(service(dir.path())), l, Access { limits, ..Default::default() }));
+    let head = |len: usize| format!("POST /v1/query HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n");
+    // A pause: ten bytes of a thousand, then nothing.
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s.write_all(format!("{}{{\"sql\": \"S", head(1000)).as_bytes()).await.unwrap();
+    let t0 = Instant::now();
+    let answer = read_all(&mut s, Duration::from_secs(5)).await;
+    assert!(t0.elapsed() < Duration::from_secs(3), "a paused body held its request {:?}", t0.elapsed());
+    assert!(answer.starts_with("HTTP/1.1 4"), "{answer}");
+    // A trickle: a byte every 100 ms, under 1 KiB a second.
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s.write_all(head(1000).as_bytes()).await.unwrap();
+    let t0 = Instant::now();
+    let trickle = async {
+        loop {
+            if s.write_all(b" ").await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if t0.elapsed() > Duration::from_secs(5) {
+                return;
+            }
+        }
+    };
+    trickle.await;
+    assert!(t0.elapsed() < Duration::from_secs(3), "a trickled body held its request {:?}", t0.elapsed());
+    // A body sent at once is read as before.
+    let r = client().post(format!("http://127.0.0.1:{port}/v1/query")).json(&json!({"sql": "SELECT COUNT(*) FROM products"})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{}", r.text().await.unwrap());
+}
+
+/// N-8: a client that stops reading its answer has its connection closed
+/// after the write timeout, which frees its place under the cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_stops_reading_is_cut_off() {
+    const BIG: usize = 64 << 20;
+    let router = axum::Router::new().route("/big", axum::routing::get(|| async { vec![b'x'; BIG] })).route("/small", axum::routing::get(|| async { "small" }));
+    let access = Access { limits: Limits { write: Duration::from_millis(500), max_connections: 1, per_client: 1, ..Default::default() }, ..Default::default() };
+    let (l, port) = listen().await;
+    let (_stop, stopped) = stopper();
+    tokio::spawn(async move { server::serve_router_until(router, l, &access, stopped).await });
+    let sock = tokio::net::TcpSocket::new_v4().unwrap();
+    sock.set_recv_buffer_size(4096).unwrap();
+    let mut s = sock.connect(format!("127.0.0.1:{port}").parse().unwrap()).await.unwrap();
+    s.write_all(b"GET /big HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await.unwrap();
+    // Reads nothing for a while: the server's write waits, then fails.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let mut got = 0usize;
+    let mut buf = vec![0u8; 1 << 20];
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match s.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => got += n,
+            }
+        }
+    })
+    .await;
+    assert!(got < BIG, "the whole answer came: {got} bytes");
+    // Its place under the cap is free again.
+    let r = tokio::time::timeout(Duration::from_secs(5), client().get(format!("http://127.0.0.1:{port}/small")).send()).await.expect("served once the slow reader was cut").unwrap();
+    assert_eq!(r.text().await.unwrap(), "small");
 }
 
 /// D-B5: a server over TLS that stops waits for the requests under way,
@@ -310,6 +484,77 @@ async fn a_server_with_a_feed_open_stops() {
     assert!(end.is_ok(), "the feed was still open {:?} after the stop", t0.elapsed());
     tokio::time::timeout(Duration::from_secs(10), served).await.expect("the server stopped").unwrap().unwrap();
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+}
+
+/// D-B6: a gRPC server with a follower's feed open stops within its
+/// grace time: the feed ends, rather than holding the process until a
+/// supervisor kills it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_grpc_server_with_a_feed_open_stops() {
+    use chloedb_server::pb;
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let (l, port) = listen().await;
+    let (stop, stopped) = stopper();
+    let served = tokio::spawn(server::serve_grpc_until(svc, l, Access::default(), stopped));
+    let mut c = pb::strata_client::StrataClient::connect(format!("http://127.0.0.1:{port}")).await.unwrap();
+    let mut feed = c.feed(pb::FeedRequest { from: 1, ..Default::default() }).await.unwrap().into_inner();
+    // Its first line says where it starts; then, with no writes, it
+    // sends a heartbeat now and then, and would go on for ever.
+    assert!(feed.message().await.unwrap().is_some(), "the feed's first line");
+    let t0 = Instant::now();
+    stop();
+    let end = tokio::time::timeout(Duration::from_secs(10), async { while let Ok(Some(_)) = feed.message().await {} }).await;
+    assert!(end.is_ok(), "the feed was still open {:?} after the stop", t0.elapsed());
+    tokio::time::timeout(Duration::from_secs(10), served).await.expect("the server stopped").unwrap().unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+}
+
+/// N-D11: a key limited to tables refused on the gRPC port leaves an entry
+/// in the audit log, as an HTTP refusal does; and gRPC over TLS still
+/// answers on the new accept loop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limited_keys_grpc_refusal_is_audited() {
+    use chloedb_server::keys::Grant;
+    use chloedb_server::pb;
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let (admin, admin_secret) = svc.keys.create("ops", Scope::Admin, None, false, false).unwrap();
+    let (_, secret) = svc.keys.create_limited("an-app", Scope::Read, Some(vec![Grant::new("products", Scope::Read).unwrap()]), None, None, None, false, false).unwrap();
+    let (l, port) = listen().await;
+    tokio::spawn(server::serve_grpc(svc.clone(), l, Access { tls: Some(tls()), ..Default::default() }));
+    let ca = tonic::transport::Certificate::from_pem(std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/tls/ca.pem")).unwrap());
+    let ch = tonic::transport::Channel::from_shared(format!("https://localhost:{port}")).unwrap().tls_config(tonic::transport::ClientTlsConfig::new().ca_certificate(ca).domain_name("localhost")).unwrap().connect().await.unwrap();
+    let call = |secret: String| {
+        let mut c = pb::strata_client::StrataClient::with_interceptor(ch.clone(), move |mut req: tonic::Request<()>| {
+            req.metadata_mut().insert("authorization", format!("Bearer {secret}").parse().unwrap());
+            Ok(req)
+        });
+        async move { c.query(pb::QueryRequest { sql: "SELECT COUNT(*) FROM products".into(), ..Default::default() }).await }
+    };
+    let e = call(secret).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::PermissionDenied, "{e:?}");
+    let refused: Vec<Json> = audit(&svc).into_iter().filter(|e| e["who"] == "an-app").collect();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!((refused[0]["status"].as_u64(), refused[0]["method"].as_str()), (Some(403), Some("gRPC")));
+    // An admin key's call is answered, over TLS.
+    call(admin_secret).await.unwrap_or_else(|e| panic!("{} over TLS: {e:?}", admin.name));
+}
+
+/// N-D12: a server started with --no-fetch-models refuses an admin's
+/// Fetch, rather than downloading what it was told not to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_that_does_not_fetch_models_refuses_fetch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut svc = service(dir.path());
+    svc.fetch_models = false;
+    let base = http(Arc::new(svc), Access::default()).await;
+    let known = chloedb::embed::KNOWN_MODELS[0].0;
+    let r = client().post(format!("{base}/v1/admin/models/fetch")).json(&json!({"model": known})).send().await.unwrap();
+    let status = r.status().as_u16();
+    let text = r.text().await.unwrap();
+    assert_eq!(status, 409, "{text}");
+    assert!(text.contains("--no-fetch-models"), "{text}");
 }
 
 /// H-12: the published image (the Dockerfile's last stage) has a user

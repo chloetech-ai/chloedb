@@ -260,6 +260,9 @@ pub struct QueryReq {
     /// Start a scroll ([`scroll`]): answer the first page, and keep the
     /// rest for [`Service::scroll_next`] ([`Answer::cursor`]).
     pub scroll: Option<ScrollAsk>,
+    /// Whose model budget the query's `llm()` questions take from
+    /// ([`crate::budget`]); `None`: the server's own query, not counted.
+    pub who: Option<Principal>,
     /// From a coordinator that fuses a rank-safe boost from the rows each
     /// shard's bound found alone ([`crate::grpc::BOOSTS_PROTOCOL`]): the
     /// shard leaves out the boost's inputs' top rows
@@ -476,6 +479,8 @@ pub struct Service {
     pub schema: Schema,
     pub metrics: Metrics,
     pub agent: AgentConfig,
+    /// The model calls each API key may make a day ([`crate::budget`]).
+    pub model_budget: Arc<crate::budget::ModelBudget>,
     // ----- core: identity, service levels, place (command center rebuild)
     pub identity: Identity,
     pub slo: Slo,
@@ -747,6 +752,7 @@ impl Service {
             schema,
             metrics: Metrics::default(),
             agent,
+            model_budget: Default::default(),
             identity: Identity::default(),
             slo: Slo::default(),
             place: Place::from_env(None),
@@ -1549,6 +1555,12 @@ impl Service {
                     let names: Vec<&str> = chloedb::embed::KNOWN_MODELS.iter().map(|m| m.0).collect();
                     ApiError::bad(format!("{name} is not a model this server fetches: one of {}", names.join(", ")))
                 })?;
+                // N-D12: a server told not to download (an air-gapped
+                // install, a network policy) makes no outbound request when
+                // an admin clicks Fetch either.
+                if !self.fetch_models {
+                    return Err(ApiError { status: 409, message: format!("this server does not download models (--no-fetch-models): fetch {known} with chloedb-server fetch-model {known} --models DIR, or restart it without the flag") });
+                }
                 (known.to_string(), None)
             }
             Some(elem) => {
@@ -2106,7 +2118,7 @@ impl Service {
     /// A coordinator asks its shards for their tables and rank profiles
     /// again ([`Coordinator::refresh`]; at most once a second unless
     /// `now`): whether it learned of a change.
-    async fn learn_tables(&self, now: bool) -> bool {
+    pub(crate) async fn learn_tables(&self, now: bool) -> bool {
         let Backend::Cluster(c) = &self.backend else { return false };
         let changed = c.refresh(now).await;
         if changed {
@@ -2963,7 +2975,27 @@ impl Service {
                 let rs = std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
                 let (params, models) = (req.params.clone(), self.models_dir());
                 let t0 = Instant::now();
-                a.rs = tokio::task::spawn_blocking(move || split.finish(rs, &params, &models)).await.map_err(|e| ApiError::internal(format!("llm(): {e}")))??;
+                // Each batch of questions asked takes from the caller's
+                // model budget, where it is sent.
+                let (budget, who) = (self.model_budget.clone(), req.who.clone());
+                let refused: std::sync::Mutex<Option<ApiError>> = std::sync::Mutex::new(None);
+                let finished = tokio::task::spawn_blocking(move || {
+                    let take = |n: u64| {
+                        budget.take(who.as_ref(), n, "llm()").map_err(|e| {
+                            let m = e.message.clone();
+                            *refused.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+                            chloedb::Error::Unavailable(m)
+                        })
+                    };
+                    let r = split.finish_within(rs, &params, &models, Some(&take));
+                    (r, refused.into_inner().unwrap_or_else(|p| p.into_inner()))
+                })
+                .await
+                .map_err(|e| ApiError::internal(format!("llm(): {e}")))?;
+                a.rs = match finished {
+                    (_, Some(refused)) => return Err(refused),
+                    (r, None) => r?,
+                };
                 a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
             }
@@ -3893,7 +3925,7 @@ impl Service {
         // INSERTs.
         if chloedb::query::chunks::of_sql(sql, params)?.is_some() {
             who.may(Scope::Read, "a query")?;
-            let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, ..Default::default() }).await?;
+            let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), ..Default::default() }).await?;
             return Ok(SqlAnswer::Rows(a));
         }
         if let Some(ins) = chloedb::query::chunks::insert_of_sql(sql, params)? {
@@ -3902,7 +3934,7 @@ impl Service {
             let schema = self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(&ins.query.table)).ok_or_else(|| ApiError::bad(format!("query error: no table {}", ins.query.table)))?;
             let mut rows = ins.query.source_rows();
             let chunks = loop {
-                let a = self.query(QueryReq { sql: ins.query.source_sql_of(&schema, rows)?, params: params.clone(), timeout_ms, after: after.clone(), own_read: true, ..Default::default() }).await?;
+                let a = self.query(QueryReq { sql: ins.query.source_sql_of(&schema, rows)?, params: params.clone(), timeout_ms, after: after.clone(), own_read: true, who: Some(who.clone()), ..Default::default() }).await?;
                 let chunks = ins.query.finish(&a.rs);
                 match ins.query.more_rows(rows, &a.rs, &chunks) {
                     Some(more) => rows = more,
@@ -3938,7 +3970,7 @@ impl Service {
         }
         let ddl = match command {
             Command::Query => {
-                let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, ..Default::default() }).await?;
+                let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), ..Default::default() }).await?;
                 return Ok(SqlAnswer::Rows(a));
             }
             Command::Explain { .. } => return Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain")),
