@@ -2048,6 +2048,11 @@ test('every version is drawn on a phone and a computer, and the rules find what 
   assert.match(said[1].problem, /8 things to tap are smaller than a finger \(44 px\): Edit/);
   assert.match(said[2].problem, /"No streak yet" at 3.1:1/);
   assert.match(said[3].problem, /raw ids are shown: ai7nozxh2o/);
+  // A hair under its contrast is noted, not a change of its own (APC-16), and says its own need.
+  const near = rules({ ...ok, faint: [{ text: 'Water', ratio: 4.49, need: 4.5 }], faintCount: 1 }, 'phone');
+  assert.deepEqual(near.map((r) => [r.severity, r.problem]), [['low', 'text that is hard to read: "Water" at 4.49:1 (it needs 4.5:1)']]);
+  assert.equal(repairRequest(near.map((r) => ({ ...r, view: 'Plants', device: 'phone', by: 'rule' }))), null);
+  assert.equal(rules({ ...ok, faint: [{ text: 'Big title', ratio: 2.5, need: 3 }], faintCount: 1 }, 'phone')[0].severity, 'high');
   // small targets are a phone's problem; a computer has a pointer
   assert.ok(!rules(bad, 'computer').some((r) => /finger/.test(r.problem)));
   assert.equal(repairRequest([{ view: 'Today', device: 'phone', problem: 'x', severity: 'low' }]), null);

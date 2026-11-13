@@ -108,7 +108,9 @@ export function measure(fold) {
     const r = ratio(over({ ...fg, a: fg.a * alpha }, bg), bg);
     const size = parseFloat(cs.fontSize);
     const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
-    if (r < (large ? 3 : 4.5)) faint.push({ text: words(t.data).slice(0, 40), ratio: Math.round(r * 10) / 10 });
+    // The ratio cut (never rounded up), so that one under the need never reads as the need itself.
+    const need = large ? 3 : 4.5;
+    if (r < need) faint.push({ text: words(t.data).slice(0, 40), ratio: Math.floor(r * 100) / 100, need });
   }
   faint.sort((a, b) => a.ratio - b.ratio);
   // Row ids shown as they are (an engine id: ten letters and digits).
@@ -157,7 +159,13 @@ export function rules(m, device) {
   if (m.text < 3 && !m.controls) out.push({ problem: 'the screen draws nothing', severity: 'high' });
   if (m.scroll > m.width + 2) out.push({ problem: `the page is ${m.scroll - m.width} px wider than the ${device} and scrolls sideways${m.wide ? ` (${m.wide.what} reaches ${m.wide.right} px)` : ''}`, severity: 'high' });
   if (device === 'phone' && m.smallCount) out.push({ problem: `${m.smallCount} thing${m.smallCount === 1 ? '' : 's'} to tap ${m.smallCount === 1 ? 'is' : 'are'} smaller than a finger (44 px): ${m.small.slice(0, 3).join(', ')}`, severity: 'high' });
-  if (m.faintCount) out.push({ problem: `text that is hard to read: ${m.faint.slice(0, 2).map((f) => `"${f.text}" at ${f.ratio}:1`).join(', ')} (it needs 4.5:1)`, severity: 'high' });
+  // Text a hair under its contrast (within 0.2) is noted, not a reason for
+  // a change of its own: the audit saw a paid change for 4.49:1.
+  if (m.faintCount) {
+    const need = (f) => f.need || 4.5;
+    const far = m.faint.some((f) => f.ratio < need(f) - 0.2);
+    out.push({ problem: `text that is hard to read: ${m.faint.slice(0, 2).map((f) => `"${f.text}" at ${f.ratio}:1 (it needs ${need(f)}:1)`).join(', ')}`, severity: far ? 'high' : 'low' });
+  }
   if (m.ids.length) out.push({ problem: `raw ids are shown: ${m.ids.join(', ')} (show the name of the row instead)`, severity: 'high' });
   if (m.repeats.length) out.push({ problem: `buttons say the same on every row with nothing to tell them apart: ${m.repeats.join(', ')}`, severity: 'low' });
   // Taste rules held in code (Doable): the job's content on the first
