@@ -1718,7 +1718,7 @@ impl Service {
     /// (and shipped to replicas) hold the results.
     fn embed_ops(&self, db: &Db, ops: &mut [Json]) -> Result<(), ApiError> {
         let models = self.models();
-        let writes_doc = |op: &Json| matches!(op.get("op").and_then(|o| o.as_str()), Some("insert" | "upsert" | "upsert_if_newer"));
+        let writes_doc = |op: &Json| matches!(op.get("op").and_then(|o| o.as_str()), Some("insert" | "insert_if_absent" | "upsert" | "upsert_if_newer"));
         let now = chloedb::timestamp::now();
         let t0 = Instant::now();
         let mut n = 0;
@@ -3004,7 +3004,7 @@ impl Service {
         a.rs = std::mem::replace(&mut served.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
         let ops: Vec<Json> = served.entries.iter().map(|e| json!({"op": "upsert", "table": log.table, "doc": e.to_json()})).collect();
         let w = match ops.is_empty() {
-            true => Written { rows: 0, seq_no: None, seq_nos: Vec::new(), skipped: 0, stamps: Vec::new() },
+            true => Written::default(),
             false => self.write_ops(ops, None).await?,
         };
         Ok((a, served, w))
@@ -3775,6 +3775,9 @@ impl Service {
             }
         }
         let need = command_scope(&command);
+        // An UPDATE or DELETE with a LIMIT, which a coordinator runs by
+        // picking its rows first ([`Self::limited_write`]).
+        let limited = matches!(&command, Command::Write { write: chloedb::query::Write::Update { select, .. } | chloedb::query::Write::Delete { select }, .. } if select.limit.is_some());
         who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?;
         if who.limited() {
             crate::scoped::check_statement(who, sql, &command, &self.table_names(), &self.functions())?;
@@ -3827,6 +3830,7 @@ impl Service {
                     _ => r,
                 }
             }
+            (Backend::Cluster(_), false) if limited => self.limited_write(sql, params, key).await,
             (Backend::Cluster(c), false) => c.sql(sql, params, key).await,
         };
         let w = self.wrote(r, t0, Some(sql))?;
@@ -3907,6 +3911,66 @@ impl Service {
             .collect();
         out.sort();
         out
+    }
+
+    /// `UPDATE ... LIMIT n` or `DELETE ... [ORDER BY ...] LIMIT n` through a
+    /// coordinator, whose shards would each take n rows: the keys of the
+    /// rows it changes are read first, by a SELECT of the statement's
+    /// WHERE, ORDER BY and LIMIT over every shard, and the statement then
+    /// runs without its LIMIT over those keys alone (`WHERE (...) AND key
+    /// IN (...)`), so that it changes at most n rows. It is two steps, not
+    /// one: a row changed in between so that it no longer matches is left
+    /// alone (the WHERE still holds it), and fewer than n rows may change.
+    async fn limited_write(self: &Arc<Self>, sql: &str, params: &Params, key: Option<String>) -> Result<Written, ApiError> {
+        use sqlparser::ast as a;
+        let Backend::Cluster(c) = &self.backend else { return Err(ApiError::internal("limited_write is a coordinator's")) };
+        let mut stmts = chloedb::query::parse::parse(sql)?;
+        let [stmt] = &mut stmts[..] else { return Err(ApiError::bad("one statement at a time")) };
+        let (relation, selection, order_by, limit) = match stmt {
+            a::Statement::Update { table, selection, limit, .. } => (table.relation.clone(), selection, Vec::new(), limit),
+            a::Statement::Delete(d) => {
+                let (a::FromTable::WithFromKeyword(from) | a::FromTable::WithoutKeyword(from)) = &d.from;
+                let relation = from.first().map(|t| t.relation.clone()).ok_or_else(|| ApiError::bad("DELETE from one table"))?;
+                (relation, &mut d.selection, std::mem::take(&mut d.order_by), &mut d.limit)
+            }
+            _ => return Err(ApiError::bad("not an UPDATE or DELETE")),
+        };
+        let a::TableFactor::Table { name, .. } = &relation else { return Err(ApiError::bad("UPDATE or DELETE one table")) };
+        let schema = self.table(&name.to_string()).await?;
+        let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: UPDATE and DELETE ... LIMIT through a coordinator pick their rows by key", schema.table)))?;
+        let pk_name = schema.fields[pk].name.clone();
+        let n = limit.as_ref().map(|l| l.to_string()).unwrap_or_default();
+        let cap: usize = n.trim().parse().map_err(|_| ApiError::bad(format!("LIMIT {n}: through a coordinator, an UPDATE or DELETE takes a LIMIT that is a number")))?;
+        if cap > MAX_GET_KEYS {
+            return Err(ApiError::bad(format!("LIMIT {cap}: through a coordinator, an UPDATE or DELETE takes a LIMIT of at most {MAX_GET_KEYS}")));
+        }
+        let mut pick = format!("SELECT {} FROM {relation}", ident(&pk_name));
+        if let Some(w) = selection.as_ref() {
+            pick.push_str(&format!(" WHERE {w}"));
+        }
+        if !order_by.is_empty() {
+            pick.push_str(&format!(" ORDER BY {}", order_by.iter().map(|o| o.to_string()).collect::<Vec<_>>().join(", ")));
+        }
+        pick.push_str(&format!(" LIMIT {cap}"));
+        let picked = self.query(QueryReq { sql: pick, params: params.clone(), ..Default::default() }).await?;
+        let keys: Vec<Value> = picked.rs.rows.iter().filter_map(|r| r.first().cloned()).collect();
+        if keys.is_empty() {
+            return Ok(Written { receipt: None, ..Default::default() });
+        }
+        let mut params = params.clone();
+        let mut list = Vec::with_capacity(keys.len());
+        for (j, k) in keys.into_iter().enumerate() {
+            let name = format!("__limit_key_{j}");
+            list.push(a::Expr::value(a::Value::Placeholder(format!(":{name}"))));
+            params.0.insert(name, k);
+        }
+        let within = a::Expr::InList { expr: Box::new(a::Expr::Identifier(a::Ident::new(pk_name))), list, negated: false };
+        *selection = Some(match selection.take() {
+            Some(w) => a::Expr::BinaryOp { left: Box::new(a::Expr::Nested(Box::new(w))), op: a::BinaryOperator::And, right: Box::new(within) },
+            None => within,
+        });
+        *limit = None;
+        c.sql(&stmt.to_string(), &params, key).await
     }
 
     /// `CREATE TABLE`, `ALTER TABLE` or `DROP TABLE`, `CREATE RANK PROFILE`
@@ -4089,7 +4153,15 @@ impl Service {
     /// [`Self::write_ops`], of rows of moving slots copied by the
     /// coordinator moving them, or deleted here, as `moved` says
     /// ([`Self::write`]).
-    pub async fn write_ops_as(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
+    pub async fn write_ops_as(self: &Arc<Self>, ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
+        let received = ops.iter().filter(|op| !is_mark(op)).count() as u64;
+        self.write_ops_counted(ops, key, moved).await.map(|mut w| {
+            w.received = received;
+            w
+        })
+    }
+
+    async fn write_ops_counted(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
         own_marks_ok(&ops)?;
         let n = match &self.backend {
@@ -4300,22 +4372,52 @@ impl Service {
     /// row is read once first, so that a bad one writes nothing; then read
     /// again a request's worth at a time, the next while the last is
     /// written, so that an import holds its body and two requests' rows,
-    /// not every row. Returns the rows written and the fields the schema
-    /// lacks (skipped).
-    pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format) -> Result<(u64, Vec<String>), ApiError> {
+    /// not every row. Returns what was written ([`Written`], its receipt
+    /// summed over the requests) and the fields the schema lacks
+    /// (skipped). With `opts.strict`, a key twice in the file or one a row
+    /// has already is refused before anything is written, and the rows go
+    /// as inserts, so that one written meanwhile fails the request too.
+    pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format, opts: ImportOpts) -> Result<(Written, Vec<String>), ApiError> {
         let schema = match table {
             Some(t) => self.table(t).await?,
             None => self.default_table()?,
         };
         // Rows of the first table name none, as before there were tables.
         let named = (table.is_some() || self.first_table().is_placeholder()).then(|| schema.table.clone());
+        let strict = opts.strict && schema.primary_key.is_some();
+        if strict {
+            let (s, b) = (schema.clone(), body.clone());
+            let keys = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, ApiError> {
+                let pk = s.primary_key.expect("strict needs a key");
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut keys = Vec::new();
+                for (n, d) in Rows::new(&s, std::io::Cursor::new(b), format)?.empty_cells(opts.empty).enumerate() {
+                    let d = d?;
+                    if !seen.insert(js::to_json(&d[pk]).to_string()) {
+                        return Err(conflict(format!("strict: row {} repeats key {} of an earlier row; nothing was written", n + 1, key_text(&d[pk]))));
+                    }
+                    keys.push(d[pk].clone());
+                }
+                Ok(keys)
+            })
+            .await
+            .map_err(ApiError::internal)??;
+            for chunk in keys.chunks(MAX_GET_KEYS) {
+                let got = self.get_rows(Some(&schema.table), chunk.to_vec(), None, &After::default(), 0, false).await?;
+                let there: Vec<&Value> = chunk.iter().zip(&got.rows).filter(|(_, r)| r.is_some()).map(|(k, _)| k).collect();
+                if let Some(k) = there.first() {
+                    return Err(conflict(format!("strict: {} has a row with key {} already ({} of the file's keys are there); nothing was written", schema.table, key_text(k), there.len())));
+                }
+            }
+        }
         let (tx, mut rx) = tokio::sync::mpsc::channel::<chloedb::Result<Vec<Json>>>(1);
         let reader = tokio::task::spawn_blocking(move || -> chloedb::Result<Vec<String>> {
-            let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?;
+            let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?.empty_cells(opts.empty);
             check.by_ref().try_for_each(|d| d.map(drop))?;
-            let mut rows = Rows::new(&schema, std::io::Cursor::new(body), format)?;
-            // A table without a key (log lines) takes its rows as inserts.
-            let kind = if schema.primary_key.is_some() { "upsert" } else { "insert" };
+            let mut rows = Rows::new(&schema, std::io::Cursor::new(body), format)?.empty_cells(opts.empty);
+            // A strict import inserts; a table without a key (log lines)
+            // takes its rows as inserts too.
+            let kind = if strict || schema.primary_key.is_none() { "insert" } else { "upsert" };
             loop {
                 let op = |d: chloedb::value::Document| {
                     let mut op = json!({"op": kind, "doc": js::document_json(&schema, &d)});
@@ -4333,15 +4435,16 @@ impl Service {
             }
             Ok(rows.unknown.into_iter().collect())
         });
-        let mut n = 0;
+        let mut all = Written { receipt: Some(Receipt::default()), ..Default::default() };
         while let Some(chunk) = rx.recv().await {
             let ops = chunk?;
             if !ops.is_empty() {
-                n += self.write_ops(ops, None).await?.rows;
+                let w = self.write_ops(ops, None).await?;
+                all.add(w);
             }
         }
         let unknown = reader.await.map_err(ApiError::internal)??;
-        Ok((n, unknown))
+        Ok((all, unknown))
     }
 
     /// Imports the tables of the SQLite file in `body`
@@ -4563,8 +4666,15 @@ impl Service {
     /// database, once no write holds the writer; a primary ships it with
     /// the rows. A coordinator creates tables only through `CREATE TABLE`.
     async fn create_table(self: &Arc<Self>, schema: Schema, timeout_ms: u64) -> Result<(), ApiError> {
-        let Backend::Local(db) = &self.backend else {
-            return Err(ApiError::bad(format!("a coordinator imports into the tables its shards have: create table {} first (CREATE TABLE through the coordinator), or import on each shard", schema.table)));
+        let db = match &self.backend {
+            Backend::Local(db) => db,
+            // On every shard, as CREATE TABLE through the coordinator, so
+            // that an import makes the table its plan says it makes.
+            Backend::Cluster(_) => {
+                let sql = chloedb::query::ddl::create_sql(&schema);
+                self.ddl(sql.trim_end_matches(';'), &Params::new(), timeout_ms, "import").await?;
+                return Ok(());
+            }
         };
         self.takes_writes()?;
         let _entry = self.moving.enter();
@@ -5193,6 +5303,112 @@ pub struct Written {
     /// When the events the write applied happened (their `source.ts`, in
     /// microseconds), for the lag metric; not part of the answer.
     pub stamps: Vec<i64>,
+    /// What the write's operations found ([`Receipt`]): `None` for a SQL
+    /// statement, an answer replayed by its idempotency key, or through a
+    /// coordinator a shard of a protocol before [`crate::grpc::RECEIPT_PROTOCOL`].
+    pub receipt: Option<Receipt>,
+    /// Through a coordinator: each shard written, its rows and receipt.
+    pub shards: Vec<ShardWritten>,
+    /// The operations the request carried (its marks of stream sources
+    /// left out): 0 for a SQL statement.
+    pub received: u64,
+}
+
+/// What one request's write operations found, counted by the server that
+/// applied them ([`apply_into`]): rows inserted (no row had the key),
+/// replaced (a document written over a row that was there), updated (a
+/// `set` or an `add` of a row that was there), deleted, collapsed (a
+/// document written over one an earlier operation of the same request
+/// wrote: a key twice in one batch, which leaves one row), and not found
+/// (a `set`, `add` or `delete` of a key no row has).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Receipt {
+    pub inserted: u64,
+    pub replaced: u64,
+    pub updated: u64,
+    pub deleted: u64,
+    pub collapsed: u64,
+    pub not_found: u64,
+}
+
+impl Receipt {
+    pub fn add(&mut self, o: &Receipt) {
+        self.inserted += o.inserted;
+        self.replaced += o.replaced;
+        self.updated += o.updated;
+        self.deleted += o.deleted;
+        self.collapsed += o.collapsed;
+        self.not_found += o.not_found;
+    }
+
+    /// What `strict` refuses: a row replaced, a key twice, a key not found.
+    pub fn mismatches(&self) -> Vec<String> {
+        let mut m = Vec::new();
+        for (n, what) in [(self.replaced, "replaced a row that was there"), (self.collapsed, "wrote a key an earlier operation of the request wrote"), (self.not_found, "found no row with its key")] {
+            if n > 0 {
+                m.push(format!("{n} operation{} {what}", if n == 1 { "" } else { "s" }));
+            }
+        }
+        m
+    }
+}
+
+impl Written {
+    /// Adds `w`, another request's answer of the same write (an import's),
+    /// to this one: its rows, receipt and shards' parts. Their sequence
+    /// numbers are the last's.
+    pub fn add(&mut self, w: Written) {
+        self.rows += w.rows;
+        self.skipped += w.skipped;
+        self.received += w.received;
+        self.receipt = match (self.receipt, w.receipt) {
+            (Some(mut a), Some(b)) => {
+                a.add(&b);
+                Some(a)
+            }
+            _ => None,
+        };
+        for p in w.shards {
+            match self.shards.iter_mut().find(|q| q.shard == p.shard) {
+                Some(q) => {
+                    q.rows += p.rows;
+                    q.receipt = match (q.receipt, p.receipt) {
+                        (Some(mut a), Some(b)) => {
+                            a.add(&b);
+                            Some(a)
+                        }
+                        _ => None,
+                    };
+                }
+                None => self.shards.push(p),
+            }
+        }
+        self.shards.sort_by_key(|p| p.shard);
+        if w.seq_no.is_some() {
+            self.seq_no = w.seq_no;
+        }
+        if !w.seq_nos.is_empty() {
+            self.seq_nos = w.seq_nos;
+        }
+    }
+}
+
+/// How an import reads and writes its rows ([`Service::import`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ImportOpts {
+    /// Refuse a key twice in the file or one a row has already, writing
+    /// nothing.
+    pub strict: bool,
+    /// What an empty CSV or TSV cell means.
+    pub empty: chloedb::ingest::EmptyCell,
+}
+
+/// One shard's part of a write through a coordinator ([`Written::shards`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShardWritten {
+    pub shard: usize,
+    pub rows: u64,
+    pub receipt: Option<Receipt>,
 }
 
 /// Rows one write request of an import carries.
@@ -5752,11 +5968,12 @@ struct Applied {
     rows: u64,
     skipped: u64,
     stamps: Vec<i64>,
+    receipt: Receipt,
 }
 
 impl Applied {
     fn written(self, seq_no: Option<u64>) -> Written {
-        Written { rows: self.rows, seq_no, skipped: self.skipped, stamps: self.stamps, ..Default::default() }
+        Written { rows: self.rows, seq_no, skipped: self.skipped, stamps: self.stamps, receipt: Some(self.receipt), ..Default::default() }
     }
 }
 
@@ -6040,10 +6257,45 @@ fn check_seq_no(t: &TableTxn<'_, '_>, op: &Json, key: &Value) -> Result<(), ApiE
 }
 
 fn key_text(key: &Value) -> String {
-    match key {
-        Value::Str(s) => format!("{s:?}"),
-        v => format!("{v:?}"),
+    chloedb::query::hint::sql_value(key)
+}
+
+/// What an operation of a request's write found ([`Receipt`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Found {
+    Inserted,
+    Replaced,
+    Collapsed,
+    Updated,
+    Deleted,
+}
+
+impl Found {
+    /// A document written over a key this request wrote (`again`), or one
+    /// a row had (`existed`).
+    fn of(again: bool, existed: bool) -> Found {
+        match (again, existed) {
+            (true, _) => Found::Collapsed,
+            (false, true) => Found::Replaced,
+            (false, false) => Found::Inserted,
+        }
     }
+}
+
+/// A `set`, `add` or `delete` that found no row with its key, refused
+/// (`"if_missing": "error"`, which a coordinator gives an operation with a
+/// `routing`, or `strict`): 404, naming the routing a table placed by a
+/// column was given.
+fn not_found(schema: &Schema, op: &Json, kind: &str) -> ApiError {
+    let key = op_key(schema, op).map(|k| key_text(&k)).unwrap_or_else(|_| "?".into());
+    let message = match (op.get("routing").filter(|r| !r.is_null()), schema.shard_by.as_deref()) {
+        (Some(r), Some(by)) => format!(
+            "{kind} found no row of {} with key {key} where its routing {r} ({by}) places it: on a cluster the row is on the shard of its own {by}, so give that as \"routing\" (or \"if_missing\": \"skip\" to pass over a key that is not there); nothing was written",
+            schema.table
+        ),
+        _ => format!("{kind} found no row of {} with key {key}; nothing was written (\"if_missing\": \"skip\" passes over a key that is not there)", schema.table),
+    };
+    ApiError { status: 404, message }
 }
 
 /// Applies one request's `ops`, each to the table it names ([`op_table`]);
@@ -6060,6 +6312,8 @@ fn key_text(key: &Value) -> String {
 fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json], epoch: u64, arrived: &mut arrivals::Group<'_>) -> Result<Applied, ApiError> {
     let mut a = Applied::default();
     let now = chloedb::timestamp::now();
+    // The keys documents of this request wrote, by table.
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     // Each source's offset when the request started, its highest applied
     // here, and the highest it names here.
     let mut sources: Vec<(String, Option<i64>, i64, i64)> = Vec::new();
@@ -6117,21 +6371,65 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json], epo
             }
         };
         checked(t)?;
+        // Whether a row had the key before this operation, and whether an
+        // earlier operation of this request wrote it.
+        let existed = |t: &mut TableTxn<'_, '_>, key: &Value| -> Result<bool, ApiError> {
+            let pk = schema.primary_key.map(|pk| schema.fields[pk].name.as_str());
+            Ok(match pk {
+                Some(pk) => t.value(key, pk)?.is_some(),
+                None => false,
+            })
+        };
+        let mut seen_before = |key: &Value| !seen.insert((schema.table.to_ascii_lowercase(), js::to_json(key).to_string()));
+        let doc_key = |d: &chloedb::value::Document| schema.primary_key.map(|pk| d[pk].clone());
+        // A document written: inserted, replaced, or collapsed onto one
+        // this request wrote.
+        let mut found = Found::Inserted;
         let wrote = match kind {
             "insert" => {
-                t.insert(doc()?)?;
+                let d = doc()?;
+                if let Some(k) = doc_key(&d) {
+                    seen_before(&k);
+                }
+                t.insert(d)?;
                 true
             }
+            // INSERT ... ON CONFLICT DO NOTHING through a coordinator
+            // ([`crate::grpc::RECEIPT_PROTOCOL`]): a key a row has, or an
+            // earlier operation wrote, writes nothing.
+            "insert_if_absent" => {
+                let d = doc()?;
+                let there = match doc_key(&d) {
+                    Some(k) => seen_before(&k) || existed(t, &k)?,
+                    None => false,
+                };
+                if !there {
+                    t.insert(d)?;
+                }
+                !there
+            }
             "upsert" => {
-                t.upsert(doc()?)?;
+                let d = doc()?;
+                if let Some(k) = doc_key(&d) {
+                    found = Found::of(seen_before(&k), existed(t, &k)?);
+                }
+                t.upsert(d)?;
                 true
             }
             "upsert_if_newer" => {
                 let v = op.get("version").and_then(|v| v.as_str()).ok_or_else(|| ApiError::bad("upsert_if_newer needs a version field"))?;
-                t.upsert_if_newer(doc()?, v)?
+                let d = doc()?;
+                if let Some(k) = doc_key(&d) {
+                    found = Found::of(seen_before(&k), existed(t, &k)?);
+                }
+                t.upsert_if_newer(d, v)?
             }
-            "delete" => t.delete(&op_key(schema, op)?)?,
+            "delete" => {
+                found = Found::Deleted;
+                t.delete(&op_key(schema, op)?)?
+            }
             "set" => {
+                found = Found::Updated;
                 let key = op_key(schema, op)?;
                 let f = field()?;
                 let fi = schema.field_index(f).ok_or_else(|| ApiError::bad(format!("no field {f}")))?;
@@ -6154,15 +6452,45 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json], epo
                         if op.get("key").is_some() && op_key(schema, op)? != d[pk] {
                             return Err(ApiError::bad("add's key and its doc's key differ: give one"));
                         }
+                        found = if existed(t, &d[pk])? { Found::Updated } else { Found::Inserted };
                         t.add_or_insert(d, field()?, &delta)?;
                         true
                     }
-                    None => t.add(&op_key(schema, op)?, field()?, &delta)?,
+                    None => {
+                        found = Found::Updated;
+                        t.add(&op_key(schema, op)?, field()?, &delta)?
+                    }
                 }
             }
             other => return Err(ApiError::bad(format!("unknown write op {other:?}"))),
         };
-        a.rows += wrote as u64;
+        let r = &mut a.receipt;
+        match (found, wrote) {
+            (Found::Inserted, true) => r.inserted += 1,
+            (Found::Replaced, true) => r.replaced += 1,
+            (Found::Collapsed, true) => r.collapsed += 1,
+            (Found::Updated, true) => r.updated += 1,
+            (Found::Deleted, true) => r.deleted += 1,
+            // An upsert_if_newer of an older version: kept the row.
+            (Found::Inserted | Found::Replaced | Found::Collapsed, false) => {}
+            (Found::Updated | Found::Deleted, false) => {
+                r.not_found += 1;
+                let asked = op.get("if_missing").and_then(|m| m.as_str());
+                if asked == Some("error") || (asked.is_none() && op.get("strict").and_then(Json::as_bool) == Some(true)) {
+                    return Err(not_found(schema, op, kind));
+                }
+            }
+        }
+        if op.get("strict").and_then(Json::as_bool) == Some(true) && wrote && matches!(found, Found::Replaced | Found::Collapsed) {
+            let key = op_key(schema, op).map(|k| key_text(&k)).unwrap_or_default();
+            let what = match found {
+                Found::Replaced => "a row has it already",
+                _ => "an earlier operation of this request wrote it",
+            };
+            return Err(ApiError::bad(format!("strict: {kind} of key {key} in {} would not insert a new row: {what}; nothing was written", schema.table)));
+        }
+        // A key written twice leaves one row.
+        a.rows += (wrote && found != Found::Collapsed) as u64;
     }
     for (name, stored, top, seen) in sources {
         let kept = match top > i64::MIN && stored.is_none_or(|s| top > s) {

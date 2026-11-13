@@ -137,7 +137,14 @@ use crate::{agent, json as js, judge, obs, profiling, telemetry, ui, ApiError};
 struct Failure(Arc<str>);
 
 impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+    fn into_response(mut self) -> Response {
+        // A key the table holds already (the engine's `conflict`,
+        // [`chloedb::Error::code`]): 409 over HTTP. Not over gRPC, where a
+        // coordinator takes FAILED_PRECONDITION for a slot map's refusal.
+        // So is a strict write's refusal, 400 over gRPC for the same reason.
+        if self.status == 400 && (self.message.contains("duplicate primary key") || self.message.contains("strict: ")) {
+            self.status = 409;
+        }
         let code = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let failure = (self.status >= 500).then(|| Failure(self.message.as_str().into()));
         let client = (400..500).contains(&self.status).then(|| ClientError(self.message.as_str().into()));
@@ -243,6 +250,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/feed/keys", post(feed_keys))
         .route("/v1/sources/*name", get(source))
         .route("/v1/schema/check", post(schema_check))
+        .route("/v1/sql/check", post(sql_check))
         .route("/v1/explain", post(explain))
         .route("/v1/embed", post(embed))
         .route("/v1/models", get(models))
@@ -957,7 +965,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         // otlp: logs in; reading the server's own lines stays the admin's.
         "/v1/logs" if method == Method::POST => Scope::Write,
-        "/v1/export" => Scope::Admin,
+        // The rows of one table need read on it; the files, the admin ([`export`]).
+        "/v1/export" => Scope::Read,
         // The autopilot writes its tables, may spend Claude's tokens on
         // grades, and applying a proposal replaces a rank profile.
         "/v1/relevance/autopilot" | "/v1/relevance/proposals/:id/apply" | "/v1/relevance/proposals/:id/dismiss" => Scope::Admin,
@@ -1600,16 +1609,27 @@ async fn feed_keys(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Ax
 /// The records of a log table ([`chloedb::rank_log::export`]) as NDJSON,
 /// read from one snapshot of a local database as they are sent. A failure
 /// after the first record ends the answer with `{"error": ..., "status":
-/// ..}`. A coordinator refuses it: each shard's server exports its own
-/// rows, which hold every row of a context when the log and the events
-/// are placed by it (`shard_by`).
+/// ..}`. A coordinator runs the export's queries over its shards
+/// ([`crate::export::rank_log`]), each read whole.
 async fn export_rank_log(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let x = chloedb::rank_log::Export::from_json(&b)?;
-    rank_log_ok(&who(w), &x)?;
-    let db = app.svc.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator does not export a rank log: export from each shard's server"))?;
+    let p = who(w);
+    rank_log_ok(&p, &x)?;
     // Refused before the answer starts.
     chloedb::rank_log::check(&*app.svc.table(&x.table).await?)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Json>(1024);
+    let Some(db) = app.svc.local_db().cloned() else {
+        let (svc, owner) = (app.svc.clone(), crate::service::scroll_owner(&p));
+        tokio::spawn(async move {
+            let out = tx.clone();
+            let r = crate::export::rank_log(&svc, &owner, x, move |r| out.blocking_send(r).map_err(|_| chloedb::Error::Query("the export's client left".into()))).await;
+            if let Err(e) = r {
+                let _ = tx.send(json!({"error": e.message, "status": e.status})).await;
+            }
+        });
+        let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|j| Ok::<_, std::convert::Infallible>(Bytes::from(format!("{j}\n"))));
+        return Ok(([(header::CONTENT_TYPE, "application/x-ndjson")], axum::body::Body::from_stream(lines)).into_response());
+    };
     tokio::task::spawn_blocking(move || {
         let r = db.export_rank_log(&x, |r| tx.blocking_send(r).map_err(|_| chloedb::Error::Query("the export's client left".into())));
         if let Err(e) = r {
@@ -1636,11 +1656,25 @@ fn rank_log_ok(who: &Principal, x: &chloedb::rank_log::Export) -> Result<(), Api
 /// `/v1/rank_log/export`'s), from a local database as the export is.
 async fn interleaving(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let x = chloedb::rank_log::Export::from_json(&b)?;
-    rank_log_ok(&who(w), &x)?;
-    let db = app.svc.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator does not export a rank log: ask each shard's server"))?;
+    let p = who(w);
+    rank_log_ok(&p, &x)?;
     chloedb::rank_log::check(&*app.svc.table(&x.table).await?)?;
     let t0 = std::time::Instant::now();
-    let pairs = tokio::task::spawn_blocking(move || db.interleaving_credit(&x)).await.map_err(ApiError::internal)??;
+    let pairs = match app.svc.local_db().cloned() {
+        Some(db) => tokio::task::spawn_blocking(move || db.interleaving_credit(&x)).await.map_err(ApiError::internal)??,
+        // Credited over the export through the coordinator.
+        None => {
+            let credits = Arc::new(std::sync::Mutex::new(chloedb::rank_log::Credits::default()));
+            let c = credits.clone();
+            crate::export::rank_log(&app.svc, &crate::service::scroll_owner(&p), x, move |r| {
+                c.lock().unwrap_or_else(|e| e.into_inner()).add(&r);
+                Ok(())
+            })
+            .await?;
+            let c = std::mem::take(&mut *credits.lock().unwrap_or_else(|e| e.into_inner()));
+            c.finish()
+        }
+    };
     Ok(AxJson(json!({"pairs": pairs.iter().map(|c| c.to_json()).collect::<Vec<_>>(), "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
 }
 
@@ -1841,6 +1875,9 @@ fn table_written(sql: &str) -> Option<String> {
 /// coordinator each shard's ([`Written`]).
 fn written(w: Written, took_ms: f64) -> Json {
     let mut j = json!({"written": w.rows, "took_ms": took_ms});
+    if let Some(r) = receipt_json(&w) {
+        j["receipt"] = r;
+    }
     if w.skipped > 0 {
         j["skipped"] = json!(w.skipped);
     }
@@ -1851,6 +1888,47 @@ fn written(w: Written, took_ms: f64) -> Json {
         j["seq_nos"] = json!(w.seq_nos);
     }
     j
+}
+
+/// What a write's operations found ([`crate::service::Receipt`]):
+/// `{received, inserted, replaced, updated, deleted, collapsed, not_found,
+/// per_shard}`, the counts null where a shard did not say (an older one).
+/// None for a write without operations (a SQL statement on one server).
+fn receipt_json(w: &Written) -> Option<Json> {
+    if w.receipt.is_none() && w.shards.is_empty() && w.received == 0 {
+        return None;
+    }
+    let counts = |r: Option<crate::service::Receipt>| match r {
+        Some(r) => serde_json::to_value(r).unwrap_or_default(),
+        None => json!({"inserted": null, "replaced": null, "updated": null, "deleted": null, "collapsed": null, "not_found": null}),
+    };
+    let mut j = counts(w.receipt);
+    j["received"] = json!(w.received);
+    if !w.shards.is_empty() {
+        j["per_shard"] = Json::Array(
+            w.shards
+                .iter()
+                .map(|p| {
+                    let mut s = counts(p.receipt);
+                    s["shard"] = json!(p.shard);
+                    s["rows"] = json!(p.rows);
+                    s
+                })
+                .collect(),
+        );
+    }
+    Some(j)
+}
+
+/// `strict` (a body's or a query's): each operation is sent with
+/// `"strict": true`, which refuses, writing nothing, one that would
+/// replace a row, write a key an earlier one wrote, or find no row.
+fn strict_ops(ops: &mut [Json]) {
+    for op in ops.iter_mut().filter(|op| !crate::service::is_mark(op)) {
+        if op.get("strict").is_none() {
+            op["strict"] = json!(true);
+        }
+    }
 }
 
 /// Runs a plan ([`chloedb::query::ir`]) as `/v1/sql` runs a statement.
@@ -1869,10 +1947,15 @@ async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>,
 /// The body's `ops`, applied once per idempotency key (the body's
 /// `idempotency_key` or an `Idempotency-Key` header).
 async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
-    let ops = match b.get_mut("ops").map(Json::take) {
+    let mut ops = match b.get_mut("ops").map(Json::take) {
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
     };
+    match b.get("strict") {
+        None | Some(Json::Null) | Some(Json::Bool(false)) => {}
+        Some(Json::Bool(true)) => strict_ops(&mut ops),
+        Some(_) => return Err(ApiError::bad("strict is true or false")),
+    }
     let who = who(w);
     if who.limited() {
         // Each operation's table, or the default table for one that names
@@ -2175,8 +2258,17 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
     let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv, sqlite or parquet"))?;
     table_ok(&app, &who(w), q.get("table").map(String::as_str), Scope::Write, "an import").await?;
     let t0 = std::time::Instant::now();
-    let (n, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format).await?;
-    Ok(AxJson(json!({"written": n, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
+    let empty = match q.get("empty") {
+        None => chloedb::ingest::EmptyCell::Default,
+        Some(e) => chloedb::ingest::EmptyCell::parse(e).ok_or_else(|| ApiError::bad(format!("empty is default, null or text, not {e:?}")))?,
+    };
+    let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)?, empty };
+    let (w, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format, opts).await?;
+    let mut j = json!({"written": w.rows, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3});
+    if let Some(r) = receipt_json(&w) {
+        j["receipt"] = r;
+    }
+    Ok(AxJson(j))
 }
 
 /// A query parameter that is true or false (`1`, `0`, `yes`, `no`), or
@@ -2250,12 +2342,38 @@ async fn import_parquet(_: &App, _: &Principal, _: &std::collections::HashMap<St
 /// `?format=parquet`, one table (`?tables=`, which a database of one
 /// table may leave out) as a Parquet file ([`Service::export_parquet`]),
 /// `?schemas=false` leaving out its kept Strata schema.
-async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+///
+/// `?format=jsonl`, `csv` or `arrow`, and on a coordinator `parquet` too,
+/// answer one table's rows read by a scroll ([`crate::export`]), which a
+/// key with read on that table may ask for; the database's files (SQLite,
+/// a server's own Parquet) are the admin's.
+async fn export(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let format = q.get("format").map(|f| f.to_ascii_lowercase());
+    let who = who(w);
+    let cluster = app.svc.coordinator().is_ok();
+    let rows = match format.as_deref() {
+        Some("parquet") if !cluster => None,
+        Some(f) => crate::export::Format::parse(f),
+        None => None,
+    };
+    if let Some(f) = rows {
+        let mut tables = tables_param(&q);
+        let table = match (tables.pop(), tables.is_empty()) {
+            (Some(t), true) => t,
+            _ => return Err(ApiError::bad("an export of rows is of one table: name it (?tables=name)")),
+        };
+        table_ok(&app, &who, Some(&table), Scope::Read, "an export").await?;
+        who.may(Scope::Read, "an export")?;
+        return crate::export::rows(&app.svc, &crate::service::scroll_owner(&who), &table, f).await;
+    }
+    if who.limited() {
+        return Err(ApiError { status: 403, message: "an export of the database's files (format sqlite or parquet) is not for a key limited to tables: format jsonl, csv or arrow export a table's rows with read on it".into() });
+    }
+    who.may(Scope::Admin, "an export of the database's files (format sqlite or parquet; format jsonl, csv or arrow export a table's rows with read on it)")?;
     match format.as_deref() {
         None | Some("sqlite") => {}
         Some("parquet") => return export_parquet(&app, &q).await,
-        Some(f) => return Err(ApiError::bad(format!("unknown format {f:?}: format=sqlite or format=parquet"))),
+        Some(f) => return Err(ApiError::bad(format!("unknown format {f:?}: format=sqlite, parquet, jsonl, csv or arrow"))),
     }
     let opts = chloedb::sqlite::ExportOptions { tables: tables_param(&q), fts: flag(&q, "fts", true)?, indexes: flag(&q, "indexes", true)?, meta: flag(&q, "schemas", true)? };
     let (dir, path, done) = app.svc.export_sqlite(opts).await?;
@@ -2692,6 +2810,14 @@ async fn source(State(app): State<App>, axum::extract::Path(name): axum::extract
 
 fn source_json(s: chloedb::db::Source) -> Json {
     json!({"name": s.name, "offset": s.offset, "updated": s.updated.map(chloedb::timestamp::format)})
+}
+
+/// Whether a statement would run on this deployment, without running it
+/// ([`crate::sql_check`]): `{runs, deployment, kind, error?, notes}`.
+async fn sql_check(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let sql = body_str(&b, "sql")?;
+    let params = app.svc.params(b.get("params")).await?;
+    Ok(AxJson(crate::sql_check::check(&app.svc, sql, &params)))
 }
 
 /// A schema validated, in both JSON forms and as the `CREATE TABLE`

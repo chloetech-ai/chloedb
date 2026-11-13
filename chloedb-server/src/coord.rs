@@ -102,10 +102,10 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, HOLD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL, VALIDATE_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, HOLD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, RECEIPT_PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL, VALIDATE_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
-use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
+use crate::service::{is_mark, op_key, op_place, op_schema, op_source, After, QueryReq, Written};
 use crate::replication::Acks;
 use crate::cores::slots as core;
 use crate::slots::{self, hash_shard_of, Move, SlotMap};
@@ -954,7 +954,19 @@ pub struct Coordinator {
     /// What this coordinator says of itself in its surveys' calls, which
     /// its shards keep ([`crate::peers`]).
     pub announce: std::sync::OnceLock<Vec<(&'static str, tonic::metadata::AsciiMetadataValue)>>,
+    /// Held, by a stripe of their keys' hash, while inserts into tables
+    /// placed by a column are checked against the other shards and written
+    /// ([`Coordinator::unique_inserts`]).
+    inserting: Vec<Arc<tokio::sync::Mutex<()>>>,
 }
+
+/// A key as text, to compare and hash keys by.
+fn js_key(k: &Value) -> String {
+    crate::json::to_json(k).to_string()
+}
+
+/// How many stripes [`Coordinator::unique_inserts`] locks keys by.
+const INSERT_STRIPES: usize = 64;
 
 /// How many copies the index inspector asks at once ([`Coordinator::inspect`]).
 pub const INSPECT_AT_ONCE: usize = 16;
@@ -1359,6 +1371,8 @@ struct Wrote {
     rows: u64,
     seq_no: u64,
     skipped: u64,
+    /// What its operations found, from a shard of [`RECEIPT_PROTOCOL`].
+    receipt: Option<crate::service::Receipt>,
 }
 
 impl Coordinator {
@@ -1502,6 +1516,7 @@ impl Coordinator {
             snapshot: tokio::sync::Mutex::new(None),
             observer: std::sync::OnceLock::new(),
             announce: std::sync::OnceLock::new(),
+            inserting: (0..INSERT_STRIPES).map(|_| Arc::new(tokio::sync::Mutex::new(()))).collect(),
         })
     }
 
@@ -2763,7 +2778,8 @@ impl Coordinator {
         let mut written = None;
         for a in join_all(calls).await {
             let a = a?.into_inner();
-            written.get_or_insert(Wrote { rows: a.written, seq_no: a.seq_no.filter(|_| one).unwrap_or(0), skipped: a.skipped });
+            let receipt = a.receipt.then_some(crate::service::Receipt { inserted: a.inserted, replaced: a.replaced, updated: a.updated, deleted: a.deleted, collapsed: a.collapsed, not_found: a.not_found });
+            written.get_or_insert(Wrote { rows: a.written, seq_no: a.seq_no.filter(|_| one).unwrap_or(0), skipped: a.skipped, receipt });
         }
         Ok(written.unwrap_or_default())
     }
@@ -2774,15 +2790,37 @@ impl Coordinator {
     fn written(&self, t: &Topology, shards: Vec<(usize, Wrote)>) -> Written {
         let mut seq_nos = vec![0; t.replicas.len()];
         let (mut rows, mut skipped) = (0, 0);
+        // Known while every shard written said what it found.
+        let mut receipt = Some(crate::service::Receipt::default());
+        let mut parts: Vec<crate::service::ShardWritten> = Vec::new();
         for (i, w) in shards {
             rows += w.rows;
             skipped += w.skipped;
             seq_nos[i] = w.seq_no;
+            match (&mut receipt, &w.receipt) {
+                (Some(all), Some(r)) => all.add(r),
+                _ => receipt = None,
+            }
+            // A shard asked twice (by a map that moved): one part.
+            match parts.iter_mut().find(|p| p.shard == i) {
+                Some(p) => {
+                    p.rows += w.rows;
+                    p.receipt = match (p.receipt, w.receipt) {
+                        (Some(mut a), Some(b)) => {
+                            a.add(&b);
+                            Some(a)
+                        }
+                        _ => None,
+                    };
+                }
+                None => parts.push(crate::service::ShardWritten { shard: i, rows: w.rows, receipt: w.receipt }),
+            }
         }
         if seq_nos.iter().all(|&s| s == 0) {
             seq_nos.clear();
         }
-        Written { rows, seq_nos, skipped, ..Default::default() }
+        parts.sort_by_key(|p| p.shard);
+        Written { rows, seq_nos, skipped, receipt: receipt.filter(|_| !parts.is_empty()), shards: parts, ..Default::default() }
     }
 
     /// An INSERT goes to the shards of its documents' keys (or their
@@ -2800,11 +2838,9 @@ impl Coordinator {
                 let op = match conflict {
                     Conflict::Fail => "insert",
                     Conflict::Replace => "upsert",
-                    // The shards' write operations have no insert-if-absent
-                    // or update-on-conflict.
-                    Conflict::Skip | Conflict::Update(_) => {
-                        return Err(ApiError::bad("INSERT ... ON CONFLICT DO NOTHING and DO UPDATE are not supported through a coordinator yet (INSERT OR REPLACE is)"))
-                    }
+                    Conflict::Skip => "insert_if_absent",
+                    // The statement itself goes to the shard of its rows.
+                    Conflict::Update(_) => "insert",
                 };
                 // Rows of the first table name none, as before there were
                 // tables.
@@ -2820,13 +2856,76 @@ impl Coordinator {
                     })
                     .collect();
                 let key = self.keyed(&ops, key);
-                self.write_ops(ops, key).await
+                match conflict {
+                    Conflict::Update(_) => self.upsert_statement(schema, &ops, sql, params, key).await,
+                    _ => self.write_ops(ops, key).await,
+                }
             }
-            // Each shard would take its own LIMIT rows.
-            Write::Update { select, .. } | Write::Delete { select } if select.limit.is_some() => {
-                Err(ApiError::bad("UPDATE ... LIMIT and DELETE ... LIMIT are not supported through a coordinator yet"))
-            }
+            // Each shard would take its own LIMIT rows: the service picks
+            // the rows first ([`crate::service::Service::sql_in`]).
+            Write::Update { select, .. } | Write::Delete { select } if select.limit.is_some() => Err(ApiError::bad("UPDATE ... LIMIT and DELETE ... LIMIT through a coordinator pick their rows first: send the statement to /v1/sql")),
             _ => self.statement(sql, params, Some(key.unwrap_or_else(auto_key))).await,
+        }
+    }
+
+    /// INSERT ... ON CONFLICT DO UPDATE: the statement as it is, sent to
+    /// the one shard all of its rows (`ops`, as inserts) go to, which
+    /// binds the update against the row it holds. Rows that go to several
+    /// shards are refused: each shard would need the statement with its
+    /// own rows. In a table placed by a column (shard_by), a key another
+    /// shard holds is refused too, since the update would insert a second
+    /// row with it there.
+    async fn upsert_statement(&self, schema: &Schema, ops: &[Json], sql: &str, params: &Params, key: Option<String>) -> Result<Written, ApiError> {
+        let mut tries = 0;
+        loop {
+            let t = self.topo();
+            let mut shards = std::collections::BTreeSet::new();
+            for op in ops {
+                shards.insert(self.shard_of(&t, &op_place(schema, op)?));
+            }
+            let i = match shards.iter().copied().collect::<Vec<_>>()[..] {
+                [] => return Ok(Written::default()),
+                [i] => i,
+                _ => {
+                    return Err(ApiError::bad(format!(
+                        "INSERT ... ON CONFLICT DO UPDATE through a coordinator takes rows of one shard, and these go to shards {}: send a statement per row (or per shard), or use INSERT OR REPLACE",
+                        shards.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+                    )))
+                }
+            };
+            if let (Some(by), Some(pk)) = (schema.shard_by_field(), schema.primary_key) {
+                if by != pk && t.replicas.len() > 1 {
+                    let keys: Vec<Value> = ops.iter().map(|op| op_key(schema, op)).collect::<Result<_, _>>()?;
+                    let held = self.held_keys(&t, schema, &keys, Instant::now() + Duration::from_secs(30)).await?;
+                    for (s, rows) in held.iter().enumerate().filter(|(s, _)| *s != i) {
+                        if let Some(j) = rows.iter().position(Option::is_some) {
+                            return Err(ApiError {
+                                status: 409,
+                                message: format!(
+                                    "nothing was written: {} has a row with key {} on shard {s}, by another {}: ON CONFLICT DO UPDATE updates a row only where its {} places it, so give the row's own value",
+                                    schema.table,
+                                    chloedb::query::hint::sql_value(&keys[j]),
+                                    schema.shard_by.as_deref().unwrap_or("shard_by"),
+                                    schema.shard_by.as_deref().unwrap_or("shard_by"),
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            if tries == 0 {
+                self.writable(&[i]).await?;
+            }
+            let idempotency_key = match tries {
+                0 => key.as_ref().map(|k| format!("{k}/{i}")),
+                r => key.as_ref().map(|k| format!("{k}/{i}.{r}")),
+            };
+            let r = pb::WriteRequest { sql: sql.into(), params: params_to_pb(params), epoch: t.epoch(), idempotency_key: idempotency_key.unwrap_or_default(), ..Default::default() };
+            match self.write(&t, i, r, MIN_PROTOCOL).await {
+                Ok(w) => return Ok(self.written(&t, vec![(i, w)])),
+                Err(e) if self.route_again(&e, t.epoch(), tries).await => tries += 1,
+                Err(e) => return Err(e),
+            }
         }
     }
 
@@ -2910,18 +3009,30 @@ impl Coordinator {
     fn written_by(&self, t: &Topology, done: Vec<(String, Wrote)>) -> Written {
         let mut placed = Vec::new();
         let mut rows = Wrote::default();
+        let mut unplaced = false;
         for (url, w) in done {
             match t.replicas.iter().position(|rs| rs.iter().any(|r| r.url == url)) {
                 Some(i) => placed.push((i, w)),
                 None => {
                     rows.rows += w.rows;
                     rows.skipped += w.skipped;
+                    match (&mut rows.receipt, &w.receipt, unplaced) {
+                        (_, None, _) => unplaced = true,
+                        (Some(a), Some(b), false) => a.add(b),
+                        (None, Some(b), false) => rows.receipt = Some(*b),
+                        _ => {}
+                    }
                 }
             }
         }
         let mut written = self.written(t, placed);
         written.rows += rows.rows;
         written.skipped += rows.skipped;
+        if unplaced {
+            written.receipt = None;
+        } else if let (Some(a), Some(b)) = (&mut written.receipt, &rows.receipt) {
+            a.add(b);
+        }
         written
     }
 
@@ -2991,12 +3102,25 @@ impl Coordinator {
                 let r = r.clone();
                 async move { (i, self.write(t, i, r, MIN_PROTOCOL).await) }
             });
-            let mut failed = None;
+            let mut failed: Option<ApiError> = None;
+            // A NOT NULL column added without a default: the rows of every
+            // shard that refused it, not the first's alone.
+            let mut rows_refused = (0u64, 0usize);
             for (i, a) in join_all(calls).await {
                 match a {
                     Ok(_) => done.push(t.replicas[i][0].url.clone()),
                     Err(e) => {
+                        if let Some(n) = not_null_rows(&e.message) {
+                            rows_refused = (rows_refused.0 + n, rows_refused.1 + 1);
+                        }
                         failed.get_or_insert(e);
+                    }
+                }
+            }
+            if let (Some(e), (n, shards)) = (&mut failed, rows_refused) {
+                if shards > 1 {
+                    if let Some(first) = not_null_rows(&e.message) {
+                        e.message = e.message.replacen(&format!("the {first} rows"), &format!("the {n} rows (over {shards} shards)"), 1);
                     }
                 }
             }
@@ -3088,8 +3212,31 @@ impl Coordinator {
     /// Operations a shard refused as routed by a map it left (a move
     /// flipped) go again by the new map, under keys of their own
     /// (`key/shard.round`).
-    pub async fn write_ops(&self, ops: Vec<Json>, key: Option<String>) -> Result<Written, ApiError> {
+    pub async fn write_ops(&self, mut ops: Vec<Json>, key: Option<String>) -> Result<Written, ApiError> {
         let marks: Vec<Json> = ops.iter().filter(|op| is_mark(op)).cloned().collect();
+        // An update or delete by key that names where its row is: refused
+        // when that shard has no such row, rather than answered as no row
+        // written ([`crate::service::Receipt`]).
+        for op in ops.iter_mut() {
+            let by_key = match op.get("op").and_then(Json::as_str) {
+                Some("set" | "delete") => true,
+                Some("add") => op.get("doc").is_none(),
+                _ => false,
+            };
+            if by_key && op.get("routing").is_some_and(|r| !r.is_null()) && op.get("if_missing").is_none() {
+                op["if_missing"] = json!("error");
+            }
+        }
+        // Held until the write is done.
+        // Asked again by a newer map when a shard holds one.
+        let mut tries = 0;
+        let _inserting = loop {
+            let routed = self.topo().epoch();
+            match self.unique_inserts(&mut ops).await {
+                Err(e) if self.route_again(&e, routed, tries).await => tries += 1,
+                r => break r?,
+            }
+        };
         let (mut pending, mut done, mut round) = (ops, Vec::new(), 0);
         loop {
             let t = self.topo();
@@ -3142,6 +3289,9 @@ impl Coordinator {
         // that the least over the shards is where a stream resumes
         // ([`Self::sources`]): each shard skips what it applied already.
         let need = if marks.is_empty() { MIN_PROTOCOL } else { SOURCES_PROTOCOL };
+        // A strict write goes only to shards that refuse what it refuses.
+        let strict = by_shard.values().flatten().any(|op| op.get("strict").and_then(Json::as_bool) == Some(true) || op.get("op").and_then(Json::as_str) == Some("insert_if_absent"));
+        let need = if strict { need.max(RECEIPT_PROTOCOL) } else { need };
         if round == 0 {
             self.writable(&by_shard.keys().copied().collect::<Vec<_>>()).await?;
             if by_shard.len() > 1 {
@@ -3175,6 +3325,154 @@ impl Coordinator {
             }
         }
         Ok((wrote, failed, errors))
+    }
+
+    /// Checks that the rows `ops` insert into tables placed by a column
+    /// (`shard_by`, not their key) have keys no other shard holds: such a
+    /// row goes to the shard of its shard_by value, which refuses a key it
+    /// holds itself but cannot see a row with the key on another shard
+    /// (a plain INSERT left two rows with one key). Each shard's primary
+    /// is asked for the keys (one `Get` a shard, [`GET_PROTOCOL`]), and the
+    /// keys' stripes of [`Self::inserting`] are held, and returned, until
+    /// the write is done, so that two inserts of one key through this
+    /// coordinator do not both pass. Two coordinators inserting one key at
+    /// the same moment with different shard_by values are not ordered by
+    /// it (docs/chloedb/cluster-limits.md). An upsert is not checked: it
+    /// replaces the row on its own shard, as documented. An
+    /// `insert_if_absent` (ON CONFLICT DO NOTHING) whose key another shard
+    /// holds, or an earlier operation inserts, is taken out of `ops`.
+    async fn unique_inserts(&self, ops: &mut Vec<Json>) -> Result<Vec<tokio::sync::OwnedMutexGuard<()>>, ApiError> {
+        let t = self.topo();
+        if t.replicas.len() < 2 {
+            return Ok(Vec::new());
+        }
+        let mut catalog = self.catalog();
+        if ops.iter().any(|op| !is_mark(op) && op_schema(&catalog, op).is_err()) && self.refresh(false).await {
+            catalog = self.catalog();
+        }
+        // By table: each insert's key, the shard it goes to, and its place.
+        let mut by_table: BTreeMap<String, (Arc<Schema>, Vec<(Value, usize, usize)>)> = BTreeMap::new();
+        for (place, op) in ops.iter().enumerate() {
+            if is_mark(op) || !matches!(op.get("op").and_then(Json::as_str), Some("insert" | "insert_if_absent")) {
+                continue;
+            }
+            let Ok(schema) = op_schema(&catalog, op) else { continue };
+            let (Some(by), Some(pk)) = (schema.shard_by_field(), schema.primary_key) else { continue };
+            if by == pk {
+                continue;
+            }
+            let (Ok(k), Ok(p)) = (op_key(schema, op), op_place(schema, op)) else { continue };
+            let s = self.shard_of(&t, &p);
+            by_table.entry(schema.table.clone()).or_insert_with(|| (schema.clone(), Vec::new())).1.push((k, s, place));
+        }
+        if by_table.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stripes: Vec<usize> = by_table
+            .iter()
+            .flat_map(|(table, (_, ks))| {
+                ks.iter().map(move |(k, ..)| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    table.to_ascii_lowercase().hash(&mut h);
+                    js_key(k).hash(&mut h);
+                    (h.finish() as usize) % INSERT_STRIPES
+                })
+            })
+            .collect();
+        stripes.sort_unstable();
+        stripes.dedup();
+        let mut held = Vec::with_capacity(stripes.len());
+        for s in stripes {
+            held.push(self.inserting[s].clone().lock_owned().await);
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let skips = |place: usize| ops[place].get("op").and_then(Json::as_str) == Some("insert_if_absent");
+        // The places of the operations that write nothing.
+        let mut out: Vec<usize> = Vec::new();
+        for (table, (schema, ks)) in &by_table {
+            let by_name = schema.shard_by.as_deref().unwrap_or("shard_by");
+            // One key inserted twice, toward two shards.
+            let mut first: HashMap<String, (usize, usize)> = HashMap::new();
+            for (k, s, place) in ks {
+                match first.get(&js_key(k)) {
+                    Some(&(s0, _)) if s0 != *s && skips(*place) => out.push(*place),
+                    Some(&(s0, p0)) if s0 != *s => {
+                        return Err(ApiError {
+                            status: 409,
+                            message: format!("nothing was written: operations {p0} and {place} of the request both insert key {} into {table}, with {by_name} values on different shards", chloedb::query::hint::sql_value(k)),
+                        });
+                    }
+                    Some(_) => {}
+                    None => {
+                        first.insert(js_key(k), (*s, *place));
+                    }
+                }
+            }
+            let keys: Vec<Value> = ks.iter().map(|(k, ..)| k.clone()).collect();
+            let held_by = self.held_keys(&t, schema, &keys, deadline).await?;
+            let by = schema.shard_by_field().expect("checked above");
+            for (j, (k, s, place)) in ks.iter().enumerate() {
+                for (i, rows) in held_by.iter().enumerate() {
+                    if i == *s {
+                        continue;
+                    }
+                    let Some(row) = rows.get(j).and_then(Option::as_ref) else { continue };
+                    if skips(*place) {
+                        out.push(*place);
+                        continue;
+                    }
+                    let place_text = row.get(by).map(chloedb::query::hint::sql_value).unwrap_or_default();
+                    return Err(ApiError {
+                        status: 409,
+                        message: format!(
+                            "nothing was written: operation {place} of the request inserts key {} into {table}, which already has a row with that key ({by_name} {place_text}, on shard {i}): a primary key is unique across the shards; INSERT OR REPLACE (upsert) replaces a row only where its {by_name} places it",
+                            chloedb::query::hint::sql_value(k),
+                        ),
+                    });
+                }
+            }
+        }
+        if !out.is_empty() {
+            let mut place = 0;
+            ops.retain(|_| {
+                place += 1;
+                !out.contains(&(place - 1))
+            });
+        }
+        Ok(held)
+    }
+
+    /// Rows of `schema` by key on every shard, each read from its primary
+    /// (or its first replica while none has a role): per shard, per key,
+    /// the row's values or none.
+    async fn held_keys(&self, t: &Topology, schema: &Schema, keys: &[Value], deadline: Instant) -> Result<Vec<Vec<Option<Vec<Value>>>>, ApiError> {
+        let pb_keys: Vec<pb::Value> = keys.iter().map(crate::grpc::to_pb).collect();
+        let calls = (0..t.replicas.len()).map(|i| {
+            let pb_keys = pb_keys.clone();
+            async move {
+                let k = self.primary(t, i).await?.unwrap_or(0);
+                let rep = &t.replicas[i][k];
+                let mut c = rep.client.clone();
+                let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
+                if p < GET_PROTOCOL {
+                    return Err(ApiError { status: 503, message: format!("{} speaks protocol {p}, and checking that an inserted key is on no other shard needs {GET_PROTOCOL}: upgrade it", rep.url) });
+                }
+                // No epoch: every shard is asked, whichever slots it holds
+                // now, so a map that moves on meanwhile changes nothing.
+                let got = c
+                    .get(pb::GetRequest { table: schema.table.clone(), keys: pb_keys, timeout_ms: ms_left(deadline), protocol: p, ..Default::default() })
+                    .await
+                    .map_err(|s| self.named(&rep.url, s))?
+                    .into_inner();
+                let rows: Vec<Option<Vec<Value>>> = crate::grpc::rows_from_pb(got).into_iter().map(|r| r.map(|(v, _)| v)).collect();
+                if rows.len() != keys.len() {
+                    return Err(ApiError::internal(format!("a shard answered {} rows for {} keys", rows.len(), keys.len())));
+                }
+                Ok::<_, ApiError>(rows)
+            }
+        });
+        join_all(calls).await.into_iter().collect()
     }
 
     /// Asks each shard of a write that spans several whether it would apply
@@ -4205,6 +4503,15 @@ fn refused_op(m: &str) -> Option<(usize, &str)> {
     let at = m.find(&format!("{VALIDATE_OP} "))?;
     let (n, why) = m[at + VALIDATE_OP.len() + 1..].split_once(VALIDATE_OF)?;
     Some((n.parse().ok()?, why))
+}
+
+/// The rows a shard said a NOT NULL column without a default would leave
+/// empty (`... is NOT NULL, and the N rows T holds would have none`).
+fn not_null_rows(message: &str) -> Option<u64> {
+    let (_, rest) = message.split_once("is NOT NULL, and the ")?;
+    let (n, rest) = rest.split_once(" rows ")?;
+    rest.contains("would have none").then_some(())?;
+    n.parse().ok()
 }
 
 /// The refusal of a write to shard `i`, of `servers` servers none of which

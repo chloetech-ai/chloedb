@@ -307,11 +307,14 @@ async fn three_shards_answer_like_one_database() {
     let e = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17})], None).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("\"routing\""), "{}", e.message);
     let other = if usr == "u0" { "u1" } else { "u0" };
-    let w = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": other})], None).await.unwrap();
-    // u0's shard may be the row's too.
+    // u0's shard may be the row's too; another shard has no such row, and
+    // says so rather than delete nothing.
     let elsewhere = map.shard_of(&chloedb::Value::Str(other.into())) != map.shard_of(&chloedb::Value::Str(usr.clone()));
-    assert_eq!(w.rows, !elsewhere as u64);
-    let w = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": usr})], None).await.unwrap();
+    match coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": other})], None).await {
+        Ok(w) => assert!(!elsewhere && w.rows == 1, "{w:?}"),
+        Err(e) => assert!(elsewhere && e.status == 404 && e.message.contains(other), "{}", e.message),
+    }
+    let w = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": usr, "if_missing": "skip"})], None).await.unwrap();
     assert_eq!(w.rows, elsewhere as u64);
     whole.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17})], None).await.unwrap();
     // SQL deletes reach every shard.
