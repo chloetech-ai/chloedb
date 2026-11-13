@@ -274,6 +274,8 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         // A scroll's start names its owner ([`Grpc::query`]).
         scroll: None,
         skip_steps: r.skip_steps,
+        // A client's, held to the server's limits.
+        own_read: false,
     })
 }
 
