@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 31] = [
+pub const FEATURES: [&str; 32] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, ASOF_JOIN,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -82,6 +82,10 @@ pub const WINDOW: &str = "window";
 /// The feature of a plan that takes two queries' rows together
 /// ([`Node::SetOp`]: `UNION`, `INTERSECT`, `EXCEPT`).
 pub const SET_OPS: &str = "set_ops";
+
+/// The feature of a plan with an `ASOF JOIN` ([`JoinKind::AsOf`]): each
+/// left row joined to the latest right row at or before its time.
+pub const ASOF_JOIN: &str = "asof_join";
 
 /// The feature of a plan with a column of rows' sequence numbers
 /// ([`Expr::SeqNo`]).
@@ -342,6 +346,12 @@ pub enum JoinKind {
     #[default]
     Inner,
     Left,
+    /// `ASOF JOIN`: each left row beside the one right row with its keys
+    /// whose time is the latest at or before the left row's, or NULLs
+    /// when none is. The join's `on` is the match condition, a comparison
+    /// of a left expression and a right one: `l >= r` (at or before) or
+    /// `l > r` (before). Needs [`ASOF_JOIN`].
+    AsOf,
 }
 
 impl JoinKind {
@@ -1320,6 +1330,10 @@ impl Node {
 
     /// Whether the node or one below it (outside subqueries) is a
     /// [`Node::SetOp`].
+    fn has_asof(&self) -> bool {
+        matches!(self, Node::Join { kind: JoinKind::AsOf, .. }) || self.inputs().into_iter().any(Node::has_asof)
+    }
+
     fn has_set_ops(&self) -> bool {
         matches!(self, Node::SetOp { .. }) || self.inputs().into_iter().any(Node::has_set_ops)
     }
@@ -2172,6 +2186,15 @@ impl Plan {
         });
         if set_ops {
             features.push(SET_OPS.to_string());
+        }
+        let mut asof = root.has_asof();
+        root.visit_exprs(&mut |e| {
+            if let Expr::Subquery(n) | Expr::Values(n) | Expr::Keys(n) | Expr::Exists(n) | Expr::Scalar(n) | Expr::Encode { rows: n, .. } = e {
+                asof |= n.has_asof();
+            }
+        });
+        if asof {
+            features.push(ASOF_JOIN.to_string());
         }
         if root.walks_edge_tables() {
             features.push(EDGE_TABLE.to_string());

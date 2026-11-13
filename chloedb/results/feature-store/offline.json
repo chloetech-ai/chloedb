@@ -1,0 +1,50 @@
+{
+ "spine_rows": 500000,
+ "user_rows": 480303,
+ "item_rows": 239842,
+ "pandas_merge_asof_s": 1.1432096589996945,
+ "pandas_merge_asof_runs_s": [
+  1.263,
+  1.143,
+  1.12
+ ],
+ "feast_duckdb_s": 2.8662853739997445,
+ "feast_duckdb_runs_s": [
+  6.056,
+  2.866,
+  2.792
+ ],
+ "chloedb_asof_s": 4.156371967999803,
+ "chloedb_asof_runs_s": [
+  4.368,
+  3.794,
+  4.156
+ ],
+ "feast_mismatches": {
+  "clicks_7d": 0,
+  "buys_30d": 0,
+  "avg_price": 0,
+  "sessions_7d": 0,
+  "dwell_s": 0,
+  "ctr_7d": 0,
+  "views_1d": 0,
+  "price": 0,
+  "stock": 0,
+  "rating": 0
+ },
+ "chloedb_mismatches": {
+  "clicks_7d": 0,
+  "buys_30d": 0,
+  "avg_price": 0,
+  "sessions_7d": 0,
+  "dwell_s": 0,
+  "ctr_7d": 0,
+  "views_1d": 0,
+  "price": 0,
+  "stock": 0,
+  "rating": 0
+ },
+ "chloedb_future_user_rows": 0,
+ "chloedb_future_item_rows": 0,
+ "null_user_features": 2704
+}
