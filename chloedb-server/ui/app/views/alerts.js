@@ -22,7 +22,10 @@ export default view;
 export const alertPage = { id: "alert", title: "Alert", icon: "alerts", group: "Operate", hidden: true, nav: false, render, onParams };
 
 // ---------------------------------------------------------------- helpers
-const Needs = (scope) => needs(scope).replace(/^n/, "N");
+const Needs = (scope, route) => needs(scope, route).replace(/^n/, "N");
+// Acknowledging, silencing and a note are bounded (tier 1): a write key,
+// or an ops key, may take them (the catalog says which routes a role may call).
+const ACK = "POST /v1/alerts/:rule/ack";
 /** The audit's "change" event of an acknowledge, silence or note: the alert's own event says it already. */
 export const dupChange = (e) => e.kind === "change" && /^\/v1\/alerts\/[^/]+\/(ack|silence|notes)$/.test(e.detail?.route || "");
 /** Copy URLs in a text, named: "shard http://…:8211: tcp connect error" reads "shard s0-0: tcp connect error". */
@@ -55,7 +58,7 @@ const single = () => !coordinator() && !allCopies();
 const range = () => timeRange();
 /** Asks before a change, with a required reason: resolves {reason} or false. */
 const ask = ({ title, body, ok, danger, typed, reason = true }) => confirm({ title, body, ok, danger, typed, reason });
-const failMsg = (e, what) => e instanceof ApiError && e.status === 403 ? `${what} ${needs("write")}` : e instanceof ApiError && (e.status === 404 || e.status === 405) ? `${what}: this server cannot do that yet (it needs a newer chloedb-server)` : `${what}: ${e.message}`;
+const failMsg = (e, what) => e instanceof ApiError && e.status === 403 ? `${what} ${needs("write", ACK)}` : e instanceof ApiError && (e.status === 404 || e.status === 405) ? `${what}: this server cannot do that yet (it needs a newer chloedb-server)` : `${what}: ${e.message}`;
 const missing = (e) => e instanceof ApiError && (e.status === 404 || e.status === 405);
 // A backtest point: the rule's evaluated value over its window (`window`), else the raw value.
 const btPoint = (p) => [p.t, p.window !== undefined ? p.window : p.value];
@@ -397,9 +400,9 @@ function listView(page, r) {
   function actions(r, x) {
     const out = [];
     if (m.fleet) {
-      const w = can("write");
-      out.push(h("button", { class: "btn xs", disabled: !w || !!x.ack, title: !w ? Needs("write") : x.ack ? `Acknowledged by ${x.ack.by}` : "Acknowledge: you are on it", onclick: () => ack(r) }, "Ack"));
-      const sil = h("button", { class: "btn xs", disabled: !w, title: w ? "Silence it for a while, with a reason" : Needs("write") }, "Silence", icon("down"));
+      const w = can("write", ACK);
+      out.push(h("button", { class: "btn xs", disabled: !w || !!x.ack, title: !w ? Needs("write", ACK) : x.ack ? `Acknowledged by ${x.ack.by}` : "Acknowledge: you are on it", onclick: () => ack(r) }, "Ack"));
+      const sil = h("button", { class: "btn xs", disabled: !w, title: w ? "Silence it for a while, with a reason" : Needs("write", ACK) }, "Silence", icon("down"));
       sil.onclick = () => silenceMenu(sil, r, draw);
       out.push(sil);
     }
@@ -444,10 +447,10 @@ function listView(page, r) {
     }
     const unacked = live.filter((r) => { const x = m.st.get(r.id); return x.state === "firing" && !x.ack; });
     const held = rows.filter(isHeld);
-    const w8 = can("write");
+    const w8 = can("write", ACK);
     const bar = m.fleet && (unacked.length > 1 || held.length) ? h("div", { class: "al-fbar" },
       h("span", { class: "small" }, [`${fmt.plural(live.length, "alert")}`, held.length ? `${fmt.n(held.length)} held back under their cause` : null, unacked.length ? `${fmt.n(unacked.length)} not acknowledged` : "all acknowledged"].filter(Boolean).join(" · ")),
-      unacked.length > 1 ? h("button", { class: "btn sm", disabled: !w8, title: w8 ? "Acknowledge every firing alert that nobody acknowledged" : Needs("write"), onclick: () => ackAll(unacked) }, icon("check"), `Acknowledge all (${fmt.n(unacked.length)})`) : null) : null;
+      unacked.length > 1 ? h("button", { class: "btn sm", disabled: !w8, title: w8 ? "Acknowledge every firing alert that nobody acknowledged" : Needs("write", ACK), onclick: () => ackAll(unacked) }, icon("check"), `Acknowledge all (${fmt.n(unacked.length)})`) : null) : null;
     const tbl = table([
       { key: "sev", label: "", width: "24px", cls: "al-c-dot", render: (r) => h("span", { class: "dot " + (m.st.get(r.id).state === "firing" ? (r.severity === "critical" ? "critical pulse" : r.severity === "warning" ? "warn" : "") : "pending"), title: m.st.get(r.id).state } ) , sortable: false },
       { key: "name", label: "alert", cls: "al-c-name", render: (r) => { const x = m.st.get(r.id); return h("div", { class: isHeld(r) ? "al-heldname" : "" },
@@ -895,10 +898,10 @@ function alertHub(page, id, r) {
       firesOn(x) ? h("div", { class: "small al-heldwhy" }, `It ${st === "pending" ? "waits to fire" : "fires"} on coordinator ${firesOn(x)}, on the traffic sent through it; on this coordinator it is ${stateName(x.here) === "ok" ? "fine" : stateName(x.here).replace("_", " ")}. `,
         ...(x.elsewhere || []).filter((e) => e.url).slice(0, 2).map((e) => h("a", { href: e.url.replace(/\/$/, "") + "/#/alert/" + encodeURIComponent(rule.id), target: "_blank", rel: "noopener" }, `Open it on ${e.name || hostOf(e.url)}`, icon("ext")))) : null,
       pg && st === "firing" ? h("div", { class: "small muted" }, x.paged ? `${pagedText(x)[0].toUpperCase()}${pagedText(x).slice(1)}.` : `Not paged yet. Messages are sent by ${pg.me ? "this coordinator" : hostOf(pg.sends)}.`) : null);
-    const w8 = can("write"), fleet = m.fleet;
+    const w8 = can("write", ACK), fleet = m.fleet;
     const ackBtn = x.ack
       ? h("button", { class: "btn al-acked", disabled: true, title: x.ack.note || "" }, icon("check"), h("span", { class: "al-wide-only" }, `Acknowledged · ${x.ack.by || "someone"} ${hm(x.ack.at_ms)}`), h("span", { class: "al-narrow-only" }, "Acked"))
-      : h("button", { class: "btn primary", disabled: !fleet || !w8 || st !== "firing", title: !fleet ? "This server cannot acknowledge alerts yet" : !w8 ? Needs("write") : st !== "firing" ? "Only a firing alert is acknowledged" : "Acknowledge: you are on it", onclick: async () => {
+      : h("button", { class: "btn primary", disabled: !fleet || !w8 || st !== "firing", title: !fleet ? "This server cannot acknowledge alerts yet" : !w8 ? Needs("write", ACK) : st !== "firing" ? "Only a firing alert is acknowledged" : "Acknowledge: you are on it", onclick: async () => {
         try { await api(`/v1/alerts/${encodeURIComponent(id)}/ack`, { body: {} }); toast("Acknowledged", "ok"); await refreshAlerts(); load(); } catch (e) { toast(failMsg(e, "Acknowledging"), "bad"); }
       } }, icon("check"), h("span", { class: "al-wide-only" }, "Acknowledge"), h("span", { class: "al-narrow-only" }, "Ack"));
     const silBtn = x.silent
@@ -907,15 +910,15 @@ function alertHub(page, id, r) {
         if (!ok) return;
         try { await api(`/v1/alerts/${encodeURIComponent(id)}/silence`, { method: "DELETE", reason: ok.reason }); toast("Silence ended", "ok"); await refreshAlerts(); load(); } catch (e) { toast(failMsg(e, "Ending the silence"), "bad"); }
       } }, icon("pause"), h("span", { class: "al-wide-only" }, `Silenced to ${hm(x.silenced.until_ms)} · end`), h("span", { class: "al-narrow-only" }, `To ${hm(x.silenced.until_ms)} · end`))
-      : h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server cannot silence alerts yet" : !w8 ? Needs("write") : "Silence it for a while, with a reason" }, icon("pause"), "Silence", icon("down"));
+      : h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server cannot silence alerts yet" : !w8 ? Needs("write", ACK) : "Silence it for a while, with a reason" }, icon("pause"), "Silence", icon("down"));
     if (!x.silent) silBtn.onclick = () => silenceMenu(silBtn, rule, () => load());
     clear(tools, ackBtn, silBtn,
-      h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? Needs("write") : "Add a note to the alert's timeline", onclick: () => { noteIn.scrollIntoView({ block: "center", behavior: "smooth" }); noteIn.focus({ preventScroll: true }); } }, icon("edit"), h("span", { class: "al-wide-only" }, "Add note"), h("span", { class: "al-narrow-only" }, "Note")),
+      h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? Needs("write", ACK) : "Add a note to the alert's timeline", onclick: () => { noteIn.scrollIntoView({ block: "center", behavior: "smooth" }); noteIn.focus({ preventScroll: true }); } }, icon("edit"), h("span", { class: "al-wide-only" }, "Add note"), h("span", { class: "al-narrow-only" }, "Note")),
       h("button", { class: "btn al-ico", title: "Copy a link to this alert at this time", onclick: () => { const t = since(); copy(location.origin + location.pathname + alertLink(id, { from: Math.round(t - 30 * 60e3), to: Math.round(x.state === "firing" ? Date.now() : t + 60 * 60e3) }), "Link copied: it opens this alert at this time"); } }, icon("link"), h("span", { class: "al-wide-only" }, "Copy link")),
       h("button", { class: "btn ghost al-ico", title: "Edit the rule", onclick: () => editRule(rule, { after: load }) }, icon("sliders"), h("span", { class: "al-wide-only" }, "Edit rule")),
-      can("admin") ? h("a", { class: "btn al-ico", href: "#/oncall?alert=" + encodeURIComponent(id) + (st === "firing" || st === "pending" ? "&start=1" : ""), title: st === "firing" || st === "pending" ? "The on-call agent looks into it now, with read-only tools, and proposes what to do" : "Ask the on-call agent about this alert" }, icon("agent"), h("span", { class: "al-wide-only" }, "Investigate")) : null);
+      can("admin", "POST /v1/admin/oncall") ? h("a", { class: "btn al-ico", href: "#/oncall?alert=" + encodeURIComponent(id) + (st === "firing" || st === "pending" ? "&start=1" : ""), title: st === "firing" || st === "pending" ? "The on-call agent looks into it now, with read-only tools, and proposes what to do" : "Ask the on-call agent about this alert" }, icon("agent"), h("span", { class: "al-wide-only" }, "Investigate")) : null);
     noteIn.disabled = noteBtn.disabled = !fleet || !w8;
-    noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? Needs("write") : "Add a note: what you found, what you did";
+    noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? Needs("write", ACK) : "Add a note: what you found, what you did";
   }
 
   function drawKpis() {

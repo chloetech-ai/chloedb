@@ -444,8 +444,8 @@ function editor(shot, view) {
   const errs = ERRORS.slice();
   const withErrors = h("input", { type: "checkbox", checked: errs.length > 0 });
   const sendBtn = h("button", { type: "button", class: "btn primary", onclick: () => send() }, icon("check"), "Send");
-  const writer = can("write");
-  if (!writer) { sendBtn.disabled = true; sendBtn.title = "Sending feedback " + needs("write"); }
+  const writer = can("write", "POST /v1/feedback");
+  if (!writer) { sendBtn.disabled = true; sendBtn.title = "Sending feedback " + needs("write", "POST /v1/feedback"); }
   function redrawList() {
     clear(list, marks.length ? marks.map((m) => h("li", { dataset: { n: String(m.n) }, class: "fb-mark" },
       m.tool === "redact" ? h("span", { class: "fb-n fb-n-redact", title: "Blacked out: not in the picture sent" }, "■") : h("span", { class: "fb-n", style: { background: m.color } }, String(m.n)),

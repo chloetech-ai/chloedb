@@ -122,7 +122,7 @@ function navLink(e) {
   const v = viewOf(e);
   const a = h("a", { href: "#/" + e.id, dataset: { view: e.id }, title: e.title + (e.key ? ` (g then ${e.key})` : "") }, icon(e.icon || v.icon), h("span", { class: "t" }, e.title));
   if (e.key) a.append(h("span", { class: "kb", "aria-hidden": "true" }, "g " + e.key));
-  if (e.scope && state.whoami && !can(e.scope)) { a.classList.add("gated"); a.title = `${e.title}: you can look; changing anything here ${needs(e.scope)}`; a.append(h("span", { class: "lockic" }, icon("lock"))); }
+  if (e.scope && state.whoami && !can(e.scope, e.route)) { a.classList.add("gated"); a.title = `${e.title}: you can look; changing anything here ${needs(e.scope, e.route)}`; a.append(h("span", { class: "lockic" }, icon("lock"))); }
   // The range goes along, so a view opens on the window in use.
   a.addEventListener("click", (ev) => { if (ev.button === 0 && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey) { ev.preventDefault(); location.hash = link(e.id); } });
   return a;
@@ -538,7 +538,7 @@ const ACTIONS = [
   ...RANGES.map(([k, m], i) => ({ name: `Show the last ${k.replace(/(\d)([a-z])/, "$1 $2")}`, icon: "clock", run: () => setRange(m), hint: String(i + 1) })),
   { name: "Show a fixed window (dates and times)", icon: "clock", run: () => pickWindow() },
   { name: "What happened overnight (Timeline, 18:00 to 08:00)", icon: "timeline", run: () => { const [a, b] = overnight(); setWindow(a, b); location.hash = link("timeline"); } },
-  { name: "Add a note to the timeline", icon: "note", run: go("#/timeline?note=1"), scope: "admin" },
+  { name: "Add a note to the timeline", icon: "note", run: go("#/timeline?note=1"), scope: "admin", route: "POST /v1/events/notes" },
   { name: "Toggle light or dark", icon: "moon", run: () => toggleTheme(), hint: "t" },
   { name: "Collapse or expand the sidebar", icon: "menu", run: () => toggleSide(), hint: "[" },
   { name: "Open another coordinator", icon: "node", run: () => askCoordinator() },
@@ -706,7 +706,7 @@ function openPalette(initial = "") {
     if (focus) items = focus.acts.map((a) => ({ ...a, grp: focus.name }));
     else {
       const views = ENTRIES.map((e) => { const v = viewOf(e); return { name: e.title, icon: e.icon || v.icon, grp: "Views", hint: e.group + (e.key ? ` · g ${e.key}` : ""), run: go(link(e.id)), sc: Math.max(score(q, e.title), score(q, (v.keywords || "") + " " + e.id, false) * 0.8) * (q ? 0.9 : 1) }; });
-      const acts = ACTIONS.filter((a) => !a.scope || can(a.scope)).map((a) => ({ ...a, grp: "Actions", sc: score(q, a.name, false) * 0.8 }));
+      const acts = ACTIONS.filter((a) => !a.scope || can(a.scope, a.route)).map((a) => ({ ...a, grp: "Actions", sc: score(q, a.name, false) * 0.8 }));
       const ents = entities(q).sort((a, b) => b.sc - a.sc);
       // The best match's actions come right after it ("about shard 117").
       const best = ents[0];

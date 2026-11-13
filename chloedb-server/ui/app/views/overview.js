@@ -672,7 +672,7 @@ function render(page, r0) {
   page.append(h("section", { class: "card home-ready" }, h("div", { class: "hd" }, readyTitle, readySub), h("div", { class: "bd" }, readyBody)));
   let auditFile, auditKnown = false;
   async function loadAudit() {
-    if (!can("admin")) { auditKnown = false; drawReady(); return; }
+    if (!can("admin", "GET /v1/admin/audit")) { auditKnown = false; drawReady(); return; }
     try { const j = await api("/v1/admin/audit?limit=1", { timeout: 4000 }); auditFile = j.file || null; auditKnown = true; } catch { auditKnown = false; }
     drawReady();
   }

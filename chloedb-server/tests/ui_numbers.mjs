@@ -66,4 +66,33 @@ const { isStored } = await import(new URL("catalog.js", app));
 assert.deepEqual(products.short.fields.map(isStored), [true, true, true, false, true, true, false]);
 assert.equal(isStored({ name: "b", type: "text", from: ["a"], stored: true }), true);
 
+// CCW-1: the ops and propose roles. A role key reads as a read key does,
+// and may take what the catalog says its role may (an ops key the bounded,
+// tier 1 actions); the tooltip names the key that would do.
+const core = await import(new URL("core.js", app));
+const ACK = "POST /v1/alerts/:rule/ack", NOTE = "POST /v1/events/notes", APPROVE = "POST /v1/admin/oncall/proposals/:id/approve";
+core.provideRoutes([
+  { method: "POST", path: "/v1/alerts/:rule/ack", scope: "write", tier: 1, roles: { ops: true, propose: false } },
+  { method: "POST", path: "/v1/events/notes", scope: "admin", tier: 1, roles: { ops: true, propose: false } },
+  { method: "GET", path: "/v1/admin/audit", scope: "admin", tier: 0, roles: { ops: true, propose: true } },
+  { method: "POST", path: "/v1/admin/oncall/proposals/:id/approve", scope: "admin", tier: 2, roles: { ops: false, propose: false } },
+]);
+const role = (scope) => ({ name: "bot", scope, may: { data: "read", server_views: true, act_alone_up_to_tier: scope === "ops" ? 1 : 0, reason_required: true } });
+core.provide({ whoami: role("ops") });
+assert.equal(core.roleOf(), "ops");
+assert.ok(core.can("read") && !core.can("write") && !core.can("admin"));
+assert.ok(core.can("write", ACK) && core.can("admin", NOTE) && core.can("admin", "GET /v1/admin/audit"));
+assert.ok(!core.can("admin", APPROVE));
+assert.equal(core.needs("admin", APPROVE), "needs an admin key (this key is ops: it files a change request instead)");
+assert.ok(core.reasonNeeded());
+core.provide({ whoami: role("propose") });
+assert.ok(core.can("read") && !core.can("write", ACK) && core.can("admin", "GET /v1/admin/audit"));
+assert.equal(core.needs("write", ACK), "needs a write or an ops key (this key is propose: it files change requests)");
+core.provide({ whoami: { name: "w", scope: "write", may: { data: "write", server_views: false } } });
+assert.ok(core.can("write", ACK) && !core.can("admin", NOTE) && core.can("write"));
+assert.equal(core.needs("admin", NOTE), "needs an admin or an ops key");
+assert.equal(core.roleOf(), null);
+core.provide({ whoami: null });
+core.provideRoutes(null);
+
 console.log("ok");

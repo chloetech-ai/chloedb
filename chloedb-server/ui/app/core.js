@@ -271,6 +271,21 @@ export function refusedRoute(path) {
 }
 
 export async function api(path, opts = {}) {
+  try { return await request(path, opts); }
+  catch (e) {
+    // An agent's key says why it changes the server (the audit log keeps
+    // it): asked once, then the request is sent again with it.
+    if (e?.body?.error_code !== "reason_required" || opts.reason || opts.blob) throw e;
+    // Several at once (Acknowledge all) share one question.
+    asking ||= confirm({ title: "Say why", body: `This key is an agent's (${ctx.whoami?.name || "a key"}${roleOf() ? `, ${roleOf()}` : ""}): the server keeps a reason with each change it makes, in the audit log.`, ok: "Send", reason: "Why: a sentence, kept in the audit log" }).finally(() => { asking = null; });
+    const ok = await asking;
+    if (!ok) throw e;
+    return request(path, { ...opts, reason: ok.reason });
+  }
+}
+let asking = null;
+
+async function request(path, opts) {
   const get = !opts.method && opts.body === undefined;
   const held = get && !opts.hub ? refusedRoute(path) : null;
   if (held) throw new ApiError(403, held, { error: held, limited: true });
@@ -280,7 +295,7 @@ export async function api(path, opts = {}) {
     else { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(opts.body); }
   }
   if (token) init.headers.authorization = "Bearer " + token;
-  if (opts.reason) init.headers["x-strata-reason"] = headerSafe(opts.reason);
+  if (opts.reason) init.headers["x-chloedb-reason"] = headerSafe(opts.reason);
   let timer = null, timedOut = false;
   if (opts.timeout) {
     const ac = new AbortController();
@@ -348,22 +363,53 @@ export const isPaused = () => ctx.paused;
 
 // ---------------------------------------------------------------- scope
 const RANK = { feed: 1, read: 2, write: 3, admin: 4 };
+// The routes as the server lists them (GET /v1/catalog: each one's scope,
+// tier, and whether the ops and propose roles may call it), for a key that
+// acts on the server by its role rather than its scope.
+let ROUTES = null;
+/** For data.js: the catalog's routes ([{method, path, scope, tier, roles}]). */
+export function provideRoutes(list) { ROUTES = list ? new Map(list.map((r) => [`${r.method} ${r.path}`, r])) : null; }
+/** A key for operations' role (whoami's scope "ops" or "propose"), or null. */
+export const roleOf = (w = ctx.whoami) => (w && !RANK[w.scope] && w.may?.server_views ? w.scope : null);
+/** What a key may do to the data: its scope, or for a role key what whoami's `may.data` says (read). */
+const dataScope = (w) => (RANK[w.scope] ? w.scope : w.may?.data || "read");
 /**
- * Whether the signed-in key may do this: can("feed" | "read" | "write" | "admin").
- * Unknown (not signed in, or whoami failed) can read only. Views hide or
- * disable what they cannot do, with `needs(scope)` as the tooltip.
+ * Whether the signed-in key may do this: can("feed" | "read" | "write" |
+ * "admin"), and, for an action on the server, its route ("POST
+ * /v1/alerts/:rule/ack"): the server's catalog then says which scope it
+ * needs and whether an ops or propose key may call it (the bounded,
+ * tier 1 actions for ops; the server's views for both). Unknown (not
+ * signed in, or whoami failed) can read only. Views hide or disable what
+ * they cannot do, with `needs(scope, route)` as the tooltip.
  */
-export function can(scope) {
+export function can(scope, route = null) {
   const w = ctx.whoami;
   if (!w) return scope === "read";
   if (w.root) return true;
+  const r = route ? ROUTES?.get(route) : null;
+  const need = r?.scope || scope;
   // A key limited to tables is never the server's admin: its admin is its
   // tables' (CREATE, ALTER, DROP).
-  if (w.tables && (RANK[scope] || RANK.admin) >= RANK.admin) return false;
-  return (RANK[w.scope] || 0) >= (RANK[scope] || RANK.admin);
+  if (w.tables && (RANK[need] || RANK.admin) >= RANK.admin) return false;
+  if ((RANK[dataScope(w)] || 0) >= (RANK[need] || RANK.admin)) return true;
+  const role = roleOf(w);
+  return !!(role && r?.roles?.[role]);
 }
-/** The tooltip of an action the key cannot take: "needs an admin key". */
-export const needs = (scope) => ctx.whoami?.tables && scope === "admin" ? "needs an admin key of the server (this key is limited to tables)" : `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+/** Whether an action's request needs a reason from this key (an agent's: whoami's `may.reason_required`). */
+export const reasonNeeded = () => !!ctx.whoami?.may?.reason_required;
+/** The tooltip of an action the key cannot take: "needs an admin key", or for a bounded action "needs a write or an ops key". */
+export function needs(scope, route = null) {
+  const r = route ? ROUTES?.get(route) : null;
+  const need = r?.scope || scope;
+  if (ctx.whoami?.tables && need === "admin") return "needs an admin key of the server (this key is limited to tables)";
+  const a = need === "admin" ? "an admin" : `a ${need}`;
+  const ops = route && (r ? r.roles?.ops : false);
+  const role = roleOf();
+  if (role === "propose" && ops) return `needs ${a} or an ops key (this key is propose: it files change requests)`;
+  if (ops) return `needs ${a} or an ops key`;
+  if (role) return `needs ${a} key (this key is ${role}: it files a change request instead)`;
+  return `needs ${a} key`;
+}
 /** Whether the signed-in key is limited to tables (whoami's `tables`). */
 export const limited = () => !!ctx.whoami?.tables;
 /** A key's grants in words: "swarm_* admin, * read" (whoami's or a key's `tables`). */
@@ -380,8 +426,8 @@ export function cannotSee(e, what) {
   return e?.message || String(e);
 }
 /** Disables a button the key cannot use, and says why: gate(btn, "admin"). Returns the button. */
-export function gate(btn, scope) {
-  if (!can(scope)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope); btn.classList.add("gated"); }
+export function gate(btn, scope, route = null) {
+  if (!can(scope, route)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope, route); btn.classList.add("gated"); }
   return btn;
 }
 
