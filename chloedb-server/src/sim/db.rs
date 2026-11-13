@@ -229,12 +229,22 @@ impl ModelDb {
         Checkpoint { numbering: self.numbering.clone(), txns: self.txns.clone() }
     }
 
-    /// [`chloedb::storage::Database::install_copy`]: the copy's rows,
+    /// [`chloedb::storage::Database::install_copy`] (`over`:
+    /// [`chloedb::storage::Database::install_copy_over`]): the copy's rows,
     /// numbers and terms in place of this database's, the ship log emptied;
-    /// durable on return. A copy of an older term is refused.
-    pub fn install_copy(&mut self, copy: &Checkpoint) -> Result<SeqNo, ApiError> {
+    /// durable on return. A copy of an older term is refused, and so is,
+    /// unless `over`, one that ends before this database's last
+    /// transaction when that one is of the copy's term.
+    pub fn install_copy(&mut self, copy: &Checkpoint, over: bool) -> Result<SeqNo, ApiError> {
         if copy.numbering.term < self.numbering.term {
             return Err(ApiError::bad(format!("the copy is of term {}, older than this database's ({}): it is a copy of a replaced primary", copy.numbering.term, self.numbering.term)));
+        }
+        let own = self.numbering.last();
+        if !over && own.term == copy.numbering.term && own.seq > copy.numbering.seq {
+            return Err(ApiError::bad(format!(
+                "the copy ends at transaction {}, before this database's last ({} of term {}, the copy's term): it was taken before transactions of its primary that this database holds since, and would drop them",
+                copy.numbering.seq, own.seq, own.term
+            )));
         }
         self.numbering = copy.numbering.clone();
         self.txns = copy.txns.clone();
@@ -261,7 +271,7 @@ mod tests {
         let mut r = ModelDb::new(true, 2);
         let bytes: Vec<Vec<u8>> = t.iter().map(|t| t.bytes.to_vec()).collect();
         assert_eq!(r.apply_shipped(SeqNo { term: 1, seq: 1 }, &bytes).unwrap(), Applied::Mismatch { seq: 0, term: 0 });
-        assert_eq!(r.install_copy(&p.checkpoint()).unwrap(), SeqNo { term: 1, seq: 3 });
+        assert_eq!(r.install_copy(&p.checkpoint(), false).unwrap(), SeqNo { term: 1, seq: 3 });
         p.begin_term(2).unwrap();
         p.commit(4);
         let LogRead::Txns(t) = p.log_from(4, 10) else { panic!() };

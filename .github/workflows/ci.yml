@@ -289,7 +289,8 @@ jobs:
       # The cluster simulator over more seeds than its tests run (`cargo
       # test` built chloedb-sim): the first 3,000 of each world on every
       # change, and in the nightly run and a run started by hand 30,000 of
-      # each that no run checked before, a new range each day. A seed
+      # each that no run checked before, a new range each day; a third as
+      # many with calls lost and with copies arriving late. A seed
       # replays exactly: `chloedb-sim --seed N --trace` (with `--cluster`
       # for the second world) shows what happened in it.
       - name: Simulator seeds
@@ -315,6 +316,7 @@ jobs:
           }
           sim --seeds "$from..$((from + n))"
           sim --seeds "$from..$((from + n / 3))" --drop-ppm 150000
+          sim --seeds "$from..$((from + n / 3))" --late-copies
           sim --cluster --seeds "$from..$((from + n))"
           exit $status
       # Compiler warnings and clippy's correctness and suspicious lints fail
@@ -375,12 +377,18 @@ jobs:
   # are not fetched here), and clippy over the feature's code. `vision`
   # includes `bert`, so the cross-encoder tests against transformers'
   # scores of the small models in chloedb/tests/models run here too.
+  # Two parts that run at once, ChloeDB's and the server's: each builds
+  # candle on its own, and one after the other they took 31 minutes.
   vision:
-    name: images (feature vision)
+    name: images (feature vision, ${{ matrix.part }})
     needs: changes
     if: fromJSON(needs.changes.outputs.run).full
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [chloedb, chloedb-server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -390,11 +398,10 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: |
-            chloedb
-            chloedb-server
-          key: vision
+          workspaces: ${{ matrix.part }}
+          key: vision-${{ matrix.part }}
       - name: ChloeDB
+        if: matrix.part == 'chloedb'
         working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -402,6 +409,7 @@ jobs:
           cargo test --locked --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
           cargo clippy --locked --profile ci --features vision --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
       - name: chloedb-server
+        if: matrix.part == 'chloedb-server'
         working-directory: chloedb-server
         run: cargo test --locked --profile ci --features vision --test media_vectors --test media
 
@@ -448,12 +456,20 @@ jobs:
   # (CHLOEDB_ENGINE=datafusion: a plan it does not lower runs on the
   # operators), Parquet files in and out (feature parquet, on DataFusion's
   # Arrow) with s3:// URLs (feature s3), and clippy over the features' code.
+  # The tests build with one set of features (datafusion, sqlite, parquet,
+  # s3), so ChloeDB and DataFusion compile once rather than once for each of
+  # three sets, and clippy runs at the same time in a part of its own: in
+  # one job, one after the other, they took 35 minutes.
   datafusion:
-    name: DataFusion engine (feature datafusion)
+    name: DataFusion engine (feature datafusion, ${{ matrix.part }})
     needs: changes
     if: fromJSON(needs.changes.outputs.run).full
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [tests, clippy]
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
@@ -466,17 +482,21 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb
-          key: datafusion
+          key: datafusion-${{ matrix.part }}
       - name: ChloeDB
+        if: matrix.part == 'tests'
         working-directory: chloedb
         run: |
-          cargo test --locked --profile ci --features datafusion --test datafusion_engine --test hash_function
-          cargo test --locked --profile ci --features datafusion,sqlite --test window_functions --test set_operations
-          CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
+          f=datafusion,sqlite,parquet,s3
+          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations
+          CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features $f --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
-          cargo test --locked --profile ci --features datafusion,parquet,s3 --test parquet
-          cargo test --locked --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
-          cargo clippy --locked --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+          cargo test --locked --profile ci --features $f --test parquet
+          cargo test --locked --profile ci --features $f --lib -- parquet:: objects:: arrow_rows::
+      - name: Clippy
+        if: matrix.part == 'clippy'
+        working-directory: chloedb
+        run: cargo clippy --locked --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # Power losses, full disks and failing syncs at every write of a storage
   # workload (storage::io, tests/storage_faults.rs). A job of its own: after
@@ -1032,46 +1052,104 @@ jobs:
   # Every code block of the guide's pages (docs/guide/*.md,
   # docs/quickstart.md) runs, in order, against this commit's programs, and
   # prints what the page shows (docs/guide/run.py).
+  # The programs the guide's pages use besides chloedb-server, each built
+  # in a job of its own, at the same time as the others and as server-bin,
+  # and kept by the git trees it is built from (as server-bin is). In one
+  # job, one after the other and each compiling ChloeDB again, they took
+  # 20 of the docs job's 22 minutes (the pages themselves, 28 seconds).
+  docs-bins:
+    name: guide program ${{ matrix.crate }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && fromJSON(needs.changes.outputs.run).docs }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [chloedb-crawl, chloedb-sheets, chloectx, chloedb-py]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Source key
+        id: key
+        run: echo "key=docs-bin-${{ matrix.crate }}-${{ runner.os }}-${RUST_TOOLCHAIN}-py3.12-$(git rev-parse HEAD:chloedb HEAD:${{ matrix.crate }} | sha256sum | cut -c1-24)" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache
+        with:
+          path: .docs-bin
+          key: ${{ steps.key.outputs.key }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        if: steps.cache.outputs.cache-hit != 'true' && matrix.crate == 'chloedb-py'
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: ${{ matrix.crate }}
+          key: docs-${{ matrix.crate }}
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: ${{ matrix.crate }}
+        run: |
+          mkdir -p ../.docs-bin
+          if [ "${{ matrix.crate }}" = chloedb-py ]; then
+            pip install maturin
+            maturin build --locked --profile ci --interpreter python3.12 -o ../.docs-bin
+          else
+            cargo build --locked --profile ci
+            cp "target/ci/${{ matrix.crate }}" ../.docs-bin/
+          fi
+      # Saved from pull requests too: a binary is small, and a pull
+      # request's next push of an untouched crate takes it from here.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: .docs-bin
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: docs-bin-${{ matrix.crate }}
+          path: .docs-bin/
+          retention-days: 3
+          if-no-files-found: error
+          include-hidden-files: true
+
   docs:
     name: Documentation site and its examples
-    needs: [changes, server-bin]
-    if: ${{ !cancelled() && needs.server-bin.result == 'success' && fromJSON(needs.changes.outputs.run).docs }}
+    needs: [changes, server-bin, docs-bins]
+    if: ${{ !cancelled() && needs.server-bin.result == 'success' && needs.docs-bins.result == 'success' && fromJSON(needs.changes.outputs.run).docs }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: |
-            chloedb-server
-            chloedb-crawl
-            chloedb-sheets
-            chloectx
-            chloedb-py
-          key: docs
-      # chloedb-server's binary from job server-bin.
+      # chloedb-server's binary from job server-bin, the other programs and
+      # the Python package's wheel from docs-bins, where run.py looks for
+      # them (each crate's target/ci).
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: chloedb-server
           path: chloedb-server/target/release
-      - name: chloedb-server from job server-bin
-        run: chmod +x chloedb-server/target/release/chloedb-server && chloedb-server/target/release/chloedb-server --version
-      - name: Build the programs the pages use
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: docs-bin-*
+          path: .docs-bin
+      - name: The programs the pages use
         run: |
-          python -m venv "$RUNNER_TEMP/venv"
+          chmod +x chloedb-server/target/release/chloedb-server && chloedb-server/target/release/chloedb-server --version
           for crate in chloedb-crawl chloedb-sheets chloectx; do
-            (cd "$crate" && cargo build --locked --profile ci)
+            mkdir -p "$crate/target/ci"
+            install -m 0755 ".docs-bin/docs-bin-$crate/$crate" "$crate/target/ci/$crate"
           done
+          python -m venv "$RUNNER_TEMP/venv"
           . "$RUNNER_TEMP/venv/bin/activate"
-          pip install maturin -r docs/guide/requirements.txt
-          (cd chloedb-py && maturin develop --locked --profile ci)
+          pip install -r docs/guide/requirements.txt .docs-bin/docs-bin-chloedb-py/*.whl
       # The embedding models the pages name are kept between runs.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -1085,7 +1163,7 @@ jobs:
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, server-bin, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript, java, docs-site, docs]
+    needs: [changes, server-bin, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript, java, docs-site, docs-bins, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

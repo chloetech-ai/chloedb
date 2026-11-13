@@ -49,6 +49,27 @@ __all__ = ["ChloeDBVectorStore"]
 
 DEFAULT_MODEL = "potion-retrieval-32M"
 
+# Reciprocal rank fusion's constant (ChloeDB's rrf(), k = 60): a document
+# first in both rankings of a hybrid search scores 2 / (60 + 1).
+_RRF_K = 60
+_RRF_BEST = 2.0 / (_RRF_K + 1)
+
+
+def _relevance_fn(mode: str) -> Callable[[float], float]:
+    """How a score of a search in `mode` reads as relevance from 0 to 1.
+
+    By vector, the score is the cosine similarity (vectors are unit
+    length), the relevance Chroma, FAISS and PGVector report for cosine:
+    the similarity itself, negative ones as 0. Hybrid, the fused score
+    over its best (first in both rankings). By words, BM25 has no scale
+    to map to 0 to 1, so a relevance threshold is refused there."""
+    if mode == "vector":
+        return lambda s: max(0.0, min(1.0, float(s)))
+    if mode == "hybrid":
+        return lambda s: max(0.0, min(1.0, float(s) / _RRF_BEST))
+    raise NotImplementedError("a search by words (mode='text') ranks by BM25, which has no scale of 0 to 1: use similarity_search_with_score, or mode='vector' or 'hybrid' for relevance scores")
+
+
 
 class ChloeDBVectorStore(VectorStore):
     """A LangChain `VectorStore` over a ChloeDB table.
@@ -184,12 +205,17 @@ class ChloeDBVectorStore(VectorStore):
         return self._search(None, k, vector=embedding, filter=filter, mode="vector")
 
     def _select_relevance_score_fn(self) -> Callable[[float], float]:
-        """Scores as relevance from 0 to 1: a cosine similarity's half
-        turn ((1 + s) / 2); BM25 and fused scores are not bounded, so a
-        store searching by words passes them as they are."""
-        if self.mode != "vector":
-            return lambda s: s
-        return lambda s: max(0.0, min(1.0, (1.0 + s) / 2.0))
+        """Scores as relevance from 0 to 1, for a search in the store's own
+        `mode` (a search given `mode=` maps by that mode instead)."""
+        return _relevance_fn(self.mode)
+
+    def _similarity_search_with_relevance_scores(self, query: str, k: int = 4, **kwargs: Any) -> list[tuple[Document, float]]:
+        relevance = _relevance_fn(kwargs.get("mode") or self.mode)
+        return [(d, relevance(s)) for d, s in self.similarity_search_with_score(query, k, **kwargs)]
+
+    async def _asimilarity_search_with_relevance_scores(self, query: str, k: int = 4, **kwargs: Any) -> list[tuple[Document, float]]:
+        relevance = _relevance_fn(kwargs.get("mode") or self.mode)
+        return [(d, relevance(s)) for d, s in await self.asimilarity_search_with_score(query, k, **kwargs)]
 
     def max_marginal_relevance_search(self, query: str, k: int = 4, fetch_k: int = 20, lambda_mult: float = 0.5, *, filter: dict | None = None, **kwargs: Any) -> list[Document]:
         return self.max_marginal_relevance_search_by_vector(self._query_vector(query), k, fetch_k, lambda_mult, filter=filter, **kwargs)

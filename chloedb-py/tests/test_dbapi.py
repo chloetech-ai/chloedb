@@ -47,7 +47,8 @@ def test_reads(conn):
     assert cur.rowcount == 2
     first = cur.fetchone()
     assert first[:4] == ("b2", "Winter garden", 2005, 3.0)
-    assert first[4].startswith("2026-10-02")
+    # A TIMESTAMP is a datetime in UTC, as description says.
+    assert first[4] == datetime.datetime(2026, 10, 2, tzinfo=datetime.timezone.utc)
     assert cur.fetchone()[0] == "b3"
     assert cur.fetchone() is None
     cur.execute("SELECT id FROM books ORDER BY id")

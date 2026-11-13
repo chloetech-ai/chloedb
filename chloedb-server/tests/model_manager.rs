@@ -94,6 +94,21 @@ async fn settled(base: &str) -> bool {
     docs["embeddings"].as_array().unwrap().iter().all(|e| e["loaded"] == true && e["backfill"]["state"] != "running")
 }
 
+/// Whether `field` of `docs` is listed, its model open, and its backfill
+/// done (or, with no backfill, its vectors there for a query).
+async fn filled(base: &str, field: &str) -> bool {
+    let t = get(base, "/v1/tables").await;
+    let docs = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "docs").unwrap().clone();
+    let Some(e) = docs["embeddings"].as_array().unwrap().iter().find(|e| e["field"] == field).cloned() else { return false };
+    if e["loaded"] != true {
+        return false;
+    }
+    match e["backfill"]["state"].as_str() {
+        Some(state) => state == "done",
+        None => !nearest(base, field, "truck").await.is_empty(),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_field_changes_model_beside_the_old_one_then_switches_by_renaming() {
     let dir = tempfile::tempdir().unwrap();
@@ -151,9 +166,11 @@ async fn a_field_changes_model_beside_the_old_one_then_switches_by_renaming() {
 
     // The change: a field beside the old one, filled in for the rows there.
     sql(&base, "ALTER TABLE docs ADD COLUMN emb_next VECTOR(8) OPTIONS(embed = 'body', model = 'tiny-int8', index = 'flat')").await;
+    // settled() alone can pass before the new field has a backfill at all
+    // (right after the ALTER), so wait for its backfill to be done.
     until("the new field's vectors", || {
         let base = base.clone();
-        Box::pin(async move { settled(&base).await })
+        Box::pin(async move { settled(&base).await && filled(&base, "emb_next").await })
     })
     .await;
     assert_eq!(nearest(&base, "emb_next", "truck").await, nearest(&base, "emb", "truck").await, "int8 ranks as its original");
