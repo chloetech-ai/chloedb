@@ -80,7 +80,7 @@
       <span class="eyebrow">Apps</span>
       <h1>Install ChloeCtx on your machine</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/setup.md">docs/chloectx/setup.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.0.</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-you-need">What you need</a></li><li><a href="#prebuilt">Prebuilt</a></li><li><a href="#install-in-one-command-from-source">Install in one command, from source</a></li><li><a href="#or-let-your-agent-do-it">Or let your agent do it</a></li><li><a href="#or-step-by-step">Or step by step</a></li><li><a href="#check-it">Check it</a></li><li><a href="#try-it-for-real">Try it for real</a></li><li><a href="#explore-your-stores-chloectx-ui">Explore your stores: chloectx ui</a></li><li><a href="#where-everything-lives">Where everything lives</a></li><li><a href="#other-environments">Other environments</a></li><li><a href="#upgrade-and-remove">Upgrade and remove</a></li><li><a href="#keep-the-stores-tidy-chloectx-stores-and-chloectx-prune">Keep the stores tidy: chloectx stores and chloectx prune</a></li><li><a href="#chloectx-was-called-engram">ChloeCtx was called Engram</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ol></details>
     <div class="doc-body">
@@ -126,7 +126,7 @@
 <p>Python 3 is only needed for the scripted demo and the evaluation harnesses, not for ChloeCtx itself.</p>
 <p>The CLI login matters more than it looks. The distiller runs <code>claude -p</code> in the background, so an expired CLI login breaks it even while interactive sessions (or the desktop app) keep working. Recording and recall still work in that state, but nothing new is written down. <code>chloectx doctor</code> checks for it.</p>
 <h2 id="prebuilt">Prebuilt<a class="anchor" href="#prebuilt" aria-label="Link to this section">#</a></h2>
-<p><span class="since unreleased">since 0.3.1 (unreleased)</span> From release 0.3.1, the ChloeDB installer fetches <code>chloectx</code> prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:</p>
+<p><span class="since">since 0.3.1</span> From release 0.3.1, the ChloeDB installer fetches <code>chloectx</code> prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx    # ~/.local/bin/chloectx
 ~/.local/bin/chloectx fetch-model                    # potion-retrieval-32M, 129 MB, SHA-256 checked
 ~/.local/bin/chloectx install --project /absolute/path/to/project    # or: install --user, every session

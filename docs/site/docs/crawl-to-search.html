@@ -80,13 +80,13 @@
       <span class="eyebrow">Cookbook</span>
       <h1>Crawl a site into search</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs describe release 0.3.0.</p>
+      <p class="doc-version">These docs describe release 0.3.1.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#a-site-to-crawl">A site to crawl</a></li><li><a href="#look-before-you-crawl">Look before you crawl</a></li><li><a href="#crawl">Crawl</a></li><li><a href="#search-it">Search it</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
 <p><code>chloedb-crawl</code> reads a site, finds the fields its pages carry (JSON-LD, meta tags, spec tables, the site's own template), makes a table from them and fills it. This recipe crawls a small shop, served on your machine so that it runs anywhere, and searches the table it made with SQL.</p>
-<p>You need <code>chloedb-server</code> and <code>chloedb-crawl</code> on your <code>PATH</code>. <span class="since unreleased">since 0.3.1 (unreleased)</span> From release 0.3.1, the installer puts both there prebuilt, with nothing to compile:</p>
+<p>You need <code>chloedb-server</code> and <code>chloedb-crawl</code> on your <code>PATH</code>. <span class="since">since 0.3.1</span> From release 0.3.1, the installer puts both there prebuilt, with nothing to compile:</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl</pre>
 <p>Release 0.3.0 and earlier have no prebuilt crawler. With those, or to build from source, use a checkout of the repository (Rust and a C compiler, several minutes): <code>(cd chloedb-server &amp;&amp; cargo build --release) &amp;&amp; (cd chloedb-crawl &amp;&amp; cargo build --release)</code>, then add both <code>target/release</code> directories to <code>PATH</code>.</p>
 <h2 id="a-site-to-crawl">A site to crawl<a class="anchor" href="#a-site-to-crawl" aria-label="Link to this section">#</a></h2>
