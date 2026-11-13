@@ -360,7 +360,7 @@ const CSS = `
 const T = (x) => (x ? Date.parse(x) : null);
 const SEV = { critical: "bad", major: "serious", minor: "warn", sev1: "bad", sev2: "serious", sev3: "warn" };
 const STATUS = { investigating: ["warn", "Investigating"], identified: ["info", "Cause identified"], mitigated: ["ok", "Mitigated"], resolved: ["good", "Resolved"] };
-const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity" };
+const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity", estate: "Estate outage" };
 const PAGES = [["", "My shift"], ["map", "Map"], ["dash", "Dashboards"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
 const gbps = (bps) => (bps == null ? "–" : bps >= 1e12 ? (bps / 1e12).toFixed(2) + " Tb/s" : bps >= 1e9 ? (bps / 1e9).toFixed(1) + " Gb/s" : (bps / 1e6).toFixed(0) + " Mb/s");
 const pct = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : (v * 100).toFixed(d) + "%");
@@ -1719,7 +1719,7 @@ const STATE_COLOR = { ok: "var(--good)", warn: "var(--warn)", bad: "var(--crit)"
 
 function diagnosePage(body, app, path) {
   const { h, C, charts } = app;
-  const hero = h("div"), grid = h("div"), listEl = h("div"), inv = h("div"), side = h("div", { class: "no-col" });
+  const hero = h("div"), grid = h("div"), listEl = h("div"), inv = h("div"), estateEl = h("div"), side = h("div", { class: "no-col" });
   body.append(hero, h("div", { class: "no-cols wide" }, h("div", { class: "no-col" }, C.card({ title: "The stack, by place", sub: "customers at the top, power at the bottom: a fault shows on its own layer and on every layer above it", body: [grid, listEl] }), inv), side));
   let sel = null, picked = null, last = null, auto = true;
   const openIt = (o) => o.kind === "link" ? linkDrawer(app, o.id) : o.kind === "device" ? deviceDrawer(app, o.id) : o.kind === "service" ? serviceDrawer(app, o.id) : app.go("customers", o.id);
@@ -1799,7 +1799,11 @@ function diagnosePage(body, app, path) {
         { key: "change", label: "Changed", sortable: false, render: (r) => r.change ? h("a", { class: "no-link small", onclick: (e) => { e.stopPropagation(); changeDrawer(app, r.change.id); } }, `${r.change.id}, ${C.fmt.ago(T(r.change.executed))}`) : h("span", { class: "muted small" }, "no") },
         { key: "incident", label: "Incident", sortable: false, render: (r) => r.incident ? app.link(r.incident, "incidents", r.incident) : h("span", { class: "muted small" }, r.alert ? "alerting" : "no alert") },
       ], { rows: shown.slice(0, 14), compact: true, onRow: (r) => { auto = false; investigate(r); } })] : null);
-    if (!side.childElementCount) put(side, traceCard(app, s ? s.first : null), C.card({ title: "Changes, last six hours", sub: "the first thing to rule out", body: j.changes.length ? h("ul", { class: "no-list" }, j.changes.slice(0, 6).map((c) => h("li", { style: { cursor: "pointer" }, onclick: () => changeDrawer(app, c.id) }, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, c.title), h("span", { class: "small muted", style: { whiteSpace: "nowrap" } }, C.fmt.ago(T(c.executed)))), h("div", { class: "small muted" }, `${c.id} · ${c.devices.slice(0, 3).join(", ")}`)))) : h("div", { class: "dim" }, "None carried out.") }),
+    // The estate behind the backbone: its outages are the shift's too, and the map shows where.
+    const est = j.estate || [];
+    put(estateEl, est.length ? C.card({ title: "Behind the backbone", sub: `${est.length} object${est.length === 1 ? "" : "s"} of the estate alerting`, tools: app.link("Map", "map"), body: h("ul", { class: "no-list" }, est.slice(0, 6).map((a) => h("li", { style: { cursor: "pointer" }, onclick: () => openThing(app, "object", a.entity) },
+      h("div", { class: "row between nw" }, h("b", { class: "mono small ellipsis" }, a.entity), a.incident ? app.link(a.incident, "incidents", a.incident) : C.pill(a.severity === "minor" ? "warn" : "bad", a.severity)), h("div", { class: "small muted ellipsis", title: a.summary }, a.summary.replace(/^[^:]*: [^:]*: /, ""))))) }) : null);
+    if (!side.childElementCount) put(side, estateEl, traceCard(app, s ? s.first : null), C.card({ title: "Changes, last six hours", sub: "the first thing to rule out", body: j.changes.length ? h("ul", { class: "no-list" }, j.changes.slice(0, 6).map((c) => h("li", { style: { cursor: "pointer" }, onclick: () => changeDrawer(app, c.id) }, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, c.title), h("span", { class: "small muted", style: { whiteSpace: "nowrap" } }, C.fmt.ago(T(c.executed)))), h("div", { class: "small muted" }, `${c.id} · ${c.devices.slice(0, 3).join(", ")}`)))) : h("div", { class: "dim" }, "None carried out.") }),
       C.card({ title: "How to read this page", body: h("div", { class: "small dim stack" }, h("div", {}, h("b", {}, "Start at the bottom. "), "A dark optic is a down link, a lost adjacency, a failing service and a customer on the phone. The lowest layer that is broken is the cause; the rest are its symptoms."),
         h("div", {}, h("b", {}, "Then ask one thing five ways. "), "Investigate walks the topology graph, finds its log lines by substring on every device, checks what changed, searches past incidents by meaning, and shows its last hour. All of it is SQL against one database."),
         h("div", {}, h("b", {}, "Or follow a path. "), "Trace walks from a customer or a device to another, hop by hop, and marks the hop where it goes wrong.")) }));

@@ -325,7 +325,7 @@ async fn incident(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let timeline = q.rows("Its timeline", "SELECT ts, kind, actor, note, ref_id FROM netops_timeline\nWHERE incident = :id ORDER BY ts LIMIT 300", json!({"id": id})).await?;
     let runs = q.rows("Agent runs on it", "SELECT * FROM netops_agent_runs WHERE incident = :id ORDER BY started DESC LIMIT 20", json!({"id": id})).await?;
     let acts = q.rows("Actions proposed for it", "SELECT * FROM netops_actions WHERE incident = :id ORDER BY proposed LIMIT 50", json!({"id": id})).await?;
-    let rca = runs.iter().find(|r| r.s("agent") == "root-cause").map(|r| r.s("id"));
+    let rca = runs.iter().find(|r| r.s("agent") == "root-cause" || r.s("agent") == "estate").map(|r| r.s("id"));
     let (steps, receipts) = match &rca {
         Some(run) => (
             q.rows("What the root-cause agent did, step by step", "SELECT n, tool, title, detail, sql_text, row_count, ms FROM netops_agent_steps\nWHERE run = :run ORDER BY n LIMIT 100", json!({"run": run})).await?,
