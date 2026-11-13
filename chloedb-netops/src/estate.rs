@@ -55,7 +55,11 @@ pub struct Node {
     pub anc: [u32; 4],
     pub x: f64,
     pub y: f64,
+    /// Half the shorter side of a place (what a level of detail is chosen by).
     pub r: f64,
+    /// A place's width and height: places are boxes, one inside the other.
+    pub w: f64,
+    pub h: f64,
     pub vendor: &'static str,
     pub model: &'static str,
     pub version: String,
@@ -190,7 +194,7 @@ impl Estate {
     /// The backbone of `w` and, behind each of its sites, about `size`
     /// objects in all.
     pub fn build(w: &World, size: usize) -> Estate {
-        let mut e = Estate { nodes: Vec::new(), edges: Vec::new(), index: HashMap::new(), down: Vec::new(), up: Vec::new(), trunks: Vec::new(), hub_r: 1.0, site_r: 0.1, classes: Default::default(), live: Mutex::new(Vec::new()) };
+        let mut e = Estate { nodes: Vec::new(), edges: Vec::new(), index: HashMap::new(), down: Vec::new(), up: Vec::new(), trunks: Vec::new(), hub_r: f64::MAX, site_r: f64::MAX, classes: Default::default(), live: Mutex::new(Vec::new()) };
         let mut rng = Rng::new(77_041);
         let sites = w.sites.len().max(1);
         // What a hub holds: 12 sites of an access node and what is behind it.
@@ -210,30 +214,42 @@ impl Estate {
         }
         let lon = |r: &(&str, Vec<usize>)| r.1.iter().map(|&i| w.sites[i].lon).sum::<f64>() / r.1.len() as f64;
         regions.sort_by(|a, b| lon(a).total_cmp(&lon(b)));
-        const R0: f64 = 110.0;
+        // Places are boxes, one inside the other, each with a strip along
+        // its top for its name. Metros are all of a size; a region is as
+        // wide as its metros side by side; regions fill two rows.
+        const METRO: f64 = 100.0;
+        const GAP: f64 = 8.0;
+        const HEAD: f64 = 12.0;
+        let width = |k: usize| k as f64 * METRO + (k as f64 + 1.0) * GAP;
+        let region_h = METRO + HEAD + 2.0 * GAP;
+        let half: f64 = regions.iter().map(|r| width(r.1.len()) + 3.0 * GAP).sum::<f64>() / 2.0;
+        let mut place: Vec<(f64, f64)> = Vec::new();
+        let (mut left, mut row) = (0.0, 0usize);
+        for r in &regions {
+            let w = width(r.1.len());
+            if row == 0 && left > 0.0 && left + w / 2.0 > half {
+                row = 1;
+                left = 0.0;
+            }
+            place.push((left + w / 2.0, row as f64 * (region_h + 3.0 * GAP)));
+            left += w + 3.0 * GAP;
+        }
         let mut core_at: HashMap<usize, u32> = HashMap::new();
         for (ri, (rname, members)) in regions.iter().enumerate() {
-            let (rx, ry) = (ri as f64 * 250.0, if ri % 2 == 0 { -60.0 } else { 60.0 });
-            let region = e.add(Node::container(format!("r-{}", rname.to_lowercase()), "region", 0, rname.to_string(), [NONE; 4], rx, ry, R0));
+            let (rx, ry) = place[ri];
+            let region = e.add(Node::container(format!("r-{}", rname.to_lowercase()), "region", 0, rname.to_string(), [NONE; 4], rx, ry, width(members.len()), region_h));
             let k = members.len();
-            let (ring, rm) = match k {
-                1 => (0.0, 72.0),
-                2 => (52.0, 46.0),
-                3 => (58.0, 44.0),
-                _ => (R0 * 0.6, R0 * 0.6 * (std::f64::consts::PI / k as f64).sin() * 0.92),
-            };
+            let rm = METRO;
             for (mi, &si) in members.iter().enumerate() {
                 let site = &w.sites[si];
-                let a = -std::f64::consts::FRAC_PI_2 + mi as f64 * std::f64::consts::TAU / k as f64;
-                let (mx, my) = (rx + ring * a.cos(), ry + ring * a.sin());
-                let metro = e.add(Node::container(format!("m-{}", site.id), "metro", 1, site.name.to_string(), [region, NONE, NONE, NONE], mx, my, rm));
+                let (mx, my) = (rx - width(k) / 2.0 + GAP + METRO / 2.0 + mi as f64 * (METRO + GAP), ry + HEAD / 2.0);
+                let metro = e.add(Node::container(format!("m-{}", site.id), "metro", 1, site.name.to_string(), [region, NONE, NONE, NONE], mx, my, rm, rm));
                 // The site's own devices, in a ring at the centre.
                 let devs: Vec<usize> = w.devices.iter().enumerate().filter(|(_, d)| d.site == site.id).map(|(i, _)| i).collect();
                 for (j, &di) in devs.iter().enumerate() {
                     let d = &w.devices[di];
-                    let a = j as f64 * std::f64::consts::TAU / devs.len() as f64;
-                    let ring = if devs.len() > 8 { 0.2 } else { 0.15 } * rm;
-                    let i = e.add(Node { id: d.id.clone(), kind: d.role, layer: "core", tier: 3, name: d.id.clone(), anc: [region, metro, NONE, NONE], x: mx + ring * a.cos(), y: my + ring * a.sin(), r: 0.0, vendor: d.vendor, model: d.model, version: d.os_version.clone(), customer: String::new(), base_ms: round(rng.range(0.2, 0.9), 2), children: 0 });
+                    let (cx, cy) = (mx - rm / 2.0 + rm * (j as f64 + 0.5) / devs.len() as f64, my - rm / 2.0 + 0.16 * rm);
+                    let i = e.add(Node { id: d.id.clone(), kind: d.role, layer: "core", tier: 3, name: d.id.clone(), anc: [region, metro, NONE, NONE], x: cx, y: cy, r: 0.0, w: 0.0, h: 0.0, vendor: d.vendor, model: d.model, version: d.os_version.clone(), customer: String::new(), base_ms: round(rng.range(0.2, 0.9), 2), children: 0 });
                     core_at.insert(di, i);
                 }
                 let mut aggs: Vec<u32> = devs.iter().filter(|&&i| w.devices[i].role == "agg").map(|i| core_at[i]).collect();
@@ -241,35 +257,38 @@ impl Estate {
                     aggs = devs.iter().map(|i| core_at[i]).collect();
                 }
                 let n_hubs = ((hubs as f64) * (0.5 + 0.7 * site.weight)).round().max(1.0) as usize;
-                let rh = rm * (0.61 * 0.4 / n_hubs as f64).sqrt().min(0.24);
-                e.hub_r = rh;
+                // Hubs in a grid under the core's row.
+                let (area_w, area_h, top) = (0.94 * rm, 0.74 * rm, my - rm / 2.0 + 0.23 * rm);
+                let cols = ((n_hubs as f64 * area_w / area_h).sqrt().ceil() as usize).max(1);
+                let rows = n_hubs.div_ceil(cols);
+                let (cw, ch) = (area_w / cols as f64, area_h / rows as f64);
+                let (hw, hh) = (cw * 0.9, ch * 0.9);
+                e.hub_r = e.hub_r.min(hw.min(hh) / 2.0);
                 for hi in 0..n_hubs {
-                    let tt = (hi as f64 + 0.5) / n_hubs as f64;
-                    let rad = rm * (0.36f64.powi(2) + tt * (0.86f64.powi(2) - 0.36f64.powi(2))).sqrt();
-                    let a = hi as f64 * 2.399_963;
-                    let (hx, hy) = (mx + rad * a.cos(), my + rad * a.sin());
+                    let (hx, hy) = (mx - area_w / 2.0 + cw * ((hi % cols) as f64 + 0.5), top + ch * ((hi / cols) as f64 + 0.5));
                     let tag = format!("h{:02}-{}", hi + 1, site.id);
-                    let hub = e.add(Node::container(tag.clone(), "hub", 2, format!("{} hub {}", site.name, hi + 1), [region, metro, NONE, NONE], hx, hy, rh));
+                    let hub = e.add(Node::container(tag.clone(), "hub", 2, format!("{} hub {}", site.name, hi + 1), [region, metro, NONE, NONE], hx, hy, hw, hh));
                     let anc = [region, metro, hub, NONE];
                     let mut routers = Vec::new();
                     for n in 0..2 {
                         let (vendor, model, versions) = gear("hub-router", hi);
-                        let i = e.add(Node { id: format!("hr{}-{tag}", n + 1), kind: "hub-router", layer: "aggregation", tier: 3, name: format!("hr{}-{tag}", n + 1), anc, x: hx + (n as f64 - 0.5) * 0.3 * rh, y: hy - 0.05 * rh, r: 0.0, vendor, model, version: versions[(hi * 3 + n) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(0.8, 2.6), 2), children: 0 });
+                        let i = e.add(Node { id: format!("hr{}-{tag}", n + 1), kind: "hub-router", layer: "aggregation", tier: 3, name: format!("hr{}-{tag}", n + 1), anc, x: hx + (n as f64 - 0.5) * 0.44 * hw, y: hy - hh / 2.0 + 0.2 * hh, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(hi * 3 + n) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(0.8, 2.6), 2), children: 0 });
                         for &up in &aggs {
                             e.edges.push((up, i, "uplink"));
                         }
                         routers.push(i);
                     }
                     let (vendor, model, versions) = gear("power", hi);
-                    let pw = e.add(Node { id: format!("pw-{tag}"), kind: "power", layer: "power", tier: 3, name: format!("Power plant, {} hub {}", site.name, hi + 1), anc, x: hx, y: hy + 0.2 * rh, r: 0.0, vendor, model, version: versions[0].to_string(), customer: String::new(), base_ms: 0.0, children: 0 });
+                    let pw = e.add(Node { id: format!("pw-{tag}"), kind: "power", layer: "power", tier: 3, name: format!("Power plant, {} hub {}", site.name, hi + 1), anc, x: hx, y: hy - hh / 2.0 + 0.2 * hh, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[0].to_string(), customer: String::new(), base_ms: 0.0, children: 0 });
                     for &r in &routers {
                         e.edges.push((pw, r, "power"));
                     }
-                    let ra = 0.64 * rh * (std::f64::consts::PI / SITES_PER_HUB as f64).sin() * 0.88;
-                    e.site_r = ra;
+                    // Its sites, four across, under the routers' row.
+                    let (sw_cell, sh_cell, s_top) = (0.94 * hw / 4.0, 0.68 * hh / (SITES_PER_HUB as f64 / 4.0).ceil(), hy - hh / 2.0 + 0.29 * hh);
+                    let (sw, sh) = (sw_cell * 0.9, sh_cell * 0.9);
+                    e.site_r = e.site_r.min(sw.min(sh) / 2.0);
                     for s in 0..SITES_PER_HUB {
-                        let a = s as f64 * std::f64::consts::TAU / SITES_PER_HUB as f64;
-                        let (sx, sy) = (hx + 0.64 * rh * a.cos(), hy + 0.64 * rh * a.sin());
+                        let (sx, sy) = (hx - 0.47 * hw + sw_cell * ((s % 4) as f64 + 0.5), s_top + sh_cell * ((s / 4) as f64 + 0.5));
                         let pick = rng.below(4);
                         let (kind, behind_kind, label, count) = match pick {
                             0 => ("cell", "radio", "Cell site", 3 + rng.below(4)),
@@ -277,17 +296,20 @@ impl Estate {
                             _ => ("olt", "ont", "Cabinet", (behind * 3 / 4).max(3) + rng.below(behind / 2 + 1)),
                         };
                         let stag = format!("s{:02}-{tag}", s + 1);
-                        let asite = e.add(Node::container(stag.clone(), "site", 3, format!("{label} {}, {} hub {}", s + 1, site.name, hi + 1), anc, sx, sy, ra));
+                        let asite = e.add(Node::container(stag.clone(), "site", 3, format!("{label} {}, {} hub {}", s + 1, site.name, hi + 1), anc, sx, sy, sw, sh));
                         let anc = [region, metro, hub, asite];
                         let (vendor, model, versions) = gear(kind, hi + s);
-                        let node = e.add(Node { id: format!("{kind}-{stag}"), kind, layer: "access", tier: 3, name: format!("{kind}-{stag}"), anc, x: sx, y: sy, r: 0.0, vendor, model, version: versions[(hi + s * 5) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(2.5, 7.5), 2), children: 0 });
+                        let node = e.add(Node { id: format!("{kind}-{stag}"), kind, layer: "access", tier: 3, name: format!("{kind}-{stag}"), anc, x: sx, y: sy - sh / 2.0 + 0.17 * sh, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(hi + s * 5) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(2.5, 7.5), 2), children: 0 });
                         e.edges.push((routers[s % 2], node, "access"));
                         if s % 3 == 0 {
                             e.edges.push((routers[(s + 1) % 2], node, "access"));
                         }
                         for b in 0..count {
-                            let rad = ra * 0.92 * ((b as f64 + 2.0) / (count as f64 + 2.0)).sqrt();
-                            let a = b as f64 * 2.399_963;
+                            // What is behind the access node, in a grid under it.
+                            let (gw, gh) = (0.9 * sw, 0.6 * sh);
+                            let gc = ((count as f64 * gw / gh).sqrt().ceil() as usize).max(1);
+                            let gr = count.div_ceil(gc);
+                            let (px, py) = (sx - gw / 2.0 + gw * ((b % gc) as f64 + 0.5) / gc as f64, sy - sh / 2.0 + 0.34 * sh + gh * ((b / gc) as f64 + 0.5) / gr as f64);
                             let (vendor, model, versions) = gear(behind_kind, b + s);
                             let customer = if behind_kind == "cpe" { format!("{} {}", FIRMS_A[rng.below(FIRMS_A.len())], FIRMS_B[rng.below(FIRMS_B.len())]) } else { String::new() };
                             let id = format!("{behind_kind}-{:03}-{stag}", b + 1);
@@ -297,7 +319,7 @@ impl Estate {
                                 _ => format!("ONT {}", b + 1),
                             };
                             let base = if behind_kind == "radio" { rng.range(9.0, 24.0) } else { rng.range(5.0, 16.0) };
-                            let i = e.add(Node { id, kind: behind_kind, layer: "premises", tier: 4, name, anc, x: sx + rad * a.cos(), y: sy + rad * a.sin(), r: 0.0, vendor, model, version: versions[(b * 7 + s) % versions.len()].to_string(), customer, base_ms: round(base, 2), children: 0 });
+                            let i = e.add(Node { id, kind: behind_kind, layer: "premises", tier: 4, name, anc, x: px, y: py, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(b * 7 + s) % versions.len()].to_string(), customer, base_ms: round(base, 2), children: 0 });
                             e.edges.push((node, i, "drop"));
                         }
                     }
@@ -381,7 +403,7 @@ impl Estate {
                 // A few are slow on an ordinary day.
                 let ms = if n.base_ms > 0.0 && rng.chance(0.015) { round(n.base_ms * rng.range(2.5, 6.0), 2) } else { n.base_ms };
                 json!({"id": n.id, "num": i, "kind": n.kind, "layer": n.layer, "tier": n.tier, "name": n.name, "region": a[0], "metro": a[1], "hub": a[2], "asite": a[3],
-                    "x": round(n.x, 4), "y": round(n.y, 4), "r": round(n.r, 4), "vendor": n.vendor, "model": n.model, "os_version": n.version, "customer": n.customer,
+                    "x": round(n.x, 4), "y": round(n.y, 4), "r": round(n.r, 4), "w": round(n.w, 4), "h": round(n.h, 4), "vendor": n.vendor, "model": n.model, "os_version": n.version, "customer": n.customer,
                     "children": n.children, "state": "ok", "reason": "", "latency_ms": ms, "base_ms": n.base_ms, "loss": 0.0})
             })
             .collect()
@@ -527,8 +549,8 @@ impl Estate {
 
 impl Node {
     #[allow(clippy::too_many_arguments)]
-    fn container(id: String, kind: &'static str, tier: u8, name: String, anc: [u32; 4], x: f64, y: f64, r: f64) -> Node {
-        Node { id, kind, layer: "container", tier, name, anc, x, y, r, vendor: "", model: "", version: String::new(), customer: String::new(), base_ms: 0.0, children: 0 }
+    fn container(id: String, kind: &'static str, tier: u8, name: String, anc: [u32; 4], x: f64, y: f64, w: f64, h: f64) -> Node {
+        Node { id, kind, layer: "container", tier, name, anc, x, y, r: w.min(h) / 2.0, w, h, vendor: "", model: "", version: String::new(), customer: String::new(), base_ms: 0.0, children: 0 }
     }
 }
 
@@ -543,7 +565,7 @@ fn quoted(ids: impl IntoIterator<Item = impl AsRef<str>>) -> String {
 /// another size), and puts back to `ok` what a stopped app left broken.
 pub async fn ensure(e: &Engine) -> Result<()> {
     let Some(est) = &e.estate else { return Ok(()) };
-    let want = json!({"nodes": est.nodes.len(), "edges": est.edges.len()}).to_string();
+    let want = json!({"nodes": est.nodes.len(), "edges": est.edges.len(), "layout": "boxes"}).to_string();
     let have = e.db.query("SELECT val FROM netops_state WHERE id = 'estate'", json!({})).await?;
     if have.first().map(|r| r.s("val")) == Some(want.clone()) {
         e.db.sql(&format!("UPDATE {NODES} SET state = 'ok', reason = '', latency_ms = base_ms, loss = 0 WHERE state != 'ok'")).await?;
@@ -633,7 +655,7 @@ pub fn routes() -> Router<Shared> {
     Router::new().route("/v1/map/base", get(base)).route("/v1/map/hot", get(hot)).route("/v1/map/view", get(view)).route("/v1/map/node", get(node))
 }
 
-const NODE_COLS: &str = "id, kind, layer, tier, name, x, y, r, state, children, region, metro, hub, asite";
+const NODE_COLS: &str = "id, kind, layer, tier, name, x, y, r, w, h, state, children, region, metro, hub, asite";
 
 /// What does not change: the regions, metros and hubs, the trunks between
 /// metros, and the sizes that say how far in each level of detail starts.

@@ -2081,7 +2081,8 @@ function mapPage(body, app, path) {
 
   const sx = (x) => x * view.k + view.tx, sy = (y) => y * view.k + view.ty;
   const wx = (px) => (px - view.tx) / view.k, wy = (py) => (py - view.ty) / view.k;
-  const tier = () => (!base ? 1 : base.site_r * view.k >= 30 ? 4 : base.site_r * view.k >= 10 ? 3 : base.hub_r * view.k >= 9 ? 2 : 1);
+  const tier = () => (!base ? 1 : base.site_r * view.k >= 30 ? 4 : base.site_r * view.k >= 4 ? 3 : base.hub_r * view.k >= 9 ? 2 : 1);
+  const inside = (c, x, y) => Math.abs(x - c.x) <= c.w / 2 && Math.abs(y - c.y) <= c.h / 2;
 
   const resize = () => {
     const r = stage.getBoundingClientRect();
@@ -2092,7 +2093,7 @@ function mapPage(body, app, path) {
   };
   const bounds = () => {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const c of cont.values()) if (c.kind === "region") { x0 = Math.min(x0, c.x - c.r); x1 = Math.max(x1, c.x + c.r); y0 = Math.min(y0, c.y - c.r); y1 = Math.max(y1, c.y + c.r); }
+    for (const c of cont.values()) if (c.kind === "region") { x0 = Math.min(x0, c.x - c.w / 2); x1 = Math.max(x1, c.x + c.w / 2); y0 = Math.min(y0, c.y - c.h / 2); y1 = Math.max(y1, c.y + c.h / 2); }
     return x0 === Infinity ? [0, 0, 1, 1] : [x0, y0, x1, y1];
   };
   const target = (x, y, k) => ({ k, tx: W / 2 - x * k, ty: H / 2 - y * k });
@@ -2121,7 +2122,7 @@ function mapPage(body, app, path) {
     const k = Math.max(fitK * 0.6, Math.min(base ? 260 / base.site_r : 400, view.k * f));
     fly({ k, tx: px - wx(px) * k, ty: py - wy(py) * k }, 220);
   };
-  const flyToPlace = (c) => fly(target(c.x, c.y, Math.min(W, H) / (2.3 * c.r)));
+  const flyToPlace = (c) => fly(target(c.x, c.y, Math.min(W / (c.w * 1.12), H / (c.h * 1.12))));
   const flyToNode = (n) => fly(target(n.x, n.y, Math.max(view.k, 46 / base.site_r)));
 
   // What the window shows, at its level of detail: asked again when it moves.
@@ -2165,7 +2166,10 @@ function mapPage(body, app, path) {
     const line = v("--line"), text = v("--text"), text2 = v("--text-2"), muted = v("--muted"), crit = v("--crit"), warn = v("--warn"), serious = v("--serious"), accent = v("--accent"), surface = v("--surface");
     const family = getComputedStyle(canvas).fontFamily || "system-ui, sans-serif";
     const font = (px, w = 500) => { g.font = `${w} ${px}px ${family}`; };
-    const onScreen = (x, y, r) => sx(x) + r * k > -40 && sx(x) - r * k < W + 40 && sy(y) + r * k > -40 && sy(y) - r * k < H + 40;
+    const onScreen = (c) => sx(c.x + c.w / 2) > -40 && sx(c.x - c.w / 2) < W + 40 && sy(c.y + c.h / 2) > -40 && sy(c.y - c.h / 2) < H + 40;
+    const box = (c, grow = 0) => { const w = c.w * k, hh = c.h * k; g.beginPath(); g.roundRect(sx(c.x) - w / 2 - grow, sy(c.y) - hh / 2 - grow, w + 2 * grow, hh + 2 * grow, Math.max(2, Math.min(10, Math.min(w, hh) * 0.08)) + grow); };
+    // A name cut to the room it has.
+    const fitted = (s, room) => { if (g.measureText(s).width <= room) return s; while (s.length > 1 && g.measureText(s + "…").width > room) s = s.slice(0, -1); return s.length > 1 ? s + "…" : ""; };
     const badge = (x, y, n, color) => {
       const s = String(n);
       font(11, 700);
@@ -2181,20 +2185,20 @@ function mapPage(body, app, path) {
         const a = cont.get(tr.a), b = cont.get(tr.b);
         if (!a || !b) continue;
         g.lineWidth = Math.min(5, 1 + tr.n * 0.8);
-        g.beginPath(); g.moveTo(sx(a.x), sy(a.y)); g.lineTo(sx(b.x), sy(b.y)); g.stroke();
+        g.beginPath(); g.moveTo(sx(a.x), sy(a.y - a.h * 0.34)); g.lineTo(sx(b.x), sy(b.y - b.h * 0.34)); g.stroke();
       }
       g.globalAlpha = 1;
     }
     // Places, largest first. The deepest level drawn carries the counts.
     const deepest = t === 1 ? "metro" : t === 2 ? "hub" : "site";
     const place = (c, isDeep) => {
-      const r = c.r * k, x = sx(c.x), y = sy(c.y);
-      if (r < 1.5 || !onScreen(c.x, c.y, c.r)) return;
+      const w = c.w * k, hh = c.h * k;
+      if (Math.min(w, hh) < 3 || !onScreen(c)) return;
       const p = hot.places[c.id], ht = heat(p, c.kind);
       const col = ht === 3 ? crit : ht === 2 ? warn : ht === 1 ? serious : null;
-      g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
-      const big = r > Math.min(W, H) * 0.75;
-      g.globalAlpha = big ? 0.25 : c.kind === "region" ? 0.5 : 0.9;
+      box(c);
+      const big = w > W * 1.5 || hh > H * 1.5;
+      g.globalAlpha = big ? 0.25 : c.kind === "region" ? 0.5 : 1;
       g.fillStyle = c.kind === "region" || (c.kind === "hub" && !isDeep) ? v("--surface-2") : surface;
       g.fill();
       if (col && isDeep) { g.globalAlpha = 0.2; g.fillStyle = col; g.fill(); }
@@ -2203,44 +2207,65 @@ function mapPage(body, app, path) {
       g.strokeStyle = col || (c.kind === "region" ? v("--line-2") : line);
       g.stroke();
       const m = found && found.places[c.id];
-      if (m && isDeep) { g.lineWidth = 3; g.strokeStyle = accent; g.setLineDash([5, 4]); g.beginPath(); g.arc(x, y, r + 4, 0, Math.PI * 2); g.stroke(); g.setLineDash([]); }
+      if (m && isDeep) { g.lineWidth = 3; g.strokeStyle = accent; g.setLineDash([5, 4]); box(c, 4); g.stroke(); g.setLineDash([]); }
     };
+    const short = (c) => (c.kind === "hub" ? c.name.replace(/^.* hub /, "Hub ") : c.kind === "site" ? c.name.replace(/,.*$/, "") : c.name);
     const label = (c, isDeep) => {
-      const r = c.r * k, x = sx(c.x), y = sy(c.y);
-      if (!onScreen(c.x, c.y, c.r)) return;
+      const w = c.w * k, hh = c.h * k, x = sx(c.x), y = sy(c.y), x0 = x - w / 2, y0 = y - hh / 2;
+      if (!onScreen(c)) return;
       const p = hot.places[c.id];
-      g.textAlign = "center"; g.textBaseline = "middle";
-      if (c.kind === "region") {
-        if (r > 40 && r < Math.max(W, H)) { font(12, 700); g.fillStyle = text2; g.fillText(c.name.toUpperCase(), x, y - r - 12); }
-      } else if (isDeep && r > 15) {
-        font(r > 60 ? 15 : r > 22 ? 12 : 10, 600); g.fillStyle = text;
-        g.fillText(c.kind === "hub" ? c.name.replace(/^.* hub /, r > 22 ? "Hub " : "") : c.kind === "site" ? c.name.replace(/,.*$/, "") : c.name, x, y - (r > 44 ? 8 : 0));
-        if (r > 44) { font(11, 400); g.fillStyle = muted; g.fillText(`${C.fmt.n(c.children)} objects`, x, y + 10); }
-      } else if (!isDeep && r > 36 && r < Math.max(W, H) * 0.9 && c.kind !== "site") {
-        font(c.kind === "hub" ? 11 : 12.5, 600); g.fillStyle = text2; g.fillText(c.kind === "hub" ? c.name.replace(/^.* hub /, "Hub ") : c.name, x, y - r + (c.kind === "hub" ? -8 : 14));
+      g.textBaseline = "middle";
+      if (isDeep && c.kind !== "region") {
+        // The deepest boxes drawn carry their name and their counts in the middle.
+        g.textAlign = "center";
+        if (w > 34 && hh > 16) {
+          font(w > 120 ? 15 : w > 60 ? 12 : 10, 600); g.fillStyle = text;
+          const two = hh > 70 && w > 80, low = c.kind === "site" ? hh * 0.12 : 0;
+          g.fillText(fitted(w > 60 || c.kind !== "hub" ? short(c) : short(c).replace("Hub ", ""), w - 8), x, y + low - (two ? 8 : 0));
+          if (two) { font(11, 400); g.fillStyle = muted; g.fillText(`${C.fmt.n(c.children)} objects`, x, y + low + 10); }
+        }
+      } else if (w > 70 && w < W * 3) {
+        // A box that shows what is inside it keeps its name on the strip along its top.
+        const strip = c.kind === "region" ? hh * 0.086 : c.kind === "metro" ? hh * 0.07 : c.kind === "hub" ? hh * 0.09 : hh * 0.075;
+        if (strip >= 7) {
+          const px = Math.max(9.5, Math.min(c.kind === "region" ? 13 : 14, strip * 0.72));
+          font(px, c.kind === "site" ? 500 : 650); g.fillStyle = c.kind === "site" ? muted : text2; g.textAlign = "left";
+          const pad = Math.max(5, Math.min(12, w * 0.03));
+          const name = c.kind === "region" ? c.name.toUpperCase() : short(c);
+          g.fillText(fitted(name, w - 2 * pad), x0 + pad, y0 + Math.max(strip / 2 + 1, px * 0.5 + 3));
+        }
       }
       if (isDeep) {
         const n = p ? (p.down || 0) + (p.degraded || 0) + (p.incidents || 0) : 0, ht = heat(p, c.kind);
-        if (n && r > 5) badge(x + r * 0.7, y - r * 0.7, n, ht === 3 ? crit : ht === 2 ? warn : muted);
-        else if (p && p.impacted && r > 5) badge(x + r * 0.7, y - r * 0.7, p.impacted, serious);
+        if (n && w > 10) badge(x0 + w - 5, y0 + 5, n, ht === 3 ? crit : ht === 2 ? warn : muted);
+        else if (p && p.impacted && w > 10) badge(x0 + w - 5, y0 + 5, p.impacted, serious);
         const m = found && found.places[c.id];
-        if (m && r > 5) badge(x + r * 0.7, y + r * 0.7, C.fmt.n(m), accent);
+        if (m && w > 10) badge(x0 + w - 5, y0 + hh - 5, C.fmt.n(m), accent);
       }
     };
     const levels = ["region", "metro"].concat(t >= 2 ? ["hub"] : []);
-    for (const kind of levels) for (const c of all) if (c.kind === kind) place(c, kind === deepest);
-    if (t === 2) {
-      g.strokeStyle = line; g.lineWidth = 1;
-      for (const c of all) if (c.kind === "hub" && onScreen(c.x, c.y, c.r)) { const m = cont.get(c.metro); if (m) { g.beginPath(); g.moveTo(sx(c.x), sy(c.y)); g.lineTo(sx(m.x), sy(m.y)); g.stroke(); } }
-      for (const c of all) if (c.kind === "hub") place(c, true);
+    for (const kind of levels) {
+      // A link to another metro runs under the metros' boxes and shows between them; inside
+      // a box only its first stretch is drawn, so it does not cross the hubs out.
+      if (t >= 3 && kind !== "region") {
+        g.lineWidth = 1.2; g.strokeStyle = muted;
+        for (const e of shown.edges) {
+          if (e.kind !== "backbone") continue;
+          if (kind === "metro") { g.beginPath(); g.moveTo(sx(e.x1), sy(e.y1)); g.lineTo(sx(e.x2), sy(e.y2)); g.stroke(); continue; }
+          const dx = e.x2 - e.x1, dy = e.y2 - e.y1, d = Math.hypot(dx, dy) || 1, len = Math.min(d / 2, 4.5);
+          g.beginPath(); g.moveTo(sx(e.x1), sy(e.y1)); g.lineTo(sx(e.x1 + dx / d * len), sy(e.y1 + dy / d * len));
+          g.moveTo(sx(e.x2), sy(e.y2)); g.lineTo(sx(e.x2 - dx / d * len), sy(e.y2 - dy / d * len)); g.stroke();
+        }
+      }
+      for (const c of all) if (c.kind === kind) place(c, kind === deepest);
     }
     // Links, then sites, then the objects themselves.
     let drawn = 0;
     if (t >= 3) {
       g.lineWidth = 1;
       for (const e of shown.edges) {
-        const far = e.kind === "backbone";
-        g.strokeStyle = far ? muted : line; g.globalAlpha = e.kind === "drop" ? 0.7 : 1;
+        if (e.kind === "backbone") continue;
+        g.strokeStyle = line; g.globalAlpha = e.kind === "drop" ? 0.7 : e.kind === "uplink" ? 0.35 : 1;
         g.beginPath(); g.moveTo(sx(e.x1), sy(e.y1)); g.lineTo(sx(e.x2), sy(e.y2)); g.stroke();
       }
       g.globalAlpha = 1;
@@ -2252,8 +2277,10 @@ function mapPage(body, app, path) {
         const x = sx(n.x), y = sy(n.y);
         if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
         drawn++;
+        // A site too small to show its node shows its state by its own colour.
+        if (n.layer === "access" && base.site_r * k < 11) { n._s = 0; continue; }
         const sc = stateColor(v, n);
-        const s = n.layer === "premises" ? Math.max(2.2, Math.min(6, base.site_r * k * 0.045)) : n.layer === "access" ? Math.max(3.5, Math.min(10, base.site_r * k * 0.16)) : Math.max(3.5, Math.min(9, base.hub_r * k * 0.035));
+        const s = n.layer === "premises" ? Math.max(2.2, Math.min(6, base.site_r * k * 0.045)) : n.layer === "access" ? Math.max(3.5, Math.min(8, base.site_r * k * 0.16)) : Math.max(3.5, Math.min(9, base.hub_r * k * 0.035));
         g.fillStyle = sc || (n.layer === "core" ? text : n.layer === "aggregation" ? text2 : n.layer === "power" ? v("--seq-5") : n.layer === "access" ? text2 : muted);
         g.beginPath();
         if (n.layer === "core") g.rect(x - s, y - s, s * 2, s * 2);
@@ -2275,7 +2302,7 @@ function mapPage(body, app, path) {
         const x = sx(n.x), y = sy(n.y);
         if (x < 0 || x > W || y < 0 || y > H) continue;
         font(10.5, 500); g.fillStyle = text2;
-        g.fillText(n.layer === "premises" ? n.name.replace(/, customer router$/, "") : n.id, x, y + (n._s || 4) + 4);
+        g.fillText(n.layer === "premises" ? n.name.replace(/, customer router$/, "") : n.layer === "access" ? n.id.replace(/-h\d+-\w+$/, "") : n.id, x, y + (n._s || 4) + 4);
       }
     }
     for (const kind of levels) for (const c of all) if (c.kind === kind) label(c, kind === deepest);
@@ -2312,7 +2339,7 @@ function mapPage(body, app, path) {
     const cx = wx(W / 2), cy = wy(H / 2), trail = [];
     for (const kind of ["region", "metro", "hub"]) {
       let best = null;
-      for (const c of cont.values()) if (c.kind === kind && Math.hypot(c.x - cx, c.y - cy) < c.r && c.r * view.k > Math.min(W, H) * 0.28) best = c;
+      for (const c of cont.values()) if (c.kind === kind && inside(c, cx, cy) && c.w * view.k > W * 0.5) best = c;
       if (best) trail.push(best);
     }
     put(crumbs, h("a", { onclick: () => fit(true) }, "Whole network"), trail.map((c) => [h("span", { class: "muted" }, "›"), h("a", { onclick: () => flyToPlace(c) }, c.name)]));
@@ -2323,13 +2350,13 @@ function mapPage(body, app, path) {
     const t = tier();
     if (t >= 3) {
       let best = null, bd = 12;
-      for (const n of shown.nodes) { if (n.layer === "container") continue; const d = Math.hypot(sx(n.x) - px, sy(n.y) - py) - (n._s || 3); if (d < bd) { bd = d; best = n; } }
+      for (const n of shown.nodes) { if (n.layer === "container" || n._s === 0) continue; const d = Math.hypot(sx(n.x) - px, sy(n.y) - py) - (n._s || 3); if (d < bd) { bd = d; best = n; } }
       if (best) return { node: best };
-      for (const n of shown.nodes) if (n.kind === "site" && Math.hypot(sx(n.x) - px, sy(n.y) - py) < n.r * view.k && t === 3) return { place: n };
+      for (const n of shown.nodes) if (n.kind === "site" && inside(n, wx(px), wy(py)) && t === 3) return { place: n };
     }
     for (const kind of ["hub", "metro", "region"]) {
       if (kind === "hub" && t < 2) continue;
-      for (const c of cont.values()) if (c.kind === kind && Math.hypot(sx(c.x) - px, sy(c.y) - py) < c.r * view.k && c.r * view.k < Math.min(W, H) * 0.45) return { place: c };
+      for (const c of cont.values()) if (c.kind === kind && inside(c, wx(px), wy(py)) && c.w * view.k < W * 0.9) return { place: c };
     }
     return null;
   };

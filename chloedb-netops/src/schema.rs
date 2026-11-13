@@ -178,7 +178,7 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
 )".into(), "Where each table's rows come from"),
         ("netops_estate_nodes", "CREATE TABLE IF NOT EXISTS netops_estate_nodes (
   id KEYWORD PRIMARY KEY, num INT, kind KEYWORD, layer KEYWORD, tier INT, name KEYWORD OPTIONS(substring = true),
-  region KEYWORD, metro KEYWORD, hub KEYWORD, asite KEYWORD, x FLOAT, y FLOAT, r FLOAT,
+  region KEYWORD, metro KEYWORD, hub KEYWORD, asite KEYWORD, x FLOAT, y FLOAT, r FLOAT, w FLOAT, h FLOAT,
   vendor KEYWORD, model KEYWORD, os_version KEYWORD, customer KEYWORD OPTIONS(substring = true), children INT,
   state KEYWORD, reason TEXT, since TIMESTAMP, latency_ms FLOAT, base_ms FLOAT, loss FLOAT
 )".into(), "Everything the network is made of, from regions down to a customer's router: each with its place on the map, its state and its latest readings"),
