@@ -7,7 +7,7 @@
 // origin (a page it serves, or one behind the same reverse proxy): it
 // sends no CORS headers, and refuses writes from other origins.
 
-import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema, pickTable } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema } from "./common.js";
 
 export { ChloeDBError, StrataError, Result, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError } from "./common.js";
 
@@ -204,15 +204,18 @@ export class Client extends Searchable {
     return as === "text" ? text : decode(text);
   }
 
-  async #schemaAnswer() {
+  /** /v1/schema's answer: the first table's (kept), or `table`'s alone,
+   * which never reads the first table (a key limited to other tables may
+   * not). */
+  async #schemaAnswer(table) {
+    if (table != null) return this._call("GET", `/v1/schema?table=${encodeURIComponent(table)}`);
     return (this.#schema ??= await this._call("GET", "/v1/schema"));
   }
 
   /** The first table's schema, or `table`'s, in its short form: {table,
    * key, fields}. */
   async schema(table) {
-    if (table == null) return orderedSchema((await this.#schemaAnswer()).short);
-    return pickTable(await this.tables(), table);
+    return orderedSchema((await this.#schemaAnswer(table)).short);
   }
 
   /** Every table's schema in its short form, the first first. */
@@ -222,10 +225,8 @@ export class Client extends Searchable {
 
   /** @internal */
   async _embedded(table) {
-    let a = await this.#schemaAnswer();
-    if (table != null && a.table.toLowerCase() !== String(table).toLowerCase()) {
-      a = (await this._call("GET", "/v1/tables")).tables.find((t) => t.table.toLowerCase() === String(table).toLowerCase()) ?? {};
-    }
+    const first = table == null ? undefined : this.#schema;
+    const a = first && first.table.toLowerCase() === String(table).toLowerCase() ? first : await this.#schemaAnswer(table);
     return (a.embeddings ?? []).filter((e) => e.loaded).map((e) => e.field);
   }
 
