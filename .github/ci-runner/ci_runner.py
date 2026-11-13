@@ -166,7 +166,7 @@ def want(args):
     # dozen jobs of its own).
     limit = int(env("CI_RUNNER_HOSTED_LIMIT", str(args.limit)))
     running, queued = hosted_load()
-    if not queued and running + args.headroom < limit:
+    if not queued and running + args.headroom < limit and not args.force:
         return FALLBACK, f"GitHub's runners have room ({running} of {limit} busy, none waiting)"
     log(f"GitHub's runners are full: {running} of {limit} busy, {queued} jobs waiting")
     deadline = time.time() + args.wait
@@ -181,6 +181,8 @@ def want(args):
             # are as quick as waiting for one.
             return FALLBACK, f"all {len(online)} runners busy"
         ds = droplets()
+        if ds and ds[0]["status"] == "off":
+            return FALLBACK, f"droplet {ds[0]['id']} powered itself off: its boot failed (the reaper destroys it)"
         if not ds and not made:
             create(env("CI_RUNNER_REGION", "nyc1"), env("CI_RUNNER_SIZE", "c-16"), int(env("CI_RUNNER_COUNT", "2")))
             made = True
@@ -222,6 +224,8 @@ def reap(args):
             why = None
             if age > args.max_age and (not working or age > args.max_age + 2 * 3600):
                 why = f"older than {args.max_age} s"
+            elif d["status"] == "off":
+                why = "it powered itself off (its boot failed, or someone stopped it)"
             elif not online and age > args.boot + 300:
                 why = "no runner came online"
             elif not busy and not working and idle > args.idle:
@@ -274,6 +278,14 @@ def image(args):
         do(f"/snapshots/{s['id']}", "DELETE")
 
 
+def status(args):
+    for d in droplets():
+        print(f"droplet {d['id']} {d['name']} {d['size_slug']} {d['region']['slug']} {d['status']}, {int(age_s(d['created_at']))} s old")
+    for r in runners():
+        print(f"runner {r['name']}: {r['status']}{', busy' if r['busy'] else ''}")
+    print(f"GitHub's runners: {'%d busy, %d waiting' % hosted_load()}")
+
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -282,11 +294,13 @@ def main():
     w.add_argument("--boot", type=int, default=360, help="a droplet older than this without a runner is broken")
     w.add_argument("--limit", type=int, default=60, help="jobs GitHub runs at once for the account (CI_RUNNER_HOSTED_LIMIT)")
     w.add_argument("--headroom", type=int, default=6, help="overflow when fewer slots than this are free")
+    w.add_argument("--force", action="store_true", help="use the droplet even while GitHub has room (to test it)")
     r = sub.add_parser("reap")
     r.add_argument("--idle", type=int, default=900)
     r.add_argument("--max-age", type=int, default=12 * 3600)
     r.add_argument("--boot", type=int, default=360)
     r.add_argument("--patience", type=int, default=1200, help="seconds to keep checking")
+    sub.add_parser("status")
     i = sub.add_parser("image")
     i.add_argument("--toolchain", default="1.100.0")
     args = p.parse_args()
@@ -300,6 +314,8 @@ def main():
         if env("GITHUB_STEP_SUMMARY"):
             with open(env("GITHUB_STEP_SUMMARY"), "a") as f:
                 f.write(f"Heavy jobs run on **{label}**: {why}.\n")
+    elif args.cmd == "status":
+        status(args)
     elif args.cmd == "reap":
         reap(args)
     else:

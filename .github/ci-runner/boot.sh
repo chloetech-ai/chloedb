@@ -9,6 +9,11 @@
 # the next: the droplet itself is destroyed when CI has been idle a while,
 # so a powered-off droplet never bills.
 set -euo pipefail
+exec > >(tee -a /var/log/ci-runner-boot.log) 2>&1
+# A droplet whose runners cannot start is of no use: power it off, which the
+# controller and the reaper see (status "off") and act on at once, rather
+# than leave it billing until it times out.
+trap 'echo "boot.sh failed at line $LINENO"; poweroff' ERR
 token="$1" label="$2" count="$3"
 repo_url=https://github.com/chloetech-ai/chloedb
 
@@ -32,13 +37,15 @@ if [ "$use" -gt 80 ]; then
   find /mnt/ci -maxdepth 3 -path '*/target/*' -type d -printf '%T@ %p\n' | sort -n | head -n 4 | cut -d' ' -f2- | xargs -r rm -rf
 fi
 
+install -d /opt/runners
 for i in $(seq 1 "$count"); do
   dir=/opt/runners/$i
   rm -rf "$dir"
   cp -a /opt/actions-runner "$dir"
   install -d -o runner -g runner "/mnt/ci/work-$i"
   chown -R runner:runner "$dir"
-  sudo -u runner "$dir/config.sh" --unattended --replace --url "$repo_url" --token "$token" \
+  cd "$dir"
+  sudo -u runner ./config.sh --unattended --replace --url "$repo_url" --token "$token" \
     --name "do-$(hostname)-$i" --labels "$label" --work "/mnt/ci/work-$i" --no-default-labels
   cat >> "$dir/.env" <<ENV
 ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/ci-runner/job-started.sh
