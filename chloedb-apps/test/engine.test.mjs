@@ -2459,6 +2459,14 @@ test('a published app is open to the public at its own host, and nothing else is
     assert.equal(await pub.allows(req(m, h), at(p)), null, `${m} ${p} on ${h}`);
   }
   assert.ok(await pub.allows(req('GET', host), at('/api/stream?app=a1')));
+  // A stranger who signs up first through the public path is a member, not the owner.
+  const { Services } = await import('../engine/services.mjs');
+  const members = new Map();
+  const db = { get: async (t, ids) => ids.map((id) => members.get(id)), query: async (sql, { a }) => [...members.values()].filter((m) => m.app === a).map((m) => ({ id: m.id })),
+    write: async (ops) => ops.forEach((o) => members.set(o.doc.id, o.doc)) };
+  const sv = new Services({ db, store: {} }, {});
+  assert.equal((await sv.join('a1', 'stranger', { pub: true })).role, 'member');
+  assert.equal((await sv.join('a3', 'builder')).role, 'owner');
   // A read of the settings that fails (a slow cluster) keeps what was published.
   const query = store.db.query;
   store.db.query = async () => { throw new Error('the query ran past its 5000 ms deadline'); };

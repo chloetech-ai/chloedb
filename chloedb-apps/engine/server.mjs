@@ -160,9 +160,9 @@ function visitorOf(req) {
   return m ? m[1] : null;
 }
 // The person as this app sees them, or null.
-async function userOf(req, appId) {
+async function userOf(req, appId, pub = false) {
   const person = await services.personOf(tokenOf(req)).catch(() => null);
-  return person ? services.user(appId, person) : null;
+  return person ? services.user(appId, person, { pub }) : null;
 }
 
 // ---- map tiles, fetched once and kept on disk (OpenStreetMap's policy:
@@ -556,6 +556,10 @@ async function appState(appId) {
   };
 }
 
+// The options of app.ask a visitor may pass: the answer's shape and the
+// screen's own instructions, never the web or a fresh (uncached) call.
+const publicAsk = (o = {}) => ({ ...(o.json ? { json: true } : {}), ...(typeof o.system === 'string' ? { system: o.system } : {}) });
+
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
@@ -667,10 +671,11 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), ...cx.where() }); noteActivity(id); return out; }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b); setSession(cx.res, out.token); return { user: out.user }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
   ['POST', /^\/api\/signout$/, async (b, m, url, cx) => { await services.signOut(tokenOf(cx.req)); setSession(cx.res, null); return { ok: true }; }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)\/people$/, async (b, [id]) => ({ people: await services.people(id) })],
+  // The public (a published app's visitors) gets names and roles, never emails.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/people$/, async (b, [id], url, cx) => ({ people: (await services.people(id)).map((p) => (cx.public ? { id: p.id, name: p.name, role: p.role, joined: p.joined } : p)) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/files\/info$/, async (b, [id]) => ({ files: (await services.fileInfo(id, b.ids)).map((f) => ({ ...f, url: `/api/apps/${id}/files/${f.id}` })) })],
   // Email from a view needs someone signed in; functions send as the app.
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/email$/, async (b, [id], url, cx) => {
@@ -689,8 +694,11 @@ const routes = [
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
   // A model and the web (reach.mjs): views ask through these, functions
   // through the same calls in the engine.
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/ask$/, async (b, [id]) => ({ answer: await reach.ask(id, b.prompt, b.opts || {}) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/fetch$/, async (b, [id]) => ({ page: await reach.fetch(id, b.url, b.opts || {}) })],
+  // A published app's visitors name no secret, header or method of their own
+  // (reach.fetch) and do not search the web or skip the cache (reach.ask):
+  // they get the plain call, under the app's switches and limits.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/ask$/, async (b, [id], url, cx) => ({ answer: await reach.ask(id, b.prompt, cx.public ? publicAsk(b.opts) : b.opts || {}) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/fetch$/, async (b, [id], url, cx) => ({ page: await reach.fetch(id, b.url, cx.public ? {} : b.opts || {}) })],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => reachOf(id, await engine.view(id))],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/reach$/, async (b, [id]) => {
     const on = await reach.setSwitches(id, b || {});
@@ -728,7 +736,11 @@ const routes = [
     noteActivity(id);
     return { ok: true };
   }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/error$/, async (b, [id]) => {
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/error$/, async (b, [id], url, cx) => {
+    // A published app's visitors start no build: their text would go into
+    // the model's prompt, and a repair becomes the live version. Their
+    // errors are logged for the owner to see in the studio.
+    if (cx.public) { log(`[${id}] error from a visitor (no repair): ${String(b.cap || '').slice(0, 40)} ${String(b.message || '').slice(0, 200)}`); return { ok: true, repairing: false }; }
     const cap = String(b.cap || '');
     // An error from code the app no longer runs (a window still showing an
     // older version) is not sent to the forge.
@@ -888,7 +900,7 @@ const server = http.createServer(async (req, res) => {
     // A write or a run also says how many taps led to it (x-sa-taps).
     const taps = Number(req.headers['x-sa-taps']);
     const where = (session) => ({ session: tag(req.headers['x-sa-session']) || tag(session), screen: tag(req.headers['x-sa-view']), ...(Number.isInteger(taps) && taps >= 0 && taps < 10000 ? { taps } : {}) });
-    const cx = { ...cx0, req, res, where, user: (appId) => userOf(req, appId), who: async (appId) => (await userOf(req, appId))?.id || visitorOf(req) };
+    const cx = { ...cx0, req, res, where, user: (appId) => userOf(req, appId, !!cx0.public), who: async (appId) => (await userOf(req, appId, !!cx0.public))?.id || visitorOf(req) };
     // ?v=N runs a request on version N of the app (a version built to try).
     const v = Number(url.searchParams.get('v')) || null;
     for (const [method, re, fn] of routes) {
