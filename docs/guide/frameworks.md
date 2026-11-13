@@ -17,14 +17,10 @@ methods and filter operators is in [the reference](../chloedb/frameworks.md).
 
 ## Install
 
-<!-- since 0.2.1 --> The adapters are new in 0.2.1, which is not released yet: release 0.2.0's wheel does not have them. Until it is, build the package from the repository (it needs Rust and a C compiler, and takes several minutes):
-
 ```sh
 # install
-pip install "chloedb[langchain,langgraph,llama-index] @ git+https://github.com/chloetech-ai/chloedb#subdirectory=chloedb-py" pandas
+pip install "chloedb[langchain,langgraph,llama-index]" pandas -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0
 ```
-
-Once 0.2.1 is released, its wheel installs them with no build: `pip install --upgrade "chloedb[langchain,langgraph,llama-index]" pandas -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.1` (and a plain `pip install "chloedb[langchain,langgraph,llama-index]"` once ChloeDB is on PyPI).
 
 Each extra pulls in its framework's core package only (`langchain-core`,
 `langgraph`, `llama-index-core`). The examples embed with

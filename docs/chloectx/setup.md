@@ -18,7 +18,7 @@ The CLI login matters more than it looks. The distiller runs `claude -p` in the 
 
 ## Prebuilt
 
-<!-- since 0.2.1 --> From release 0.2.1, the ChloeDB installer fetches `chloectx` prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:
+<!-- since 0.3.1 --> From release 0.3.1, the ChloeDB installer fetches `chloectx` prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:
 
 ```bash
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx    # ~/.local/bin/chloectx
@@ -27,7 +27,7 @@ curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with c
 ~/.local/bin/chloectx doctor
 ```
 
-Release 0.2.0 has no prebuilt `chloectx`: build it from source, below. This installer (the website's `install.sh`) is not the repository's `./install.sh`, which builds ChloeCtx from a checkout.
+Release 0.3.0 and earlier have no prebuilt `chloectx`: build it from source, below. This installer (the website's `install.sh`) is not the repository's `./install.sh`, which builds ChloeCtx from a checkout.
 
 ## Install in one command, from source
 
@@ -77,7 +77,7 @@ chloectx doctor
 
 ```console
 $ chloectx doctor
-ChloeCtx 0.2.0 for /home/you/code/app
+ChloeCtx 0.3.0 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
   ok    Claude Code CLI: 2.1.299 (Claude Code)
   ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)

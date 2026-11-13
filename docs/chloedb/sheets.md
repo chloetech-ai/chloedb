@@ -33,7 +33,7 @@ chloedb-sheets serve --server http://coordinator:7700 --key "$CHLOEDB_KEY" --tok
 chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOKEN=$SHEETS_TOKEN
 ```
 
-`--server` was `--strata` before 0.2.1; the old name still works.
+`--server` was `--strata` before 0.3.1; the old name still works.
 
 `--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.
 

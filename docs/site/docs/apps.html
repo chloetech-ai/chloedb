@@ -42,6 +42,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -73,16 +74,16 @@
       <span class="eyebrow">Apps</span>
       <h1>Apps on a cluster</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
+      <p class="doc-version">These docs describe release 0.3.0.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#how-an-app-attaches">How an app attaches</a></li><li><a href="#start-a-server-and-two-apps">Start a server and two apps</a></li><li><a href="#sheets-a-workbook-with-a-formula-and-a-query">Sheets: a workbook with a formula and a query</a></li><li><a href="#chloectx-a-memory-space-and-its-context">ChloeCtx: a memory space and its context</a></li><li><a href="#the-crawler">The crawler</a></li><li><a href="#on-kubernetes">On Kubernetes</a></li></ol></details>
     <div class="doc-body">
 
 <p>Some programs built on ChloeDB run beside chloedb-server and show in its command center under <strong>Apps</strong>: the <a href="crawler.html">crawler</a>, which turns a site into a table, <a href="sheets.html">Sheets</a>, spreadsheets whose cells are rows of ChloeDB, and <a href="chloectx-app.html">ChloeCtx</a>, memory spaces that agents write to and ask for context. Each is a program of its own that talks to the server over HTTP and serves a small API and a view; the server lists it and forwards to it.</p>
 <p>This page starts a server with Sheets and ChloeCtx beside it and uses both through the server, the way the command center does.</p>
-<p>You need <code>chloedb-server</code>, <code>chloedb-sheets</code> and <code>chloectx</code> on your <code>PATH</code>. <span class="since unreleased">since 0.2.1 (unreleased)</span> From release 0.2.1, the installer puts the three there prebuilt, with nothing to compile:</p>
+<p>You need <code>chloedb-server</code>, <code>chloedb-sheets</code> and <code>chloectx</code> on your <code>PATH</code>. <span class="since unreleased">since 0.3.1 (unreleased)</span> From release 0.3.1, the installer puts the three there prebuilt, with nothing to compile:</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets,ctx</pre>
-<p>Release 0.2.0 has no prebuilt Sheets or ChloeCtx. With it, or to build from source, build each in its directory of a checkout of the repository (<code>cargo build --release</code>; Rust and a C compiler, several minutes) and add their <code>target/release</code> directories to <code>PATH</code>.</p>
+<p>Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository (<code>cargo build --release</code>; Rust and a C compiler, several minutes) and add their <code>target/release</code> directories to <code>PATH</code>.</p>
 <h2 id="how-an-app-attaches">How an app attaches<a class="anchor" href="#how-an-app-attaches" aria-label="Link to this section">#</a></h2>
 <p>The server learns of an app from <code>--app name=URL</code>, and sends each request under <code>/v1/apps/&lt;name&gt;/</code> on to it with a token of its own, <code>CHLOEDB_APP_TOKEN</code>, in place of the caller's key. Callers never reach an app directly: the server checks their key first (read scope to read, admin to change anything), and an app refuses requests that do not carry the token.</p>
 <pre class="mermaid">flowchart LR

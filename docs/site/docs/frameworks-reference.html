@@ -42,6 +42,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -73,15 +74,12 @@
       <span class="eyebrow">Clients</span>
       <h1>ChloeDB in LangChain, LangGraph, LlamaIndex and DB-API tools</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/frameworks.md">docs/chloedb/frameworks.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
+      <p class="doc-version">These docs describe release 0.3.0.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#langchain">LangChain</a></li><li><a href="#langgraph">LangGraph</a></li><li><a href="#llamaindex">LlamaIndex</a></li><li><a href="#db-api">DB-API</a></li></ol></details>
     <div class="doc-body">
 
 <p>The <a href="python.html">Python package</a> plugs ChloeDB into the frameworks agents and retrieval pipelines are built with, and into anything that takes a Python DB-API connection:</p>
-<p><span class="since unreleased">since 0.2.1 (unreleased)</span> These modules and the extras below are new in 0.2.1, which is not released yet: release 0.2.0's wheel has none of them (<code>import chloedb.langchain</code> fails there, and pip warns that it has no extra <code>langchain</code>). Until 0.2.1 is released, build it from the repository, which needs Rust and a C compiler (several minutes):</p>
-<pre data-lang="sh">pip install &quot;chloedb[langchain,langgraph,llama-index] @ git+https://github.com/chloetech-ai/chloedb#subdirectory=chloedb-py&quot;</pre>
-<p>Once it is released, <code>pip install --upgrade "chloedb[langchain]" -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.1</code> (and, when ChloeDB is on PyPI, a plain <code>pip install "chloedb[langchain]"</code>) installs it prebuilt.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -92,22 +90,22 @@
 </thead>
 <tbody>
 <tr>
-<td><code>chloedb.langchain</code> <span class="since unreleased">since 0.2.1 (unreleased)</span></td>
+<td><code>chloedb.langchain</code></td>
 <td><code>ChloeDBVectorStore</code>, a LangChain vector store (and, through <code>as_retriever()</code>, a retriever)</td>
 <td><code>pip install "chloedb[langchain]"</code></td>
 </tr>
 <tr>
-<td><code>chloedb.langgraph</code> <span class="since unreleased">since 0.2.1 (unreleased)</span></td>
+<td><code>chloedb.langgraph</code></td>
 <td><code>ChloeDBSaver</code>, a LangGraph checkpointer, and <code>ChloeDBStore</code>, a LangGraph store for long-term memory</td>
 <td><code>pip install "chloedb[langgraph]"</code></td>
 </tr>
 <tr>
-<td><code>chloedb.llama_index</code> <span class="since unreleased">since 0.2.1 (unreleased)</span></td>
+<td><code>chloedb.llama_index</code></td>
 <td><code>ChloeDBVectorStore</code>, a LlamaIndex vector store, and <code>ChloeDBEmbedding</code></td>
 <td><code>pip install "chloedb[llama-index]"</code></td>
 </tr>
 <tr>
-<td><code>chloedb.dbapi</code> <span class="since unreleased">since 0.2.1 (unreleased)</span></td>
+<td><code>chloedb.dbapi</code></td>
 <td>a <a href="https://peps.python.org/pep-0249/">PEP 249</a> driver: <code>connect()</code>, cursors, <code>pandas.read_sql</code></td>
 <td>nothing more</td>
 </tr>

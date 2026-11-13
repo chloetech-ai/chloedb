@@ -2,20 +2,12 @@
 
 The [Python package](python.md) plugs ChloeDB into the frameworks agents and retrieval pipelines are built with, and into anything that takes a Python DB-API connection:
 
-<!-- since 0.2.1 --> These modules and the extras below are new in 0.2.1, which is not released yet: release 0.2.0's wheel has none of them (`import chloedb.langchain` fails there, and pip warns that it has no extra `langchain`). Until 0.2.1 is released, build it from the repository, which needs Rust and a C compiler (several minutes):
-
-```sh
-pip install "chloedb[langchain,langgraph,llama-index] @ git+https://github.com/chloetech-ai/chloedb#subdirectory=chloedb-py"
-```
-
-Once it is released, `pip install --upgrade "chloedb[langchain]" -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.1` (and, when ChloeDB is on PyPI, a plain `pip install "chloedb[langchain]"`) installs it prebuilt.
-
 | module | what it is | install |
 |---|---|---|
-| `chloedb.langchain` <!-- since 0.2.1 --> | `ChloeDBVectorStore`, a LangChain vector store (and, through `as_retriever()`, a retriever) | `pip install "chloedb[langchain]"` |
-| `chloedb.langgraph` <!-- since 0.2.1 --> | `ChloeDBSaver`, a LangGraph checkpointer, and `ChloeDBStore`, a LangGraph store for long-term memory | `pip install "chloedb[langgraph]"` |
-| `chloedb.llama_index` <!-- since 0.2.1 --> | `ChloeDBVectorStore`, a LlamaIndex vector store, and `ChloeDBEmbedding` | `pip install "chloedb[llama-index]"` |
-| `chloedb.dbapi` <!-- since 0.2.1 --> | a [PEP 249](https://peps.python.org/pep-0249/) driver: `connect()`, cursors, `pandas.read_sql` | nothing more |
+| `chloedb.langchain` | `ChloeDBVectorStore`, a LangChain vector store (and, through `as_retriever()`, a retriever) | `pip install "chloedb[langchain]"` |
+| `chloedb.langgraph` | `ChloeDBSaver`, a LangGraph checkpointer, and `ChloeDBStore`, a LangGraph store for long-term memory | `pip install "chloedb[langgraph]"` |
+| `chloedb.llama_index` | `ChloeDBVectorStore`, a LlamaIndex vector store, and `ChloeDBEmbedding` | `pip install "chloedb[llama-index]"` |
+| `chloedb.dbapi` | a [PEP 249](https://peps.python.org/pep-0249/) driver: `connect()`, cursors, `pandas.read_sql` | nothing more |
 
 Each of them takes where the data is in the same way: a database's path (opened in the process, and made at the first write when it does not exist), the `http://` or `https://` URL of a [chloedb-server](server.md) or a coordinator (with `token=`, or `$CHLOEDB_TOKEN`), or a `chloedb.Database` or `chloedb.Client` already open. Adapters given the same path in one process share one open database (a process opens a database once to write it), so a checkpointer and a store can both name `"agent.chloedb"`; a database opened by `chloedb.open` is passed as itself. The same code runs on a file on a laptop and on a cluster, and one database can hold an agent's vectors, checkpoints, memories and its other tables side by side, each in a table of its own.
 

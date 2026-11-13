@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0"
+WHEELS = "https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0"
 
 
 class _Missing:
@@ -126,7 +126,7 @@ class DuplicateKeyError(ConflictError, BadRequestError):
     """A write of a row whose primary key the table already holds (an
     INSERT, without OR REPLACE or ON CONFLICT). Its code is "conflict",
     and it is a ConflictError and a BadRequestError both (it was the
-    latter alone before 0.2.1). `table` is the table, `field` its key
+    latter alone before 0.3.1). `table` is the table, `field` its key
     field, `key` the key, and `row` the row's position in the write (from
     1) when the message names it; each is None when it does not."""
 

@@ -11,7 +11,7 @@ The package is in [`chloedb-js/`](https://github.com/chloetech-ai/chloedb/tree/m
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler. Install the tarball for your platform:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.2.0/chloedb-0.2.0-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.0/chloedb-0.3.0-darwin-arm64.tgz
 ```
 
 It imports as `"chloedb"`. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2). Release 0.1.0, from before the rename, was published as `strata-db` and imports as `"strata-db"`.
@@ -25,7 +25,7 @@ It imports as `"chloedb"`. Windows and Alpine (musl) have no tarball: build from
 
 The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds the tarballs on a `chloedb-js-v<version>` tag and runs each one in an empty app before attaching it to the release; `node scripts/pack.mjs <platform>` packs one by hand.
 
-`chloedb` on npm is a placeholder (0.0.x) that holds the name until the releases are published there: a bare `npm install chloedb` installs it, and importing it throws an error that says how to install ChloeDB. From 0.2.1 the same workflow can publish to npm the way napi-rs packages are: `chloedb`, the JavaScript, with a package per platform holding its addon (`@chloedb/linux-x64-gnu`, `@chloedb/darwin-arm64`, ...) as optional dependencies, of which npm installs the one of your machine. Once it has (the workflow's header says what that needs), `npm install chloedb` is all it takes. `node scripts/pack.mjs --npm <platform>` and `--npm-main` pack those packages by hand.
+`chloedb` on npm is a placeholder (0.0.x) that holds the name until the releases are published there: a bare `npm install chloedb` installs it, and importing it throws an error that says how to install ChloeDB. From 0.3.1 the same workflow can publish to npm the way napi-rs packages are: `chloedb`, the JavaScript, with a package per platform holding its addon (`@chloedb/linux-x64-gnu`, `@chloedb/darwin-arm64`, ...) as optional dependencies, of which npm installs the one of your machine. Once it has (the workflow's header says what that needs), `npm install chloedb` is all it takes. `node scripts/pack.mjs --npm <platform>` and `--npm-main` pack those packages by hand.
 
 ### From source
 
@@ -67,7 +67,7 @@ r.rows;          // [[1999, 1]]
 await db.close();
 ```
 
-`open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename; before 0.2.1, always); `chloedb-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
+`open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename; before 0.3.1, always); `chloedb-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
 
 Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open to write it (a second one gets "busy: the database is open elsewhere"). Others can open it with `Database.open(path, { readOnly: true })` to read it while it is written, the workers of a cluster, say: each query sees the writer's commits so far, every write fails, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). For writes from several processes, serve it with chloedb-server.
 

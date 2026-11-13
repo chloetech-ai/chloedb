@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.2.1). The
+(November 2026, every crate and package at version 0.3.0). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -31,12 +31,20 @@ This code opens formats 1 to 3 and refuses a higher number
 A reader refuses a database that requires a feature it does not know, and
 names the feature; it ignores optional features and keys it does not know.
 This code knows: `added_fields`, `bool`, `cluster_by`, `cold_segments`,
-`compact_keys`, `default`, `derive`, `derive_text`, `edge_table`,
+`compact_keys`, `default`, `derive`, `derive_keyword`, `derive_text`, `edge_table`,
 `expire_by`, `field_ids`, `functions`, `json`, `json_text`, `media`,
 `multi_vector`, `not_null`, `packed_positions`, `rank_profiles`, `rabitq`,
 `retain`, `semantic_id`, `seq_no`, `shard_by`, `sources`, `sparse_embed`,
-`timestamp`, `vector_partition` and `zstd` (the list `FEATURES` in `manifest.rs` is the
-authority).
+`substring:1`, `timestamp`, `vector_partition` and `zstd` (the list `FEATURES` in
+`manifest.rs` is the authority), and `analyzer:<name>:<version>` for each
+analyzer but `english` (`Analyzer::feature` in `chloedb/src/text/analyzer.rs`).
+
+0.3.0 added `analyzer:<name>:1` for its new analyzers (`simple`'s, from
+before, is unchanged), `substring:1` (a substring index), `sparse_embed` (a
+SPARSE field a model fills) and `derive_keyword` (a KEYWORD field derived
+from a text). Each is written only by a database that uses it: a 0.2.x build
+refuses such a database by name and opens every other database 0.3.0
+wrote.
 
 **What it writes.** Every database this code creates is format 3 with
 feature `field_ids` (each field named by an id rather than its position).
@@ -84,7 +92,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.2.0), and keeps it between releases: name a
+version of the last release (0.3.0), and keeps it between releases: name a
 build from a commit after a release by its commit.
 
 ## A cluster of mixed versions
@@ -108,6 +116,9 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   than sending a call the shard would misread.
 - A server refuses a protocol newer than its own, and a plan of a newer
   version or one that needs a feature it lacks, by name.
+  0.3.0 added the plan feature `terms_syntax`, which only a search with
+  query expansion (`bm25(.., expand => n)`) uses: a 0.2.x shard refuses
+  such a search by name, so upgrade the shards before using it.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -134,8 +145,8 @@ advance.
 | programs | `chloedb-server`, `chloedb-crawl`, `chloedb-sheets` | `strata-server`, `strata-crawl`, `strata-sheets`, in the image and the release archives |
 | container image | `ghcr.io/chloetech-ai/chloedb-server` | `ghcr.io/chloetech-ai/strata-server` |
 | settings | `CHLOEDB_*` | `STRATA_*` |
-| the server an app writes to | `chloedb-crawl --server URL`, `chloedb-sheets --server URL` (0.2.1) | `--strata URL` |
-| models folder | `~/.local/share/chloedb/models` (0.2.1) | `~/.local/share/strata/models`, used where it exists and the new folder does not |
+| the server an app writes to | `chloedb-crawl --server URL`, `chloedb-sheets --server URL` (0.3.1) | `--strata URL` |
+| models folder | `~/.local/share/chloedb/models` (0.3.1) | `~/.local/share/strata/models`, used where it exists and the new folder does not |
 | HTTP headers and gRPC metadata | `x-chloedb-*` | `x-strata-*` |
 | Python package | `import chloedb`, `ChloeDBError` | `import strata`, `StrataError` (with a `DeprecationWarning`) |
 | JavaScript errors | `ChloeDBError` | `StrataError` |
@@ -164,7 +175,7 @@ format (`STRATADB` magic, ChloeCtx's `memory.strata` and `engram.sock`), the
 gRPC services, the Kubernetes operator's resources (the `StrataCluster`
 kind, the `strata.chloetech.ai` API group, the `strata-system` namespace),
 and the app engine in `chloedb-apps/`. The default models directory is
-`~/.local/share/chloedb/models` from 0.2.1 (`~/.local/share/strata/models`
+`~/.local/share/chloedb/models` from 0.3.1 (`~/.local/share/strata/models`
 before); a machine that has the old folder and no `~/.local/share/chloedb`
 keeps using it, as a machine that already has ChloeCtx's old folder,
 `~/.local/share/engram`, does.

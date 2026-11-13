@@ -6,14 +6,14 @@ This page starts a server with Sheets and ChloeCtx beside it and uses both throu
 
 <!-- run: needs chloedb-server chloedb-sheets chloectx -->
 
-You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. <!-- since 0.2.1 --> From release 0.2.1, the installer puts the three there prebuilt, with nothing to compile:
+You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. <!-- since 0.3.1 --> From release 0.3.1, the installer puts the three there prebuilt, with nothing to compile:
 
 ```sh
 # install
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets,ctx
 ```
 
-Release 0.2.0 has no prebuilt Sheets or ChloeCtx. With it, or to build from source, build each in its directory of a checkout of the repository (`cargo build --release`; Rust and a C compiler, several minutes) and add their `target/release` directories to `PATH`.
+Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository (`cargo build --release`; Rust and a C compiler, several minutes) and add their `target/release` directories to `PATH`.
 
 ## How an app attaches
 

@@ -42,6 +42,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -73,7 +74,7 @@
       <span class="eyebrow">Apps</span>
       <h1>chloedb-crawl: a site into a table</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/crawler.md">docs/chloedb/crawler.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.2.1, unreleased). The latest release is 0.2.0; what is newer is marked "since 0.2.1".</p>
+      <p class="doc-version">These docs describe release 0.3.0.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#what-it-does-with-a-page">What it does with a page</a></li><li><a href="#the-command-centers-view">The command center's view</a></li><li><a href="#options">Options</a></li><li><a href="#api">API</a></li><li><a href="#limits">Limits</a></li></ol></details>
     <div class="doc-body">
@@ -97,7 +98,7 @@ target/release/chloedb-crawl preview https://books.toscrape.com/ --pages 10</pre
 <p>The crawler writes to any chloedb-server, one server or a coordinator, with a key that can write (and an admin key to grow a cluster):</p>
 <pre data-lang="sh">chloedb-crawl serve --server http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$CRAWL_TOKEN&quot; \
   --listen 0.0.0.0:7800 --grow kube --split-rows 5000000</pre>
-<p><code>--server</code> was <code>--strata</code> before 0.2.1; the old name still works.</p>
+<p><code>--server</code> was <code>--strata</code> before 0.3.1; the old name still works.</p>
 <p>and the coordinator shows it as an app when told where it is, with the crawler's token:</p>
 <pre data-lang="sh">CHLOEDB_APP_TOKEN=&quot;$CRAWL_TOKEN&quot; chloedb-server --shards ... --app crawler=http://crawler-host:7800</pre>
 <p><code>--grow</code> says how the cluster gets a shard: <code>kube</code> asks the Kubernetes operator for one more (<code>POST /v1/admin/kube</code>, the coordinator must run under the operator), <code>servers=URL,URL</code> adds empty servers started for it, by their gRPC URLs, one at a time, and <code>off</code> never grows. Each new shard gets its share of the slots by a rebalance (<code>POST /v1/admin/rebalance</code>) while the crawl keeps writing.</p>
@@ -284,7 +285,7 @@ target/release/chloedb-crawl preview https://books.toscrape.com/ --pages 10</pre
 </tr>
 <tr>
 <td><code>user_agent</code></td>
-<td><code>chloedb-crawl/0.2.0 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html)</code></td>
+<td><code>chloedb-crawl/0.3.0 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html)</code></td>
 <td>a crawl's own is sent with that after it, unless it names <code>chloedb-crawl</code> (or <code>strata-crawl</code>, its old name)</td>
 </tr>
 <tr>
