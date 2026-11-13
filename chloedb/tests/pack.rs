@@ -181,3 +181,147 @@ fn dedupe_on_a_vector_field_compares_meanings() {
     let p = db.pack("SELECT id, body FROM notes ORDER BY rank DESC PACK 500 TOKENS DEDUPE 0.9", &Params::new()).unwrap();
     assert_eq!(p.rs.rows.len(), 3);
 }
+
+fn empty_db(dir: &std::path::Path) -> Db {
+    let seed = Schema::new("seed", vec![Field::new("id", FieldType::Keyword)], Some("id")).unwrap();
+    Db::create(&dir.join("p.strata"), seed, DbOptions { sync: false, ..DbOptions::default() }).unwrap()
+}
+
+/// A fused ranking is read deeper each time, from its first row, not page
+/// by page: the second page of `rrf` at a depth of its page's size comes
+/// back short when one input matches few rows, which the pack used to read
+/// as the end of the query, and stopped with most of the budget unspent
+/// (N-B7, P2).
+#[test]
+fn a_fused_ranking_fills_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = empty_db(dir.path());
+    run(&db, "CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)");
+    // 3,000 notes of about 20 tokens; 40 say "retry".
+    let values: Vec<String> = (0..3000)
+        .map(|i| {
+            let word = if i % 75 == 0 { "retry" } else { "other" };
+            format!("({i}, 'note {i} on the {word} work of team {} with words to make it longer than a few tokens')", i % 17)
+        })
+        .collect();
+    run(&db, &format!("INSERT INTO notes (id, body) VALUES {}", values.join(", ")));
+    let sql = "SELECT id, body FROM notes ORDER BY rrf(bm25(body, 'retry'), bm25(body, 'note')) DESC PACK 8000 TOKENS WITH RECEIPT";
+    let p = db.pack(sql, &Params::new()).unwrap();
+    assert!(p.receipt.used > 8000 - 32, "{} of 8000 tokens in {} rows, by {} queries", p.receipt.used, p.receipt.rows.len(), p.receipt.queries);
+    // No row is decided twice, and the 40 that match both are among them.
+    let mut keys: Vec<&Value> = p.receipt.rows.iter().map(|d| &d.key).collect();
+    let n = keys.len();
+    let int = |v: &Value| match v {
+        Value::Int(i) => *i,
+        v => panic!("{v:?}"),
+    };
+    let retry = p.receipt.rows.iter().filter(|d| int(&d.key) % 75 == 0).count();
+    assert_eq!(retry, 40);
+    keys.sort_by_key(|k| int(k));
+    keys.dedup();
+    assert_eq!(keys.len(), n);
+}
+
+/// Text without spaces is cut inside its runs, so a row never spends more
+/// than the budget (P1, N-C3); its excerpt is around the query's words as
+/// the field's analyzer finds them.
+#[test]
+fn text_without_spaces_keeps_to_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = empty_db(dir.path());
+    run(&db, "CREATE TABLE docs (id INT PRIMARY KEY, body TEXT OPTIONS(analyzer = 'standard'))");
+    let filler = "これは関係のない長い文章です。".repeat(3000);
+    let page = format!("{filler}東京都の天気は晴れです。{filler}");
+    run(&db, &format!("INSERT INTO docs (id, body) VALUES (1, {}), (2, {})", q(&page), q(&"中文没有空格".repeat(5000))));
+    for budget in [40, 100, 1000] {
+        let p = db.pack(&format!("SELECT id, body FROM docs ORDER BY id PACK {budget} TOKENS WITH RECEIPT"), &Params::new()).unwrap();
+        assert!(p.receipt.used <= budget, "{} of {budget}", p.receipt.used);
+        for (r, d) in p.rs.rows.iter().zip(&p.receipt.rows).filter(|(_, d)| d.taken) {
+            assert_eq!(d.decision, "excerpt");
+            assert!(count_tokens(r[1].as_str().unwrap()) == d.tokens && d.tokens <= budget);
+        }
+    }
+    let p = db.pack("SELECT id, body FROM docs WHERE MATCH(body, '天気') ORDER BY bm25(body, '天気') DESC PACK 200 TOKENS", &Params::new()).unwrap();
+    let cut = p.rs.rows[0][1].as_str().unwrap();
+    assert!(cut.contains("天気") && count_tokens(cut) <= 200, "{cut}");
+}
+
+/// `PACK :n TOKENS`: the budget a parameter, as LIMIT may be.
+#[test]
+fn the_budget_may_be_a_parameter() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = memory(dir.path());
+    let sql = "SELECT id, text FROM memory ORDER BY bm25(text, :task) DESC PACK :budget TOKENS WITH RECEIPT";
+    let p = db.pack(sql, &task().set("budget", Value::Int(200))).unwrap();
+    assert_eq!(p.receipt.budget, 200);
+    assert!(p.receipt.used <= 200);
+    assert!(db.pack(sql, &task()).unwrap_err().to_string().contains("no parameter budget"));
+    let SqlResult::Rows(rs) = db.sql(sql, &task().set("budget", Value::Int(300))).unwrap() else { panic!("rows") };
+    assert!(rs.columns.contains(&"pack_tokens".to_string()));
+}
+
+/// A row with no text spends nothing and says so; `WITH RECEIPT` answers a
+/// row skipped without its text, so the rows' text fits the budget (P5,
+/// P6); a text column that is NULL in the first read and text later is
+/// counted (P8).
+#[test]
+fn rows_without_text_and_rows_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = empty_db(dir.path());
+    run(&db, "CREATE TABLE notes (id INT PRIMARY KEY, rank INT, title KEYWORD, extra TEXT)");
+    let values: Vec<String> = (0..300)
+        .map(|i| match i {
+            0..=9 => format!("({i}, {}, NULL, NULL)", 1000 - i),
+            10..=99 => format!("({i}, {}, 't{i}', NULL)", 1000 - i),
+            _ => format!("({i}, {}, 't{i}', 'an extra note of {i} with a few more words in it')", 1000 - i),
+        })
+        .collect();
+    run(&db, &format!("INSERT INTO notes (id, rank, title, extra) VALUES {}", values.join(", ")));
+    let p = db.pack("SELECT id, title, extra FROM notes ORDER BY rank DESC PACK 1500 TOKENS WITH RECEIPT", &Params::new()).unwrap();
+    for d in &p.receipt.rows[..10] {
+        assert_eq!((d.decision.as_str(), d.tokens), ("skip: no text", 0));
+    }
+    let (title, extra) = (1, 2);
+    for (r, d) in p.rs.rows.iter().zip(&p.receipt.rows) {
+        let text = |j: usize| r[j].as_str().map_or(0, count_tokens);
+        match d.taken {
+            true => assert_eq!(d.tokens, text(title) + text(extra), "{r:?}"),
+            false => assert!(r[title] == Value::Null && r[extra] == Value::Null, "{r:?}"),
+        }
+    }
+    let late = p.receipt.rows.iter().position(|d| d.key == Value::Int(120)).expect("row 120 decided");
+    assert!(p.receipt.rows[late].full_tokens > count_tokens("t120"), "{:?}", p.receipt.rows[late]);
+    assert!(p.receipt.used <= 1500 && p.receipt.used > 1500 - 32, "{}", p.receipt.used);
+    // The answer's text adds up to what the pack spent.
+    let spent: usize = p.rs.rows.iter().map(|r| r[title].as_str().map_or(0, count_tokens) + r[extra].as_str().map_or(0, count_tokens)).sum();
+    assert_eq!(spent, p.receipt.used);
+}
+
+/// `LIMIT 0` answers no rows with the pack's columns; a query that reads
+/// back otherwise once printed (`- -1`) runs, as nothing is printed
+/// (N-B8, N-B9).
+#[test]
+fn limit_zero_and_queries_that_do_not_print_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = memory(dir.path());
+    let rs = db.query("SELECT id, text FROM memory ORDER BY bm25(text, :task) DESC PACK 100 TOKENS LIMIT 0", &task()).unwrap();
+    assert_eq!(rs.columns, vec!["id", "text", "pack_tokens", "pack_decision"]);
+    assert!(rs.rows.is_empty());
+    run(&db, "CREATE TABLE ranked (id INT PRIMARY KEY, rank INT, body TEXT)");
+    run(&db, "INSERT INTO ranked (id, rank, body) VALUES (1, 0, 'zero'), (2, 1, 'one'), (3, 2, 'two')");
+    let p = db.pack("SELECT id, body FROM ranked WHERE rank > - -1 ORDER BY rank DESC PACK 300 TOKENS", &Params::new()).unwrap();
+    assert_eq!(p.rs.rows.len(), 1);
+}
+
+/// A binding's Arrow answer of a PACK query is its rows (N-B9).
+#[cfg(feature = "datafusion")]
+#[test]
+fn query_leaf_runs_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = memory(dir.path());
+    let sql = PACKED.replace(" WITH RECEIPT", "");
+    match db.query_leaf(&sql, &task()).unwrap() {
+        chloedb::query::exec::Leaf::Rows(rs) => assert_eq!(rs.rows, db.query(&sql, &task()).unwrap().rows),
+        _ => panic!("rows"),
+    }
+}

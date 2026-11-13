@@ -1159,6 +1159,20 @@ pub struct Creds {
 }
 
 impl Cluster {
+    /// The image the app engine runs ([`super::upgrade::apps_image`]),
+    /// from what the cluster's `status.upgrade` found of its tag.
+    async fn apps_image(&self, u: &super::upgrade::Upgrade, image: &str) -> String {
+        if u.mode != super::upgrade::Mode::On {
+            return image.to_string();
+        }
+        let path = format!("/apis/{GROUP}/{VERSION}/namespaces/{}/{PLURAL}/{}", self.ns, self.name);
+        let state: super::upgrade::State = match self.kube.get(&path).await {
+            Ok(Some(c)) => serde_json::from_value(c["status"]["upgrade"].clone()).unwrap_or_default(),
+            _ => return image.to_string(),
+        };
+        super::upgrade::apps_image(u, &state, image)
+    }
+
     /// An app's two variables, its cluster `key` and its own API's
     /// `token`: from its credentials Secret, or the admin token.
     fn app_env(&self, app: &str, creds: Creds, key: &str, token: &str) -> Vec<Json> {
@@ -1332,6 +1346,13 @@ impl Platform for Cluster {
         if let Some(a) = &spec.apps {
             with.apps_volume(a).await?;
         }
+        // With upgrades on, the engine runs its tag's newest image by digest.
+        let mut spec = spec.clone();
+        if let Some(a) = spec.apps.as_mut() {
+            let image = self.apps_image(&spec.upgrade, a.image()).await;
+            a.image = Some(image);
+        }
+        let spec = &spec;
         let creds = self.creds(spec, super::apps::APP).await?;
         // Published apps' load balancer first: an sslip domain is its address.
         let address = with.apps_public(spec.apps.as_ref()).await?;
@@ -1911,6 +1932,26 @@ pub async fn upgraded(cluster: &Cluster, c: &Json, out: &Outcome, rejected: Opti
             Some(_) => registry.resolve(&spec.image).await.ok(),
             None => None,
         };
+        // The app engine's tag, which it runs by digest with `on`
+        // ([`super::upgrade::apps_image`]): a new image of it restarts the
+        // engine, as a new server image rolls the servers.
+        match spec.apps.as_ref().map(|a| a.image().to_string()).filter(|i| digest_of(i).is_none()) {
+            Some(tag) => match registry.resolve(&tag).await {
+                Ok(i) => {
+                    if s.apps_track != tag || s.apps.as_ref().is_none_or(|l| l.digest != i.digest) {
+                        let runs = if u.mode == Mode::On { "; the app engine runs it" } else { "" };
+                        s.note(now, format!("{tag} names {}{runs}", said(&i)));
+                    }
+                    s.apps = Some(i);
+                    s.apps_track = tag;
+                }
+                Err(e) => tracing::warn!(cluster = %cluster.name, image = %tag, error = %e, "could not ask the registry for the app engine's image"),
+            },
+            None => {
+                s.apps = None;
+                s.apps_track = String::new();
+            }
+        }
     }
     if let Ok(r) = cluster.running_images().await {
         s.running = r;

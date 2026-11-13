@@ -33,7 +33,9 @@ use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, 
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
+mod rollup;
 mod writes;
+pub use rollup::RefreshStats;
 pub use writes::{Footprints, WriteOp, WriteStats, GROUP_OPS};
 
 /// What [`Db::sql`] returns.
@@ -1433,6 +1435,13 @@ impl Db {
             }
         }
         let q = qsql::parse_query_cached(sql)?;
+        self.query_parsed_at(snap, sql, q, params, opts)
+    }
+
+    /// [`Db::query_at`] of a query parsed (`sql` its text, which is only
+    /// looked at for the features it may call), as a step of another reads
+    /// it ([`crate::query::pack`]): without printing it and parsing it again.
+    fn query_parsed_at(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
         // Understood words (`bm25(.., understand => 'boost')`): the
         // dictionaries of the table's keyword fields, then the query with
         // the conditions the words name.
@@ -1538,10 +1547,20 @@ impl Db {
     /// the clause. Every slice of candidates, and every row followed, is
     /// read from `snap`.
     pub fn pack_at(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Option<crate::query::pack::Packed>> {
-        let key_of = |t: &str| snap.table(t).and_then(|v| v.schema().primary_key.map(|k| v.schema().fields[k].name.clone()));
-        let Some(mut p) = crate::query::pack::Packer::of_sql(sql, params, &key_of)? else { return Ok(None) };
-        while let Some(q) = p.next_query()? {
-            p.feed(self.query_at(snap, &q, params, opts)?)?;
+        let table_of = |t: &str| snap.schemas().find(|s| s.table.eq_ignore_ascii_case(t)).map(|s| Arc::new(s.clone()));
+        let Some(mut p) = crate::query::pack::Packer::of_sql(sql, params, &table_of)? else { return Ok(None) };
+        while let Some(next) = p.next_query()? {
+            // Each read as the query it is, not as its text printed and
+            // parsed again; only a table function the text names
+            // (`chunks_of`, `json_paths`) is read from its text.
+            let text = next.query.to_string();
+            let rs = if crate::query::chunks::may_call(&text) || text.to_ascii_lowercase().contains("json_paths") {
+                self.query_at(snap, &next.sql()?, &next.params, opts)?
+            } else {
+                let profiles = text.to_ascii_lowercase().contains("rank_profile");
+                self.query_parsed_at(snap, &text, Arc::new(qsql::Parsed { query: next.query, profiles }), &next.params, opts)?
+            };
+            p.feed(rs)?;
         }
         p.finish(Some(snap.txn()), snap.seq_no()).map(Some)
     }
@@ -1761,10 +1780,21 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(&snap, &call, params, opts).map(|p| Leaf::Rows(p.to_result()));
         }
+        // A statement that is run as steps (PACK, chunks_of, understood or
+        // expanded words, llm()): its rows, as Db::query answers them.
+        let functions = self.functions_at(&snap)?;
+        let stepped = (crate::query::pack::may_pack(sql) && crate::query::pack::split(sql)?.is_some())
+            || crate::query::chunks::may_call(sql)
+            || crate::query::understand::may_understand(sql)
+            || crate::query::prf::may_expand(sql)
+            || crate::query::llm::may_call(sql, &functions);
+        if stepped {
+            return self.query_at(&snap, sql, params, opts).map(Leaf::Rows);
+        }
         let q = qsql::parse_query_cached(sql)?;
         let (q, embedded) = self.embed_texts(&snap, sql, q, params)?;
         let params = embedded.as_ref().unwrap_or(params);
-        let plan = plan_of_parsed(&snap, &q, params, &*self.functions_at(&snap)?)?;
+        let plan = plan_of_parsed(&snap, &q, params, &functions)?;
         self.run_leaf_on(&snap, &plan, opts, Some(0))
     }
 
@@ -1856,6 +1886,10 @@ impl Db {
     pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
+        }
+        // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`.
+        if let Some(st) = crate::query::rollup::parse_statement(sql)? {
+            return self.rollup_statement(st, opts);
         }
         // `CREATE SYNONYMS ON t AS '...'`: the table's synonym list, kept
         // as a function.

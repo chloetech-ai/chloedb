@@ -50,6 +50,7 @@ pub mod plan;
 pub mod profile;
 pub mod pool;
 pub mod rank;
+pub mod rollup;
 pub mod sequence;
 pub mod sql;
 pub mod stats;
