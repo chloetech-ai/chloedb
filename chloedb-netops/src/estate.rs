@@ -702,12 +702,14 @@ pub async fn diagnose(e: &Engine, incident: &str, m: i64) -> Result<()> {
         return Ok(());
     }
     let objs = run.q("What the objects report now", &format!("SELECT id, kind, layer, name, state, reason, since, hub, metro, region, vendor, model, os_version FROM {NODES}\nWHERE id IN ({}) LIMIT 50", quoted(&ids)), json!({})).await;
-    // The root is the one highest up: a hub's power before its routers, a
-    // router before what it feeds; then the one with the most behind it.
+    // The root is one that is down before one that is only degraded (a
+    // slow router does not take down what it feeds); among those, the one
+    // highest up: a hub's power before its routers, a router before what it
+    // feeds; then the one with the most behind it.
     let rank = |r: &Row| LAYER_RANK.iter().position(|l| *l == r.s("layer")).unwrap_or(9);
     let reading = |r: &Row| alerts.iter().find(|a| a.s("entity") == r.s("id")).map_or(0.0, |a| a.f("reading"));
     let mut sorted: Vec<&Row> = objs.iter().collect();
-    sorted.sort_by(|a, b| rank(a).cmp(&rank(b)).then(reading(b).total_cmp(&reading(a))));
+    sorted.sort_by(|a, b| (a.s("state") != "down").cmp(&(b.s("state") != "down")).then(rank(a).cmp(&rank(b))).then(reading(b).total_cmp(&reading(a))));
     let Some(root) = sorted.first().map(|r| (*r).clone()) else {
         run.think("Conclude", "None of the alerting objects is in the estate's tables.");
         run.finish("done", "The objects were not found", 0.0).await?;

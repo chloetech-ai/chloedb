@@ -923,7 +923,8 @@ function incidentRoom(body, app, path) {
   const mapCard = C.card({ title: "Where it is", sub: "the devices the incident touches, their neighbours dimmed", body: [replayEl, map, mapLegend(app, "live")] });
   const stepsSub = h("span", { class: "sub" });
   const board = boardCard(app, id);
-  left.append(C.card({ title: "Likely cause", sub: "from the root-cause agent", body: [causeEl, keyEl] }), C.card({ title: "Proposed actions", sub: "nothing runs without an approval, unless autopilot is on", body: actionsEl }), board.el, mapCard,
+  const causeCard = C.card({ title: "Likely cause", sub: "from the root-cause agent", body: [causeEl, keyEl] });
+  left.append(causeCard, C.card({ title: "Proposed actions", sub: "nothing runs without an approval, unless autopilot is on", body: actionsEl }), board.el, mapCard,
     C.card({ title: "Around the incident", sub: "half an hour before it, to now", body: chartsEl }),
     C.card({ title: "How the agent got there", sub: stepsSub, body: stepsEl }),
     C.card({ title: "What the agent was shown", sub: "its brief, packed to a token budget; a click on a row shows the text", body: rcptEl }),
@@ -1021,7 +1022,9 @@ function incidentRoom(body, app, path) {
       because.length ? h("ul", { class: "no-why" }, because.map((b) => h("li", {}, b))) : null,
       rc ? runFacts(app, rc) : null)
       : C.empty("agent", "No cause named yet", "The agent runs when the incident opens and again as alerts arrive."));
-    if (!keyEl.firstChild) put(keyEl, h("button", { class: "btn xs", style: { marginTop: "10px" }, title: "The simulator knows what it broke. The agent is never shown this.", onclick: () => checkKey(i) }, C.icon("eye"), "Check against the simulator's answer key"));
+    // The estate's outages are worked by its own agent, and the simulator keeps no answer key for them.
+    if (i.root_kind === "estate") { const sub = causeCard.querySelector(".sub"); if (sub) sub.textContent = "from the estate's agent"; put(keyEl); }
+    else if (!keyEl.firstChild) put(keyEl, h("button", { class: "btn xs", style: { marginTop: "10px" }, title: "The simulator knows what it broke. The agent is never shown this.", onclick: () => checkKey(i) }, C.icon("eye"), "Check against the simulator's answer key"));
     stepsSub.textContent = rc ? `${rc.queries ?? j.steps.length - 1} queries, ${C.fmt.ms(rc.ms)} in the database. Click a step for its SQL.` : "";
     // Actions.
     put(actionsEl, j.actions.length ? j.actions.map((a) => actionCard(app, a, () => stop.run())) : C.empty("bolt", "No actions proposed"));

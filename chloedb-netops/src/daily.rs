@@ -1180,7 +1180,7 @@ async fn shift(State(svc): State<Shared>) -> Answer {
         work.push((urgency, at.clone(), json!({"urgency": urgency, "kind": kind, "title": title, "sub": sub, "at": at, "go": go, "act": act})));
     };
     for a in &pending {
-        add(1, a.s("proposed"), "approval", format!("Approve or reject: {}", a.s("title")), format!("{} risk, proposed by the root-cause agent for {}", a.s("risk"), a.s("incident")), json!({"page": "incidents", "id": a.s("incident")}), json!({"action": a.s("id")}));
+        add(1, a.s("proposed"), "approval", format!("Approve or reject: {}", a.s("title")), format!("{} risk, proposed by the {} agent for {}", a.s("risk"), if e.is_estate(&a.s("incident")) { "estate's" } else { "root-cause" }, a.s("incident")), json!({"page": "incidents", "id": a.s("incident")}), json!({"action": a.s("id")}));
     }
     for i in incidents.iter().filter(|i| i.s("status") != "resolved") {
         let waits = pending.iter().any(|a| a.s("incident") == i.s("id"));
