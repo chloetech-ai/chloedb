@@ -4774,7 +4774,7 @@ impl Service {
     /// (skipped). With `opts.strict`, a key twice in the file or one a row
     /// has already is refused before anything is written, and the rows go
     /// as inserts, so that one written meanwhile fails the request too.
-    pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format, opts: ImportOpts) -> Result<(Written, Vec<String>), ApiError> {
+    pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format, opts: ImportOpts) -> Result<(Written, Vec<String>, u64), ApiError> {
         let schema = match table {
             Some(t) => self.table(t).await?,
             None => self.default_table()?,
@@ -4788,7 +4788,7 @@ impl Service {
                 let pk = s.primary_key.expect("strict needs a key");
                 let mut seen: HashSet<String> = HashSet::new();
                 let mut keys = Vec::new();
-                for (n, d) in Rows::new(&s, std::io::Cursor::new(b), format)?.empty_cells(opts.empty).enumerate() {
+                for (n, d) in Rows::new(&s, std::io::Cursor::new(b), format)?.empty_cells(opts.empty).strict(true).enumerate() {
                     let d = d?;
                     if !seen.insert(js::to_json(&d[pk]).to_string()) {
                         return Err(conflict(format!("strict: row {} repeats key {} of an earlier row; nothing was written", n + 1, key_text(&d[pk]))));
@@ -4808,10 +4808,10 @@ impl Service {
             }
         }
         let (tx, mut rx) = tokio::sync::mpsc::channel::<chloedb::Result<Vec<Json>>>(1);
-        let reader = tokio::task::spawn_blocking(move || -> chloedb::Result<Vec<String>> {
-            let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?.empty_cells(opts.empty);
+        let reader = tokio::task::spawn_blocking(move || -> chloedb::Result<(Vec<String>, u64)> {
+            let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?.empty_cells(opts.empty).strict(opts.strict);
             check.by_ref().try_for_each(|d| d.map(drop))?;
-            let mut rows = Rows::new(&schema, std::io::Cursor::new(body), format)?.empty_cells(opts.empty);
+            let mut rows = Rows::new(&schema, std::io::Cursor::new(body), format)?.empty_cells(opts.empty).strict(opts.strict);
             // A strict import inserts; a table without a key (log lines)
             // takes its rows as inserts too.
             let kind = if strict || schema.primary_key.is_none() { "insert" } else { "upsert" };
@@ -4830,7 +4830,7 @@ impl Service {
                     break;
                 }
             }
-            Ok(rows.unknown.into_iter().collect())
+            Ok((rows.unknown.into_iter().collect(), rows.ragged))
         });
         let mut all = Written { receipt: Some(Receipt::default()), ..Default::default() };
         while let Some(chunk) = rx.recv().await {
@@ -4840,8 +4840,8 @@ impl Service {
                 all.add(w);
             }
         }
-        let unknown = reader.await.map_err(ApiError::internal)??;
-        Ok((all, unknown))
+        let (unknown, ragged) = reader.await.map_err(ApiError::internal)??;
+        Ok((all, unknown, ragged))
     }
 
     /// Imports the tables of the SQLite file in `body`
@@ -5796,7 +5796,8 @@ impl Written {
 /// How an import reads and writes its rows ([`Service::import`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ImportOpts {
-    /// Refuse a key twice in the file or one a row has already, writing
+    /// Refuse a key twice in the file or one a row has already, and a CSV
+    /// or TSV row with more or fewer values than its header, writing
     /// nothing.
     pub strict: bool,
     /// What an empty CSV or TSV cell means.

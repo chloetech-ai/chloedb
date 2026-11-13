@@ -290,6 +290,11 @@ pub struct Rows<'a> {
     empty: EmptyCell,
     /// Columns or keys the schema has no field for (skipped).
     pub unknown: BTreeSet<String>,
+    /// CSV or TSV rows with more or fewer values than the header names
+    /// (their missing cells empty, their extra ones left out), unless
+    /// [`Rows::strict`] refuses them.
+    pub ragged: u64,
+    strict: bool,
 }
 
 /// What an empty cell of a CSV or TSV file means (all spaces, or nothing,
@@ -399,7 +404,7 @@ impl<'a> Rows<'a> {
                 let reader: Box<dyn Read + Send> = Box::new(Counting { inner: reader, newlines: newlines.clone() });
                 let mut r = csv::ReaderBuilder::new().delimiter(if format == Format::Tsv { b'\t' } else { b',' }).flexible(true).from_reader(reader);
                 let header = r.headers().map_err(|e| Error::Schema(format!("CSV header: {e}")))?.clone();
-                let columns = header
+                let columns: Vec<Option<usize>> = header
                     .iter()
                     .map(|h| {
                         let h = h.trim().trim_start_matches('\u{feff}');
@@ -410,10 +415,28 @@ impl<'a> Rows<'a> {
                         f
                     })
                     .collect();
+                // A column twice would be filled by its last cell, silently.
+                for (i, f) in columns.iter().enumerate() {
+                    if let Some(j) = f.and_then(|f| columns[..i].iter().position(|g| *g == Some(f))) {
+                        return Err(Error::Schema(format!("CSV header: column {} names field {} again, as column {} does", i + 1, schema.fields[f.unwrap_or_default()].name, j + 1)));
+                    }
+                }
+                if !columns.iter().any(Option::is_some) {
+                    let sep = if format == Format::Tsv { "tab-separated" } else { "comma-separated" };
+                    return Err(Error::Schema(format!("CSV header: it names no field of {} (is the file {sep}, its first line the header?)", schema.table)));
+                }
                 Inner::Csv(r.into_records(), columns, newlines)
             }
         };
-        Ok(Rows { schema, inner, now: crate::timestamp::now(), empty: EmptyCell::Default, unknown })
+        Ok(Rows { schema, inner, now: crate::timestamp::now(), empty: EmptyCell::Default, unknown, ragged: 0, strict: false })
+    }
+
+    /// These rows refusing a CSV or TSV row with more or fewer values than
+    /// the header names, by its line, rather than counting it in
+    /// [`Rows::ragged`].
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
     }
 
     /// These rows with `empty` the meaning of an empty CSV cell
@@ -460,6 +483,12 @@ impl Iterator for Rows<'_> {
                     Err(e) => return Some(Err(Error::Schema(format!("CSV: {e}")))),
                 };
                 let line = rec.position().map_or(0, |p| newlines.line(p.byte()));
+                if rec.len() != columns.len() {
+                    if self.strict {
+                        return Some(Err(at_row("line", line, Error::Schema(format!("{} values, and the header names {} columns", rec.len(), columns.len())))));
+                    }
+                    self.ragged += 1;
+                }
                 let mut doc = match start(schema, now) {
                     Ok(d) => d,
                     Err(e) => return Some(Err(e)),
@@ -499,6 +528,8 @@ pub struct Imported {
     pub bulk: bool,
     /// Columns or keys the schema has no field for (skipped).
     pub unknown: Vec<String>,
+    /// CSV or TSV rows with more or fewer values than the header names.
+    pub ragged: u64,
 }
 
 /// Rows a transaction of [`import`] upserts.
@@ -552,6 +583,7 @@ pub fn import_into(db: &Db, table: &str, mut rows: Rows<'_>) -> Result<Imported>
         }
     }
     out.unknown = rows.unknown.iter().cloned().collect();
+    out.ragged = rows.ragged;
     Ok(out)
 }
 

@@ -2518,8 +2518,13 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         Some(e) => chloedb::ingest::EmptyCell::parse(e).ok_or_else(|| ApiError::bad(format!("empty is default, null or text, not {e:?}")))?,
     };
     let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)?, empty };
-    let (w, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format, opts).await?;
+    let (w, skipped, ragged) = app.svc.import(q.get("table").map(String::as_str), body, format, opts).await?;
     let mut j = json!({"written": w.rows, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3});
+    // Rows of a CSV or TSV file with more or fewer values than its header
+    // (?strict=true refuses them).
+    if ragged > 0 {
+        j["ragged_rows"] = json!(ragged);
+    }
     if let Some(r) = receipt_json(&w) {
         j["receipt"] = r;
     }
