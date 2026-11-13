@@ -22,7 +22,9 @@
 //! node or two, one is given it and the other is not. A call that was
 //! acknowledged is in the store. A call that was not may be sent again
 //! with the same `key`: when the first did commit, the second changes
-//! nothing and answers what the first answered.
+//! nothing and answers what the first answered. A key is one agent's
+//! name for one call: another agent's call under the same key is another
+//! call.
 //!
 //! A lease is a time on the clock of the node that serves the call. A
 //! task whose lease has passed may be given to another agent while the
@@ -309,13 +311,16 @@ impl<'a> Board<'a> {
     }
 
     /// A call that writes: one transaction, and one commit of the tenant.
-    /// With a `key`, a call the board has applied under that key answers
-    /// what it answered then, and writes nothing.
+    /// With a `key`, a call the board has applied for this agent under
+    /// that key answers what it answered then, and writes nothing.
     fn apply<T: Serialize + DeserializeOwned>(&self, tool: &str, key: Option<&str>, op: impl for<'d> FnOnce(&'d Db, i64) -> Result<std::result::Result<(T, Tx<'d>), String>>) -> BResult<T> {
         let key = match key {
             Some(k) => {
                 check_name("key", k)?;
-                Some(format!("{tool}:{k}"))
+                // A key is its agent's: two agents that choose the same
+                // word are not answered each other's calls. (The name's
+                // length keeps `a:b` with key `c` from `a` with `b:c`.)
+                Some(format!("{tool}:{}:{}:{k}", self.agent.len(), self.agent))
             }
             None => None,
         };

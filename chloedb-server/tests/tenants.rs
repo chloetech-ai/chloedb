@@ -95,6 +95,27 @@ async fn two_servers_on_one_store_serve_the_same_tenants() {
     let latest = json!({"sql": "SELECT count(*) AS n FROM notes", "objects": true, "latest": true});
     assert_eq!(call(&b, "POST", "/v1/admin/tenants/agent-7/sql", root, Some(latest)).await.1["rows"], json!([{"n": 3}]));
 
+    // What a statement does is what the engine says it does, not how it
+    // begins. A query behind a comment reads: B, which is not the writer
+    // now, does not take the tenant for it, so A's next write is not
+    // refused.
+    let (s, j) = call(&b, "POST", "/v1/admin/tenants/agent-7/sql", root, sql("/* how many */ SELECT count(*) FROM notes")).await;
+    assert_eq!((s, &j["rows"]), (200, &json!([[3]])), "{j}");
+    let (s, j) = call(&a, "POST", "/v1/admin/tenants/agent-7/sql", root, sql("INSERT INTO notes VALUES (4, 'four')")).await;
+    assert_eq!(s, 200, "{j}");
+    // And what begins as a read does but would write is either run as a
+    // write, and then it is in the store, or not run: it is never in one
+    // server's copy alone.
+    for stmt in ["WITH x AS (SELECT 5 AS id) INSERT INTO notes SELECT id, 'five' FROM x", "EXPLAIN INSERT INTO notes VALUES (6, 'six')", "WITH x AS (SELECT 7 AS id) DELETE FROM notes WHERE id = 1"] {
+        // (B's copy is brought to the store's first: A wrote since.)
+        assert_eq!(call(&b, "POST", "/v1/admin/tenants/agent-7/sql", root, Some(json!({"sql": "SELECT 1", "latest": true}))).await.0, 200);
+        let (s, j) = call(&b, "POST", "/v1/admin/tenants/agent-7/sql", root, sql(stmt)).await;
+        assert!(s == 200 || s == 400, "{stmt}: {s} {j}");
+        let here = call(&b, "POST", "/v1/admin/tenants/agent-7/sql", root, Some(json!({"sql": "SELECT id FROM notes ORDER BY id"}))).await.1;
+        let stored = call(&a, "POST", "/v1/admin/tenants/agent-7/sql", root, Some(json!({"sql": "SELECT id FROM notes ORDER BY id", "latest": true}))).await.1;
+        assert!(here["rows"].is_array() && here["rows"] == stored["rows"], "{stmt}: B has {}, the store {}", here["rows"], stored["rows"]);
+    }
+
     // A statement that does not parse is the caller's error.
     assert_eq!(call(&a, "POST", "/v1/admin/tenants/agent-7/sql", root, sql("SELEC 1")).await.0, 400);
 
@@ -176,7 +197,7 @@ async fn a_blackboard_is_worked_through_http_and_mcp() {
         let (base, path) = (base.to_string(), format!("/v1/admin/tenants/job/board/{name}"));
         async move { call(&base, "POST", &path, Some("root-token"), Some(body)).await }
     };
-    let (s, j) = tool(&a, "add_tasks", json!({"agent": "lead", "tasks": [{"title": "port the parser", "spec": "two passes"}, {"id": "lexer", "title": "port the lexer"}]})).await;
+    let (s, j) = tool(&a, "add_tasks", json!({"agent": "lead", "key": "intake", "tasks": [{"title": "port the parser", "spec": "two passes"}, {"id": "lexer", "title": "port the lexer"}]})).await;
     assert_eq!((s, &j["added"]), (200, &json!(["t1", "lexer"])), "{j}");
 
     // A claim, and the same claim sent again with its key.
@@ -187,13 +208,33 @@ async fn a_blackboard_is_worked_through_http_and_mcp() {
     assert_eq!(tool(&a, "claim", claim).await.1, j);
 
     // What the board refuses is a conflict; what it cannot read, the caller's error.
-    let (s, j) = tool(&a, "complete", json!({"agent": "bob", "task": "t1", "result": "mine"})).await;
+    let (s, j) = tool(&a, "complete", json!({"agent": "bob", "task": "t1", "result": "mine", "key": "x1"})).await;
     assert_eq!(s, 409, "{j}");
     assert!(j["error"].as_str().unwrap_or_default().contains("claimed by ann"), "{j}");
     assert_eq!(tool(&a, "erase", json!({"agent": "bob"})).await.0, 404);
     assert_eq!(tool(&a, "claim", json!({"agent": "bob", "count": 2})).await.0, 400);
-    assert_eq!(tool(&a, "claim", json!({"n": 2})).await.0, 400);
-    assert_eq!(tool(&a, "complete", json!({"agent": "bob", "task": "t1"})).await.0, 400);
+    assert_eq!(tool(&a, "claim", json!({"n": 2, "key": "x2"})).await.0, 400);
+    assert_eq!(tool(&a, "complete", json!({"agent": "bob", "task": "t1", "key": "x3"})).await.0, 400);
+    // A call that is not the same when made twice names itself, so that
+    // whoever sends it again sends the same call: without a key it is
+    // refused before anything is written. A list of tasks that all have
+    // ids is the same twice, and needs none.
+    for (name, args) in [
+        ("claim", json!({"agent": "bob"})),
+        ("claim", json!({"agent": "bob", "key": ""})),
+        ("complete", json!({"agent": "ann", "task": "t1", "result": "done"})),
+        ("fail", json!({"agent": "ann", "task": "t1", "why": "no"})),
+        ("post", json!({"agent": "bob", "body": "a finding without a key"})),
+        ("add_tasks", json!({"agent": "bob", "tasks": [{"title": "no id and no key"}]})),
+    ] {
+        let (s, j) = tool(&a, name, args).await;
+        assert_eq!(s, 400, "{name}: {j}");
+        assert!(j["error"].as_str().unwrap_or_default().contains("key is missing"), "{name}: {j}");
+    }
+    let (s, j) = tool(&a, "status", json!({"agent": "bob"})).await;
+    assert_eq!((s, &j["tasks"]["open"], &j["tasks"]["claimed"], &j["findings"]), (200, &json!(1), &json!(1), &json!(0)), "{j}");
+    let (s, j) = tool(&a, "add_tasks", json!({"agent": "lead", "tasks": [{"id": "lexer", "title": "port the lexer"}]})).await;
+    assert_eq!((s, &j["existing"]), (200, &json!(["lexer"])), "{j}");
     assert_eq!(call(&a, "POST", "/v1/admin/tenants/plain/board/status", root, Some(json!({"agent": "bob"}))).await.0, 400);
     assert_eq!(call(&a, "POST", "/v1/admin/tenants/nothing/board/status", root, Some(json!({"agent": "bob"}))).await.0, 404);
     assert_eq!(call(&a, "POST", "/v1/admin/tenants/job/board/status", None, Some(json!({"agent": "bob"}))).await.0, 401);
@@ -223,19 +264,28 @@ async fn a_blackboard_is_worked_through_http_and_mcp() {
         }
     };
     let said = |j: &Json| -> Json { serde_json::from_str(j["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Json::Null) };
-    let j = call_tool(&a, "bob", "claim", json!({"n": 5})).await;
+    // Another agent's key of the same name as ann's is another key.
+    let j = call_tool(&a, "bob", "claim", json!({"n": 5, "key": "c1"})).await;
     assert_eq!((&j["result"]["isError"], &said(&j)["tasks"][0]["id"], said(&j)["tasks"].as_array().map(Vec::len)), (&json!(false), &json!("lexer"), Some(1)), "{j}");
     let j = call_tool(&a, "bob", "complete", json!({"task": "lexer", "result": "ported", "key": "d1"})).await;
     assert_eq!(said(&j)["state"], "done", "{j}");
-    let j = call_tool(&a, "bob", "complete", json!({"task": "t1", "result": "not mine"})).await;
+    let j = call_tool(&a, "bob", "complete", json!({"task": "t1", "result": "not mine", "key": "d2"})).await;
     assert_eq!(j["result"]["isError"], true, "{j}");
     assert!(j["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("claimed by ann"), "{j}");
     assert_eq!(call_tool(&a, "bob", "claim", json!({"count": 5})).await["error"]["code"], -32602);
+    let j = call_tool(&a, "bob", "claim", json!({"n": 5})).await;
+    assert_eq!(j["error"]["code"], -32602, "{j}");
+    assert!(j["error"]["message"].as_str().unwrap_or_default().contains("key is missing"), "{j}");
+    let listed = mcp(&a, "bob", json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})).await.1;
+    let j = &listed["result"]["tools"];
+    for (i, required) in [(0, json!(["key"])), (2, json!(["task", "result", "key"])), (3, json!(["task", "why", "key"])), (4, json!(["body", "key"]))] {
+        assert_eq!(j[i]["inputSchema"]["required"], required, "{}", j[i]["name"]);
+    }
     assert_eq!(call_tool(&a, "bob", "erase", json!({})).await["error"]["code"], -32602);
 
-    let first = said(&call_tool(&a, "bob", "post", json!({"body": "The lexer keeps a one token lookahead for the parser.", "task": "lexer"})).await);
+    let first = said(&call_tool(&a, "bob", "post", json!({"body": "The lexer keeps a one token lookahead for the parser.", "task": "lexer", "key": "p1"})).await);
     assert_eq!((&first["id"], &first["dup_of"]), (&json!("f1"), &Json::Null), "{first}");
-    let again = said(&call_tool(&a, "ann", "post", json!({"body": "the lexer keeps a one-token lookahead, for the parser"})).await);
+    let again = said(&call_tool(&a, "ann", "post", json!({"body": "the lexer keeps a one-token lookahead, for the parser", "key": "p1"})).await);
     assert_eq!(again["dup_of"], "f1", "{again}");
     let found = said(&call_tool(&a, "ann", "search", json!({"q": "lookahead"})).await);
     assert_eq!((found["findings"].as_array().map(Vec::len), &found["findings"][0]["id"], &found["findings"][0]["duplicates"]), (Some(1), &json!("f1"), &json!(1)), "{found}");
@@ -245,9 +295,9 @@ async fn a_blackboard_is_worked_through_http_and_mcp() {
     // the first server's next call is tried again there, not refused.
     let (s, j) = tool(&b, "status", json!({"agent": "carol", "latest": true})).await;
     assert_eq!((s, &j["tasks"]["claimed"], &j["tasks"]["done"], &j["findings"], &j["duplicates"]), (200, &json!(1), &json!(1), &json!(2), &json!(1)), "{j}");
-    let (s, j) = tool(&b, "add_tasks", json!({"agent": "carol", "tasks": [{"id": "lexer", "title": "again"}, {"title": "port the printer"}]})).await;
+    let (s, j) = tool(&b, "add_tasks", json!({"agent": "carol", "key": "more", "tasks": [{"id": "lexer", "title": "again"}, {"title": "port the printer"}]})).await;
     assert_eq!((s, &j["added"], &j["existing"]), (200, &json!(["t2"]), &json!(["lexer"])), "{j}");
-    let (s, j) = tool(&a, "complete", json!({"agent": "ann", "task": "t1", "result": "parser ported"})).await;
+    let (s, j) = tool(&a, "complete", json!({"agent": "ann", "task": "t1", "result": "parser ported", "key": "d1"})).await;
     assert_eq!((s, &j["state"]), (200, &json!("done")), "{j}");
     let (s, j) = tool(&a, "timeline", json!({"agent": "ann", "since": 2})).await;
     let told: Vec<String> = j["events"].as_array().unwrap().iter().map(|e| format!("{} {} {}", e["agent"].as_str().unwrap(), e["kind"].as_str().unwrap(), e["about"].as_str().unwrap())).collect();
