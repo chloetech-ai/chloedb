@@ -248,7 +248,7 @@ target/release/chloedb-crawl preview https://books.toscrape.com/ --pages 10</pre
 <tr>
 <td><code>max_depth</code></td>
 <td>5</td>
-<td>links from a seed</td>
+<td>links from a seed; a list's next page (a link with <code>rel="next"</code>, or named "Next", "Next page", "Older posts" or an arrow) is as deep as the list, so a long list is read to its end. A crawl that ends says why: its page limit, its depth (with the links it left out, also in the status's <code>beyond_depth</code>), or no links left</td>
 </tr>
 <tr>
 <td><code>concurrency</code>, <code>per_host</code></td>
