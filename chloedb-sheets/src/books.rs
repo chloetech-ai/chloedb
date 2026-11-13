@@ -683,7 +683,8 @@ mod tests {
         }
         assert_eq!(books.let_go_over(10_000), 0);
         // b2 is in use: kept, though it is old enough to go.
-        let held = books.slots().get("b2").unwrap().clone().lock_owned().await;
+        let b2 = books.slots().get("b2").unwrap().clone();
+        let held = b2.lock_owned().await;
         // Of the books not in use (900 cells), 300 at most: b0 (400) goes,
         // b1 is kept (unsaved), and b3 (200) goes.
         assert_eq!(books.let_go_over(300), 2);
