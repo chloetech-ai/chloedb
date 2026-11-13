@@ -535,6 +535,8 @@ pub struct Service {
     pub contain: crate::contain::Contain,
     /// The on-call agent's proposals, waiting for an admin ([`crate::oncall`]).
     pub oncall: crate::oncall::Desk,
+    /// Connectors: other systems' data into tables ([`crate::connectors`]).
+    pub connectors: crate::connectors::Connectors,
     /// The cloud view's AWS credentials and machine catalogues ([`crate::aws`]).
     pub aws: Arc<crate::aws::Aws>,
     /// The cloud view's DigitalOcean token and size catalogues
@@ -771,6 +773,7 @@ impl Service {
             alerts: Alerts::new(None, None).expect("the default alert rules"),
             contain: Default::default(),
             oncall: Default::default(),
+            connectors: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
