@@ -147,7 +147,7 @@ fn write_rows(dir: &Path, n: usize, run: usize, mut said: Said) {
             Err(e) => panic!("open: {e}"),
         }
     };
-    for i in 0.. {
+    for i in 0..i64::MAX {
         let id = (n as i64) * 1_000_000_000 + (run as i64) * 1_000_000 + i;
         said.say(format!("try {id}"));
         let wrote = t.write(|db: &Db| -> Result<()> { db.sql(&format!("INSERT INTO notes VALUES ({id}, 'row {id}')"), &Params::new()).map(|_| ()) });
@@ -182,7 +182,7 @@ fn work_tasks(dir: &Path, n: usize, run: usize, mut said: Said) {
             }
         }
     }
-    for i in 0.. {
+    for i in 0..i64::MAX {
         let key = format!("w{n}-{run}-{i}");
         let tasks = again(|| me.claim(1, 1, Some(&key))).unwrap();
         let Some(task) = tasks.first() else {

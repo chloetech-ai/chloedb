@@ -444,8 +444,16 @@ impl Faulty {
     }
 
     fn fault(&self) -> u32 {
-        let due = self.faults.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
-        if due { self.mode.load(Ordering::SeqCst) } else { TAKES }
+        // (`fetch_update` is deprecated on newer toolchains and its
+        // replacement missing on older ones.)
+        let mut left = self.faults.load(Ordering::SeqCst);
+        while left > 0 {
+            match self.faults.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return self.mode.load(Ordering::SeqCst),
+                Err(now) => left = now,
+            }
+        }
+        TAKES
     }
 
     fn up(&self) -> Result<()> {

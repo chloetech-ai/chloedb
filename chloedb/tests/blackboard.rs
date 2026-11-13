@@ -217,7 +217,7 @@ fn agents_on_two_nodes_claim_each_task_once() {
                         }
                     };
                     let mut mine = Vec::new();
-                    for round in 0.. {
+                    for round in 0..u32::MAX {
                         let key = format!("w{w}-claim-{round}");
                         let got = again(&|| me.claim(2, 600, Some(&key)));
                         if got.is_empty() {
