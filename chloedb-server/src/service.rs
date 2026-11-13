@@ -2582,7 +2582,9 @@ impl Service {
                 }
             }
             let mut r = like.cloned().unwrap_or_default();
-            (r.sql, r.params, r.scroll, r.hold) = (chloedb::query::understand::dictionary_sql(&key.0, &key.1), Params::new(), None, false);
+            // The server's own read: a dictionary of up to
+            // MAX_LISTED_VALUES values, past --max-rows.
+            (r.sql, r.params, r.scroll, r.hold, r.own_read) = (chloedb::query::understand::dictionary_sql(&key.0, &key.1), Params::new(), None, false, true);
             let rs = Box::pin(self.query(r)).await?.rs;
             let g = Arc::new(chloedb::query::understand::Gazetteer::build(&key.1, &rs, key.2));
             self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), (Instant::now(), g.clone()));
@@ -2603,12 +2605,68 @@ impl Service {
         Ok(u)
     }
 
+    /// "Did you mean" ([`chloedb::db::Db::correct`]): the words of `text`
+    /// in no document of TEXT field `field` of `table`, each replaced by
+    /// the indexed term it most likely meant. A coordinator counts the
+    /// documents by its shards' term statistics, summed: the words' own,
+    /// then, for the words in none, their neighbours' (`fuzzy => n`, the
+    /// nearest of each shard), and picks as one server does.
+    pub async fn correct(self: &Arc<Self>, table: &str, field: &str, text: &str, timeout_ms: u64) -> Result<chloedb::db::Corrected, ApiError> {
+        use chloedb::query::exec::{correction_words, corrected_text};
+        if let Backend::Local(db) = &self.backend {
+            let (db, table, field, text) = (db.clone(), table.to_string(), field.to_string(), text.to_string());
+            return Ok(tokio::task::spawn_blocking(move || db.correct(&table, &field, &text)).await.map_err(ApiError::internal)??);
+        }
+        let schema = self.table(table).await?;
+        let f = schema.field(field).ok_or_else(|| ApiError::bad(format!("{table} has no field {field}")))?;
+        if !matches!(f.ty, chloedb::schema::FieldType::Text { .. }) {
+            return Err(ApiError::bad(format!("{table}.{field} is not a TEXT field: only text is corrected")));
+        }
+        let analyzer = f.text_analyzer();
+        let words = correction_words(text, analyzer);
+        let unchanged = || chloedb::db::Corrected { text: text.to_string(), changed: false, words: Vec::new() };
+        if words.is_empty() {
+            return Ok(unchanged());
+        }
+        // A plain query of the table: a column, not an expression, which
+        // would make it a query of operators.
+        let col = quoted(&schema.primary_key.map_or(&f.name, |k| &schema.fields[k].name));
+        let sql = |opts: &str| format!("SELECT {col} FROM {} ORDER BY bm25({}, :q{opts}) DESC LIMIT 1", ident(&schema.table), quoted(&f.name));
+        let stats_of = |sql: String, q: String| {
+            let this = self.clone();
+            async move {
+                let params = Params::new().set("q", Value::Str(q));
+                let (st, _, _) = this.term_stats(&sql, None, &params, &After::default(), timeout_ms).await?;
+                Ok::<_, ApiError>(st.fields.into_values().next().unwrap_or_default().df)
+            }
+        };
+        // The words' own counts, in one round.
+        let own = stats_of(sql(""), words.iter().map(|w| w.word.as_str()).collect::<Vec<_>>().join(" ")).await?;
+        let mut out = Vec::new();
+        for w in &words {
+            // A term the round did not count (a stopword of the ranking)
+            // is left as written.
+            let Some(&df) = own.get(&w.term) else { continue };
+            if df > 0 {
+                continue;
+            }
+            let near = stats_of(sql(&format!(", fuzzy => {}", w.edits)), w.word.clone()).await?;
+            let typed: Vec<char> = w.term.chars().collect();
+            let near: Vec<(String, u64, u8)> = near.into_iter().filter(|(n, _)| *n != w.term).filter_map(|(n, ndf)| chloedb::text::fuzzy::within(&typed, &n, w.edits).map(|d| (n, ndf, d))).collect();
+            out.extend(w.correct(df, &near, analyzer));
+        }
+        if out.is_empty() {
+            return Ok(unchanged());
+        }
+        Ok(chloedb::db::Corrected { text: corrected_text(text, &out), changed: true, words: out })
+    }
+
     /// The answers of [`chloedb::query::understand::Understood::checks`]'s queries.
     async fn understanding_counts(self: &Arc<Self>, u: &chloedb::query::understand::Understood, like: Option<&QueryReq>) -> Result<Vec<u64>, ApiError> {
         let mut out = Vec::new();
         for c in u.checks() {
             let mut r = like.cloned().unwrap_or_default();
-            (r.sql, r.params, r.scroll, r.hold) = (c, Params::new(), None, false);
+            (r.sql, r.params, r.scroll, r.hold, r.own_read) = (c, Params::new(), None, false, true);
             out.push(chloedb::query::understand::count_of(&Box::pin(self.query(r)).await?.rs));
         }
         Ok(out)

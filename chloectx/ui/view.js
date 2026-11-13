@@ -162,6 +162,17 @@ const CSS = `
 .cx-dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 10px; font-size: 12.5px; margin: 12px 0; }
 .cx-dl dt { color: var(--muted); }
 .cx-dl dd { margin: 0; overflow-wrap: anywhere; }
+/* Numbered steps and copyable commands, as the command center's "Start here" draws them. */
+.cx-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.cx-steps > li { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.cx-steps > li > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.cx-steps > li b { color: var(--text); }
+.cx-steps > li.done { background: var(--surface-2); }
+.cx-n { flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; background: var(--accent-soft); color: var(--accent); }
+.cx-steps > li.done .cx-n { background: var(--good-soft); color: var(--good-ink); }
+.cx-wrap { position: relative; }
+.cx-wrap .cx-copy { position: absolute; top: 6px; right: 6px; }
+.cx-cmd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; padding-right: 72px; }
 @media (max-width: 900px) {
   .cx-insp { grid-template-columns: minmax(0, 1fr); }
   .cx-split, .cx-alert { grid-template-columns: minmax(0, 1fr); }
@@ -199,14 +210,25 @@ function render(el, ctx) {
   };
   ctx.onPath(show);
   show(ctx.path());
+  ctx.api("/v1/info").then((i) => {
+    const was = LOCAL;
+    LOCAL = !!i.local;
+    if (was !== LOCAL) root.querySelectorAll(".cx-top > .seg").forEach((t) => t.replaceWith(tabs(ctx, t.querySelector("[aria-pressed=true]")?.dataset?.v || "context")));
+  }).catch(() => {});
   return () => stop?.();
 }
 
 // ---------------------------------------------------------------- shared bits
 
+// Whether this chloectx app reads its machine's stores (--local-stores):
+// null until /v1/info says. Without them Receipts and Blame have nothing to
+// show, and their tabs are left out.
+let LOCAL = null;
+
 function tabs(ctx, on) {
   const { seg } = ctx.core;
-  return seg([["context", "Context"], ["inspector", "Inspector"], ["seen", "Seen before"], ["receipts", "Receipts", "What each recall showed and why, replayed"], ["blame", "Blame", "From a line of code to the memory behind it"]], on,
+  const all = [["context", "Context"], ["inspector", "Inspector"], ["seen", "Seen before"], ["receipts", "Receipts", "What each recall showed and why, replayed"], ["blame", "Blame", "From a line of code to the memory behind it"]];
+  return seg(all.filter(([v]) => LOCAL !== false || (v !== "receipts" && v !== "blame") || v === on), on,
     (v) => { location.hash = v === "context" ? ctx.href() : v === "receipts" || v === "blame" ? ctx.href(v, ...(pickedStore() ? [pickedStore()] : [])) : ctx.href(v); });
 }
 
@@ -273,15 +295,20 @@ function homePage(root, ctx) {
       list.style.display = "block";
     } else {
       list.replaceChildren(...ss.map((s) => {
-        const by = s.by_kind || {};
-        const notes = ["decision", "preference", "fact", "todo", "note"].reduce((a, k) => a + (by[k] || 0), 0);
-        const said = (by.prompt || 0) + (by.answer || 0);
+        const all = s.by_kind || {};
+        // The notes a context shows: not those replaced, retired or done.
+        const by = s.live_by_kind || all;
+        const NOTE = ["decision", "preference", "fact", "todo", "note"];
+        const notes = NOTE.reduce((a, k) => a + (by[k] || 0), 0);
+        const retired = NOTE.reduce((a, k) => a + (all[k] || 0), 0) - notes;
+        const said = (all.prompt || 0) + (all.answer || 0);
         const href = s.kind === "incidents" ? ctx.href("seen") : ctx.href("space", s.name);
         return h("a", { class: "card cx-space", href },
           h("div", { class: "row", style: { justifyContent: "space-between", gap: "8px" } }, h("h4", {}, s.title || s.name), h("span", { class: "badge mono" }, s.table)),
           h("p", {}, s.description || ""),
           h("div", { class: "cx-counts" },
-            s.kind === "incidents" ? h("span", {}, h("b", {}, fmt.n(by.note || 0)), " incidents") : h("span", {}, h("b", {}, fmt.n(notes)), " notes"),
+            s.kind === "incidents" ? h("span", {}, h("b", {}, fmt.n(by.note || 0)), " incidents") : h("span", {}, h("b", {}, fmt.n(notes)), notes === 1 ? " current note" : " current notes"),
+            retired > 0 ? h("span", { title: "Replaced, retired or done: kept in the space's history, left out of every context" }, `${fmt.n(retired)} in history`) : null,
             said ? h("span", {}, h("b", {}, fmt.n(said)), " messages") : null,
             by.decision ? h("span", {}, fmt.plural(by.decision, "decision")) : null,
             by.preference ? h("span", {}, fmt.plural(by.preference, "rule")) : null,
@@ -374,7 +401,15 @@ function spacePage(root, ctx, name) {
     try { j = await ctx.api(`${sp}/notes?limit=200${all ? "&all=1" : ""}`); }
     catch (e) { notesBody.replaceChildren(e.status === 404 ? empty("layers", "No such space", e.message) : failure(e, "The notes")); return; }
     const ns = j.notes || [];
-    if (!ns.length) { notesBody.replaceChildren(empty("note", "No notes yet", "Add one here, or write to the space from an agent.")); return; }
+    if (!ns.length) {
+      // None current: say whether the history holds some.
+      let old = [];
+      if (!all) try { old = (await ctx.api(`${sp}/notes?limit=1&all=1`)).notes || []; } catch { /* the empty state below */ }
+      notesBody.replaceChildren(old.length
+        ? empty("note", "No current notes", "Every note here was replaced, retired or done: With history shows them. Add one, or write to the space from an agent.", h("button", { class: "btn sm", onclick: () => { which.set("all"); all = true; loadNotes(); } }, "Show the history"))
+        : empty("note", "No notes yet", "Add one here, or write to the space from an agent."));
+      return;
+    }
     notesBody.replaceChildren(h("ul", { class: "cx-list" }, ns.map((n) => h("li", { class: "plain" },
       h("div", {},
         h("div", { class: "cx-text" + (n.tag === "superseded" ? " old" : "") }, n.text),
@@ -412,10 +447,52 @@ function spacePage(root, ctx, name) {
   const conv = card({ title: "Hand over a conversation", sub: "a model writes down its decisions, rules and facts", body: h("div", { class: "cx-form" }, user, asst, h("div", { class: "row", style: { justifyContent: "space-between", gap: "10px" } }, said, send)) });
 
   const make = makeApps(ctx, name);
-  root.append(h("div", { class: "cx-split" }, play, h("div", { class: "cx-stack" }, notes, conv)), make.el);
+  root.append(connectAgent(ctx, name), h("div", { class: "cx-split" }, play, h("div", { class: "cx-stack" }, notes, conv)), make.el);
   loadNotes();
   setTimeout(() => q.focus(), 0);
   return make.stop;
+}
+
+/** A command in a code block, with a Copy button on it. */
+function copyable(ctx, text) {
+  const { h, icon } = ctx.core;
+  const pre = h("pre", { class: "code cx-cmd" }, text);
+  const el = h("div", { class: "cx-wrap" }, pre, h("button", { class: "btn xs cx-copy", title: "Copy", onclick: () => ctx.core.copy(pre.textContent.replace(/ +#.*$/gm, ""), "Command copied") }, icon("copy"), "Copy"));
+  el.set = (t) => { pre.textContent = t; };
+  return el;
+}
+
+/**
+ * Connect an agent to a space: the space is an MCP server (tools ask,
+ * remember, notes), and a key limited to its table is all an agent needs.
+ * The key is made here and shown once, in the command to paste.
+ */
+function connectAgent(ctx, name) {
+  const { h, card, toast } = ctx.core;
+  const url = `${location.origin}/v1/apps/chloectx/v1/spaces/${encodeURIComponent(name)}/mcp`;
+  const cmd = (secret) => `claude mcp add --transport http ctx-${name.replace(/_/g, "-")} ${url} \\\n  --header "Authorization: Bearer ${secret || "$KEY"}"`;
+  const code = copyable(ctx, cmd(null));
+  const said = h("div", { class: "cx-hint" }, "Then, in Claude Code: “check the ", name, " space before you start” or “remember that …”. Any MCP client connects the same way.");
+  const make = h("button", { class: "btn sm primary" }, "Make a key for this space");
+  make.onclick = async () => {
+    make.disabled = true;
+    try {
+      // A key that may write this space's table alone: chloedb-server
+      // lets it call the app, which holds it to that grant.
+      const k = await ctx.core.api("/v1/admin/keys", { body: { name: `ctx-${name}-agent-${new Date().toISOString().slice(0, 10)}`, scope: "write", tables: { [`ctx_${name}`]: "write" }, note: `MCP access to the ChloeCtx space ${name}` } });
+      code.set(cmd(k.secret));
+      said.replaceChildren(h("b", {}, "Shown once: "), "this key reaches only the table ", h("span", { class: "mono" }, `ctx_${name}`), " (revoke it under Access and audit). Paste the command where Claude Code runs.");
+      make.remove();
+    } catch (e) { toast(`The key: ${e.message}`, "bad", 8000); make.disabled = false; }
+  };
+  if (!ctx.core.can("admin")) { make.disabled = true; make.title = ctx.core.needs("admin"); }
+  return card({
+    title: "Connect Claude Code",
+    sub: "this space as an MCP server: ask, remember, notes",
+    tools: make,
+    attrs: { style: { marginBottom: "16px" } },
+    body: h("div", { class: "stack", style: { gap: "8px" } }, code, said),
+  });
 }
 
 // ---------------------------------------------------------------- apps from a space
@@ -804,9 +881,7 @@ function inspectorPage(root, ctx) {
     const server = location.origin;
     if (!j.exists || !j.projects.length) {
       list.style.display = "block";
-      list.replaceChildren(empty("layers", j.exists ? "No project synced yet" : "Nothing synced to this cluster yet",
-        "On a machine where ChloeCtx records Claude Code, point its sync at this server once; the daemon then sends what it records every 30 seconds.",
-        h("pre", { class: "code cx-code", style: { textAlign: "left" } }, `chloectx sync setup --url ${server} --token-stdin <<< "$KEY"\nchloectx sync push`)));
+      list.replaceChildren(syncSetup(ctx, j, server));
       return;
     }
     list.replaceChildren(...j.projects.map((p) => h("a", { class: "card cx-space", href: ctx.href("inspector", p.project) },
@@ -816,6 +891,41 @@ function inspectorPage(root, ctx) {
     root.append(ctx.core.card({ title: "In SQL", sub: `the rows of ${j.table}`, body: sqlBlock(`SELECT project, session, kind, content, ts FROM ${j.table} WHERE kind IN ('decision', 'preference', 'fact') ORDER BY ts DESC LIMIT 20`) }));
   })();
   return null;
+}
+
+/**
+ * How to fill the Inspector: a key that may write only the memory table,
+ * made here, and the one command that points a machine's ChloeCtx at
+ * this server with it.
+ */
+function syncSetup(ctx, j, server) {
+  const { h, card, toast } = ctx.core;
+  const cmd = (secret) => `printf %s ${secret ? `'${secret}'` : '"$KEY"'} | chloectx sync setup --url ${server} --token-stdin\nchloectx sync push    # in a project's folder: now, rather than within 30 s`;
+  const code = copyable(ctx, cmd(null));
+  const said = h("span", {}, "Any key that may write ", h("span", { class: "mono" }, j.table), " works; an admin's key also creates the table.");
+  const make = h("button", { class: "btn sm primary" }, "Make a sync key");
+  make.onclick = async () => {
+    make.disabled = true;
+    try {
+      // The table first, so that a key limited to it can write.
+      if (!j.exists && j.create) await ctx.core.api("/v1/sql", { body: { sql: j.create } });
+      const k = await ctx.core.api("/v1/admin/keys", { body: { name: `chloectx-sync-${new Date().toISOString().slice(0, 10)}`, scope: "write", tables: { [j.table]: "write" }, note: "chloectx sync, made on the Inspector page" } });
+      code.set(cmd(k.secret));
+      keyStep.classList.add("done");
+      said.replaceChildren(h("b", {}, "Shown once: "), "this key may only write ", h("span", { class: "mono" }, j.table), ". Revoke it under Access and audit.");
+      make.remove();
+    } catch (e) { toast(`The key: ${e.message}`, "bad", 8000); make.disabled = false; }
+  };
+  if (!ctx.core.can("admin")) { make.disabled = true; make.title = ctx.core.needs("admin"); }
+  const keyStep = h("li", {}, h("span", { class: "cx-n" }, "1"), h("div", {}, h("b", {}, "A key that may write only the memory table"), h("div", {}, make), said));
+  return card({
+    title: j.exists ? "No project synced yet" : "Nothing synced to this cluster yet",
+    sub: "three steps, on a machine where ChloeCtx records Claude Code",
+    body: h("ol", { class: "cx-steps" },
+      keyStep,
+      h("li", {}, h("span", { class: "cx-n" }, "2"), h("div", {}, h("b", {}, "ChloeCtx 0.2.0 or later"), h("span", {}, h("span", { class: "mono" }, "chloectx doctor"), " says which you have; an older one has no ", h("span", { class: "mono" }, "sync"), ": run ", h("span", { class: "mono" }, "git pull && ./install.sh"), " in its checkout."))),
+      h("li", {}, h("span", { class: "cx-n" }, "3"), h("div", {}, h("b", {}, "Point it here, once"), h("span", {}, "Each project's daemon then sends what it records every 30 seconds, and the projects appear on this page."), code))),
+  });
 }
 
 function projectPage(root, ctx, project, session) {
