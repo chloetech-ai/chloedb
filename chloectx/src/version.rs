@@ -157,6 +157,40 @@ pub fn check(home: &Path, fetch: bool) -> Option<Standing> {
     Some(s)
 }
 
+/// How often `chloectx ui` fetches the upstream branch on its own: the page
+/// asks on each load, and asking again within this many seconds reuses the
+/// last fetch.
+pub const UI_FETCH_EVERY: i64 = 600;
+
+/// What `chloectx ui` shows of this build: its version and commit, the
+/// checkout it came from, and how it stands against the checkout's
+/// upstream branch. `check` checks again, fetching the upstream branch
+/// unless it was fetched in the last [`UI_FETCH_EVERY`] seconds (`force`:
+/// fetching anyway); else the last check is shown, or one made now without
+/// fetching. `standing` is null for a build that knows no commit or
+/// checkout.
+pub fn summary(home: &Path, check: bool, force: bool) -> Json {
+    let fetched_at = read_cache(home)["fetched_at"].as_i64().unwrap_or(0);
+    let s = if check {
+        let fetch = force || crate::now() - fetched_at > UI_FETCH_EVERY;
+        let s = self::check(home, fetch);
+        if s.as_ref().is_some_and(|s| s.fetched) {
+            let mut v = read_cache(home);
+            v["fetched_at"] = json!(crate::now());
+            write_cache(home, &v);
+        }
+        s
+    } else {
+        cached(home, CHECK_EVERY).or_else(|| self::check(home, false))
+    };
+    let v = read_cache(home);
+    json!({
+        "version": env!("CARGO_PKG_VERSION"), "build": BUILD_COMMIT, "source": source_dir(),
+        "standing": s.as_ref().map(Standing::json), "line": s.as_ref().map(Standing::line),
+        "checked_at": v["checked_at"], "fetched_at": v["fetched_at"],
+    })
+}
+
 /// Whether to tell the person about a newer version now (at most once a
 /// day): marks it told.
 pub fn notify_due(home: &Path) -> bool {
