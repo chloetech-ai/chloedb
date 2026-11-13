@@ -288,10 +288,18 @@ pub const MAX_RANGES: usize = 64;
 /// the pattern has more candidates than one per `locate_bytes` bytes is
 /// scanned ([`LOCATE_BYTES`]; 0 never scans for that).
 pub fn eval(index: &SubstringIndex, like: &Like, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>, locate_bytes: u64, stats: &mut Stats) -> Result<DocSet> {
+    eval_with(index, like, n_docs, value, locate_bytes, stats, &mut || Ok(()))
+}
+
+/// [`eval`], calling `tick` once a document it tests or locates, so that a
+/// query's deadline and cancel flag stop it inside a part: an error from
+/// `tick` ends it with that error.
+pub fn eval_with(index: &SubstringIndex, like: &Like, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>, locate_bytes: u64, stats: &mut Stats, tick: &mut dyn FnMut() -> Result<()>) -> Result<DocSet> {
     let mut bits = vec![0u64; (n_docs as usize).div_ceil(64)];
     let plan = like.plan();
     for part in index.parts() {
-        eval_part(part, like, &plan, n_docs, value, locate_bytes, stats, &mut bits)?;
+        tick()?;
+        eval_part(part, like, &plan, n_docs, value, locate_bytes, stats, &mut bits, tick)?;
     }
     Ok(DocSet::from_bits(bits, n_docs))
 }
@@ -305,9 +313,10 @@ fn set(bits: &mut [u64], d: DocId, n_docs: u32) -> Result<()> {
 }
 
 /// Tests each of the part's documents.
-fn scan_part(part: &Part, like: &Like, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>, stats: &mut Stats, bits: &mut [u64]) -> Result<()> {
+fn scan_part(part: &Part, like: &Like, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>, stats: &mut Stats, bits: &mut [u64], tick: &mut dyn FnMut() -> Result<()>) -> Result<()> {
     stats.scanned += 1;
     for o in 0..part.n_docs() {
+        tick()?;
         let Some(d) = part.doc(o)? else { continue };
         stats.read += 1;
         if value(d)?.is_some_and(|v| like.matches(&v)) {
@@ -404,7 +413,7 @@ pub fn estimate(index: &SubstringIndex, like: &Like, locate_bytes: u64) -> Resul
     Ok(e)
 }
 
-fn eval_part(part: &Part, like: &Like, plan: &Plan, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>, locate_bytes: u64, stats: &mut Stats, bits: &mut [u64]) -> Result<()> {
+fn eval_part(part: &Part, like: &Like, plan: &Plan, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>, locate_bytes: u64, stats: &mut Stats, bits: &mut [u64], tick: &mut dyn FnMut() -> Result<()>) -> Result<()> {
     let (ranges, exact) = match candidates(part, plan)? {
         Rows::All => {
             for o in 0..part.n_docs() {
@@ -415,12 +424,12 @@ fn eval_part(part: &Part, like: &Like, plan: &Plan, n_docs: u32, value: &mut dyn
             stats.exact += 1;
             return Ok(());
         }
-        Rows::Any => return scan_part(part, like, n_docs, value, stats, bits),
+        Rows::Any => return scan_part(part, like, n_docs, value, stats, bits, tick),
         Rows::Ranges(ranges, exact) => (ranges, exact),
     };
     let total: u64 = ranges.iter().map(|r| r.1 - r.0).sum();
     if too_many(part, total, exact || like.ci, locate_bytes) {
-        return scan_part(part, like, n_docs, value, stats, bits);
+        return scan_part(part, like, n_docs, value, stats, bits, tick);
     }
     match exact {
         true => stats.exact += 1,
@@ -430,6 +439,7 @@ fn eval_part(part: &Part, like: &Like, plan: &Plan, n_docs: u32, value: &mut dyn
     let mut seen = vec![0u64; (part.n_docs() as usize).div_ceil(64)];
     for (lo, hi) in ranges {
         for row in lo..hi {
+            tick()?;
             stats.located += 1;
             let o = part.ordinal(row)?;
             let (w, b) = ((o / 64) as usize, 1u64 << (o % 64));
@@ -454,8 +464,14 @@ fn eval_part(part: &Part, like: &Like, plan: &Plan, n_docs: u32, value: &mut dyn
 /// The documents of `0..n_docs` whose value matches `like`, each read with
 /// `value`: what a segment without an index answers with.
 pub fn scan(like: &Like, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>) -> Result<DocSet> {
+    scan_with(like, n_docs, value, &mut || Ok(()))
+}
+
+/// [`scan`], calling `tick` once a document, as [`eval_with`] does.
+pub fn scan_with(like: &Like, n_docs: u32, value: &mut dyn FnMut(DocId) -> Result<Option<String>>, tick: &mut dyn FnMut() -> Result<()>) -> Result<DocSet> {
     let mut bits = vec![0u64; (n_docs as usize).div_ceil(64)];
     for d in 0..n_docs {
+        tick()?;
         if value(d)?.is_some_and(|v| like.matches(&v)) {
             bits[d as usize / 64] |= 1 << (d % 64);
         }

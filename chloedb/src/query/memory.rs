@@ -231,6 +231,21 @@ pub fn budget_of(bytes: u64, what: &str) -> Option<Arc<MemoryBudget>> {
     (bytes > 0).then(|| MemoryBudget::named(bytes, what))
 }
 
+/// The most a read a database makes for itself may hold: the rows
+/// [`crate::query::chunks`] splits, a classifier's training rows
+/// ([`own_read_budget`]). Such a read is not held to a server's
+/// `--max-rows`, so this is what bounds it.
+pub const OWN_READ_BYTES: u64 = 1 << 30;
+
+/// The budget of one read a database makes for itself (see
+/// [`OWN_READ_BYTES`]): its own, of [`OWN_READ_BYTES`] or `base`'s limit
+/// if that is smaller. It is a budget of its own, so the read is not
+/// counted in `base` while it runs: what bounds it is its own limit.
+pub fn own_read_budget(base: Option<&Arc<MemoryBudget>>) -> Option<Arc<MemoryBudget>> {
+    let limit = base.map_or(OWN_READ_BYTES, |b| b.limit().min(OWN_READ_BYTES));
+    Some(MemoryBudget::named(limit, format!("a read the database makes for itself (the rows chunks_of() splits, a classifier's training rows) may hold, {} MiB: narrow it with a WHERE or a LIMIT", limit >> 20)))
+}
+
 /// The budget the queries of every database this process opens share
 /// unless they are given another ([`crate::db::Db::exec`]):
 /// `CHLOEDB_QUERY_MEMORY_MB` MiB when it is set (0: none), else a
@@ -279,6 +294,15 @@ pub fn row_bytes(row: &[Value]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_own_read_has_a_budget_of_its_own() {
+        assert_eq!(own_read_budget(None).unwrap().limit(), OWN_READ_BYTES);
+        let small = MemoryBudget::new(1 << 20);
+        let b = own_read_budget(Some(&small)).unwrap();
+        assert_eq!((b.limit(), Arc::ptr_eq(&b, &small)), (1 << 20, false));
+        assert_eq!(own_read_budget(Some(&MemoryBudget::new(u64::MAX))).unwrap().limit(), OWN_READ_BYTES);
+    }
 
     #[test]
     fn queries_share_the_budget_and_give_it_back() {
