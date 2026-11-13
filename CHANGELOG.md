@@ -11,6 +11,280 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+## 0.3.1
+
+Fixes from the second audit (13 Nov) and what was built beside them:
+`chloedb-server-v0.3.1`, `chloedb-py-v0.3.1` and `chloedb-js-v0.3.1`
+(the Java package and ChloeCtx are built from source). The file format
+stays 3 and no file feature is new. Three plan features are new, and a
+plan carries one only when its query uses it: `asof_join` (`ASOF JOIN`),
+`date_bin` (a `GROUP BY date_bin(..)` or `date_trunc(..)` on the columns)
+and `approx_percentiles` (`approx_percentile`). A 0.3.0 shard refuses each
+by name, so upgrade the shards before the coordinators. The shard protocol
+stays 20: `JOIN_KIND_AS_OF` and `QueryRequest.skip_steps` are additions an
+older server ignores or refuses by name. A replica no longer installs a
+copy of its primary that arrives late, which is what lost 34 acknowledged
+writes in the simulator's nightly seed (#477).
+
+### What changes by default
+
+- chloedb-server keeps answers between queries (`--answer-cache-mb`, 64
+  MiB; `0` turns it off), allocates with mimalloc, and leaves a query's
+  profile steps out of its answer unless asked for (`"steps": true`) (#456).
+- A table with `retain` merges its segments only within windows of time
+  (#463).
+- ChloeCtx keeps an automatic snapshot at most once an hour, not after
+  every recall (#473).
+- The app engine gives each app a key of its own, and a key limited to
+  tables can no longer read other tables' vectors through `vector_of` or
+  `embed` (#476, #462).
+- The command center is reorganised around what people do with their data
+  (#471).
+
+### Security
+
+- The app engine gives each app a key of its own (audit N-G5, N-G6, part of
+  N-G7, and N-G3). An app's `app.sql`, inserts, updates and removes go to ChloeDB with
+  a key limited to the app's tables (`app_<id>_*`, write, and `sa_numbers`,
+  read, for the library's table functions), so the server refuses another
+  app's rows, the engine's people, sessions and settings, and every other
+  table of the cluster, whatever the engine's SQL rewrite lets through; the
+  engine no longer runs the statement through `/v1/explain` first on that
+  path. The keys are made from the engine's own key, kept sealed in
+  `sa_settings`, reused across restarts and made again when the server no
+  longer takes them (`STRATA_APPS_KEYS=shared` keeps the old behaviour).
+  An engine given the admin token makes itself a key limited to `sa_*` and
+  `app_*` (`chloedb-apps`) and follows the feed of changes with it too (it
+  keeps the token for the feed only on a server from before limited keys
+  could read it), and says so in its log; an engine that cannot give its apps keys says so at start
+  and in `GET /api/status` (`keys`). The chloedb-server the engine starts on
+  its own (`run.sh`) now takes a token, kept in `data/strata.token`. (#476)
+- `chloedb-server`: keys a key makes (`POST /v1/keys/own`, `GET`, and
+  `DELETE /v1/keys/own/ID`). A key with the admin scope on some tables makes
+  keys within them, named `<its name>/<name>`; they expire with it, open
+  nothing once it is revoked (its revocation revokes them), and make none in
+  turn. Their digest is marked `d:` in the keys file, so a server from
+  before them never admits one. `/v1/whoami` says `auth.own_keys`. This
+  touches auth (one-way door). (#476)
+- `chloedb-server`: a key limited to tables may follow the feed
+  (`GET /v1/feed`) of the tables it may read: each transaction's operations
+  on them, an empty `ops` when there are none, and no `sources` or
+  `unknown`; it may not ask for a copy (`copy=true`). `/v1/whoami` says
+  `auth.limited_feed` (audit N-G6). (#476)
+- The app engine: apps' own model calls (`app.ask`) have a share of the
+  spending limit of their own (`STRATA_APPS_ASK_CAP_USD`, a quarter of
+  `STRATA_APPS_SPEND_CAP_USD` by default) and builds the rest, so that a
+  published app's visitors cannot stop the studio's builds, nor builds the
+  apps; one app's calls stop at `STRATA_APPS_ASK_USD_PER_DAY` dollars a day
+  (default 2), whatever their count; and a published app suggests changes
+  from its use rather than building them, unless its owner sets its mode to
+  build (audit N-G3). `GET /api/status` shows `spend.asksUsd` and
+  `spend.asksCap`. (#476)
+- `chloedb-server`: a key limited to tables may read a stored table
+  function: its body is written out and checked by the tables it reads, as
+  the engine runs it (before, every table function was refused). Such a key
+  with the admin scope on some tables may `CREATE FUNCTION` one no one has,
+  or the same definition again, when its body reads only tables it may read
+  and calls no model; it replaces and drops none. (#476)
+- A key limited to tables can no longer read another table's vectors through a request parameter. `{"vector_of": key, "table": "t"}` now needs read on `t`, and a limited key has to name the table. `{"embed": ...}` (and `POST /v1/embed`) needs read on the table whose model it uses. This applies to `/v1/query`, `/v1/sql` and `/v1/explain`. (Audit N-D1.) (#462)
+- Applying a relevance-autopilot proposal now runs only a `CREATE OR REPLACE RANK PROFILE` of the proposal's own profile on its own table, rebuilt from what the stored statement parses to. Any other statement is refused (`DROP TABLE`, `CREATE FUNCTION`, another table or profile, a second statement). A table grant given by a pattern (`*`, `rel*`) can still read `relevance_proposals` but can't write it. Only a grant that names the table writes it. (Audit N-D2.) (#462)
+- A key limited to tables can no longer send an operation with a `"source"` (a stream's offset) or an `"op": "source"` mark to `/v1/write`. Before this, such a key could move the offset of any stream, so that the stream's later events were dropped as replays, even in tables it can't write. (Audit N-D3.) (#462)
+- The apps that chloedb-server starts itself (crawler, Sheets, ChloeCtx) no longer bind a port that the server picked and then released. The server binds each app's loopback socket, holds it while it runs, and hands it to the app as file descriptor 3 (`CHLOEDB_LISTEN_FD=3`) at every start and restart. Before this, another local process could take the port in the gap, receive the app's token and the forwarded requests, and serve the command center's pages for that app. `chloedb-crawl serve`, `chloedb-sheets serve` and `chloectx app` accept the inherited socket. Otherwise they bind `--listen` / `--port` as before. These programs need to be from the same release as the server. (Audit N-P1.) (#462)
+
+### Added
+
+- `chloedb-netops`: network operations on ChloeDB, an app of the command
+  center (`chloedb-server --app netops=URL`, the operator's `spec.netops`,
+  port 7840, a key limited to `netops_*`). A map of the whole network,
+  from regions down to one customer's router (about 200,000 simulated
+  objects of 18 kinds), that reads only its window at its level of
+  detail, colours each place by what is broken inside it, walks the graph
+  around an object that is clicked, and takes a search in a sentence
+  ("changed in the last week about a firmware upgrade by m.rossi with
+  latency above 15 ms, behind ag1-fra") that it compiles into one
+  statement, rewritten by the server's `llm()` when it has a model. The shift's home page (a
+  handover written from the tables and one list of what waits), a lookup
+  of anything a ticket names, a Diagnose page (the stack by place with
+  the lowest broken layer named, one broken thing asked of the graph, the
+  logs, the history and past incidents, and a trace hop by hop), incidents grouped over the topology graph
+  with a root-cause agent that keeps its SQL, a board per incident that
+  starts from its cause's template and that people extend by asking for a
+  panel, alerts with owners and silences, changes carried out and checked
+  against the network before them, a customer's "is it the network?",
+  carriers' maintenance notices checked for collisions, the topology read
+  from the logs, and a leadership view of the same tables. It ships with a
+  simulated carrier network and six faults; `--no-simulate` reads the
+  network from the inventory tables and judges whatever feeds write
+  ([docs](docs/chloedb/netops.md)). (#458)
+- `chloedb-server`: connectors, other systems' data kept coming into
+  tables. Pulls on a schedule: Prometheus rollups (PromQL over each new
+  minute, series joined by labels into one row per subject and step), Jira
+  issues by JQL, ServiceNow records through the Table API, Oxidized device
+  configs (each changed node a version), any REST API that answers JSON;
+  pushes: raw emails (with carriers' BCOP maintenance fields read out),
+  Alertmanager's webhook, any JSON webhook, Oxidized's hook. A map turns
+  records into rows (paths, templates, conversions), fitted to the target's
+  columns and upserted by key; presets write the network operations app's
+  tables. Configs are rows of `chloedb_connectors`, runs of
+  `chloedb_connector_runs`; secrets stay in `<db>.connectors.json`
+  (`--connector-secrets`) or `env:` names. A pull writes with a key the
+  server makes for it, limited to its target; a push connector gets a
+  limited key `connector:<name>` that the sending system holds. Pulls run on
+  a server of its own or the coordinator that pages (`--connectors off`).
+  `/v1/admin/connectors`, `POST /v1/connectors/NAME/push`, a dry run
+  (`/v1/admin/connectors/test`), and the command center's Data > Connectors
+  page with each connector's health. [docs](docs/chloedb/connectors.md) (#464)
+- `ASOF JOIN ... MATCH_CONDITION (s.ts > u.ts) ON ...`: each row joined to the latest row of the other table from before its time (point-in-time joins for training sets), on the row operators and on columns in the DataFusion path. The shard protocol gains `JOIN_KIND_AS_OF`; an older shard refuses such a plan. (#466)
+- `chloedb/results/feature-store`: a benchmark against Feast 0.68 (training sets and online serving). (#466)
+- `examples/feature-store`: a feature store demo, the command center app `features` (streaming features on write, a batch SQL job, snapshots, ASOF JOIN training sets, models as rows, serving by key), with a feature builder: workflows defined as rows, chained, drawn as a map and searched by their statistics. (#466)
+- `chloectx upgrade` installs the newest version from the checkout ChloeCtx was built from: it pulls the checkout (fast forward only; `--no-pull` builds it as it is), stops the old daemons, rebuilds with `install.sh --no-wire` into the binary's own prefix, writes the user-level install again (new hook events; the distillation model is kept) and runs `doctor`. `--check` only says whether a newer version is there. The binary records the commit it was built from (`chloectx --version` names it). (#480)
+- `chloectx doctor` says how many commits on the checkout's upstream branch change ChloeCtx or ChloeDB since the build, warns about the store folder's old name, and counts the stores (and the ones `prune` would remove). (#480)
+- `chloectx stores` lists every store on the machine with the project it records, its size on disk and when it was last used. `chloectx prune` removes the stores nothing will use again: their project folder is gone, or is a temporary folder unused for a day, or they name no project and were unused for a month (`--older-than DAYS` adds idle ones). It lists them and asks first (`--yes`, `--dry-run`); a running store is never removed. Stores from before `project.txt` get one written from their `daemon.log`. (#480)
+- SQL `date_bin(width, t [, origin])`: the start of the bucket of a fixed width (`'5 minutes'`, `'30s'`, `'1 hour'`, `'1 week'`) that a time is in, counted from an origin (1970-01-01 without one), as PostgreSQL's. A `GROUP BY` of it over a `TIMESTAMP` field runs on the columns, each row finding its bucket by number; so do `date_trunc` to a second, minute, hour, day or week. OpenSearch's `date_histogram` with a `fixed_interval` runs as one instead of a subquery. Plan feature `date_bin`; proto `FUNC_DATE_BIN`. On 20M synthetic log lines (4-core Xeon 2.1 GHz): 5-minute buckets by severity over 24 hours in 35 ms rather than 1,343 ms the old way; hourly buckets over 7 days in 52 ms rather than 255 ms. (#467)
+- SQL `approx_percentile(f, p)`: `PERCENTILE_DISC(p)` within 1%, from a DDSketch of at most 4 KB a group however many rows; sketches merge exactly across segments and shards, and travel as versioned bytes. Several fractions of one field share one sketch. Plan feature `approx_percentiles`; proto `AGG_FN_APPROX_PERCENTILE`. On the same data: p50/p95/p99 over 30 days in 406 ms rather than 2,058 ms exact, and per 5-minute bucket by service in 90 ms rather than 114 ms, all within 1%. (#467)
+- The shard simulator has a knob for calls held up while faults run (`held_per_mille`, 3 by default, as before), a setup where copies often arrive late (`chloedb-sim --late-copies`, which CI now runs on 1,000 seeds per change and 10,000 per night), a `late_copies` count, and the bug flag `installs-a-late-copy`, which that setup finds again. (#477)
+- `chloedb-server --otlp-retain PERIOD`: the retention of the tables
+  OpenTelemetry logs make (`otel_logs`); without it they are kept for
+  ever, as before. (#463)
+- `examples/log_series_bench.rs` and results/log-series: log tables over
+  time (merges and retention while streaming, time-window queries). (#463)
+- `PACK :n TOKENS`: the budget may be a parameter. (#475)
+- `chloedb-pack-bench`: PACK against the top rows of a ranking cut in the client, on BEIR, with the estimate of tokens compared with cl100k_base and o200k_base (`chloedb/results/pack/`). On SciFact at 500 tokens PACK finds 0.741 of the relevant documents where the top rows cut to fit find 0.647, and at 2,000 tokens and more the two are within a hundredth (Intel Xeon 2.30GHz, 4 vCPUs). (#475)
+- FOLLOW's second and third hops follow the rows taken at the hop before, not every row read (as the reference says). (#475)
+- ChloeDB: rollups. `CREATE ROLLUP logs_5m ON logs AS SELECT
+  date_bin('5 minutes', ts), service, COUNT(*), SUM(latency), MAX(latency)`
+  makes an ordinary table of counts, sums, least and greatest values per
+  bucket of time and group, kept up to date as rows arrive: a refresh
+  compares each recent bucket's count of rows with the table's (read from
+  the time column's index) and folds again, in one transaction, the
+  buckets that differ, late rows within `OPTIONS(lateness = ...)` (10
+  minutes by default) included; `REFRESH ROLLUP name [FULL]` and
+  `DROP ROLLUP` too. chloedb-server refreshes every rollup every 5
+  seconds and checks every bucket every 5 minutes; an embedding program
+  calls `Db::spawn_rollups`. Buckets older than the table's `retain` keep
+  what they counted, and `OPTIONS(retain = ...)` gives the rollup its own.
+  The definition is a stored function (`rollup__<name>`), so nothing new
+  is written on disk. Queries name the rollup; a coordinator over shards
+  does not run rollup statements yet. (#484)
+- `log_series_bench rollup DB`: a rollup's first fold, its refreshes, and
+  time-bucket queries of it beside the same queries of the table. (#484)
+
+### Changed
+
+- A speed gate (`.github/workflows/perf.yml`, `scripts/perf-gate.py`): two commits built and timed in turns on one runner, BM25 through SQL on the relevance gate's collections, loads, and `chloedb-server-bench` on SciFact over HTTP; a measure fails when the head is more than 10% slower on its median and slower in every round. Nightly (main against main 24 hours earlier; a red night opens an issue), on a pull request labelled `perf`, or by hand. (#460)
+- The framework adapters (`chloedb.langchain`, `chloedb.langgraph`, `chloedb.llama_index`) and `chloedb.dbapi` read a server through a `Session`, one per adapter, so their reads see their own writes through a coordinator and from a replica (start the servers with `--seq-no`); a `chloedb.Client` given to one is used through its session (audit N-H1). (#474)
+- LangGraph's checkpoint and writes tables are made with `shard_by = 'thread_id'` and `cluster_by = 'thread_id'`, so a thread's rows sit on one shard of a cluster and a task's writes go in one transaction; `get_tuple` and `put_writes` read the thread's shard only. Tables made by 0.3.0 or earlier keep their placement by key (audit N-H2). (#474)
+- `chloedb.dbapi`: `with conn:` commits and leaves the connection open, as `sqlite3` does (it used to close it); `contextlib.closing(conn)` closes it (audit N-H4). (#474)
+- `chloedb.dbapi`: a `TIMESTAMP` column comes back as a `datetime` in UTC (it was ISO text); `Binary()` and `bytes` parameters raise `NotSupportedError`, since ChloeDB has no binary type (audit N-H6). (#474)
+- `chloedb.dbapi`: a `SELECT` through a server is read a page of 10,000 rows at a time as it is fetched, past `--max-result-window`, as a file reads it; `rowcount` is -1 until the count is known. A ranked query without `LIMIT`, cut to its best 100 rows, warns and puts a `Warning` in `cursor.messages` (audit N-H5). (#474)
+- LangChain relevance scores (`similarity_search_with_relevance_scores`, `similarity_score_threshold` retrievers): by vector the cosine itself (it was `(1 + cos) / 2`), hybrid the fused score over its best (1 for a document first in both rankings), by words `NotImplementedError`; chosen by the search's own `mode=` (audit N-H7). (#474)
+- The Python client keeps one connection per thread alive between requests instead of a connection per request (over https, a TLS handshake each), and sends NaN and infinity as `null`, as a database in the process stores them (audit N-H6, N-H11). Through `$HTTPS_PROXY`/`$HTTP_PROXY` it uses `urllib` as before. (#474)
+- Operator: with `spec.upgrade.mode: on`, the app engine (`spec.apps`, at a
+  tag) runs its tag's newest image by digest (`status.upgrade.apps`), so a
+  new `chloedb-apps:latest` restarts it within `checkMinutes` without a
+  `kubectl rollout restart`. An installed operator does not upgrade itself:
+  apply `operator.yaml` again to get this. (#476)
+- When distillation has been failing (most often an expired `claude` CLI login), a session's start says so: a message to the person (the hook's `systemMessage`) with the fix (`claude auth login`, or `chloectx doctor`), and a line for the model at the top of the briefing. Until now an install in that state looked like a working one while nothing was written down. A newer version in the checkout is mentioned once a day. (#480)
+- `chloectx --help` lists the eleven everyday commands (install, uninstall, doctor, upgrade, ui, ask, search, remember, stores, prune, stop); the others still work and are named below the list by what they are for. (#480)
+- `chloectx upgrade` moves `~/.local/share/engram`, the store folder's name before the rename, to `~/.local/share/chloectx` (with the daemons stopped, and not when `CHLOECTX_HOME` is set), leaving `engram` as a link to it. (#480)
+- ChloeCtx keeps an automatic snapshot at most once an hour by default (`receipts.snapshots.min_interval_secs`, was 0: one after every recall that showed records). Each snapshot flushes the store and reads every segment, and one per turn more than doubled the store's write amplification and its disk use. Set it to 0 in the store's `config.json` for a snapshot after every recall (audit N-F7). (#473)
+- ChloeCtx writes a recall's receipt after the hook has answered, not before (audit N-F14). The receipts file flushes every 256 receipts and when the daemon stops, merges in the background, and keeps receipts 90 days and at most 20,000 (`receipts.retention`), pruned when the daemon starts (audit N-F3). (#473)
+- `chloectx receipts off [--purge]` and `chloectx receipts on` turn receipts and automatic snapshots off or on for a project's store. Without `receipts.enabled` in `config.json`, `CHLOECTX_RECEIPTS=0` now holds whichever process started the daemon: each hook sends it (audit N-F6). `chloectx stats` shows the receipts' and snapshots' bytes (audit N-F9). (#473)
+- A capsule's manifest names the project's folder, not its absolute path (audit C7); `pack --max-records` keeps the newest records, not the oldest (C3). (#473)
+- ChloeDB: a table with `retain` merges its segments only within windows
+  of time, a thirtieth of the retention each (from a second to a day), by
+  each segment's newest row, so a segment leaves the table whole once its
+  newest row is past the retention instead of being rewritten as its rows
+  expire. Segments with no live rows left are dropped together, unread
+  (and a cold one unfetched). On a stream kept 190 seconds for 10 minutes
+  (results/log-series), rows rewritten per row fell from 2.99 to 1.91 and
+  expired rows still on disk from 964K to 409K. Tables without `retain`
+  merge as before. (#463)
+- `PACK n TOKENS` is marked experimental in the reference: what it reads and how it chooses may change. (#475)
+- `PACK` reads its candidates deeper each time from the query's `OFFSET` (the first 64, 320, 1,344 rows ...), passing over the rows seen by their keys, instead of reading the next page. A fused ranking (`rrf`, a weighted sum) ranks to a depth that grows with the `LIMIT`, so its pages at `OFFSET` were pages of different rankings: rows could be missed, and a short second page ended the pack with most of the budget unspent (audit P2, N-B7). A table without a primary key is still read page by page. (#475)
+- `PACK`'s excerpts and word `DEDUPE` analyze text with the column's own analyzer (its field's, else the searched field's, else `english`): terms match by stem, not by a prefix of four letters (`policy` no longer matches `police`), and Chinese, Japanese and Thai are compared by their words (audit P9, N-C3). A term in more than a quarter of a text says nothing of where to cut it, and is passed over. (#475)
+- `WITH RECEIPT` answers the rows skipped with their text columns `NULL`, so that the text of the rows answered still fits the budget (audit P6). (#475)
+- A row with no text to count is `skip: no text`, not `skip: over budget` (audit P5). (#475)
+- A text column that is `NULL` in the first rows read and text later is counted from the row it first holds text (audit P8). (#475)
+- `count_tokens` counts a token per three letters in alphabets other than Latin (Cyrillic, Greek, Arabic, Hebrew, Devanagari and the rest), where it counted one per six and undercounted them about three times. Measured against o200k_base it is now 9% to 27% over in every language sampled; against cl100k_base it is still under in Arabic, Hindi, Chinese, Korean and Russian (`chloedb/results/pack/`). (#475)
+- chloedb-server allocates with mimalloc (feature `mimalloc`, on by default): a coordinator uses 25-35% less CPU per query, a shard 5-15% less. (#456)
+- query answers (`/v1/query`, `/v1/sql`, `/v1/plan`) carry their profile steps (`stats.steps`) only with `"steps": true` or `"profile": true`; `/v1/explain` and the list of queries keep them. A coordinator asks its shards to leave theirs out (`QueryRequest.skip_steps`). (#456)
+- chloedb-server keeps answers between queries (`--answer-cache-mb`, 64 MiB by default, 0 turns it off): the same query on the same version of a table is answered from memory, and any write makes it compute again. Queries that read the clock, random numbers, `uuid()` or a model are never kept. Metrics `chloedb_answer_cache_*`. (#456)
+- An idle HTTP connection costs about 31 KB instead of about 300 KB (the router was copied for each connection), and the server raises its soft open-file limit to the hard limit when it starts. (#456)
+
+### Fixed
+
+- Vector and hybrid queries no longer pay for static embeddings (#433): a query with `similarity(emb, :v)` whose parameters hold only vectors and numbers is no longer parsed again (the server's parse was uncached) and copied twice to find no text to embed. Server p50 on SciFact, one database: vector 0.632 ms -> 0.536 ms (0.2.0: 0.518), vector + filter 0.485 -> 0.386 ms (0.377); hybrid queries win back about half (Xeon 2.1 GHz, 4 CPUs, release builds, 3 rounds in turns). (#460)
+- Closing one `chloedb.dbapi` connection no longer closes the database under the adapters and other connections of the same path: each opening counts, and the last to let go closes it (audit N-H3). (#474)
+- LlamaIndex `delete_nodes(node_ids=[], filters=...)` and `delete_nodes(filters=MetadataFilters(filters=[]))` delete nothing (they deleted every node the filter kept, or every node); `get_nodes(node_ids=[])` returns none (audit N-H8). (#474)
+- LangGraph `list_namespaces` works past `--max-groups` (65,536 namespaces): it reads the namespaces in order a page at a time when grouping them fails (audit N-H9). (#474)
+- LangGraph filters find checkpoints and store items whose metadata or value is past what a JSON field takes (1,000 values, 16 levels, 256-byte paths): what fits is indexed, top-level values first, where nothing was before (audit N-H10). (#474)
+- `ChloeDBStore` no longer switches the database-wide `set_embed_later` on and off around writes of items without text, which let another thread's rows go without vectors and turned off a setting the caller had turned on (audit N-H13). (#474)
+- A `chloedb.dbapi` connection reads the tables' column types once, and again after a `CREATE`, `ALTER` or `DROP` it runs, not with every `SELECT` (audit N-H11). (#474)
+- The PyPI placeholder (`packaging/chloedb/python`, 0.0.2, not yet published) names ChloeDB and the release install command; the published 0.0.1 still names Strata. The quickstart installs the wheel from the release, since `pip install chloedb` alone takes the placeholder until PyPI publishing is switched on. (#474)
+- Prompts are stored without the envelopes some harnesses wrap them in (`<system-reminder>`, `<wake>`, `<coordinator-relay>`, an HTML-escaped `<session-context>`, slash-command markup): the person's words inside are kept, the machinery dropped. Stored with them, they were recalled into later prompts as if they were the conversation, and a reminder's "never ..." was picked as the user's rule. Recall, the briefing and the distiller's related notes pass over records stored that way before, and a daemon retires the rules taken from them once, when it first starts on a store. (#480)
+- `memory_forget` rewrites the store's segments that held the record without it before it drops the automatic snapshots, and no snapshot is taken meanwhile, so the next snapshot no longer copies the forgotten text for another 30 days (audit N-F2). Forgetting a prompt also removes it from the query of its receipts, and scrubbed receipts drop the forgotten record's text hash (R2). With receipts off, `memory_forget` and `chloectx redact` still scrub the receipts kept before (N-F6). Receipts are scrubbed a page at a time, in one commit per page (R6). (#473)
+- Snapshot retention runs when the daemon starts and before each new snapshot, whatever the settings say now, so turning receipts off or leaving a project no longer keeps its snapshots for good (audit N-F4). What lies under `snapshots/` and belongs to no snapshot (a checkpoint a stopped daemon left half written) is removed when the daemon starts; a snapshot whose predecessor does not read is kept as a full copy instead of failing every time; removal writes the index before deleting directories (N-F12). `chloectx stop` waits for the work after each answer (the prompt's own record, a snapshot being written). (#473)
+- A snapshot records the commit readers saw when the checkpoint took the writer lock (`CheckpointStats::source_txn`, new in ChloeDB), so a receipt never replays "exactly" on a snapshot holding a later write (R3). A receipt's recency reference is the one ranking used (N-F10). Receipts name the ChloeCtx version that wrote them, and a replay says when its embedder or version differs (R4). (#473)
+- A mounted capsule's answers are no longer recorded into the receiving project's memory, whatever its MCP server is named (audit N-F5). `chloectx mount` refuses a capsule that carries stored functions or rank profiles, which could call a model with the user's key from inside `capsule_sql` (N-F8), and one whose embedder differs from its manifest's unless `--embedder` is given (C4). The manifest's title and topics are cut to one bounded line and presented as the packer's words (C2). The mount's copy and the pack's backup are made in `mkdtemp` directories, and the copy is the file whose hash is checked (C5, C6). A record redaction changed while packing gets a vector of its redacted text (C1). (#473)
+- `chloectx blame` attributes a line to the newest edit that added it as a whole line (not one that only kept it around its change), reads the receipts of the edit's turn and the three turns before it instead of the session's oldest 500, and resolves a relative path from where the command runs, or from the project in a daemon request, never from the daemon's own working directory (R5, N-F11, N-F13). (#473)
+- A replica no longer installs a copy of its primary that arrives late. A copy whose call gave up (its timeout, or a broken connection) could still reach the replica after a newer copy and the transactions that follow it, and replace what the replica had applied and acknowledged since; a later election that replica won lost those writes. This is what the cluster simulator's nightly seed 624036738 found (34 acknowledged writes lost; audit E-0g, N-E1). `Database::install_copy` now refuses a copy that ends before the database's last transaction when that transaction is of the copy's term, and changes nothing; the new `Database::install_copy_over` (and `Db::install_copy_over`) installs it anyway, which a replica does only when it holds another transaction than its primary's (`differs`). The term check and this one now run before anything is changed. (#477)
+- `chloedb-server`: a copy's install holds the replica's call lock until it ends, also when the primary's call ended early, so no other call of the primary is taken while a copy is going in. (#477)
+- An excerpt never spends more than its room: text without spaces (Chinese, Japanese, Thai, a URL, base64, a minified line) is cut inside the run, in pieces of at most 8 tokens, where it used to be returned whole, so one row could overrun the budget by any amount (audit P1). (#475)
+- On a server, a `PACK` statement is admitted once by the Contain rules, not once per read (a rule of one query at a time refused its second read with 429), and its reads share the statement's deadline; the reads of steps of `chunks_of`, understood and expanded words are admitted once too (audit P3). (#475)
+- On a server, every read of a pack is of one snapshot: a lease held for the pack and released after it, or the client's `snapshot` (kept for the client with `hold`). A coordinator's shards still each read their latest version (audit P4). (#475)
+- An embedded `Db` runs a pack's reads as the parsed queries they are, not printed and parsed again (no parse-cache churn, and `- -1` works); a server prints them and refuses one that does not read back the same, as `llm()` does (audit N-B8, P7). FOLLOW's reads take the keys as a parameter, so their text is the same for every row followed. (#475)
+- `PACK ... LIMIT 0` answers no rows with the pack's columns on a server too (it was HTTP 400), and `Db::query_leaf` (Python's `query_arrow`) runs `PACK`, `chunks_of`, understood and expanded words and `llm()` as `Db::query` does, where it failed with a syntax error (audit N-B9). (#475)
+- A key limited to tables can run `PACK`: it is judged by the query without its clause (audit N-D6). (#475)
+- `similarity(field, embed(*))` and `similarity(field, embed(name => ..))` no longer panic the caller's thread (or kill the server request); they are refused with "embed(..) takes text" (audit N-B1). (#455)
+- `embed('hash:N', ..)` refuses N = 0 (a division by zero) and N above 65,536, which used to allocate N floats; `hash:N` models in schemas get the same check. New `VECTOR(N)` fields take 1 to 65,536 dimensions (`chloedb::schema::MAX_VECTOR_DIM`). The embedded `Db` now keeps at most 16 models opened by `embed('model', ..)`, as the server does. (#455)
+- `LIKE` and `ILIKE` check the query's deadline and cancel flag every 1,024 values inside a segment, in substring-index parts, in segments without the index and in the few-rows path, so `timeout_ms` and `Db.interrupt()` stop a scan of a large segment (audit N-B2). A `LIKE '%x%'` on a KEYWORD field without a substring index, which the operators filter row by row, now also stops: the projection of a segment's rows checks the deadline too. (#455)
+- `chloectx blame path:line` reads only a regular file inside the project, after links and `..` are resolved, of at most 8 MiB; `../`, absolute paths outside the project, links out of it and `/dev/zero` are refused (audit F R1). (#455)
+
+### Experimental
+
+- A tenant's write that the store refused although it had taken it is
+  now reported committed, not `NotWriter`. A store's client may send a
+  conditional put twice after an answer it lost and report the store's
+  refusal of the second; the handle now loads the tenant again and looks
+  before it says that nothing was written, so the caller does not make
+  the write a second time (audit finding N-P12). (#469)
+- The directory store's `delete` takes the lock its conditional writes
+  take, so a write of `HEAD` that races a tenant's deletion cannot put
+  `HEAD` back after it. (#469)
+- `POST /v1/admin/tenants/:id/sql` decides whether a statement reads by
+  how the engine binds it, not by its first word, and runs reads through
+  what cannot write. A query that begins with a comment no longer makes
+  the server the tenant's writer (audit finding N-P15). (#469)
+- The blackboard's tools over HTTP and MCP refuse `claim`, `complete`,
+  `fail` and `post` without a `key` (and `add_tasks` of a task without
+  an id): 400, or an invalid-parameters error over MCP. A key is now its
+  agent's own, so two agents that choose the same key are not answered
+  each other's calls. Keys written by 0.3.0 are not found under the new
+  names: a call sent again across the upgrade is applied again. (#469)
+- The design for 0.6.0 now begins the accepted `STRARC01` format at
+  version 2. Version 1 stays what experimental tenants write, as 0.3.0
+  does, so nothing written now is taken for the accepted format later,
+  and tenants written by 0.3.0 are read as before. (#469)
+
+### Command center and CI
+
+- The command center is built around what people do with their data: a
+  page per table (search by words or meaning, data, quality, what uses it,
+  storage), saved searches kept as stored functions and callable from
+  code or MCP, a Start here page, Ask (Ctrl+J, the server's agent), and
+  navigation by job (Build, Watch, Run the cluster, Apps, Labs). Every
+  table function is an MCP tool (`fn_<name>`), and an alert rule can watch
+  a SELECT. (#471)
+- Query understanding bounds its own reads, quotes expansion's names and
+  bounds mining. (#459)
+- CI runs only the jobs a change needs, builds chloedb-server once per
+  source tree, builds the guide's programs in parallel and keeps them by
+  their source trees (the docs job from 22 minutes to under 2), splits the
+  DataFusion and image jobs, runs no macOS job on pull requests, and can
+  overflow to an on-demand DigitalOcean runner. (#461, #465, #468, #470,
+  #479, #481)
+
 ## 0.3.0
 
 Apps on by default, each with a key limited to its own tables, and new

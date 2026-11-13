@@ -5,7 +5,7 @@ This release holds the name `chloedb` for [ChloeDB](https://github.com/chloetech
 Install a release from GitHub, where each `chloedb-py-v<version>` release has a wheel per platform:
 
 ```sh
-pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.1
 ```
 
 (the newest release is at https://github.com/chloetech-ai/chloedb/releases).
