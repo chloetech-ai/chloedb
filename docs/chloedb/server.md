@@ -579,6 +579,8 @@ Every request and answer is JSON. Every answer carries the request's id in an `x
 | `DELETE /v1/kv/TABLE/KEY?if_seq_no=n&routing=v` | | `{deleted, written, seq_no?}` |
 | `POST /v1/write` | `{ops: [...], idempotency_key?}` | `{written, skipped?, seq_no?, seq_nos?}` ([conditional writes](#conditional-writes); `skipped` for [stream events](#streams) written already; `seq_nos` from a coordinator) |
 | `POST /v1/stream` | operations as NDJSON, one a line, or one event's several as `{ops, source}` ([streams](#streams)) | NDJSON: a line per batch once it commits, `{batch, ops, written, skipped, lines}`, then `{done, batches, lines, written, skipped}`, or `{error, status, lines}` at the first failure |
+| `GET /v1/admin/connectors`, `POST /v1/admin/connectors`, `/v1/admin/connectors/NAME` (`GET`, `POST`, `DELETE`), `POST /v1/admin/connectors/NAME/run`, `POST /v1/admin/connectors/NAME/key`, `POST /v1/admin/connectors/test` | a connector's settings | [connectors](connectors.md): their health, state and runs; a new one (its push key's secret once); a change; a pull now; a new push key; a dry run |
+| `POST /v1/connectors/NAME/push` | any body: JSON, or a raw email | what a push connector took: `{records, rows, skipped, dropped}`, written with the sender's key ([connectors](connectors.md)) |
 | `GET /v1/sources`, `GET /v1/sources/NAME` | | `{sources: [{name, offset, updated}]}`: each stream source's last offset written ([streams](#streams)); for one, `{name, offset, updated}`, `offset` null for a source not written from |
 | `POST /v1/plan` | `{plan, timeout_ms?, min_seq_no?, min_seq_nos?, objects?}`: a [plan](query-language.md#explain) in JSON, as `/v1/explain` gives it in `ir` | rows for a read, a compound query's plan included, `{written}` for a write; a coordinator runs reads, and refuses a write plan (400) until its shards take write plans |
 | `POST /v1/import?format=F&table=T` | rows as JSON Lines, JSON, CSV or TSV ([loading rows](#loading-rows)) | `{written, skipped_fields, took_ms}` |
@@ -767,6 +769,10 @@ SELECT * FROM otel_logs WHERE trace_id = '5b8efff798038103d269b633813fc60c';
 ```
 
 The answer is OTLP's: an empty `ExportLogsServiceResponse` when every record was written, and `partial_success` with `rejected_log_records` and the first one's reason when the table refused some (attributes nested more than 16 levels, say), the others written. A body that is not OTLP is answered 400, another content type 415, and a server behind on its writes 429 or 503 with `Retry-After`, which exporters wait out and send again; a failure is OTLP's `Status` in the request's encoding (over gRPC, the call's status). A call is counted in the metrics, and audited when refused, as `LogsExport`.
+
+### Connectors
+
+A connector keeps another system's data coming into a table: it pulls Prometheus rollups, Jira issues, ServiceNow records, Oxidized configs or any REST API that answers JSON on a schedule, or takes what a system pushes (an email, Alertmanager's webhook, any JSON), maps each record to a row and upserts it. Connectors are rows of `chloedb_connectors`, each writes with a key limited to its target table, their secrets stay in `<db>.connectors.json` (`--connector-secrets`), and the command center's **Data > Connectors** page shows their health. A server of its own or a coordinator runs the pulls (`--connectors off` turns them off). `POST /v1/admin/connectors`, `GET /v1/admin/connectors`, `POST /v1/connectors/NAME/push`: [Connectors](connectors.md).
 
 ### Backups
 

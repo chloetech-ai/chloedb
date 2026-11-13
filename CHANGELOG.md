@@ -13,6 +13,24 @@ changes collect under "Unreleased".
 
 ### Added
 
+- `chloedb-server`: connectors, other systems' data kept coming into
+  tables. Pulls on a schedule: Prometheus rollups (PromQL over each new
+  minute, series joined by labels into one row per subject and step), Jira
+  issues by JQL, ServiceNow records through the Table API, Oxidized device
+  configs (each changed node a version), any REST API that answers JSON;
+  pushes: raw emails (with carriers' BCOP maintenance fields read out),
+  Alertmanager's webhook, any JSON webhook, Oxidized's hook. A map turns
+  records into rows (paths, templates, conversions), fitted to the target's
+  columns and upserted by key; presets write the network operations app's
+  tables. Configs are rows of `chloedb_connectors`, runs of
+  `chloedb_connector_runs`; secrets stay in `<db>.connectors.json`
+  (`--connector-secrets`) or `env:` names. A pull writes with a key the
+  server makes for it, limited to its target; a push connector gets a
+  limited key `connector:<name>` that the sending system holds. Pulls run on
+  a server of its own or the coordinator that pages (`--connectors off`).
+  `/v1/admin/connectors`, `POST /v1/connectors/NAME/push`, a dry run
+  (`/v1/admin/connectors/test`), and the command center's Data > Connectors
+  page with each connector's health. [docs](docs/chloedb/connectors.md)
 - ChloeDB and `chloedb-server`: the relevance autopilot. It replays the
   queries the rank log kept that rank by a rank profile, on one snapshot,
   with the profile as it is and with the numbers a coordinate-ascent search

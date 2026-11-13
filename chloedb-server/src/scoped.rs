@@ -55,6 +55,8 @@ pub fn route_ok(method: &Method, route: &str) -> bool {
         "/v1/kv/:table/:key" => get || method == Method::PUT || method == Method::DELETE,
         // Embeddings of text, and the models that make them: no table.
         "/v1/embed" => method == Method::POST,
+        // A connector's push: written with the key, so by its tables.
+        "/v1/connectors/:name/push" => method == Method::POST,
         "/v1/models" => get,
         _ => false,
     }

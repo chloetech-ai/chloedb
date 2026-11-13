@@ -44,8 +44,9 @@ import media from "./media.js";
 import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
+import connectors from "./connectors.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, understand, media, graph, classic, apps];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, models, importer, slices, builder, relevance, autopilot, recsys, sid, autocomplete, understand, media, graph, classic, apps, connectors];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -86,6 +87,7 @@ export const NAV = [
     { id: "schema", title: "Schema", icon: "schema", key: "d" },
     { id: "models", title: "Models", icon: "cpu" },
     { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },
+    { id: "connectors", title: "Connectors", icon: "streams", scope: "admin" },
     { id: "slices", title: "Slices", icon: "layers" },
   ]],
   // Apps (--app name=url): one entry each, added by the shell once the

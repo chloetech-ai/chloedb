@@ -82,6 +82,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/graph.js", JS, include_str!("../ui/app/views/graph.js")),
     ("views/classic.js", JS, include_str!("../ui/app/views/classic.js")),
     ("views/apps.js", JS, include_str!("../ui/app/views/apps.js")),
+    ("views/connectors.js", JS, include_str!("../ui/app/views/connectors.js")),
 ];
 
 /// A file from `CHLOEDB_UI_DIR`, when it is set: `rel` under it.

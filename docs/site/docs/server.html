@@ -54,6 +54,7 @@
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
@@ -1294,6 +1295,16 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <td>NDJSON: a line per batch once it commits, <code>{batch, ops, written, skipped, lines}</code>, then <code>{done, batches, lines, written, skipped}</code>, or <code>{error, status, lines}</code> at the first failure</td>
 </tr>
 <tr>
+<td><code>GET /v1/admin/connectors</code>, <code>POST /v1/admin/connectors</code>, <code>/v1/admin/connectors/NAME</code> (<code>GET</code>, <code>POST</code>, <code>DELETE</code>), <code>POST /v1/admin/connectors/NAME/run</code>, <code>POST /v1/admin/connectors/NAME/key</code>, <code>POST /v1/admin/connectors/test</code></td>
+<td>a connector's settings</td>
+<td><a href="connectors.html">connectors</a>: their health, state and runs; a new one (its push key's secret once); a change; a pull now; a new push key; a dry run</td>
+</tr>
+<tr>
+<td><code>POST /v1/connectors/NAME/push</code></td>
+<td>any body: JSON, or a raw email</td>
+<td>what a push connector took: <code>{records, rows, skipped, dropped}</code>, written with the sender's key (<a href="connectors.html">connectors</a>)</td>
+</tr>
+<tr>
 <td><code>GET /v1/sources</code>, <code>GET /v1/sources/NAME</code></td>
 <td></td>
 <td><code>{sources: [{name, offset, updated}]}</code>: each stream source's last offset written (<a href="#streams">streams</a>); for one, <code>{name, offset, updated}</code>, <code>offset</code> null for a source not written from</td>
@@ -1587,6 +1598,8 @@ ORDER BY ts DESC LIMIT 100;
 SELECT service, COUNT(*) FROM otel_logs WHERE attributes[&#x27;http.status_code&#x27;] &gt;= 500 GROUP BY service;
 SELECT * FROM otel_logs WHERE trace_id = &#x27;5b8efff798038103d269b633813fc60c&#x27;;</pre>
 <p>The answer is OTLP's: an empty <code>ExportLogsServiceResponse</code> when every record was written, and <code>partial_success</code> with <code>rejected_log_records</code> and the first one's reason when the table refused some (attributes nested more than 16 levels, say), the others written. A body that is not OTLP is answered 400, another content type 415, and a server behind on its writes 429 or 503 with <code>Retry-After</code>, which exporters wait out and send again; a failure is OTLP's <code>Status</code> in the request's encoding (over gRPC, the call's status). A call is counted in the metrics, and audited when refused, as <code>LogsExport</code>.</p>
+<h3 id="connectors">Connectors<a class="anchor" href="#connectors" aria-label="Link to this section">#</a></h3>
+<p>A connector keeps another system's data coming into a table: it pulls Prometheus rollups, Jira issues, ServiceNow records, Oxidized configs or any REST API that answers JSON on a schedule, or takes what a system pushes (an email, Alertmanager's webhook, any JSON), maps each record to a row and upserts it. Connectors are rows of <code>chloedb_connectors</code>, each writes with a key limited to its target table, their secrets stay in <code>&lt;db&gt;.connectors.json</code> (<code>--connector-secrets</code>), and the command center's <strong>Data &gt; Connectors</strong> page shows their health. A server of its own or a coordinator runs the pulls (<code>--connectors off</code> turns them off). <code>POST /v1/admin/connectors</code>, <code>GET /v1/admin/connectors</code>, <code>POST /v1/connectors/NAME/push</code>: <a href="connectors.html">Connectors</a>.</p>
 <h3 id="backups">Backups<a class="anchor" href="#backups" aria-label="Link to this section">#</a></h3>
 <p>Copying the database's files while the server runs is not a backup: a commit reuses pages an older version freed, and the directory layout deletes files a version stops naming, so a copy (<code>cp</code>, rsync, a disk snapshot, Time Machine) can pair one version's manifest with another's pages. A checkpoint is the safe copy. <code>POST /v1/admin/checkpoint</code> flushes the memtable, pins the version that holds every committed write and copies it into <code>--backup-dir/&lt;name&gt;</code> while queries and writes go on (they wait only for the flush). The checkpoint is itself a database, checked against its checksums before it gets its name: restore by stopping the server and serving the checkpoint (<code>--db</code>), or by moving it into place.</p>
 <pre data-lang="sh">chloedb-server --db shop.chloedb --backup-dir /backups

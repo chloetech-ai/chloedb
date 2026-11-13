@@ -188,6 +188,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     // hold itself); and health, which takes no credential (the on-call
     // agent's first look, [`crate::oncall`]).
     let tools = api(&app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    // connectors: their runs write through the same routes and checks.
+    crate::connectors::Connectors::start(&app.svc, tools.clone(), app.hosts.as_deref().and_then(|h| h.first().cloned()));
     let app = App { mcp: Some(tools), ..app };
     let api = api(&app);
     Router::new()
@@ -376,6 +378,13 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/cloud/clusters/:id/expiry", post(cloud_expiry))
         .route("/v1/admin/cloud/found", get(cloud_found))
         .route("/v1/admin/cloud/found/delete", post(cloud_found_delete))
+        // connectors: configs, runs and health (crate::connectors).
+        .route("/v1/admin/connectors", get(connectors_list).post(connectors_create))
+        .route("/v1/admin/connectors/test", post(connectors_test))
+        .route("/v1/admin/connectors/:name", get(connectors_one).post(connectors_update).delete(connectors_delete))
+        .route("/v1/admin/connectors/:name/run", post(connectors_run))
+        .route("/v1/admin/connectors/:name/key", post(connectors_rotate))
+        .route("/v1/connectors/:name/push", post(connectors_push).layer(rows.clone()))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
@@ -936,6 +945,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // All a feed key may read: the feed, and whether it is up.
         "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
+        // connectors: a system's push, written with its own key.
+        "/v1/connectors/:name/push" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         // otlp: logs in; reading the server's own lines stays the admin's.
         "/v1/logs" if method == Method::POST => Scope::Write,
@@ -5869,4 +5880,63 @@ mod tests {
         let direct = serde_json::to_string(&KeyRowsJson { got: &got, took_ms: 1.5 }).unwrap();
         assert_eq!(direct, serde_json::to_string(&tree).unwrap());
     }
+}
+
+// ----- connectors (crate::connectors)
+
+/// Who a connectors request is from, for the calls it makes with the
+/// caller's credential.
+fn connector_caller(app: &App, headers: &HeaderMap, w: &Principal) -> crate::connectors::Caller {
+    let auth = headers.get(header::AUTHORIZATION).cloned().or_else(|| headers.get(header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)).cloned());
+    let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
+    crate::connectors::Caller { auth, guarded: app.guarded(), in_cluster, who: w.name.clone() }
+}
+
+async fn connectors_list(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap) -> Res {
+    let c = connector_caller(&app, &headers, &who(w));
+    Ok(AxJson(crate::connectors::list_json(&app.svc, &c).await?))
+}
+
+async fn connectors_one(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::connectors::one_json(&app.svc, &name).await?))
+}
+
+async fn connectors_create(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::create(&app.svc, &c, &b).await?;
+    let detail = format!("created connector {} ({} into {})", r["connector"]["name"].as_str().unwrap_or_default(), r["connector"]["kind"].as_str().unwrap_or_default(), r["connector"]["target"].as_str().unwrap_or_default());
+    Ok(audited(r, detail))
+}
+
+async fn connectors_update(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::update(&app.svc, &c, &name, &b).await?;
+    Ok(audited(r, format!("changed connector {name}")))
+}
+
+async fn connectors_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::delete(&app.svc, &c, &name).await?;
+    Ok(audited(r, format!("deleted connector {name}")))
+}
+
+async fn connectors_rotate(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let c = connector_caller(&app, &headers, &who(w));
+    let r = crate::connectors::rotate(&app.svc, &c, &name).await?;
+    Ok(audited(r, format!("rotated the push key of connector {name}")))
+}
+
+async fn connectors_run(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::connectors::run_now(&app.svc, &name).await?))
+}
+
+async fn connectors_test(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::connectors::test(&app.svc, &b).await?))
+}
+
+/// `POST /v1/connectors/:name/push`: any body (JSON, or a raw email).
+async fn connectors_push(State(app): State<App>, headers: HeaderMap, axum::extract::Path(name): axum::extract::Path<String>, body: axum::body::Bytes) -> Res {
+    let auth = headers.get(header::AUTHORIZATION).cloned();
+    let ty = header_str(&headers, header::CONTENT_TYPE).unwrap_or("application/octet-stream").to_ascii_lowercase();
+    Ok(AxJson(crate::connectors::push(&app.svc, &name, auth.as_ref(), &ty, &body).await?))
 }

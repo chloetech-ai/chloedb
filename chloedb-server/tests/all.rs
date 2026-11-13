@@ -26,6 +26,7 @@ mod cloud_clusters;
 mod cluster;
 mod cluster_keys;
 mod command_center;
+mod connectors;
 mod correlated;
 mod date_cluster;
 mod digitalocean;
