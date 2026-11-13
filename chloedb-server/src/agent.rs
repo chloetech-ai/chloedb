@@ -185,7 +185,7 @@ async fn run_sql(svc: &Arc<Service>, input: &Json) -> (Result<Json, String>, Jso
         if chloedb::query::bind_write(&sql, &svc.first_table(), &chloedb::query::Params::new()).ok().flatten().is_some() {
             return Err(ApiError::bad("run_sql is read-only"));
         }
-        let params = svc.params(input.get("params")).await?;
+        let params = svc.params(None, input.get("params")).await?;
         svc.query(QueryReq { sql: sql.clone(), params, ..Default::default() }).await
     }
     .await;

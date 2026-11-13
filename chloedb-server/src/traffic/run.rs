@@ -669,7 +669,7 @@ async fn read(svc: &Arc<Service>, ask: Ask, timeout: u64) -> Done {
         Ask::Key(k) => telemetry::traced(trace.clone(), svc.get_rows(Some(TABLE), vec![chloedb::Value::Str(k)], None, &After::Any, timeout, false)).await.map(|_| ()),
         Ask::Sql { sql, params } => {
             let fut = async {
-                let params = svc.params(Some(&params)).await?;
+                let params = svc.params(None, Some(&params)).await?;
                 svc.query(QueryReq { sql, params, timeout_ms: timeout, quiet: true, ..Default::default() }).await.map(|_| ())
             };
             telemetry::traced(trace.clone(), fut).await

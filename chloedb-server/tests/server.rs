@@ -707,7 +707,7 @@ async fn coordinator_answers_like_one_database() {
     for (sql, params) in queries() {
         let p = if params["q"].is_object() { Params::new().set("q", vector_42(&whole)) } else { Params::new() };
         let want = js::result(&whole.query(sql, &p).unwrap(), 0.0);
-        let params = coord.params(Some(&params)).await.unwrap();
+        let params = coord.params(None, Some(&params)).await.unwrap();
         let got = coord.query(QueryReq { sql: sql.into(), params, ..Default::default() }).await.unwrap();
         same(sql, &want, &js::result(&got.rs, 0.0));
     }
@@ -1063,7 +1063,7 @@ async fn replicas_cover_for_a_shard_down_or_hung() {
     for (sql, params) in queries() {
         let p = if params["q"].is_object() { Params::new().set("q", vector_42(&whole)) } else { Params::new() };
         let want = js::result(&whole.query(sql, &p).unwrap(), 0.0);
-        let params = coord.params(Some(&params)).await.unwrap();
+        let params = coord.params(None, Some(&params)).await.unwrap();
         let t = std::time::Instant::now();
         let got = coord.query(QueryReq { sql: sql.into(), params, ..Default::default() }).await.unwrap();
         assert!(t.elapsed() < Duration::from_secs(2), "{sql}: {:?}", t.elapsed());
@@ -1560,7 +1560,7 @@ async fn shards_speak_the_oldest_protocol_among_them() {
         for (sql, params) in queries() {
             let p = if params["q"].is_object() { Params::new().set("q", vector_42(&whole)) } else { Params::new() };
             let want = js::result(&whole.query(sql, &p).unwrap(), 0.0);
-            let params = coord.params(Some(&params)).await.unwrap();
+            let params = coord.params(None, Some(&params)).await.unwrap();
             let got = coord.query(QueryReq { sql: sql.into(), params, ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
             same(sql, &want, &js::result(&got.rs, 0.0));
         }
@@ -3304,7 +3304,7 @@ async fn bool_and_timestamp_fields_over_http_and_grpc() {
         assert!(values.iter().any(Json::is_boolean) && values.iter().any(|v| v.as_str().is_some_and(|s| s.ends_with('Z'))), "{sql}: {got}");
     }
     // A parameter of each type reaches the shards.
-    let params = coord.params(Some(&json!({"d": false, "since": "2026-10-25"}))).await.unwrap();
+    let params = coord.params(None, Some(&json!({"d": false, "since": "2026-10-25"}))).await.unwrap();
     let got = coord.query(QueryReq { sql: "SELECT id FROM tasks WHERE done = :d AND at >= :since ORDER BY n".into(), params, ..Default::default() }).await.unwrap();
     let want = whole.query("SELECT id FROM tasks WHERE done = FALSE AND at >= '2026-10-25' ORDER BY n", &Params::new()).unwrap();
     assert_eq!(got.rs.rows, want.rows);
