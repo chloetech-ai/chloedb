@@ -1,6 +1,6 @@
 # cargo deny's rules for every crate that locks its dependencies (chloedb,
 # chloectx, chloedb-server, chloedb-py, chloedb-crawl, chloedb-sheets,
-# chloedb-java, chloedb-js). The Supply chain workflow (supply-chain.yml)
+# chloedb-netops, chloedb-java, chloedb-js). The Supply chain workflow (supply-chain.yml)
 # runs it in each, every day and on any change to a manifest or a lockfile:
 #
 #   cd chloedb-server && cargo deny --manifest-path Cargo.toml check --config ../deny.toml

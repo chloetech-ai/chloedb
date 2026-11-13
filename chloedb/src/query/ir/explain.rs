@@ -274,6 +274,7 @@ impl<'a> Text<'a> {
             AggFn::Max => format!("MAX({arg})"),
             AggFn::PercentileCont(p) => format!("PERCENTILE_CONT({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
             AggFn::PercentileDisc(p) => format!("PERCENTILE_DISC({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
+            AggFn::ApproxPercentile(p) => format!("APPROX_PERCENTILE({arg}, {})", p.get()),
         }
     }
 

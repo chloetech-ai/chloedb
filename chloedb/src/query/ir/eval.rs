@@ -452,7 +452,8 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             let r = func.eval_f64(&xs);
             Ok(if r.is_nan() { Value::Null } else { Value::Float(r) })
         }
-        Func::DateTrunc | Func::DatePart | Func::Strftime | Func::TimeBucket => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
+        Func::DateTrunc | Func::DatePart | Func::Strftime => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
+        Func::DateBin => date_bin(&one, args.get(1).unwrap_or(&Value::Null), args.get(2)),
         Func::Hash => hash(&one, args.get(1).unwrap_or(&Value::Int(0))),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
@@ -529,12 +530,45 @@ fn dates(func: Func, how: &Value, t: &Value) -> Result<Value> {
                 ts::PartValue::Float(x) => Value::Float(x),
             }
         }
-        Func::TimeBucket => {
-            let width = ts::bucket_width(how).map_err(err)?;
-            Value::Timestamp(ts::bucket(micros, width).ok_or_else(|| err(format!("time_bucket('{how}', {}): the start is outside the times a TIMESTAMP holds", sv(t))))?)
-        }
         _ => Value::Str(ts::strftime(how, micros).map_err(err)?),
     })
+}
+
+/// A TIMESTAMP argument of `func`: a TIMESTAMP, or ISO 8601 text of one;
+/// `None` for NULL.
+fn time_arg(func: Func, t: &Value) -> Result<Option<i64>> {
+    Ok(match t {
+        Value::Null => None,
+        Value::Timestamp(m) => Some(*m),
+        Value::Str(s) => Some(crate::timestamp::parse(s).ok_or_else(|| err(format!("{}: {} is not a time (ISO 8601: '2026-11-05' or '2026-11-05T07:30:00Z')", func.name(), sv(t))))?),
+        v => return Err(err(format!("{} takes a TIMESTAMP, not {}", func.name(), sv(v)))),
+    })
+}
+
+/// The width of `date_bin`'s buckets, in microseconds, from its text.
+pub(crate) fn stride(width: &str) -> Result<i64> {
+    crate::timestamp::parse_stride(width).ok_or_else(|| {
+        err(format!("date_bin's width is a whole number of a fixed unit ('5 minutes', '1 hour', '30s', '250ms', '1 day', '1 week'), not {width:?}; months and years are date_trunc's"))
+    })
+}
+
+/// `date_bin(width, t [, origin])` ([`Func::DateBin`]): NULL for a NULL
+/// argument.
+fn date_bin(width: &Value, t: &Value, origin: Option<&Value>) -> Result<Value> {
+    let width = match width {
+        Value::Null => return Ok(Value::Null),
+        Value::Str(s) => stride(s)?,
+        v => return Err(err(format!("date_bin's first argument is text, a width ('5 minutes'), not {}", sv(v)))),
+    };
+    let origin = match origin {
+        None => 0,
+        Some(o) => match time_arg(Func::DateBin, o)? {
+            Some(o) => o,
+            None => return Ok(Value::Null),
+        },
+    };
+    let Some(micros) = time_arg(Func::DateBin, t)? else { return Ok(Value::Null) };
+    crate::timestamp::bin(micros, width, origin).map(Value::Timestamp).ok_or_else(|| err(format!("date_bin of {}: the start is outside the times a TIMESTAMP holds", sv(t))))
 }
 
 /// A vector argument: a vector, or a list of numbers as a parameter

@@ -397,10 +397,38 @@ fn queries(newest: i64, has_latency: bool) -> Vec<(&'static str, String, i64)> {
         ("minutely_by_severity_24h", format!("SELECT date_trunc('minute', ts) AS m, severity, COUNT(*) FROM logs WHERE {} GROUP BY m, severity", last(DAY)), DAY),
         ("errors_top_hosts_24h", format!("SELECT host, COUNT(*) AS n FROM logs WHERE {} AND severity = 'ERROR' GROUP BY host ORDER BY n DESC LIMIT 10", last(DAY)), DAY),
         ("match_in_hour_newest", format!("SELECT ts, host, body FROM logs WHERE MATCH(body, 'error') AND {} ORDER BY ts DESC LIMIT 100", last(HOUR)), HOUR),
+        // 5-minute buckets: date_bin from the columns, and the same buckets
+        // as a version without it computes them (what OpenSearch's
+        // fixed_interval ran before), row by row through a WITH.
+        ("bins_5m_by_severity_24h", format!("SELECT date_bin('5 minutes', ts) AS b, severity, COUNT(*) FROM logs WHERE {} GROUP BY b, severity", last(DAY)), DAY),
+        (
+            "bins_5m_by_severity_24h_rows",
+            format!(
+                "WITH r AS (SELECT (EXTRACT(epoch FROM ts) * 1000000) / 300000000 AS y, severity FROM logs WHERE {}), s AS (SELECT (y - (y % 1.0)) - CASE WHEN y % 1.0 < 0 THEN 1.0 ELSE 0.0 END AS b, severity FROM r) SELECT b, severity, COUNT(*) FROM s GROUP BY b, severity",
+                last(DAY)
+            ),
+            DAY,
+        ),
     ];
     if has_latency {
         q.push(("p99_hourly_by_service_24h", format!("SELECT date_trunc('hour', ts) AS h, service, PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency) FROM logs WHERE {} GROUP BY h, service", last(DAY)), DAY));
         q.push(("p50_p95_p99_24h", format!("SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency), PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency), PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency) FROM logs WHERE {}", last(DAY)), DAY));
+        // Exact and approximate percentiles side by side: the exact ones as
+        // PERCENTILE_DISC, one of the values, which the sketch's answers
+        // are within 1% of (`accuracy` lines).
+        for (p, tag) in [(0.5, "p50"), (0.99, "p99")] {
+            let exact = format!("SELECT date_bin('5 minutes', ts) AS b, service, PERCENTILE_DISC({p}) WITHIN GROUP (ORDER BY latency) FROM logs WHERE {} GROUP BY b, service", last(DAY));
+            let approx = format!("SELECT date_bin('5 minutes', ts) AS b, service, approx_percentile(latency, {p}) FROM logs WHERE {} GROUP BY b, service", last(DAY));
+            q.push((if tag == "p50" { "p50_5m_by_service_24h_exact" } else { "p99_5m_by_service_24h_exact" }, exact, DAY));
+            q.push((if tag == "p50" { "p50_5m_by_service_24h_approx" } else { "p99_5m_by_service_24h_approx" }, approx, DAY));
+        }
+        // The plan's query 4: p50, p95 and p99 per 5-minute bucket by service.
+        let three = |f: &dyn Fn(f64) -> String| [0.5, 0.95, 0.99].map(f).join(", ");
+        q.push(("p50_p95_p99_5m_by_service_24h_exact", format!("SELECT date_bin('5 minutes', ts) AS b, service, {} FROM logs WHERE {} GROUP BY b, service", three(&|p| format!("PERCENTILE_DISC({p}) WITHIN GROUP (ORDER BY latency)")), last(DAY)), DAY));
+        q.push(("p50_p95_p99_5m_by_service_24h_approx", format!("SELECT date_bin('5 minutes', ts) AS b, service, {} FROM logs WHERE {} GROUP BY b, service", three(&|p| format!("approx_percentile(latency, {p})")), last(DAY)), DAY));
+        q.push(("p50_p95_p99_24h_approx", format!("SELECT approx_percentile(latency, 0.5), approx_percentile(latency, 0.95), approx_percentile(latency, 0.99) FROM logs WHERE {}", last(DAY)), DAY));
+        q.push(("p50_p95_p99_30d_exact", "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY latency), PERCENTILE_DISC(0.95) WITHIN GROUP (ORDER BY latency), PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY latency) FROM logs".to_string(), i64::MAX));
+        q.push(("p50_p95_p99_30d_approx", "SELECT approx_percentile(latency, 0.5), approx_percentile(latency, 0.95), approx_percentile(latency, 0.99) FROM logs".to_string(), i64::MAX));
     }
     q
 }
@@ -411,14 +439,23 @@ fn query(db_path: &Path, runs: usize) {
     let newest = segs.iter().map(|s| s.1).max().unwrap();
     let has_latency = count(&db, "SELECT COUNT(*) FROM logs WHERE latency IS NOT NULL") > 0;
     let lines = count(&db, "SELECT COUNT(*) FROM logs");
+    // Each `_exact` query's answer, for its `_approx` twin.
+    let mut exact: std::collections::HashMap<String, Vec<Vec<Value>>> = std::collections::HashMap::new();
     for (name, sql, window) in queries(newest, has_latency) {
         let mut ms = Vec::with_capacity(runs);
         let mut rows = 0;
+        let mut answer = Vec::new();
         for _ in 0..runs {
             let t = Instant::now();
             let r = db.query(&sql, &Params::new()).unwrap();
             ms.push(t.elapsed().as_secs_f64() * 1e3);
             rows = r.rows.len();
+            answer = r.rows;
+        }
+        if let Some(base) = name.strip_suffix("_exact") {
+            exact.insert(base.to_string(), answer);
+        } else if let Some(want) = name.strip_suffix("_approx").and_then(|base| exact.get(base)) {
+            println!("{}", accuracy(name, want, &answer));
         }
         ms.sort_by(f64::total_cmp);
         let from = newest.saturating_sub(window);
@@ -431,6 +468,41 @@ fn query(db_path: &Path, runs: usize) {
         });
         println!("{out}");
     }
+}
+
+/// How far an `_approx` query's percentiles are from its `_exact` twin's,
+/// group by group (the rows' leading columns that are not numbers of a
+/// percentile): the greatest and the mean relative error.
+fn accuracy(name: &str, exact: &[Vec<Value>], approx: &[Vec<Value>]) -> serde_json::Value {
+    let num = |v: &Value| match v {
+        Value::Int(x) => Some(*x as f64),
+        Value::Float(x) => Some(*x),
+        _ => None,
+    };
+    // Groups are every column but the trailing percentiles, as many as the
+    // query computes: the columns that differ between the two answers.
+    let width = exact.first().map_or(0, Vec::len);
+    let keys = width.saturating_sub(if name.starts_with("p50_p95_p99") { 3 } else { 1 });
+    let by: std::collections::HashMap<String, &Vec<Value>> = exact.iter().map(|r| (format!("{:?}", &r[..keys]), r)).collect();
+    let (mut worst, mut sum, mut n, mut missing) = (0f64, 0f64, 0u64, 0u64);
+    for r in approx {
+        let Some(want) = by.get(&format!("{:?}", &r[..keys])) else {
+            missing += 1;
+            continue;
+        };
+        for (g, w) in r[keys..].iter().zip(&want[keys..]) {
+            if let (Some(g), Some(w)) = (num(g), num(w)) {
+                let e = if w == 0.0 { (g - w).abs() } else { ((g - w) / w).abs() };
+                worst = worst.max(e);
+                sum += e;
+                n += 1;
+            }
+        }
+    }
+    serde_json::json!({
+        "mode": "accuracy", "query": name, "groups": approx.len(), "values": n, "groups_missing": missing,
+        "max_relative_error": round(worst, 5), "mean_relative_error": round(sum / n.max(1) as f64, 5), "commit": commit(),
+    })
 }
 
 /// Runs `sql` `runs` times: median and 95th percentile ms, and the rows,

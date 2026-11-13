@@ -80,7 +80,7 @@ fn column(e: &Expr, cols: &[Column], schema: &Schema) -> Option<(Expr, Read)> {
     };
     match e {
         Expr::Output(i) => Some((Expr::Field(field(*i)?), Read::Field)),
-        Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime | Func::TimeBucket), args } => {
+        Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime), args } => {
             let [how @ Expr::Lit(Value::Str(_)), Expr::Output(i)] = args.as_slice() else { return None };
             let f = field(*i)?;
             let fld = schema.fields.get(f as usize)?;
@@ -88,6 +88,22 @@ fn column(e: &Expr, cols: &[Column], schema: &Schema) -> Option<(Expr, Read)> {
                 return None;
             }
             Some((Expr::Call { func: *func, args: vec![how.clone(), Expr::Field(f)] }, Read::Time))
+        }
+        // `date_bin(width, field [, origin])`, the width as text and the origin a literal.
+        Expr::Call { func: Func::DateBin, args } => {
+            let (width @ Expr::Lit(Value::Str(_)), Expr::Output(i)) = (args.first()?, args.get(1)?) else { return None };
+            let origin = args.get(2);
+            if origin.is_some_and(|o| !matches!(o, Expr::Lit(Value::Timestamp(_) | Value::Str(_)))) || args.len() > 3 {
+                return None;
+            }
+            let f = field(*i)?;
+            let fld = schema.fields.get(f as usize)?;
+            if fld.logical != Some(crate::schema::Logical::Timestamp) || fld.multi || !fld.indexed {
+                return None;
+            }
+            let mut out = vec![width.clone(), Expr::Field(f)];
+            out.extend(origin.cloned());
+            Some((Expr::Call { func: Func::DateBin, args: out }, Read::Time))
         }
         Expr::Call { func: Func::JsonExtract, args } => {
             let (Some(Expr::Output(i)), rest) = (args.first(), &args[1.min(args.len())..]) else { return None };

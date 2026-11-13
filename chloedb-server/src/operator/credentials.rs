@@ -1,5 +1,5 @@
 //! A key and a token of its own for each app beside the cluster
-//! (`spec.crawler`, `spec.sheets`, `spec.chloectx`, `spec.apps`), so that
+//! (`spec.crawler`, `spec.sheets`, `spec.chloectx`, `spec.apps`, `spec.netops`), so that
 //! none holds the cluster's admin token.
 //!
 //! For each app the operator keeps a Secret, `<cluster>-<app>-credentials`,
@@ -52,6 +52,8 @@ pub fn default_tables(app: &str) -> &'static [&'static str] {
         super::sheets::APP => &["sheets_*=admin", "*=read"],
         // Its spaces, and the memory `chloectx sync` pushes.
         super::chloectx::APP => &["ctx_*=admin", "chloectx_memory=read"],
+        // The network, its telemetry, its incidents and its agents' runs.
+        super::netops::APP => &["netops_*=admin"],
         // The engine's own tables and its apps' rows.
         super::apps::APP => &["sa_*=admin", "app_*=admin"],
         // A crawl fills the table it names (by default its first seed's
@@ -136,6 +138,7 @@ pub fn spec_tables(spec: &super::Spec, app: &str) -> Vec<String> {
         super::sheets::APP => spec.sheets.as_ref().map_or(&[], |c| &c.tables),
         super::chloectx::APP => spec.chloectx.as_ref().map_or(&[], |c| &c.tables),
         super::apps::APP => spec.apps.as_ref().map_or(&[], |c| &c.tables),
+        super::netops::APP => spec.netops.as_ref().map_or(&[], |c| &c.tables),
         _ => &[],
     };
     tables_of(app, given)
@@ -182,8 +185,9 @@ mod tests {
     #[test]
     fn apps_get_their_own_tables() {
         assert_eq!(tables_of("sheets", &[]), ["sheets_*=admin", "*=read"]);
+        assert_eq!(tables_of("netops", &[]), ["netops_*=admin"]);
         assert_eq!(tables_of("chloectx", &["ctx_*=write".into()]), ["ctx_*=write"]);
-        for app in ["crawler", "sheets", "chloectx", "apps"] {
+        for app in ["crawler", "sheets", "chloectx", "apps", "netops"] {
             assert!(check_tables(app, &tables_of(app, &[])).is_ok(), "{app}");
         }
         assert!(check_tables("sheets", &["sheets_*=root".into()]).unwrap_err().contains("sheets.tables"));

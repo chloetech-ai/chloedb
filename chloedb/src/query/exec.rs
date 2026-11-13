@@ -3320,8 +3320,9 @@ impl<'a> Executor<'a> {
             Col::Time(t) => q.times.get(t).map_or("?".into(), |tc| match &tc.of {
                 TimeOf::Trunc(u) => format!("date_trunc('{}', {})", u.name(), self.field_name(tc.field)),
                 TimeOf::Part(p) => format!("date_part('{}', {})", p.name(), self.field_name(tc.field)),
-                TimeOf::Bucket(w) => format!("time_bucket('{}', {})", crate::timestamp::width_text(*w), self.field_name(tc.field)),
                 TimeOf::Format(f) => format!("strftime({}, {})", crate::query::hint::sql_value(&Value::Str(f.clone())), self.field_name(tc.field)),
+                TimeOf::Bin { width, origin: 0 } => format!("date_bin('{}', {})", crate::timestamp::stride_text(*width), self.field_name(tc.field)),
+                TimeOf::Bin { width, origin } => format!("date_bin('{}', {}, '{}')", crate::timestamp::stride_text(*width), self.field_name(tc.field), crate::timestamp::format(*origin)),
             }),
         }
     }

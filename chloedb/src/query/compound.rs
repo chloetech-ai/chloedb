@@ -65,15 +65,16 @@ fn err(m: impl Into<String>) -> Error {
 const NATIVE: [&str; 14] = ["match", "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "reachable", "path", "hops", "score", "now", "near"];
 /// Score functions, which order a side's scan.
 const SCORES: [&str; 8] = ["bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops"];
-pub(crate) const AGGREGATES: [&str; 8] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc"];
+pub(crate) const AGGREGATES: [&str; 9] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// Statistical aggregates, which [`stats_as_sums`] writes as sums and
 /// counts: every path that aggregates (a shard's partial groups among
 /// them) computes those.
 pub(crate) const STATS: [&str; 9] = ["stddev", "stddev_samp", "stddev_pop", "variance", "var_samp", "var_pop", "covar_samp", "covar_pop", "corr"];
 /// The percentiles among the aggregates: `MEDIAN(x)`, and `PERCENTILE_CONT(x,
 /// p)` as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` parses
-/// ([`super::parse`]), and `PERCENTILE_DISC` alike.
-pub(crate) const PERCENTILES: [&str; 3] = ["median", "percentile_cont", "percentile_disc"];
+/// ([`super::parse`]), and `PERCENTILE_DISC` alike, and
+/// `approx_percentile(x, p)`.
+pub(crate) const PERCENTILES: [&str; 4] = ["median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
 const RANKING: [&str; 18] = [
@@ -780,7 +781,7 @@ fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
         }
         walk(&o.expr, &mut |x| {
             found |= match x {
-                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "time_bucket"),
+                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "time_bucket"),
                 Expr::Extract { .. } => true,
                 _ => false,
             }
@@ -2629,7 +2630,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
                 let fl = lt.fields.get(f as usize)?;
                 let typed = match a.func {
                     AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
-                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) | AggFn::ApproxPercentile(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
                 };
                 if !plain(fl) || !typed {
                     return None;
@@ -3435,7 +3436,8 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "date_trunc" => Func::DateTrunc,
                 "date_part" => Func::DatePart,
                 "strftime" => Func::Strftime,
-                "time_bucket" => Func::TimeBucket,
+                "date_bin" => Func::DateBin,
+                "time_bucket" => Func::DateBin,
                 "hash" => Func::Hash,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
@@ -3447,19 +3449,17 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             let mut args: Vec<ir::Expr> = Vec::new();
             for (i, a) in func_args(f).into_iter().enumerate() {
                 args.push(match (func, i) {
-                    // time_bucket(INTERVAL '5 minutes', t) or ('5 minutes', t): the width as text the evaluator reads.
-                    (Func::TimeBucket, 0) => match super::sql::interval(a) {
+                    // date_bin(INTERVAL '5 minutes', t) (and time_bucket, its other
+                    // name): the width as the text the evaluator reads.
+                    (Func::DateBin, 0) => match super::sql::interval(a) {
                         Some(iv) => {
                             let iv = iv?;
                             if iv.months != 0 || iv.micros <= 0 {
                                 return Err(err(format!("{e}: a bucket's width is a positive length of time without months or years, such as INTERVAL '5 minutes'")));
                             }
-                            ir::Expr::Lit(Value::Str(crate::timestamp::width_text(iv.micros)))
+                            ir::Expr::Lit(Value::Str(crate::timestamp::stride_text(iv.micros)))
                         }
-                        None => match go(a)? {
-                            ir::Expr::Lit(Value::Str(w)) => ir::Expr::Lit(Value::Str(crate::timestamp::width_text(crate::timestamp::bucket_width(&w).map_err(err)?))),
-                            x => x,
-                        },
+                        None => go(a)?,
                     },
                     _ => go(a)?,
                 });
@@ -3522,15 +3522,15 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 21] = [
-        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "time_bucket", "hash",
+    const ROW_FUNCTIONS: [&str; 22] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "date_bin", "time_bucket", "hash",
     ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
             "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
         }
         "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
-            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), time_bucket('5 minutes', at), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + INTERVAL '1 day' or now() - INTERVAL '15 minutes'"
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), date_bin('5 minutes', at) (its bucket of a fixed width), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
@@ -3612,7 +3612,11 @@ fn percentile(f: &sql::Function, name: &str, distinct: bool, params: &Params) ->
         _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY x): p, from 0 to 1, of one value of each row"))),
     };
     let p = Fraction::new(p).ok_or_else(|| err(format!("{upper}: the fraction is from 0 to 1, not {p}")))?;
-    Ok(if name == "percentile_disc" { AggFn::PercentileDisc(p) } else { AggFn::PercentileCont(p) })
+    Ok(match name {
+        "percentile_disc" => AggFn::PercentileDisc(p),
+        "approx_percentile" => AggFn::ApproxPercentile(p),
+        _ => AggFn::PercentileCont(p),
+    })
 }
 
 /// A window function's call: its text (how other expressions name it) and

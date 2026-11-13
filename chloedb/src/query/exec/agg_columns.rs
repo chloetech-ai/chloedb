@@ -11,7 +11,8 @@
 //!
 //! It answers a query whose groups are single-valued keyword, INT or
 //! FLOAT fields, or a part of a single-valued TIMESTAMP's times
-//! (`date_trunc('year', at)`, `EXTRACT(dow FROM at)`), and whose
+//! (`date_trunc('year', at)`, `date_bin('5 minutes', at)`, `EXTRACT(dow
+//! FROM at)`), and whose
 //! aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
 //! `AVG`, `MIN`, `MAX` and percentiles of single-valued INT or FLOAT
 //! fields; anything
@@ -24,7 +25,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use super::{Executor, Local, Seg};
 use crate::error::Result;
 use crate::forward::{KeywordColumn, NumericColumn, NumericKind, BLOCK};
-use crate::query::agg::{self, Acc, ExactSum, Part};
+use crate::query::agg::{self, Acc, ExactSum, Part, Sketch};
 use crate::query::logical::{AggFn, Col, Projection, Select, TimeCol, TimeOf};
 use crate::schema::FieldType;
 use crate::segment::{DocId, DocSet};
@@ -55,7 +56,7 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
                 times.push(None);
             }
             // A part of a time is a number; text (`strftime`) goes row by row.
-            Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_) | TimeOf::Bucket(_)) && single(tc.field, &[FieldType::Int])) => {
+            Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_) | TimeOf::Bin { .. }) && single(tc.field, &[FieldType::Int])) => {
                 groups.push(q.times[t].field);
                 times.push(Some(t));
             }
@@ -70,7 +71,7 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
     for p in needed {
         match p {
             Projection::Count => aggs.push(None),
-            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_), of: Col::Field(f) } if single(*f, &[FieldType::Int, FieldType::Float]) => {
+            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) | AggFn::ApproxPercentile(_), of: Col::Field(f) } if single(*f, &[FieldType::Int, FieldType::Float]) => {
                 aggs.push(Some(*f))
             }
             _ => return None,
@@ -201,6 +202,25 @@ impl Hasher for Fx {
 
 type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 
+/// The fixed width (microseconds) and origin of a part of a time that is
+/// a bucket of one: `date_bin`, and `date_trunc` to a second, minute,
+/// hour, day or week (from Monday 1970-01-05). Rows of a segment then find
+/// their group by the bucket's number from the least one, without making
+/// the bucket's value first.
+fn fixed_width(t: &TimeCol) -> Option<(i64, i64)> {
+    use crate::timestamp::Unit;
+    const DAY: i64 = 86_400_000_000;
+    match t.of {
+        TimeOf::Bin { width, origin } => Some((width, origin)),
+        TimeOf::Trunc(Unit::Second) => Some((1_000_000, 0)),
+        TimeOf::Trunc(Unit::Minute) => Some((60_000_000, 0)),
+        TimeOf::Trunc(Unit::Hour) => Some((3_600_000_000, 0)),
+        TimeOf::Trunc(Unit::Day) => Some((DAY, 0)),
+        TimeOf::Trunc(Unit::Week) => Some((7 * DAY, 4 * DAY)),
+        _ => None,
+    }
+}
+
 /// A numeric group field's keys in a segment that groups find by a table
 /// (of this many slots at most) rather than by hashing.
 const DENSE_KEYS: i64 = 1 << 16;
@@ -217,6 +237,13 @@ enum Sink {
     /// from it ([`agg::near_units`]), `pending` of them since they were
     /// last moved into it.
     Float { avg: bool, sum: Vec<ExactSum>, near: Vec<i128>, pending: u32, n: Vec<i64> },
+    /// `approx_percentile` of p: each group's sketch, which adds the
+    /// column's numbers without making values of them.
+    Sketch(f64, Vec<Sketch>),
+    /// An `approx_percentile` of the field an earlier one's sketch (of
+    /// this index in the needed aggregates) is of: it adds nothing, and
+    /// answers from that sketch.
+    SketchOf(usize),
     /// `MIN`, `MAX`, percentiles, and any aggregate of a field with values
     /// written in place of another type than its own: the row-by-row
     /// aggregate's accumulators.
@@ -231,6 +258,7 @@ impl Sink {
             Projection::Agg { func: AggFn::Count, .. } if typed => Sink::Count(Vec::new()),
             Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if typed && float => Sink::Float { avg: *f == AggFn::Avg, sum: Vec::new(), near: Vec::new(), pending: 0, n: Vec::new() },
             Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if typed => Sink::Int { avg: *f == AggFn::Avg, isum: Vec::new(), n: Vec::new() },
+            Projection::Agg { func: AggFn::ApproxPercentile(p), .. } if typed => Sink::Sketch(p.get(), Vec::new()),
             _ => Sink::Accs(Vec::new()),
         }
     }
@@ -247,6 +275,8 @@ impl Sink {
                 near.push(0);
                 n.push(0);
             }
+            Sink::Sketch(p, s) => s.push(Sketch::new(*p)),
+            Sink::SketchOf(_) => {}
             Sink::Accs(a) => a.push(Acc::new(p)),
         }
     }
@@ -273,6 +303,8 @@ impl Sink {
                 sum[g].merge(&s2[h]);
                 n[g] += n2[h];
             }
+            (Sink::Sketch(p, s), Sink::Sketch(_, t)) => s[g].absorb(std::mem::replace(&mut t[h], Sketch::new(*p))),
+            (Sink::SketchOf(_), Sink::SketchOf(_)) => {}
             (Sink::Accs(a), Sink::Accs(b)) => a[g].absorb(std::mem::replace(&mut b[h], Acc::Count(0))),
             _ => unreachable!("segments' sinks differ"),
         }
@@ -287,6 +319,9 @@ impl Sink {
             Sink::Float { avg: true, sum, n, .. } => Acc::Avg { sum: std::mem::take(&mut sum[g]), isum: 0, n: n[g] },
             Sink::Float { avg: false, n, .. } if n[g] == 0 => Acc::Sum { sum: ExactSum::new(), isum: 0, int: true, any: false },
             Sink::Float { avg: false, sum, .. } => Acc::Sum { sum: std::mem::take(&mut sum[g]), isum: 0, int: false, any: true },
+            Sink::Sketch(p, s) => Acc::Sketch(Box::new(std::mem::replace(&mut s[g], Sketch::new(*p)))),
+            // Filled in from the sketch it shares (`aggregate_columns`).
+            Sink::SketchOf(_) => Acc::Count(0),
             Sink::Accs(a) => std::mem::replace(&mut a[g], Acc::Count(0)),
         }
     }
@@ -311,7 +346,25 @@ impl<'a> Executor<'a> {
         // one does.
         let typed = self.segs.iter().all(|s| plan.aggs.iter().flatten().all(|&f| self.updates(s, f).is_none_or(|u| own_type(u, f, &self.schema.fields[f].ty))));
         let schema = self.schema;
-        let new = || All { keys: Vec::new(), index: HashMap::new(), sinks: needed.iter().zip(&plan.aggs).map(|(p, &f)| Sink::new(p, f, schema, typed)).collect() };
+        // Approximate percentiles of one field share the first one's sketch
+        // (p50, p95 and p99 of a latency): each answers from it.
+        let sketch_of = |k: usize| -> Option<usize> {
+            let Projection::Agg { func: AggFn::ApproxPercentile(_), .. } = needed[k] else { return None };
+            (0..k).find(|&j| matches!(needed[j], Projection::Agg { func: AggFn::ApproxPercentile(_), .. }) && plan.aggs[j] == plan.aggs[k] && sketch_of_first(needed, plan, j))
+        };
+        let new = || All {
+            keys: Vec::new(),
+            index: HashMap::new(),
+            sinks: needed
+                .iter()
+                .zip(&plan.aggs)
+                .enumerate()
+                .map(|(k, (p, &f))| match (typed, sketch_of(k)) {
+                    (true, Some(of)) => Sink::SketchOf(of),
+                    _ => Sink::new(p, f, schema, typed),
+                })
+                .collect(),
+        };
         let per = self.per_segment(|ex, s, l| {
             let mut part = new();
             ex.aggregate_segment(s, q, needed, plan, &mut part, l)?;
@@ -344,7 +397,21 @@ impl<'a> Executor<'a> {
         let mut groups = agg::Groups::limited(self.opts.max_groups);
         groups.charge = self.charge.clone();
         let mut sinks = all.sinks;
-        groups.map = all.keys.into_iter().enumerate().map(|(g, k)| (k, sinks.iter_mut().map(|s| s.acc(g)).collect())).collect();
+        groups.map = all
+            .keys
+            .into_iter()
+            .enumerate()
+            .map(|(g, k)| {
+                let mut accs: Vec<Acc> = sinks.iter_mut().map(|s| s.acc(g)).collect();
+                for (i, s) in sinks.iter().enumerate() {
+                    if let (Sink::SketchOf(of), Projection::Agg { func: AggFn::ApproxPercentile(p), .. }) = (s, &needed[i]) {
+                        let Acc::Sketch(first) = &accs[*of] else { unreachable!("a shared sketch is a sketch") };
+                        accs[i] = Acc::Sketch(Box::new(first.with_fraction(p.get())));
+                    }
+                }
+                (k, accs)
+            })
+            .collect();
         Ok(groups)
     }
 
@@ -377,7 +444,7 @@ impl<'a> Executor<'a> {
             .iter()
             .zip(&all.sinks)
             .map(|(a, sink)| match (a, sink) {
-                (Some((f, _, Some(u))), Sink::Count(_) | Sink::Int { .. } | Sink::Float { .. }) => u.field(*f).collect(),
+                (Some((f, _, Some(u))), Sink::Count(_) | Sink::Int { .. } | Sink::Float { .. } | Sink::Sketch(..)) => u.field(*f).collect(),
                 _ => Vec::new(),
             })
             .collect();
@@ -393,8 +460,23 @@ impl<'a> Executor<'a> {
         // without a value; one numeric field of a few thousand keys (none
         // written in place): of each key from the smallest; else by the
         // key's bits.
+        // One fixed-width part of a time (none written in place): of each
+        // bucket from the least.
+        let mut width: Option<(i64, i64, i128)> = None;
         let (mut by_code, base): (Vec<u32>, Option<i64>) = match keys.as_slice() {
             [Key::Codes(kw)] => (vec![u32::MAX; kw.n_values() + 1], None),
+            [Key::Num(col, None, Some(t))] if fixed_width(t).is_some() => {
+                let (w, o) = fixed_width(t).expect("fixed");
+                let bucket = |k: i64| (k as i128 - o as i128).div_euclid(w as i128);
+                match col.key_bounds() {
+                    Some((lo, hi)) if bucket(hi) - bucket(lo) < DENSE_KEYS as i128 => {
+                        width = Some((w, o, bucket(lo)));
+                        (vec![u32::MAX; (bucket(hi) - bucket(lo)) as usize + 2], Some(lo))
+                    }
+                    None => (vec![u32::MAX; 1], Some(0)),
+                    _ => (Vec::new(), None),
+                }
+            }
             [Key::Num(col, None, None)] => match col.key_bounds() {
                 Some((lo, hi)) if hi.checked_sub(lo).is_some_and(|w| w < DENSE_KEYS) => (vec![u32::MAX; (hi - lo) as usize + 2], Some(lo)),
                 None => (vec![u32::MAX; 1], Some(0)),
@@ -460,10 +542,11 @@ impl<'a> Executor<'a> {
                 let d = (b * BLOCK + j) as DocId;
                 let g = match keys.as_slice() {
                     [_] if !by_code.is_empty() => {
-                        let c = match (has(0, j), base) {
-                            (false, _) => by_code.len() - 1,
-                            (true, None) => block[0][j] as usize,
-                            (true, Some(lo)) => (block[0][j] - lo) as usize,
+                        let c = match (has(0, j), base, width) {
+                            (false, _, _) => by_code.len() - 1,
+                            (true, None, _) => block[0][j] as usize,
+                            (true, Some(lo), None) => (block[0][j] - lo) as usize,
+                            (true, Some(_), Some((w, o, first))) => ((block[0][j] as i128 - o as i128).div_euclid(w as i128) - first) as usize,
                         };
                         match by_code[c] {
                             u32::MAX => match self.group_of(all, needed, &keys, d, plan) {
@@ -556,6 +639,23 @@ impl<'a> Executor<'a> {
                             *pending = 0;
                         }
                     }
+                    (Sink::Sketch(_, sk), Some((_, col, _))) => {
+                        let (vals, rows) = (&block[i], rows.filter(|&(j, _)| has(i, j)));
+                        let mut more = match col.kind() {
+                            NumericKind::Decimal(s) => add_sketches(|k| NumericKind::Decimal(s).decode(k), vals, rows, sk),
+                            NumericKind::FloatBits => add_sketches(|k| NumericKind::FloatBits.decode(k), vals, rows, sk),
+                            NumericKind::Int => add_sketches(|k| k as f64, vals, rows, sk),
+                        };
+                        for (g, v) in written {
+                            more += sk[g].add(v);
+                        }
+                        if more > 0 {
+                            if let Err(e) = self.charge.add(more) {
+                                err = Some(e);
+                                return false;
+                            }
+                        }
+                    }
                     (Sink::Accs(accs), Some((f, col, u))) => {
                         // A percentile holds its values.
                         let mut more = 0;
@@ -570,7 +670,8 @@ impl<'a> Executor<'a> {
                         }
                     }
                     (Sink::Accs(accs), None) => rows.for_each(|(_, g)| accs[g].add_row()),
-                    (Sink::Int { .. } | Sink::Float { .. }, None) => {}
+                    (Sink::Int { .. } | Sink::Float { .. } | Sink::Sketch(..), None) => {}
+                    (Sink::SketchOf(_), _) => {}
                 }
             }
             true
@@ -625,4 +726,22 @@ fn add_floats(decode: impl Fn(i64) -> f64, vals: &[i64; BLOCK], rows: impl Itera
         }
         n[g] += 1;
     }
+}
+
+/// Whether aggregate `j` of `needed` is the first `approx_percentile` of its
+/// field, whose sketch later ones of the field share.
+fn sketch_of_first(needed: &[Projection], plan: &Plan, j: usize) -> bool {
+    !(0..j).any(|i| matches!(needed[i], Projection::Agg { func: AggFn::ApproxPercentile(_), .. }) && plan.aggs[i] == plan.aggs[j])
+}
+
+/// Adds a block's values of a numeric column to their groups' sketches;
+/// returns the bytes they now hold more. A function of its own per kind of
+/// column, as [`add_floats`].
+#[inline(never)]
+fn add_sketches(decode: impl Fn(i64) -> f64, vals: &[i64; BLOCK], rows: impl Iterator<Item = (usize, usize)>, sk: &mut [Sketch]) -> u64 {
+    let mut more = 0;
+    for (j, g) in rows {
+        more += sk[g].add_f64(decode(vals[j]));
+    }
+    more
 }

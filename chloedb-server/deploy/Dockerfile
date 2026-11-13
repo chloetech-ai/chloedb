@@ -1,6 +1,7 @@
-# chloedb-server in a small Linux image, with chloedb-crawl, chloedb-sheets
-# and chloectx, the crawler, the spreadsheets and ChloeCtx the operator runs
-# beside a cluster (spec.crawler, spec.sheets, spec.chloectx). It has a
+# chloedb-server in a small Linux image, with chloedb-crawl, chloedb-sheets,
+# chloedb-netops and chloectx, the crawler, the spreadsheets, the network
+# operations app and ChloeCtx the operator runs beside a cluster
+# (spec.crawler, spec.sheets, spec.netops, spec.chloectx). It has a
 # user 10001 (chloedb) that owns its data directory, /data: run it as that
 # user (`docker run --user 10001:10001`, or `runAsUser`, as the operator's
 # pods do). It does not switch to that user itself yet, because the
@@ -35,6 +36,7 @@ COPY chloedb chloedb
 COPY chloedb-server chloedb-server
 COPY chloedb-crawl chloedb-crawl
 COPY chloedb-sheets chloedb-sheets
+COPY chloedb-netops chloedb-netops
 COPY chloectx chloectx
 # Compiled in (src/mcp.rs).
 COPY docs/chloedb/query-language.md docs/chloedb/build-an-app.md docs/chloedb/
@@ -53,6 +55,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/chloedb-sheets/target \
     cargo build --release --manifest-path chloedb-sheets/Cargo.toml \
     && cp chloedb-sheets/target/release/chloedb-sheets /out/
+# And the network operations app (spec.netops).
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/chloedb-netops/target \
+    cargo build --release --manifest-path chloedb-netops/Cargo.toml \
+    && cp chloedb-netops/target/release/chloedb-netops /out/
 # And ChloeCtx (`chloectx app`), which embeds ChloeDB for its records and
 # keeps them in the cluster. Its embedding model is not in the image: the
 # operator's pod downloads it at start (chloectx fetch-model, with curl).
@@ -78,7 +85,7 @@ RUN ln -s chloedb-server /usr/local/bin/strata-server \
     && ln -s chloedb-crawl /usr/local/bin/strata-crawl \
     && ln -s chloedb-sheets /usr/local/bin/strata-sheets
 WORKDIR /data
-EXPOSE 7700 7701 7760 7800 7820
+EXPOSE 7700 7701 7760 7800 7820 7840
 # The database lives in /data: mount a volume there to keep it.
 RUN mkdir -p /data
 ENTRYPOINT ["chloedb-server"]

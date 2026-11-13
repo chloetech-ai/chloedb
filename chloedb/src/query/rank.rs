@@ -1001,7 +1001,7 @@ mod tests {
                         fin((v[0]? * m).round() / m)
                     }
                     Func::CountTrue => Some(some.iter().filter(|&&x| x != 0.0).count() as f64),
-                    Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime | Func::TimeBucket | Func::Hash => None,
+                    Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime | Func::DateBin | Func::Hash => None,
                 }
             }
             Score::Norm { kind: NormKind::Tmm, input, lo } => {

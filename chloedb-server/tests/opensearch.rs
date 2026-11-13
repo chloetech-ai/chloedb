@@ -180,6 +180,38 @@ async fn scenario(base: &str) -> Vec<Json> {
     assert_eq!(a["names"]["after_key"], json!({"n": "cy"}));
     assert_eq!(a["awarded"]["doc_count"], count_of(&|i| i % 5 == 0));
     seen.push(a.clone());
+    // A fixed_interval is date_bin's buckets, counted from the offset: the
+    // same buckets and metrics as counted here, empty ones between.
+    let r = ok(base, "POST", "/books/_search", Some(json!({"size": 0, "aggs": {
+        "every": {"date_histogram": {"field": "published", "fixed_interval": "1000d", "offset": "+12h"}, "aggs": {"y": {"max": {"field": "year"}}}},
+        "busy": {"date_histogram": {"field": "published", "fixed_interval": "90d", "min_doc_count": 1}}}}))).await;
+    let day = 86_400_000i64;
+    let ms = |i: usize| chloedb::timestamp::parse(book(i)["published"].as_str().unwrap()).unwrap() / 1000;
+    let key = |t: i64, w: i64, off: i64| (t - off).div_euclid(w) * w + off;
+    let mut want = std::collections::BTreeMap::<i64, (u64, i64)>::new();
+    for i in 0..N {
+        let e = want.entry(key(ms(i), 1000 * day, day / 2)).or_insert((0, i64::MIN));
+        e.0 += 1;
+        e.1 = e.1.max(1990 + (i % 30) as i64);
+    }
+    let every = r["aggregations"]["every"]["buckets"].as_array().unwrap();
+    let (lo, hi) = (*want.keys().next().unwrap(), *want.keys().last().unwrap());
+    assert_eq!(every.len() as i64, (hi - lo) / (1000 * day) + 1, "{every:?}");
+    for b in every {
+        let k = b["key"].as_i64().unwrap();
+        let (n, y) = want.get(&k).copied().unwrap_or((0, 0));
+        assert_eq!(b["doc_count"].as_u64(), Some(n), "{b}");
+        if n > 0 {
+            assert_eq!(b["y"]["value"].as_f64(), Some(y as f64), "{b}");
+        }
+    }
+    let mut busy = std::collections::BTreeMap::<i64, u64>::new();
+    for i in 0..N {
+        *busy.entry(key(ms(i), 90 * day, 0)).or_default() += 1;
+    }
+    let got: Vec<(i64, u64)> = r["aggregations"]["busy"]["buckets"].as_array().unwrap().iter().map(|b| (b["key"].as_i64().unwrap(), b["doc_count"].as_u64().unwrap())).collect();
+    assert_eq!(got, busy.into_iter().collect::<Vec<_>>());
+    seen.push(r["aggregations"].clone());
     // Numbers: from their columns while no document holds an array of
     // one, from `_source` once one does (each value counts).
     ok(base, "PUT", "/nums", Some(json!({"mappings": {"properties": {"n": {"type": "long"}, "x": {"type": "double"}, "k": {"type": "keyword"}}}}))).await;

@@ -119,7 +119,7 @@ A `MEDIA` value names a file, `{"uri": "https://cdn.example.com/a.png", "sha256"
 SELECT date_trunc('day', at) AS day, COUNT(*), AVG(price), MIN(price) FROM snapshots GROUP BY day ORDER BY day;
 SELECT EXTRACT(dow FROM at) AS dow, AVG(price) FROM snapshots WHERE item = 'i42' GROUP BY dow;
 SELECT strftime('%Y-%m', at) AS month, SUM(price) FROM sales GROUP BY month;
-SELECT time_bucket('5 minutes', ts) AS t, host, COUNT(*) FROM syslog WHERE ts > now() - INTERVAL '1 hour' GROUP BY t, host;
+SELECT date_bin('5 minutes', ts) AS b, severity, COUNT(*) FROM logs WHERE ts >= '2026-11-12' GROUP BY b, severity;
 
 -- A moving average of daily prices: groups by day in a WITH, a window over them.
 WITH daily AS (SELECT item, date_trunc('day', at) AS day, AVG(price) AS px FROM snapshots GROUP BY item, day)
@@ -128,13 +128,14 @@ FROM daily;
 ```
 
 - **`date_trunc(unit, t)`** is the time cut to the start of its `second`, `minute`, `hour`, `day`, `week` (from Monday, as ISO 8601 and PostgreSQL count weeks), `month`, `quarter` or `year`, a `TIMESTAMP`. The unit is text in any case, and a plural (`'days'`) is taken too.
+- **`date_bin(width, t [, origin])`** is the start of the bucket of a fixed `width` that the time is in, a `TIMESTAMP`, as PostgreSQL's `date_bin`: buckets are counted from `origin` (a `TIMESTAMP` or ISO 8601 text; 1970-01-01 without one), so `date_bin('15 minutes', at, '2026-01-01T00:05:00Z')` starts buckets at :05, :20, :35 and :50. The width is a whole number and a unit: `microseconds` (`us`), `milliseconds` (`ms`), `seconds` (`s`), `minutes` (`m`), `hours` (`h`), `days` (`d`) or `weeks` (`w`), singular or plural, as `'5 minutes'`, `'30s'` or `'1 day'`; months and years are not a fixed width, and are `date_trunc`'s. `date_bin('1 day', t)` is `date_trunc('day', t)`. OpenSearch's `date_histogram` with a `fixed_interval` runs as one.
 - **`date_part(part, t)`**, and **`EXTRACT(part FROM t)`** which is the same function, is a number: `year`, `isoyear`, `quarter` (1 to 4), `month` (1 to 12), `week` (the ISO week, 1 to 53), `day` (of the month), `doy` (of the year, 1 to 366), `dow` (0 for Sunday to 6 for Saturday, as PostgreSQL counts), `isodow` (1 for Monday to 7 for Sunday), `hour`, `minute`, and as a `FLOAT`, `second` (with its fraction) and `epoch` (seconds since 1970).
-- **`time_bucket(width, t)`** is the start of the bucket of `width` that the time is in, a `TIMESTAMP`: buckets of a fixed length counted from 1970-01-01 UTC, as TimescaleDB counts buckets shorter than a week, so `time_bucket('5 minutes', ts)` gives 03:00, 03:05, 03:10 and `time_bucket('1 minute', ts)` is `date_trunc('minute', ts)`. The width is text as an [interval](#times-later-and-earlier-interval) writes it (`'90 seconds'`, `'15 min'`, `'1 hour'`, `'1 day'`), or an `INTERVAL '5 minutes'`; a month or a year has no fixed length and is refused (`date_trunc('month', t)` cuts to months).
+- **`time_bucket(width, t)`** is another name for `date_bin(width, t)`, as TimescaleDB spells it: `time_bucket('5 minutes', ts)` gives 03:00, 03:05, 03:10. The width can also be an `INTERVAL '5 minutes'`.
 - **`strftime(format, t)`** is text, written as SQLite's `strftime` writes it: `%Y` year, `%m` month 01-12, `%d` day 01-31, `%H` hour 00-23, `%M` minute, `%S` second, `%f` seconds with milliseconds (`SS.SSS`), `%j` day of the year 001-366, `%w` day of the week 0-6 from Sunday, `%u` 1-7 from Monday, `%W` week of the year 00-53 from the first Monday, `%V` the ISO week 01-53 and `%G` its year, `%s` seconds since 1970, `%F` for `%Y-%m-%d`, `%T` for `%H:%M:%S`, and `%%` for a `%`.
 
-All four read times in UTC. A `NULL` time gives `NULL`, text is read as a time (`date_trunc('month', '2026-11-05')`), and any other value is an error, as are a unit, part or directive they do not have (the message lists the ones they do).
+They all read times in UTC. A `NULL` time gives `NULL`, text is read as a time (`date_trunc('month', '2026-11-05')`), and any other value is an error, as are a unit, part or directive they do not have (the message lists the ones they do).
 
-A **`GROUP BY` of one of them over a `TIMESTAMP` field of the table** (indexed, one value per row) runs in the executor, as a `GROUP BY` of a column does: it reads the field's column, has no limit on the number of rows, and over shards each shard groups its own rows and the coordinator merges the groups. The rows without a time form the group `NULL`. Anywhere else, in `SELECT`, `WHERE` and over joined or derived rows, they are computed row by row; in `WHERE` they are a [condition the indexes cannot answer](#statement-shape), so a range of times is faster written on the field (`at >= '2026-11-01' AND at < '2026-12-01'`) than as `EXTRACT(month FROM at) = 11`. A plan that uses them needs the plan feature `dates` (and `time_bucket` for that one), which shards of a version without these functions refuse.
+A **`GROUP BY` of one of them over a `TIMESTAMP` field of the table** (indexed, one value per row) runs in the executor, as a `GROUP BY` of a column does: it reads the field's column, has no limit on the number of rows, and over shards each shard groups its own rows and the coordinator merges the groups. The rows without a time form the group `NULL`. Anywhere else, in `SELECT`, `WHERE` and over joined or derived rows, they are computed row by row; in `WHERE` they are a [condition the indexes cannot answer](#statement-shape), so a range of times is faster written on the field (`at >= '2026-11-01' AND at < '2026-12-01'`) than as `EXTRACT(month FROM at) = 11`. A plan that uses them needs the plan feature `dates`, which shards of a version without these functions refuse, and one with `date_bin` also needs the plan feature `date_bin`.
 
 ### Samples, splits and shuffles: `hash`
 
@@ -1018,6 +1019,18 @@ A `SUM` or `AVG` of `FLOAT` values is exact: the values are added without roundi
 
 - **Of columns and expressions.** Over one table they take indexed `INT` and `FLOAT` columns, read from the columns as the other aggregates are; over joined or derived rows, any numeric expression (`MEDIAN(s.price * 1.2)`). `p` is a constant or a parameter (`:p`); the order is ascending (`ORDER BY f DESC` is an error: write `1 - p`). They are aggregates of groups, not window functions.
 - **Exact, so they hold the values.** A group keeps each of its values (8 bytes each, counted against the [query's memory budget](server.md#limits)) and orders them once when it is read: a median over 5 million rows holds 40 MB. A shard sends a group's values to the coordinator as runs of equal values, so prices that repeat travel once with their count, and the coordinator's answer is one server's. Plans with a percentile carry the plan feature `percentiles`, which a version of ChloeDB from before them refuses by name.
+
+### Approximate percentiles
+
+```sql
+SELECT date_bin('5 minutes', ts) AS b, service, approx_percentile(latency, 0.99) AS p99
+FROM logs WHERE ts >= '2026-11-12' GROUP BY b, service;
+```
+
+`approx_percentile(f, p)` is `PERCENTILE_DISC(p)` of the group's values (the one at position ⌈p·n⌉ in order) within 1% of it, a `FLOAT`, from a [DDSketch](https://arxiv.org/abs/1908.10693) of the group's values rather than the values themselves. `p` = 0 and 1 give the least and greatest values exactly. It takes what the exact percentiles take, `INT` and `FLOAT` columns over one table and numeric expressions over joined or derived rows, except `TIMESTAMP`s.
+
+- **A few KB a group, however many rows.** A sketch counts each value in a bucket of values within 1% of each other, and keeps at most 1,024 buckets of each sign (4 KB): the bound holds for values up to about 10⁸ times apart, as latencies are, and past that the least ones are folded together, so the low percentiles of such a spread lose it first. A p99 over 100 million rows holds a few KB rather than 800 MB.
+- **Exact merges.** Sketches of segments, threads and shards add up to the sketch of all the values, so the answer does not depend on how rows were split: a coordinator's answer is one server's. A shard sends a group's sketch as versioned bytes (base64 text), which a coordinator reads only in the version it knows. Plans with one carry the plan feature `approx_percentiles`, which a version of ChloeDB from before it refuses by name.
 
 ### Rollups: `CREATE ROLLUP`
 

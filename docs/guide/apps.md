@@ -163,4 +163,4 @@ The crawler attaches the same way (`--app crawler=URL`), and `chloedb-crawl serv
 
 ## On Kubernetes
 
-A cluster the operator runs gets each app from a field of its `StrataCluster`: `spec.crawler`, `spec.sheets`, `spec.chloectx` and `spec.apps` (the app engine, a prototype). The operator runs them from the cluster's own image and lists them on its coordinators, with nothing to start by hand ([server on Kubernetes](../chloedb/server.md#on-kubernetes)).
+A cluster the operator runs gets each app from a field of its `StrataCluster`: `spec.crawler`, `spec.sheets`, `spec.chloectx`, `spec.netops` ([network operations](../chloedb/netops.md)) and `spec.apps` (the app engine, a prototype). The operator runs them from the cluster's own image and lists them on its coordinators, with nothing to start by hand ([server on Kubernetes](../chloedb/server.md#on-kubernetes)).
