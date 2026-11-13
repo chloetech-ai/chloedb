@@ -38,6 +38,8 @@ const CSS = `
 .ac .ac-chip:hover { border-color: var(--accent); color: var(--text); }
 .ac .tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 1px 7px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
 .ac .tag.live { background: var(--good-soft); color: var(--good-ink); } .ac .tag.try { background: var(--warn-soft); color: var(--cc-warn-ink, #8a5b00); }
+.ac .tag.bad { background: var(--crit-soft); color: var(--crit-ink); }
+.ac .appcard .cardacts { display: flex; gap: 6px; margin-top: 2px; }
 .ac .tag.k-create { background: color-mix(in srgb, var(--ac-c) 16%, transparent); color: var(--ac-c); }
 .ac .tag.k-scratch { background: color-mix(in srgb, var(--ac-s) 18%, transparent); color: var(--ac-s); }
 .ac .tag.k-reused { background: color-mix(in srgb, var(--ac-r) 22%, transparent); color: var(--text-2); }
@@ -430,13 +432,30 @@ function render(el, ctx) {
     setTimeout(() => ta.focus(), 0);
 
     const made = new Map();
+    // An app's state in a word: its live version, building, or "did not
+    // build" (its first build failed; the engine says so, status).
+    const stateTag = (a) => (Number(a.head) ? h('span', { class: 'tag live' }, `v${a.head}`)
+      : a.status === 'failed' ? h('span', { class: 'tag bad', title: 'Its first build did not go through: open it to see why, or try again' }, 'did not build')
+        : h('span', { class: 'tag try' }, 'building'));
+    const stateWord = (a) => (Number(a.head) ? `v${a.head}` : a.status === 'failed' ? 'did not build' : 'building');
+    const again = async (e, a) => {
+      e.preventDefault(); e.stopPropagation();
+      try { await post(`/api/apps/${a.id}/requests`, { text: a.description }); location.hash = ctx.href('a', a.id); } catch (err) { toast(err.status === 403 ? 'Building an app needs an admin key' : err.message, 'bad'); }
+    };
+    const drop = async (e, a) => {
+      e.preventDefault(); e.stopPropagation();
+      const ok = await core.confirm({ title: `Delete “${String(a.name || a.id).trim()}”?`, ok: 'Delete app', danger: true, body: 'Its first version never built, so it has no screens or rows: this removes its request and what it cost from the gallery.' });
+      if (!ok) return;
+      try { await post(`/api/apps/${a.id}/delete`, {}); toast('Deleted', 'ok'); refresh(); } catch (err) { toast(err.status === 403 ? 'Deleting an app needs an admin key' : err.message, 'bad'); }
+    };
     const card = (a) => {
       const m = made.get(a.id);
       const initials = String(a.name || a.id).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
       return h('a', { class: 'appcard', href: ctx.href('a', a.id) },
         h('div', { class: 'row' }, h('div', { class: 'ico', style: { background: `hsl(${hue(a.id)} 55% 48%)` } }, initials || '·'),
-          h('div', { class: 'grow' }, h('div', { class: 'nm' }, a.name || a.id), h('div', { class: 'meta' }, a.head ? h('span', { class: 'tag live' }, `v${a.head}`) : h('span', { class: 'tag try' }, 'building'), a.created ? core.ago(new Date(a.created).getTime()) : null, a.cost?.builds ? h('span', { title: `What its ${a.cost.builds} build${a.cost.builds === 1 ? '' : 's'} cost` }, money(a.cost.usd)) : null))),
+          h('div', { class: 'grow' }, h('div', { class: 'nm' }, a.name || a.id), h('div', { class: 'meta' }, stateTag(a), a.created ? core.ago(new Date(a.created).getTime()) : null, a.cost?.builds ? h('span', { title: `What its ${a.cost.builds} build${a.cost.builds === 1 ? '' : 's'} cost` }, money(a.cost.usd)) : null))),
         h('div', { class: 'ds' }, a.description || ''),
+        !Number(a.head) && a.status === 'failed' ? h('div', { class: 'cardacts' }, h('button', { class: 'btn sm', type: 'button', onclick: (e) => again(e, a) }, 'Try again'), h('button', { class: 'btn sm ghost', type: 'button', onclick: (e) => drop(e, a) }, 'Delete')) : null,
         m && m.runs ? [meter(m, false), h('div', { class: 'meta' }, h('span', {}, h('b', { style: { color: 'var(--ac-c)' } }, pct(m.totals.create.share)), ' from CREATE'), h('span', {}, `${num(m.runs)} lines`))] : h('div', { class: 'ac-meter' }));
     };
     let apps = [];
@@ -454,7 +473,7 @@ function render(el, ctx) {
     };
     const group = ([a, ...older]) => (older.length
       ? h('div', { class: 'appgrp' }, card(a), h('div', { class: 'earlier', title: 'Other apps with this name, newest first' }, h('span', {}, `${older.length} earlier:`),
-        older.map((o) => h('a', { href: ctx.href('a', o.id) }, o.head ? `v${o.head}` : 'building', o.created ? ` · ${core.ago(new Date(o.created).getTime())}` : ''))))
+        older.map((o) => h('a', { href: ctx.href('a', o.id) }, stateWord(o), o.created ? ` · ${core.ago(new Date(o.created).getTime())}` : ''))))
       : card(a));
     const paint = () => {
       gallery.replaceChildren(...(apps.length ? groups().map(group) : [core.empty('box', 'No apps yet', 'Describe one above, or start from an example.')]));
@@ -466,11 +485,12 @@ function render(el, ctx) {
         paint();
         const s = status.spend;
         const named = groups().length;
-        facts.replaceChildren(
+        // (replaceChildren prints a null as "null": only what is there)
+        facts.replaceChildren(...[
           h('span', {}, h('b', {}, String(named)), ` app${named === 1 ? '' : 's'}`, named < apps.length ? ` (${apps.length} with the earlier ones)` : ''),
           status.model && status.model !== 'null' ? h('span', {}, 'built by ', h('b', {}, String(status.model))) : null,
           h('span', {}, s && s.cap != null ? [h('b', {}, money(s.usd)), ` spent of the ${money(s.cap)} limit`] : 'no spending limit'),
-          status.feed ? h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes') : null);
+          status.feed ? h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes') : null].filter(Boolean));
         // What each app is made of, a few at a time.
         for (const a of apps.slice(0, 24)) {
           if (made.has(a.id) || !a.head) continue;
@@ -845,7 +865,9 @@ __sa_ready();
       const st = W.st;
       title.textContent = st.app.name || appId;
       costTag.textContent = st.cost?.builds ? `${money(st.cost.usd)} in ${st.cost.builds} build${st.cost.builds === 1 ? '' : 's'}` : '';
-      verTag.replaceChildren(st.version.n ? h('span', { class: `tag ${st.version.trying ? 'try' : 'live'}` }, st.version.trying ? `trying v${st.version.trying} · live v${st.version.live}` : `v${st.version.n} live`) : h('span', { class: 'tag try' }, 'first version'));
+      const firstFailed = !st.version.n && !st.running && !W.lines.length && (st.requests || [])[0]?.status === 'failed';
+      verTag.replaceChildren(st.version.n ? h('span', { class: `tag ${st.version.trying ? 'try' : 'live'}` }, st.version.trying ? `trying v${st.version.trying} · live v${st.version.live}` : `v${st.version.n} live`)
+        : firstFailed ? h('span', { class: 'tag bad' }, 'did not build') : h('span', { class: 'tag try' }, 'first version'));
       status.replaceChildren(...(W.lines.length ? [h('span', { class: 'spin' }), ' building'] : []));
       const pub = st.publish;
       pubTag.hidden = !pub || !st.views.length;

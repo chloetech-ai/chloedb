@@ -20,7 +20,7 @@ import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './s
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions, useFunctionReads } from './sql.mjs';
 import { MODEL, spend, useSpendFile } from './llm.mjs';
-import { newId } from './store.mjs';
+import { newId, shortName, firstBuildStatus } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
 import { provenance } from './provenance.mjs';
@@ -542,7 +542,7 @@ async function appState(appId) {
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
-    app: view.app,
+    app: { ...view.app, name: nameOf(view.app) },
     design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
     evolve,
@@ -579,6 +579,11 @@ const publicAsk = (o = {}) => (o.json ? { json: true } : {});
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
+// An app's name as shown. One with no version yet that is still called by
+// the first 40 characters of its description (as apps were named before
+// shortName) is shown by a short name instead.
+const nameOf = (a) => (!Number(a.head) && a.name && String(a.description || '').startsWith(String(a.name).trim()) && String(a.name).trim().length >= 30 ? shortName(a.description) : a.name);
+
 async function publicState(appId, access) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
@@ -620,7 +625,17 @@ const routes = [
   ['GET', /^\/api\/apps$/, async (b, m, url, cx) => {
     const costs = await engine.store.costs();
     // A key limited to tables lists the apps whose tables it reads.
-    return { apps: (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id)).map((a) => ({ ...a, cost: costs.get(a.id) || { usd: 0, builds: 0 } })) };
+    const apps = (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id));
+    // Each app's state: live (a version), building, or failed (its first
+    // build did not go through and none is running): the gallery said
+    // "building" for ever of an app whose first build failed.
+    const status = async (a) => {
+      if (Number(a.head)) return 'live';
+      if (running.has(a.id) || waiting.has(a.id)) return 'building';
+      const [last] = await engine.store.requests(a.id, 1).catch(() => []);
+      return firstBuildStatus(last, Date.now());
+    };
+    return { apps: await Promise.all(apps.map(async (a) => ({ ...a, name: nameOf(a), status: await status(a), cost: costs.get(a.id) || { usd: 0, builds: 0 } }))) };
   }],
   // The events since ?after=N (see broadcast), for one app with ?app=.
   ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
@@ -641,7 +656,7 @@ const routes = [
     if (description.length < 5) throw Object.assign(new Error('describe the app in a sentence or more'), { status: 400 });
     // A name given is the app's for good (the plan's name does not replace it).
     const given = String(b.name || '').trim().slice(0, 60);
-    const name = given || description.split(/[.\n]/)[0].slice(0, 40);
+    const name = given || shortName(description);
     const app = await engine.store.createApp({ name, description });
     if (given) await engine.store.putSetting(app, 'named', '1');
     // Its three designs are made beside the first build, from the art

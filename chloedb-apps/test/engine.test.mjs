@@ -3327,3 +3327,19 @@ test('a visitor who may only look is offered no form and no write; a refusal is 
   assert.match(await own.frame().evaluate(() => document.body.innerText), /read-only for visitors/, 'the refusal is said');
   assert.deepEqual((await own.seen()).filter((x) => x.kind === 'error'), [], 'and not reported as an error');
 });
+
+test('an app is named shortly from its description, and one whose first build failed says so (APC-4)', async () => {
+  const { shortName, firstBuildStatus } = await import('../engine/store.mjs');
+  assert.equal(shortName('A tiny reading list: links with a title and a note, and whether I read them.'), 'Tiny reading list');
+  assert.equal(shortName('A weekend trip expense splitter: who paid what, split four ways.'), 'Weekend trip expense splitter');
+  assert.equal(shortName("Kids' reading — books and who read them"), "Kids' reading");
+  assert.equal(shortName('Track my running mileage per week and show a chart of the last three months of runs'), 'Track my running mileage per week');
+  assert.ok(shortName('x'.repeat(80)).length <= 40);
+  const now = Date.parse('2026-11-13T12:00:00Z');
+  const at = (min) => new Date(now - min * 60000).toISOString();
+  assert.equal(firstBuildStatus({ status: 'failed', created: at(1) }, now), 'failed');
+  assert.equal(firstBuildStatus({ status: 'stopped', created: at(1) }, now), 'failed');
+  assert.equal(firstBuildStatus({ status: 'running', created: at(2) }, now), 'building');
+  assert.equal(firstBuildStatus({ status: 'running', created: at(45) }, now), 'failed', 'an engine that stopped in the middle of it');
+  assert.equal(firstBuildStatus(null, now), 'building');
+});

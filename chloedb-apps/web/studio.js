@@ -284,7 +284,7 @@ async function renderHome() {
     list.replaceChildren(...(apps.length ? apps.map((a) => h('a', { class: 'appcard', href: `#/app/${a.id}` },
       h('div', { class: 'name' }, a.name),
       h('div', { class: 'desc' }, a.description),
-      h('div', { class: 'meta' }, h('span', { class: 'pill' }, a.head ? `v${a.head}` : 'building'), h('span', ago(a.created)))))
+      h('div', { class: 'meta' }, h('span', { class: 'pill' }, Number(a.head) ? `v${a.head}` : a.status === 'failed' ? 'did not build' : 'building'), h('span', ago(a.created)))))
       : [h('div', { class: 'hint' }, 'None yet. Describe one above, or pick an example.')]));
   } catch (e) { list.replaceChildren(h('div', { class: 'err' }, e.message)); }
 }
