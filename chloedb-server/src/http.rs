@@ -387,6 +387,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
         .route("/v1/admin/keys/clients", get(key_clients))
         .route("/v1/admin/keys/:id", axum::routing::delete(revoke_key))
+        // A key's own keys, within its tables (an app engine's for each app).
+        .route("/v1/keys/own", get(own_keys).merge(post(create_own_key)))
+        .route("/v1/keys/own/:id", axum::routing::delete(revoke_own_key))
         .route("/v1/admin/audit", get(audit_log))
         // alerts (alerts agent)
         .route("/v1/alerts", get(alerts))
@@ -1515,8 +1518,10 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
 /// The feed ends when the server stops taking connections
 /// ([`crate::server::Stopping`]), so that a server a follower reads from
 /// stops rather than waiting on it.
-async fn feed(State(app): State<App>, stopping: Option<axum::Extension<crate::server::Stopping>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+async fn feed(State(app): State<App>, w: Option<axum::Extension<Principal>>, stopping: Option<axum::Extension<crate::server::Stopping>>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let stopping = Box::pin(crate::server::Stopping::of(stopping.map(|axum::Extension(s)| s)));
+    // A key limited to tables reads the feed of the tables it may read.
+    let mut only = w.map(|axum::Extension(w)| w).filter(Principal::limited).map(FeedFor::new);
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
@@ -1525,13 +1530,19 @@ async fn feed(State(app): State<App>, stopping: Option<axum::Extension<crate::se
     if copy.is_none() && ["since", "whole", "digests"].iter().any(|k| q.contains_key(*k)) {
         return Err(ApiError::bad("since, whole and digests are a copy's (copy=true)"));
     }
+    if copy.is_some() && only.is_some() {
+        return Err(ApiError { status: 403, message: "a key limited to tables follows the feed from a transaction (from=N); a copy (copy=true) is of every table".into() });
+    }
     let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
     if let Ok(c) = app.svc.coordinator() {
         let shard = shard.ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
         let chunks = c.feed(shard as usize, from, after.unwrap_or(0), copy).await?;
-        let lines = chunks.map(|c| {
+        let lines = chunks.map(move |c| {
             Ok::<_, std::convert::Infallible>(match c {
-                Ok(c) => Bytes::from(c.lines),
+                Ok(c) => match &mut only {
+                    Some(f) => f.chunk(&c.lines),
+                    None => Bytes::from(c.lines),
+                },
                 Err(s) => {
                     let e = ApiError::from(s);
                     Bytes::from(format!("{}\n", json!({"error": e.message, "status": e.status})))
@@ -1546,8 +1557,59 @@ async fn feed(State(app): State<App>, stopping: Option<axum::Extension<crate::se
         return Err(ApiError::bad(format!("this server holds shard {own} alone: ask its coordinator for shard {}", shard.unwrap_or(0))));
     }
     let rx = app.svc.feed(from, after, copy).await?;
-    let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
+    let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(move |v| {
+        Ok::<_, std::convert::Infallible>(match &mut only {
+            Some(f) => f.chunk(&v),
+            None => Bytes::from(v),
+        })
+    });
     Ok(ndjson(axum::body::Body::from_stream(futures::StreamExt::take_until(lines, stopping))))
+}
+
+/// The feed as a key limited to tables reads it: each transaction's
+/// operations on the tables it may read (an empty `ops` when there are
+/// none, so that the reader still counts the transaction), without the
+/// stream sources' offsets (`sources`, other clients') and the operations
+/// of tables the server could not read (`unknown`). The other lines (where
+/// the feed starts, how far it reaches, slot marks, an end) are as they
+/// are. Lines are taken whole, across chunks.
+struct FeedFor {
+    who: Principal,
+    carry: Vec<u8>,
+}
+
+impl FeedFor {
+    fn new(who: Principal) -> FeedFor {
+        FeedFor { who, carry: Vec::new() }
+    }
+
+    fn chunk(&mut self, b: &[u8]) -> Bytes {
+        self.carry.extend_from_slice(b);
+        let Some(end) = self.carry.iter().rposition(|&c| c == b'\n') else { return Bytes::new() };
+        let rest = self.carry.split_off(end + 1);
+        let whole = std::mem::replace(&mut self.carry, rest);
+        let mut out = Vec::with_capacity(whole.len());
+        for l in whole.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
+            let j = match serde_json::from_slice::<Json>(l) {
+                Ok(j) => self.line(j),
+                Err(e) => json!({"error": format!("a line of the feed is not JSON: {e}"), "status": 500}),
+            };
+            serde_json::to_writer(&mut out, &j).expect("JSON serialises");
+            out.push(b'\n');
+        }
+        Bytes::from(out)
+    }
+
+    fn line(&self, mut j: Json) -> Json {
+        if let Some(o) = j.as_object_mut() {
+            if let Some(Json::Array(ops)) = o.get_mut("ops") {
+                ops.retain(|op| op.get("table").and_then(Json::as_str).and_then(|t| self.who.table_scope(t)).is_some_and(|s| s >= Scope::Read));
+            }
+            o.remove("sources");
+            o.remove("unknown");
+        }
+        j
+    }
 }
 
 /// `POST /v1/feed/keys {"tables": [...], "slots"?: [...]}`: the keys of
@@ -5539,8 +5601,9 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
     let mut j = w.json();
     // `app_keys`: this server makes keys limited to tables, and sends each
     // app its own token ([`crate::apps`]), as the operator asks before it
-    // gives an app a key of its own.
-    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true});
+    // gives an app a key of its own. `own_keys`: a key with the admin
+    // scope on tables makes keys within them (`/v1/keys/own`).
+    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true, "own_keys": true, "limited_feed": true});
     j["cluster"] = app.svc.identity.json();
     j["caller"] = json!(keys::caller());
     AxJson(j)
@@ -5602,6 +5665,47 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
         None => format!("created key {} ({}, {})", key.name, key.id, scope.name()),
     };
     Ok(audited(json!({"key": key.json(), "secret": secret, "closed": open}), detail))
+}
+
+/// `GET /v1/keys/own`: the keys the calling key made
+/// ([`keys::Keys::create_delegated`]).
+async fn own_keys(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> Res {
+    let by = who(w);
+    let keys: Vec<Json> = by.key.as_deref().map(|id| app.svc.keys.delegated(id)).unwrap_or_default().iter().map(keys::Key::json).collect();
+    Ok(AxJson(json!({"keys": keys, "max": keys::DELEGATED_MAX})))
+}
+
+/// `POST /v1/keys/own {"name": "app-x1y2z3", "tables": {"app_x1y2z3_*":
+/// "write"}, "note": ...}`: a key the calling key makes, limited to tables
+/// it has the admin scope on, named `<its name>/<name>`, which opens
+/// nothing once the calling key is revoked or expires; one of that name it
+/// made before is revoked. Its secret is in this answer only. An app
+/// engine gives each of its apps such a key, so that an app's queries are
+/// held to its own tables by the server rather than by the engine.
+async fn create_own_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let by = who(w);
+    let name = body_str(&b, "name")?;
+    let tables = keys::grants_of(b.get("tables").ok_or_else(|| ApiError::bad("tables names what the key may touch: {\"app_x_*\": \"write\"}"))?)?;
+    let note = b.get("note").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
+    let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
+    let (key, secret) = app.svc.keys.create_delegated(&by, name, tables, note, in_cluster && !app.guarded())?;
+    let limits = key.tables.as_deref().map(keys::grants_json);
+    keys::note_change(keys::Change { object: Some(format!("key {}", key.name)), after: Some(json!({"id": key.id, "scope": key.scope.name(), "tables": limits, "owner": key.owner, "parent": key.parent})), ..Default::default() });
+    tracing::info!(key = %key.id, name = %key.name, by = %by.name, "API key made by a key");
+    let detail = format!("key {} made key {} ({}, limited to {})", by.name, key.name, key.id, key.tables.as_deref().map(keys::grants_text).unwrap_or_default());
+    Ok(audited(json!({"key": key.json(), "secret": secret}), detail))
+}
+
+/// `DELETE /v1/keys/own/:id`: revokes a key the calling key made.
+async fn revoke_own_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let by = who(w);
+    let Some(k) = by.key.as_deref().and_then(|me| app.svc.keys.delegated(me).into_iter().find(|k| k.id == id)) else {
+        return Err(ApiError { status: 404, message: format!("no key {id} made by {:?}", by.name) });
+    };
+    app.svc.keys.revoke_by(&id, app.guarded(), Some(keys::audit_name(&by)))?;
+    keys::note_change(keys::Change { object: Some(format!("key {}", k.name)), before: Some(json!({"id": id})), ..Default::default() });
+    tracing::info!(key = %id, by = %by.name, "API key made by a key revoked");
+    Ok(audited(json!({"revoked": id}), format!("key {} revoked key {} ({id})", by.name, k.name)))
 }
 
 async fn revoke_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {

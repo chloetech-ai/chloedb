@@ -298,6 +298,7 @@ export function tablesOfPlan(ir) {
 // Tables the library's SQL functions read in their bodies (sa_numbers): a
 // plan that calls one reads them, and they hold nothing of anyone's.
 const functionReads = new Set();
+export const functionReadTables = () => [...functionReads];
 export const useFunctionReads = (bodies) => {
   functionReads.clear();
   for (const b of bodies) for (const m of String(b || '').matchAll(/\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)/gi)) functionReads.add(m[1].toLowerCase());

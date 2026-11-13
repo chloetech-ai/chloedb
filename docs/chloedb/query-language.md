@@ -1010,6 +1010,28 @@ FROM logs WHERE ts >= '2026-11-12' GROUP BY b, service;
 - **A few KB a group, however many rows.** A sketch counts each value in a bucket of values within 1% of each other, and keeps at most 1,024 buckets of each sign (4 KB): the bound holds for values up to about 10⁸ times apart, as latencies are, and past that the least ones are folded together, so the low percentiles of such a spread lose it first. A p99 over 100 million rows holds a few KB rather than 800 MB.
 - **Exact merges.** Sketches of segments, threads and shards add up to the sketch of all the values, so the answer does not depend on how rows were split: a coordinator's answer is one server's. A shard sends a group's sketch as versioned bytes (base64 text), which a coordinator reads only in the version it knows. Plans with one carry the plan feature `approx_percentiles`, which a version of ChloeDB from before it refuses by name.
 
+### Rollups: `CREATE ROLLUP`
+
+A rollup is a table of counts, sums, least and greatest values per bucket of time and per group, kept up to date from another table as rows arrive: a time-bucket query over weeks of logs reads a few thousand rows of the rollup instead of millions of the table.
+
+```sql
+CREATE ROLLUP logs_5m ON logs OPTIONS(lateness = '10 minutes', retain = '400 days') AS
+  SELECT date_bin('5 minutes', ts), service, severity, COUNT(*), SUM(latency), MAX(latency) AS worst
+  WHERE severity <> 'DEBUG';
+
+SELECT date_trunc('hour', bucket) AS h, service, SUM(count), SUM(sum_latency) / SUM(count) AS mean, MAX(worst)
+FROM logs_5m WHERE bucket >= '2026-11-01' GROUP BY h, service;
+
+REFRESH ROLLUP logs_5m;        -- now, without waiting for the background job
+REFRESH ROLLUP logs_5m FULL;   -- every bucket, for rows later than the lateness
+DROP ROLLUP IF EXISTS logs_5m;
+```
+
+- **The bucket** is `date_bin('<width>', field)`, any whole number of seconds, minutes, hours, days or weeks counted from 1970-01-01, or `date_trunc('second' | 'minute' | 'hour' | 'day', field)`, of a `TIMESTAMP` column. The groups are `KEYWORD`, `INT`, `BOOL` or `TIMESTAMP` columns, and the aggregates `COUNT(*)`, `SUM(f)`, `MIN(f)`, `MAX(f)` and `AVG(f)` of numeric columns (`MIN` and `MAX` of a `TIMESTAMP` too). A `WHERE` keeps some rows only; `FROM`, when written, names the table after `ON`.
+- **The rollup is an ordinary table**, named by the statement, with a row per bucket and group: `rollup_key` (its primary key), the bucket (`bucket`, or the name `AS` gives it), the group columns, typed as in the table, and a column per aggregate, `count`, `sum_<field>`, `min_<field>` and `max_<field>` unless `AS` names it. `AVG(f)` keeps `sum_f` and `count`, so the mean is `SUM(sum_f) / SUM(count)`. A `count` column is always kept. Query it by name, and add its rows up into larger buckets or fewer groups (`SUM(count)`, `MIN(min_latency)`); a query of the table is not rewritten onto it. `OPTIONS(retain = ...)` is the rollup's own [retention](#tables), kept by its bucket: a rollup outlives the rows it counts.
+- **How it is kept.** `CREATE ROLLUP` folds the table's rows at once (on a server, its refresher does, a few seconds on). From then on a refresh compares, bucket by bucket, how many rows of the table the bucket holds with the rollup's count for it (a count over a time window reads the column's index, well under a millisecond), and folds again, in one transaction, the buckets that differ. A plain refresh compares the buckets from the newest row less the `lateness` (10 minutes by default) to the newest, and any the rollup has not folded yet; `FULL` compares them all. A server refreshes every rollup every few seconds, and all their buckets every few minutes; an embedding program calls `Db::spawn_rollups` (or runs `REFRESH ROLLUP`). Buckets older than the table's `retain` are not compared again, so they keep what they counted.
+- **For tables rows are added to**, such as logs: a change that leaves a bucket's count as it was (an `UPDATE`, or a delete and an insert into one bucket between two refreshes) is seen only when the bucket is next folded. The definition is kept as a [stored function](#stored-functions), `rollup__<name>()`, whose body is the statement, so it needs nothing new on disk and travels with the database. On a server with shards, each shard keeps a rollup of its own rows; rollups through a coordinator come later.
+
 ## Subqueries, WITH and joins
 
 ```sql
@@ -1200,6 +1222,8 @@ Caps trade relevance for spread. ArguAna's answer to a query is the argument aga
 
 ## As much as fits: `PACK n TOKENS`
 
+**Experimental:** what `PACK` reads and how it chooses may change between releases. Against the top rows of a ranking cut in the client ([measured](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/pack/README.md) on SciFact and NFCorpus), it reaches more of the relevant documents when the budget holds one to three (SciFact 0.74 against 0.65 at 500 tokens) and spends less of the budget on them, and the two are the same once it holds five or more.
+
 A query's answer is often the context a language model is given, and the model has a budget of tokens, not of rows. `PACK n TOKENS` at the end of a SELECT fills that budget: it reads the query's rows in its order and decides each once, so that a long row, a row that repeats one already taken and a row linked to one taken are weighed inside the query rather than by the application after a top k.
 
 ```sql
@@ -1213,18 +1237,20 @@ PACK 4000 TOKENS DEDUPE 0.85 FOLLOW links 1 HOP WITH RECEIPT;
 Each row, in the query's order, is:
 
 - **taken** whole when its text fits what is left of the budget;
-- **excerpted** when it is longer than one row may be (`EXCERPT n`; a quarter of the budget by default) or than what is left: the stretch of its longest text column with the most words of the query's `bm25` and `MATCH` texts (or its start, when it has none), marked `… ` where it was cut;
-- **skipped as a near-duplicate** of a row taken before it, with `DEDUPE x`: at least the share x of the shorter one's words are in the other, or, with `DEDUPE x ON emb`, the cosine of their vectors is at least x;
-- **skipped as over budget** when not even an excerpt of 32 tokens fits.
+- **excerpted** when it is longer than one row may be (`EXCERPT n`; a quarter of the budget by default) or than what is left: the stretch of its longest text column with the most terms of the query's `bm25` and `MATCH` texts (or its start, when it has none), marked `… ` where it was cut. Terms are found as the column's analyzer makes them (stemmed for `english`, dictionary words for Chinese and Japanese under `standard`), and the text is cut between words, or inside a run without spaces (Chinese, Japanese, Thai, a URL, base64), so an excerpt never spends more than its room;
+- **skipped as a near-duplicate** of a row taken before it, with `DEDUPE x`: at least the share x of the shorter one's terms (as its analyzer makes them) are in the other, or, with `DEDUPE x ON emb`, the cosine of their vectors is at least x;
+- **skipped as over budget** when not even an excerpt of 32 tokens fits;
+- **skipped as no text** when none of its counted columns holds text.
 
 With `FOLLOW edges n HOP` (1 to 3 hops, 1 by default), each row taken brings the rows its [`EDGES`](#graphs) field reaches, up to 16, right after it in the order of its edges, if they pass the query's `WHERE`, decided the same way (`linked from k`). The rows are read by key, a hop at a time, so `FOLLOW` works through a coordinator, where graph walks do not: a decision a file note links to is taken with the note, though it shares no word with the task.
 
-The answer is the rows taken, in that order, with two more columns: `pack_tokens`, the tokens the row spends, and `pack_decision` (`take`, `excerpt`, `linked from k`). `WITH RECEIPT` adds the rows skipped (`skip: near-duplicate of k`, `skip: over budget`) and the columns `pack_score`, the query's score of the row, and `pack_used`, the tokens spent up to and with it. In Rust, `Db::pack` answers the rows and a receipt with every decision and the snapshot read (`txn` and `seq_no`).
+The answer is the rows taken, in that order, with two more columns: `pack_tokens`, the tokens the row spends, and `pack_decision` (`take`, `excerpt`, `linked from k`). `WITH RECEIPT` adds the rows skipped (`skip: near-duplicate of k`, `skip: over budget`, `skip: no text`), with their text columns `NULL`, so that the text of the rows answered is still what fits the budget, and the columns `pack_score`, the query's score of the row, and `pack_used`, the tokens spent up to and with it. In Rust, `Db::pack` answers the rows and a receipt with every decision and the snapshot read (`txn` and `seq_no`).
 
-- **The text counted** is every text column but the key's, or the columns `OF a, b` names. Tokens are an estimate (`chloedb::query::pack::count_tokens`), as the real count depends on the model's tokenizer: a run of letters is a token per six letters, a run of digits a token per three, a CJK character or a punctuation mark one each.
-- **Reads.** The rows are read in slices, 64 and then four times as many, and reading stops once what is left of the budget is too small for any row: a query whose first rows fill the budget reads one slice. `LIMIT` is the most candidates read (1,000 without one), and `OFFSET` where they start. Every slice, and every row followed, is a query of its own on the same snapshot.
+- **The budget** is a whole number from 1 to 10,000,000, or a parameter that holds one: `PACK :budget TOKENS`.
+- **The text counted** is every column a row read holds text in, but the key's, or the columns `OF a, b` names. Tokens are an estimate (`chloedb::query::pack::count_tokens`), as the real count depends on the model's tokenizer: a run of Latin letters is a token per six letters, a run of another alphabet's (Cyrillic, Greek, Arabic, Hebrew, the scripts of India) a token per three, a run of digits a token per three, a CJK or Thai character or a punctuation mark one each. Against OpenAI's cl100k_base and o200k_base it counts English and code 13 to 27% high, the safe side; other scripts are counted high against o200k_base but low against cl100k_base, by up to 2.4 times for Hindi ([measured](https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/pack/README.md)).
+- **Reads.** The rows are read in growing reads, the first 64, then the first 320, 1,344 and so on, each from `OFFSET`, and the rows seen before are passed over by their keys; reading stops once what is left of the budget is too small for any row, so a query whose first rows fill the budget reads once. A deeper read rather than the next page, because a fused ranking (`rrf`, a weighted sum) ranks its candidates to a depth that grows with the `LIMIT`: a deeper read is a better ranking of the same rows, and one that comes back short is the end of the ranking. (In a table without a primary key the reads are pages instead.) `LIMIT` is the most candidates read (1,000 without one), and `OFFSET` where they start. Every read, and every row followed, is a query of its own on the same snapshot: on a server, a lease held for the pack (kept for the client with `hold`, or the client's own `snapshot`), and the statement is admitted once, by its text, and held to one deadline. Through a coordinator each shard reads its latest version at each read.
 - **Choosing** is greedy in the query's order. A row that does not fit whole is excerpted rather than skipped, so that one long log cannot spend the budget, and a smaller row after one over the budget is still taken.
-- **Where.** On a file, a server and a coordinator alike: a coordinator merges each slice from its shards, and packs. `PACK` inside a subquery is not the clause (`pack` stays a name there, and anywhere it is not followed by a number and `TOKENS`).
+- **Where.** On a file, a server and a coordinator alike: a coordinator merges each read from its shards, and packs. A key limited to tables runs it as it runs the query without the clause. `PACK` inside a subquery is not the clause (`pack` stays a name there, and anywhere it is not followed by a number and `TOKENS`).
 
 ## Graphs
 

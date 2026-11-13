@@ -626,6 +626,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
+    spawn_rollups(&svc, Duration::from_secs(5));
     spawn_key_forgetter(&svc, Duration::from_secs(60));
     spawn_sampler(&svc);
     spawn_watch(&svc);
@@ -1192,6 +1193,42 @@ pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
                     reported = Some(why);
                 }
                 Err(e) => tracing::error!(error = %e, "the expirer stopped"),
+            }
+        }
+    });
+}
+
+/// Refreshes the rollups every `every`, and every bucket of each every
+/// sixtieth time ([`Service::refresh_rollups_due`]), until the service is
+/// dropped.
+pub fn spawn_rollups(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        let mut tick: u64 = 0;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            let full = tick % 60 == 59;
+            tick += 1;
+            match tokio::task::spawn_blocking(move || svc.refresh_rollups_due(full)).await {
+                Ok(Ok(n)) => {
+                    reported = None;
+                    if n > 0 {
+                        tracing::debug!(buckets = n, "refreshed rollups");
+                    }
+                }
+                Ok(Err(e)) => {
+                    let why = e.to_string();
+                    if reported.as_ref() != Some(&why) {
+                        tracing::warn!(error = %why, "could not refresh the rollups; the next try is in a few seconds");
+                    }
+                    reported = Some(why);
+                }
+                Err(e) => tracing::error!(error = %e, "the rollups' refresher stopped"),
             }
         }
     });

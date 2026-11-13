@@ -6,7 +6,9 @@
 //! log_series_bench gen OUT.jsonl LINES DAYS [SEED]
 //! log_series_bench stream DB IN.jsonl SECONDS RETAIN_SECONDS [OPTIONS]
 //! log_series_bench load DB IN.jsonl [OPTIONS]
+//! log_series_bench ingest DB IN.jsonl THREADS [OPTIONS]
 //! log_series_bench query DB [RUNS]
+//! log_series_bench rollup DB [RUNS]
 //! ```
 //!
 //! IN may be `gen:LINES:DAYS`, the records `gen` makes, made as they are
@@ -34,6 +36,17 @@
 //! 95th percentile milliseconds, the rows it returned, and how many
 //! segments its time window overlaps out of all of them.
 //!
+//! `ingest` writes IN's records as a server does: THREADS writers sending
+//! batches of 5,000 at once, the flusher and the merger in the background
+//! with their defaults. It prints lines a second until the last write is
+//! answered and until the merges settle.
+//!
+//! `rollup` makes a rollup of a loaded table by 5 minutes, service and
+//! severity (count, sum, least and greatest latency), and prints how long
+//! its first fold took, a refresh with nothing new, one after 50,000 new
+//! lines and a full one; then queries of the rollup beside the same
+//! queries of the table, with whether their answers are equal.
+//!
 //! `OPTIONS` are the table's (`cluster_by = 'ts'`, `compression = 'zstd'`).
 
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -59,7 +72,9 @@ fn main() {
         Some("gen") => gen(Path::new(&args[2]), args[3].parse().unwrap(), args[4].parse().unwrap(), args.get(5).map_or(7, |s| s.parse().unwrap())),
         Some("stream") => stream(Path::new(&args[2]), Path::new(&args[3]), args[4].parse().unwrap(), args[5].parse().unwrap(), args.get(6).map_or("", String::as_str)),
         Some("load") => load(Path::new(&args[2]), Path::new(&args[3]), args.get(4).map_or("", String::as_str)),
+        Some("ingest") => ingest(Path::new(&args[2]), Path::new(&args[3]), args[4].parse().unwrap(), args.get(5).map_or("", String::as_str)),
         Some("query") => query(Path::new(&args[2]), args.get(3).map_or(7, |s| s.parse().unwrap())),
+        Some("rollup") => rollup(Path::new(&args[2]), args.get(3).map_or(7, |s| s.parse().unwrap())),
         _ => {
             eprintln!("usage: log_series_bench gen|stream|load|query ...");
             std::process::exit(2);
@@ -201,7 +216,7 @@ fn overlap(segs: &[(i64, i64, u32)]) -> f64 {
 
 fn count(db: &Db, sql: &str) -> i64 {
     match db.query(sql, &Params::new()).unwrap().rows.first().and_then(|r| r.first()) {
-        Some(Value::Int(n)) => *n,
+        Some(Value::Int(n) | Value::Timestamp(n)) => *n,
         _ => 0,
     }
 }
@@ -314,6 +329,61 @@ fn load(db_path: &Path, input: &Path, options: &str) {
     });
     println!("{out}");
     db.close().unwrap();
+}
+
+fn ingest(db_path: &Path, input: &Path, threads: usize, options: &str) {
+    let db = std::sync::Arc::new(create(db_path, options));
+    db.spawn_flusher();
+    db.spawn_merger(chloedb::storage::MergerOptions::default());
+    let newest = records(input).map(|(ts, _)| ts).max().unwrap();
+    let shift = chloedb::timestamp::now() - newest;
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<Document>>(threads * 2);
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    let start = Instant::now();
+    let writers: Vec<_> = (0..threads)
+        .map(|_| {
+            let (db, rx) = (db.clone(), rx.clone());
+            std::thread::spawn(move || loop {
+                let Ok(batch) = rx.lock().unwrap().recv() else { return };
+                db.write_ops(batch.into_iter().map(|doc| WriteOp::Insert { table: "logs".into(), doc }).collect()).unwrap();
+            })
+        })
+        .collect();
+    let mut lines = 0u64;
+    let mut batch = Vec::with_capacity(BATCH);
+    for (ts, mut doc) in records(input) {
+        doc[0] = Value::Timestamp(ts + shift);
+        batch.push(doc);
+        lines += 1;
+        if batch.len() == BATCH {
+            tx.send(std::mem::take(&mut batch)).unwrap();
+        }
+    }
+    if !batch.is_empty() {
+        tx.send(batch).unwrap();
+    }
+    drop(tx);
+    writers.into_iter().for_each(|w| w.join().unwrap());
+    let written = start.elapsed().as_secs_f64();
+    // Settled: the memtable flushed and no merge running or to run.
+    db.storage().flush().unwrap();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if db.storage().merge_status().running == 0 && db.storage().merge(&MergePolicy::default()).unwrap().merges == 0 {
+            break;
+        }
+    }
+    let settled = start.elapsed().as_secs_f64();
+    let segs = layout(&db);
+    let out = serde_json::json!({
+        "mode": "ingest", "input": input.file_name().unwrap().to_string_lossy(), "options": options, "threads": threads,
+        "cores": std::thread::available_parallelism().map_or(1, |n| n.get()),
+        "lines": lines, "seconds_written": round(written, 1), "lines_per_second_written": round(lines as f64 / written, 0),
+        "seconds_settled": round(settled, 1), "lines_per_second_settled": round(lines as f64 / settled, 0),
+        "merges": db.storage().merge_status().merges, "segments": segs.len(), "segment_bytes": segment_bytes(&db),
+        "commit": commit(),
+    });
+    println!("{out}");
 }
 
 /// The query set, over windows ending at the newest row.
@@ -433,6 +503,97 @@ fn accuracy(name: &str, exact: &[Vec<Value>], approx: &[Vec<Value>]) -> serde_js
         "mode": "accuracy", "query": name, "groups": approx.len(), "values": n, "groups_missing": missing,
         "max_relative_error": round(worst, 5), "mean_relative_error": round(sum / n.max(1) as f64, 5), "commit": commit(),
     })
+}
+
+/// Runs `sql` `runs` times: median and 95th percentile ms, and the rows,
+/// sorted, of the last run.
+fn timed(db: &Db, sql: &str, runs: usize) -> (f64, f64, Vec<Vec<Value>>) {
+    let mut ms = Vec::with_capacity(runs);
+    let mut rows = Vec::new();
+    for _ in 0..runs {
+        let t = Instant::now();
+        rows = db.query(sql, &Params::new()).unwrap().rows;
+        ms.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    ms.sort_by(f64::total_cmp);
+    rows.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    (round(ms[runs / 2], 2), round(ms[((runs as f64 * 0.95).ceil() as usize).min(runs) - 1], 2), rows)
+}
+
+/// Rows with numbers rounded, to compare a rollup's average with the
+/// table's.
+fn rounded(rows: &[Vec<Value>]) -> Vec<Vec<String>> {
+    rows.iter().map(|r| r.iter().map(|v| match v {
+        Value::Float(f) => format!("{:.6}", f),
+        Value::Int(n) => format!("{:.6}", *n as f64),
+        v => format!("{v:?}"),
+    }).collect()).collect()
+}
+
+fn rollup(db_path: &Path, runs: usize) {
+    let db = Db::open(db_path, DbOptions::default()).unwrap();
+    let say = |what: &str, secs: f64, extra: serde_json::Value| {
+        let mut out = serde_json::json!({"mode": "rollup", "db": db_path.file_name().unwrap().to_string_lossy(), "step": what, "seconds": round(secs, 3), "commit": commit()});
+        out.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        println!("{out}");
+    };
+    let refresh = |sql: &str| -> (f64, Vec<Value>) {
+        let t = Instant::now();
+        let r = match db.sql(sql, &Params::new()).unwrap() {
+            chloedb::db::SqlResult::Rows(rs) => rs.rows.into_iter().next().unwrap(),
+            _ => unreachable!(),
+        };
+        (t.elapsed().as_secs_f64(), r)
+    };
+    let stats = |r: &[Value]| serde_json::json!({"buckets_checked": format!("{:?}", r[0]), "buckets_folded": format!("{:?}", r[1]), "rows_written": format!("{:?}", r[2])});
+    let _ = db.sql("DROP ROLLUP IF EXISTS logs_5m", &Params::new());
+    let lines = count(&db, "SELECT COUNT(*) FROM logs");
+    let (secs, r) = refresh("CREATE ROLLUP logs_5m ON logs AS SELECT date_bin('5 minutes', ts), service, severity, COUNT(*), SUM(latency), MIN(latency), MAX(latency)");
+    say("create", secs, serde_json::json!({"lines": lines, "rollup_rows": count(&db, "SELECT COUNT(*) FROM logs_5m")}).as_object().map(|o| { let mut o = o.clone(); o.extend(stats(&r).as_object().unwrap().clone()); serde_json::Value::Object(o) }).unwrap());
+    let (secs, r) = refresh("REFRESH ROLLUP logs_5m");
+    say("refresh_nothing_new", secs, stats(&r));
+    // 50,000 new lines over the last minute, as a busy minute brings.
+    let now = chloedb::timestamp::now();
+    let fresh: Vec<WriteOp> = (0..50_000i64).map(|i| WriteOp::Insert { table: "logs".into(), doc: vec![
+        Value::Timestamp(now - 60_000_000 + i * 1200), Value::Str(format!("host-{:03}", i % 500)), Value::Str(format!("svc-{:02}", i % 20)),
+        Value::Str(["INFO", "WARN", "ERROR"][(i % 3) as usize].into()), Value::Int(1000 + i % 4000), Value::Int(i % 9000), Value::Str("request served ok".into())] }).collect();
+    for chunk in fresh.chunks(5000) {
+        db.write_ops(chunk.to_vec()).unwrap();
+    }
+    let (secs, r) = refresh("REFRESH ROLLUP logs_5m");
+    say("refresh_50k_new", secs, stats(&r));
+    let (secs, r) = refresh("REFRESH ROLLUP logs_5m FULL");
+    say("refresh_full", secs, stats(&r));
+
+    let newest = count(&db, "SELECT MAX(ts) FROM logs");
+    let hour = |t: i64| t.div_euclid(HOUR) * HOUR;
+    let since = |w: i64| chloedb::timestamp::format(hour(newest - w) + HOUR);
+    let pairs = [
+        ("hourly_7d",
+         format!("SELECT date_trunc('hour', bucket) AS h, SUM(count) FROM logs_5m WHERE bucket >= '{}' GROUP BY h", since(7 * DAY)),
+         format!("SELECT date_trunc('hour', ts) AS h, COUNT(*) FROM logs WHERE ts >= '{}' GROUP BY h", since(7 * DAY))),
+        ("by_severity_5m_24h",
+         format!("SELECT bucket, severity, SUM(count) FROM logs_5m WHERE bucket >= '{}' GROUP BY bucket, severity", since(DAY)),
+         format!("SELECT date_trunc('minute', ts) AS m, severity, COUNT(*) FROM logs WHERE ts >= '{}' GROUP BY m, severity", since(DAY))),
+        ("mean_latency_hourly_by_service_24h",
+         format!("SELECT date_trunc('hour', bucket) AS h, service, SUM(sum_latency) / SUM(count) FROM logs_5m WHERE bucket >= '{}' GROUP BY h, service", since(DAY)),
+         format!("SELECT date_trunc('hour', ts) AS h, service, AVG(latency) FROM logs WHERE ts >= '{}' GROUP BY h, service", since(DAY))),
+        ("max_latency_hourly_24h",
+         format!("SELECT date_trunc('hour', bucket) AS h, MAX(max_latency) FROM logs_5m WHERE bucket >= '{}' GROUP BY h", since(DAY)),
+         format!("SELECT date_trunc('hour', ts) AS h, MAX(latency) FROM logs WHERE ts >= '{}' GROUP BY h", since(DAY))),
+    ];
+    for (name, on_rollup, on_table) in pairs {
+        let (rm, rp, rr) = timed(&db, &on_rollup, runs);
+        let (tm, tp, tr) = timed(&db, &on_table, runs);
+        // By severity, the table's query is by minute: a different answer,
+        // the nearest the table gives without date_bin.
+        let equal = (name != "by_severity_5m_24h").then(|| rounded(&rr) == rounded(&tr));
+        println!("{}", serde_json::json!({
+            "mode": "rollup", "db": db_path.file_name().unwrap().to_string_lossy(), "lines": lines + 50_000, "query": name, "runs": runs,
+            "rollup_ms_median": rm, "rollup_ms_p95": rp, "rollup_rows": rr.len(), "table_ms_median": tm, "table_ms_p95": tp, "table_rows": tr.len(),
+            "equal": equal, "sql_rollup": on_rollup, "sql_table": on_table, "commit": commit(),
+        }));
+    }
 }
 
 fn commit() -> String {
