@@ -512,6 +512,7 @@ impl Cluster {
             super::sheets::APP => super::sheets::PORT,
             super::chloectx::APP => super::chloectx::PORT,
             super::apps::APP => super::apps::PORT,
+            super::netops::APP => super::netops::PORT,
             _ => super::crawler::PORT,
         };
         format!("http://{}-{app}:{port}", self.name)
@@ -652,6 +653,61 @@ impl Cluster {
         json!({
             "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.sheets_name(), self.labels()),
             "spec": {"selector": self.sheets_labels(), "ports": [{"name": "http", "port": port, "targetPort": port}]},
+        })
+    }
+
+    fn netops_name(&self) -> String {
+        format!("{}-{}", self.name, super::netops::APP)
+    }
+
+    fn netops_labels(&self) -> Json {
+        let mut labels = self.labels();
+        labels["app.kubernetes.io/component"] = json!("netops");
+        labels
+    }
+
+    /// The network operations app's Deployment ([`super::netops`]): one
+    /// pod, or none while paused, never two at once (Recreate: its
+    /// simulator writes each minute of the network once), that reads and
+    /// writes the tables `netops_*` through the coordinators' Service with
+    /// its own key, or the admin token, which its API requires too.
+    pub fn netops_deployment(&self, c: &super::NetopsSpec, creds: Creds) -> Json {
+        let s = &self.spec;
+        let labels = self.netops_labels();
+        let mut env = vec![json!({"name": "RUST_LOG", "value": "info"})];
+        env.extend(self.app_env(super::netops::APP, creds, "CHLOEDB_KEY", "CHLOEDB_NETOPS_TOKEN"));
+        let port = super::netops::PORT;
+        let mut container = json!({
+            "name": "netops", "image": s.image, "command": ["chloedb-netops"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
+            "ports": [{"name": "http", "containerPort": port}],
+            "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5},
+            "resources": c.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "50m", "memory": "96Mi"}, "limits": {"memory": "1Gi"}})),
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        if let Some(p) = &s.image_pull_policy {
+            container["imagePullPolicy"] = json!(p);
+        }
+        json!({
+            "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&self.netops_name(), labels.clone()),
+            "spec": {
+                "replicas": if c.paused { 0 } else { 1 },
+                "selector": {"matchLabels": labels},
+                "strategy": {"type": "Recreate"},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {"automountServiceAccountToken": false, "terminationGracePeriodSeconds": 30, "containers": [container]},
+                },
+            },
+        })
+    }
+
+    /// The network operations app's Service, which the coordinators
+    /// forward `/v1/apps/netops/...` to.
+    pub fn netops_service(&self) -> Json {
+        let port = super::netops::PORT;
+        json!({
+            "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.netops_name(), self.labels()),
+            "spec": {"selector": self.netops_labels(), "ports": [{"name": "http", "port": port, "targetPort": port}]},
         })
     }
 
@@ -1117,6 +1173,20 @@ pub fn rolled(mut d: Json, creds: &Creds) -> Json {
 }
 
 impl Cluster {
+    /// The image the app engine runs ([`super::upgrade::apps_image`]),
+    /// from what the cluster's `status.upgrade` found of its tag.
+    async fn apps_image(&self, u: &super::upgrade::Upgrade, image: &str) -> String {
+        if u.mode != super::upgrade::Mode::On {
+            return image.to_string();
+        }
+        let path = format!("/apis/{GROUP}/{VERSION}/namespaces/{}/{PLURAL}/{}", self.ns, self.name);
+        let state: super::upgrade::State = match self.kube.get(&path).await {
+            Ok(Some(c)) => serde_json::from_value(c["status"]["upgrade"].clone()).unwrap_or_default(),
+            _ => return image.to_string(),
+        };
+        super::upgrade::apps_image(u, &state, image)
+    }
+
     /// An app's two variables, its cluster `key` and its own API's
     /// `token`: from its credentials Secret, or the admin token.
     fn app_env(&self, app: &str, creds: Creds, key: &str, token: &str) -> Vec<Json> {
@@ -1274,6 +1344,12 @@ impl Platform for Cluster {
         self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), rolled(with.sheets_deployment(c, creds.clone()), &creds)))).await
     }
 
+    async fn netops(&self, spec: &Spec) -> Result<(), String> {
+        let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
+        let creds = self.creds(spec, super::netops::APP).await?;
+        self.beside(self.app_paths(&self.netops_name()), spec.netops.as_ref().map(|c| (with.netops_service(), rolled(with.netops_deployment(c, creds.clone()), &creds)))).await
+    }
+
     async fn chloectx(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
         let creds = self.creds(spec, super::chloectx::APP).await?;
@@ -1285,6 +1361,13 @@ impl Platform for Cluster {
         if let Some(a) = &spec.apps {
             with.apps_volume(a).await?;
         }
+        // With upgrades on, the engine runs its tag's newest image by digest.
+        let mut spec = spec.clone();
+        if let Some(a) = spec.apps.as_mut() {
+            let image = self.apps_image(&spec.upgrade, a.image()).await;
+            a.image = Some(image);
+        }
+        let spec = &spec;
         let creds = self.creds(spec, super::apps::APP).await?;
         // Published apps' load balancer first: an sslip domain is its address.
         let address = with.apps_public(spec.apps.as_ref()).await?;
@@ -1296,7 +1379,7 @@ impl Platform for Cluster {
         use super::credentials as cr;
         let apps = spec.apps();
         // An app taken out of the spec: its key revoked, its Secret gone.
-        for app in [super::crawler::APP, super::sheets::APP, super::chloectx::APP, super::apps::APP] {
+        for app in [super::crawler::APP, super::sheets::APP, super::chloectx::APP, super::apps::APP, super::netops::APP] {
             if apps.contains(&app) {
                 continue;
             }
@@ -1864,6 +1947,26 @@ pub async fn upgraded(cluster: &Cluster, c: &Json, out: &Outcome, rejected: Opti
             Some(_) => registry.resolve(&spec.image).await.ok(),
             None => None,
         };
+        // The app engine's tag, which it runs by digest with `on`
+        // ([`super::upgrade::apps_image`]): a new image of it restarts the
+        // engine, as a new server image rolls the servers.
+        match spec.apps.as_ref().map(|a| a.image().to_string()).filter(|i| digest_of(i).is_none()) {
+            Some(tag) => match registry.resolve(&tag).await {
+                Ok(i) => {
+                    if s.apps_track != tag || s.apps.as_ref().is_none_or(|l| l.digest != i.digest) {
+                        let runs = if u.mode == Mode::On { "; the app engine runs it" } else { "" };
+                        s.note(now, format!("{tag} names {}{runs}", said(&i)));
+                    }
+                    s.apps = Some(i);
+                    s.apps_track = tag;
+                }
+                Err(e) => tracing::warn!(cluster = %cluster.name, image = %tag, error = %e, "could not ask the registry for the app engine's image"),
+            },
+            None => {
+                s.apps = None;
+                s.apps_track = String::new();
+            }
+        }
     }
     if let Ok(r) = cluster.running_images().await {
         s.running = r;
@@ -2114,6 +2217,36 @@ mod tests {
         // Paused: no pod.
         let paused = cluster(json!({"tokenSecret": "admin", "crawler": {"paused": true}}));
         assert_eq!(paused.crawler_deployment(paused.spec.crawler.as_ref().unwrap(), Creds::default())["spec"]["replicas"], 0);
+    }
+
+    #[test]
+    fn network_operations_run_beside_the_cluster_with_their_own_key() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "sheets": {}, "netops": {"args": ["--fault-every", "0"]}}));
+        let n = c.spec.netops.as_ref().unwrap();
+        let d = c.netops_deployment(n, Creds::default());
+        assert_eq!(d["metadata"]["name"], "orders-netops");
+        assert_eq!(d["spec"]["replicas"], 1);
+        assert_eq!(d["spec"]["strategy"]["type"], "Recreate");
+        let k = &d["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(k["command"], json!(["chloedb-netops"]));
+        assert_eq!(k["image"], c.spec.image.as_str(), "the cluster's image, which carries chloedb-netops");
+        assert_eq!(k["args"], json!(["serve", "--listen", "0.0.0.0:7840", "--strata", "http://orders:7700", "--fault-every", "0"]));
+        let secret = |d: &Json, name: &str| d["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
+        // The admin token until the app has its own key and token.
+        assert_eq!(secret(&d, "CHLOEDB_KEY"), Some(json!({"name": "admin", "key": "token"})));
+        assert_eq!(secret(&d, "CHLOEDB_NETOPS_TOKEN"), Some(json!({"name": "admin", "key": "token"})));
+        let own = c.netops_deployment(n, Creds { key: true, token: true, key_id: None });
+        assert_eq!(secret(&own, "CHLOEDB_KEY"), Some(json!({"name": "orders-netops-credentials", "key": "key"})));
+        assert_eq!(secret(&own, "CHLOEDB_NETOPS_TOKEN"), Some(json!({"name": "orders-netops-credentials", "key": "token"})));
+        let s = c.netops_service();
+        assert_eq!(s["metadata"]["name"], "orders-netops");
+        assert_eq!(s["spec"]["ports"][0]["port"], 7840);
+        assert_eq!(s["spec"]["selector"]["app.kubernetes.io/component"], "netops");
+        assert_eq!(c.spec.apps(), ["sheets", "netops"]);
+        assert_eq!(c.app_url("netops"), "http://orders-netops:7840");
+        assert_eq!(super::super::credentials::spec_tables(&c.spec, "netops"), ["netops_*=admin"]);
+        let paused = cluster(json!({"tokenSecret": "admin", "netops": {"paused": true}}));
+        assert_eq!(paused.netops_deployment(paused.spec.netops.as_ref().unwrap(), Creds::default())["spec"]["replicas"], 0);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 
 /// The products the operators join, and DataFusion.
 const N: usize = 4000;
-const N_DATAFUSION: usize = 14_000;
+const N_DATAFUSION: usize = 20_000;
 
 /// Every product meets every product of its category, and no pair passes
 /// the rest of the condition.

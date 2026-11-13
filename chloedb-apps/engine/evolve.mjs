@@ -276,9 +276,19 @@ export class Evolver {
     return [...ux, ...found].slice(0, 12);
   }
 
+  // An app's mode, as its owner set it; else the default, but never
+  // "build" for a published app (audit N-G3): its visitors' use would start
+  // builds the studio pays for, so it only suggests until its owner says.
   async mode(appId) {
     const m = await this.store.setting(appId, 'evolve').catch(() => null);
-    return MODES[m] ? m : DEFAULT_MODE;
+    if (MODES[m]) return m;
+    if (DEFAULT_MODE === 'build' && (await this.published(appId))) return 'suggest';
+    return DEFAULT_MODE;
+  }
+
+  async published(appId) {
+    const raw = await this.store.setting(appId, 'publish').catch(() => null);
+    try { return !!(raw && JSON.parse(raw).on); } catch { return false; }
   }
 
   async setMode(appId, mode) {

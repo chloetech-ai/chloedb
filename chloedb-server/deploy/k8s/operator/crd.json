@@ -453,6 +453,35 @@
                   "imagePullPolicy": {
                     "type": "string"
                   },
+                  "netops": {
+                    "description": "Network operations beside the cluster: a chloedb-netops Deployment of one, which the command center shows under Apps; its network, telemetry, incidents and agents' runs are rows of the cluster's tables netops_*.",
+                    "properties": {
+                      "args": {
+                        "description": "More arguments of chloedb-netops serve (--fault-every 0, --history-hours 2, --no-simulate).",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "paused": {
+                        "description": "No pod for now (the tables stay; nothing is written to them).",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of its container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: netops_*=admin.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "replicas": {
                     "description": "Copies of each shard: a primary and its replicas (default 3).",
                     "minimum": 1,
@@ -622,7 +651,7 @@
                         "type": "integer"
                       },
                       "mode": {
-                        "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready.",
+                        "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready, and the app engine (spec.apps, at a tag) runs its tag's newest image too.",
                         "enum": [
                           "off",
                           "suggest",

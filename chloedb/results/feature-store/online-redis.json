@@ -1,0 +1,13 @@
+{
+ "feast_redis": {
+  "p50_ms": 64.38,
+  "p99_ms": 153.26,
+  "n": 55
+ },
+ "chloedb_kv": {
+  "p50_ms": 9.04,
+  "p99_ms": 10.09,
+  "n": 55
+ },
+ "same_user_values": true
+}

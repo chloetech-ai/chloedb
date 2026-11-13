@@ -488,7 +488,7 @@ jobs:
         working-directory: chloedb
         run: |
           f=datafusion,sqlite,parquet,s3
-          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations
+          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations --test pack
           CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features $f --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
           cargo test --locked --profile ci --features $f --test parquet
@@ -672,6 +672,7 @@ jobs:
             chloedb-server
             chloedb-crawl
             chloedb-sheets
+            chloedb-netops
             chloectx
           key: chloedb-server-smoke
       # chloedb-server's binary from job server-bin.
@@ -733,6 +734,17 @@ jobs:
         env:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOEDB_SHEETS_NEED_SERVER: "1"
+        run: cargo test --locked --profile ci --test cluster
+      # The network operations app on a server of this build: its 31
+      # tables, the topology found from logs, each of the simulator's six
+      # faults diagnosed and checked against its answer key, an action
+      # approved, and the same network read back after a restart.
+      - name: Network operations on a server
+        if: fromJSON(needs.changes.outputs.run).smoke_netops
+        working-directory: chloedb-netops
+        env:
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
+          CHLOEDB_NETOPS_NEED_SERVER: "1"
         run: cargo test --locked --profile ci --test cluster
       # ChloeCtx as an app of a cluster of this build's servers (two shards
       # and a coordinator): spaces, notes, contexts within a budget, an

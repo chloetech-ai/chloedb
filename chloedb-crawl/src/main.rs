@@ -320,7 +320,11 @@ async fn run() {
         Cmd::Serve(a) => {
             a.reach.set();
             let token = a.token.clone().or_else(|| a.target.local.as_ref().map(|_| random_token()));
-            let listener = tokio::net::TcpListener::bind(&a.listen).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.listen)));
+            // Started by chloedb-server: the socket it holds, not --listen.
+            let listener = match chloedb_crawl::inherited_listener().unwrap_or_else(|e| fail(e)) {
+                Some(l) => l.set_nonblocking(true).and_then(|()| tokio::net::TcpListener::from_std(l)).unwrap_or_else(|e| fail(format!("the inherited socket: {e}"))),
+                None => tokio::net::TcpListener::bind(&a.listen).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.listen))),
+            };
             let me = format!("http://{}", listener.local_addr().map(|x| x.to_string()).unwrap_or(a.listen.clone()));
             let (strata, local, grower) = connect(&a.target, Some((me.clone(), token.clone()))).await;
             if let Some(c) = a.contact.as_deref().filter(|c| !chloedb_crawl::fetch::header_text(c)) {

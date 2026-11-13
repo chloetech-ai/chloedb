@@ -280,7 +280,7 @@ impl Load {
             None | Some(Json::Null) => 1,
             Some(v) => v.as_u64().filter(|c| (1..=64).contains(c)).ok_or_else(|| ApiError::bad("clients is a whole number from 1 to 64"))? as usize,
         };
-        let req = QueryReq { sql: sql.to_string(), params: svc.params(b.get("params")).await?, quiet: true, ..Default::default() };
+        let req = QueryReq { sql: sql.to_string(), params: svc.params(None, b.get("params")).await?, quiet: true, ..Default::default() };
         // Once first: a query that fails answers at once, and the caches it
         // reads are warm when the profile starts.
         svc.query(req.clone()).await?;

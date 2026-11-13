@@ -8,6 +8,7 @@ license = "Apache-2.0"
 description = "Strata over the network: HTTP JSON and gRPC, a coordinator over shards, and a query UI"
 
 [dependencies]
+mimalloc = { version = "0.1", optional = true, default-features = false }
 # SQLite files in and out (`chloedb-server import`, `chloedb-server export`).
 chloedb = { path = "../chloedb", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
@@ -76,7 +77,11 @@ flate2 = "1"
 pprof = { version = "0.15", default-features = false }
 
 [features]
-default = ["datafusion", "parquet", "s3"]
+default = ["datafusion", "parquet", "s3", "mimalloc"]
+# mimalloc under the server's counting allocator (`heap`), in place of the
+# system's: on a coordinator under load, glibc's malloc and free were a
+# quarter of its CPU time.
+mimalloc = ["dep:mimalloc"]
 # DataFusion as the engine of joins, groups and sorts over a few thousand
 # rows or more (`chloedb::query::df`); the default engine picks it by size.
 datafusion = ["chloedb/datafusion"]

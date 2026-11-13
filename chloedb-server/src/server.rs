@@ -93,6 +93,10 @@ pub struct Options {
     /// `timeout_ms` and 60 s).
     pub max_timeout_ms: u64,
     pub max_concurrent: usize,
+    /// How long a client's query waits for a slot before it is refused
+    /// with 429 ([`crate::service::Service::admission_wait`]; 0: until its
+    /// deadline).
+    pub admission_wait_ms: u64,
     /// The most rows a query may reach, OFFSET included (0: no limit).
     pub max_result_window: usize,
     /// The rows the open scrolls may hold between them
@@ -110,10 +114,16 @@ pub struct Options {
     /// Memory for filters kept between queries, in MiB (`None`:
     /// [`chloedb::query::exec::FILTER_CACHE_BYTES`]; 0: none kept).
     pub filter_cache_mb: Option<usize>,
+    /// Memory for answers kept between queries, in MiB (`None`:
+    /// [`crate::answers::DEFAULT_MB`]; 0: none kept).
+    pub answer_cache_mb: Option<usize>,
     /// Write requests held at once before more are refused (0: no limit).
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
     pub max_body_mb: usize,
+    /// How long tables OTLP's logs make keep their rows, in seconds
+    /// (`None`: for ever).
+    pub otlp_retain: Option<i64>,
     pub model: String,
     pub api_key: Option<String>,
     pub api_base: String,
@@ -475,6 +485,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.slow = (o.slow_ms > 0).then(|| Duration::from_millis(o.slow_ms));
     svc.max_rows = (o.max_result_window > 0).then_some(o.max_result_window);
+    svc.admission_wait = (o.admission_wait_ms > 0).then(|| Duration::from_millis(o.admission_wait_ms));
+    svc.answers = crate::answers::AnswerCache::new(o.answer_cache_mb.unwrap_or(crate::answers::DEFAULT_MB)).map(Arc::new);
     svc.max_scroll_rows = o.max_scroll_rows.unwrap_or(crate::service::MAX_SCROLL_ROWS);
     svc.max_groups = (o.max_groups > 0).then_some(o.max_groups);
     svc.max_rerank = (o.max_rerank > 0).then_some(o.max_rerank);
@@ -490,6 +502,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);
     }
+    svc.otlp_retain = o.otlp_retain;
     let aws = o.aws_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::aws::Aws::file_of));
     if let Some(file) = aws {
         svc.aws = Arc::new(crate::aws::Aws::open(file)?);
@@ -622,6 +635,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
+    spawn_rollups(&svc, Duration::from_secs(5));
     spawn_key_forgetter(&svc, Duration::from_secs(60));
     spawn_sampler(&svc);
     spawn_watch(&svc);
@@ -1193,6 +1207,42 @@ pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
     });
 }
 
+/// Refreshes the rollups every `every`, and every bucket of each every
+/// sixtieth time ([`Service::refresh_rollups_due`]), until the service is
+/// dropped.
+pub fn spawn_rollups(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        let mut tick: u64 = 0;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            let full = tick % 60 == 59;
+            tick += 1;
+            match tokio::task::spawn_blocking(move || svc.refresh_rollups_due(full)).await {
+                Ok(Ok(n)) => {
+                    reported = None;
+                    if n > 0 {
+                        tracing::debug!(buckets = n, "refreshed rollups");
+                    }
+                }
+                Ok(Err(e)) => {
+                    let why = e.to_string();
+                    if reported.as_ref() != Some(&why) {
+                        tracing::warn!(error = %why, "could not refresh the rollups; the next try is in a few seconds");
+                    }
+                    reported = Some(why);
+                }
+                Err(e) => tracing::error!(error = %e, "the rollups' refresher stopped"),
+            }
+        }
+    });
+}
+
 /// Deletes the database's records of idempotency keys older than
 /// [`crate::idem::TTL`], every `every` ([`Service::forget_keys_due`]),
 /// until the service is dropped.
@@ -1239,7 +1289,9 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
         loop {
             tick.tick().await;
             let Some(svc) = svc.upgrade() else { return };
-            let s = svc.sample();
+            let mut s = svc.sample();
+            crate::alerts::refresh_sql(&svc);
+            s.named = svc.alerts.sql_values();
             if let Some(point) = svc.series.add(s) {
                 // alerts agent: this server's rules, and a coordinator's cluster.
                 crate::alerts::tick(&svc, &point);
@@ -1387,9 +1439,10 @@ async fn serve_conns(router: axum::Router, listener: TcpListener, access: &Acces
         0 => cap / 2,
         n => n,
     });
-    // Past the cap: a few connections for the probes, one per address.
+    // Past the cap: a few connections for the probes, two at once per
+    // address.
     let health = Arc::new(tokio::sync::Semaphore::new(if kind == Kind::Http { listener::HEALTH_SLOTS } else { 0 }));
-    let probers = listener::Clients::new(1);
+    let probers = listener::Clients::new(2);
     let builder = |header_read: Duration| {
         let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
         b.http1().timer(TokioTimer::new()).header_read_timeout(header_read);
@@ -1457,9 +1510,11 @@ async fn serve_conns(router: axum::Router, listener: TcpListener, access: &Acces
         let _ = tcp.set_nodelay(true);
         let activity = listener::Activity::new();
         // Each request knows its peer's address (the audit log's `addr`)
-        // and its connection's.
+        // and its connection's, set on it as it comes in: layering the
+        // router per connection would copy every route, about 300 KB a
+        // connection.
         let conn = listener::Conn { activity: activity.clone(), slot, body };
-        let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))).layer(axum::Extension(conn)));
+        let service = hyper_util::service::TowerToHyperService::new(tower::ServiceExt::map_request(router.clone(), with_conn(peer, conn)));
         let builder = if slot == Slot::Full { full.clone() } else { probe.clone() };
         let (tls, open, mut told, mut gone) = (tls.clone(), open.clone(), stopping.subscribe(), alive.subscribe());
         let tcp = listener::Stall::new(tcp, limits.write);
@@ -1515,6 +1570,16 @@ async fn serve_conns(router: axum::Router, listener: TcpListener, access: &Acces
     Ok(())
 }
 
+/// Sets a request's peer address (axum's `ConnectInfo`) and its
+/// connection ([`crate::listener::Conn`]) as it comes in.
+fn with_conn<B>(peer: std::net::SocketAddr, conn: crate::listener::Conn) -> impl Fn(axum::http::Request<B>) -> axum::http::Request<B> + Clone {
+    move |mut r| {
+        r.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+        r.extensions_mut().insert(conn.clone());
+        r
+    }
+}
+
 /// That the listener a request came in on stopped taking connections, for
 /// an answer that goes on until told to end (a feed): [`Self::wait`].
 #[derive(Clone)]
@@ -1548,6 +1613,7 @@ fn connections() -> (Arc<tokio::sync::Semaphore>, usize) {
         let mut n = 65_536;
         #[cfg(unix)]
         {
+            raise_open_files();
             let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
             // SAFETY: getrlimit writes the struct it is given, and nothing else.
             if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } == 0 && r.rlim_cur != libc::RLIM_INFINITY {
@@ -1557,6 +1623,32 @@ fn connections() -> (Arc<tokio::sync::Semaphore>, usize) {
         (Arc::new(tokio::sync::Semaphore::new(n)), n)
     })
     .clone()
+}
+
+/// Raises the process's soft open-file limit to its hard limit (at most
+/// 2^20), once: the soft limit is often 1,024 or 20,000 while the hard one
+/// allows a million, and each connection is a descriptor. A limit that
+/// cannot be raised (macOS caps it below an infinite hard limit) is left
+/// as it was, or set to the most it takes.
+#[cfg(unix)]
+fn raise_open_files() {
+    let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: getrlimit writes the struct it is given, and nothing else.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
+        return;
+    }
+    let want = if r.rlim_max == libc::RLIM_INFINITY { 1 << 20 } else { r.rlim_max.min(1 << 20) };
+    for cur in [want, 1 << 16, 10_240] {
+        if cur <= r.rlim_cur {
+            return;
+        }
+        let n = libc::rlimit { rlim_cur: cur, rlim_max: r.rlim_max };
+        // SAFETY: setrlimit reads the struct it is given, and nothing else.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &n) } == 0 {
+            tracing::debug!(from = r.rlim_cur as u64, to = cur as u64, "raised the open-file limit");
+            return;
+        }
+    }
 }
 
 /// Headers every HTTP answer carries unless its handler set its own: no

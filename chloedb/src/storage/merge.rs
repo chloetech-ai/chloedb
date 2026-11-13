@@ -10,6 +10,14 @@
 //! drop its deleted documents. Segments too large to merge with a peer
 //! without exceeding `max_merged_docs` are left alone.
 //!
+//! A table kept for a time ([`crate::schema::Schema::with_retain`]) is
+//! merged within windows of time: each segment is in the window of its
+//! newest row ([`SegmentInfo::window`]), and the tiers are formed in each
+//! window alone, so a segment never takes rows of an older window and
+//! leaves the table whole, without a rewrite, once its newest row is past
+//! the retention. Segments with no live rows left are dropped together,
+//! before any merge.
+//!
 //! Also what the background merger needs ([`MergerOptions`]): an estimate
 //! of a merge's memory ([`merge_memory`]), the memory the process may use
 //! ([`memory_limit`]), a shared limit on how fast merges write ([`Pacer`]),
@@ -22,6 +30,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+
+/// The most segments without live rows one merge drops.
+const MAX_DROPPED: usize = 256;
 
 /// Which segments to merge.
 #[derive(Clone, Debug)]
@@ -62,6 +73,11 @@ pub struct SegmentInfo {
     /// The bytes of its image in sections a merge that spills writes out as
     /// it goes instead of holding ([`crate::segment::spill::streams`]).
     pub spilled: u64,
+    /// The window of time its newest row is in, for a table kept for a
+    /// time: segments merge only with segments of the same window. `None`
+    /// for other tables (and segments without a time), which merge with
+    /// each other as before.
+    pub window: Option<i64>,
 }
 
 /// Work done by `Database::merge`.
@@ -368,8 +384,26 @@ impl MergeRecord {
 }
 
 impl MergePolicy {
-    /// The next group of segments to merge, if any.
+    /// The next group of segments to merge, if any: the segments with no
+    /// live rows left, which a merge drops without reading, then a group
+    /// of one window of time ([`SegmentInfo::window`]), oldest window
+    /// first.
     pub fn select(&self, segs: &[SegmentInfo]) -> Option<Vec<u64>> {
+        let empty: Vec<u64> = segs.iter().filter(|s| s.n_docs > 0 && s.n_live == 0).map(|s| s.id).take(MAX_DROPPED).collect();
+        if !empty.is_empty() {
+            return Some(empty);
+        }
+        let mut windows: Vec<Option<i64>> = segs.iter().map(|s| s.window).collect();
+        windows.sort_unstable();
+        windows.dedup();
+        windows.into_iter().find_map(|w| {
+            let members: Vec<SegmentInfo> = segs.iter().filter(|s| s.window == w).copied().collect();
+            self.select_tiered(&members)
+        })
+    }
+
+    /// [`select`](Self::select) among segments that may merge with each other.
+    fn select_tiered(&self, segs: &[SegmentInfo]) -> Option<Vec<u64>> {
         let factor = self.merge_factor.max(2);
         let floor = self.floor_docs.max(1) as f64;
         let tier = |s: &SegmentInfo| ((s.n_live as f64).max(floor) / floor).log(factor as f64).floor() as usize;
@@ -437,7 +471,7 @@ mod tests {
     use super::*;
 
     fn seg(id: u64, n_docs: u32, n_live: u32) -> SegmentInfo {
-        SegmentInfo { id, n_docs, n_live, bytes: n_docs as u64 * 100, spilled: 0 }
+        SegmentInfo { id, n_docs, n_live, bytes: n_docs as u64 * 100, spilled: 0, window: None }
     }
 
     /// No merge spills.
@@ -460,6 +494,23 @@ mod tests {
         // A mostly deleted segment is rewritten alone; the worst one first.
         let segs = [seg(1, 6000, 1000), seg(2, 6000, 6000), seg(3, 100, 0)];
         assert_eq!(p.select(&segs), Some(vec![3]));
+    }
+
+    #[test]
+    fn windows_of_time_merge_apart() {
+        let p = MergePolicy { merge_factor: 3, floor_docs: 100, max_merged_docs: 10_000, max_deleted_ratio: 0.5 };
+        let at = |id, n, w| SegmentInfo { window: Some(w), ..seg(id, n, n) };
+        // Three tier-0 segments, but of two windows: no merge.
+        assert_eq!(p.select(&[at(1, 50, 7), at(2, 60, 7), at(3, 70, 8)]), None);
+        // The older window fills first, and merges alone.
+        let segs = [at(1, 50, 8), at(2, 60, 7), at(3, 70, 7), at(4, 80, 7), at(5, 90, 8), at(6, 95, 8)];
+        assert_eq!(p.select(&segs), Some(vec![2, 3, 4]));
+        // Segments with no live rows left (past the retention) go first,
+        // all together, whatever their windows.
+        let segs = [at(1, 50, 8), at(2, 60, 7), at(3, 70, 7), at(4, 80, 7), SegmentInfo { window: Some(5), ..seg(5, 9000, 0) }, SegmentInfo { window: Some(6), ..seg(6, 9000, 0) }];
+        assert_eq!(p.select(&segs), Some(vec![5, 6]));
+        // Without windows, as before.
+        assert_eq!(p.select(&[seg(1, 50, 50), seg(2, 60, 60), seg(3, 70, 70)]), Some(vec![1, 2, 3]));
     }
 
     #[test]
@@ -506,7 +557,7 @@ mod tests {
     fn merges_past_four_batches_cost_less_per_byte() {
         const MB: u64 = 1 << 20;
         // Short documents, 128 bytes each: a batch is 32 MB of image.
-        let segs = |mb: u64| -> Vec<SegmentInfo> { (1..=4).map(|id| SegmentInfo { id, n_docs: (mb * MB / 4 / 128) as u32, n_live: (mb * MB / 4 / 128) as u32, bytes: mb * MB / 4, spilled: mb * MB / 10 }).collect() };
+        let segs = |mb: u64| -> Vec<SegmentInfo> { (1..=4).map(|id| SegmentInfo { id, n_docs: (mb * MB / 4 / 128) as u32, n_live: (mb * MB / 4 / 128) as u32, bytes: mb * MB / 4, spilled: mb * MB / 10, window: None }).collect() };
         let at = |mb: u64, threads: usize| merge_memory(&segs(mb), threads, HELD) as f64;
         for threads in [1, 4, 8] {
             // Up to four batches, each byte costs the full estimate.
@@ -521,7 +572,7 @@ mod tests {
         assert!((merge_memory(&half, 1, HELD) as f64 - at(500, 1)).abs() < 1e3);
         // Long documents make a batch of at least 16,384 of them, so four
         // batches of 8 KB documents are 512 MB.
-        let long: Vec<SegmentInfo> = (1..=4).map(|id| SegmentInfo { id, n_docs: 32_768, n_live: 32_768, bytes: 32_768 * 8192, spilled: 0 }).collect();
+        let long: Vec<SegmentInfo> = (1..=4).map(|id| SegmentInfo { id, n_docs: 32_768, n_live: 32_768, bytes: 32_768 * 8192, spilled: 0, window: None }).collect();
         assert!((merge_memory(&long, 1, HELD) as f64 - 1024.0 * MB as f64 * memory_per_image_byte(1) + 512.0 * MB as f64 * (memory_per_image_byte(1) - memory_per_streamed_byte(1))).abs() < 1e3);
     }
 
@@ -529,7 +580,7 @@ mod tests {
     fn merges_that_spill_count_only_the_sections_they_hold() {
         const MB: u64 = 1 << 20;
         // 40% of each image streams when the merge spills.
-        let segs = |mb: u64| -> Vec<SegmentInfo> { (1..=4).map(|id| SegmentInfo { id, n_docs: (mb * MB / 4 / 128) as u32, n_live: (mb * MB / 4 / 128) as u32, bytes: mb * MB / 4, spilled: mb * MB / 10 }).collect() };
+        let segs = |mb: u64| -> Vec<SegmentInfo> { (1..=4).map(|id| SegmentInfo { id, n_docs: (mb * MB / 4 / 128) as u32, n_live: (mb * MB / 4 / 128) as u32, bytes: mb * MB / 4, spilled: mb * MB / 10, window: None }).collect() };
         let at = |mb: u64, threads: usize, spill: u64| merge_memory(&segs(mb), threads, spill) as f64;
         for threads in [1, 4, 8] {
             // The first four batches cost what they did.

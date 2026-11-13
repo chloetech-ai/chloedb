@@ -295,6 +295,11 @@ pub struct ScrubReport {
 pub struct CheckpointStats {
     /// The commit of the database that the copy holds.
     pub txn: u64,
+    /// The commit readers of the database saw when the checkpoint took the
+    /// writer lock, before its flush (which makes a commit of its own that
+    /// changes no row): a read at this commit sees exactly the rows the
+    /// copy holds.
+    pub source_txn: u64,
     pub tables: usize,
     pub segments: usize,
     /// Of `segments`, those hard-linked from `link_from`.
@@ -654,6 +659,20 @@ fn arrange<T>(schema: &Schema, mut live: Vec<Document>, mut with: Vec<T>, retent
 /// Whether row `d` is past `retention`, its table's ([`Schema::retention`]).
 fn expired(retention: Option<(usize, i64)>, d: &Document) -> bool {
     retention.is_some_and(|(f, cutoff)| matches!(d[f], Value::Timestamp(t) | Value::Int(t) if t < cutoff))
+}
+
+/// The width of the windows of time a table kept for `retain_seconds`
+/// merges in ([`SegmentInfo::window`]): a thirtieth of the retention, from
+/// a second to a day, so that about one window's rows are past it at once
+/// and a table kept for 30 days merges within days.
+fn merge_window(retain_seconds: i64) -> i64 {
+    (retain_seconds.saturating_mul(1_000_000) / 30).clamp(1_000_000, 86_400_000_000)
+}
+
+/// The newest time in segment `v`'s TIMESTAMP column `key`, from the
+/// column's greatest value.
+fn newest_time(v: &SegmentView, key: &str) -> Option<i64> {
+    crate::forward::NumericColumn::open(&v.file, key).ok()?.max().map(|t| t as i64)
 }
 
 /// A row's place in a segment ordered by its cluster_by field: rows
@@ -3172,12 +3191,19 @@ impl Database {
         // Rows past the table's retention count as deleted: a segment of
         // them only is dropped, and one with many is rewritten without them.
         let retention = snap.schema().retention(crate::timestamp::now());
+        let width = snap.schema().retain.as_ref().map(|r| merge_window(r.seconds));
         let infos: Vec<SegmentInfo> = snap
             .segments()
             .iter()
             .map(|v| {
-                let expired = retention.map_or(0, |(f, cutoff)| self.expired_in(v, &snap.schema().fields[f].key(), cutoff));
-                SegmentInfo { id: v.id, n_docs: v.file.n_docs() as u32, n_live: v.n_live.saturating_sub(expired), bytes: bytes.get(&v.id).copied().unwrap_or(0), spilled: v.file.section_bytes(crate::segment::spill::streams) }
+                let (expired, window) = match retention {
+                    Some((f, cutoff)) => {
+                        let key = snap.schema().fields[f].key();
+                        (self.expired_in(v, &key, cutoff), width.and_then(|w| newest_time(v, &key).map(|t| t.div_euclid(w))))
+                    }
+                    None => (0, None),
+                };
+                SegmentInfo { id: v.id, n_docs: v.file.n_docs() as u32, n_live: v.n_live.saturating_sub(expired), bytes: bytes.get(&v.id).copied().unwrap_or(0), spilled: v.file.section_bytes(crate::segment::spill::streams), window }
             })
             .collect();
         let cap = |g: &[u64]| match (m.record.cap(g), budget) {
@@ -3255,7 +3281,6 @@ impl Database {
             // The merged segment gets a checksum of its own, so a damaged
             // input must fail here rather than become a valid segment.
             let h = lock(&self.state).handle(id).cloned().ok_or_else(|| corrupt("merge input vanished"))?;
-            h.verify(self.dir.as_deref())?;
             let n = v.file.n_docs() as DocId;
             let mut live: Vec<DocId> = (0..n).filter(|&d| v.live.as_ref().is_none_or(|l| l.contains(d))).collect();
             stats.docs_dropped += (n as usize - live.len()) as u64;
@@ -3266,6 +3291,11 @@ impl Database {
                 let before = live.len();
                 live.retain(|&d| times.get_i64(d).is_none_or(|t| t >= cutoff));
                 stats.docs_expired += (before - live.len()) as u64;
+            }
+            // An input none of whose rows are kept is dropped unread, so it
+            // need not be read whole to be checked (nor fetched, if cold).
+            if !live.is_empty() {
+                h.verify(self.dir.as_deref())?;
             }
             views.push(v);
             inputs.push((id, live));
@@ -3663,9 +3693,10 @@ impl Database {
             Some(_) => return Err(Error::Schema("link_from needs a checkpoint in the directory layout".into())),
             None => None,
         };
-        let (_snap, manifest, handles) = {
+        let (_snap, manifest, handles, source_txn) = {
             let mut wal = lock(&self.writer);
             self.check_poisoned()?;
+            let source_txn = lock(&self.state).txn;
             self.flush_locked(&mut wal)?;
             // Pins the version: no later commit reuses its pages.
             let snap = self.snapshot_inner(false);
@@ -3683,7 +3714,7 @@ impl Database {
                     t.profiles = ts.profiles.to_vec();
                 }
             }
-            (snap, manifest, st.handles().cloned().collect::<Vec<_>>())
+            (snap, manifest, st.handles().cloned().collect::<Vec<_>>(), source_txn)
         };
         let tmp = beside(dest, "checkpoint")?;
         let r = self.write_checkpoint(&tmp, opts.layout, &manifest, &handles, link);
@@ -3705,6 +3736,7 @@ impl Database {
         let parent = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(parent)?;
         stats.txn = manifest.txn;
+        stats.source_txn = source_txn;
         stats.seconds = t0.elapsed().as_secs_f64();
         Ok(stats)
     }

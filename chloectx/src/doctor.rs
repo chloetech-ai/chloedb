@@ -110,8 +110,16 @@ pub fn run(project: &Path) -> i32 {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
     r.ok("binary", &exe);
     let home = paths::home();
+    // Where this build stands against the checkout it was built from.
+    if let Some(v) = crate::version::check(&home, true) {
+        if v.behind > 0 {
+            r.warn("version", v.line());
+        } else {
+            r.ok("version", v.line());
+        }
+    }
     if home.file_name().map_or(false, |n| n == paths::OLD_HOME) {
-        r.ok("stores", format!("{} (the folder's name before the rename; it stays where it is)", home.display()));
+        r.warn("stores", format!("{} is the folder's name before the rename; `chloectx upgrade` moves it to {}", home.display(), home.with_file_name(paths::HOME).display()));
     }
     if std::env::var("CHLOECTX_DISABLE").is_ok_and(|v| v == "1") {
         r.warn("CHLOECTX_DISABLE", "is 1 in this shell (or ENGRAM_DISABLE, its name before the rename): hooks started from here record nothing");
@@ -242,6 +250,18 @@ pub fn run(project: &Path) -> i32 {
             Ok(s) => r.fail("daemon", s["error"].to_string()),
             Err(e) => r.fail("daemon", format!("{e}: {}", log.trim())),
         }
+    }
+
+    // Stores of folders that are gone or were temporary pile up.
+    let all = crate::stores::survey(&home);
+    let now = crate::now();
+    let total: u64 = all.iter().map(|e| e.bytes).sum();
+    let spare: Vec<&crate::stores::Entry> = all.iter().filter(|e| crate::stores::reason(e, now, None).is_some()).collect();
+    let summary = format!("{} store{}, {} in {}", all.len(), if all.len() == 1 { "" } else { "s" }, crate::stores::human(total), home.display());
+    if spare.len() >= 10 {
+        r.warn("all stores", format!("{summary}; {} of them ({}) belong to folders that are gone or temporary: `chloectx prune` removes them", spare.len(), crate::stores::human(spare.iter().map(|e| e.bytes).sum())));
+    } else if !all.is_empty() {
+        r.ok("all stores", format!("{summary} (`chloectx stores` lists them)"));
     }
 
     if r.failed == 0 {

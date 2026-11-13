@@ -185,7 +185,7 @@ struct Ops<'a, 'r> {
 /// What an operator's step is called, and what it works on.
 fn label(n: &Node) -> (&'static str, String) {
     match n {
-        Node::Join { kind, keys, .. } => ("join", format!("{} on {} key{}", if *kind == JoinKind::Left { "left" } else { "inner" }, keys.len(), if keys.len() == 1 { "" } else { "s" })),
+        Node::Join { kind, keys, .. } => ("join", format!("{} on {} key{}", match kind { JoinKind::Left => "left", JoinKind::AsOf => "as-of", JoinKind::Inner => "inner" }, keys.len(), if keys.len() == 1 { "" } else { "s" })),
         Node::With { ctes, .. } => ("with", ctes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")),
         Node::Limit { offset, limit, .. } => ("limit", match limit {
             Some(l) => format!("{l} after {offset}"),
@@ -1209,6 +1209,9 @@ impl<'a> Ops<'a, '_> {
         }
         let on = on.as_ref().map(|c| self.resolved(c)).transpose()?;
         let width = r.columns.len().max(r.rows.first().map_or(0, Vec::len));
+        if *kind == JoinKind::AsOf {
+            return self.as_of(l, r, table, keys, &lefts_at, &ints, on.as_ref(), width);
+        }
         let mut out = Rows { columns: l.columns.iter().chain(&r.columns).cloned().collect(), rows: Vec::new(), keys: None, scores: Some(Vec::new()) };
         let scores = out.scores.as_mut().expect("scores");
         for (li, lrow) in l.rows.iter().enumerate() {
@@ -1244,6 +1247,139 @@ impl<'a> Ops<'a, '_> {
             }
         }
         self.plan.push(format!("join ({}): {} rows", if *kind == JoinKind::Left { "left" } else { "inner" }, out.rows.len()));
+        Ok(out)
+    }
+
+    /// An ASOF JOIN of `l` and `r` (hashed on its keys in `table`): each
+    /// left row beside the right row of its keys with the latest time at
+    /// or before its own (`on` is `left time >= right time`, or `>` for
+    /// strictly before), or NULLs. Rows of a key are sorted by time once,
+    /// and each left row binary-searches them. Of right rows at the same
+    /// time, the last read wins.
+    #[allow(clippy::too_many_arguments)]
+    fn as_of(&mut self, l: Rows, r: Rows, mut table: HashMap<Vec<Part>, Vec<usize>>, keys: &[JoinKey], lefts_at: &[Expr], ints: &[(bool, bool)], on: Option<&Expr>, width: usize) -> Result<Rows> {
+        let Some(Expr::Cmp { op, left: lt, right: rt }) = on else { return Err(err("an ASOF JOIN's match condition compares a time of the left rows with one of the right rows")) };
+        let strict = match op {
+            CmpOp::Ge => false,
+            CmpOp::Gt => true,
+            _ => return Err(err("an ASOF JOIN's match condition is left time >= right time, or >")),
+        };
+        let lw = l.columns.len().max(l.rows.first().map_or(0, Vec::len));
+        let mut times: Vec<Value> = Vec::with_capacity(r.rows.len());
+        for row in &r.rows {
+            self.tick()?;
+            // A column of the right rows is read in place; anything else is
+            // computed over the joined row's shape.
+            times.push(match rt.as_ref() {
+                Expr::Output(j) if (*j as usize) >= lw => row.get(*j as usize - lw).cloned().unwrap_or(Value::Null),
+                _ => {
+                    let padded: Vec<Value> = std::iter::repeat_n(Value::Null, lw).chain(row.iter().cloned()).collect();
+                    value(rt, &padded)?
+                }
+            });
+        }
+        let order = |a: &Value, b: &Value| eval::compare(a, b).ok().flatten().unwrap_or(Ordering::Equal);
+        // Times that are all integers (or all TIMESTAMPs) compare as i64.
+        let ints_at: Option<Vec<i64>> = {
+            let ts = times.iter().all(|t| matches!(t, Value::Timestamp(_) | Value::Null));
+            let is = times.iter().all(|t| matches!(t, Value::Int(_) | Value::Null));
+            (ts || is).then(|| times.iter().map(|t| match t {
+                Value::Timestamp(x) | Value::Int(x) => *x,
+                _ => i64::MIN,
+            }).collect())
+        };
+        for rows in table.values_mut() {
+            rows.retain(|&ri| !matches!(times[ri], Value::Null));
+            match &ints_at {
+                Some(t) => rows.sort_by_key(|&ri| (t[ri], ri)),
+                None => rows.sort_by(|&a, &b| order(&times[a], &times[b]).then(a.cmp(&b))),
+            }
+        }
+        let mut out = Rows { columns: l.columns.iter().chain(&r.columns).cloned().collect(), rows: Vec::with_capacity(l.rows.len()), keys: None, scores: Some(Vec::with_capacity(l.rows.len())) };
+        let mut found = 0usize;
+        let scores = l.scores;
+        // Each left row's match, found on the query's threads: the probe
+        // reads only shared state, and the rows are put together after.
+        let probe = |lrow: &[Value]| -> Result<Option<usize>> {
+            let combos: Vec<Vec<Part>> = if let ([k], [at], [(int, _)]) = (keys, lefts_at, ints) {
+                // One key: no product of the keys' values.
+                let v = match at {
+                    Expr::Output(i) => lrow.get(*i as usize).cloned().unwrap_or(Value::Null),
+                    _ => value(at, lrow)?,
+                };
+                match &v {
+                    Value::Str(_) | Value::Int(_) if !k.left_links => vec![vec![part(&v)]],
+                    _ => join_values(&v, k.left_links, *int)?.iter().map(|v| vec![part(v)]).collect(),
+                }
+            } else {
+                let mut combos: Vec<Vec<Part>> = vec![Vec::new()];
+                for ((k, at), &(int, _)) in keys.iter().zip(lefts_at).zip(ints) {
+                    let vals: Vec<Part> = join_values(&value(at, lrow)?, k.left_links, int)?.iter().map(part).collect();
+                    combos = combos.into_iter().flat_map(|c| vals.iter().map(move |v| [c.clone(), vec![v.clone()]].concat())).collect();
+                }
+                combos
+            };
+            let t = match lt.as_ref() {
+                Expr::Output(i) => lrow.get(*i as usize).cloned().unwrap_or(Value::Null),
+                _ => value(lt, lrow)?,
+            };
+            let mut best: Option<usize> = None;
+            if !matches!(t, Value::Null) {
+                for c in &combos {
+                    let Some(bucket) = table.get(c) else { continue };
+                    let n = match (&ints_at, &t) {
+                        (Some(at), Value::Int(x) | Value::Timestamp(x)) => bucket.partition_point(|&ri| at[ri] < *x || (!strict && at[ri] == *x)),
+                        _ => bucket.partition_point(|&ri| match eval::compare(&times[ri], &t) {
+                            Ok(Some(Ordering::Less)) => true,
+                            Ok(Some(Ordering::Equal)) => !strict,
+                            _ => false,
+                        }),
+                    };
+                    if n > 0 {
+                        let ri = bucket[n - 1];
+                        if combos.len() == 1 || best.is_none_or(|b| order(&times[ri], &times[b]).then(ri.cmp(&b)) == Ordering::Greater) {
+                            best = Some(ri);
+                        }
+                    }
+                }
+            }
+            Ok(best)
+        };
+        const CHUNK: usize = 16_384;
+        let lrows = &l.rows;
+        let chunks = lrows.len().div_ceil(CHUNK);
+        let slots: Vec<std::sync::Mutex<Option<Result<Vec<Option<usize>>>>>> = (0..chunks).map(|_| std::sync::Mutex::new(None)).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let work = || loop {
+            let c = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if c >= chunks {
+                return;
+            }
+            let part: Result<Vec<Option<usize>>> = lrows[c * CHUNK..((c + 1) * CHUNK).min(lrows.len())].iter().map(|r| probe(r)).collect();
+            *slots[c].lock().unwrap_or_else(|e| e.into_inner()) = Some(part);
+        };
+        let threads = self.opts.threads.max(1).min(chunks.max(1));
+        super::pool::Pool::global().run(threads - 1, &work);
+        self.opts.check()?;
+        let mut bests: Vec<Option<usize>> = Vec::with_capacity(lrows.len());
+        for s in slots {
+            bests.extend(s.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every chunk probed")?);
+        }
+        for (li, (lrow, best)) in l.rows.into_iter().zip(bests).enumerate() {
+            self.tick()?;
+            let mut row = lrow;
+            match best {
+                Some(ri) => {
+                    found += 1;
+                    row.extend(r.rows[ri].iter().cloned());
+                }
+                None => row.extend(std::iter::repeat_n(Value::Null, width)),
+            }
+            self.charge.row(&row)?;
+            out.rows.push(row);
+            out.scores.as_mut().expect("scores").push(scores.as_ref().map_or(0.0, |s| s[li]));
+        }
+        self.plan.push(format!("join (as-of): {} rows, {found} matched", out.rows.len()));
         Ok(out)
     }
 

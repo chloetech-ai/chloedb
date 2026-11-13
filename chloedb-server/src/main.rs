@@ -261,6 +261,12 @@ struct Args {
     /// Queries running at once; more wait for a slot until their deadline.
     #[arg(long, default_value_t = 64)]
     max_concurrent: usize,
+    /// How long a client's query waits for a slot (--max-concurrent)
+    /// before it is refused with 429 and Retry-After, instead of waiting
+    /// until its deadline (0: until its deadline). A coordinator's calls to
+    /// its shards always wait until their deadline.
+    #[arg(long, default_value_t = 0)]
+    admission_wait_ms: u64,
     /// The most rows a query may reach, OFFSET included: a larger LIMIT
     /// plus OFFSET, or a query without a LIMIT that matches more, fails
     /// (0: no limit).
@@ -314,6 +320,11 @@ struct Args {
     /// (default: 64; 0: none kept).
     #[arg(long)]
     filter_cache_mb: Option<usize>,
+    /// Memory for answers kept between queries, in MiB: a read query asked
+    /// again on the same version of the data is answered from them, without
+    /// running (default: 64; 0: none kept). Every write moves the version on.
+    #[arg(long)]
+    answer_cache_mb: Option<usize>,
     /// Write requests the server holds at once (embedding, waiting for the
     /// writer, or being applied); more are refused with 429 (0: no limit).
     #[arg(long, default_value_t = 1024)]
@@ -322,6 +333,12 @@ struct Args {
     /// requests take up to 16 MiB).
     #[arg(long, default_value_t = 256)]
     max_body_mb: usize,
+    /// How long the tables OpenTelemetry logs make (`otel_logs`) keep
+    /// their rows, as `30 days` or `12h`: older rows are dropped, a window
+    /// of segments at a time (default: kept for ever). Tables already
+    /// there keep their own retention.
+    #[arg(long, value_parser = |s: &str| chloedb::schema::Retain::parse_period(s).map_err(|e| e.to_string()))]
+    otlp_retain: Option<i64>,
     /// The agent's default model.
     #[arg(long, default_value = chloedb_server::agent::DEFAULT_MODEL)]
     model: String,
@@ -540,8 +557,9 @@ struct Args {
     #[arg(long, env = "CHLOEDB_CLUSTER_NAME")]
     cluster_name: Option<String>,
     /// The cluster's environment ("production", "staging"...): the
-    /// command center treats one starting with "prod", or none, as
-    /// production.
+    /// command center treats one starting with "prod" as production, and
+    /// none too, except opened on this machine (localhost), where it is a
+    /// sandbox whose writes need no second ask.
     #[arg(long, env = "CHLOEDB_ENVIRONMENT")]
     environment: Option<String>,
     /// Where people reach this server's command center
@@ -1270,14 +1288,17 @@ async fn run() {
         timeout_ms: a.timeout_ms,
         max_timeout_ms: a.max_timeout_ms,
         max_concurrent: a.max_concurrent,
+        admission_wait_ms: a.admission_wait_ms,
         max_result_window: a.max_result_window,
         max_scroll_rows: Some(a.max_scroll_rows),
         max_groups: a.max_groups,
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
         filter_cache_mb: a.filter_cache_mb,
+        answer_cache_mb: a.answer_cache_mb,
         max_queued_writes: a.max_queued_writes,
         max_body_mb: a.max_body_mb,
+        otlp_retain: a.otlp_retain,
         model: a.model,
         api_key: std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty()),
         api_base: a.api_base,

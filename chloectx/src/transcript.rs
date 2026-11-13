@@ -132,6 +132,11 @@ pub fn read(path: &Path) -> Result<Vec<Timed>> {
                 if is_synthetic(&text) {
                     continue;
                 }
+                // A harness's envelope around the prompt is not part of it.
+                let text = crate::envelope::clean(&text);
+                if text.is_empty() {
+                    continue;
+                }
                 if in_turn {
                     push(&mut out, Event::Stop { answer: std::mem::take(&mut last_answer) });
                 }

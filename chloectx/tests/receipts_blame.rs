@@ -88,7 +88,7 @@ fn a_line_is_blamed_on_the_recall_before_its_edit_and_the_recall_replays() {
     // as superseded since, and the replay: identical then, different now.
     let b = ok(call(&d, json!({"op": "blame", "target": "src/retry.rs:2"})));
     let text = b["text"].as_str().unwrap();
-    assert!(b["how"].as_str().unwrap().contains("holds the line"), "{text}");
+    assert!(b["how"].as_str().unwrap().contains("added the line"), "{text}");
     assert_eq!(b["edit"]["session"], json!("s2"), "{text}");
     assert!(text.contains("Change this: payment retries"), "{text}");
     assert!(text.contains("Read src/retry.rs"), "{text}");

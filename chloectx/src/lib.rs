@@ -21,8 +21,10 @@ pub mod deep;
 pub mod distill;
 pub mod doctor;
 pub mod embed;
+pub mod envelope;
 pub mod env;
 pub mod fixes;
+pub mod health;
 pub mod hook;
 pub mod inspect;
 pub mod install;
@@ -37,9 +39,11 @@ pub mod redact;
 pub mod snapshots;
 pub mod sqlguard;
 pub mod store;
+pub mod stores;
 pub mod sync;
 pub mod transcript;
 pub mod ui;
+pub mod version;
 
 #[derive(Debug)]
 pub struct Error(pub String);

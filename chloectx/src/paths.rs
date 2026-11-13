@@ -33,7 +33,7 @@ pub const HOME: &str = "chloectx";
 pub const OLD_HOME: &str = "engram";
 
 /// `$XDG_DATA_HOME`, else `~/.local/share`.
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
@@ -230,6 +230,22 @@ pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
+}
+
+/// Makes a new directory under the system's temporary directory that only
+/// its owner can open, with a name no one can guess or make first
+/// (`mkdtemp`): a capsule's copy and a pack's backup of the store go there.
+pub fn private_temp_dir(prefix: &str) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut tmpl = std::env::temp_dir().join(format!("{prefix}-XXXXXX")).into_os_string().as_bytes().to_vec();
+    tmpl.push(0);
+    // SAFETY: a NUL-terminated buffer that mkdtemp rewrites in place.
+    let p = unsafe { libc::mkdtemp(tmpl.as_mut_ptr() as *mut libc::c_char) };
+    if p.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    tmpl.pop();
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&tmpl)))
 }
 
 #[cfg(test)]
