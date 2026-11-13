@@ -655,6 +655,11 @@ async fn slow_proxy(to: &str, delay: Arc<std::sync::atomic::AtomicU64>) -> Strin
             let (to, delay) = (to.clone(), delay.clone());
             tokio::spawn(async move {
                 let Ok(server) = tokio::net::TcpStream::connect(&to).await else { return };
+                // As the server and the coordinator's channels do: without
+                // it, Linux holds some small writes for the peer's delayed
+                // ACK (40 ms), a stall of the proxy's own.
+                let _ = client.set_nodelay(true);
+                let _ = server.set_nodelay(true);
                 let (mut cr, mut cw) = client.into_split();
                 let (mut sr, mut sw) = server.into_split();
                 tokio::spawn(async move { tokio::io::copy(&mut cr, &mut sw).await });
@@ -765,9 +770,14 @@ async fn a_copy_asked_less_while_slow_is_asked_again_with_kept_statistics() {
 }
 
 /// With `--hedge-adaptive` a query to a copy that stalls is hedged once
-/// it has taken longer than that copy usually takes (its 95th percentile,
-/// a few ms here), not after the fixed `--hedge-ms`; and a copy outrun so
-/// is not put in its cool-off, which is for failing.
+/// it has taken longer than that copy usually takes (its tail: the average
+/// of its recent round trips plus six deviations), not after the fixed
+/// `--hedge-ms`; and a copy outrun so is not put in its cool-off, which is
+/// for failing.
+///
+/// The stall and `--hedge-ms` are set from the round trips measured here,
+/// not fixed: a few ms on a fast machine, tens on a small VM, where a fixed
+/// 80 ms stall is within the copies' own tail and no hedge can beat it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_adaptive_hedge_asks_another_copy_of_a_stalled_one_sooner() {
     use chloedb_server::coord::{CoordOptions, Route};
@@ -779,35 +789,59 @@ async fn an_adaptive_hedge_asks_another_copy_of_a_stalled_one_sooner() {
     let via_a = slow_proxy(&url_a, Arc::new(0.into())).await;
     let via_b = slow_proxy(&url_b, stall.clone()).await;
     let metric = |c: &Coordinator, name: &str| c.metrics().into_iter().find(|f| f.name == name).map(|f| f.values.iter().map(|v| v.1).sum::<f64>()).unwrap_or(0.0);
+    let ask = |svc: Arc<Service>| async move {
+        let t = Instant::now();
+        let sql = "SELECT id FROM products WHERE MATCH(body, 'kettle') ORDER BY bm25(body, 'kettle') DESC LIMIT 5".to_string();
+        assert!(!svc.query(QueryReq { sql, ..Default::default() }).await.unwrap().rs.rows.is_empty());
+        t.elapsed()
+    };
+    let cluster = |opts: CoordOptions| {
+        let urls = vec![format!("{via_a}|{via_b}")];
+        async move {
+            let c = Arc::new(Coordinator::connect_with(urls, opts).await.unwrap());
+            let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+            (c, svc)
+        }
+    };
+    // How long a query takes here, with no stall and no hedges: the 95th
+    // percentile of 80, after 10 that warm up. The stall is ten times that
+    // (80 ms at least, 1 s at most), and --hedge-ms a quarter longer than
+    // the stall, so that a fixed hedge waits it out.
+    let (_, svc) = cluster(CoordOptions { hedge: Duration::from_secs(60), ..Default::default() }).await;
+    for _ in 0..10 {
+        ask(svc.clone()).await;
+    }
+    let mut usual = Vec::new();
+    for _ in 0..80 {
+        usual.push(ask(svc.clone()).await);
+    }
+    usual.sort();
+    let p95 = usual[usual.len() * 95 / 100];
+    let stalled = (p95 * 10).clamp(Duration::from_millis(80), Duration::from_secs(1));
+    let hedge = stalled + stalled / 4;
+    eprintln!("a query takes {:?} at the median, {p95:?} at p95: stall {stalled:?}, --hedge-ms {hedge:?}", usual[usual.len() / 2]);
     for (route, adaptive) in [(Route::RoundRobin, false), (Route::RoundRobin, true), (Route::LeastCost, true)] {
         stall.store(0, Ordering::Relaxed);
-        let opts = CoordOptions { route, hedge_adaptive: adaptive, ..Default::default() };
-        let c = Arc::new(Coordinator::connect_with(vec![format!("{via_a}|{via_b}")], opts).await.unwrap());
-        let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
-        let ask = || async {
-            let t = Instant::now();
-            let sql = "SELECT id FROM products WHERE MATCH(body, 'kettle') ORDER BY bm25(body, 'kettle') DESC LIMIT 5".to_string();
-            assert!(!svc.query(QueryReq { sql, ..Default::default() }).await.unwrap().rs.rows.is_empty());
-            t.elapsed()
-        };
+        let (c, svc) = cluster(CoordOptions { route, hedge, hedge_adaptive: adaptive, ..Default::default() }).await;
         // Both copies answer alike long enough to know how long they take.
         for _ in 0..80 {
-            ask().await;
+            ask(svc.clone()).await;
         }
-        stall.store(80, Ordering::Relaxed);
+        stall.store(stalled.as_millis() as u64, Ordering::Relaxed);
         let mut worst = Duration::ZERO;
         for _ in 0..10 {
-            worst = worst.max(ask().await);
+            worst = worst.max(ask(svc.clone()).await);
         }
         let (hedges, avoided) = (metric(&c, "chloedb_shard_hedges_total"), metric(&c, "chloedb_replicas_avoided"));
         eprintln!("{} adaptive={adaptive}: worst {worst:?}, hedges {hedges}, avoided {avoided}", route.name());
         if adaptive {
-            assert!(worst < Duration::from_millis(40), "{} adaptive: a stalled copy is hedged early: {worst:?}", route.name());
+            // Hedged within its tail, well before the stall is over.
+            assert!(worst < stalled / 2, "{} adaptive: a stalled copy is hedged early: {worst:?} (stall {stalled:?})", route.name());
             assert!(hedges >= 1.0, "hedged: {hedges}");
             assert_eq!(avoided, 0.0, "outrun early, not put in its cool-off");
         } else {
-            // The fixed 100 ms hedge is longer than the stall: waited out.
-            assert!(worst >= Duration::from_millis(70), "fixed: {worst:?}");
+            // The fixed hedge is longer than the stall: waited out.
+            assert!(worst >= stalled * 7 / 8, "fixed: {worst:?} (stall {stalled:?})");
         }
     }
 }
