@@ -885,9 +885,9 @@ function render(page, r) {
     const m2 = modal({
       title, wide: true, body: [
         h("div", { class: "notice" }, "Copy it now: the server keeps only its hash, so this is the only time it is shown."),
-        h("div", { class: "row nw" }, h("div", { class: "secret grow" }, j.secret), h("button", { class: "btn primary", onclick: () => copy(j.secret, "Key copied") }, icon("copy"), "Copy")),
+        h("div", { class: "row nw" }, h("div", { class: "secret grow", "data-secret": "key" }, j.secret), h("button", { class: "btn primary", onclick: () => copy(j.secret, "Key copied") }, icon("copy"), "Copy")),
         h("dl", { class: "kv" }, [["name", j.key?.name], ["scope", j.key?.tables ? `limited to ${core.keyLabel(j.key)}` : j.key?.scope], j.key?.owner ? ["owner", j.key.owner] : null, ["expires", j.key?.expires_ms ? `${full(j.key.expires_ms)} (${until(j.key.expires_ms)})` : "never"]].filter(Boolean).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v ?? "–")])),
-        h("div", { class: "small muted" }, "Try it:"), h("div", { class: "row nw" }, h("pre", { class: "code grow" }, curl), h("button", { class: "btn icon sm", onclick: () => copy(curl) }, icon("copy"))),
+        h("div", { class: "small muted" }, "Try it:"), h("div", { class: "row nw" }, h("pre", { class: "code grow", "data-secret": "key" }, curl), h("button", { class: "btn icon sm", onclick: () => copy(curl) }, icon("copy"))),
         note ? h("div", { class: "notice" }, note) : null,
         j.closed ? h("div", { class: "notice" }, "This server was open; it now needs a key for every request. This page keeps working: it signed in with the new key.") : null,
       ], foot: [h("button", { class: "btn primary", onclick: () => m2.close() }, "Done")],
