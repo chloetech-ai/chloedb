@@ -25,7 +25,7 @@ use std::sync::Arc;
 use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path as Key;
-use object_store::{ObjectStore, ObjectStoreExt, PutPayload, WriteMultipart};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion, WriteMultipart};
 
 use crate::error::{Error, Result};
 
@@ -409,6 +409,107 @@ impl crate::storage::cold::ObjectStore for Bucket {
     fn describe(&self) -> String {
         self.url.clone()
     }
+
+    fn get(&self, k: &str) -> Result<Option<(Vec<u8>, String)>> {
+        let (s3, url, full) = self.at(k);
+        self.call(async move {
+            let key = key(&url, &full)?;
+            let got = match s3.get(&key).await {
+                Ok(got) => got,
+                Err(object_store::Error::NotFound { .. }) => return Ok(None),
+                Err(e) => return Err(failed_at(&url, &full, e)),
+            };
+            let version = entity_tag(&url, &full, got.meta.e_tag.clone())?;
+            let bytes = got.bytes().await.map_err(|e| failed_at(&url, &full, e))?;
+            Ok(Some((bytes.to_vec(), version)))
+        })
+    }
+
+    fn put_if_absent(&self, k: &str, bytes: &[u8]) -> Result<Option<String>> {
+        self.put_when(k, bytes, PutMode::Create)
+    }
+
+    fn put_if_version(&self, k: &str, bytes: &[u8], version: &str) -> Result<Option<String>> {
+        self.put_when(k, bytes, PutMode::Update(UpdateVersion { e_tag: Some(version.to_string()), version: None }))
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let (s3, url, full) = self.at(prefix);
+        let own = self.prefix.len();
+        self.call(async move {
+            // object_store lists by whole path segments: list the deepest
+            // "directory" the prefix names, and keep the keys that start
+            // with all of it.
+            let dir = match full.rfind('/') {
+                Some(i) => Some(key(&url, &full[..i])?),
+                None => None,
+            };
+            let mut keys = Vec::new();
+            let mut listing = s3.list(dir.as_ref());
+            while let Some(meta) = listing.next().await {
+                let at = meta.map_err(|e| failed_at(&url, &full, e))?.location;
+                if at.as_ref().starts_with(&full) {
+                    keys.push(at.as_ref()[own..].to_string());
+                }
+            }
+            Ok(keys)
+        })
+    }
+
+    fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
+        let (s3, url, full) = self.at(prefix);
+        self.call(async move {
+            let dir = match full.trim_end_matches('/') {
+                "" => None,
+                d => Some(key(&url, d)?),
+            };
+            let listed = s3.list_with_delimiter(dir.as_ref()).await.map_err(|e| failed_at(&url, &full, e))?;
+            let mut names: Vec<String> = listed.common_prefixes.iter().filter_map(|p| p.filename().map(str::to_string)).collect();
+            names.sort();
+            Ok(names)
+        })
+    }
+
+    fn get_file(&self, k: &str, dest: &Path) -> Result<()> {
+        let (s3, url, full) = self.at(k);
+        let dest = dest.to_path_buf();
+        self.call(async move {
+            let key = key(&url, &full)?;
+            let got = s3.get(&key).await.map_err(|e| failed_at(&url, &full, e))?;
+            let mut parts = got.into_stream();
+            let mut f = std::fs::File::create(&dest)?;
+            while let Some(part) = parts.next().await {
+                f.write_all(&part.map_err(|e| failed_at(&url, &full, e))?)?;
+            }
+            Ok(f.sync_all()?)
+        })
+    }
+}
+
+impl Bucket {
+    /// A put under a condition: the object's new version, or `None` when
+    /// the condition did not hold and nothing was written.
+    fn put_when(&self, k: &str, bytes: &[u8], mode: PutMode) -> Result<Option<String>> {
+        let (s3, url, full) = self.at(k);
+        let payload = PutPayload::from(bytes.to_vec());
+        self.call(async move {
+            let key = key(&url, &full)?;
+            let updating = matches!(mode, PutMode::Update(_));
+            match s3.put_opts(&key, payload, PutOptions { mode, ..PutOptions::default() }).await {
+                Ok(done) => Ok(Some(entity_tag(&url, &full, done.e_tag)?)),
+                Err(object_store::Error::AlreadyExists { .. }) | Err(object_store::Error::Precondition { .. }) => Ok(None),
+                // Replacing an object that is gone: its version is not the one asked for.
+                Err(object_store::Error::NotFound { .. }) if updating => Ok(None),
+                Err(e) => Err(failed_at(&url, &full, e)),
+            }
+        })
+    }
+}
+
+/// An object's entity tag, which is its version: a store that gives none
+/// cannot be written to under a condition.
+fn entity_tag(url: &str, k: &str, tag: Option<String>) -> Result<String> {
+    tag.ok_or_else(|| Error::Io(std::io::Error::other(format!("{url}{k}: the store gave the object no entity tag, which conditional writes need"))))
 }
 
 #[cfg(test)]

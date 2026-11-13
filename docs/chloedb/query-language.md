@@ -372,8 +372,9 @@ BM25 of the analysed terms of `text`, disjunctively: a row scores if it contains
 | `stopwords` | 1 (0 on a `simple` field) | `0` keeps English function words in the query, `1` drops them |
 | `fuzzy` | 0 | `1`, `2` or `'auto'`: also score the indexed terms that many edits from each word; `'auto'` corrects only the words that look like typos ([typos](#typos-and-synonyms)) |
 | `synonyms` | 0 | `1`: also score each word's synonyms |
-| `syntax` | `'query'` | `'plain'` reads `+`, `-`, quotes and `^` as punctuation: the text is words alone |
+| `syntax` | `'query'` | `'plain'` reads `+`, `-`, quotes and `^` as punctuation: the text is words alone; `'terms'` reads analysed terms, each weighted by `^w`, as they are written ([query expansion](#query-expansion-expand)) |
 | `min` | none | `n` or `'p%'`: rank only the rows with at least that many of the text's optional words and phrases |
+| `expand` | 0 | `n`: also rank by the terms the query's top `n` rows hold most ([query expansion](#query-expansion-expand)), with `expand_terms` (20) and `expand_weight` (0.85) |
 
 Keeping function words is better for short questions: on Quora it gains 0.055 nDCG@10, while on TREC-COVID, whose queries are full questions, dropping them gains the same amount.
 
@@ -906,6 +907,59 @@ SELECT id FROM papers WHERE MATCH(body, 'gnn', synonyms => 1) LIMIT 10;
 
   On 500,477 passages, half of MS MARCO's first million, with the first 300 dev queries, each given a typo as the engine comparison does (two letters of its longest word swapped; 271 queries take one), the typed query's top 10 holds 0.685 of the top 10 that plain `bm25` gives the query as written, against 0.346 widening every word and 0.383 without typo tolerance. On the queries as written, `'auto'` keeps 0.946 of plain `bm25`'s top 10, against 0.340 widening every word. The median typed query takes 10.0 ms, against 48.5 ms before this change and 20.6 ms widening every word on its faster walk and scoring, and the median query as written 0.35 ms (19 ms widening every word), since it walks no dictionary. Through a coordinator over two shards of the million passages (both halves, on the same machine), the median typed query takes 15.8 ms against 112 ms before (p99 30 against 287 ms), and four clients get 137 typed queries a second against 17.7: a shard also walks once per query rather than twice, its statistics round and its query sharing the walk. On BEIR's SciFact and NFCorpus, whose queries are spelled right, nDCG@10 with `'auto'` went from 0.673 and 0.294 widening every word to 0.693 and 0.331, level with plain `bm25` (0.691 and 0.329). The thresholds were chosen on MS MARCO's dev queries, not BEIR's test queries. One segment on a 4-core cloud VM, Intel Xeon @ 2.10GHz; `cargo run --release --example typo_queries`.
 - **`synonyms => 1`** also matches what the server's synonym list says a word or phrase means. The list is in Solr's format: `laptop, notebook, portable computer` makes each find the others, and `tv => television` makes `tv` find `television` but not the reverse. Both sides are analysed like documents, so `laptops` finds `notebook`. A one-word synonym of a word shares that word's document frequency, as Lucene's synonym queries do; the words of a longer synonym score on their own. [chloedb-server](server.md) loads it from `--synonyms FILE` and edits it at `/v1/synonyms`; from Rust, set `ExecOptions::synonyms`. Without a list, `synonyms => 1` is an error that says so.
+- **A table's own list.** `CREATE SYNONYMS ON products AS 'sofa, couch\ntv => television'` gives a table rules of its own, which `synonyms => 1` on that table's searches uses after the server's list. It is kept as the stored function `synonyms_products()`, so it has versions (`CREATE OR REPLACE SYNONYMS` makes the next, `CREATE OR REPLACE FUNCTION synonyms_products FROM VERSION 1` goes back) and a coordinator writes it on every shard; `DROP SYNONYMS [IF EXISTS] ON products` removes it. The rules are checked when the list is made. `GET /v1/synonyms` lists each table's.
+- **Mined synonyms** are proposals for that list, never applied by themselves: `Db::mine_synonyms` or `POST /v1/synonyms/mine` reads the words of a stored text field and embeds the 3,000 most frequent with the model of one of the table's vector fields, proposing pairs whose vectors are close (cosine 0.6 or more) and whose spellings are not alike (a model of word pieces puts `adel` by `adela`; numbers such as `b10` and `b11` still pass); or reads a table of searches (`context`, `ts` in seconds, `text`) and proposes `a => b` where people of two or more contexts rewrote one word of a search into another within a minute. On Wayfair's WANDS (`chloedb-synonyms-eval`, `chloedb/results/text/synonyms_wands.json`, an Intel Xeon at 2.10 GHz, 4 cores), the words of 42,994 product names embedded by potion-retrieval-32M gave pairs such as `kids, children`, `bike, bicycle` and `picture, photo` beside related words that are not synonyms (`animal, dog`, `hawaii, honolulu`), and none of the lists made a measurable difference to nDCG@10 (0.4327 without; 0.4343 with the 33 rules at cosine 0.6, p = 0.31), while the 462 rules at 0.4 lowered it to 0.4231 (p = 0.007). Read the proposals before keeping them.
+
+## Query expansion: `expand`
+
+`bm25(body, :q, expand => 10)` ranks by the query's words and by the words its first ranking's top 10 rows hold most: pseudo-relevance feedback (RM3). It finds rows that use other words for what the query asks, such as `antibodies` for `vaccines`.
+
+```sql
+SELECT id, title FROM papers ORDER BY bm25(body, :q, expand => 10) DESC LIMIT 10;
+SELECT id, title FROM papers WHERE year >= 2023
+ORDER BY bm25(body, :q, expand => :n, expand_terms => 10, expand_weight => 0.7) DESC LIMIT 10;
+```
+
+- **How.** The query runs in two steps. The first ranks the rows as the call would without `expand`, through the query's `WHERE`, and reads the field's text of the top `n` (`SELECT body, score() FROM papers WHERE year >= 2023 ORDER BY bm25(body, :q) DESC LIMIT 10`). Each of those rows weighs its terms by its share of the scores and each term's share of the row; the `expand_terms` best terms over all of them share `1 − expand_weight` of the weight, and the query's own terms share `expand_weight`. The second step is the query with the call rewritten to those analysed, weighted terms (`bm25(body, 'vaccin^0.85 antibodi^0.03 immun^0.03 ...', syntax => 'terms')`), and the answer's plan lines start with what was added: `bm25(body) expanded from 10 rows of papers with 20 terms: antibodi 0.031, immun 0.029, ...`.
+- **Options.** `expand` is the rows read, from 0 (no expansion, the call as written) to 100; `expand_terms` the terms added, up to 100; `expand_weight` the query's own share, from 0 to 1. Each may be a parameter (`expand => :n`). A call that expands takes no `min`, `min_rows` or `max_rows`.
+- **Where.** In a `SELECT` of one table, in its columns, `WHERE` or `ORDER BY`, and in a `WITH` or a subquery of one table. A join is refused, and so is `expand` in a rank profile or a stored function. On a coordinator over shards the first step is an ordinary query of the shards, merged, and the coordinator rewrites the query, so every shard ranks by the same terms.
+- **Cost.** A second query and the analysis of `n` rows' text: on BEIR's SciFact, NFCorpus and ArguAna the median query took 1.8, 1.7 and 2.9 ms against 0.09, 0.03 and 0.77 ms for plain `bm25` (one core of a 4-core cloud VM, Intel Xeon @ 2.10GHz).
+- **Quality.** The defaults (10 rows, 20 terms, 0.85) were chosen on SciFact's train and NFCorpus's dev judgements (`chloedb/results/text/bm25_rm3_tuning_*.json`). On the test judgements, nDCG@10 went from 0.691 to 0.693 on SciFact (p = 0.55), 0.329 to 0.346 on NFCorpus (p = 0.0001) and 0.362 to 0.369 on ArguAna (p = 0.0006) (`chloedb/results/text/bm25_rm3.json`, `chloedb-bm25-eval --variants plain,rm3`). Expansion helps most where queries are short and documents use a field's own vocabulary; a setting that keeps less of the query (0.5) lowered SciFact to 0.646, so measure before lowering `expand_weight`.
+
+## Understanding a query's words: `understand`
+
+`bm25(field, :q, understand => 'boost')` reads the words of a search for the values of the table's `KEYWORD` fields they name (`white`, a colour; `coffee table`, a class) and for ranges of numbers (`under $300`), and ranks by the text and by them:
+
+```sql
+SELECT id, name FROM products
+ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'class, color, price') DESC LIMIT 10;
+-- :q = 'white coffee table under $300' ranks as
+-- bm25(body, 'white coffee table') * (1 + 0.25 * (CASE WHEN color = 'white' THEN 1 ELSE 0 END
+--   + CASE WHEN class IN ('Coffee Tables', 'Coffee & Cocktail Tables') THEN 1 ELSE 0 END
+--   + CASE WHEN price < 300 THEN 1 ELSE 0 END))
+```
+
+- **What names a value.** A field's values are read with a query (`SELECT color, COUNT(*) ... GROUP BY color`, once per version of the table, or on a coordinator once a minute) and analysed as the text field is. Words name a value when they are a run of its words, in its order, that ends with its last word, its head: `coffee table` names `Coffee Tables` and `Coffee & Cocktail Tables`, and `chair` every value that ends in chairs, but `table` does not name `Table Lamps`. A run inside a longer one of another field is that one's (`coffee` of `coffee table` is not the colour coffee). Values of several fields named by the same words are one condition, any of them.
+- **A check against the rows.** A run counts only when, of the rows whose text holds its words, at least `understand_share` (0.05) hold one of its values: `up` is not the brand Up when almost no row that says up is of it. That is two counts a run, about a millisecond on a table of 165,000 rows.
+- **Ranges.** `under`, `below`, `less than`, `up to`, `over`, `above`, `more than`, `at least`, `between .. and ..`, `since`, `after` and `before` followed by a number (`$1,500`, `2.5`, `10k`) are a range of a numeric field named in `understand_fields`: the one named next to them (`over 10 citations`), a field named for years for a year (`since 2020`), or the only one. Their words leave the ranked text.
+- **Modes.** `'boost'` multiplies the text score by `1 + understand_weight` (0.25) for each condition a row meets, a [rank-safe boost](#rank-safe-boosts). `'filter'` also puts each run that names a value in full, and each range, in the `WHERE` (a row without a value of the field is kept). `'off'` is the call as written. Each option may be a parameter (`understand => :mode`).
+- **Fields.** Without `understand_fields`, every `KEYWORD` field of the table but its key, and a field of more than 20,000 values is left out as a name rather than a facet; a listed field reads up to 200,000. A call that understands ranks the rows of one table, without a join, and goes with `expand` (it understands first).
+- `Db::understand(table, field, text, options)` (chloedb-server's [`POST /v1/understand`](server.md)) returns what a text says without ranking: its runs, the values each names, their shares, the ranges and the conditions.
+- **Measured.** On Wayfair's WANDS (42,994 products, 480 queries; name and description as the text, class, category, colour, style, material, shape and product type as keyword fields) `'boost'` moved nDCG@10 from 0.707 to 0.731 on the odd-numbered queries (p = 0.002), and the classes its words named held the class the query asks for in 262 of 343 queries; `'filter'` lowered it to 0.631, since a product judged relevant often lacks the value or holds another. On Amazon's ESCI (its 8,956 US test queries of the small version and the 164,900 products judged for them; brand and colour listed) `'boost'` moved it from 0.394 to 0.396 (p = 0.007): its titles already hold their brands. Without the check against the rows, ESCI's ranking fell to 0.391. The weight and share were chosen on the even-numbered queries of both. A query took 0.9 to 1.0 ms at the median, against 0.07 to 0.12 ms for `bm25` alone (`chloedb-understand-eval`, `chloedb/results/text/understand_wands.json` and `understand_esci.json`, Intel Xeon @ 2.10GHz, 4 cores).
+
+## Did you mean: correcting a query's words
+
+`Db::correct(table, field, text)` (chloedb-server's [`POST /v1/correct`](server.md)) returns the text with the words that look like typos of a TEXT field's terms replaced, for a search box to offer as "did you mean":
+
+```json
+{"text": "mRNA vaccines for neural networks", "changed": true,
+ "words": [{"word": "vacines", "term": "vacin", "to": "vaccin", "to_word": "vaccines", "edits": 1, "chance": 0.86}, ...]}
+```
+
+- A word is corrected only when no row holds it: a word some document uses is a word of the collection. Words with digits or capitals inside (`p150n`, `dLNs`) are names and codes, and stay.
+- Its neighbours are the field's terms one edit away (up to 5 letters) or two (longer), as `fuzzy => 'auto'` finds them, and it takes the one most likely meant if that chance is at least 0.5: the noisy channel of [typos](#typos-and-synonyms), with an unseen word counted as in 0.05 documents, so that a neighbour one edit away must be in 5 or more documents. The word shown keeps the typed word's ending on the corrected term (`ifnlammation` gives `inflammation`).
+- On BEIR's queries with a typo typed in (two letters of the longest word swapped), it corrected 0.73, 0.66 and 0.85 of them back to the words as written on SciFact, NFCorpus and ArguAna; of the queries it changed, 0.91, 0.90 and 0.98 were corrected back; and it changed 4.0%, 2.8% and 0% of the queries as written (`chloedb/results/text/bm25_did_you_mean.json`, variant `typed_corrected`). For ranking, `fuzzy => 'auto'` stays better than ranking the corrected text: nDCG@10 0.692 against 0.675 on SciFact, as it widens each word with its likely neighbours rather than choosing one.
+- A coordinator does not correct yet: ask one of its shards.
 
 ## Aggregates
 
@@ -1297,6 +1351,53 @@ ORDER BY llm('anthropic/claude-haiku-5-5', 'Grade from 0 to 10 how well the revi
 - **Cost.** Each distinct question (model, prompt and input) is asked once, and its answer kept in memory (10,000 of them), so the same query again asks nothing. A query asks about 100 rows at most, and a process makes 600 requests a minute at most for `llm()`: past either, the query fails before asking (chloedb-server's `--llm-rows` and `--llm-per-minute`, `chloedb::query::llm::set_limits` from Rust). A failed request fails the query (503), after the endpoint's retries. The answer's plan lines end with one that says how many rows were asked about, how many requests were made, and how many answers came from memory; `EXPLAIN` shows the plan of the rows.
 - **Inputs are data.** A row's text is the user's message and the instructions the system prompt, and the model has no tools, so a row's text can change that row's answer and nothing else.
 - **A coordinator** asks the model about the merged rows, on the coordinator, so no shard asks about a row the merge cuts, and its shards need no key. A body that calls `llm()` is a function that returns a value: `CREATE` refuses one in a `RETURNS TABLE` body, and checks each call's model and options. chloedb-server counts the requests in `chloedb_llm_requests_total`, `chloedb_llm_cached_total` and `chloedb_llm_failures_total`.
+
+## Classifiers: `CREATE CLASSIFIER` and `classify()`
+
+A classifier learns a table's labels from its rows' embeddings, and is kept as a [stored function](#stored-functions) of a vector: versioned, rolled back and dropped as any function is, and held by every shard of a cluster. It classifies rows by their stored vectors, and a query's text by the same model's vector of it.
+
+```sql
+-- trains on the rows with a label; answers what it measured
+CREATE CLASSIFIER topic ON products(emb) LABELS category
+  OPTIONS (method = 'logistic', holdout = 0.2) WHERE in_stock;
+
+-- each row's class, a column of the rows a query returns
+SELECT id, title, topic(emb) AS topic FROM products WHERE MATCH(title, :q) LIMIT 20;
+
+-- a query's class: :v is the query's vector ({"embed": "red leather sofa", "field": "emb", "table": "products"})
+SELECT topic(:v), topic(:v, 'score'), topic(:v, 'labels');
+SELECT id FROM products WHERE MATCH(body, :q)
+ORDER BY bm25(body, :q) * (1 + 0.25 * CASE WHEN category = topic(:v) THEN 1 ELSE 0 END) DESC LIMIT 10;
+
+CREATE OR REPLACE CLASSIFIER topic ON products(emb) LABELS category;   -- version 2
+CREATE OR REPLACE FUNCTION topic FROM VERSION 1;                       -- back to the first
+DROP CLASSIFIER topic;
+```
+
+- **Training.** `CREATE CLASSIFIER name ON table(vector_field) LABELS column [OPTIONS (...)] [WHERE condition]` reads `SELECT vector_field, column FROM table WHERE column IS NOT NULL [AND condition]`, at most `max_rows` rows (200,000), keeps the labels with at least `min_rows` rows (2), and holds out a share of them (`holdout`, 0.2, chosen by a hash of each vector, so the same rows every time) to measure the model it keeps. `method = 'logistic'` (the default) fits softmax regression (Adam, `epochs` 30, `learning_rate` 0.01, `l2` 0.0001); `method = 'centroid'` takes each label's mean vector, in one pass. The labels are the values of a `KEYWORD`, `TEXT`, `INT` or `BOOL` column, and the field a `VECTOR` field of one vector a row; a classifier has 10,000 labels at most. The statement answers one row: `labels`, `rows`, `train_accuracy`, `holdout_rows`, `holdout_accuracy`, `took_ms`. A coordinator reads the rows from its shards, trains, and writes the function on every shard.
+- **The function** is `name(v VECTOR, returns TEXT DEFAULT 'label') RETURNS KEYWORD`, its body a call of `classify(:v, model, returns => :returns)`, `model` the classifier as text: its labels, a row of weights a label quantized to 8 bits with a scale of its own, and a bias (about a kilobyte a label for a 512-number vector), and the table, field and embedding model it was trained on. `name(v)` is the label with the highest probability (the softmax of the scores), `NULL` for a `NULL` vector or one below the classifier's `min_score` option (0); `name(v, 'score')` that probability; `name(v, 'labels')` the best label and those whose probability is at least `min_score` and a tenth, best first.
+- **Where it runs.** A call of a value of no row, a parameter's vector, is computed before the query is planned, so it stands anywhere: `WHERE`, `ORDER BY`, a join (its `'labels'`, a list, is a column of the rows only). A call of a row's vector is a column of the rows a query returns, or ranks them in `ORDER BY`, as `llm()` is: computed after the query finds them, for 100,000 rows at most. To filter or group rows by their class, keep it in a column: a `KEYWORD` field `OPTIONS (derive = 'title', model = 'classifier:topic')` holds the label of each row written ([keywords made of text](server.md#keywords-made-of-text-languages-keyphrases-near-duplicates-entities)).
+- **Text.** `Db::classify(name, text, k)` (Rust) and `POST /v1/classify {"name", "text", "k"}` embed a text with the model of the field the classifier was trained on and give its `k` best labels with their probabilities.
+- **Measured** on Wayfair's WANDS (`chloedb-classify-eval`, `chloedb/results/text/classify_wands.json`, an Intel Xeon at 2.10 GHz, 4 cores): 42,994 products, `emb` potion-retrieval-32M's vector of a product's name, 501 product classes. The logistic classifier names the class of 81.9% of held-out products (centroid 81.3%) and the class of 62.9% of the 480 queries (centroid 51.0%; among its best three, 80.4%), at 0.07 ms a query's text, embedding included; it trains in 31 s (centroid 2 s), and a row's class costs 40 µs. As a boost, `bm25(body, :q) * (1 + 0.1 * CASE WHEN class = topic(:v) THEN 1 ELSE 0 END)` raised nDCG@10 from 0.433 to 0.439 (p = 0.002, the same on the odd-numbered queries not used to choose the weight), and a weight of 0.5 lowered it: a wrong class costs the rows that are right.
+
+## Chunks of a table's text: `chunks_of()`
+
+`chunks_of(table, text_field)` is a table of the pieces of each row's text, for a table of chunks that a vector field embeds, or a budgeted context packs from.
+
+```sql
+SELECT id, n, tokens, chunk FROM chunks_of(docs, body, max_tokens => 256, overlap => 32)
+  WHERE lang = 'en' LIMIT 20;
+
+CREATE TABLE chunks (id KEYWORD PRIMARY KEY, doc KEYWORD, n INT, body TEXT, tokens INT,
+  emb VECTOR(512) OPTIONS (embed = 'body', model = 'potion-retrieval-32M'));
+INSERT INTO chunks (id, doc, n, body, tokens)
+  SELECT chunk_id, id, n, chunk, tokens FROM chunks_of(docs, body, max_tokens => 256);
+```
+
+- **Splits.** A text is cut where it says most: before a Markdown heading, then at blank lines, then after a sentence's end, then between words, and between characters only for a word longer than a chunk. The pieces are joined in order while a chunk holds at most `max_tokens` (256, from 16 to 8192), and a heading always starts a chunk. With `overlap => m` (0), each chunk after the first starts with about `m` tokens of the end of the one before, from a word's start.
+- **Tokens** are estimated as a quarter of the characters, rounded up: close for English and most models' tokenizers, and the same on every machine.
+- **Columns.** `id` (the row's key), `n` (0, 1, ...), `chunk_id` (`'<id>#<n>'`, a key for a table of chunks), `chunk`, `tokens` (with the overlap), and `start_char` and `end_char`, where the chunk's own text is in the row's, in characters. The query names some of them, or `*`.
+- **The query** is read as written: its `WHERE` is a condition of the source table's rows, and its `LIMIT` cuts the chunks. It takes no join, `ORDER BY`, `GROUP BY` or `OFFSET`: write the chunks to a table to do those. `INSERT INTO t (columns) SELECT ... FROM chunks_of(...)` writes them, as `INSERT`s of 500 rows each. A coordinator reads the rows from its shards and splits them itself. The field is a stored `TEXT` field; a call reads 1,000,000 rows at most.
 
 ## Running SQL
 

@@ -15,7 +15,7 @@ The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/m
 Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The package is not on PyPI yet, so point pip at the release and it picks the wheel for your machine:
 
 ```sh
-pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
+pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.3.0
 ```
 
 The old name, `import strata`, still works for a release, with a `DeprecationWarning`; release 0.1.0 was published as `strata-db` and imports as `strata` only.
