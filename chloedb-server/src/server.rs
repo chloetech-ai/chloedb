@@ -212,6 +212,13 @@ pub struct Options {
     pub apps: Vec<String>,
     /// What the server sends apps as its token (`CHLOEDB_APP_TOKEN`).
     pub app_token: Option<String>,
+    /// `--tenants URL`: the object store of the tenants this server opens
+    /// (experimental, [`crate::tenants`]), and `--tenant-cache DIR`.
+    pub tenants: Option<String>,
+    pub tenant_cache: Option<PathBuf>,
+    /// `--tenant-idle-s` and `--tenant-open-max`: when tenants are closed.
+    pub tenant_idle_s: Option<f64>,
+    pub tenant_open_max: Option<usize>,
     /// The apps the server starts as child processes (`--start-apps`,
     /// [`crate::app_procs`]); [`crate::apps::Apps::start`] starts them once
     /// the server listens.
@@ -432,6 +439,15 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         svc.image_repository = r;
     }
     svc.apps = crate::apps::Apps::with_started(crate::apps::parse(&o.apps)?, o.app_token.clone(), o.started_apps.clone()).with_token_dir(o.app_token_dir.clone());
+    if let Some(url) = given(&o.tenants) {
+        let cache = o.tenant_cache.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("chloedb-tenants-{}", std::process::id())));
+        let d = crate::tenants::Limits::default();
+        let limits = crate::tenants::Limits { idle: o.tenant_idle_s.filter(|s| *s > 0.0).map_or(d.idle, Duration::from_secs_f64), open_max: o.tenant_open_max.filter(|n| *n > 0).unwrap_or(d.open_max) };
+        let tenants = Arc::new(crate::tenants::Tenants::open(&url, cache, limits)?);
+        tenants.spawn_closer();
+        svc.tenants = Some(tenants);
+        tracing::warn!(store = %url, "tenants are experimental: their layout in the store may change without a migration");
+    }
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;

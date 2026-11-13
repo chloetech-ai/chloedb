@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 31] = [
+pub const FEATURES: [&str; 32] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, TERMS_SYNTAX,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -206,6 +206,11 @@ pub const HASH: &str = "hash";
 /// distance (a similarity with option `metric => 'l2'`), which a Strata
 /// from before it ranked by the dot product.
 pub const DISTANCE: &str = "distance";
+
+/// The feature of a plan with a `bm25` of analysed, weighted terms
+/// (`syntax => 'terms'`), as a query's expansion writes it
+/// ([`crate::query::prf`]); a Strata from before it refuses the syntax.
+pub const TERMS_SYNTAX: &str = "terms_syntax";
 
 /// A statement as a tree of operators ([module docs](self)).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1534,7 +1539,7 @@ impl Node {
         let mut found = false;
         self.visit_exprs(&mut |e| {
             found |= match e {
-                Expr::Bm25 { text, opts, .. } => !crate::query::exec::plain_syntax(opts).unwrap_or(false) && crate::text::query::has_operators(text),
+                Expr::Bm25 { text, opts, .. } => crate::query::exec::syntax(opts).ok() == Some(crate::query::exec::Syntax::Query) && crate::text::query::has_operators(text),
                 Expr::Match { query, .. } => crate::text::query::match_features(query).weights,
                 _ => false,
             }
@@ -2201,6 +2206,11 @@ impl Plan {
         }
         if root.has_min_match() {
             features.push(MIN_MATCH.to_string());
+        }
+        let mut terms = false;
+        root.visit_exprs(&mut |e| terms |= matches!(e, Expr::Bm25 { opts, .. } if crate::query::exec::syntax(opts).ok() == Some(crate::query::exec::Syntax::Terms)));
+        if terms {
+            features.push(TERMS_SYNTAX.to_string());
         }
         if root.has_phrase_prefix() {
             features.push(PHRASE_PREFIX.to_string());
