@@ -385,9 +385,20 @@ impl Principal {
     }
 }
 
+/// Tables of the server's own whose rows an admin acts on, so that a
+/// grant by a pattern (`*`, `rel*`) reads them but does not write them:
+/// only a grant that names one does. Applying a relevance proposal runs
+/// the rank profile in its row ([`chloedb::autopilot::check_apply`]).
+const NAMED_TO_WRITE: &[&str] = &[chloedb::autopilot::PROPOSALS];
+
 /// The most `grants` give on table `table`.
 pub fn granted(grants: &[Grant], table: &str) -> Option<Scope> {
-    grants.iter().filter(|g| g.covers(table)).map(|g| g.scope).max()
+    let own = NAMED_TO_WRITE.iter().any(|t| t.eq_ignore_ascii_case(table));
+    grants
+        .iter()
+        .filter(|g| g.covers(table))
+        .map(|g| if own && g.table.ends_with('*') { g.scope.min(Scope::Read) } else { g.scope })
+        .max()
 }
 
 /// Grants as the API shows them: `{"crawl_*": "admin"}`.

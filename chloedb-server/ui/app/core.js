@@ -131,6 +131,8 @@ const ICONS = {
   cloud: '<path d="M7 18h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.3 9.1 4.5 4.5 0 0 0 7 18z"/>',
   cluster: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
   timeline: '<path d="M3 12h18"/><circle cx="7" cy="12" r="2"/><circle cx="14" cy="12" r="2"/><path d="M7 5v3M14 16v3M19 5v4"/>',
+  bookmark: '<path d="M6 3h12v18l-6-4-6 4z"/>',
+  rocket: '<path d="M5 15c-1.5 1-2 4-2 6 2 0 5-.5 6-2"/><path d="M9 18 6 15c1-4 4-9 11-12 0 0 1 1 1 1-3 7-8 10-12 11z"/><circle cx="14.5" cy="9.5" r="1.5"/>',
   pin: '<path d="M12 17v5M9 3h6l-1 5 3 3v2H7v-2l3-3z"/>',
   share: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   note: '<path d="M4 4h16v12l-4 4H4z"/><path d="M16 20v-4h4M8 9h8M8 13h5"/>',

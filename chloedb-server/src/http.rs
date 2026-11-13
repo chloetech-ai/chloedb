@@ -2037,6 +2037,12 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
         // none.
         let mut seen = std::collections::BTreeSet::new();
         for op in &ops {
+            // A source's offset is the stream's, whatever table the op
+            // writes: a key limited to tables could stop another table's
+            // stream by marking its offset far ahead.
+            if has_source(op) || is_mark(op) {
+                return Err(who.may_server("an operation with a \"source\" (a stream's offset)").unwrap_err());
+            }
             let table = match &op["table"] {
                 Json::Null => None,
                 Json::String(t) => Some(t.as_str()),
@@ -2891,7 +2897,7 @@ fn source_json(s: chloedb::db::Source) -> Json {
 /// ([`crate::sql_check`]): `{runs, deployment, kind, error?, notes}`.
 async fn sql_check(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     Ok(AxJson(crate::sql_check::check(&app.svc, sql, &params)))
 }
 
@@ -3177,7 +3183,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(_) => format!(" WHERE {}", body_str(&b, "where")?),
     };
     let sql = format!("SELECT COUNT(*) FROM {}{filter}", chloedb::query::sql::ident(&table));
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let next = app.svc.sid_next(&sql, None, &params, field, &prefixes, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
     let next: Vec<Json> = prefixes
         .iter()
@@ -3188,7 +3194,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 }
 
 async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
     Ok(AxJson(json!({"stats": stats, "snapshot": snapshot, "version": version})))
 }
@@ -4563,7 +4569,7 @@ async fn log_filter(State(app): State<App>, w: Option<axum::Extension<Principal>
 /// "local"`.
 async fn log_query(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
-    let params = app.svc.params(b.get("params")).await?;
+    let params = app.svc.params(None, b.get("params")).await?;
     let timeout = app.svc.timeout_of(body_u64(&b, "timeout_ms"));
     let local = match b.get("scope").and_then(|v| v.as_str()) {
         None | Some("cluster") => false,

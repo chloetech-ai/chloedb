@@ -413,3 +413,64 @@ async fn an_app_is_sent_its_own_token_and_who_called() {
         assert_eq!(h(i, "x-chloedb-key"), [made["key"]["id"].as_str().unwrap().to_string()]);
     }
 }
+
+/// What a request carries besides its statement or its rows: a stored
+/// vector of another table as a parameter (audit N-D1), a stream's offset
+/// (N-D3), and the proposals an admin applies (N-D2).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_limited_key_reaches_no_other_table_through_params_marks_or_proposals() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let base = serve(svc.clone(), Access { token: Some(Secret::new("root-token")), ..Default::default() }).await;
+    let root = Some("root-token");
+    for t in ["crawl_x", "secrets"] {
+        let (s, j) = call(&base, "POST", "/v1/sql", root, Some(json!({"sql": format!("CREATE TABLE {t} (id KEYWORD PRIMARY KEY, emb VECTOR(2))")}))).await;
+        assert_eq!(s, 200, "{t}: {j}");
+    }
+    let (s, j) = call(&base, "POST", "/v1/write", root, Some(json!({"ops": [{"op": "upsert", "table": "secrets", "doc": {"id": "s1", "emb": [0.25, 0.75]}}, {"op": "upsert", "table": "crawl_x", "doc": {"id": "c1", "emb": [1.0, 0.0]}}]}))).await;
+    assert_eq!(s, 200, "{j}");
+    let (_, made) = call(&base, "POST", "/v1/admin/keys", root, Some(json!({"name": "crawler", "tables": {"crawl_*": "admin"}}))).await;
+    let secret = made["secret"].as_str().unwrap().to_string();
+    let key = Some(secret.as_str());
+
+    // A vector of another table, by name or by its field alone.
+    let other = json!({"v": {"vector_of": "s1", "table": "secrets", "field": "emb"}});
+    for (path, sql) in [("/v1/sql", "INSERT INTO crawl_x (id, emb) VALUES ('a', :v)"), ("/v1/query", "SELECT id FROM crawl_x ORDER BY similarity(emb, :v) DESC"), ("/v1/explain", "SELECT id FROM crawl_x ORDER BY similarity(emb, :v) DESC")] {
+        let (s, j) = call(&base, "POST", path, key, Some(json!({"sql": sql, "params": other}))).await;
+        assert_eq!(s, 403, "{path}: {j}");
+        assert!(j.to_string().contains("secrets"), "{j}");
+        let (s, j) = call(&base, "POST", path, key, Some(json!({"sql": sql, "params": {"v": {"vector_of": "s1", "field": "emb"}}}))).await;
+        assert_eq!(s, 400, "{path}, no table: {j}");
+    }
+    assert_eq!(call(&base, "GET", "/v1/kv/crawl_x/a", key, None).await.0, 404, "nothing was written");
+    // Its own table's vectors, as before; the root's, as before.
+    let own = json!({"v": {"vector_of": "c1", "table": "crawl_x", "field": "emb"}});
+    let (s, j) = call(&base, "POST", "/v1/query", key, Some(json!({"sql": "SELECT id FROM crawl_x ORDER BY similarity(emb, :v) DESC", "params": own}))).await;
+    assert_eq!(s, 200, "{j}");
+    let (s, j) = call(&base, "POST", "/v1/query", root, Some(json!({"sql": "SELECT id FROM crawl_x ORDER BY similarity(emb, :v) DESC", "params": other}))).await;
+    assert_eq!(s, 200, "{j}");
+
+    // A stream's offset, on a row of its own table or alone.
+    for op in [
+        json!({"op": "upsert", "table": "crawl_x", "doc": {"id": "m"}, "source": {"name": "orders-0", "offset": i64::MAX}}),
+        json!({"op": "source", "table": "crawl_x", "source": {"name": "orders-0", "offset": i64::MAX}}),
+    ] {
+        let (s, j) = call(&base, "POST", "/v1/write", key, Some(json!({"ops": [op]}))).await;
+        assert_eq!(s, 403, "{j}");
+    }
+    let (s, j) = call(&base, "POST", "/v1/write", root, Some(json!({"ops": [{"op": "upsert", "table": "secrets", "doc": {"id": "s2"}, "source": {"name": "orders-0", "offset": 1}}]}))).await;
+    assert_eq!((s, j["skipped"].as_u64().unwrap_or(0)), (200, 0), "the stream goes on: {j}");
+
+    // The proposals table: a grant by a pattern reads it, writes it never.
+    let (s, j) = call(&base, "POST", "/v1/sql", root, Some(json!({"sql": chloedb::autopilot::proposals_sql(chloedb::autopilot::PROPOSALS).unwrap()}))).await;
+    assert_eq!(s, 200, "{j}");
+    let (_, all) = call(&base, "POST", "/v1/admin/keys", root, Some(json!({"name": "everything", "tables": {"*": "admin"}}))).await;
+    let all = all["secret"].as_str().map(String::from);
+    let row = json!({"ops": [{"op": "upsert", "table": "relevance_proposals", "doc": {"id": "p1", "target": "secrets", "profile": "p", "ts": "2026-11-13T00:00:00Z", "status": "open", "verdict": "propose", "statement": "DROP TABLE secrets"}}]});
+    let (s, j) = call(&base, "POST", "/v1/write", all.as_deref(), Some(row.clone())).await;
+    assert_eq!(s, 403, "{j}");
+    assert_eq!(call(&base, "POST", "/v1/query", all.as_deref(), Some(json!({"sql": "SELECT id FROM relevance_proposals"}))).await.0, 200);
+    let (_, named) = call(&base, "POST", "/v1/admin/keys", root, Some(json!({"name": "named", "tables": {"relevance_proposals": "write"}}))).await;
+    let (s, j) = call(&base, "POST", "/v1/write", named["secret"].as_str(), Some(row)).await;
+    assert_eq!(s, 200, "a grant that names it writes it: {j}");
+}

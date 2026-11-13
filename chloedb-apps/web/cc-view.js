@@ -62,6 +62,9 @@ const CSS = `
 .ac .appcard .nm { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ac .appcard .ds { color: var(--text-2); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.6em; }
 .ac .appcard .meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.ac .appgrp { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ac .appgrp .earlier { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 0 6px; font-size: 12px; color: var(--muted); }
+.ac .appgrp .earlier a { color: var(--text-2); }
 .ac .sectionhd { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 -4px; } .ac .sectionhd h2 { margin: 0; font-size: 15px; }
 
 /* the made-of meter */
@@ -433,8 +436,24 @@ function render(el, ctx) {
         m && m.runs ? [meter(m, false), h('div', { class: 'meta' }, h('span', {}, h('b', { style: { color: 'var(--ac-c)' } }, pct(m.totals.create.share)), ' from CREATE'), h('span', {}, `${num(m.runs)} lines`))] : h('div', { class: 'ac-meter' }));
     };
     let apps = [];
+    // Apps of one name are one card: the newest, with the earlier ones
+    // linked under it (asking for "the same app again" makes a new app,
+    // and the gallery showed each as if it were a different one).
+    const groups = () => {
+      const by = new Map();
+      for (const a of apps) {
+        const k = String(a.name || a.id).trim().toLowerCase();
+        if (!by.has(k)) by.set(k, []);
+        by.get(k).push(a);
+      }
+      return [...by.values()];
+    };
+    const group = ([a, ...older]) => (older.length
+      ? h('div', { class: 'appgrp' }, card(a), h('div', { class: 'earlier', title: 'Other apps with this name, newest first' }, h('span', {}, `${older.length} earlier:`),
+        older.map((o) => h('a', { href: ctx.href('a', o.id) }, o.head ? `v${o.head}` : 'building', o.created ? ` · ${core.ago(new Date(o.created).getTime())}` : ''))))
+      : card(a));
     const paint = () => {
-      gallery.replaceChildren(...(apps.length ? apps.map(card) : [core.empty('box', 'No apps yet', 'Describe one above, or start from an example.')]));
+      gallery.replaceChildren(...(apps.length ? groups().map(group) : [core.empty('box', 'No apps yet', 'Describe one above, or start from an example.')]));
     };
     const refresh = async () => {
       try {
@@ -442,11 +461,12 @@ function render(el, ctx) {
         apps = (list.apps || []).sort((x, y) => String(y.created || '').localeCompare(String(x.created || '')));
         paint();
         const s = status.spend;
+        const named = groups().length;
         facts.replaceChildren(
-          h('span', {}, h('b', {}, String(apps.length)), ` app${apps.length === 1 ? '' : 's'}`),
-          h('span', {}, 'built by ', h('b', {}, status.model || '–')),
-          h('span', {}, s ? [h('b', {}, money(s.usd)), ` spent of the $${s.cap} limit`] : 'no spending limit'),
-          ...(status.feed ? [h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes')] : []));
+          h('span', {}, h('b', {}, String(named)), ` app${named === 1 ? '' : 's'}`, named < apps.length ? ` (${apps.length} with the earlier ones)` : ''),
+          status.model && status.model !== 'null' ? h('span', {}, 'built by ', h('b', {}, String(status.model))) : null,
+          h('span', {}, s && s.cap != null ? [h('b', {}, money(s.usd)), ` spent of the ${money(s.cap)} limit`] : 'no spending limit'),
+          status.feed ? h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes') : null);
         // What each app is made of, a few at a time.
         for (const a of apps.slice(0, 24)) {
           if (made.has(a.id) || !a.head) continue;

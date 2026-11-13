@@ -384,7 +384,13 @@ export const environment = () => idOf()?.environment || null;
  * only for a known production environment (`environment()`).
  */
 // NEW-data-tools-13: production is anything not named as a lower environment (prd, live, production-eu).
-export const isProduction = () => { const e = environment(); return e == null || !/^(dev|development|test|testing|stage|staging|qa|local|sandbox|demo)\b/i.test(e); };
+export const isProduction = () => { const e = environment(); return e == null ? !isSandbox() : !/^(dev|development|test|testing|stage|staging|qa|local|sandbox|demo)\b/i.test(e); };
+/**
+ * A sandbox: a server with no environment set, opened on this machine
+ * (localhost), not through a hub: someone trying ChloeDB, whose writes
+ * need no second ask. Naming an environment (--environment) ends it.
+ */
+export const isSandbox = () => environment() == null && /^(localhost|127(\.\d{1,3}){3}|\[::1\]|::1)$/i.test(location.hostname) && !/^\/c\//.test(location.pathname);
 
 // ---------------------------------------------------------------- the fleet without /v1/health/fleet
 /**

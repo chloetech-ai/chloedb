@@ -130,6 +130,7 @@ fn node(n: &Node) -> pb::Node {
                 JoinKind::Inner => pb::JoinKind::Inner,
                 JoinKind::Left => pb::JoinKind::Left,
                 JoinKind::Full => pb::JoinKind::Full,
+                JoinKind::AsOf => pb::JoinKind::AsOf,
             } as i32,
             keys: keys.iter().map(|k| pb::JoinKey { left: Some(ex(&k.left)), right: Some(ex(&k.right)), left_links: k.left_links, right_links: k.right_links }).collect(),
             on: on.as_ref().and_then(bex),
@@ -579,6 +580,7 @@ fn from_node_in(n: pb::Node) -> Result<Node, ApiError> {
                 pb::JoinKind::Inner => JoinKind::Inner,
                 pb::JoinKind::Left => JoinKind::Left,
                 pb::JoinKind::Full => JoinKind::Full,
+                pb::JoinKind::AsOf => JoinKind::AsOf,
             };
             let keys = j
                 .keys

@@ -150,6 +150,10 @@ pub struct Store {
     pub embedder: Arc<dyn Embedder>,
     /// The snapshot this handle reads, if pinned (see [`Store::pinned`]).
     snap: Option<Snapshot>,
+    /// The newest record's number when it was pinned: recency is measured
+    /// from it, and a receipt records it, so both use one number however
+    /// much is written meanwhile.
+    pinned_last: Option<i64>,
 }
 
 /// Where a store's records are.
@@ -235,7 +239,7 @@ impl Store {
         // several daemons.
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         let writer = Arc::new(Writer::start(db.clone(), next)?);
-        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None })
+        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None, pinned_last: None })
     }
 
     /// Opens a store to read it and nothing else: a kept snapshot
@@ -255,7 +259,7 @@ impl Store {
         let next = last.rows.first().and_then(|r| r[0].as_i64()).map_or(1, |s| s + 1);
         let db = Arc::new(db);
         let writer = Arc::new(Writer::start(db.clone(), next)?);
-        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None })
+        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None, pinned_last: None })
     }
 
     /// Sets the number of the newest record, which recency is measured
@@ -281,7 +285,7 @@ impl Store {
         let last = cluster.query(&format!("SELECT seq FROM {table} ORDER BY seq DESC LIMIT 1"), &Params::new())?;
         let next = last.rows.first().and_then(|r| r[0].as_i64()).map_or(1, |s| s + 1);
         let remote = Remote { cluster, table: table.to_string(), next_seq: AtomicI64::new(next), writes: Mutex::new(()) };
-        Ok(Store { back: Back::Remote(Arc::new(remote)), embedder, snap: None })
+        Ok(Store { back: Back::Remote(Arc::new(remote)), embedder, snap: None, pinned_last: None })
     }
 
     /// The Strata file of a local store.
@@ -305,11 +309,12 @@ impl Store {
     /// (Its writes go to the writer as usual; its reads do not see them.)
     /// (A store in a ChloeDB server reads its latest version each time.)
     pub fn pinned(&self) -> Store {
+        let last = self.last_seq();
         let snap = match &self.back {
             Back::Local { db, .. } => Some(self.snap.clone().unwrap_or_else(|| db.snapshot())),
             Back::Remote(_) => None,
         };
-        Store { back: self.back.clone(), embedder: self.embedder.clone(), snap }
+        Store { back: self.back.clone(), embedder: self.embedder.clone(), snap, pinned_last: Some(last) }
     }
 
     /// The version reads see: the pinned one, else the latest (a local
@@ -322,6 +327,9 @@ impl Store {
     }
 
     pub fn last_seq(&self) -> i64 {
+        if let Some(n) = self.pinned_last {
+            return n;
+        }
         match &self.back {
             Back::Local { writer, .. } => writer.next_seq.load(Ordering::SeqCst) - 1,
             Back::Remote(r) => r.next_seq.load(Ordering::SeqCst) - 1,
@@ -590,14 +598,16 @@ impl Store {
         Ok(rs.rows.iter().filter_map(|r| Some((row_record(r)?, r.last()?.as_f64()?))).collect())
     }
 
-    /// Every record `filter` matches, oldest first (at most `limit`), with
-    /// its vector: what a capsule copies ([`crate::capsule::pack`]).
+    /// Every record `filter` matches, oldest first, with its vector: what
+    /// a capsule copies ([`crate::capsule::pack`]). With more than `limit`,
+    /// the newest `limit`: a capped capsule holds the work closest to now.
     pub fn export(&self, filter: &Filter, limit: usize) -> Result<Vec<(Record, Option<Vec<f32>>)>> {
-        let sql = format!("SELECT {COLUMNS}, emb FROM memory {} ORDER BY seq ASC LIMIT {limit}", filter.sql());
+        let sql = format!("SELECT {COLUMNS}, emb FROM memory {} ORDER BY seq DESC LIMIT {limit}", filter.sql());
         let rs = self.query_with(&sql, &filter.params())?;
         Ok(rs
             .rows
             .iter()
+            .rev()
             .filter_map(|r| {
                 let v = match r.last()? {
                     Value::Vector(v) => Some(v.to_vec()),
@@ -1027,6 +1037,20 @@ mod tests {
 
     fn store(dir: &Path) -> Store {
         Store::open(&dir.join("m.strata"), Arc::new(HashEmbedder { dim: 64 }), StoreOptions { sync: false, ..Default::default() }).unwrap()
+    }
+
+    #[test]
+    fn a_pinned_handle_measures_recency_from_the_number_it_was_pinned_at() {
+        // N-F10: a receipt read the writer's live counter after ranking.
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.append("a", 1, 100, vec![Draft::new(Kind::Prompt, "one")]).unwrap();
+        let p = s.pinned();
+        let at = p.last_seq();
+        s.append("a", 1, 101, vec![Draft::new(Kind::Answer, "two"), Draft::new(Kind::Answer, "three")]).unwrap();
+        assert_eq!(p.last_seq(), at);
+        assert_eq!(p.pinned().last_seq(), at);
+        assert_eq!(s.last_seq(), at + 2);
     }
 
     #[test]

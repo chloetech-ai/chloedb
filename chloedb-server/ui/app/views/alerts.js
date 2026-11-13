@@ -50,6 +50,8 @@ function nodeShort(name) {
 }
 const coordinator = () => isCoordinator() || !!state.cluster?.shards?.length;
 const allCopies = () => (state.cluster?.shards || []).reduce((a, sh) => a + (sh.replicas?.length || 0), 0);
+/** One server, no cluster: "each copy" is this server. */
+const single = () => !coordinator() && !allCopies();
 const range = () => timeRange();
 /** Asks before a change, with a required reason: resolves {reason} or false. */
 const ask = ({ title, body, ok, danger, typed, reason = true }) => confirm({ title, body, ok, danger, typed, reason });
@@ -253,6 +255,7 @@ function whereText(r, x) {
   if (w.length === 1) { const c = copyOf(w[0].copy || w[0].short); return `${names[0]}${c ? ` · shard ${c.shard}` : ""}${more}`; }
   if (r.scope === "each_copy") {
     const total = Math.max(all.length, allCopies());
+    if (single()) return "this server";
     if (!w.length) return x.state === "no_data" ? "no copy reports it" : `each copy (${fmt.n(total)})`;
     return `${w.length} of ${fmt.n(total)} copies: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""}${more}`;
   }
@@ -260,7 +263,7 @@ function whereText(r, x) {
   return r.builtin ? "the cluster" : scopeText(r)[0];
 }
 function scopeText(r) {
-  if (r.scope === "each_copy") return ["each copy", `${fmt.n(allCopies())} copies`];
+  if (r.scope === "each_copy") return single() ? ["this server", "its own points"] : ["each copy", `${fmt.n(allCopies())} copies`];
   if (r.builtin) return ["from the cluster state", "on this coordinator"];
   const coord = coordinator();
   const n = state.fleet?.coordinators?.length;
@@ -299,9 +302,11 @@ function onParams(r) {
   if (mount && hubOf(r) !== mount.id) { mountInto(r); mount.page.parentElement?.scrollTo?.(0, 0); return; }
   if (mount?.id) { hubParams?.(r); return; }
   if (r.params.get("rule")) openRule?.(r.params.get("rule"));
-  else if (r.params.get("new")) openRule?.(null);
+  else if (r.params.get("new")) openRule?.(null, newOpts(r));
   if (r.params.get("routes")) openRoutes?.();
 }
+/** A new rule's start from the link: a query to watch (T5: an alert over any table). */
+const newOpts = (r) => r.params.get("sql") ? { sql: r.params.get("sql"), name: r.params.get("name") || "", threshold: Number(r.params.get("threshold") || 0) } : {};
 
 function listView(page, r) {
   const sub = h("p");
@@ -363,7 +368,8 @@ function listView(page, r) {
     const heldAll = m.rules.filter((r) => { const x = m.st.get(r.id); return x.state === "firing" && !x.silent && x.held_by; });
     // Held under a cause that fires, or waiting out its window after the cause resolved.
     const settleN = heldAll.filter((r) => m.st.get(r.id).held_until_ms).length, heldN = heldAll.length - settleN;
-    const crit = firing.filter((r) => r.severity === "critical"), warn = firing.filter((r) => r.severity !== "critical");
+    // One severity (F2): an info alert is counted as info, not as a warning.
+    const crit = firing.filter((r) => r.severity === "critical"), warn = firing.filter((r) => r.severity === "warning"), info = firing.filter((r) => r.severity !== "critical" && r.severity !== "warning");
     const unacked = crit.filter((r) => !m.st.get(r.id).ack);
     const noData = m.rules.filter((r) => m.st.get(r.id).state === "no_data");
     const bits = [];
@@ -381,8 +387,8 @@ function listView(page, r) {
       return;
     }
     const oldest = unacked.reduce((a, r) => Math.min(a, m.st.get(r.id).since_ms || Date.now()), Date.now());
-    clear(sum, h("div", { class: "banner " + (crit.length ? "bad" : "warn") }, icon("warn", "lg"), h("div", { class: "grow" },
-      h("div", { class: "big" }, firing.length ? [crit.length ? `${crit.length} critical` : null, warn.length ? `${warn.length} warning` : null].filter(Boolean).join(", ") + " firing" + (heldN ? `, ${heldN} more held back under their cause` : "") + (settleN ? `, ${settleN} more waiting out their window after their cause resolved` : "")
+    clear(sum, h("div", { class: "banner " + (crit.length ? "bad" : warn.length ? "warn" : "info") }, icon(crit.length || warn.length ? "warn" : "info", "lg"), h("div", { class: "grow" },
+      h("div", { class: "big" }, firing.length ? [crit.length ? `${crit.length} critical` : null, warn.length ? `${warn.length} warning` : null, info.length ? `${info.length} info` : null].filter(Boolean).join(", ") + " firing" + (heldN ? `, ${heldN} more held back under their cause` : "") + (settleN ? `, ${settleN} more waiting out their window after their cause resolved` : "")
         : `${fmt.plural(heldAll.length, "alert")} firing, held back: ${settleN ? "waiting out their window after their cause resolved" : "under their cause"}`,
         m.fleet && unacked.length ? h("span", { style: { fontWeight: 500 } }, ` · ${fmt.plural(unacked.length, "critical alert")} not acknowledged for ${dur(Date.now() - oldest)}`) : null),
       h("div", { class: "small dim" }, bits.join(" · ")))));
@@ -548,13 +554,13 @@ function listView(page, r) {
     clear(histBox, svgEl);
   }
 
-  openRule = (id) => { if (id == null) { editRule(null); return; } const x = (model(state.alerts)?.rules || []).find((y) => y.id === id); if (x) editRule(x); };
+  openRule = (id, o) => { if (id == null) { editRule(null, o || {}); return; } const x = (model(state.alerts)?.rules || []).find((y) => y.id === id); if (x) editRule(x); };
   openRoutes = () => routesDrawer();
   draw();
   refreshAlerts().then(draw);
   loadLong();
   if (r.params.get("rule")) setTimeout(() => openRule(r.params.get("rule")), 60);
-  else if (r.params.get("new")) setTimeout(() => editRule(null), 60);
+  else if (r.params.get("new")) setTimeout(() => editRule(null, newOpts(r)), 60);
   if (r.params.get("routes")) setTimeout(() => routesDrawer(), 60);
   const offs = [bus.on("alerts", draw), bus.on("whoami", () => { m = null; draw(); }), bus.on("cluster", () => { if (!state.paused && m) drawSummary(); }), bus.on("range", () => { longFor = null; loadLong(); draw(); }), bus.on("narrow", () => { if (m) drawHistory(); })];
   const stop = every(30000, () => { if (!state.paused && range().live) { longFor = null; return loadLong(); } }, false);
@@ -629,7 +635,7 @@ function pushedText(j, what = "Saved") {
 }
 function cleanRule(x) {
   const out = { id: x.id, name: x.name, metric: x.metric, op: x.op, threshold: Number(x.threshold), for_s: Number(x.for_s) || 0, severity: x.severity, enabled: !!x.enabled, description: x.description || "" };
-  for (const k of ["eval", "window_s", "resolve", "scope", "owner", "runbook", "route", "builtin", "vs"]) if (x[k] != null && x[k] !== "") out[k] = x[k];
+  for (const k of ["eval", "window_s", "resolve", "scope", "owner", "runbook", "route", "builtin", "vs", "sql"]) if (x[k] != null && x[k] !== "") out[k] = x[k];
   if (out.window_s != null) out.window_s = Number(out.window_s);
   if (out.resolve != null) out.resolve = Number(out.resolve);
   return out;
@@ -880,7 +886,7 @@ function alertHub(page, id, r) {
     const w = (x.where || []).filter((c) => c.state === "firing");
     const cause = x.held_by ? m.rules.find((y) => y.id === x.held_by) : null;
     const pg = pagerOf(m), dt = differsText(x);
-    clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, (rule.metric === "key_error_ratio" || rule.metric === "key_busy_ratio") && w.length ? whereText(rule, x) : firesOn(x) ? `on coordinator ${firesOn(x)}` : scopeText(rule)[0]),
+    clear(line, cond(rule), " · ", rule.scope === "each_copy" && !single() ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, (rule.metric === "key_error_ratio" || rule.metric === "key_busy_ratio") && w.length ? whereText(rule, x) : firesOn(x) ? `on coordinator ${firesOn(x)}` : scopeText(rule)[0]),
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fvr(rule, x.value)}`, h("span", { class: "al-peak" }),
       x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: the ${dur(((rule.window_s || 0) + (rule.for_s || 0)) * 1000)} it judges still include the outage.`)
       : x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
@@ -944,7 +950,7 @@ function alertHub(page, id, r) {
     chartSub.textContent = `${rule.metric}${rule.eval && rule.eval !== "all" ? `, ${EVAL[rule.eval]} ${dur((rule.window_s || 300) * 1000)} (red) and raw points (grey)` : ""} · ${hm(from)} – ${to >= now - 5e3 ? "now" : hm(to)}`;
     const [raw, bt, evs] = await Promise.all([
       seriesOf(rule.metric, from, to),
-      api("/v1/alerts/backtest", { body: { rule: cleanRule(rule), from: Math.round(from), to: Math.round(to) } }).catch(() => null),
+      rule.sql ? null : api("/v1/alerts/backtest", { body: { rule: cleanRule(rule), from: Math.round(from), to: Math.round(to) } }).catch(() => null),
       api(`/v1/events?from=${Math.round(from)}&to=${Math.round(to)}&limit=500`).then((j) => j.events || []).catch(() => null),
     ]);
     const ev = bt?.points ? bt.points.map(btPoint) : evaluate(raw.pts, rule);
@@ -1151,6 +1157,7 @@ function editRule(rule, opts = {}) {
   const fleet = !!m?.fleet;
   const x = rule ? { ...rule } : { id: "rule-" + Math.random().toString(36).slice(2, 8), name: "", metric: "error_ratio", op: ">", threshold: 0.02, for_s: 0, severity: "warning", enabled: true, description: "", eval: "mean", window_s: 300, scope: "self" };
   if (!fleet && !rule) { x.eval = undefined; x.window_s = undefined; x.for_s = 60; }
+  if (!rule && opts.sql) { x.sql = opts.sql; x.name = opts.name || ""; x.threshold = opts.threshold || 0; x.op = ">"; x.for_s = 0; x.eval = "max"; x.window_s = 300; x.metric = "sql_" + x.id; }
   const saved = rule ? { ...rule } : null;
   const adm = can("admin");
   const locked = !!x.builtin; // built-in rules change only in severity, on/off and route
@@ -1159,9 +1166,23 @@ function editRule(rule, opts = {}) {
   const name = h("input", { class: "input", value: x.name, placeholder: "Query errors over 2%", disabled: dis("name") });
   const metric = h("select", { class: "select", disabled: dis("metric"), "aria-label": "Metric" }, metrics.map((k) => h("option", { value: k, selected: k === x.metric }, METRICS[k] && !isNarrow() ? `${k} · ${METRICS[k][0]}${METRICS[k][2] === "copy" ? " (copies only)" : ""}` : k)));
   const metricHint = h("span", { class: "tiny muted al-mhint" });
+  // A query in place of a metric: its first number, every 30 s, with :since and :now the window's ends.
+  const sqlIn = h("textarea", { class: "input mono", rows: 3, placeholder: "Or watch a query: SELECT COUNT(*) FROM orders WHERE status = 'failed' AND ts > :since", disabled: dis("metric"), style: { fontSize: "12.5px" } });
+  sqlIn.value = x.sql || "";
+  // A rule on a query watches no metric: say so where the metric was.
+  const sqlOpt = h("option", { value: "", hidden: true }, "the query below");
+  metric.prepend(sqlOpt);
+  const syncSql = () => {
+    const on = !!sqlIn.value.trim();
+    metric.disabled = dis("metric") || on;
+    if (on) sqlOpt.selected = true;
+    else if (sqlOpt.selected) metric.value = metrics.includes(x.metric) && !/^sql_/.test(x.metric) ? x.metric : metrics.find((k) => !/^sql_/.test(k)) || "";
+  };
+  sqlIn.addEventListener("input", syncSql);
+  setTimeout(syncSql, 0);
   const hintMetric = () => { const d = METRICS[x.metric]; metricHint.textContent = d ? `${d[0]}${d[2] === "copy" ? " (copies only)" : ""} · unit: ${unitOf(x.metric) === "pct" ? "%" : unitOf(x.metric)}` : "a value of the server's points"; };
   hintMetric();
-  const scopeSeg = seg([["self", coordinator() ? "this coordinator" : "this server"], ["each_copy", `each copy (${fmt.n(allCopies())})`]], x.scope || "self", (v) => { x.scope = v; run(); }, { "aria-label": "Evaluated on" });
+  const scopeSeg = seg(single() ? [["self", "this server"], ["each_copy", "this server's copy", "On one server, its own copy: the same points"]] : [["self", coordinator() ? "this coordinator" : "this server"], ["each_copy", `each copy (${fmt.n(allCopies())})`]], x.scope || "self", (v) => { x.scope = v; run(); }, { "aria-label": "Evaluated on" });
   const evalSeg = seg(Object.entries(EVAL).map(([k, l]) => [k, l]), x.eval || "all", (v) => { x.eval = v; run(); }, { "aria-label": "Value" });
   // The window keeps its seconds: a 10 s or 30 s window must not round to a minute on save.
   const w0 = x.window_s || 300, inMin = w0 % 60 === 0;
@@ -1199,6 +1220,8 @@ function editRule(rule, opts = {}) {
 
   let btGen = 0;
   async function backtest(r, from, to) {
+    // A query's value exists only from when its rule runs: nothing to replay.
+    if (r.sql) return { pts: [], spans: [], source: "sql", server: true, note: "A rule on a query has no past to replay: the server runs the query every 30 seconds once the rule is saved, and its values show on the rule's page from then on." };
     try {
       const j = await api("/v1/alerts/backtest", { body: { rule: cleanRule(r), from: Math.round(from), to: Math.round(to) } });
       return { pts: (j.points || []).map(btPoint), spans: (j.fired || []).map((f) => [f.from_ms, f.to_ms]), source: j.source, server: true, note: j.note || j.error, coveredFrom: j.covered_from || null, copies: j.copies || null, answered: j.answered, asked: j.asked };
@@ -1224,6 +1247,7 @@ function editRule(rule, opts = {}) {
       const changedRule = saved && JSON.stringify(cleanRule(saved)) !== JSON.stringify(cleanRule(x));
       const [a, b] = await Promise.all([backtest(x, from, now), changedRule ? backtest(saved, from, now).catch(() => null) : null]);
       if (my !== btGen) return;
+      if (a.source === "sql") { btTitle.textContent = "A rule on a query"; clear(verdict, note(a.note)); return; }
       const fmtv = (v) => fvr(x, v);
       const perCopy = (a.copies || []).filter((c) => c.points?.length);
       const series = perCopy.length
@@ -1253,7 +1277,8 @@ function editRule(rule, opts = {}) {
   }, 250);
   function read() {
     x.name = name.value.trim();
-    x.metric = metric.value;
+    x.sql = sqlIn.value.trim() || undefined;
+    x.metric = x.sql ? "sql_" + x.id : metric.value;
     x.threshold = fromInput(thr.value) ?? x.threshold;
     const rv = fromInput(res.value);
     x.resolve = rv == null ? undefined : rv;
@@ -1263,7 +1288,7 @@ function editRule(rule, opts = {}) {
     x.runbook = runbook.value.trim() || undefined;
     x.route = routeSel.value || undefined;
     x.description = desc.value.trim();
-    if (!fleet) { delete x.eval; delete x.window_s; delete x.resolve; delete x.scope; }
+    if (!fleet) { if (!x.sql) { delete x.eval; delete x.window_s; } delete x.resolve; delete x.scope; }
   }
   for (const el of [thr, res, forS, win]) el.oninput = run;
   winUnit.onchange = run;
@@ -1278,6 +1303,8 @@ function editRule(rule, opts = {}) {
     body: [
       h("div", { class: "row between al-ed-top" }, sw, locked ? h("span", { class: "small muted" }, "Built in: only severity, on/off and route change.") : null, !fleet ? h("span", { class: "small muted" }, "This server checks each point: window, resolve, scope, owner, runbook and route need a newer chloedb-server.") : null),
       h("div", { class: "grid g2 al-ed-names" }, field("Name", name), h("label", { class: "f" }, "Metric", metric, metricHint)),
+      field("Or a query", sqlIn, "A SELECT whose first number is the value, run every 30 s; :since and :now are the window's start and end. Any table: orders, otel_logs, yours."),
+      x.sql_run ? h("div", { class: "small " + (x.sql_run.error ? "error" : "muted") }, x.sql_run.error ? `Its last run failed: ${x.sql_run.error}` : `Last run ${fmt.ago(x.sql_run.at_ms)}: ${fmt.n(x.sql_run.value, 3)} in ${fmt.ms(x.sql_run.took_ms)}`) : null,
       h("div", { class: "row al-ed-row" }, field("Evaluated on", scopeSeg), field("Value", evalSeg), h("label", { class: "f" }, "Window", h("span", { class: "row nw", style: { gap: "4px" } }, win, winUnit)), field("Compared with", vsSeg, "the window before: fires when the value is the threshold times the one before")),
       h("div", { class: "row al-ed-row" }, field("Fires when the value is", opSeg), h("label", { class: "f" }, "Threshold", h("span", { class: "row nw", style: { gap: "4px" } }, thr, unitEls[0])), field("Held for, seconds", forS), field("Severity", sevSeg), h("label", { class: "f" }, "Resolves at", h("span", { class: "row nw", style: { gap: "4px" } }, res, unitEls[1]))),
       h("section", { class: "card al-edbt", style: { marginTop: "4px" } }, h("div", { class: "hd" }, btTitle, h("span", { class: "sub" }, "shaded: when it would have fired"), h("div", { class: "tools" }, spanSeg)), h("div", { class: "bd" }, btChart, verdict)),

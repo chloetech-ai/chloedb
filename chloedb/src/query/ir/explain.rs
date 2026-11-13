@@ -141,6 +141,7 @@ impl<'a> Text<'a> {
                     JoinKind::Inner => "Join".to_string(),
                     JoinKind::Left => "Left join".to_string(),
                     JoinKind::Full => "Full join".to_string(),
+                    JoinKind::AsOf => "As-of join".to_string(),
                 };
                 let mut conds: Vec<String> = keys.iter().map(|k| self.join_key(k, &ln, &rn)).collect();
                 conds.extend(on.iter().map(|c| self.operand(c, &names)));

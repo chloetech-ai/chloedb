@@ -24,7 +24,7 @@ fn agent() -> AgentConfig {
 async fn search(svc: &Arc<Service>, a: Ask) -> f64 {
     let Ask::Sql { sql, params } = a else { unreachable!("searches only") };
     let t0 = Instant::now();
-    let params = svc.params(Some(&params)).await.unwrap();
+    let params = svc.params(None, Some(&params)).await.unwrap();
     svc.query(QueryReq { sql, params, timeout_ms: 30_000, quiet: true, ..Default::default() }).await.unwrap();
     t0.elapsed().as_secs_f64() * 1000.0
 }

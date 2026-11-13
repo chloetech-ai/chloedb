@@ -1,0 +1,13 @@
+{
+ "feast_sqlite": {
+  "p50_ms": 74.31,
+  "p99_ms": 158.37,
+  "n": 55
+ },
+ "chloedb_kv": {
+  "p50_ms": 9.0,
+  "p99_ms": 11.37,
+  "n": 55
+ },
+ "same_user_values": true
+}

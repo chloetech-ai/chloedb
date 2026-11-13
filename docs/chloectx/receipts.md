@@ -63,17 +63,45 @@ RECEIPT` answer read alike, and tokens are counted as `PACK` counts them
 
 Receipts live in their own ChloeDB file beside the store,
 `receipts.strata` (table `receipts`). The store's file and its format are
-unchanged.
+unchanged. A receipt is written once the hook has answered, so it adds no
+write to the prompt's critical path. The file is flushed every 256
+receipts and when the daemon stops, so its write-ahead log (replayed when
+a daemon starts) stays small, and receipts older than 90 days, or past the
+newest 20,000, are dropped when the daemon starts.
 
 ## Kept snapshots
 
 After a recall that showed records, once the hook has answered and before
-anything else is written, the daemon keeps a snapshot of the store:
+anything else is written, the daemon keeps a snapshot of the store, at most
+once an hour (`min_interval_secs`, 3600 by default):
 `snapshots/auto-<commit>/` in the store's directory, a checkpoint in
-ChloeDB's directory layout. Each hard-links the segment files of the one
-before it that no merge has replaced since, so a snapshot after a turn
-costs about the records written in that turn. It is not taken when the
-store has not changed since the last one.
+ChloeDB's directory layout. It is not taken when the store has not changed
+since the last one.
+
+What a snapshot costs:
+
+- **Time.** The checkpoint flushes the store's memtable, then reads every
+  segment whole and checks its checksums, and checks the copy: a few
+  passes over the store, whether or not a segment is linked. Tenths of a
+  second for a store of tens of MB; seconds for one of a GB. This runs
+  after the hook has answered; when it runs, the prompt's own record is
+  stored after it, and `chloectx stop` waits for both.
+- **Space.** Each snapshot hard-links the segment files of the one before
+  it that no merge has replaced since, and writes the rest. The live store
+  is a single file, which a directory snapshot cannot share bytes with, so
+  the first snapshot is a full copy, and every segment a merge writes is
+  copied again by the next snapshot while older ones keep its inputs.
+  Taken after every turn (`min_interval_secs: 0`), each flush also makes a
+  small segment the store's merges rewrite several times more; a week of
+  daily use then takes several times the store's size. `chloectx stats`
+  shows the bytes of receipts and snapshots (`receipts`, `snapshots`,
+  `total_bytes`).
+
+Automatic snapshots older than `keep_days`, or past the newest `max_auto`,
+are dropped when the daemon starts and before each new one, whatever the
+settings say now. Anything under `snapshots/` that no snapshot owns (a
+checkpoint a stopped daemon left half written) is removed when the daemon
+starts.
 
 A receipt replays exactly on the snapshot kept at its commit: the replay
 runs the same retrieval code (`receipt::retrieve`, which the recall itself
@@ -89,10 +117,19 @@ drop NAME`; `chloectx snapshot list` lists them.
 Settings, in the store's `config.json`:
 
 ```json
-{"receipts": {"enabled": true, "snapshots": {"after_recall": true, "min_interval_secs": 0, "keep_days": 30, "max_auto": 2000}}}
+{"receipts": {"enabled": true,
+              "snapshots": {"after_recall": true, "min_interval_secs": 3600, "keep_days": 30, "max_auto": 2000},
+              "retention": {"keep_days": 90, "max_receipts": 20000}}}
 ```
 
-`CHLOECTX_RECEIPTS=0` turns receipts off.
+`chloectx receipts off` turns receipts and automatic snapshots off for the
+project's store (it writes `receipts.enabled` in its `config.json`), and
+`chloectx receipts off --purge` also removes the receipts and automatic
+snapshots kept so far; `chloectx receipts on` turns them back on. Without
+`receipts.enabled` in `config.json`, `CHLOECTX_RECEIPTS=0` in Claude Code's
+environment turns them off: each hook sends it to the daemon, whichever
+process started the daemon. With receipts off, `memory_forget` and
+`chloectx redact` still scrub the receipts kept before.
 
 ## Commands
 
@@ -100,6 +137,7 @@ Settings, in the store's `config.json`:
 chloectx blame src/retry.rs:88       # or a whole file: chloectx blame src/retry.rs
 chloectx blame src/retry.rs:88 --json --no-replay
 chloectx receipts [--session S] [--limit N]
+chloectx receipts off [--purge] | on
 chloectx receipt rc-19a6… [--text] [--no-replay] [--json]
 chloectx snapshot keep before-release | list | drop before-release
 ```
@@ -150,7 +188,10 @@ behind them, under the app's prefix (`/v1/apps/chloectx`):
 
 Blame reads the line from the file and looks among the stored tool calls
 (`Edit`, `MultiEdit`, `Write`, `NotebookEdit`) of that file for the newest
-whose new text holds it. When none does (the line was written outside a
+that added it: the line is a whole line of the edit's new text and not of
+the text it replaced (an edit that only kept the line around its change
+did not write it). A relative path is taken from where `chloectx blame`
+runs; in a request to the daemon, from the project. When none does (the line was written outside a
 recorded session, or changed by hand since), it takes the newest edit of
 the file before the line's commit (from `git blame`), and says which it
 did. Stored edits keep up to 1,100 characters of their new text, so a line
@@ -167,8 +208,14 @@ tool's output; the web for `WebFetch` and `WebSearch`).
 
 A receipt and a snapshot hold copies of what was recalled. So `memory_forget`
 (and the `forget` request) scrubs the text of the receipts that showed the
-forgotten record (their rows keep ids, scores and hashes) and drops every
-automatic snapshot; named snapshots are kept and listed, for you to drop.
+forgotten record (their rows keep ids and scores, and lose the record's
+text hash), removes a forgotten prompt from the query of the receipts it
+was asked as, rewrites the store's segments that held the record without
+it, and only then drops every automatic snapshot, with no snapshot taken
+meanwhile, so no snapshot taken afterwards holds its bytes. Named
+snapshots are kept and listed, for you to drop. The rewritten segments'
+old pages are free in the store's file until later writes reuse them;
+`chloectx redact` rewrites the whole file.
 `chloectx redact` redacts the receipts as it does the records, and drops
 the automatic snapshots too. Replays of the receipts before then can no
 longer be exact.

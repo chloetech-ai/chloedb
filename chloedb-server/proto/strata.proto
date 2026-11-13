@@ -865,8 +865,9 @@ message Join {
 enum JoinKind {
   JOIN_KIND_INNER = 0;
   JOIN_KIND_LEFT = 1;
+  JOIN_KIND_AS_OF = 2;
   // A plan with it lists the feature full_join.
-  JOIN_KIND_FULL = 2;
+  JOIN_KIND_FULL = 3;
 }
 
 message JoinKey {

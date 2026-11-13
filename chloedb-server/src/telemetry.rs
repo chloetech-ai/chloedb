@@ -1597,6 +1597,9 @@ pub struct Sample {
     pub allocs: u64,
     /// Gauges, by name.
     pub gauges: BTreeMap<&'static str, f64>,
+    /// Values named at run time: the alert rules' queries
+    /// ([`crate::alerts::refresh_sql`]), `sql_<rule>`.
+    pub named: BTreeMap<String, f64>,
 }
 
 /// Points kept: an hour at the default interval.
@@ -1715,6 +1718,9 @@ fn point(a: &Sample, b: &Sample) -> Json {
     }
     for (k, v) in &b.gauges {
         p[*k] = json!(v);
+    }
+    for (k, v) in &b.named {
+        p[k.as_str()] = json!(v);
     }
     p
 }

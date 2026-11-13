@@ -295,6 +295,11 @@ pub struct ScrubReport {
 pub struct CheckpointStats {
     /// The commit of the database that the copy holds.
     pub txn: u64,
+    /// The commit readers of the database saw when the checkpoint took the
+    /// writer lock, before its flush (which makes a commit of its own that
+    /// changes no row): a read at this commit sees exactly the rows the
+    /// copy holds.
+    pub source_txn: u64,
     pub tables: usize,
     pub segments: usize,
     /// Of `segments`, those hard-linked from `link_from`.
@@ -3703,9 +3708,10 @@ impl Database {
             Some(_) => return Err(Error::Schema("link_from needs a checkpoint in the directory layout".into())),
             None => None,
         };
-        let (_snap, manifest, handles) = {
+        let (_snap, manifest, handles, source_txn) = {
             let mut wal = lock(&self.writer);
             self.check_poisoned()?;
+            let source_txn = lock(&self.state).txn;
             self.flush_locked(&mut wal)?;
             // Pins the version: no later commit reuses its pages.
             let snap = self.snapshot_inner(false);
@@ -3723,7 +3729,7 @@ impl Database {
                     t.profiles = ts.profiles.to_vec();
                 }
             }
-            (snap, manifest, st.handles().cloned().collect::<Vec<_>>())
+            (snap, manifest, st.handles().cloned().collect::<Vec<_>>(), source_txn)
         };
         let tmp = beside(dest, "checkpoint")?;
         let r = self.write_checkpoint(&tmp, opts.layout, &manifest, &handles, link);
@@ -3745,6 +3751,7 @@ impl Database {
         let parent = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(parent)?;
         stats.txn = manifest.txn;
+        stats.source_txn = source_txn;
         stats.seconds = t0.elapsed().as_secs_f64();
         Ok(stats)
     }
