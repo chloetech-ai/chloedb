@@ -82,7 +82,7 @@ pub fn create_sql() -> String {
 /// Who makes the table: the server itself, since a key that may write
 /// feedback need not be one that may create tables.
 fn maker() -> Principal {
-    Principal { name: "feedback".into(), key: None, scope: Scope::Admin, root: false, tables: None }
+    Principal { name: "feedback".into(), key: None, scope: Scope::Admin, root: false, tables: None, allow: None }
 }
 
 /// Refuses what a key limited to tables may not do to the feedback table.
