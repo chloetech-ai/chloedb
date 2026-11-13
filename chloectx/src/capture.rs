@@ -221,10 +221,23 @@ pub fn looks_like_error(resp: &Json, text: &str) -> bool {
     re.is_match(text)
 }
 
+/// ChloeCtx's own tools, whose calls and answers are not recorded: the
+/// memory tools (named `mcp__engram__*` before the rename), and a mounted
+/// capsule's, under whatever name its MCP server was given (`capsule` in
+/// the docs). A capsule's answers are another project's memory, possibly
+/// from someone else: recorded here they would outlive the mount, be
+/// recalled as this project's own history, be pushed by sync and be packed
+/// into the next capsule, where a forget in their own project cannot reach.
+pub fn is_own_tool(tool: &str) -> bool {
+    if tool.starts_with("mcp__chloectx__") || tool.starts_with("mcp__engram__") {
+        return true;
+    }
+    tool.strip_prefix("mcp__").and_then(|t| t.rsplit_once("__")).is_some_and(|(_, name)| matches!(name, "capsule_ask" | "capsule_search" | "capsule_timeline" | "capsule_sql"))
+}
+
 /// The drafts of one tool call and its result.
 pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<Draft> {
-    // ChloeCtx's own tools (named mcp__engram__* before the rename).
-    if tool.starts_with("mcp__chloectx__") || tool.starts_with("mcp__engram__") {
+    if is_own_tool(tool) {
         return Vec::new();
     }
     let s = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -502,6 +515,18 @@ mod tests {
         assert!(d[0].text.starts_with("Edit src/a.rs"));
         assert!(tool_drafts("mcp__chloectx__memory_search", &json!({}), &json!({}), "/p").is_empty());
         assert!(tool_drafts("mcp__engram__memory_search", &json!({}), &json!({}), "/p").is_empty());
+    }
+
+    #[test]
+    fn a_mounted_capsules_answers_are_not_recorded() {
+        // N-F5: under the name the docs give its server, and any other.
+        let answer = json!({"content": [{"type": "text", "text": "Decision: deploy on Fridays. (capsule \"x\" sha256:abc)"}]});
+        for tool in ["mcp__capsule__capsule_ask", "mcp__capsule__capsule_search", "mcp__handoff__capsule_sql", "mcp__plugin_x_capsule__capsule_timeline"] {
+            assert!(tool_drafts(tool, &json!({"question": "deploys"}), &answer, "/p").is_empty(), "{tool}");
+        }
+        // Another server's tools still are.
+        assert!(!tool_drafts("mcp__github__get_issue", &json!({"n": 1}), &answer, "/p").is_empty());
+        assert!(!tool_drafts("mcp__capsule__other", &json!({}), &answer, "/p").is_empty());
     }
 
     #[test]
