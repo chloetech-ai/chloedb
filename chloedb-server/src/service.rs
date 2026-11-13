@@ -5267,6 +5267,12 @@ impl Service {
                     g.insert("replicas_in_sync", in_sync as f64);
                     g.insert("replicas_out_of_sync", (rs.len() - in_sync) as f64);
                     g.insert("replica_behind_max", rs.iter().filter_map(|r| r["behind"].as_f64()).fold(0.0, f64::max));
+                    // Of the replicas that apply this primary's log: not one
+                    // being sent a whole copy (it is behind by all of it until
+                    // the copy is in), nor one not heard since this primary
+                    // started (its number is not known yet): the lag alert's.
+                    let applying = |r: &&Json| r["copying"] != true && r["member"] != false && r["answered"] != false;
+                    g.insert("replica_behind_applying", rs.iter().filter(applying).filter_map(|r| r["behind"].as_f64()).fold(0.0, f64::max));
                     g.insert("seq_no", h["seq_no"].as_f64().unwrap_or(0.0));
                 }
                 Replication::Replica(f) => {

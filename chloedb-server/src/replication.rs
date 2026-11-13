@@ -826,7 +826,7 @@ impl Primary {
                 let count = |a: Option<&AtomicU64>| a.map_or(0, |a| a.load(Ordering::Relaxed));
                 let mut j = json!({
                     "url": p.url, "seq_no": p.acked, "behind": last.saturating_sub(p.acked), "in_sync": p.in_sync,
-                    "copying": p.copying, "copies": p.copies,
+                    "copying": p.copying, "copies": p.copies, "answered": p.answered.is_some(),
                     "verifications": count(f.map(|f| &f.verifications)), "divergences": count(f.map(|f| &f.divergences)),
                     "verify_failures": count(f.map(|f| &f.verify_failures)), "member": p.member, "txn_mismatches": p.mismatches,
                 });

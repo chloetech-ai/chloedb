@@ -384,6 +384,9 @@ function listView(page, r) {
     if (!m.routes.length) bits.push("no route: nobody is told when an alert fires");
     const pg = pagerOf(m);
     if (pg) bits.push(`${pg.n} coordinators; messages are sent by ${pg.me ? "this one" : hostOf(pg.sends)}`);
+    // LIV-3: the copies' own rules (scope self) fire on the copies only; say what fires there.
+    const onCopies = state.alerts?.copies_firing || [];
+    if (onCopies.length) bits.push(`on the copies' own rules: ${onCopies.slice(0, 4).map((f) => `${f.name} (${f.short || copyName(f.copy)})`).join(", ")}${onCopies.length > 4 ? ` and ${onCopies.length - 4} more` : ""}`);
     if (!firing.length && !heldAll.length) {
       clear(sum, h("div", { class: "banner ok" }, icon("okc", "lg"), h("div", { class: "grow" },
         h("div", { class: "big" }, "Nothing is firing"),
