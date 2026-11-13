@@ -352,6 +352,10 @@ fn queries(newest: i64, has_latency: bool) -> Vec<(&'static str, String, i64)> {
             q.push((if tag == "p50" { "p50_5m_by_service_24h_exact" } else { "p99_5m_by_service_24h_exact" }, exact, DAY));
             q.push((if tag == "p50" { "p50_5m_by_service_24h_approx" } else { "p99_5m_by_service_24h_approx" }, approx, DAY));
         }
+        // The plan's query 4: p50, p95 and p99 per 5-minute bucket by service.
+        let three = |f: &dyn Fn(f64) -> String| [0.5, 0.95, 0.99].map(f).join(", ");
+        q.push(("p50_p95_p99_5m_by_service_24h_exact", format!("SELECT date_bin('5 minutes', ts) AS b, service, {} FROM logs WHERE {} GROUP BY b, service", three(&|p| format!("PERCENTILE_DISC({p}) WITHIN GROUP (ORDER BY latency)")), last(DAY)), DAY));
+        q.push(("p50_p95_p99_5m_by_service_24h_approx", format!("SELECT date_bin('5 minutes', ts) AS b, service, {} FROM logs WHERE {} GROUP BY b, service", three(&|p| format!("approx_percentile(latency, {p})")), last(DAY)), DAY));
         q.push(("p50_p95_p99_24h_approx", format!("SELECT approx_percentile(latency, 0.5), approx_percentile(latency, 0.95), approx_percentile(latency, 0.99) FROM logs WHERE {}", last(DAY)), DAY));
         q.push(("p50_p95_p99_30d_exact", "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY latency), PERCENTILE_DISC(0.95) WITHIN GROUP (ORDER BY latency), PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY latency) FROM logs".to_string(), i64::MAX));
         q.push(("p50_p95_p99_30d_approx", "SELECT approx_percentile(latency, 0.5), approx_percentile(latency, 0.95), approx_percentile(latency, 0.99) FROM logs".to_string(), i64::MAX));

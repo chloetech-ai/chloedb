@@ -77,26 +77,21 @@ impl Bins {
 
     /// `n` empty buckets before the first.
     fn prepend(&mut self, n: usize) {
+        fn grow<T: Clone + Default>(b: &mut Vec<T>, n: usize) {
+            room(b, n);
+            b.splice(0..0, std::iter::repeat_n(T::default(), n));
+        }
         match self {
-            Bins::Narrow(b) => {
-                b.splice(0..0, std::iter::repeat_n(0, n));
-            }
-            Bins::Wide(b) => {
-                b.splice(0..0, std::iter::repeat_n(0, n));
-            }
+            Bins::Narrow(b) => grow(b, n),
+            Bins::Wide(b) => grow(b, n),
         }
     }
 
-    /// `n` empty buckets after the last: room for twice as many, up to
-    /// [`MAX_BINS`], so that a sketch's bytes stay within its bound.
+    /// `n` empty buckets after the last.
     fn append(&mut self, n: usize) {
         fn grow<T: Clone + Default>(b: &mut Vec<T>, n: usize) {
-            let want = b.len() + n;
-            if want > b.capacity() {
-                let room = (2 * b.len()).clamp(8, MAX_BINS).max(want);
-                b.reserve_exact(room - b.len());
-            }
-            b.resize(want, T::default());
+            room(b, n);
+            b.resize(b.len() + n, T::default());
         }
         match self {
             Bins::Narrow(b) => grow(b, n),
@@ -128,6 +123,16 @@ impl Bins {
     }
 }
 
+/// Room in `b` for `n` more: twice as many as it holds, up to
+/// [`MAX_BINS`], so that a sketch's bytes stay within its bound.
+fn room<T>(b: &mut Vec<T>, n: usize) {
+    let want = b.len() + n;
+    if want > b.capacity() {
+        let to = (2 * b.len()).clamp(8, MAX_BINS).max(want);
+        b.reserve_exact(to - b.len());
+    }
+}
+
 /// The buckets of one sign: counts of the buckets from index `first` on.
 #[derive(Clone, Debug, PartialEq)]
 struct Store {
@@ -151,10 +156,31 @@ impl Store {
     /// Counts `n` in bucket `i`: below the least bucket kept, in it once
     /// [`MAX_BINS`] are kept; above the greatest, after folding the least
     /// into one, so that at most [`MAX_BINS`] are kept.
-    fn add(&mut self, i: i32, n: u64) {
+    #[inline]
+    fn add(&mut self, i: i32, n: u64) -> u64 {
+        // A bucket kept already, its count in 4 bytes: most values.
+        let at = (i as i64 - self.first as i64) as usize;
+        if let Bins::Narrow(b) = &mut self.bins {
+            if let Some(c) = b.get_mut(at) {
+                if let Some(s) = (*c as u64).checked_add(n).filter(|&s| s <= u32::MAX as u64) {
+                    *c = s as u32;
+                    return 0;
+                }
+            }
+        }
+        let before = self.bins.bytes();
+        self.add_slow(i, n);
+        self.bins.bytes().saturating_sub(before)
+    }
+
+    /// [`Store::add`] of a bucket not kept yet, or of a count past 4 bytes.
+    #[inline(never)]
+    fn add_slow(&mut self, i: i32, n: u64) {
+        // Room for the buckets near the first value and near the least,
+        // so that most later values find theirs kept.
         if self.is_empty() {
-            self.first = i;
-            self.bins.append(1);
+            self.first = i - 16;
+            self.bins.append(48);
         }
         let last = self.first + self.bins.len() as i32 - 1;
         if i > last {
@@ -166,7 +192,7 @@ impl Store {
             self.bins.append((i - last) as usize);
         } else if i < self.first {
             let room = MAX_BINS.saturating_sub(self.bins.len());
-            let grow = ((self.first as i64 - i as i64) as usize).min(room);
+            let grow = ((self.first as i64 - i as i64) as usize).max(self.bins.len() / 2).min(room);
             self.bins.prepend(grow);
             self.first -= grow as i32;
         }
@@ -209,11 +235,11 @@ pub struct Sketch {
     max: f64,
 }
 
-/// γ of [`ALPHA`] and its log.
-fn gamma() -> (f64, f64) {
-    let g = (1.0 + ALPHA) / (1.0 - ALPHA);
-    (g, g.ln())
-}
+/// γ of [`ALPHA`], (1 + α) / (1 − α), and its log: constants, so that a
+/// value's bucket costs one `ln` (a test checks them against α).
+const GAMMA: f64 = 1.02020202020202;
+const LN_GAMMA: f64 = 0.020000666706669435;
+const INV_LN_GAMMA: f64 = 49.99833328888678;
 
 /// The least magnitude with a bucket: below it, a value counts as 0.
 const MIN_MAGNITUDE: f64 = 1e-300;
@@ -231,30 +257,31 @@ impl Sketch {
     /// The bucket of a magnitude at least [`MIN_MAGNITUDE`].
     #[inline]
     fn index(x: f64) -> i32 {
-        (x.ln() / gamma().1).ceil() as i32
+        (x.ln() * INV_LN_GAMMA).ceil() as i32
     }
 
     /// The value a bucket answers.
     fn bucket_value(i: i32) -> f64 {
-        let (g, ln_g) = gamma();
-        2.0 * (i as f64 * ln_g).exp() / (g + 1.0)
+        2.0 * (i as f64 * LN_GAMMA).exp() / (GAMMA + 1.0)
     }
 
-    /// Adds one number; NaN and the infinities add nothing.
+    /// Adds one number (NaN and the infinities add nothing); returns the
+    /// bytes it now holds more.
     #[inline]
-    pub fn add_f64(&mut self, x: f64) {
+    pub fn add_f64(&mut self, x: f64) -> u64 {
         if !x.is_finite() {
-            return;
+            return 0;
         }
         self.count += 1;
         self.min = self.min.min(x);
         self.max = self.max.max(x);
         if x >= MIN_MAGNITUDE {
-            self.pos.add(Sketch::index(x), 1);
+            self.pos.add(Sketch::index(x), 1)
         } else if x <= -MIN_MAGNITUDE {
-            self.neg.add(Sketch::index(-x), 1);
+            self.neg.add(Sketch::index(-x), 1)
         } else {
             self.zeros += 1;
+            0
         }
     }
 
@@ -267,9 +294,12 @@ impl Sketch {
             Value::Bool(b) => *b as i64 as f64,
             _ => return 0,
         };
-        let before = self.bytes();
-        self.add_f64(x);
-        self.bytes().saturating_sub(before)
+        self.add_f64(x)
+    }
+
+    /// The sketch of the same values, of another percentile.
+    pub fn with_fraction(&self, p: f64) -> Sketch {
+        Sketch { p, ..self.clone() }
     }
 
     /// About the bytes the sketch holds.
@@ -296,8 +326,9 @@ impl Sketch {
     }
 
     /// The value at fraction `p` of the values' ranks (FLOAT), NULL for no
-    /// values: the bucket of the value at rank ⌊p·(n − 1)⌋ from 0, within
-    /// [`ALPHA`] of it, and between the least and greatest values.
+    /// values: the bucket of the value `PERCENTILE_DISC(p)` picks, the one at
+    /// position ⌈p·n⌉ from 1 (the first for p = 0), so within [`ALPHA`] of
+    /// it, and between the least and greatest values.
     pub fn value(&self) -> Value {
         if self.count == 0 {
             return Value::Null;
@@ -308,7 +339,8 @@ impl Sketch {
         if self.p >= 1.0 {
             return Value::Float(self.max);
         }
-        let rank = (self.p * (self.count - 1) as f64).floor() as u64;
+        // From 0: ⌈p·n⌉ − 1.
+        let rank = ((self.p * self.count as f64).ceil() as u64).clamp(1, self.count) - 1;
         let mut seen = 0u64;
         let x = 'found: {
             // Negatives from the greatest magnitude, then zeros, then positives.
@@ -345,10 +377,13 @@ impl Sketch {
         varint(&mut out, self.zeros);
         out.extend_from_slice(&self.min.to_le_bytes());
         out.extend_from_slice(&self.max.to_le_bytes());
+        // Each store from its least bucket with values to its greatest.
         for s in [&self.pos, &self.neg] {
-            varint(&mut out, zigzag(s.first));
-            varint(&mut out, s.bins.len() as u64);
-            for j in 0..s.bins.len() {
+            let used: Vec<usize> = (0..s.bins.len()).filter(|&j| s.bins.get(j) > 0).collect();
+            let (lo, hi) = (used.first().copied().unwrap_or(0), used.last().map_or(0, |&j| j + 1));
+            varint(&mut out, zigzag(if lo < hi { s.first + lo as i32 } else { 0 }));
+            varint(&mut out, (hi - lo) as u64);
+            for j in lo..hi {
                 varint(&mut out, s.bins.get(j));
             }
         }
@@ -475,15 +510,23 @@ mod tests {
 
     use super::*;
 
-    /// The exact value at rank ⌊p·(n − 1)⌋ of `xs`, in order.
+    /// `PERCENTILE_DISC(p)` of `xs`: the value at position ⌈p·n⌉ from 1.
     fn exact(xs: &mut [f64], p: f64) -> f64 {
         xs.sort_by(f64::total_cmp);
-        xs[(p * (xs.len() - 1) as f64).floor() as usize]
+        xs[((p * xs.len() as f64).ceil() as usize).max(1) - 1]
+    }
+
+    #[test]
+    fn the_constants_are_alphas() {
+        let g = (1.0 + ALPHA) / (1.0 - ALPHA);
+        assert!((GAMMA - g).abs() < 1e-15 && (LN_GAMMA - g.ln()).abs() < 1e-15 && (INV_LN_GAMMA - 1.0 / g.ln()).abs() < 1e-12);
     }
 
     fn of(p: f64, xs: &[f64]) -> Sketch {
         let mut s = Sketch::new(p);
-        xs.iter().for_each(|&x| s.add_f64(x));
+        xs.iter().for_each(|&x| {
+            s.add_f64(x);
+        });
         s
     }
 
@@ -524,7 +567,8 @@ mod tests {
             for chunk in xs.chunks(xs.len() / parts + 1) {
                 merged.absorb(of(0.99, chunk));
             }
-            assert_eq!(merged, whole, "{parts} parts");
+            assert_eq!(merged.to_bytes(), whole.to_bytes(), "{parts} parts");
+            assert_eq!(merged.value(), whole.value());
             // And through a shard's bytes.
             let mut by_bytes = Sketch::new(0.99);
             for chunk in xs.chunks(xs.len() / parts + 1) {
@@ -557,7 +601,8 @@ mod tests {
         s.pos.add(5, u32::MAX as u64);
         s.pos.add(5, 2);
         s.pos.add(7, 1);
-        assert_eq!(s.pos.bins, Bins::Wide(vec![u32::MAX as u64 + 2, 0, 1]));
+        assert!(matches!(s.pos.bins, Bins::Wide(_)));
+        assert_eq!(s.pos.each().collect::<Vec<_>>(), vec![(5, u32::MAX as u64 + 2), (7, 1)]);
     }
 
     #[test]
@@ -565,7 +610,8 @@ mod tests {
         let s = of(0.5, &[1.0, -2.5, 0.0, 1e9]);
         let b = s.to_bytes();
         assert_eq!(b[0], VERSION);
-        assert_eq!(Sketch::from_bytes(0.5, &b).unwrap(), s);
+        assert_eq!(Sketch::from_bytes(0.5, &b).unwrap().to_bytes(), b);
+        assert_eq!(Sketch::from_bytes(0.5, &b).unwrap().value(), s.value());
         let mut newer = b.clone();
         newer[0] = 2;
         assert!(Sketch::from_bytes(0.5, &newer).unwrap_err().contains("version 2"));

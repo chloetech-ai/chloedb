@@ -1,7 +1,7 @@
 //! Approximate percentiles: `approx_percentile(x, p)`, a DDSketch of each
 //! group's values ([`chloedb::query::agg::sketch`]). Each answer is within
-//! 1% of the value at rank ⌊p·(n − 1)⌋ of the group's values, as counted
-//! here from the rows; the executor's `GROUP BY` over the columns gives the
+//! 1% of `PERCENTILE_DISC(p)` of the group's values, as counted here from
+//! the rows; the executor's `GROUP BY` over the columns gives the
 //! answer the operators give row by row (sketches merge exactly); and a
 //! group holds a few KB of sketch however many rows it has. Checked in the
 //! memtable, across flushed segments, after deletes and updates, and after
@@ -68,11 +68,12 @@ fn fill(db: &Db, rows: &mut BTreeMap<i64, Row>, rng: &mut StdRng, from: i64, to:
     }
 }
 
-/// The value at rank ⌊p·(n − 1)⌋ of `xs`; None without values.
+/// `PERCENTILE_DISC(p)` of `xs`, the value at position ⌈p·n⌉ from 1 (the
+/// first for p = 0); None without values.
 fn at_rank(xs: &[f64], p: f64) -> Option<f64> {
     let mut xs = xs.to_vec();
     xs.sort_by(f64::total_cmp);
-    (!xs.is_empty()).then(|| xs[(p * (xs.len() - 1) as f64).floor() as usize])
+    (!xs.is_empty()).then(|| xs[((p * xs.len() as f64).ceil() as usize).max(1) - 1])
 }
 
 /// Whether `got` is within 1% of `want`.
