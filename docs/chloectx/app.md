@@ -1,8 +1,9 @@
 # ChloeCtx as an app of a ChloeDB cluster
 
-`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has two pages, and two more for a machine's Claude Code stores:
+`chloectx app` runs ChloeCtx beside a ChloeDB cluster, as the crawler and Sheets do, and the command center shows it under Apps. Its memory is not a file on one laptop: it lives in the cluster's tables, so any number of agents and people can write to it and ask it for context. It has three pages, and two more for a machine's Claude Code stores:
 
 - **Context.** Memory *spaces* that any agent writes notes and conversations to and asks for context before a task, within a token budget. An answer is found by search alone (BM25 and vectors, no model call), and it says what went in, why, and what was left out.
+- **Inspector.** What Claude Code sessions remembered, as `chloectx sync` copies each machine's memory into the cluster (table `chloectx_memory`): by project, each session read as the conversation it recorded (prompts, answers, tool calls, and the decisions, rules and facts the distiller wrote down), filtered by kind and searched with BM25, as `chloectx ui` shows a local store. It only reads. ([below](#inspector))
 - **Seen before.** The cluster's firing alerts, each beside the past incidents it looks like and the fix that worked. One button hands the alert to the cluster's on-call agent with those incidents as its context.
 - **Receipts** and **Blame**, with `--local-stores`: what each recall of a Claude Code session showed and why, replayed on the snapshot kept at the time, and from a line of code to the edit, its prompt and the memory recalled before it ([Receipts and blame](receipts.md#in-the-command-center)). Off by default: they read the stores of the machine the app runs on, which are transcripts.
 
@@ -11,6 +12,8 @@
 *A space in the command center. The context for "a customer wants a refund of 700 EUR, who approves it?" holds the current refund decision with what it changed (the 500 EUR limit it replaced is shown struck through) and leaves the old version out. 307 of 2,000 tokens, 23.6 ms, no model call.*
 
 ## Start it
+
+A chloedb-server with `chloectx` installed beside it (in the same directory, as an install puts them) starts it by itself, with a token and a key of its own ([apps the server starts](../chloedb/server.md#apps-the-server-starts)); its key may make and write `ctx_*` tables and read `chloectx_memory`, so the on-call hand-off of Seen before, which needs an admin key, is refused there. Started by hand:
 
 ```bash
 cd chloectx && cargo build --release
@@ -89,6 +92,16 @@ JSON over HTTP; through chloedb-server, the same paths under `/v1/apps/chloectx`
 | `POST /v1/spaces/:s/apps/:id/open` | | a one-time link into the app engine's studio, at the built app |
 
 An answer of `ask` has, for each record in the context, its `section` (`rule`, `note`, `timeline` for a question about the whole history, `reply` and `excerpt` for past conversations), its `tokens` (about four characters each), its scores (`bm25` for the question's words, `cos` for its meaning) and, for a note that replaced another, `replaced`: what it changed. `left_out` names what the searches found and the context leaves out, and why: `superseded`, `uncertain`, or `budget`. The context is built as ChloeCtx's own `memory_ask` builds it for Claude Code ([how](index.md)), with its sizes scaled to the budget.
+
+## Inspector
+
+The Inspector reads the table `chloectx_memory`, which `chloectx sync` fills from each machine's local store ([keep the memory on a ChloeDB server](setup.md#keep-the-memory-on-a-chloedb-server); a project is its git repository, so every checkout shares one memory). Its first page lists the projects, with their sessions and records; a project's page lists its sessions, the latest first, and its records, the latest first, with a chip per kind; a session's page shows its records in the order they were recorded, turn by turn; a search ranks the project's records by BM25 over their text. A record opens in a drawer with its whole text (up to 4,000 characters), its context, files, links and id. Nothing on the page writes.
+
+| call | answer |
+|---|---|
+| `GET /v1/memory` | `{table, exists, projects: [{project, records, sessions, last}]}` |
+| `GET /v1/memory/sessions?project=` | `{sessions: [{session, records, first, last, turns}], by_kind}` |
+| `GET /v1/memory/records?project=&session=&kind=&q=&limit=&before=` | `{records, more}`: a session's in order, else the latest first (`before`, a `seq`, pages back), or the best matches for `q`; at most 500 |
 
 ## Seen before
 

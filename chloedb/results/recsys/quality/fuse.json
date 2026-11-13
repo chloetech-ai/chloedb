@@ -1,0 +1,120 @@
+{
+ "step": 0.1,
+ "users": 4599,
+ "eps": 1e-06,
+ "chosen": {
+  "weighted_rrf": [
+   {
+    "scored_half": 0,
+    "weights": {
+     "history": 0.8,
+     "encode": 0.1,
+     "ppr": 0.1
+    },
+    "ndcg@10_where_chosen": 0.1919
+   },
+   {
+    "scored_half": 1,
+    "weights": {
+     "history": 0.8,
+     "encode": 0.1,
+     "ppr": 0.1
+    },
+    "ndcg@10_where_chosen": 0.1906
+   }
+  ],
+  "weighted_sum": [
+   {
+    "scored_half": 0,
+    "weights": {
+     "history": 0.8,
+     "encode": 0.1,
+     "ppr": 0.1
+    },
+    "ndcg@10_where_chosen": 0.1914
+   },
+   {
+    "scored_half": 1,
+    "weights": {
+     "history": 0.9,
+     "encode": 0.0,
+     "ppr": 0.1
+    },
+    "ndcg@10_where_chosen": 0.1889
+   }
+  ]
+ },
+ "sources": {
+  "history": {
+   "hr@10": 0.4514,
+   "hr@100": 0.7284,
+   "ndcg@10": 0.1854,
+   "ndcg@100": 0.2297,
+   "recall@10": 0.1781,
+   "recall@100": 0.2702,
+   "recall_published@10": 0.0915,
+   "recall_published@100": 0.2663,
+   "coverage@10": 0.0379,
+   "coverage@100": 0.1681,
+   "users": 4599
+  },
+  "rrf, equal weights (in Python)": {
+   "hr@10": 0.4588,
+   "hr@100": 0.793,
+   "ndcg@10": 0.1673,
+   "ndcg@100": 0.2067,
+   "recall@10": 0.1602,
+   "recall@100": 0.2495,
+   "recall_published@10": 0.0843,
+   "recall_published@100": 0.2465,
+   "coverage@10": 0.0303,
+   "coverage@100": 0.1436,
+   "users": 4599
+  },
+  "weighted rrf (in Python)": {
+   "hr@10": 0.4647,
+   "hr@100": 0.7402,
+   "ndcg@10": 0.1912,
+   "ndcg@100": 0.2352,
+   "recall@10": 0.1843,
+   "recall@100": 0.2757,
+   "recall_published@10": 0.0958,
+   "recall_published@100": 0.2719,
+   "coverage@10": 0.0364,
+   "coverage@100": 0.1729,
+   "users": 4599
+  },
+  "weighted sum (in Python)": {
+   "hr@10": 0.4627,
+   "hr@100": 0.756,
+   "ndcg@10": 0.189,
+   "ndcg@100": 0.2341,
+   "recall@10": 0.1819,
+   "recall@100": 0.2772,
+   "recall_published@10": 0.0944,
+   "recall_published@100": 0.2733,
+   "coverage@10": 0.037,
+   "coverage@100": 0.1694,
+   "users": 4599
+  },
+  "weighted sum (the query)": {
+   "hr@10": 0.4603,
+   "hr@100": 0.7402,
+   "ndcg@10": 0.1894,
+   "ndcg@100": 0.2344,
+   "recall@10": 0.182,
+   "recall@100": 0.276,
+   "recall_published@10": 0.0947,
+   "recall_published@100": 0.2722,
+   "coverage@10": 0.0381,
+   "coverage@100": 0.1738,
+   "users": 4599,
+   "ms_p50": 583.75,
+   "ms_p99": 825.95
+  }
+ },
+ "queries": [
+  "SELECT id FROM items ORDER BY 0.8 * tmm(ranked(:hist), lo => -101) + 0.1 * tmm(similarity(emb, encode('yambda50m', (SELECT item, ts FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 200), now => :t))) + 0.1 * tmm(ppr(after, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5), dir => 'out', eps => 1e-06)) DESC LIMIT 100",
+  "SELECT id FROM items ORDER BY 0.9 * tmm(ranked(:hist), lo => -101) + 0.1 * tmm(ppr(after, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5), dir => 'out', eps => 1e-06)) DESC LIMIT 100"
+ ]
+}

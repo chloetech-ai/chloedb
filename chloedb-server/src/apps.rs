@@ -31,15 +31,21 @@
 //! starts a query (audit D-B9, G-B17). The listing asks every app at once
 //! and keeps a failure as long as a manifest, so an app that does not
 //! answer neither slows the others nor is waited for at every page (G-B10).
+//!
+//! The server also starts apps itself (`--start-apps`, [`crate::app_procs`]):
+//! those are listed here too, each with a token of its own ([`App::token`]),
+//! and with their process's state.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value as Json};
+
+use crate::app_procs::{AppKeys, Plan, Proc};
 
 /// The most an app's answer may be.
 const MAX_ANSWER: usize = 32 << 20;
@@ -49,7 +55,8 @@ pub struct App {
     pub name: String,
     pub url: String,
     /// The token sent to this app in place of the server's
-    /// (`CHLOEDB_APP_TOKEN_<NAME>`).
+    /// (`CHLOEDB_APP_TOKEN_<NAME>`; an app the server starts has one of its
+    /// own, [`crate::app_procs`]).
     pub token: Option<String>,
 }
 
@@ -96,6 +103,8 @@ pub struct Apps {
     /// Each app's manifest, or why it could not be read, read at most every
     /// 15 s.
     manifests: Mutex<HashMap<String, (Instant, Result<Json, String>)>>,
+    /// The apps this server runs as child processes ([`crate::app_procs`]).
+    pub procs: Vec<Arc<Proc>>,
 }
 
 impl Default for Apps {
@@ -107,7 +116,7 @@ impl Default for Apps {
 impl Apps {
     pub fn new(list: Vec<App>, token: Option<String>) -> Apps {
         let http = (!list.is_empty()).then(|| crate::http_client().connect_timeout(Duration::from_secs(5)).build().expect("an HTTP client"));
-        Apps { list, token: token.filter(|t| !t.is_empty()), token_dir: None, http, manifests: Mutex::new(HashMap::new()) }
+        Apps { list, token: token.filter(|t| !t.is_empty()), token_dir: None, http, manifests: Mutex::new(HashMap::new()), procs: Vec::new() }
     }
 
     /// These apps, each one's own token read from `dir` (a file of its
@@ -115,6 +124,32 @@ impl Apps {
     pub fn with_token_dir(mut self, dir: Option<std::path::PathBuf>) -> Apps {
         self.token_dir = dir;
         self
+    }
+
+    /// These apps and the ones the server starts (`plans`), which are
+    /// listed after the others under their own names and tokens.
+    pub fn with_started(list: Vec<App>, token: Option<String>, plans: Vec<Plan>) -> Apps {
+        let mut list = list;
+        list.extend(plans.iter().map(|p| App { name: p.name.clone(), url: p.url(), token: Some(p.token.clone()) }));
+        let mut apps = Apps::new(list, token);
+        apps.procs = plans.into_iter().map(Proc::new).collect();
+        apps
+    }
+
+    /// Starts the apps' processes, against the server at `server`.
+    pub fn start(&self, server: &str, keys: Arc<dyn AppKeys>) {
+        for p in &self.procs {
+            tokio::spawn(p.clone().supervise(server.to_string(), keys.clone()));
+        }
+    }
+
+    /// Stops the apps' processes.
+    pub async fn stop(&self) {
+        futures::future::join_all(self.procs.iter().map(|p| p.stop())).await;
+    }
+
+    fn proc_of(&self, name: &str) -> Option<&Arc<Proc>> {
+        self.procs.iter().find(|p| p.plan.name == name)
     }
 
     fn find(&self, name: &str) -> Option<&App> {
@@ -133,7 +168,8 @@ impl Apps {
         let manifests = futures::future::join_all(self.list.iter().map(|a| self.manifest(a))).await;
         let mut out = Vec::new();
         for (a, m) in self.list.iter().zip(manifests) {
-            out.push(match m {
+            let process = self.proc_of(&a.name).map(|p| p.json());
+            let mut entry = match m {
                 Ok(m) => json!({
                     "name": a.name, "url": a.url, "up": true,
                     "title": m["title"].as_str().unwrap_or(&a.name), "description": m["description"], "icon_svg": m["icon_svg"],
@@ -141,7 +177,11 @@ impl Apps {
                     "checks_callers": m["checks_callers"] == json!(true),
                 }),
                 Err(e) => json!({"name": a.name, "url": a.url, "up": false, "title": a.name, "error": e}),
-            });
+            };
+            if let Some(p) = process {
+                entry["process"] = p;
+            }
+            out.push(entry);
         }
         json!({ "apps": out })
     }

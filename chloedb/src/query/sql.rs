@@ -1894,6 +1894,12 @@ impl<'a> Binder<'a> {
                         let mut opts = opts;
                         Expand::from_opts(&opts).map_err(err)?;
                         crate::query::exec::plain_syntax(&opts)?;
+                        // Expansion is a rewrite before the plan
+                        // ([`crate::query::prf`]): a call still naming it is
+                        // one the rewrite does not reach.
+                        if let Some(k) = [crate::query::prf::EXPAND, crate::query::prf::EXPAND_TERMS, crate::query::prf::EXPAND_WEIGHT].into_iter().find(|k| opts.contains_key(*k)) {
+                            return Err(err(format!("bm25's {k} expands a query's own text, in a SELECT of one table: it is not taken in a rank profile, a stored function or a plan")));
+                        }
                         let need = crate::query::exec::min_need(&opts)?;
                         self.guard(&mut opts, || GuardSite::Bm25 { field, text: text.clone() }, need, None, "bm25")?;
                         Ok(Score::Bm25 { field, text, opts: without_norm(opts) })
