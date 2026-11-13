@@ -233,17 +233,22 @@ pub fn upgrade(project: &Path, o: &UpgradeOptions) -> i32 {
         }
     }
     let head = git(&src, &["rev-parse", "HEAD"], Duration::from_secs(5)).unwrap_or_default();
-    if !o.force && !build.is_empty() && head == build {
+    let up_to_date = !o.force && !build.is_empty() && head == build;
+    // Daemons of the old build stop; they start again, new, on the next
+    // hook. An up-to-date build stops them only to move the stores, which
+    // `doctor` sends the user here for whether or not there is a new build.
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("chloectx"));
+    if !up_to_date || old_home_to_move() {
+        let _ = Command::new(&exe).args(["stop", "--all"]).stdout(Stdio::null()).status();
+        match move_old_home() {
+            Ok(Some((from, to))) => println!("==> moved the stores from {} to {} (its name before the rename is a link to it)", from.display(), to.display()),
+            Ok(None) => {}
+            Err(e) => println!("==> the stores stay where they are: {e}"),
+        }
+    }
+    if up_to_date {
         println!("ChloeCtx is up to date (the checkout is at the commit this binary was built from).");
         return 0;
-    }
-    // Daemons of the old build stop; they start again, new, on the next hook.
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("chloectx"));
-    let _ = Command::new(&exe).args(["stop", "--all"]).stdout(Stdio::null()).status();
-    match move_old_home() {
-        Ok(Some((from, to))) => println!("==> moved the stores from {} to {} (its name before the rename is a link to it)", from.display(), to.display()),
-        Ok(None) => {}
-        Err(e) => println!("==> the stores stay where they are: {e}"),
     }
     let bin_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     let prefix = if bin_dir.file_name().is_some_and(|n| n == "bin") { bin_dir.parent().map(Path::to_path_buf).unwrap_or_default() } else { bin_dir.clone() };
@@ -273,6 +278,19 @@ pub fn move_old_home() -> std::result::Result<Option<(PathBuf, PathBuf)>, String
         return Ok(None);
     }
     move_old_home_in(&crate::paths::data_dir())
+}
+
+/// Whether [`move_old_home`] has a folder to move (it may still refuse
+/// while a daemon runs in it).
+fn old_home_to_move() -> bool {
+    if std::env::var_os("CHLOECTX_HOME").is_some_and(|h| !h.is_empty()) {
+        return false;
+    }
+    let data = crate::paths::data_dir();
+    let old = crate::paths::home_in(&data);
+    old.file_name().is_some_and(|n| n == crate::paths::OLD_HOME)
+        && std::fs::symlink_metadata(&old).is_ok_and(|m| !m.file_type().is_symlink())
+        && !data.join(crate::paths::HOME).exists()
 }
 
 /// [`move_old_home`] in the data folder `data`.
