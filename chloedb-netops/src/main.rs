@@ -55,6 +55,12 @@ struct ServeArgs {
     /// Minutes between the faults the simulator injects on its own (0: only when asked).
     #[arg(long, env = "CHLOEDB_NETOPS_FAULT_EVERY", default_value_t = 45)]
     fault_every: i64,
+    /// About how many objects the simulated estate behind the backbone has: hubs, cabinets, cell sites and what is behind them (0: none).
+    #[arg(long, env = "CHLOEDB_NETOPS_ESTATE", default_value_t = 200_000)]
+    estate: usize,
+    /// The model that rewrites a search asked in a sentence into a plan, called through the server's llm() (empty: the fixed reader only).
+    #[arg(long, env = "CHLOEDB_NETOPS_REWRITE_MODEL", default_value = "anthropic/claude-haiku-5-5")]
+    rewrite_model: String,
     /// Do not write: serve the tables as they are.
     #[arg(long)]
     no_simulate: bool,
@@ -178,7 +184,7 @@ async fn main() {
         (None, url) => (url.clone().unwrap_or_else(|| "http://127.0.0.1:7700".into()), None),
     };
     let db = Strata::new(&url, a.key.clone());
-    let opts = Opts { history_hours: a.history_hours.clamp(1, 48), fault_every: a.fault_every.clamp(0, 24 * 60), simulate: !a.no_simulate, reset: a.reset };
+    let opts = Opts { history_hours: a.history_hours.clamp(1, 48), fault_every: a.fault_every.clamp(0, 24 * 60), simulate: !a.no_simulate, reset: a.reset, estate: a.estate.min(2_000_000), rewrite_model: a.rewrite_model.clone() };
     let engine = if a.no_simulate {
         // The network is whatever the inventory tables say it is.
         let mut tries = 0;

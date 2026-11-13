@@ -48,7 +48,7 @@ impl App {
             .arg(bin)
             .args(["--listen", &format!("127.0.0.1:{port}"), "--local-listen", &format!("127.0.0.1:{strata}"), "--token", TOKEN])
             // No faults of its own, and a short history: the test injects what it needs.
-            .args(["--fault-every", "0", "--history-hours", "2"])
+            .args(["--fault-every", "0", "--history-hours", "2", "--estate", "4000", "--rewrite-model", ""])
             .args(more)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -177,8 +177,60 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     ran_sql(&ov, "overview");
     assert!(len(&ov["traffic"]) > 60 && len(&ov["services"]) == 12 && len(&ov["recent"]) > 0, "overview: {}", ov["at"]);
     let data = api.get("/v1/data").await;
-    assert_eq!(len(&data["tables"]), 35);
+    assert_eq!(len(&data["tables"]), 39);
     assert!(data["tables"].as_array().unwrap().iter().all(|t| t["rows"].as_i64().is_some()), "every table answers a count");
+
+    // The estate behind the backbone, as the map reads it: the places, what
+    // is broken and where, a window at a level of detail, and one object
+    // with what it hangs from, what depends on it and what was done to it.
+    let base = api.get("/v1/map/base").await;
+    ran_sql(&base, "the map's places");
+    let objects = base["objects"].as_i64().unwrap();
+    assert!(objects > 2000 && len(&base["containers"]) > 20 && len(&base["trunks"]) > 5 && base["site_r"].as_f64().unwrap() > 0.0, "the estate: {} objects", objects);
+    let hot = api.get("/v1/map/hot").await;
+    let faults = hot["faults"].as_array().unwrap();
+    assert!(!faults.is_empty(), "faults are kept going from the start");
+    let f = faults.iter().find(|f| f["layer"] == "access").or(faults.iter().find(|f| f["layer"] != "premises")).unwrap_or(&faults[0]);
+    let (fid, metro, hub) = (f["id"].as_str().unwrap(), f["metro"].as_str().unwrap(), f["hub"].as_str().unwrap());
+    for place in [f["region"].as_str().unwrap(), metro, hub] {
+        assert!(hot["places"][place][f["state"].as_str().unwrap()].as_i64().unwrap() >= 1, "{fid} counts in {place}: {}", hot["places"][place]);
+    }
+    let (x, y) = (f["x"].as_f64().unwrap(), f["y"].as_f64().unwrap());
+    let r = base["site_r"].as_f64().unwrap() * 3.0;
+    let win = api.get(&format!("/v1/map/view?x0={}&y0={}&x1={}&y1={}&t=4", x - r, y - r, x + r, y + r)).await;
+    assert!(win["nodes"].as_array().unwrap().iter().any(|n| n["id"] == fid) && len(&win["edges"]) > 0 && win["cut"] == false, "the window holds {fid}: {} objects", len(&win["nodes"]));
+    let far = api.get(&format!("/v1/map/view?x0={}&y0={}&x1={}&y1={}&t=3", x + 5000.0, y, x + 5001.0, y + 1.0)).await;
+    assert_eq!(len(&far["nodes"]), 0, "nothing out there");
+    let node = api.get(&format!("/v1/map/node?id={fid}")).await;
+    assert_eq!(node["engine"], "sql", "one server walks the graph in SQL");
+    assert_eq!(node["cause"]["id"], fid, "what is wrong starts here: {}", node["cause"]);
+    assert!(len(&node["upstream"]) >= 1 && node["upstream"][0]["hop"] == 1, "what it hangs from: {}", node["upstream"]);
+    assert!(node["history"].as_array().unwrap().iter().any(|h| h["node"] == fid && h["event"] == "fault" && h["relation"] == "this object"), "its own fault is in its history");
+    assert!(node["queries"].as_array().unwrap().iter().any(|q| q["sql"].as_str().unwrap().contains("REACHABLE(netops_estate_edges")), "walked over the edge table");
+    if f["layer"] == "access" && f["state"] == "down" {
+        // What is behind a dead access node says where its trouble comes from.
+        let behind = api.get(&format!("/v1/map/view?x0={}&y0={}&x1={}&y1={}&t=4", x - r, y - r, x + r, y + r)).await;
+        let child = behind["nodes"].as_array().unwrap().iter().find(|n| n["state"] == "impacted" && n["asite"] == f["asite"]).expect("something behind it").clone();
+        let c = api.get(&format!("/v1/map/node?id={}", child["id"].as_str().unwrap())).await;
+        assert!(c["cause"]["id"] == fid && c["cause"]["hop"] == 1, "the trouble is one hop up: {}", c["cause"]);
+    }
+    assert!(!api.http.get(format!("{}/v1/map/node?id=nothing", api.url)).bearer_auth(TOKEN).send().await.unwrap().status().is_success());
+
+    // A search in a sentence: every condition it names in one statement.
+    let up = node["upstream"].as_array().unwrap().iter().find(|u| u["layer"] == "core").or(node["upstream"].as_array().unwrap().last()).unwrap()["id"].as_str().unwrap().to_string();
+    let ask = |q: String| { let api = &api; async move { let r = api.http.get(format!("{}/v1/map/ask", api.url)).query(&[("q", q.as_str())]).bearer_auth(TOKEN).send().await.unwrap(); assert!(r.status().is_success(), "{q}: {}", r.status()); r.json::<Value>().await.unwrap() } };
+    let found = ask(format!("everything behind {up} that is not ok")).await;
+    assert!(found["understood"] == true && found["sql"].as_str().unwrap().contains("REACHABLE(") && found["rows"].as_array().unwrap().iter().any(|r| r["id"] == fid), "{fid} is behind {up} and broken: {} matches, {}", found["total"], found["read"]);
+    assert!(found["places"][metro].as_i64().unwrap() >= 1, "counted where it is, for the map");
+    let found = ask("everything changed in the last 2 months about an upgrade by operator m.rossi with latency above 1 ms".into()).await;
+    let sql = found["sql"].as_str().unwrap();
+    assert!(found["total"].as_i64().unwrap() > 0 && len(&found["read"]) == 2 && sql.contains("MATCH(text, :about)") && sql.contains("author = :author") && sql.contains("latency_ms > :latency_ms") && sql.contains("SELECT node FROM netops_estate_events"), "one statement: {sql}");
+    let first = found["rows"][0]["id"].as_str().unwrap();
+    assert!(found["why"][first]["author"] == "m.rossi" && found["why"][first]["text"].as_str().unwrap().to_lowercase().contains("upgrade"), "the change that matched: {}", found["why"][first]);
+    assert_eq!(found["reader"], "rules", "no model is set in the test");
+    let none = ask("how is the weather today".into()).await;
+    assert!(none["understood"] == false && none["total"] == 0);
+    assert!(len(&api.get("/v1/map/asks").await["asks"]) >= 2, "the searches are kept");
     for path in ["/v1/incidents", "/v1/alerts", "/v1/rules", "/v1/changes", "/v1/devices", "/v1/services", "/v1/flows", "/v1/agents", "/v1/devices/cr1-lon", "/v1/links/cr1-lon--cr1-nyc", "/v1/services/ip-transit", "/v1/devices/cr1-lon/blame"] {
         ran_sql(&api.get(path).await, path);
     }

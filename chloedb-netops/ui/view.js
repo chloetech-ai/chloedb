@@ -207,6 +207,55 @@ const CSS = `
 .no-report p { margin: 8px 0 0; }
 .no-hero.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 16%, var(--surface)), var(--surface) 70%); }
 .no-hero.info { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 12%, var(--surface)), var(--surface) 70%); }
+.no-map { display: grid; gap: 10px; }
+.no-map-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.no-map-bar .input { height: 38px; font-size: 14px; }
+.no-map-eg { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.no-map-eg .chip { cursor: pointer; border: 1px solid var(--line); background: var(--surface); font: inherit; font-size: 12px; color: var(--text-2); }
+.no-map-eg .chip:hover { border-color: var(--accent); color: var(--text); }
+.no-map-bar .btn { height: 38px; padding: 0 22px; }
+.no-map-main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; height: calc(100vh - 345px); min-height: 520px; }
+.no-map-stage { position: relative; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-3, var(--surface-2)); overflow: hidden; min-width: 0; }
+.no-map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; outline: none; }
+.no-map-crumbs { position: absolute; left: 12px; top: 10px; display: flex; gap: 6px; font-size: 12.5px; background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; }
+.no-map-crumbs a { cursor: pointer; color: var(--text); font-weight: 600; }
+.no-map-crumbs a:hover { color: var(--accent); }
+.no-map-zoom { position: absolute; right: 12px; top: 10px; display: flex; gap: 4px; }
+.no-map-legend { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-2); background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 10px; max-width: 60%; }
+.no-map-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+.no-map-stats { position: absolute; right: 12px; bottom: 10px; font-size: 11.5px; color: var(--text-2); background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 10px; font-variant-numeric: tabular-nums; }
+.no-map-tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line-2, var(--line)); border-radius: var(--r-sm); padding: 6px 10px; font-size: 12px; max-width: 250px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 2; }
+.no-map-side { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow-y: auto; min-width: 0; padding-bottom: 12px; }
+.no-map-head { padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+.no-map-head h3 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.no-map-why { margin-top: 8px; font-size: 13px; color: var(--crit-ink); }
+.no-map-kpis { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); }
+.no-map-kpis > div { padding: 10px 14px; display: grid; }
+.no-map-kpis b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.no-map-kpis span { font-size: 11.5px; color: var(--text-2); }
+.no-map-sec { padding: 12px 14px 0; }
+.no-map-sec > header { display: grid; gap: 1px; margin-bottom: 6px; }
+.no-map-sec > header b { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); }
+.no-map-sec > header .how { font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
+.no-map-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 5px 6px; margin: 0 -6px; border-radius: var(--r-sm); cursor: pointer; }
+.no-map-row:hover { background: var(--surface-2); }
+.no-map-row .t { display: grid; min-width: 0; }
+.no-map-row .t b { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.no-map-row .t span { font-size: 11.5px; color: var(--text-2); }
+.no-map-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; }
+.no-map-verdict { margin: 12px 14px 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--crit) 45%, var(--line)); background: color-mix(in srgb, var(--crit) 8%, var(--surface)); border-radius: var(--r-sm); font-size: 13px; }
+.no-map-verdict.calm { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
+.no-map-hist { display: grid; gap: 5px; font-size: 12px; }
+.no-map-hist > div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; padding-left: 8px; border-left: 3px solid var(--line); }
+.no-map-hist > div.change { border-left-color: var(--accent); }
+.no-map-hist > div.fault { border-left-color: var(--crit); }
+.no-map-hist .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.no-map-read { display: grid; gap: 5px; font-size: 12.5px; }
+.no-map-read > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; }
+.no-map-read .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); font-weight: 700; padding-top: 2px; }
+.no-map-side > .btn.ghost { margin: 8px 8px 0; }
+.no-map-side pre { font-size: 11px; max-height: 260px; overflow: auto; }
+@media (max-width: 1100px) { .no-map-main { grid-template-columns: minmax(0, 1fr); height: auto; } .no-map-stage { height: 560px; } }
 @media (max-width: 1100px) { .no-cols, .no-cols.even, .no-cols.wide { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 900px) {
   .no-hero { grid-template-columns: minmax(0, 1fr); }
@@ -220,7 +269,7 @@ const T = (x) => (x ? Date.parse(x) : null);
 const SEV = { critical: "bad", major: "serious", minor: "warn", sev1: "bad", sev2: "serious", sev3: "warn" };
 const STATUS = { investigating: ["warn", "Investigating"], identified: ["info", "Cause identified"], mitigated: ["ok", "Mitigated"], resolved: ["good", "Resolved"] };
 const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity" };
-const PAGES = [["", "My shift"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
+const PAGES = [["", "My shift"], ["map", "Map"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
 const gbps = (bps) => (bps == null ? "–" : bps >= 1e12 ? (bps / 1e12).toFixed(2) + " Tb/s" : bps >= 1e9 ? (bps / 1e9).toFixed(1) + " Gb/s" : (bps / 1e6).toFixed(0) + " Mb/s");
 const pct = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : (v * 100).toFixed(d) + "%");
 const mins = (m) => (m == null ? "–" : m >= 90 ? (m / 60).toFixed(1) + " h" : Math.round(m) + " min");
@@ -274,11 +323,11 @@ function render(el, ctx) {
     tabs.style.display = page === "leadership" ? "none" : "";
     drawAlt(page);
     if (!ready) return;
-    const f = { "": shiftPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
+    const f = { "": shiftPage, map: mapPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
     stop = f(body, app, path);
   };
   const drawTabs = (st) => {
-    const badge = { diagnose: st?.open_incidents ? "!" : 0, incidents: st?.open_incidents || 0, alerts: st?.firing || 0, "": st?.waiting || 0, carriers: st?.notices || 0 };
+    const badge = { map: st?.estate?.broken || 0, diagnose: st?.open_incidents ? "!" : 0, incidents: st?.open_incidents || 0, alerts: st?.firing || 0, "": st?.waiting || 0, carriers: st?.notices || 0 };
     const page = (current || [])[0] || "";
     tabs.replaceChildren(...PAGES.map(([p, label]) => h("button", { role: "tab", dataset: { p }, "aria-selected": String(p === page), onclick: () => app.go(...(p ? [p] : [])) }, label, badge[p] ? h("span", { class: "n", style: p === "incidents" ? { background: "var(--crit-soft)", color: "var(--crit-ink)" } : null }, String(badge[p])) : null)));
   };
@@ -300,7 +349,7 @@ function render(el, ctx) {
     if (st.error && ready) simEl.append(h("span", { class: "badge ac-bad", title: st.error }, "write error"));
     if (!st.ready) {
       setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
-        h("div", { class: "small muted" }, st.error || "Creating 35 tables, a month of history and the last hours of telemetry. This takes under a minute."));
+        h("div", { class: "small muted" }, st.error || "Creating 39 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute."));
       if (!setup.isConnected) body.replaceChildren(setup);
       return;
     }
@@ -1983,4 +2032,453 @@ function leadershipPage(body, app) {
         h("div", { class: "no-sec" }, "Incidents led, by person"), charts.barList(Object.entries(inc.pages).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })), { fmtv: C.fmt.n }),
         h("div", { class: "no-sec" }, "What the agents took"), facts(app, [["runs", C.fmt.n(agents)], ["causes confirmed by the answer key", `${j.team.right} of ${j.team.judged}`], ["actions proposed", C.fmt.n(Object.values(acts).reduce((a, b) => a + b, 0))], ["carried out", C.fmt.n(acts.executed || 0)]])] }));
   }, 60000);
+}
+
+// ---------------------------------------------------------------- the map
+
+const MAP_EXAMPLES = [
+  "everything changed in the last week about a firmware upgrade by m.rossi with latency above 15 ms",
+  "everything behind ag1-ams that is not ok",
+  "cell sites that went down in the last 3 days because of power",
+  "customer routers in Frankfurt changed in the last month about QoS with high latency",
+  "hub routers that failed in the last month about a line card",
+];
+const KIND_NAME = { region: "Region", metro: "Metro", hub: "Hub", site: "Site", core: "Core router", border: "Border router", agg: "Aggregation router", firewall: "Firewall", spine: "Spine switch", leaf: "Leaf switch", "hub-router": "Hub router", power: "Power plant", olt: "OLT", cell: "Cell site router", switch: "Access switch", ont: "ONT", radio: "Radio", cpe: "Customer router" };
+const STATE_PILL = { ok: "ok", down: "bad", degraded: "warn", impacted: "serious" };
+const fms = (v) => (v == null ? "–" : v >= 100 ? v.toFixed(0) + " ms" : v.toFixed(1) + " ms");
+
+/**
+ * The whole network as one zoomable plane. What is drawn is what two range
+ * queries return for the window at its level of detail; what is red is a
+ * GROUP BY of the rows that are not ok; what a click shows is walked over
+ * the edge table; and the search box compiles a sentence into one query.
+ */
+function mapPage(body, app, path) {
+  const { h, C } = app;
+  const canvas = h("canvas", { class: "no-map-canvas", tabindex: "0", "aria-label": "The network, zoomable" });
+  const crumbs = h("div", { class: "no-map-crumbs" });
+  const stats = h("div", { class: "no-map-stats" });
+  const tip = h("div", { class: "no-map-tip", style: { display: "none" } });
+  const side = h("aside", { class: "no-map-side" });
+  const input = h("input", { class: "input", type: "search", placeholder: "Ask the graph in a sentence: what, where, what happened to it, who did it, how it reads now, what it hangs from", "aria-label": "Search the network in a sentence", onkeydown: (e) => { if (e.key === "Enter") ask(input.value); } });
+  const askBtn = h("button", { class: "btn primary", onclick: () => ask(input.value) }, "Ask");
+  const zoomBtn = (label, title, fn) => h("button", { class: "btn sm", title, onclick: fn }, label);
+  const legend = h("div", { class: "no-map-legend" },
+    [["var(--crit)", "down or incident"], ["var(--warn)", "degraded"], ["var(--serious)", "behind a fault"], ["var(--accent)", "search match"]].map(([c, t]) => h("span", {}, h("i", { style: { background: c } }), t)));
+  const stage = h("div", { class: "no-map-stage" }, canvas, crumbs,
+    h("div", { class: "no-map-zoom" }, zoomBtn("+", "Zoom in", () => zoomBy(1.8)), zoomBtn("−", "Zoom out", () => zoomBy(1 / 1.8)), zoomBtn("Fit", "The whole network", () => fit(true))), legend, stats, tip);
+  body.append(h("div", { class: "no-map" },
+    h("div", { class: "no-map-bar" }, input, askBtn),
+    h("div", { class: "no-map-eg" }, h("span", { class: "muted small" }, "Try:"), MAP_EXAMPLES.map((q) => h("button", { class: "chip", onclick: () => { input.value = q; ask(q); } }, q))),
+    h("div", { class: "no-map-main" }, stage, side)));
+
+  const g = canvas.getContext("2d");
+  let W = 0, H = 0, dpr = 1;
+  const view = { k: 1, tx: 0, ty: 0 };
+  let base = null, hot = { faults: [], places: {}, incidents: [], devices: {} }, shown = { nodes: [], edges: [], t: 0, box: null, ms: 0, cut: false };
+  let found = null, sel = null, hover = null, dead = false, anim = null, loadSeq = 0, loadTimer = null, fitK = 1;
+  const cont = new Map();
+
+  const sx = (x) => x * view.k + view.tx, sy = (y) => y * view.k + view.ty;
+  const wx = (px) => (px - view.tx) / view.k, wy = (py) => (py - view.ty) / view.k;
+  const tier = () => (!base ? 1 : base.site_r * view.k >= 30 ? 4 : base.site_r * view.k >= 10 ? 3 : base.hub_r * view.k >= 9 ? 2 : 1);
+
+  const resize = () => {
+    const r = stage.getBoundingClientRect();
+    dpr = window.devicePixelRatio || 1;
+    W = Math.max(320, r.width); H = Math.max(320, r.height);
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    draw();
+  };
+  const bounds = () => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const c of cont.values()) if (c.kind === "region") { x0 = Math.min(x0, c.x - c.r); x1 = Math.max(x1, c.x + c.r); y0 = Math.min(y0, c.y - c.r); y1 = Math.max(y1, c.y + c.r); }
+    return x0 === Infinity ? [0, 0, 1, 1] : [x0, y0, x1, y1];
+  };
+  const target = (x, y, k) => ({ k, tx: W / 2 - x * k, ty: H / 2 - y * k });
+  const fly = (to, ms = 420) => {
+    const from = { ...view }, t0 = performance.now();
+    cancelAnimationFrame(anim);
+    // Zoom in the logarithm and move the centre, so a long way feels like one move.
+    const c0 = [wx(W / 2), wy(H / 2)], c1 = [(W / 2 - to.tx) / to.k, (H / 2 - to.ty) / to.k];
+    const step = (now) => {
+      if (dead) return;
+      const u = Math.min(1, (now - t0) / ms), e = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+      const k = Math.exp(Math.log(from.k) + (Math.log(to.k) - Math.log(from.k)) * e);
+      const cx = c0[0] + (c1[0] - c0[0]) * e, cy = c0[1] + (c1[1] - c0[1]) * e;
+      Object.assign(view, target(cx, cy, k));
+      draw();
+      if (u < 1) anim = requestAnimationFrame(step); else moved();
+    };
+    if (ms <= 0) { Object.assign(view, to); draw(); moved(); } else anim = requestAnimationFrame(step);
+  };
+  const fit = (smooth) => {
+    const [x0, y0, x1, y1] = bounds();
+    fitK = Math.min(W / (x1 - x0), H / (y1 - y0)) * 0.94;
+    fly(target((x0 + x1) / 2, (y0 + y1) / 2, fitK), smooth ? 420 : 0);
+  };
+  const zoomBy = (f, px = W / 2, py = H / 2) => {
+    const k = Math.max(fitK * 0.6, Math.min(base ? 260 / base.site_r : 400, view.k * f));
+    fly({ k, tx: px - wx(px) * k, ty: py - wy(py) * k }, 220);
+  };
+  const flyToPlace = (c) => fly(target(c.x, c.y, Math.min(W, H) / (2.3 * c.r)));
+  const flyToNode = (n) => fly(target(n.x, n.y, Math.max(view.k, 46 / base.site_r)));
+
+  // What the window shows, at its level of detail: asked again when it moves.
+  const moved = () => {
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(load, 140);
+    drawCrumbs();
+  };
+  const load = async (force) => {
+    if (dead || !base) return;
+    const t = tier();
+    if (t < 3) { shown = { nodes: [], edges: [], t, box: null, ms: 0, cut: false }; draw(); return; }
+    const x0 = wx(0), x1 = wx(W), y0 = wy(0), y1 = wy(H);
+    if (!force && shown.box && shown.t === t && x0 >= shown.box[0] && x1 <= shown.box[2] && y0 >= shown.box[1] && y1 <= shown.box[3]) return;
+    const px = (x1 - x0) * 0.3, py = (y1 - y0) * 0.3, box = [x0 - px, y0 - py, x1 + px, y1 + py];
+    const seq = ++loadSeq;
+    try {
+      const j = await app.call(`/v1/map/view?x0=${box[0].toFixed(3)}&y0=${box[1].toFixed(3)}&x1=${box[2].toFixed(3)}&y1=${box[3].toFixed(3)}&t=${t}`);
+      if (dead || seq !== loadSeq) return;
+      shown = { nodes: j.nodes, edges: j.edges, t, box, ms: j.queries.reduce((a, q) => a + q.ms, 0), cut: j.cut };
+      draw();
+    } catch (e) { console.warn(e); }
+  };
+
+  const css = () => { const s = getComputedStyle(canvas); return (n) => s.getPropertyValue(n).trim() || "#888"; };
+  const stateColor = (v, n) => (n.state === "down" || hot.devices[n.id] ? v("--crit") : n.state === "degraded" ? v("--warn") : n.state === "impacted" ? v("--serious") : null);
+  // How loudly a place shows what is broken inside it: a region is not red for one home's ONT.
+  const heat = (p, kind) => {
+    if (!p) return 0;
+    if (kind === "site") return p.down ? 3 : p.degraded ? 2 : p.impacted ? 1 : 0;
+    const [red, amber] = kind === "hub" ? [6, 1] : kind === "region" ? [1e9, 80] : [40, 12];
+    return p.incidents || p.weight >= red ? 3 : p.weight >= amber ? 2 : kind === "hub" && p.impacted ? 1 : 0;
+  };
+
+  function draw() {
+    if (dead || !W) return;
+    const v = css(), t = tier(), k = view.k;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    g.lineJoin = "round";
+    const line = v("--line"), text = v("--text"), text2 = v("--text-2"), muted = v("--muted"), crit = v("--crit"), warn = v("--warn"), serious = v("--serious"), accent = v("--accent"), surface = v("--surface");
+    const family = getComputedStyle(canvas).fontFamily || "system-ui, sans-serif";
+    const font = (px, w = 500) => { g.font = `${w} ${px}px ${family}`; };
+    const onScreen = (x, y, r) => sx(x) + r * k > -40 && sx(x) - r * k < W + 40 && sy(y) + r * k > -40 && sy(y) - r * k < H + 40;
+    const badge = (x, y, n, color) => {
+      const s = String(n);
+      font(11, 700);
+      const w = Math.max(18, g.measureText(s).width + 10);
+      g.fillStyle = color; g.beginPath(); g.roundRect(x - w / 2, y - 9, w, 18, 9); g.fill();
+      g.fillStyle = "#fff"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(s, x, y + 0.5);
+    };
+    const all = [...cont.values()];
+    // Trunks between metros, until single links are drawn.
+    if (base && t < 3) {
+      g.strokeStyle = muted; g.globalAlpha = 0.55;
+      for (const tr of base.trunks) {
+        const a = cont.get(tr.a), b = cont.get(tr.b);
+        if (!a || !b) continue;
+        g.lineWidth = Math.min(5, 1 + tr.n * 0.8);
+        g.beginPath(); g.moveTo(sx(a.x), sy(a.y)); g.lineTo(sx(b.x), sy(b.y)); g.stroke();
+      }
+      g.globalAlpha = 1;
+    }
+    // Places, largest first. The deepest level drawn carries the counts.
+    const deepest = t === 1 ? "metro" : t === 2 ? "hub" : "site";
+    const place = (c, isDeep) => {
+      const r = c.r * k, x = sx(c.x), y = sy(c.y);
+      if (r < 1.5 || !onScreen(c.x, c.y, c.r)) return;
+      const p = hot.places[c.id], ht = heat(p, c.kind);
+      const col = ht === 3 ? crit : ht === 2 ? warn : ht === 1 ? serious : null;
+      g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
+      const big = r > Math.min(W, H) * 0.75;
+      g.globalAlpha = big ? 0.25 : c.kind === "region" ? 0.5 : 0.9;
+      g.fillStyle = c.kind === "region" || (c.kind === "hub" && !isDeep) ? v("--surface-2") : surface;
+      g.fill();
+      if (col && isDeep) { g.globalAlpha = 0.2; g.fillStyle = col; g.fill(); }
+      g.globalAlpha = 1;
+      g.lineWidth = col && isDeep ? 2.2 : col ? 1.5 : 1;
+      g.strokeStyle = col || (c.kind === "region" ? v("--line-2") : line);
+      g.stroke();
+      const m = found && found.places[c.id];
+      if (m && isDeep) { g.lineWidth = 3; g.strokeStyle = accent; g.setLineDash([5, 4]); g.beginPath(); g.arc(x, y, r + 4, 0, Math.PI * 2); g.stroke(); g.setLineDash([]); }
+    };
+    const label = (c, isDeep) => {
+      const r = c.r * k, x = sx(c.x), y = sy(c.y);
+      if (!onScreen(c.x, c.y, c.r)) return;
+      const p = hot.places[c.id];
+      g.textAlign = "center"; g.textBaseline = "middle";
+      if (c.kind === "region") {
+        if (r > 40 && r < Math.max(W, H)) { font(12, 700); g.fillStyle = text2; g.fillText(c.name.toUpperCase(), x, y - r - 12); }
+      } else if (isDeep && r > 15) {
+        font(r > 60 ? 15 : r > 22 ? 12 : 10, 600); g.fillStyle = text;
+        g.fillText(c.kind === "hub" ? c.name.replace(/^.* hub /, r > 22 ? "Hub " : "") : c.kind === "site" ? c.name.replace(/,.*$/, "") : c.name, x, y - (r > 44 ? 8 : 0));
+        if (r > 44) { font(11, 400); g.fillStyle = muted; g.fillText(`${C.fmt.n(c.children)} objects`, x, y + 10); }
+      } else if (!isDeep && r > 36 && r < Math.max(W, H) * 0.9 && c.kind !== "site") {
+        font(c.kind === "hub" ? 11 : 12.5, 600); g.fillStyle = text2; g.fillText(c.kind === "hub" ? c.name.replace(/^.* hub /, "Hub ") : c.name, x, y - r + (c.kind === "hub" ? -8 : 14));
+      }
+      if (isDeep) {
+        const n = p ? (p.down || 0) + (p.degraded || 0) + (p.incidents || 0) : 0, ht = heat(p, c.kind);
+        if (n && r > 5) badge(x + r * 0.7, y - r * 0.7, n, ht === 3 ? crit : ht === 2 ? warn : muted);
+        else if (p && p.impacted && r > 5) badge(x + r * 0.7, y - r * 0.7, p.impacted, serious);
+        const m = found && found.places[c.id];
+        if (m && r > 5) badge(x + r * 0.7, y + r * 0.7, C.fmt.n(m), accent);
+      }
+    };
+    const levels = ["region", "metro"].concat(t >= 2 ? ["hub"] : []);
+    for (const kind of levels) for (const c of all) if (c.kind === kind) place(c, kind === deepest);
+    if (t === 2) {
+      g.strokeStyle = line; g.lineWidth = 1;
+      for (const c of all) if (c.kind === "hub" && onScreen(c.x, c.y, c.r)) { const m = cont.get(c.metro); if (m) { g.beginPath(); g.moveTo(sx(c.x), sy(c.y)); g.lineTo(sx(m.x), sy(m.y)); g.stroke(); } }
+      for (const c of all) if (c.kind === "hub") place(c, true);
+    }
+    // Links, then sites, then the objects themselves.
+    let drawn = 0;
+    if (t >= 3) {
+      g.lineWidth = 1;
+      for (const e of shown.edges) {
+        const far = e.kind === "backbone";
+        g.strokeStyle = far ? muted : line; g.globalAlpha = e.kind === "drop" ? 0.7 : 1;
+        g.beginPath(); g.moveTo(sx(e.x1), sy(e.y1)); g.lineTo(sx(e.x2), sy(e.y2)); g.stroke();
+      }
+      g.globalAlpha = 1;
+      const sites = shown.nodes.filter((n) => n.kind === "site");
+      for (const c of sites) place(c, t === 3);
+      const matched = found ? found.ids : null;
+      for (const n of shown.nodes) {
+        if (n.layer === "container") continue;
+        const x = sx(n.x), y = sy(n.y);
+        if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+        drawn++;
+        const sc = stateColor(v, n);
+        const s = n.layer === "premises" ? Math.max(2.2, Math.min(6, base.site_r * k * 0.045)) : n.layer === "access" ? Math.max(3.5, Math.min(10, base.site_r * k * 0.16)) : Math.max(3.5, Math.min(9, base.hub_r * k * 0.035));
+        g.fillStyle = sc || (n.layer === "core" ? text : n.layer === "aggregation" ? text2 : n.layer === "power" ? v("--seq-5") : n.layer === "access" ? text2 : muted);
+        g.beginPath();
+        if (n.layer === "core") g.rect(x - s, y - s, s * 2, s * 2);
+        else if (n.layer === "aggregation") { g.moveTo(x, y - s * 1.3); g.lineTo(x + s * 1.3, y); g.lineTo(x, y + s * 1.3); g.lineTo(x - s * 1.3, y); g.closePath(); }
+        else if (n.layer === "power") { g.moveTo(x, y - s * 1.2); g.lineTo(x + s * 1.1, y + s); g.lineTo(x - s * 1.1, y + s); g.closePath(); }
+        else g.arc(x, y, s, 0, Math.PI * 2);
+        g.fill();
+        if (sc && n.state !== "impacted") { g.strokeStyle = sc; g.globalAlpha = 0.35; g.lineWidth = 4; g.beginPath(); g.arc(x, y, s + 5, 0, Math.PI * 2); g.stroke(); g.globalAlpha = 1; }
+        if (matched && matched.has(n.id)) { g.strokeStyle = accent; g.lineWidth = 2.5; g.beginPath(); g.arc(x, y, s + 4, 0, Math.PI * 2); g.stroke(); }
+        n._s = s;
+      }
+      for (const c of sites) label(c, t === 3);
+      // Names, once there is room for them.
+      const roomy = base.site_r * k > 26;
+      g.textAlign = "center"; g.textBaseline = "top";
+      for (const n of shown.nodes) {
+        if (n.layer === "container" || (n.layer === "premises" ? base.site_r * k < 150 : !roomy && n.layer !== "core")) continue;
+        if (n.layer === "core" && base.hub_r * k < 60) continue;
+        const x = sx(n.x), y = sy(n.y);
+        if (x < 0 || x > W || y < 0 || y > H) continue;
+        font(10.5, 500); g.fillStyle = text2;
+        g.fillText(n.layer === "premises" ? n.name.replace(/, customer router$/, "") : n.id, x, y + (n._s || 4) + 4);
+      }
+    }
+    for (const kind of levels) for (const c of all) if (c.kind === kind) label(c, kind === deepest);
+    // The selection: what it hangs from, where that chain is broken, the trouble near it.
+    if (sel && sel.j) {
+      const j = sel.j, n = j.node;
+      const pt = (o) => [sx(o.x), sy(o.y)];
+      g.strokeStyle = accent; g.lineWidth = 2; g.globalAlpha = 0.9;
+      const ups = j.upstream.filter((u) => u.hop === 1);
+      for (const u of j.upstream) {
+        const from = u.hop === 1 ? [n] : j.upstream.filter((o) => o.hop === u.hop - 1);
+        for (const f of from.slice(0, 2)) { g.beginPath(); g.moveTo(...pt(f)); g.lineTo(...pt(u)); g.stroke(); }
+      }
+      g.globalAlpha = 1;
+      for (const o of j.near.filter((o) => o.layer !== "premises").slice(0, 12)) { const [x, y] = pt(o); g.strokeStyle = serious; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, 9, 0, Math.PI * 2); g.stroke(); }
+      for (const u of j.upstream) { const [x, y] = pt(u); g.fillStyle = surface; g.strokeStyle = accent; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6, 0, Math.PI * 2); g.fill(); g.stroke(); }
+      if (j.cause && j.cause.id) { const [x, y] = pt(j.cause); g.strokeStyle = crit; g.lineWidth = 3; g.beginPath(); g.arc(x, y, 13, 0, Math.PI * 2); g.stroke(); g.beginPath(); g.arc(x, y, 19, 0, Math.PI * 2); g.globalAlpha = 0.35; g.stroke(); g.globalAlpha = 1; }
+      const [x, y] = pt(n);
+      g.strokeStyle = text; g.lineWidth = 2.5; g.beginPath(); g.arc(x, y, 11, 0, Math.PI * 2); g.stroke();
+      void ups;
+    }
+    // Matches that are not in the window's rows still show, as rings.
+    if (found && t >= 3) {
+      g.strokeStyle = accent; g.lineWidth = 2;
+      const have = new Set(shown.nodes.map((n) => n.id));
+      for (const r of found.rows) if (!have.has(r.id)) { const x = sx(r.x), y = sy(r.y); if (x > 0 && x < W && y > 0 && y < H) { g.beginPath(); g.arc(x, y, 5, 0, Math.PI * 2); g.stroke(); } }
+    }
+    const level = ["", "regions and metros", "hubs", "devices and sites", "every object"][t];
+    stats.textContent = base ? `${level} · ${t >= 3 ? `${C.fmt.n(drawn)} of ${C.fmt.n(base.objects)} objects drawn, window read in ${C.fmt.ms(shown.ms)}${shown.cut ? " (cut at 9,000 rows)" : ""}` : `${C.fmt.n(base.objects)} objects, ${C.fmt.n(base.links)} links`}` : "";
+  }
+
+  const drawCrumbs = () => {
+    if (!base) return;
+    const cx = wx(W / 2), cy = wy(H / 2), trail = [];
+    for (const kind of ["region", "metro", "hub"]) {
+      let best = null;
+      for (const c of cont.values()) if (c.kind === kind && Math.hypot(c.x - cx, c.y - cy) < c.r && c.r * view.k > Math.min(W, H) * 0.28) best = c;
+      if (best) trail.push(best);
+    }
+    put(crumbs, h("a", { onclick: () => fit(true) }, "Whole network"), trail.map((c) => [h("span", { class: "muted" }, "›"), h("a", { onclick: () => flyToPlace(c) }, c.name)]));
+  };
+
+  // What is under the pointer: an object first, then the smallest place.
+  const hit = (px, py) => {
+    const t = tier();
+    if (t >= 3) {
+      let best = null, bd = 12;
+      for (const n of shown.nodes) { if (n.layer === "container") continue; const d = Math.hypot(sx(n.x) - px, sy(n.y) - py) - (n._s || 3); if (d < bd) { bd = d; best = n; } }
+      if (best) return { node: best };
+      for (const n of shown.nodes) if (n.kind === "site" && Math.hypot(sx(n.x) - px, sy(n.y) - py) < n.r * view.k && t === 3) return { place: n };
+    }
+    for (const kind of ["hub", "metro", "region"]) {
+      if (kind === "hub" && t < 2) continue;
+      for (const c of cont.values()) if (c.kind === kind && Math.hypot(sx(c.x) - px, sy(c.y) - py) < c.r * view.k && c.r * view.k < Math.min(W, H) * 0.45) return { place: c };
+    }
+    return null;
+  };
+
+  let drag = null;
+  const pos = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const [px, py] = pos(e), f = Math.exp(-e.deltaY * 0.0016);
+    const k = Math.max(fitK * 0.6, Math.min(base ? 260 / base.site_r : 400, view.k * f));
+    cancelAnimationFrame(anim);
+    Object.assign(view, { k, tx: px - wx(px) * k, ty: py - wy(py) * k });
+    draw(); moved();
+  }, { passive: false });
+  canvas.addEventListener("pointerdown", (e) => { const [px, py] = pos(e); drag = { px, py, tx: view.tx, ty: view.ty, moved: false }; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointermove", (e) => {
+    const [px, py] = pos(e);
+    if (drag) {
+      if (Math.hypot(px - drag.px, py - drag.py) > 3) drag.moved = true;
+      if (drag.moved) { cancelAnimationFrame(anim); view.tx = drag.tx + px - drag.px; view.ty = drag.ty + py - drag.py; draw(); }
+      return;
+    }
+    const o = hit(px, py);
+    hover = o;
+    canvas.style.cursor = o ? "pointer" : "grab";
+    if (!o) { tip.style.display = "none"; return; }
+    const n = o.node || o.place, p = hot.places[n.id];
+    put(tip, h("b", {}, n.name), h("div", { class: "muted" }, o.node ? `${KIND_NAME[n.kind] || n.kind}${n.state !== "ok" ? " · " + n.state : ""}${n.latency_ms ? " · " + fms(n.latency_ms) : ""}` : `${KIND_NAME[n.kind] || n.kind} · ${C.fmt.n(n.children)} objects${p ? ` · ${(p.down || 0) + (p.degraded || 0)} broken, ${p.impacted || 0} behind them${p.incidents ? `, ${p.incidents} incident${p.incidents === 1 ? "" : "s"}` : ""}` : ""}`));
+    tip.style.display = "";
+    tip.style.left = Math.min(W - 260, px + 14) + "px"; tip.style.top = Math.min(H - 50, py + 14) + "px";
+  });
+  canvas.addEventListener("pointerup", (e) => {
+    const d = drag; drag = null;
+    if (!d) return;
+    if (d.moved) { moved(); return; }
+    const [px, py] = pos(e), o = hit(px, py);
+    if (o && o.node) select(o.node.id);
+    else if (o && o.place) flyToPlace(o.place);
+  });
+  canvas.addEventListener("pointerleave", () => { tip.style.display = "none"; });
+  canvas.addEventListener("dblclick", (e) => { const [px, py] = pos(e); zoomBy(2.2, px, py); });
+
+  // ---- the side panel
+  const sec = (title, how, ...kids) => h("section", { class: "no-map-sec" }, h("header", {}, h("b", {}, title), how ? h("span", { class: "how" }, how) : null), kids);
+  const dot = (state, incident) => h("i", { class: "no-map-dot", style: { background: state === "down" || incident ? "var(--crit)" : state === "degraded" ? "var(--warn)" : state === "impacted" ? "var(--serious)" : "var(--good)" } });
+  const where = (o) => [cont.get(o.hub)?.name, !o.hub ? cont.get(o.metro)?.name : null].filter(Boolean).join(", ");
+  const row = (o, main, subText, onclick) => h("a", { class: "no-map-row", onclick }, dot(o.state, hot.devices[o.id]), h("span", { class: "t" }, h("b", {}, main), subText ? h("span", {}, subText) : null));
+
+  const drawTrouble = () => {
+    if (sel || found) return;
+    const faults = [...hot.faults].sort((a, b) => (a.state === "down" ? 0 : 1) - (b.state === "down" ? 0 : 1));
+    const behind = Object.entries(hot.places).filter(([id]) => id.startsWith("r-")).reduce((a, [, p]) => a + (p.impacted || 0), 0);
+    put(side,
+      h("div", { class: "no-map-head" }, h("h3", {}, "Where it is red"), h("div", { class: "muted small" }, base ? `${C.fmt.n(base.objects)} objects and ${C.fmt.n(base.links)} links in ChloeDB tables. Zoom in, or click anything.` : "")),
+      h("div", { class: "no-map-kpis" }, [[hot.incidents.length, "open incidents"], [faults.length, "broken objects"], [C.fmt.n(behind), "behind them"]].map(([n, l]) => h("div", {}, h("b", {}, String(n)), h("span", {}, l)))),
+      hot.incidents.length ? sec("Incidents on the backbone", null, hot.incidents.map((i) => h("a", { class: "no-map-row", onclick: () => { const m = cont.get(i.metros[0]); if (m) flyToPlace(m); } }, dot("down"), h("span", { class: "t" }, h("b", {}, i.title), h("span", {}, `${i.id} · ${i.severity} · ${i.devices.slice(0, 3).join(", ")}`)), h("button", { class: "btn xs", onclick: (e) => { e.stopPropagation(); app.go("incidents", i.id); } }, "Open")))) : null,
+      sec("Broken now", "state IN ('down', 'degraded')", faults.length ? faults.slice(0, 60).map((f) => row(f, f.name === f.id ? f.id : `${f.name}`, `${f.reason} · ${where(f)} · ${C.fmt.ago(T(f.since))}`, () => { flyToNode(f); select(f.id); })) : h("div", { class: "muted small" }, "Nothing is broken right now.")));
+  };
+
+  const select = async (id) => {
+    sel = { id, j: null };
+    put(side, h("div", { class: "no-map-head" }, h("h3", {}, id), h("div", { class: "muted small" }, "Walking the graph around it…")));
+    let j;
+    try { j = await app.call(`/v1/map/node?id=${encodeURIComponent(id)}`); } catch (e) { put(side, backBtn(), C.failure(e, "This object")); return; }
+    if (dead || !sel || sel.id !== id) return;
+    sel.j = j;
+    draw();
+    const n = j.node, qms = (i) => (j.queries[i] ? C.fmt.ms(j.queries[i].ms) : "");
+    const cause = j.cause && j.cause.id ? j.cause : null;
+    const elsewhere = cause && cause.id !== n.id;
+    const goto = (o) => { flyToNode(o); select(o.id); };
+    const byKind = {};
+    for (const r of j.downstream.rows) { const b = (byKind[r.kind] ||= { n: 0, bad: 0 }); b.n += r.n; if (r.state && r.state !== "ok") b.bad += r.n; }
+    const ended = (j.before.ended || []).slice(0, 4);
+    put(side, backBtn(),
+      h("div", { class: "no-map-head" },
+        h("div", { class: "row nw between" }, h("h3", {}, n.name), C.pill(STATE_PILL[n.state] || "info", j.incident ? "incident" : n.state)),
+        h("div", { class: "muted small" }, [KIND_NAME[n.kind] || n.kind, [n.vendor, n.model].filter(Boolean).join(" "), n.os_version, n.customer].filter(Boolean).join(" · ")),
+        h("div", { class: "muted small" }, [cont.get(n.asite)?.name || cont.get(n.hub)?.name, cont.get(n.metro)?.name, cont.get(n.region)?.name].filter(Boolean).join(" › ")),
+        n.reason ? h("div", { class: "no-map-why" }, n.reason) : null,
+        facts(app, [n.base_ms ? ["latency", n.state === "down" || (n.loss >= 100) ? `no answer (usually ${fms(n.base_ms)})` : `${fms(n.latency_ms)} (usually ${fms(n.base_ms)})`] : null, n.loss ? ["loss", n.loss.toFixed(1) + "%"] : null, n.since && n.state !== "ok" ? ["since", C.fmt.ago(T(n.since))] : null]),
+        j.incident ? h("button", { class: "btn xs primary", style: { marginTop: "8px" }, onclick: () => app.go("incidents", j.incident.id) }, `Open ${j.incident.id}: ${j.incident.title}`) : null),
+      cause || j.suspect ? h("div", { class: "no-map-verdict" + (cause ? "" : " calm") },
+        cause ? h("div", {}, h("b", {}, elsewhere ? `The trouble is ${cause.hop} ${cause.hop === 1 ? "hop" : "hops"} up: ${cause.id}` : "The trouble starts here"), h("div", { class: "small" }, cause.incident ? `${cause.incident.id}: ${cause.incident.title}` : cause.reason), elsewhere ? h("button", { class: "btn xs", style: { marginTop: "6px" }, onclick: () => goto(cause) }, "Go to it") : null) : null,
+        j.suspect ? h("div", { class: "small", style: { marginTop: cause ? "8px" : 0 } }, h("b", {}, `Changed ${j.suspect.minutes_before} min before it began: `), `${j.suspect.text} (${j.suspect.author}, ${j.suspect.ticket}, on ${j.suspect.node === n.id ? "this object" : j.suspect.node})`) : null) : null,
+      sec(n.layer === "core" ? "Its neighbours in the backbone" : "What it hangs from", `REACHABLE against the edges · ${qms(1)}`,
+        j.upstream.length ? j.upstream.map((u) => row(u, u.id, `${u.hop} ${u.hop === 1 ? "hop" : "hops"} · ${KIND_NAME[u.kind] || u.kind}${u.state !== "ok" ? " · " + u.state : ""}`, () => goto(u))) : h("div", { class: "muted small" }, "Nothing above it.")),
+      sec("What depends on it", `REACHABLE along the edges, grouped · ${qms(2)}`,
+        j.downstream.total ? [h("div", { class: "small" }, h("b", {}, C.fmt.n(j.downstream.total)), " objects", j.downstream.not_ok ? [", ", h("b", { style: { color: "var(--crit-ink)" } }, C.fmt.n(j.downstream.not_ok)), " of them not ok"] : null),
+          h("div", { style: { marginTop: "6px" } }, Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).map(([kd, b]) => h("span", { class: "chip", style: { marginRight: "4px" } }, `${C.fmt.n(b.n)} ${(KIND_NAME[kd] || kd).toLowerCase()}${b.n === 1 ? "" : "s"}`)))] : h("div", { class: "muted small" }, n.layer === "core" ? "The backbone carries everyone: see Diagnose for its services and customers." : "Nothing is behind it.")),
+      j.near.length ? sec("Trouble within three hops", `REACHABLE both ways AND state != 'ok' · ${qms(3)}`, j.near.slice(0, 8).map((o) => row(o, o.name === o.id ? o.id : `${o.name} (${o.id})`, `${o.hop} ${o.hop === 1 ? "hop" : "hops"} · ${o.state} · ${o.reason}`, () => goto(o))), j.near.length > 8 ? h("div", { class: "muted small" }, `and ${j.near.length - 8} more`) : null) : null,
+      sec("Changes and faults, here and around it", `events of the walk's rows, 30 days · ${qms(5)}`,
+        j.history.length ? h("div", { class: "no-map-hist" }, j.history.slice(0, 14).map((e) => h("div", { class: e.event }, h("span", { class: "when" }, C.fmt.ago(T(e.ts))), h("span", {}, h("b", {}, e.event === "change" ? "Change" : "Fault"), " ", e.text, h("span", { class: "muted" }, ` · ${e.relation === "this object" ? "here" : e.node + ", " + e.relation}${e.author ? " · " + e.author : ""}${e.ticket ? " · " + e.ticket : ""}`))))) : h("div", { class: "muted small" }, "Nothing in thirty days."),
+        j.changes.length ? h("div", { class: "small", style: { marginTop: "6px" } }, "Backbone changes that name it: ", j.changes.map((c) => app.link(c.id, "changes")).flatMap((a, i) => (i ? [", ", a] : [a]))) : null),
+      j.before.words ? sec("How this went before", `BM25 over ${C.fmt.n((base.events || []).reduce((a, e) => a + e.n, 0))} events`,
+        ended.length ? h("div", { class: "small" }, `On ${(KIND_NAME[j.before.kind] || j.before.kind).toLowerCase()}s, faults cleared in: `, ended.map((e) => `${mins(e.minutes)} (${e.cause}, ${C.fmt.n(e.n)} times)`).join(", ")) : null,
+        (j.before.like || []).map((e) => h("a", { class: "no-map-row", onclick: () => goto({ id: e.node, x: e.x, y: e.y }) }, dot("ok"), h("span", { class: "t" }, h("b", {}, e.node), h("span", {}, `${C.fmt.ago(T(e.ts))} · ${e.text}`))))) : null,
+      j.engine !== "sql" ? h("div", { class: "muted small" }, "The walks ran in the app: a coordinator does not walk graphs yet.") : null);
+  };
+  const backBtn = () => h("button", { class: "btn xs ghost", onclick: () => { sel = null; draw(); if (found) drawFound(); else drawTrouble(); } }, "‹ ", found ? "Back to the matches" : "Back to what is red");
+
+  // ---- the search
+  const ask = async (text) => {
+    text = (text || "").trim();
+    if (!text) { found = null; sel = null; draw(); drawTrouble(); return; }
+    sel = null;
+    askBtn.disabled = true;
+    put(side, h("div", { class: "no-map-head" }, h("h3", {}, "Searching"), h("div", { class: "muted small" }, text)));
+    let j;
+    try { j = await app.call(`/v1/map/ask?q=${encodeURIComponent(text)}`); } catch (e) { put(side, C.failure(e, "The search")); askBtn.disabled = false; return; }
+    askBtn.disabled = false;
+    if (dead) return;
+    found = { ...j, ids: new Set(j.rows.map((r) => r.id)) };
+    draw();
+    drawFound();
+    // Show them: the place that holds the most, or the single match.
+    if (j.total === 1 && j.rows[0]) flyToNode(j.rows[0]);
+    else if (j.total > 0) {
+      const metros = Object.entries(j.places).filter(([id]) => id.startsWith("m-"));
+      if (metros.length === 1 && cont.get(metros[0][0])) flyToPlace(cont.get(metros[0][0])); else if (tier() > 2) fit(true);
+    }
+  };
+  const drawFound = () => {
+    const j = found;
+    const kinds = { column: "column", substring: "substring index", reading: "reading", events: "events", graph: "graph" };
+    put(side,
+      h("div", { class: "no-map-head" },
+        h("div", { class: "row nw between" }, h("h3", {}, j.understood ? `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}` : "Not understood"), h("button", { class: "btn xs", onclick: () => { found = null; input.value = ""; draw(); drawTrouble(); } }, "Clear")),
+        h("div", { class: "small", style: { marginTop: "2px" } }, `“${j.asked}”`),
+        h("div", { class: "muted small", style: { marginTop: "4px" }, title: j.note || "" }, j.reader === "model" ? "Read by the server's model, through llm()" : `Read by the fixed reader${j.note ? ": " + j.note.replace(/ \(.*$/, "") : ""}`)),
+      j.understood ? sec("How it was read", null, h("div", { class: "no-map-read" }, j.read.map((r) => h("div", {}, h("span", { class: "k" }, kinds[r.kind] || r.kind), h("span", {}, h("b", {}, r.text), h("span", { class: "muted" }, " · " + r.how)))))) : h("div", { class: "small", style: { padding: "0 14px" } }, j.hint),
+      j.sql ? sec("One statement", `${C.fmt.ms(j.queries.find((q) => q.what.startsWith("The search"))?.ms || 0)}`, C.sqlBlock(j.sql + `\n-- ${JSON.stringify(j.params)}`)) : null,
+      j.rows.length ? sec(j.total > j.rows.length ? `The first ${j.rows.length}` : "The matches", "click one to go to it",
+        j.rows.slice(0, 80).map((r) => { const w = j.why[r.id]; return row(r, r.name === r.id ? r.id : `${r.name} (${r.id})`, [fms(r.latency_ms), r.loss ? r.loss.toFixed(1) + "% loss" : null, cont.get(r.hub)?.name || cont.get(r.metro)?.name, w ? `${w.event === "change" ? "changed" : "failed"} ${C.fmt.ago(T(w.ts))}${w.author ? " by " + w.author : ""}: ${w.text}` : null].filter(Boolean).join(" · "), () => { flyToNode(r); select(r.id); }); })) : null);
+  };
+
+  // ---- start
+  canvas.__map = { fly, select, ask, zoomBy, cont, view, flyToPlace, flyToNode };
+  const ro = new ResizeObserver(resize);
+  ro.observe(stage);
+  let stopHot = null;
+  (async () => {
+    try { base = await app.call("/v1/map/base"); } catch (e) { put(side, C.failure(e, "The map")); return; }
+    if (dead) return;
+    for (const c of base.containers) cont.set(c.id, c);
+    resize();
+    fit(false);
+    stopHot = live(app, side, "/v1/map/hot", (j) => { hot = j; draw(); drawTrouble(); if (tier() >= 3) load(true); }, 10000);
+    if (path[1]) { try { const j = await app.call(`/v1/map/node?id=${encodeURIComponent(path[1])}`); flyToNode(j.node); select(path[1]); } catch (e) { console.warn(e); } }
+  })();
+  return () => { dead = true; ro.disconnect(); cancelAnimationFrame(anim); clearTimeout(loadTimer); stopHot?.(); };
 }

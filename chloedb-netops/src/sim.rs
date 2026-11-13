@@ -32,6 +32,10 @@ pub struct Opts {
     pub simulate: bool,
     /// Drop the tables first.
     pub reset: bool,
+    /// About how many objects the simulated estate has (0: none).
+    pub estate: usize,
+    /// The model the server's llm() is asked to rewrite a search with ("" for none).
+    pub rewrite_model: String,
 }
 
 /// An incident that is not resolved yet.
@@ -93,6 +97,8 @@ pub struct Engine {
     pub db: Strata,
     pub w: World,
     pub graph: Graph,
+    /// The simulated estate behind the backbone, when there is one.
+    pub estate: Option<crate::estate::Estate>,
     pub opts: Opts,
     state: Mutex<State>,
     pub lock: tokio::sync::Mutex<()>,
@@ -142,9 +148,11 @@ impl Engine {
     pub fn with(db: Strata, opts: Opts, w: World) -> Arc<Engine> {
         let graph = Graph::of(&w);
         let fault_every = opts.fault_every;
+        let estate = (opts.simulate && opts.estate > 0).then(|| crate::estate::Estate::build(&w, opts.estate));
         Arc::new(Engine {
             db,
             graph,
+            estate,
             w,
             opts,
             state: Mutex::new(State {
@@ -187,7 +195,7 @@ impl Engine {
         self.counter.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn phase(&self, phase: &str, progress: f64) {
+    pub(crate) fn phase(&self, phase: &str, progress: f64) {
         let mut st = self.st();
         st.phase = phase.into();
         st.progress = progress;
@@ -296,7 +304,7 @@ impl Engine {
                 self.seed(minute_now()).await?
             }
         }
-        Ok(())
+        crate::estate::ensure(self).await
     }
 
     async fn restore(&self, s: Saved) -> Result<()> {
@@ -474,6 +482,7 @@ impl Engine {
         self.director(m).await?;
         self.write_minute(m).await?;
         self.st().last_minute = m;
+        crate::estate::minute(self, m).await?;
         self.after_minute(m).await
     }
 

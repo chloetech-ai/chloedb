@@ -80,7 +80,8 @@ Removing `spec.netops` deletes its Deployment and Service and restarts the coord
 | **Explore** | logs by words or by substring, flows (who talks to whom), and one search box over runbooks, incidents, configurations and tickets |
 | **Devices** | the inventory with each device's metrics, what happened on it in the last day, logs, configuration history and blame |
 | **Agents** | the six agents, their runs and what each cost in queries, rows and tokens; capacity, advisories and configuration drift; autopilot |
-| **Data** | the 35 tables with their definitions and row counts, where each one's rows come from and whether they are arriving, and the simulator's settings |
+| **Map** | the whole network on one plane, from regions down to one customer's router: zoom in and detail appears, what is broken colours the place that holds it at every zoom, a click on an object says what is wrong and what it has to do with everything around it, and a search box takes a sentence ([below](#the-map)) |
+| **Data** | the 39 tables with their definitions and row counts, where each one's rows come from and whether they are arriving, and the simulator's settings |
 | **Leadership** | the switch at the top: services against what was sold, incidents with their cost in customer-minutes and revenue exposed, time to detect and resolve, what caused them and which followed a change, the risk register (spans that cannot fail over at their measured peak, software with open advisories, contracts ending), carriers by cost and downtime, and the week written as a report |
 
 The box in the header looks anything up: an address (matched to the customer whose prefix holds it), a circuit id, a customer, a device, an interface, an AS number. It answers what the thing is, whether it is healthy, and opens it.
@@ -88,6 +89,54 @@ The box in the header looks anything up: an address (matched to the customer who
 Each page has a **SQL** button that lists the queries behind what it shows, with their times.
 
 ![An incident's room: the cause the agent named with its evidence, the actions it proposed, and the room's board](../assets/img/netops-incident.png)
+
+## The map
+
+![The whole network: regions and metros, coloured by what is broken inside them](../assets/img/netops-map.png)
+
+The backbone of 64 devices is what a carrier's core is. What it carries is far more: metro hubs with their routers and power plants, street cabinets, cell sites and business parks, and the ONTs, radios and customer routers behind them. The simulator makes that estate too (`--estate N`, about 200,000 objects by default, `0` for none): 18 kinds of object in `netops_estate_nodes`, what feeds what in `netops_estate_edges` (an edge table, upstream to downstream), and two months of faults and changes on every object in `netops_estate_events`. A few dozen faults are kept going, some of them caused by a change a few minutes before.
+
+The Map page draws all of it without ever asking for all of it:
+
+- **Zoom is a query.** Every object has a place on a plane and a level of detail from which it is worth drawing. Regions, metros and hubs are read once; from there on the page asks for the objects and links in its window at its level of detail, two range queries, and draws what comes back.
+- **Red is a `GROUP BY`.** The objects that are down or degraded, and a count by place of what is behind them, are two queries every ten seconds; the page adds them up through site, hub, metro and region, with the backbone's open incidents. A place is coloured by how much the broken things inside it carry: a hub's router weighs more than a cabinet, a cabinet more than one home.
+- **A click is a walk.** For one object: what it hangs from (`REACHABLE` against the edges) and the nearest of those that is broken, which is where its trouble comes from; what depends on it, counted by kind and state (`REACHABLE` along the edges, grouped); what else is in trouble within three hops; the changes and faults of thirty days on it and on everything around it, with the change made just before the trouble began; and how faults that read like this one ended before (BM25 over the events).
+
+![One object: where its trouble starts, what it hangs from, what depends on it, and the trouble around it](../assets/img/netops-map-object.png)
+
+### Asking in a sentence
+
+The search box takes a question such as "everything changed in the last week about a firmware upgrade by m.rossi with latency above 15 ms", or "customer routers in Frankfurt behind hr1-h03-fra that are not ok". It names up to five kinds of condition, and ChloeDB answers them in one statement:
+
+```sql
+SELECT id, kind, name, state, latency_ms, ... FROM netops_estate_nodes
+WHERE layer != 'container'
+  AND latency_ms > :latency_ms                      -- its latest reading
+  AND id IN (                                       -- what happened to it
+    SELECT node FROM netops_estate_events
+    WHERE event = 'change' AND ts >= :since AND author = :author AND MATCH(text, :about))
+  AND REACHABLE(netops_estate_edges, 'ag1-fra',     -- where it sits in the graph
+        hops => 6, dir => 'out', through => layer != 'core')
+ORDER BY latency_ms DESC LIMIT 300
+```
+
+| in the sentence | becomes |
+|---|---|
+| a kind, a vendor, a version, a place, a state ("degraded Nokia OLTs in Frankfurt") | comparisons on keyword columns |
+| a customer's name | `ILIKE` from the substring index |
+| a reading ("latency above 40 ms", "high latency", "loss over 1%") | a comparison on the object's latest reading, or of two of its columns (`latency_ms > base_ms * 2`) |
+| what happened, when, about what, by whom ("changed last week about QoS by a.khan", "went down in the last 3 days because of power", "not changed in the last month") | a subquery over the events table: time, author, cause, and `MATCH` on the words; `NOT IN` for what did not happen |
+| where it sits ("behind ag1-fra", "upstream of ...", "within 2 hops of ...") | `REACHABLE` over the edge table |
+
+The same conditions run a second time grouped by place, so the map shows the matches at every zoom: a count on each region, metro, hub and site that holds some, and a ring on each object once it is drawn.
+
+![A sentence read into conditions, the one statement it became, and the matches by place](../assets/img/netops-map-search.png)
+
+A sentence becomes a plan, and only a plan becomes SQL: every value in it is one the estate has or a parameter. Two readers make plans. With `--rewrite-model` (default `anthropic/claude-haiku-5-5`, empty for none) the app asks the server's own [`llm()`](query-language.md#language-models-llm) to rewrite the question, over the row it was saved as in `netops_searches`; the model is told the plan's shape and what it may name, and its answer is checked field by field. When the server has no model (no key, no network), a reader of fixed vocabulary answers instead, and the page says which of them read the sentence. The model's path is covered by a unit test of the checking, not by a run against a model: this build was only run where the server had none.
+
+Measured on one server in a 4-vCPU cloud container, with 170,337 objects, 173,133 links and about 470,000 events: the estate is written in about 25 seconds; a window is read in 10 to 75 ms depending on how much is in it; the eight queries behind one object take about 17 ms together; the statement above takes 5 to 10 ms, a walk of the 20,000 objects behind one aggregation router with a condition 22 to 30 ms, and "not changed in the last month" about 290 ms.
+
+On a cluster of shards the range queries, the grouping and the subquery run through the coordinator as they are. A coordinator does not walk graphs yet, so the walks are done by the app over the estate it made, and the page says so.
 
 ## Where is it broken
 
@@ -209,6 +258,10 @@ A metrics row carries the link's or device's `id` as the inventory has it and a 
 | `netops_maintenance` | carriers' maintenance notices, each matched to a circuit and a window |
 | `netops_handovers` | notes left from one shift to the next |
 | `netops_panels` | each incident's board: one read-only query a panel |
+| `netops_estate_nodes` | everything the network is made of, from regions down to a customer's router: its place on the map, its level of detail, its state and its latest readings |
+| `netops_estate_edges` | what feeds what, upstream to downstream (an edge table) |
+| `netops_estate_events` | faults, their clearing and changes on every object, with their words, cause and author |
+| `netops_searches` | the questions asked in a sentence: who read each, the plan and the SQL it became |
 | `netops_faults` | the simulator's answer key (agents never read it) |
 | `netops_sources` | where each table's rows come from |
 | `netops_state` | the app's own bookkeeping |

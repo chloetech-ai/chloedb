@@ -15,7 +15,14 @@ changes collect under "Unreleased".
 
 - `chloedb-netops`: network operations on ChloeDB, an app of the command
   center (`chloedb-server --app netops=URL`, the operator's `spec.netops`,
-  port 7840, a key limited to `netops_*`). The shift's home page (a
+  port 7840, a key limited to `netops_*`). A map of the whole network,
+  from regions down to one customer's router (about 200,000 simulated
+  objects of 18 kinds), that reads only its window at its level of
+  detail, colours each place by what is broken inside it, walks the graph
+  around an object that is clicked, and takes a search in a sentence
+  ("changed in the last week about a firmware upgrade by m.rossi with
+  latency above 15 ms, behind ag1-fra") that it compiles into one
+  statement, rewritten by the server's `llm()` when it has a model. The shift's home page (a
   handover written from the tables and one list of what waits), a lookup
   of anything a ticket names, a Diagnose page (the stack by place with
   the lowest broken layer named, one broken thing asked of the graph, the

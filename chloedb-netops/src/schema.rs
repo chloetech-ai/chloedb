@@ -176,6 +176,26 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   id KEYWORD PRIMARY KEY, name KEYWORD, kind KEYWORD, table_name KEYWORD, via KEYWORD, status KEYWORD,
   rate FLOAT, lag_s FLOAT, last_seen TIMESTAMP, retention KEYWORD, note TEXT, snippet TEXT OPTIONS(indexed = false)
 )".into(), "Where each table's rows come from"),
+        ("netops_estate_nodes", "CREATE TABLE IF NOT EXISTS netops_estate_nodes (
+  id KEYWORD PRIMARY KEY, num INT, kind KEYWORD, layer KEYWORD, tier INT, name KEYWORD OPTIONS(substring = true),
+  region KEYWORD, metro KEYWORD, hub KEYWORD, asite KEYWORD, x FLOAT, y FLOAT, r FLOAT,
+  vendor KEYWORD, model KEYWORD, os_version KEYWORD, customer KEYWORD OPTIONS(substring = true), children INT,
+  state KEYWORD, reason TEXT, since TIMESTAMP, latency_ms FLOAT, base_ms FLOAT, loss FLOAT
+)".into(), "Everything the network is made of, from regions down to a customer's router: each with its place on the map, its state and its latest readings"),
+        ("netops_estate_edges", "CREATE TABLE IF NOT EXISTS netops_estate_edges (
+  id KEYWORD PRIMARY KEY,
+  src KEYWORD NOT NULL REFERENCES netops_estate_nodes, dst KEYWORD NOT NULL REFERENCES netops_estate_nodes,
+  kind KEYWORD, tier INT, x1 FLOAT, y1 FLOAT, x2 FLOAT, y2 FLOAT, minx FLOAT, maxx FLOAT, miny FLOAT, maxy FLOAT
+) OPTIONS(edges = 'src, dst')".into(), "What feeds what, upstream to downstream: an edge table, so a walk along it is what depends on a thing and a walk against it what the thing depends on"),
+        ("netops_estate_events", "CREATE TABLE IF NOT EXISTS netops_estate_events (
+  id KEYWORD PRIMARY KEY, ts TIMESTAMP, node KEYWORD, kind KEYWORD, layer KEYWORD,
+  region KEYWORD, metro KEYWORD, hub KEYWORD, asite KEYWORD, x FLOAT, y FLOAT,
+  event KEYWORD, severity KEYWORD, cause KEYWORD, text TEXT, fault KEYWORD, author KEYWORD, ticket KEYWORD, minutes FLOAT
+)".into(), "Faults, their clearing and changes on every object of the estate, searched by words and by condition"),
+        ("netops_searches", "CREATE TABLE IF NOT EXISTS netops_searches (
+  id KEYWORD PRIMARY KEY, ts TIMESTAMP, asked TEXT, reader KEYWORD, plan TEXT OPTIONS(indexed = false),
+  sql_text TEXT OPTIONS(indexed = false), found INT, ms FLOAT
+)".into(), "Questions asked of the estate in a sentence: who read each (a model or the fixed reader), the plan and the SQL it became"),
         ("netops_state", "CREATE TABLE IF NOT EXISTS netops_state (
   id KEYWORD PRIMARY KEY, val TEXT OPTIONS(indexed = false), updated TIMESTAMP
 )".into(), "The app's own bookkeeping"),
