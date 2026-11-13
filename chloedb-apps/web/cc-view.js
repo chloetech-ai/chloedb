@@ -110,6 +110,7 @@ const CSS = `
 .ac .msg.it.bad { background: var(--crit-soft); border-color: transparent; }
 .ac .msg.sys { align-self: stretch; max-width: none; background: transparent; border: 1px dashed var(--line-2); color: var(--text-2); font-size: 12px; }
 .ac .msg.sys .i { width: 13px; height: 13px; vertical-align: -2px; }
+.ac .prog .stopbar { display: flex; gap: 6px; align-items: center; }
 .ac .msg .m { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
 .ac .linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
 .ac .linkbtn:hover { text-decoration: underline; }
@@ -316,7 +317,7 @@ function buildPace(b) {
   const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' ? 15000 : 1500));
   const total = keys.reduce((a, k) => a + exp(k), 0);
   const cur = b.steps.at(-1);
-  if (!cur) return { f: 0.01, elapsed, left: total, slow: false };
+  if (!cur) return { f: 0.01, elapsed, left: total, slow: false, late: elapsed > 2 * total };
   const i = Math.max(0, keys.indexOf(cur.key));
   const before = keys.slice(0, i).reduce((a, k) => a + exp(k), 0);
   const after = keys.slice(i + 1).reduce((a, k) => a + exp(k), 0);
@@ -324,7 +325,8 @@ function buildPace(b) {
   const t = Math.max(0, elapsed - cur.t);
   let within = t < e ? 0.85 * t / e : 0.85 + 0.15 * (1 - Math.exp(-(t - e) / e));
   if (cur.key === 'write' && b.pieces?.length) within = Math.max(within, b.pieces.filter((p) => p.state === 'done').length / b.pieces.length * 0.95);
-  return { f: Math.min(0.97, (before + within * e) / total), elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6 };
+  // late: twice what the whole build usually takes (offer to start it again)
+  return { f: Math.min(0.97, (before + within * e) / total), elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6, late: elapsed > 2 * total };
 }
 const paceText = (b) => {
   if (!b) return 'Waiting for its turn';
@@ -883,7 +885,7 @@ __sa_ready();
       const st = W.st;
       title.textContent = st.app.name || appId;
       costTag.textContent = st.cost?.builds ? `${money(st.cost.usd)} in ${st.cost.builds} build${st.cost.builds === 1 ? '' : 's'}` : '';
-      const firstFailed = !st.version.n && !st.running && !W.lines.length && (st.requests || [])[0]?.status === 'failed';
+      const firstFailed = !st.version.n && !st.running && !W.lines.length && ['failed', 'stopped'].includes((st.requests || [])[0]?.status);
       verTag.replaceChildren(st.version.n ? h('span', { class: `tag ${st.version.trying ? 'try' : 'live'}` }, st.version.trying ? `trying v${st.version.trying} · live v${st.version.live}` : `v${st.version.n} live`)
         : firstFailed ? h('span', { class: 'tag bad' }, 'did not build') : h('span', { class: 'tag try' }, 'first version'));
       status.replaceChildren(...(W.lines.length ? [h('span', { class: 'spin' }), ' building'] : []));
@@ -918,16 +920,15 @@ __sa_ready();
           items.push(h('div', { class: 'msg it' }, h('div', {}, r.comp ? h('b', {}, `Version ${r.comp} is live. `) : null, r.summary || 'Done.'),
             h('div', { class: 'm' }, r.ms ? h('span', {}, secs(r.ms)) : null, r.cost ? h('span', {}, money(r.cost)) : null, r.created ? h('span', {}, core.ago(new Date(r.created).getTime())) : null,
               r.source !== 'edit' ? h('button', { class: 'linkbtn', onclick: () => showTimeline(appId, r.id, r.comp ? `How version ${r.comp} was built` : 'This build') }, 'Timeline') : null)));
-        } else if (r.status === 'failed') {
-          items.push(h('div', { class: 'msg it bad' }, h('b', {}, 'This did not go through. '), r.error || '',
-            h('div', { class: 'm' }, h('button', { class: 'linkbtn', onclick: () => ask(r.text) }, 'Try again'), h('button', { class: 'linkbtn', onclick: () => showTimeline(appId, r.id, 'How this build failed') }, 'Timeline'))));
+        } else if (r.status === 'failed' || r.status === 'stopped') {
+          items.push(failure(r.said, r.error, r.text, r.status === 'failed' ? r.id : null));
         }
       }
       if (W.lines.length) {
         items.push(asked(W.runningText, W.runningSource));
         items.push(progressBox());
-      } else if (W.failed && !reqs.some((r) => r.status === 'failed' && r.text === W.failed.text)) {
-        items.push(h('div', { class: 'msg it bad' }, h('b', {}, 'This did not go through. '), W.failed.error, h('div', { class: 'm' }, h('button', { class: 'linkbtn', onclick: () => ask(W.failed.text) }, 'Try again'))));
+      } else if (W.failed && !reqs.some((r) => (r.status === 'failed' || r.status === 'stopped') && r.text === W.failed.text)) {
+        items.push(failure(W.failed.said, W.failed.error, W.failed.text, null));
       }
       // Built from use: versions the engine made from patterns in what people do.
       const cands = (st.evolve?.candidates || []).filter((c) => c.status === 'ready' || c.status === 'building');
@@ -957,9 +958,22 @@ __sa_ready();
       }
       convo.replaceChildren(...items);
       ta.disabled = false;
-      ta.placeholder = st.version.n ? 'Ask for a change: "add a due date and sort by it", "a chart of this week", "let me import a CSV"…' : 'Waiting for the first version… you can queue a change now.';
+      const firstFailed = !st.version.n && !W.lines.length && ['failed', 'stopped'].includes((st.requests || [])[0]?.status);
+      ta.placeholder = st.version.n ? 'Ask for a change: "add a due date and sort by it", "a chart of this week", "let me import a CSV"…'
+        : firstFailed ? 'Describe the app again, in other words if you like, to build its first version…' : 'Waiting for the first version… you can queue a change now.';
       hint.textContent = W.lines.length ? 'Requests wait their turn' : '⌘/Ctrl + Enter';
       if (nearBottom || W.lines.length) convoScroll.scrollTop = convoScroll.scrollHeight;
+    }
+
+    // A build that did not go through: what went wrong and what to do, in a
+    // sentence (the engine's said), the error itself folded under Details.
+    function failure(said, error, text, requestId) {
+      const t = said || { title: 'The build did not go through.', hint: '' };
+      const stopped = t.title === 'Stopped.';
+      return h('div', { class: `msg it${stopped ? '' : ' bad'}` }, h('b', {}, t.title), t.hint ? ` ${t.hint}` : null,
+        error && !stopped ? h('details', { class: 'log' }, h('summary', {}, 'Details'), h('div', {}, error)) : null,
+        h('div', { class: 'm' }, h('button', { class: 'linkbtn', onclick: () => ask(text) }, 'Try again'),
+          requestId ? h('button', { class: 'linkbtn', onclick: () => showTimeline(appId, requestId, 'How this build failed') }, 'Timeline') : null));
     }
 
     // What was asked: by the owner, or by the engine itself (a repair, the
@@ -993,13 +1007,26 @@ __sa_ready();
             state === 'done' && s.end != null ? h('span', { class: 'took' }, bsecs(s.end - s.t)) : null);
         })),
         b?.pieces?.length ? h('div', { class: 'bits' }, b.pieces.map((p) => h('span', { class: `bit ${p.state}`, title: `${p.kind} ${p.label}` }, p.state === 'done' ? '✓' : h('span', { class: 'spin' }), p.label))) : null,
-        h('div', { class: 'now' }, nowLine), log);
+        h('div', { class: 'now' }, nowLine),
+        h('div', { class: 'm stopbar' }, h('button', { class: 'btn sm ghost', type: 'button', title: 'Stop this build: the model stops at once and the app stays as it is', onclick: () => stopBuild(false) }, 'Stop'),
+          h('button', { class: 'btn sm', type: 'button', style: { display: b && buildPace(b).late ? '' : 'none' }, title: 'It is taking twice as long as builds here usually do', onclick: () => stopBuild(true) }, 'Stop and try again')),
+        log);
+    }
+    async function stopBuild(again) {
+      const text = W.runningText;
+      try {
+        const out = await post(`${base}/stop`, W.runningId ? { request: W.runningId } : {});
+        if (!out.stopped) { toast('Nothing is being built right now'); return; }
+        if (again && text) { W.lines = []; await ask(text); }
+      } catch (e) { toast(e.status === 403 ? 'Stopping a build needs an admin key' : e.message, 'bad'); }
     }
     const pacer = setInterval(() => {
       if (!W.lines.length || !W.build) return;
       const f = buildPace(W.build).f;
       for (const el of root.querySelectorAll('.prog .fill')) el.style.width = `${Math.round(f * 1000) / 10}%`;
       for (const el of root.querySelectorAll('.prog .pace')) el.textContent = paceText(W.build);
+      const late = buildPace(W.build).late;
+      for (const el of root.querySelectorAll('.prog .stopbar .btn:not(.ghost)')) el.style.display = late ? '' : 'none';
     }, 250);
 
     async function submit() {
@@ -1069,9 +1096,10 @@ __sa_ready();
       if (!st.views.length) {
         for (const f of W.frames.values()) f.iframe.remove();
         W.frames.clear();
-        const failedFirst = !st.running && !W.lines.length && (st.requests || []).find((r) => r.status === 'failed');
+        const failedFirst = !st.running && !W.lines.length && ['failed', 'stopped'].includes((st.requests || [])[0]?.status) ? st.requests[0] : null;
         deviceBox.append(h('div', { class: 'building' }, h('div', { class: 'box' },
-          h('h2', {}, failedFirst ? 'The first version did not build' : 'Building the first version'),
+          h('h2', {}, failedFirst ? (failedFirst.status === 'stopped' ? 'The first build was stopped' : 'The first version did not build') : 'Building the first version'),
+          failedFirst?.said && failedFirst.status !== 'stopped' ? h('div', { class: 'small', style: { textAlign: 'center' } }, failedFirst.said.title) : null,
           h('div', { class: 'small dim', style: { textAlign: 'center' } }, st.app.description),
           W.lines.length ? h('div', { class: 'small muted', style: { textAlign: 'center' } }, 'Follow it on the left; its screens show here as soon as they are written.')
             : failedFirst ? h('button', { class: 'btn sm', style: { alignSelf: 'center' }, onclick: () => ask(st.app.description) }, 'Try again') : h('div', { class: 'small muted', style: { textAlign: 'center' } }, h('span', { class: 'spin' }), ' Waiting for the engine…'))));
@@ -1548,7 +1576,7 @@ __sa_ready();
       } else if (type === 'done' || type === 'failed') {
         W.ended.add(d.request);
         W.previews.clear(); W.previewView = null;
-        if (type === 'failed' && !d.candidate) W.failed = { text: W.runningText, error: d.error };
+        if (type === 'failed' && !d.candidate) W.failed = { text: W.runningText, error: d.error, said: d.said };
         if (type === 'done') toast(d.candidate ? `Built from use, ready to try (version ${d.n})` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`, 'ok', 5000);
         W.lines = []; W.build = null; W.runningText = '';
         refresh();

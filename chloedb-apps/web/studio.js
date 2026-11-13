@@ -193,7 +193,7 @@ function connect() {
     S.previewView = null;
     renderFrames();
     if (d.candidate) toast(`A change built from your use did not go through: ${d.error}`);
-    else S.failed = { text: S.runningText, error: d.error, lines: S.lines.slice() };
+    else S.failed = { text: S.runningText, error: d.error, said: d.said, lines: S.lines.slice() };
     S.lines = [];
     S.build = null;
     S.runningText = '';
@@ -1125,13 +1125,22 @@ function renderFrames() {
   }
 }
 
+// A build that did not go through, in a plain sentence (the engine's said),
+// its error folded under Details.
+function failedNote(said, error) {
+  const t = said || { title: 'The build did not go through.', hint: '' };
+  return [h('div', { class: 'line bad' }, h('b', t.title), t.hint ? ` ${t.hint}` : ''),
+    error && t.title !== 'Stopped.' ? h('details', h('summary', { class: 'hint' }, 'Details'), h('div', { class: 'line' }, error)) : null];
+}
+
 function buildingScreen() {
   const st = S.app;
-  const failed = !st.running && st.requests.find((r) => r.status === 'failed');
+  const last = st.requests[0];
+  const failed = !st.running && last && ['failed', 'stopped'].includes(last.status) ? last : null;
   return h('div', { class: 'building' }, h('div', { class: 'box' },
     h('h2', failed && !S.lines.length ? 'The first version did not build' : 'Building the first version'),
     h('p', { class: 'hint' }, st.app.description),
-    progressBox() || (failed ? h('div', { class: 'log' }, h('div', { class: 'line bad' }, failed.error), h('button', { class: 'btn small', style: 'align-self:start;margin-top:6px', onclick: () => ask(st.app.description) }, 'Try again')) : h('div', { class: 'hint' }, 'Waiting for the engine...'))));
+    progressBox() || (failed ? h('div', { class: 'log' }, failedNote(failed.said, failed.error), h('button', { class: 'btn small', style: 'align-self:start;margin-top:6px', onclick: () => ask(st.app.description) }, 'Try again')) : h('div', { class: 'hint' }, 'Waiting for the engine...'))));
 }
 
 // A build's progress: a bar that moves at the pace builds here usually go
@@ -1159,7 +1168,7 @@ function buildPace(b) {
   const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' ? 15000 : 1500));
   const total = keys.reduce((a, k) => a + exp(k), 0);
   const cur = b.steps.at(-1);
-  if (!cur) return { f: 0.01, elapsed, left: total, slow: false };
+  if (!cur) return { f: 0.01, elapsed, left: total, slow: false, late: elapsed > 2 * total };
   const i = Math.max(0, keys.indexOf(cur.key));
   const before = keys.slice(0, i).reduce((a, k) => a + exp(k), 0);
   const after = keys.slice(i + 1).reduce((a, k) => a + exp(k), 0);
@@ -1168,7 +1177,8 @@ function buildPace(b) {
   let within = t < e ? 0.85 * t / e : 0.85 + 0.15 * (1 - Math.exp(-(t - e) / e));
   if (cur.key === 'write' && b.pieces?.length) within = Math.max(within, b.pieces.filter((p) => p.state === 'done').length / b.pieces.length * 0.95);
   const f = Math.min(0.97, (before + within * e) / total);
-  return { f, elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6 };
+  // late: twice what the whole build usually takes (offer to start it again)
+  return { f, elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6, late: elapsed > 2 * total };
 }
 
 const bsecs = (ms) => ms < 950 ? 'under 1 s' : ms < 10000 ? `${Math.max(1, Math.round(ms / 1000))} s` : ms < 90000 ? `${Math.round(ms / 5000) * 5} s` : `${Math.round(ms / 60000)} min`;
@@ -1211,7 +1221,19 @@ function progressBox() {
     h('div', { class: 'bmeta' }, paceText(b)),
     steps, pieces,
     h('div', { class: `bnow${/^Failed/.test(now) ? ' bad' : ''}` }, now),
+    BARE ? null : h('div', { class: 'row', style: 'display:flex;gap:6px' },
+      h('button', { class: 'btn small ghost', title: 'Stop this build: the model stops at once and the app stays as it is', onclick: () => stopBuild(false) }, 'Stop'),
+      b && buildPace(b).late ? h('button', { class: 'btn small', title: 'It is taking twice as long as builds here usually do', onclick: () => stopBuild(true) }, 'Stop and try again') : null),
     log);
+}
+
+async function stopBuild(again) {
+  const text = S.runningText;
+  try {
+    const out = await api('POST', `/api/apps/${S.appId}/stop`, S.runningId ? { request: S.runningId } : {});
+    if (!out.stopped) { toast('Nothing is being built right now'); return; }
+    if (again && text) await ask(text);
+  } catch (e) { toast(e.message); }
 }
 
 // Moves the bars and the times between the engine's reports.
@@ -1269,7 +1291,9 @@ function renderPanel() {
 
 function changeTab(draft) {
   const st = S.app;
-  const ta = h('textarea', { placeholder: st.version.n ? 'Ask for any change: "add a due date and sort by it", "show a chart of this week", "let me import a list"...' : 'Waiting for the first version...', value: draft });
+  const firstFailed = !st.version.n && !S.lines.length && ['failed', 'stopped'].includes(st.requests?.[0]?.status);
+  const ta = h('textarea', { placeholder: st.version.n ? 'Ask for any change: "add a due date and sort by it", "show a chart of this week", "let me import a list"...'
+    : firstFailed ? 'Describe the app again, in other words if you like, to build its first version...' : 'Waiting for the first version...', value: draft });
   const send = h('button', { class: 'btn primary', onclick: submit }, 'Send');
   async function submit() {
     const text = ta.value.trim();
@@ -1283,7 +1307,7 @@ function changeTab(draft) {
   const prog = progressBox();
   if (prog) out.push(prog);
   else if (S.failed) {
-    out.push(h('div', { class: 'log' }, h('div', { class: 'req' }, 'This change did not go through'), h('div', { class: 'line bad' }, S.failed.error),
+    out.push(h('div', { class: 'log' }, h('div', { class: 'req' }, 'This change did not go through'), failedNote(S.failed.said, S.failed.error),
       h('div', { class: 'row', style: 'display:flex;gap:6px;margin-top:6px' }, h('button', { class: 'btn small', onclick: () => ask(S.failed.text) }, 'Try again'), h('button', { class: 'btn small ghost', onclick: () => { S.failed = null; renderPanel(); } }, 'Dismiss'))));
   } else if (st.version.n && st.version.summary && !st.version.trying) {
     out.push(h('div', { class: 'where' }, h('b', `Version ${st.version.n}: `), st.version.summary));

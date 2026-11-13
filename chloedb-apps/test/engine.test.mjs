@@ -3343,3 +3343,32 @@ test('an app is named shortly from its description, and one whose first build fa
   assert.equal(firstBuildStatus({ status: 'running', created: at(45) }, now), 'failed', 'an engine that stopped in the middle of it');
   assert.equal(firstBuildStatus(null, now), 'building');
 });
+
+test('a build its owner stops ends at once: the model call running is killed and the next one never starts (APC-6)', async () => {
+  const { buildScope, IDLE_S } = await import('../engine/llm.mjs');
+  assert.ok(IDLE_S <= 90, 'a model that says nothing holds its app 90 s at most');
+  const answer = '<plan>{"views":[]}</plan>';
+  const stop = new AbortController();
+  const t0 = Date.now();
+  const run = buildScope.run({ signal: stop.signal }, () => ask({ system: 's', prompt: 'p', bin: fakeClaude(answer, 20000), idleMs: 60000 }));
+  setTimeout(() => stop.abort(), 200);
+  await assert.rejects(run, (e) => e.stopped === true && /stopped by its owner/.test(e.message));
+  assert.ok(Date.now() - t0 < 5000, 'stopped, not waited out');
+  await assert.rejects(buildScope.run({ signal: stop.signal }, () => ask({ system: 's', prompt: 'p', bin: fakeClaude(answer) })), /stopped by its owner/);
+  // Outside a build, a call is as it was.
+  assert.equal((await ask({ system: 's', prompt: 'p', bin: fakeClaude(answer) })).text, answer);
+});
+
+test('a failed build says what went wrong in a sentence (APC-7)', async () => {
+  const { explainFailure } = await import('../engine/failures.mjs');
+  assert.match(explainFailure('claude exited 1: Invalid API key · Please run /login').title, /not signed in/);
+  assert.match(explainFailure('claude: Claude AI usage limit reached|1794600000').title, /usage limit/);
+  assert.match(explainFailure('the model wrote nothing for 90 s (0 characters written)').title, /stopped answering/);
+  assert.match(explainFailure('the model\'s answer did not pass the checks: view settle: CREATE SCREEN line 2: "FROBNICATE" does not start a part').title, /did not pass the engine's checks/);
+  assert.match(explainFailure("the model's answer did not pass the checks: the answer held no <plan>: I'm sorry").title, /checks/);
+  assert.match(explainFailure('this studio has reached its spending limit for the model ($6.01 of $6)').title, /spent what it may/);
+  assert.equal(explainFailure('anything', { stopped: true }).title, 'Stopped.');
+  const other = explainFailure('TypeError: x is undefined');
+  assert.match(other.title, /did not go through/);
+  for (const m of ['claude exited 1: Invalid API key', 'x']) assert.doesNotMatch(explainFailure(m).title + explainFailure(m).hint, /^[a-z]/, 'a sentence starts with a capital');
+});

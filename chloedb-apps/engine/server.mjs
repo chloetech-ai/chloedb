@@ -19,7 +19,8 @@ import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions, useFunctionReads } from './sql.mjs';
-import { MODEL, spend, useSpendFile } from './llm.mjs';
+import { MODEL, spend, useSpendFile, buildScope } from './llm.mjs';
+import { explainFailure } from './failures.mjs';
 import { newId, shortName, firstBuildStatus } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
@@ -342,7 +343,8 @@ async function runRequest(req, extra = {}) {
   // The build's steps as the studio draws them (read, plan, write, store),
   // with when each began, and the pieces being written at once.
   const split = SPLIT === 'always' || (SPLIT === 'first' && first);
-  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'] };
+  // stop: aborts every model call of this build (POST .../stop).
+  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'], stop: new AbortController() };
   running.set(req.app, state);
   // A line sent with {replace: true} takes the place of the previous such
   // line (the model's running count), so the log does not fill with them.
@@ -356,19 +358,24 @@ async function runRequest(req, extra = {}) {
   };
   await engine.store.putRequest({ ...req, status: 'running' });
   try {
-    const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress)
-      : await forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress);
+    const out = await buildScope.run({ signal: state.stop.signal }, () => (req.source === 'component' ? useSharedVersion(engine, req.app, extra.cap, progress)
+      : forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress)));
+    if (state.stop.signal.aborted) throw Object.assign(new Error('stopped by its owner'), { stopped: true });
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
     engine.changes?.soon();
-  } catch (e) {
-    progress(`Failed: ${e.message}`);
-    await engine.store.putRequest({ ...req, status: 'failed', error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
-    if (e.trace) await saveTrace(req, e.trace, lines, { status: 'failed', error: e.message.slice(0, 500), cost: e.cost || 0 });
+  } catch (err) {
+    // Stopped by its owner: whatever the forge made of the stop, it is a stop.
+    const stopped = state.stop.signal.aborted;
+    const e = stopped ? Object.assign(new Error('stopped by its owner'), { cost: err.cost, trace: err.trace }) : err;
+    const status = stopped ? 'stopped' : 'failed';
+    progress(stopped ? 'Stopped' : `Failed: ${e.message}`);
+    await engine.store.putRequest({ ...req, status, error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
+    if (e.trace) await saveTrace(req, e.trace, lines, { status, error: e.message.slice(0, 500), cost: e.cost || 0 });
     if (extra.candidate) await evolver.failed(extra.candidate, e.message).catch(() => {});
-    broadcast('failed', { app: req.app, request: req.id, error: e.message, candidate: extra.candidate || null });
+    broadcast('failed', { app: req.app, request: req.id, error: e.message, stopped, said: explainFailure(e.message, { stopped }), candidate: extra.candidate || null });
   } finally {
     running.delete(req.app);
     // A first build that gave no art direction: designs from the description.
@@ -560,7 +567,8 @@ async function appState(appId) {
     suggestions: await store.suggestions(appId),
     // (versions built to try and not kept are listed with their candidates)
     versions: (await store.compositions(appId)).filter((c) => !unkept.has(Number(c.n)) || Number(c.n) === head),
-    requests: await store.requests(appId, 30),
+    // A failed or stopped request says why in a plain sentence (said), its error kept for the details.
+    requests: (await store.requests(appId, 30)).map((r) => (r.status === 'failed' || r.status === 'stopped' ? { ...r, said: explainFailure(r.error, { stopped: r.status === 'stopped' }) } : r)),
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
     drawn: drawnOf.get(appId) || null,
     reach: await reachOf(appId, view),
@@ -737,6 +745,15 @@ const routes = [
     const source = ['user', 'suggestion', 'library'].includes(b.source) ? b.source : 'user';
     const r = await submit(id, text, source);
     return { request: r.id };
+  }],
+  // Stop the build running for this app: its model calls are killed at once
+  // and the request ends "stopped" (requests queued after it go on).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/stop$/, async (b, [id]) => {
+    const run = running.get(id);
+    if (!run || (b.request && b.request !== run.id)) return { stopped: false };
+    log(`[${id}] stopped by its owner`);
+    run.stop.abort();
+    return { stopped: true, request: run.id };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), visitor: !!cx.public, ownRows: cx.access === 'add', ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
