@@ -120,6 +120,10 @@ pub const JSON_TEXT: &str = "json_text";
 /// The feature of a TEXT field a language model makes of another's text
 /// ([`Derive::prompt`]): a version without it would not make the text.
 pub const DERIVE_TEXT: &str = "derive_text";
+/// The feature of a KEYWORD field a built-in model or a dictionary makes
+/// of a text ([`crate::content`]): a version without it would not make
+/// the values.
+pub const DERIVE_KEYWORD: &str = "derive_keyword";
 
 /// The feature of a database with a VECTOR field searched by RaBitQ codes
 /// ([`VectorCodes::Rabitq1`], [`crate::vector::rabitq`]): versions of
@@ -1515,8 +1519,30 @@ impl Schema {
         for (i, f) in self.fields.iter().enumerate() {
             let Some(d) = &f.derive else { continue };
             let bad = |m: &str| Err(Error::Schema(format!("field {}: {m}", f.name)));
+            // Values a built-in model or a dictionary makes of a text.
+            if f.ty == FieldType::Keyword || crate::content::is_content_model(&d.model) {
+                let many = match crate::content::classifier_name(&d.model) {
+                    // A classifier gives its best label, or its labels.
+                    Some(_) => Some(f.multi),
+                    None => crate::content::makes_many(&d.model),
+                };
+                let Some(many) = many else {
+                    return bad(&format!("a derived KEYWORD field's model is one of {}, dict:<table>.<field> or classifier:<name>, not {}", crate::content::MODELS.map(|(m, _)| m).join(", "), d.model));
+                };
+                if f.ty != FieldType::Keyword || f.multi != many || !f.stored || !f.generated_from.is_empty() || f.semantic_id.is_some() {
+                    return bad(&format!("model {} makes a {} field", d.model, if many { "stored KEYWORD[]" } else { "stored KEYWORD" }));
+                }
+                if self.primary_key == Some(i) || f.default.is_some() || f.not_null || !d.prompt.is_empty() {
+                    return bad("a derived KEYWORD field is made from a text: it is not the key, and has no default, NOT NULL or prompt");
+                }
+                match self.field(&d.from) {
+                    Some(m) if matches!(m.ty, FieldType::Text { .. } | FieldType::Keyword) && !m.name.eq_ignore_ascii_case(&f.name) && m.derive.is_none() && m.stored && m.generated_from.is_empty() && !m.multi => {}
+                    _ => return bad(&format!("derive names {}: a built-in model reads a stored TEXT or KEYWORD field of one value, not generated or derived itself", d.from)),
+                }
+                continue;
+            }
             if !matches!(f.ty, FieldType::Text { .. }) || !f.stored || !f.generated_from.is_empty() {
-                return bad("a derived field is a stored TEXT field, not generated from others");
+                return bad("a derived field is a stored TEXT field (or a KEYWORD field a built-in model makes), not generated from others");
             }
             if self.primary_key == Some(i) || f.default.is_some() || f.not_null {
                 return bad("a derived field is made from a file: it is not the key, and has no default or NOT NULL");
@@ -1674,6 +1700,7 @@ impl Schema {
                 f.media.map(|_| "media"),
                 f.derive.as_ref().map(|_| "derive"),
                 f.derive.as_ref().filter(|d| !d.prompt.is_empty()).map(|_| DERIVE_TEXT),
+                f.derive.as_ref().filter(|_| f.ty == FieldType::Keyword).map(|_| DERIVE_KEYWORD),
                 f.added.as_ref().map(|_| ADDED_FIELDS),
                 (f.ty == FieldType::Json).then_some(JSON),
                 (f.ty == FieldType::Json && f.text).then_some(JSON_TEXT),
