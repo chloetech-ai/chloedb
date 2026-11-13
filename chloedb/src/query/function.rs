@@ -72,7 +72,7 @@ const TYPES: [&str; 8] = ["INT", "FLOAT", "TEXT", "KEYWORD", "BOOL", "TIMESTAMP"
 /// Names the binder gives a meaning of its own, which no stored function
 /// takes.
 const RESERVED: &[&str] = &[
-    "abs", "array_agg", "at_least", "avg", "bm25", "ceil", "ceiling", "char_length", "character_length", "clamp", "coalesce", "concat", "count", "count_true", "cross_encoder", "cume_dist", "date", "date_add",
+    "abs", "array_agg", "at_least", "avg", "bm25", "ceil", "ceiling", "char_length", "character_length", "clamp", "classify", "coalesce", "concat", "count", "count_true", "cross_encoder", "cume_dist", "date", "date_add",
     "date_format", "date_part", "date_sub", "date_trunc", "datediff", "datepart", "datetrunc", "day", "dayofweek", "decay", "dense_rank", "distance", "dot", "embed", "encode", "exp", "extract", "features", "first_value",
     "floor", "gbdt", "greatest", "group_concat", "hash", "hops", "hour", "ifnull", "instr", "isnull", "json_extract", "lag", "last_value", "lcase", "lead", "least", "left", "len", "length", "llm", "ln", "log", "lower",
     "ltrim", "match", "max", "maxsim", "min", "minmax", "month", "now", "nth_value", "ntile", "nvl", "path", "percent_rank", "percentile_cont", "percentile_disc", "position", "pow", "power", "ppr", "prefix", "rand",
@@ -275,7 +275,8 @@ impl Function {
 pub struct FunctionSet {
     by_name: BTreeMap<String, Vec<Arc<Function>>>,
     /// Whether a version's body may call a language model
-    /// ([`super::llm`]).
+    /// ([`super::llm`]) or a classifier ([`super::classify`]), which run
+    /// after the query that finds the rows.
     llm: bool,
 }
 
@@ -289,7 +290,10 @@ impl FunctionSet {
         for vs in s.by_name.values_mut() {
             vs.sort_by_key(|f| f.version);
         }
-        s.llm = s.by_name.values().flatten().any(|f| f.def.body.to_ascii_lowercase().contains(super::llm::NAME));
+        s.llm = s.by_name.values().flatten().any(|f| {
+            let b = f.def.body.to_ascii_lowercase();
+            b.contains(super::llm::NAME) || b.contains(super::classify::NAME)
+        });
         s
     }
 
@@ -678,6 +682,11 @@ fn name_at(toks: &[&TokenWithSpan], i: usize) -> Option<String> {
         Some(Token::Word(w)) => Some(w.value.to_ascii_lowercase()),
         _ => None,
     }
+}
+
+/// Checks `name` as a stored function's name, as `CREATE FUNCTION` does.
+pub(crate) fn check_function_name(name: &str) -> Result<()> {
+    check_name(name)
 }
 
 fn check_name(name: &str) -> Result<()> {

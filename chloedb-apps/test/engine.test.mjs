@@ -825,6 +825,24 @@ test('a rule sends its email once its writes are stored, and none when it stops'
   assert.equal(order.length, 2, 'a rule that stops writes nothing and sends nothing');
 });
 
+test('a function that fails for a published app\'s visitor asks for no repair', async () => {
+  const { Engine } = await import('../engine/engine.mjs');
+  const { compileRule } = await import('../engine/rulesql.mjs');
+  const engine = new Engine({ write: async () => { throw new Error('requests.title takes text, not <a visitor\'s words>'); }, get: async () => [] }, { log: () => {} });
+  engine.store = { track: async () => {} };
+  engine.sql = async () => [];
+  const errors = [];
+  engine.on('error', (e) => errors.push(e));
+  const view = { comp: { n: 1 }, helpers: [], tables: [{ spec: { name: 'requests', columns: [{ name: 'title', type: 'text' }] } }], functions: [
+    { id: 'a/function/add', slug: 'add', code: JSON.stringify(compileRule("CREATE RULE add AS INSERT INTO requests (title) VALUES (:title);").rule), spec: { rule: true } },
+  ] };
+  engine.view = async () => view;
+  await assert.rejects(engine.call('a', 'add', { title: 'x' }, { pub: true }), /takes text/);
+  assert.equal(errors.length, 0, 'no repair from the public path');
+  await assert.rejects(engine.call('a', 'add', { title: 'x' }), /takes text/);
+  assert.equal(errors.length, 1, 'the owner\'s own failure still gets its repair');
+});
+
 test('rule steps loop over rows, refuse with a message, insert or update, and return a value', async () => {
   const { Refused } = await import('../engine/rules.mjs');
   const writes = [];
@@ -2459,6 +2477,20 @@ test('a published app is open to the public at its own host, and nothing else is
     assert.equal(await pub.allows(req(m, h), at(p)), null, `${m} ${p} on ${h}`);
   }
   assert.ok(await pub.allows(req('GET', host), at('/api/stream?app=a1')));
+  // A stranger who signs up first through the public path is a member, not the owner.
+  const { Services } = await import('../engine/services.mjs');
+  const members = new Map();
+  const db = { get: async (t, ids) => ids.map((id) => members.get(id)), query: async (sql, { a }) => [...members.values()].filter((m) => m.app === a).map((m) => ({ id: m.id })),
+    write: async (ops) => ops.forEach((o) => members.set(o.doc.id, o.doc)) };
+  const sv = new Services({ db, store: {} }, {});
+  assert.equal((await sv.join('a1', 'stranger', { pub: true })).role, 'member');
+  assert.equal((await sv.join('a3', 'builder')).role, 'owner');
+  // A read of the settings that fails (a slow cluster) keeps what was published.
+  const query = store.db.query;
+  store.db.query = async () => { throw new Error('the query ran past its 5000 ms deadline'); };
+  await pub.load(true);
+  assert.deepEqual(await pub.allows(req('GET', host), at('/')), { app: 'a1', page: true });
+  store.db.query = query;
   // A visitor's rate: 5 calls a minute, 2 of them dear.
   const r = req('POST', host, { 'x-forwarded-for': '198.51.100.7, 10.0.0.1' });
   assert.equal(pub.limit(r, true), null);
