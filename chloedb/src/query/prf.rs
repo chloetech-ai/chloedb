@@ -324,11 +324,17 @@ pub fn text_columns(schemas: &[&Schema], table: &str, field: &str) -> Vec<String
 impl Expansion {
     /// The queries of the first step, one for each call that expands: its
     /// rows' text (the columns [`text_columns`] names, of the tables of
-    /// `schemas`) and score, best first.
-    pub fn feedback(&self, schemas: &[&Schema]) -> Vec<sql::Query> {
+    /// `schemas`) and score, best first. A name that is a keyword
+    /// (`order`) or has other characters (`my-table`) is quoted, so that it
+    /// reads back as itself.
+    pub fn feedback(&self, schemas: &[&Schema]) -> Result<Vec<sql::Query>> {
+        let quoted = |n: &str| {
+            let keyword = sqlparser::keywords::ALL_KEYWORDS.binary_search(&n.to_ascii_uppercase().as_str()).is_ok();
+            if keyword || super::sql::ident(n) != n { Ident::with_quote('"', n) } else { Ident::new(n) }
+        };
         self.sites.iter().flatten().map(|s| {
             let mut args = vec![
-                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(Ident::new(&s.field)))),
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(quoted(&s.field)))),
                 FunctionArg::Unnamed(FunctionArgExpr::Expr(s.text.clone())),
             ];
             args.extend(s.rest.iter().cloned());
@@ -343,10 +349,10 @@ impl Expansion {
                 within_group: Vec::new(),
             });
             let filter = s.filter.as_ref().map(|f| format!(" WHERE {f}")).unwrap_or_default();
-            let cols: Vec<String> = text_columns(schemas, &s.table, &s.field).iter().map(|c| Ident::new(c).to_string()).collect();
-            let text = format!("SELECT {}, score() FROM {}{filter} ORDER BY {call} DESC LIMIT {}", cols.join(", "), Ident::new(&s.table), s.rows);
-            let q = super::sql::parse_query(&text).expect("a feedback query parses");
-            (*q).clone()
+            let cols: Vec<String> = text_columns(schemas, &s.table, &s.field).iter().map(|c| quoted(c).to_string()).collect();
+            let text = format!("SELECT {}, score() FROM {}{filter} ORDER BY {call} DESC LIMIT {}", cols.join(", "), quoted(&s.table), s.rows);
+            let q = super::sql::parse_query(&text).map_err(|e| Error::Query(format!("expand: the query of {}.{}'s top rows ({text}) does not parse: {e}", s.table, s.field)))?;
+            Ok((*q).clone())
         }).collect()
     }
 
@@ -491,7 +497,7 @@ mod tests {
         let q = super::super::sql::parse_query("SELECT id FROM papers WHERE year > 2020 ORDER BY bm25(body, :q, expand => 5, expand_terms => 2) DESC LIMIT 3").unwrap();
         let p = Params::new().set("q", Value::Str("mrna vaccines".into()));
         let x = plan(&q, &p).unwrap().unwrap();
-        let fb = x.feedback(&[]);
+        let fb = x.feedback(&[]).unwrap();
         assert_eq!(fb.len(), 1);
         assert_eq!(fb[0].to_string(), "SELECT body, score() FROM papers WHERE year > 2020 ORDER BY bm25(body, :q) DESC LIMIT 5");
         assert_eq!(x.fields(), vec![("papers".to_string(), "body".to_string())]);
@@ -508,7 +514,7 @@ mod tests {
     fn expand_zero_is_the_call_as_written() {
         let q = super::super::sql::parse_query("SELECT id FROM papers ORDER BY bm25(body, :q, expand => 0, syntax => 'plain') DESC").unwrap();
         let x = plan(&q, &Params::new()).unwrap().unwrap();
-        assert!(x.feedback(&[]).is_empty());
+        assert!(x.feedback(&[]).unwrap().is_empty());
         let (q2, made) = x.finish(&[], &[], &Params::new()).unwrap();
         assert!(made.is_empty());
         assert_eq!(q2.to_string(), "SELECT id FROM papers ORDER BY bm25(body, :q, syntax => 'plain') DESC");

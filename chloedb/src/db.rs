@@ -1414,9 +1414,10 @@ impl Db {
         // the rows it reads, split.
         if let Some(c) = crate::query::chunks::of_sql(sql, params)? {
             let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(&c.table)).ok_or_else(|| Error::Query(format!("no table {}", c.table)))?.clone();
-            // Its own read: not held to the answer's `max_rows`.
-            let rs = self.query_at(snap, &c.source_sql(&schema)?, params, &ExecOptions { max_rows: None, ..opts.clone() })?;
-            return Ok(c.finish(&rs));
+            // Its own read: not held to the answer's `max_rows`, but to a
+            // budget of its own, and of as many rows as the LIMIT needs.
+            let own = ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() };
+            return c.run(&schema, |source| self.query_at(snap, source, params, &own));
         }
         if crate::query::pack::may_pack(sql) {
             if let Some(p) = self.pack_at(snap, sql, params, opts)? {
@@ -1443,7 +1444,7 @@ impl Db {
             if let Some(x) = crate::query::prf::plan(&q.query, params)? {
                 let mut rows = Vec::new();
                 let schemas: Vec<&Schema> = snap.schemas().collect();
-                for f in x.feedback(&schemas) {
+                for f in x.feedback(&schemas)? {
                     rows.push(self.query_at(snap, &f.to_string(), params, opts)?);
                 }
                 let analyzers = x.fields().iter().map(|(t, f)| {
@@ -1488,7 +1489,7 @@ impl Db {
                 }
             }
             let sql = crate::query::understand::dictionary_sql(&key.0, &key.1);
-            let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..opts.clone() })?;
+            let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() })?;
             let g = Arc::new(crate::query::understand::Gazetteer::build(&key.1, &rs, key.2));
             self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), (stamp, g.clone()));
             out.insert(key.clone(), g);
@@ -1858,9 +1859,10 @@ impl Db {
         // then their INSERTs.
         if let Some(ins) = crate::query::chunks::insert_of_sql(sql, params)? {
             let schema = self.table(&ins.query.table)?;
-            let rs = self.query_with(&ins.query.source_sql(&schema)?, params, &ExecOptions { max_rows: None, ..opts.clone() })?;
+            let own = ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() };
+            let chunks = ins.query.run(&schema, |source| self.query_with(source, params, &own))?;
             let mut n = 0;
-            for (statement, p) in ins.inserts(&ins.query.finish(&rs)) {
+            for (statement, p) in ins.inserts(&chunks) {
                 if let SqlResult::Written(w) = self.sql_with(&statement, &p, opts)? {
                     n += w;
                 }
@@ -1971,7 +1973,7 @@ impl Db {
                 if !c.replace && self.functions()?.current(&c.name).is_some() {
                     return Err(Error::Query(format!("function {} exists: CREATE OR REPLACE CLASSIFIER {} makes its next version", c.name, c.name)));
                 }
-                let rs = self.query_with(&c.training_sql(), &Params::new(), &ExecOptions { max_rows: None, ..opts.clone() })?;
+                let rs = self.query_with(&c.training_sql(), &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() })?;
                 let trained = c.train(&schema, &rs)?;
                 self.sql_with(&trained.function_sql(c), &Params::new(), opts)?;
                 Ok(SqlResult::Rows(trained.result_set()))
@@ -1990,7 +1992,9 @@ impl Db {
         if !matches!(f.ty, FieldType::Text { .. }) {
             return Err(Error::Query(format!("{}.{} is not a TEXT field: synonyms are of a text's words", req.table, req.field)));
         }
-        let (analyzer, opts) = (f.text_analyzer(), &req.options);
+        // Within the bounds a mining keeps to, whoever asks.
+        let bounded = req.options.bounded();
+        let (analyzer, opts) = (f.text_analyzer(), &bounded);
         let (source, rows, words, proposals, header) = match &req.source {
             mine::Source::Vectors { vector } => {
                 if !f.stored {
@@ -1998,7 +2002,7 @@ impl Db {
                 }
                 let e = self.embedder_in(&req.table, vector).ok_or_else(|| Error::Query(format!("{}.{vector} has no model here to embed words with", req.table)))?;
                 let sql = format!("SELECT {} FROM {} LIMIT {}", qsql::ident(&f.name), qsql::ident(&schema.table), opts.max_rows);
-                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(self.exec.memory.as_ref()), ..self.exec.clone() })?;
                 let (rows, words) = mine::vocabulary(rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str())), analyzer, opts);
                 let vectors = words.iter().map(|w| e.embed_query(&w.word)).collect::<Result<Vec<_>>>()?;
                 let ps = mine::by_vectors(&words, &vectors, opts);
@@ -2007,7 +2011,7 @@ impl Db {
             }
             mine::Source::Log { log } => {
                 let sql = format!("SELECT context, ts, text FROM {} LIMIT {}", qsql::ident(log), opts.max_rows);
-                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+                let rs = self.query_with(&sql, &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(self.exec.memory.as_ref()), ..self.exec.clone() })?;
                 let searches: Vec<mine::Search> = rs
                     .rows
                     .iter()

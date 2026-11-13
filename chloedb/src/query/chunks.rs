@@ -170,7 +170,16 @@ pub fn split(text: &str, max_tokens: usize, overlap: usize) -> Vec<Chunk> {
             _ => spans.push(p),
         }
     }
-    let char_at = |byte: usize| text[..byte].chars().count();
+    // Characters before a byte, counted on from the last one asked for:
+    // the spans are in order, so the whole text is counted once.
+    let mut counted = (0usize, 0usize);
+    let mut char_at = |byte: usize| {
+        if byte < counted.0 {
+            counted = (0, 0);
+        }
+        counted = (byte, counted.1 + text[counted.0..byte].chars().count());
+        counted.1
+    };
     let mut out = Vec::with_capacity(spans.len());
     for (n, s) in spans.into_iter().enumerate() {
         // Its own text, trimmed.
@@ -187,7 +196,8 @@ pub fn split(text: &str, max_tokens: usize, overlap: usize) -> Vec<Chunk> {
             from = text[back..start].char_indices().find(|&(i, c)| i > 0 && !c.is_whitespace() && text[back..start][..i].ends_with(char::is_whitespace)).map_or(start, |(i, _)| back + i);
         }
         let body = text[from..end].to_string();
-        out.push(Chunk { n: out.len(), tokens: estimate_tokens(&body), text: body, start: char_at(start), end: char_at(end) });
+        let (start, end) = (char_at(start), char_at(end));
+        out.push(Chunk { n: out.len(), tokens: estimate_tokens(&body), text: body, start, end });
     }
     out
 }
@@ -323,14 +333,54 @@ pub fn insert_of_sql(sql_text: &str, params: &Params) -> Result<Option<ChunksIns
 
 impl ChunksQuery {
     /// The query that reads the rows it splits: each row's key and text.
+    ///
+    /// It reads [`ChunksQuery::source_rows`] rows: as many as the query's
+    /// LIMIT, since every row with text gives a chunk at least. When rows
+    /// without text leave the LIMIT unfilled, [`ChunksQuery::more_rows`]
+    /// says how many to read again.
     pub fn source_sql(&self, schema: &Schema) -> Result<String> {
+        self.source_sql_of(schema, self.source_rows())
+    }
+
+    /// The rows [`ChunksQuery::source_sql`] reads first: the query's
+    /// LIMIT, or [`MAX_SOURCE_ROWS`] without one.
+    pub fn source_rows(&self) -> usize {
+        self.limit.map_or(MAX_SOURCE_ROWS, |l| l.max(1)).min(MAX_SOURCE_ROWS)
+    }
+
+    /// After a read of `read` rows that gave `rs` and the chunks `chunks`
+    /// ([`ChunksQuery::finish`]): how many rows to read instead, when the
+    /// LIMIT is not filled and the table may hold more rows (twice as
+    /// many, up to [`MAX_SOURCE_ROWS`]); `None` when the answer is whole.
+    pub fn more_rows(&self, read: usize, rs: &ResultSet, chunks: &ResultSet) -> Option<usize> {
+        let limit = self.limit?;
+        (chunks.rows.len() < limit && rs.rows.len() >= read && read < MAX_SOURCE_ROWS).then(|| read.saturating_mul(2).min(MAX_SOURCE_ROWS))
+    }
+
+    /// [`ChunksQuery::source_sql`] reading `rows` rows at most.
+    pub fn source_sql_of(&self, schema: &Schema, rows: usize) -> Result<String> {
         let f = schema.field(&self.field).ok_or_else(|| err(format!("{NAME}(): {} has no field {}", schema.table, self.field)))?;
         if !f.stored || !matches!(f.ty, crate::schema::FieldType::Text { .. } | crate::schema::FieldType::Keyword) || f.multi {
             return Err(err(format!("{NAME}(): {} is not a stored TEXT field", f.name)));
         }
         let key = schema.primary_key.map(|k| super::sql::ident(&schema.fields[k].name)).unwrap_or_else(|| "NULL".into());
         let cond = self.condition.as_ref().map_or(String::new(), |c| format!(" WHERE {c}"));
-        Ok(format!("SELECT {key}, {} FROM {}{cond} LIMIT {MAX_SOURCE_ROWS}", super::sql::ident(&f.name), super::sql::ident(&schema.table)))
+        Ok(format!("SELECT {key}, {} FROM {}{cond} LIMIT {}", super::sql::ident(&f.name), super::sql::ident(&schema.table), rows.clamp(1, MAX_SOURCE_ROWS)))
+    }
+
+    /// The query's answer, its rows read by `read` (a query of the
+    /// table's rows, as [`ChunksQuery::source_sql_of`] writes it): as few
+    /// rows as fill the LIMIT.
+    pub fn run(&self, schema: &Schema, mut read: impl FnMut(&str) -> Result<ResultSet>) -> Result<ResultSet> {
+        let mut rows = self.source_rows();
+        loop {
+            let rs = read(&self.source_sql_of(schema, rows)?)?;
+            let out = self.finish(&rs);
+            match self.more_rows(rows, &rs, &out) {
+                Some(more) => rows = more,
+                None => return Ok(out),
+            }
+        }
     }
 
     /// The chunks of the rows `rs` (of [`ChunksQuery::source_sql`]) as
