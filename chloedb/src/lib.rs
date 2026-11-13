@@ -34,12 +34,14 @@ pub mod audio;
 pub mod autopilot;
 #[cfg(feature = "baselines")]
 pub mod baselines;
+pub mod blackboard;
 pub mod beir;
 #[cfg(feature = "audio")]
 pub mod clap;
 pub mod cluster;
 pub mod data;
 pub mod db;
+pub mod content;
 pub mod derive;
 pub mod embed;
 pub mod env;
@@ -70,6 +72,7 @@ pub mod simd;
 pub mod sqlite;
 pub mod storage;
 pub mod substring;
+pub mod tenant;
 pub mod text;
 pub mod timestamp;
 pub mod upgrade;

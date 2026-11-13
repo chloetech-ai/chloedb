@@ -86,13 +86,16 @@ function render(page, route) {
       page.append(h("div", { class: "page-head" }, h("h1", {}, "Apps")),
         list.length ? h("div", { class: "grid g3" }, list.map((a) => h("a", { class: "card", href: "#/app/" + a.name, style: { padding: "16px", display: "flex", gap: "12px", alignItems: "flex-start" } },
           appIcon(a, "lg"), h("div", {}, h("b", {}, a.title), h("div", { class: "small dim" }, a.up ? a.description || "" : `not answering: ${a.error}`)))))
-          : empty("box", "No apps", "An app is a program of its own that this server forwards to: start the server with --app name=url (chloedb-crawl, the crawler, and chloedb-sheets, the spreadsheets, are two)."));
+          : empty("box", "No apps", "An app is a program of its own that this server forwards to. The server starts the crawler (chloedb-crawl), Sheets (chloedb-sheets) and ChloeCtx (chloectx) itself when they are installed beside it (--start-apps); others it reaches with --app name=url."));
       return;
     }
     const a = list.find((x) => x.name === name);
     if (!a) { page.append(empty("box", `No app ${name}`, list.length ? `This server's apps: ${list.map((x) => x.name).join(", ")}.` : "This server has no apps (--app name=url).")); return; }
     if (!a.up) {
-      page.append(empty("warn", `${a.title} does not answer`, `${a.error}. The server reaches it at ${a.url}.`, h("button", { class: "btn sm", onclick: () => loadApps(true).then(draw) }, core.icon("refresh"), "Ask again")));
+      const p = a.process;
+      const how = p ? (p.running ? `This server started it (${p.program}, pid ${p.pid}); it may still be starting.` : `This server starts it (${p.program}): ${p.last_exit || "not running"}${p.restarts ? `, started again ${p.restarts} times` : ""}.`) : `The server reaches it at ${a.url}.`;
+      page.append(empty("warn", `${a.title} does not answer`, `${a.error}. ${how}`, h("button", { class: "btn sm", onclick: () => loadApps(true).then(draw) }, core.icon("refresh"), "Ask again")));
+      if (p?.tail?.length) page.append(h("pre", { class: "code", style: { marginTop: "12px", whiteSpace: "pre-wrap", maxHeight: "320px", overflow: "auto", fontSize: "12px" } }, p.tail.join("\n")));
       return;
     }
     if (!a.view) { page.append(empty("box", `${a.title} has no view`, "Its manifest names none.")); return; }

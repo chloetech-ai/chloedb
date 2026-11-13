@@ -68,8 +68,7 @@ import) is a bug to report as an issue, not an advisory.
 ## Holes closed
 
 Each release lists the holes it closes under **Security** in
-[CHANGELOG.md](CHANGELOG.md), with what changes for a user. Since 0.2.0
-(not yet released):
+[CHANGELOG.md](CHANGELOG.md), with what changes for a user. In 0.2.0:
 
 - `chloectx app` served any caller with no token on any address;
 - `chloectx app` started a thread per request and per exchange, without

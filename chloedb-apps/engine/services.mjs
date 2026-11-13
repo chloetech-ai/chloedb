@@ -62,10 +62,13 @@ export class Services {
   }
 
   // Joins the app, as its owner when nobody has yet.
-  async join(appId, personId) {
+  // The first member is the app's owner, unless they joined through the
+  // public path of a published app (publish.mjs): a stranger who signs up
+  // first must not own it.
+  async join(appId, personId, { pub = false } = {}) {
     const had = await this.member(appId, personId);
     if (had) return had;
-    const any = await this.db.query('SELECT id FROM sa_members WHERE app = :a LIMIT 1', { a: appId });
+    const any = pub ? [1] : await this.db.query('SELECT id FROM sa_members WHERE app = :a LIMIT 1', { a: appId });
     const doc = { id: `${appId}#${personId}`, app: appId, person: personId, role: any.length ? 'member' : 'owner' };
     await this.db.write([{ op: 'insert', table: 'sa_members', doc }]);
     return doc;
@@ -80,23 +83,23 @@ export class Services {
     return token;
   }
 
-  async signUp(appId, { email, name, password } = {}) {
+  async signUp(appId, { email, name, password } = {}, opts = {}) {
     const e = String(email || '').trim().toLowerCase();
     if (!EMAIL_RE.test(e)) throw err('Enter an email address');
     if (String(password || '').length < 8) throw err('Choose a password of at least 8 characters');
     if (await this.personByEmail(e)) throw err('That email already has an account: sign in instead');
     const person = { id: newId(10), email: e, name: String(name || '').trim().slice(0, 80) || e.split('@')[0], hash: await Services.hashPassword(password) };
     await this.db.write([{ op: 'insert', table: 'sa_people', doc: person }]);
-    await this.join(appId, person.id);
+    await this.join(appId, person.id, opts);
     this.store.track(appId, 'action', '', 'signed up').catch(() => {});
-    return { token: await this.newSession(person.id), user: await this.user(appId, person.id) };
+    return { token: await this.newSession(person.id), user: await this.user(appId, person.id, opts) };
   }
 
-  async signIn(appId, { email, password } = {}) {
+  async signIn(appId, { email, password } = {}, opts = {}) {
     const p = await this.personByEmail(email || '');
     if (!p || !(await Services.checkPassword(password || '', p.hash))) throw err('That email and password do not match', 401);
-    await this.join(appId, p.id);
-    return { token: await this.newSession(p.id), user: await this.user(appId, p.id) };
+    await this.join(appId, p.id, opts);
+    return { token: await this.newSession(p.id), user: await this.user(appId, p.id, opts) };
   }
 
   async signOut(token) {
@@ -123,11 +126,11 @@ export class Services {
 
   // The signed-in person as an app sees them: {id, name, email, role}, or
   // null. A person signed in through another app joins this one on first use.
-  async user(appId, personId) {
+  async user(appId, personId, opts = {}) {
     if (!personId) return null;
     const [p] = await this.db.get('sa_people', [personId]);
     if (!p) return null;
-    const m = await this.join(appId, personId);
+    const m = await this.join(appId, personId, opts);
     return { id: p.id, name: p.name, email: p.email, role: m.role };
   }
 

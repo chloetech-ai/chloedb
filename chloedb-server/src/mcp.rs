@@ -54,6 +54,7 @@ ChloeDB SQL is its own dialect, not Postgres: MATCH(field, 'words') filters by t
 similarity(vector_field, :p) ranks by meaning (bind :p in params as {\"embed\": \"some text\", \"field\": \"emb\"}), and search_docs finds the syntax of anything else. \
 query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON. \
 check_sql parses and binds a statement against the tables without running it, and explain shows how a SELECT runs. \
+list_feedback and get_feedback read what people asked of the command center, with screenshots; update_feedback takes an item and marks it done. \
 The key you connect with decides what you may change (whoami): read, write, or admin for tables.";
 
 /// What a tool's call does.
@@ -75,6 +76,8 @@ enum Shape {
     Tables,
     /// Rows, at most this many.
     Rows(usize),
+    /// A feedback item: its `shot`, a `data:` URL, answered as an image.
+    Shot,
 }
 
 /// Why a tool's call failed: arguments the tool does not take (a protocol
@@ -304,6 +307,76 @@ const TOOLS: &[Tool] = &[
         read_only: true,
         destructive: false,
         act: |a| Ok(Act::SearchDocs { query: s(a, "query")?.to_string(), limit: a.get("limit").and_then(|v| v.as_u64()).map_or(3, |n| (n as usize).clamp(1, 8)) }),
+    },
+    Tool {
+        name: "list_feedback",
+        title: "List feedback",
+        description: "What people asked of the command center (the server's web UI): each item's id, kind (bug, change, idea, question), status (new, triaged, planned, doing, done, wontfix), priority (0 now to 3 some day), title, note, the view it is about, and its numbered marks on the screenshot as text, newest first. status is open (the default: new, triaged, planned and doing), all, or a list such as new,planned. It is table cc_feedback, which query reads too.",
+        schema: || json!({"type": "object", "properties": {
+            "status": {"type": "string", "default": "open"},
+            "kind": {"type": "string", "enum": ["bug", "change", "idea", "question"]},
+            "q": {"type": "string", "description": "Words of the note, the title or the marks."},
+            "assignee": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}
+        }}),
+        read_only: true,
+        destructive: false,
+        act: |a| {
+            let mut q = Vec::new();
+            for k in ["status", "kind", "q", "assignee"] {
+                if let Some(v) = opt_s(a, k) {
+                    q.push(format!("{k}={}", encode(v)));
+                }
+            }
+            if let Some(n) = a.get("limit").and_then(|v| v.as_u64()) {
+                q.push(format!("limit={n}"));
+            }
+            Ok(route(Method::GET, format!("/v1/feedback?{}", q.join("&")), None, Shape::All))
+        },
+    },
+    Tool {
+        name: "get_feedback",
+        title: "Get a feedback item",
+        description: "One feedback item in full: its note, its marks (each with its place on the screenshot in CSS pixels, what it says, and the element under it: selector, text, card), the page's context (window size, theme, errors on the page), its triage, and the screenshot with the marks drawn on it, as an image.",
+        schema: || json!({"type": "object", "properties": {
+            "id": {"type": "string"},
+            "shot": {"type": "boolean", "default": true, "description": "Answer the screenshot as an image."}
+        }, "required": ["id"]}),
+        read_only: true,
+        destructive: false,
+        act: |a| {
+            let id = encode(s(a, "id")?);
+            Ok(match a.get("shot").and_then(|v| v.as_bool()).unwrap_or(true) {
+                true => route(Method::GET, format!("/v1/feedback/{id}?shot=1"), None, Shape::Shot),
+                false => route(Method::GET, format!("/v1/feedback/{id}"), None, Shape::All),
+            })
+        },
+    },
+    Tool {
+        name: "update_feedback",
+        title: "Triage a feedback item",
+        description: "Set a feedback item's status, priority (0 to 3, or null), assignee (who works on it) or resolution (what was done: a pull request's link). To take an item, set status doing and assignee with if_status new (or triaged, planned): it is refused when someone took it first. Set status done with a resolution when the change is made. Needs a write key.",
+        schema: || json!({"type": "object", "properties": {
+            "id": {"type": "string"},
+            "status": {"type": "string", "enum": ["new", "triaged", "planned", "doing", "done", "wontfix"]},
+            "priority": {"type": ["integer", "null"], "minimum": 0, "maximum": 3},
+            "assignee": {"type": ["string", "null"]},
+            "resolution": {"type": ["string", "null"]},
+            "kind": {"type": "string", "enum": ["bug", "change", "idea", "question"]},
+            "if_status": {"type": "string", "enum": ["new", "triaged", "planned", "doing", "done", "wontfix"]}
+        }, "required": ["id"]}),
+        read_only: false,
+        destructive: false,
+        act: |a| {
+            let id = encode(s(a, "id")?);
+            let mut body = serde_json::Map::new();
+            for k in ["status", "priority", "assignee", "resolution", "kind", "if_status"] {
+                if let Some(v) = a.get(k) {
+                    body.insert(k.to_string(), v.clone());
+                }
+            }
+            Ok(route(Method::PATCH, format!("/v1/feedback/{id}"), Some(Json::Object(body)), Shape::All))
+        },
     },
     Tool {
         name: "whoami",
@@ -575,7 +648,7 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             match call(svc, router, caller, name, &args).await {
-                Ok(text) => ok(&id, json!({"content": [{"type": "text", "text": text}], "isError": false})),
+                Ok(content) => ok(&id, json!({"content": content, "isError": false})),
                 Err(Failed::Call(why)) => ok(&id, json!({"content": [{"type": "text", "text": why}], "isError": true})),
                 Err(Failed::Arguments(why)) => error(&id, -32602, why),
             }
@@ -584,32 +657,45 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
     })
 }
 
-/// A tool's call: its answer as text.
-async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &Caller<'_>, name: &str, args: &Json) -> Result<String, Failed> {
+/// A tool's call: its answer's content, text and perhaps an image.
+async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &Caller<'_>, name: &str, args: &Json) -> Result<Vec<Json>, Failed> {
     let tool = TOOLS.iter().find(|t| t.name == name).ok_or_else(|| Failed::Arguments(format!("no tool {name:?}: tools/list names them")))?;
     if !args.is_object() {
         return Err(Failed::Arguments("arguments are an object".into()));
     }
+    let mut image = None;
     let answer = match (tool.act)(args)? {
         Act::CheckSql(sql) => check_sql(&sql, &svc.tables_listed().await).map_err(Failed::Call)?,
         Act::SearchDocs { query, limit } => search_docs(&query, limit),
         Act::Route { method, path, body, shape } => {
             let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
-            let j = forward(router, caller, method, &path, body).await.map_err(Failed::Call)?;
+            let mut j = forward(router, caller, method, &path, body).await.map_err(Failed::Call)?;
+            if let Shape::Shot = shape {
+                image = j.as_object_mut().and_then(|o| o.remove("shot")).and_then(|s| s.as_str().and_then(data_url_image));
+            }
             shaped(j, shape)
         }
     };
     let text = serde_json::to_string(&answer).unwrap_or_default();
-    Ok(match clip(&text, MAX_TEXT) {
+    let text = match clip(&text, MAX_TEXT) {
         (t, false) => t.to_string(),
         (t, true) => format!("{t}\n[cut at {MAX_TEXT} characters of {}: ask for fewer rows or columns]", text.len()),
-    })
+    };
+    let mut content = vec![json!({"type": "text", "text": text})];
+    content.extend(image);
+    Ok(content)
+}
+
+/// An MCP image content block of a `data:` URL's picture.
+fn data_url_image(u: &str) -> Option<Json> {
+    let (mime, data) = u.strip_prefix("data:")?.split_once(";base64,")?;
+    Some(json!({"type": "image", "mimeType": mime, "data": data}))
 }
 
 /// What a tool keeps of its route's answer.
 fn shaped(mut j: Json, shape: Shape) -> Json {
     match shape {
-        Shape::All => j,
+        Shape::All | Shape::Shot => j,
         Shape::Tables => {
             if let Some(ts) = j.get_mut("tables").and_then(|t| t.as_array_mut()) {
                 for t in ts.iter_mut() {

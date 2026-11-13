@@ -80,6 +80,54 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     fn delete(&self, key: &str) -> Result<()>;
     /// Where the store is, for messages (`s3://bucket/prefix/`, a path).
     fn describe(&self) -> String;
+
+    /// The whole of object `key` and its version; `None` when it is
+    /// missing. A version names one write of the object: no two writes of
+    /// different bytes under one key have the same version.
+    fn get(&self, key: &str) -> Result<Option<(Vec<u8>, String)>> {
+        Err(unconditional(self.describe(), key))
+    }
+    /// Writes `bytes` as object `key` only if no object has that key, and
+    /// answers its version; `None`, having written nothing, when one does.
+    /// Of several callers at once, at most one is answered a version.
+    fn put_if_absent(&self, key: &str, bytes: &[u8]) -> Result<Option<String>> {
+        let _ = bytes;
+        Err(unconditional(self.describe(), key))
+    }
+    /// Replaces object `key` with `bytes` only if it is still at
+    /// `version`, and answers its new version; `None`, having written
+    /// nothing, when the object changed since or is gone. Of several
+    /// callers at once holding one version, at most one is answered.
+    fn put_if_version(&self, key: &str, bytes: &[u8], version: &str) -> Result<Option<String>> {
+        let _ = (bytes, version);
+        Err(unconditional(self.describe(), key))
+    }
+    /// The keys that start with `prefix`, in no order. A store may answer
+    /// from a moment ago: a key just written can be missing.
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        Err(unconditional(self.describe(), prefix))
+    }
+    /// The names directly under `prefix` (empty, or ending in `/`) that
+    /// keys continue past, as directories of a file system, in order. A
+    /// store may name one that no key is under any more.
+    fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut names: Vec<String> = self.list(prefix)?.iter().filter_map(|k| k.get(prefix.len()..)?.split_once('/').map(|(d, _)| d.to_string())).collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+    /// Writes the whole of object `key` to the file at `dest`, replacing
+    /// one there; an error if the object is missing.
+    fn get_file(&self, key: &str, dest: &Path) -> Result<()> {
+        let (bytes, _) = self.get(key)?.ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{}: object {key} is missing", self.describe()))))?;
+        Ok(std::fs::write(dest, bytes)?)
+    }
+}
+
+/// The error of a store that has no conditional writes, which a database
+/// kept in an object store commits by ([`crate::tenant`]).
+fn unconditional(store: String, key: &str) -> Error {
+    Error::Schema(format!("{store}: this object store has no conditional writes or listing ({key})"))
 }
 
 /// The store `url` names: an `s3://bucket/prefix` URL (feature `s3`), or a
@@ -160,6 +208,128 @@ impl ObjectStore for DirStore {
 
     fn describe(&self) -> String {
         self.root.display().to_string()
+    }
+
+    fn get(&self, key: &str) -> Result<Option<(Vec<u8>, String)>> {
+        match std::fs::read(self.path(key)?) {
+            Ok(b) => {
+                let v = version_of(&b);
+                Ok(Some((b, v)))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            // A key under a file (`a/b` where `a` is an object) names none.
+            Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn put_if_absent(&self, key: &str, bytes: &[u8]) -> Result<Option<String>> {
+        let _held = self.lock_key(key)?;
+        if self.path(key)?.exists() {
+            return Ok(None);
+        }
+        self.put(key, bytes)?;
+        Ok(Some(version_of(bytes)))
+    }
+
+    fn put_if_version(&self, key: &str, bytes: &[u8], version: &str) -> Result<Option<String>> {
+        let _held = self.lock_key(key)?;
+        match self.get(key)? {
+            Some((_, v)) if v == version => {}
+            _ => return Ok(None),
+        }
+        self.put(key, bytes)?;
+        Ok(Some(version_of(bytes)))
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        // Start from the deepest directory the prefix names.
+        let dir = match prefix.rfind('/') {
+            Some(i) => self.path(&prefix[..i])?,
+            None => self.root.clone(),
+        };
+        let mut out = Vec::new();
+        let mut todo = vec![dir];
+        while let Some(d) = todo.pop() {
+            let entries = match std::fs::read_dir(&d) {
+                Ok(e) => e,
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            for entry in entries {
+                let entry = entry?;
+                let p = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                // The locks' directory, and objects still being written.
+                if name == LOCKS || name.contains(".tmp-") {
+                    continue;
+                }
+                if entry.file_type()?.is_dir() {
+                    todo.push(p);
+                } else if let Some(key) = p.strip_prefix(&self.root).ok().and_then(|k| k.to_str()) {
+                    if key.starts_with(prefix) {
+                        out.push(key.to_string());
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn get_file(&self, key: &str, dest: &Path) -> Result<()> {
+        std::fs::copy(self.path(key)?, dest).map_err(|e| missing(self, key, e))?;
+        Ok(())
+    }
+
+    fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
+        let dir = match prefix.trim_end_matches('/') {
+            "" => self.root.clone(),
+            p => self.path(p)?,
+        };
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name != LOCKS && entry.file_type()?.is_dir() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+}
+
+/// Where a [`DirStore`] keeps the locks of its conditional writes.
+const LOCKS: &str = ".locks";
+
+/// The version a [`DirStore`] gives an object: a hash of its bytes, so the
+/// same bytes written again have the version they had (as S3's entity tag
+/// of a small object does).
+fn version_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+impl DirStore {
+    /// Holds key `key`'s lock until the file returned is dropped: an
+    /// exclusive `flock` on a file of its own, so that conditional writes
+    /// of one key exclude each other, between processes too.
+    fn lock_key(&self, key: &str) -> Result<File> {
+        self.path(key)?;
+        let dir = self.root.join(LOCKS);
+        std::fs::create_dir_all(&dir)?;
+        let f = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(version_of(key.as_bytes())))?;
+        // SAFETY: `f` is an open file, whose descriptor the call only locks.
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(f)
     }
 }
 
@@ -1028,6 +1198,50 @@ impl Drop for ColdImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_directory_store_writes_under_conditions() {
+        let dir = std::env::temp_dir().join(format!("chloedb-dirstore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Arc::new(DirStore::new(&dir).unwrap());
+        assert_eq!(s.get("t/HEAD").unwrap(), None);
+        assert_eq!(s.put_if_version("t/HEAD", b"x", "any").unwrap(), None, "nothing to replace");
+        let v1 = s.put_if_absent("t/HEAD", b"one").unwrap().expect("created");
+        assert_eq!(s.put_if_absent("t/HEAD", b"other").unwrap(), None);
+        assert_eq!(s.get("t/HEAD").unwrap(), Some((b"one".to_vec(), v1.clone())));
+        let v2 = s.put_if_version("t/HEAD", b"two", &v1).unwrap().expect("replaced");
+        assert_ne!(v1, v2);
+        assert_eq!(s.put_if_version("t/HEAD", b"three", &v1).unwrap(), None, "a stale version");
+        assert_eq!(s.get("t/HEAD").unwrap().unwrap().0, b"two");
+        assert_eq!(s.get("t/HEAD/under").unwrap(), None);
+
+        // Many at once replacing one version: one of them does.
+        let wins: usize = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8u8).map(|n| scope.spawn({
+                let (s, v2) = (s.clone(), v2.clone());
+                move || usize::from(s.put_if_version("t/HEAD", &[n], &v2).unwrap().is_some())
+            })).collect();
+            threads.into_iter().map(|t| t.join().unwrap()).sum()
+        });
+        assert_eq!(wins, 1);
+
+        s.put("t/i/log/1", b"l").unwrap();
+        s.put("t/i/base/1", b"b").unwrap();
+        s.put("t2/HEAD", b"h").unwrap();
+        let mut keys = s.list("t/").unwrap();
+        keys.sort();
+        assert_eq!(keys, ["t/HEAD", "t/i/base/1", "t/i/log/1"]);
+        assert_eq!(s.list("t/i/l").unwrap(), ["t/i/log/1"]);
+        assert!(s.list("nowhere/").unwrap().is_empty());
+        assert_eq!(s.list_dirs("").unwrap(), ["t", "t2"]);
+        assert_eq!(s.list_dirs("t/i/").unwrap(), ["base", "log"]);
+        assert!(s.list_dirs("nowhere/").unwrap().is_empty());
+        let dest = dir.join("copy");
+        s.get_file("t/i/base/1", &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"b");
+        assert!(s.get_file("t/i/base/2", &dest).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn chunk_tables_round_trip_and_refuse_damage() {
