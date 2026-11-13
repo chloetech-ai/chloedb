@@ -265,6 +265,17 @@ pub struct QueryReq {
     /// shard leaves out the boost's inputs' top rows
     /// ([`ExecOptions::boost_inputs`]). False answers them, for any other.
     pub boosts_alone: bool,
+    /// Answer without the timed steps (`stats.steps`), which are kept in
+    /// the list of queries all the same: a client's query that did not ask
+    /// for them, and a coordinator's shards for it. Most of an answer's
+    /// bytes are its steps, and a coordinator spends a sixth of its CPU
+    /// reading its shards' and writing them out again.
+    pub skip_steps: bool,
+    /// What names the query for the answer cache ([`crate::answers`]): its
+    /// SQL and what a coordinator sent with it (plan, statistics), made
+    /// where the request arrived; its parameters and this server's
+    /// settings are added here. `None`: not cached.
+    pub cache_key: Option<crate::answers::Key>,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -618,6 +629,16 @@ pub struct Service {
     /// Queries allowed to run at once; the rest wait until their deadline.
     admission: Arc<Semaphore>,
     pub max_concurrent: usize,
+    /// How long a client's query waits for a slot before it is refused
+    /// with 429 (`--admission-wait-ms`); `None`: until its deadline. A
+    /// query that waits its whole deadline in a queue only holds a client
+    /// longer, so past saturation a short wait keeps the latency of the
+    /// queries that run near the latency of an idle server, and the
+    /// throughput at its peak. A shard's calls from its coordinator always
+    /// wait until their deadline: the coordinator's own slots bound them.
+    pub admission_wait: Option<Duration>,
+    /// Answers kept between queries ([`crate::answers`]; `None`: none).
+    pub answers: Option<Arc<crate::answers::AnswerCache>>,
     /// Texts embedded at once (one per core): writes' and queries'.
     embedding: Arc<Semaphore>,
     /// Models queries named in `embed('model', ..)`, opened from the models
@@ -785,6 +806,8 @@ impl Service {
             stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
+            admission_wait: None,
+            answers: None,
             embedding: Arc::new(Semaphore::new(cores)),
             named_models: Mutex::new(HashMap::new()),
             cores,
@@ -2651,6 +2674,43 @@ impl Service {
     /// changed since (through another coordinator, or on that shard), the
     /// coordinator asks again and plans once more.
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
+        let skip = req.skip_steps;
+        let mut a = self.query_steps(req).await?;
+        if skip {
+            a.rs.stats.steps = Vec::new();
+            a.rs.stats.steps_dropped = 0;
+        }
+        Ok(a)
+    }
+
+    /// The key of `req`'s answer in the answer cache ([`crate::answers`]),
+    /// or `None` when it is not cached: no cache, a request that named no
+    /// query ([`QueryReq::cache_key`]), or one whose answer holds more
+    /// than its rows (a lease, a scroll, Arrow columns, measured steps).
+    fn answer_key(&self, req: &QueryReq, table: &str) -> Option<crate::answers::Key> {
+        let base = req.cache_key?;
+        self.answers.as_ref()?;
+        if req.hold || req.scroll.is_some() || req.profile || req.quiet || req.arrow.is_some() {
+            return None;
+        }
+        // Synonyms set while the server runs are part of what a query reads.
+        let synonyms = self.synonyms().map_or(0, |s| Arc::as_ptr(&s) as *const u8 as usize as u64);
+        let flags = [req.shard as u8, req.own_read as u8, req.boosts_alone as u8];
+        Some(
+            crate::answers::KeyBuilder::default()
+                .key(base)
+                .params(&req.params)
+                .part(table.as_bytes())
+                .part(&flags)
+                .part(&synonyms.to_le_bytes())
+                .part(&req.stats_version.to_le_bytes())
+                .part(&self.max_rows.unwrap_or(0).to_le_bytes())
+                .finish(),
+        )
+    }
+
+    /// [`Self::query`], with its steps.
+    async fn query_steps(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // alerts agent: Contain rules, at admission ([`crate::contain`]).
         let _turn = self.contained(&req).await?;
         self.dispatch(req).await
@@ -3046,8 +3106,28 @@ impl Service {
                         stale = true;
                         return Ok((no_rows(), Vec::new()));
                     }
+                    // An answer kept for the same query on this version
+                    // ([`crate::answers`]) needs no slot and no executor.
+                    let txn = snap.txn();
+                    let cached = self.answer_key(&req, &schema.table);
+                    if let (Some(k), Some(cache)) = (cached, &self.answers) {
+                        let tc = Instant::now();
+                        if let Some(kept) = cache.get(k, txn) {
+                            let mut rs = (*kept).clone();
+                            rs.stats.steps.push(chloedb::query::steps::Step {
+                                op: "answer cache".into(),
+                                detail: format!("the answer of this query on version {txn}"),
+                                start_us: steps::us_at(tc),
+                                us: steps::tenth(tc.elapsed().as_nanos() as f64 / 1e3),
+                                rows: Some(rs.rows.len() as u64),
+                                ..Default::default()
+                            });
+                            telemetry::record("answer cache", tc, "hit");
+                            return Ok((rs, Vec::new()));
+                        }
+                    }
                     let ta = Instant::now();
-                    let permit = self.admit(timeout).await.ok_or_else(too_many);
+                    let permit = self.admit(self.admission_budget(timeout, req.shard)).await.ok_or_else(too_many);
                     telemetry::record("admission", ta, if permit.is_ok() { "ok" } else { "rejected" });
                     let permit = permit?;
                     lease = self.held(&req, &snap, timeout)?;
@@ -3112,6 +3192,9 @@ impl Service {
                         Ok((r, started, ended)) => {
                             let (mut rs, ipc, scrolled) = r?;
                             steps::around(&mut rs.stats.steps, te, started, ended, back);
+                            if let (Some(k), Some(cache), true, None) = (cached, &self.answers, ipc.is_empty(), &scrolled) {
+                                cache.put(k, txn, &rs);
+                            }
                             arrow = ipc;
                             if let (Some(s), Some(ask)) = (scrolled, &req.scroll) {
                                 cursor = self.keep_scroll(scroll::Paged::Db(s), Some(snap.clone()), &schema.table, &req.sql, ask, req.shard, scroll_stats)?;
@@ -3126,7 +3209,7 @@ impl Service {
             Backend::Cluster(c) => {
                 LiveQueries::run(&live, async {
                     let ta = Instant::now();
-                    let permit = self.admit(timeout).await;
+                    let permit = self.admit(self.admission_budget(timeout, false)).await;
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
                     let permit = permit.ok_or_else(too_many)?;
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
@@ -3414,6 +3497,15 @@ impl Service {
     fn rejected(&self, kind: &'static str, t0: Instant) -> ApiError {
         self.metrics.query(kind, "refused", t0.elapsed().as_secs_f64());
         too_many()
+    }
+
+    /// How long a query with deadline `timeout` may wait for a slot: until
+    /// its deadline, or [`Self::admission_wait`] for a client's query.
+    fn admission_budget(&self, timeout: Duration, shard: bool) -> Duration {
+        match self.admission_wait {
+            Some(w) if !shard => w.min(timeout),
+            _ => timeout,
+        }
     }
 
     /// A query slot, waited for until `timeout`; `None` (counted as
@@ -5212,6 +5304,9 @@ impl Service {
             }
             Backend::Cluster(c) => more.extend(c.metrics()),
         }
+        if let Some(a) = &self.answers {
+            more.extend(a.metrics());
+        }
         self.metrics.render(&more)
     }
 }
@@ -6289,6 +6384,31 @@ mod tests {
         changed.borrow_and_update();
         svc.reopen_models();
         assert!(!changed.has_changed().unwrap());
+    }
+
+    // Past saturation every query waited for a slot until its deadline, so
+    // a server under ten times its capacity answered all of them seconds
+    // late. With an admission wait, a client's query that finds no slot in
+    // time is refused at once (429), while a shard's call from its
+    // coordinator still waits until its deadline.
+    #[tokio::test]
+    async fn a_query_finding_no_slot_within_the_admission_wait_is_refused_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), chloedb::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let deadline = Duration::from_secs(10);
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 1, deadline);
+        assert_eq!(svc.admission_budget(deadline, false), deadline, "no wait set: until the deadline");
+        svc.admission_wait = Some(Duration::from_millis(50));
+        assert_eq!(svc.admission_budget(deadline, false), Duration::from_millis(50));
+        assert_eq!(svc.admission_budget(deadline, true), deadline, "a shard's call waits until its deadline");
+        assert_eq!(svc.admission_budget(Duration::from_millis(20), false), Duration::from_millis(20), "never past the deadline");
+        let held = svc.admission.clone().acquire_owned().await.unwrap();
+        let t0 = Instant::now();
+        assert!(svc.admit(svc.admission_budget(deadline, false)).await.is_none());
+        assert!(t0.elapsed() < Duration::from_secs(2), "refused after {:?}", t0.elapsed());
+        drop(held);
+        assert!(svc.admit(svc.admission_budget(deadline, false)).await.is_some(), "a free slot is taken at once");
     }
 
     // A primary fenced by a call of the new primary as it kept its vote

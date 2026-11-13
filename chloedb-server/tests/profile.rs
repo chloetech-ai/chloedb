@@ -88,9 +88,11 @@ async fn a_query_s_profile_is_on_its_request_s_clock() {
     let svc = service(Backend::Local(db), schema);
     let base = http(svc.clone()).await;
 
-    // Every query answers its steps; "profile" adds their CPU time and the
-    // request's trace.
-    let plain = query(&base, json!({"sql": BM25})).await;
+    // A query answers its steps when asked ("steps"); "profile" adds their
+    // CPU time and the request's trace.
+    let bare = query(&base, json!({"sql": BM25})).await;
+    assert!(bare["stats"].get("steps").is_none() && bare["stats"]["plan"].is_array(), "{bare}");
+    let plain = query(&base, json!({"sql": BM25, "steps": true})).await;
     let st = steps(&plain["stats"]["steps"]);
     assert!(ops(&st).iter().any(|(op, d)| op == "rank" && *d == 0), "{plain}");
     assert!(st.iter().all(|s| s.get("cpu_us").is_none()), "{plain}");
@@ -140,7 +142,7 @@ async fn a_query_s_profile_is_on_its_request_s_clock() {
     assert_eq!(status, 200, "{s}");
     assert_eq!(s["slow_ms"], 0.0);
     assert_eq!(s["cpu_all"], true);
-    let j = query(&base, json!({"sql": "SELECT COUNT(*) FROM products WHERE price > 10"})).await;
+    let j = query(&base, json!({"sql": "SELECT COUNT(*) FROM products WHERE price > 10", "steps": true})).await;
     assert!(steps(&j["stats"]["steps"]).iter().any(|s| s["op"] == "count" && s["cpu_us"].as_f64().is_some()), "{j}");
     let (_, slow) = get(&base, "/v1/queries/slow").await;
     assert_eq!(slow["queries"].as_array().unwrap().len(), 1, "{slow}");
@@ -154,7 +156,7 @@ async fn a_query_s_profile_is_on_its_request_s_clock() {
     assert_eq!(get(&base, "/v1/system").await.1["limits"]["slow_ms"], Json::Null);
 
     // A compound query's operators, each leaf's executor steps inside.
-    let j = query(&base, json!({"sql": "SELECT DISTINCT category FROM (SELECT category FROM products ORDER BY bm25(body, 'laptop') DESC LIMIT 40) AS t"})).await;
+    let j = query(&base, json!({"sql": "SELECT DISTINCT category FROM (SELECT category FROM products ORDER BY bm25(body, 'laptop') DESC LIMIT 40) AS t", "steps": true})).await;
     let st = steps(&j["stats"]["steps"]);
     let leaf = st.iter().position(|s| s["op"] == "leaf").unwrap_or_else(|| panic!("{j}"));
     assert!(children(&st, leaf).iter().any(|&i| st[i]["op"] == "rank"), "{j}");
@@ -209,8 +211,18 @@ async fn a_coordinator_s_profile_holds_each_shard_s_steps() {
     let (_, recent) = get(&base, "/v1/queries/recent").await;
     assert!(recent["queries"][0]["cpu_ms"].as_f64().unwrap() > 0.0, "{recent}");
     // Without "profile", the shards measure no CPU time.
-    let j = query(&base, json!({"sql": BM25})).await;
+    let j = query(&base, json!({"sql": BM25, "steps": true})).await;
     let st = steps(&j["stats"]["steps"]);
     assert!(st.iter().any(|s| s["op"] == "rank"), "{j}");
     assert!(st.iter().all(|s| s.get("cpu_us").is_none_or(|c| c.is_null())), "{j}");
+    // Without "steps", the answer has none, and the shards answer the
+    // coordinator without theirs (QueryRequest.skip_steps): its list of
+    // queries keeps its own steps, its calls to the shards and its merge.
+    let j = query(&base, json!({"sql": BM25})).await;
+    assert!(j["stats"].get("steps").is_none(), "{j}");
+    let (_, recent) = get(&base, "/v1/queries/recent").await;
+    let (_, full) = get(&base, &format!("/v1/queries/finished/{}", recent["queries"][0]["id"])).await;
+    let kept = steps(&full["steps"]);
+    assert_eq!(kept.iter().filter(|s| s["op"] == "shard").count(), 2, "{full}");
+    assert!(kept.iter().all(|s| s["op"] != "rank"), "{full}");
 }

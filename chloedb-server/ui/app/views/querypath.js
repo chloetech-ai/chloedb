@@ -196,7 +196,7 @@ function render(page, r) {
     try {
       for (let k = 0; k < n && !stop; k++) {
         const t0 = performance.now();
-        const j = await api("/v1/query", { body: Object.keys(p).length ? { sql: text, params: p } : { sql: text } });
+        const j = await api("/v1/query", { body: Object.keys(p).length ? { sql: text, params: p, steps: true } : { sql: text, steps: true } });
         runs.push(parseRun(j, performance.now() - t0));
         sel = runs.length - 1;
         status.textContent = `run ${runs.length} of ${n}`;

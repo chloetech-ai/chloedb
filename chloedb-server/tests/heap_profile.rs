@@ -88,7 +88,7 @@ async fn the_heap_is_counted_and_a_query_s_steps_carry_what_they_allocated() {
         assert!(s["alloc_bytes"].as_u64().unwrap() == 0 || s["allocs"].as_u64().unwrap() > 0, "{s}");
     }
     // Without "profile", steps carry no allocations (nor CPU time).
-    let (_, plain) = post(&base, "/v1/query", json!({"sql": BM25})).await;
+    let (_, plain) = post(&base, "/v1/query", json!({"sql": BM25, "steps": true})).await;
     let plain: Json = serde_json::from_str(&plain).unwrap();
     assert!(steps(&plain["stats"]["steps"]).iter().all(|s| s["alloc_bytes"].is_null()), "{plain}");
 
