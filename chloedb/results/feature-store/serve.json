@@ -1,0 +1,39 @@
+{
+ "feast_server_redis@1": {
+  "requests": 90,
+  "per_s": 11.2,
+  "p50_ms": 75.89,
+  "p99_ms": 171.18
+ },
+ "feast_server_redis@4": {
+  "requests": 321,
+  "per_s": 39.8,
+  "p50_ms": 83.33,
+  "p99_ms": 188.92
+ },
+ "feast_server_redis@16": {
+  "requests": 266,
+  "per_s": 32.3,
+  "p50_ms": 400.62,
+  "p99_ms": 552.95
+ },
+ "chloedb_kv@1": {
+  "requests": 1517,
+  "per_s": 189.6,
+  "p50_ms": 5.13,
+  "p99_ms": 6.82
+ },
+ "chloedb_kv@4": {
+  "requests": 3122,
+  "per_s": 389.9,
+  "p50_ms": 9.82,
+  "p99_ms": 17.72
+ },
+ "chloedb_kv@16": {
+  "requests": 3064,
+  "per_s": 381.5,
+  "p50_ms": 39.19,
+  "p99_ms": 78.0
+ },
+ "same_values": true
+}

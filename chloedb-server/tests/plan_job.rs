@@ -23,10 +23,13 @@ use tokio::net::TcpListener;
 
 const N: usize = 300;
 
-/// A port free now, of a block of 20 this test process takes alone.
+/// A port free now, of a block of 20 this test process takes alone, below
+/// Linux's ephemeral range (32768 and up): a port there could be taken by
+/// another test's connection between this check and the server's bind
+/// ("Address already in use" on the self-hosted runner).
 fn port() -> u16 {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let base = 30_000 + (std::process::id() % 500) * 20;
+    let base = 20_000 + (std::process::id() % 600) * 20;
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         assert!(n < 20, "this test process took its 20 ports");

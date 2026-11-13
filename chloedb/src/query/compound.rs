@@ -270,6 +270,12 @@ fn joins_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
                 | sql::JoinOperator::Inner(sql::JoinConstraint::On(on))
                 | sql::JoinOperator::Left(sql::JoinConstraint::On(on))
                 | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) => walk_mut(on, f),
+                sql::JoinOperator::AsOf { match_condition, constraint } => {
+                    walk_mut(match_condition, f);
+                    if let sql::JoinConstraint::On(on) = constraint {
+                        walk_mut(on, f);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1860,6 +1866,12 @@ impl<'a> Planner<'a> {
             if let sql::JoinOperator::Join(sql::JoinConstraint::On(on)) | sql::JoinOperator::Inner(sql::JoinConstraint::On(on)) | sql::JoinOperator::Left(sql::JoinConstraint::On(on)) | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) = &j.join_operator {
                 before.push(on);
             }
+            if let sql::JoinOperator::AsOf { match_condition, constraint } = &j.join_operator {
+                before.push(match_condition);
+                if let sql::JoinConstraint::On(on) = constraint {
+                    before.push(on);
+                }
+            }
         }
         for e in before {
             let mut call = None;
@@ -1915,15 +1927,44 @@ impl<'a> Planner<'a> {
         let mut srcs = Vec::new();
         let (alias, kind) = self.source(&twj.relation)?;
         srcs.push(Src { alias, kind, join: None });
+        // The match condition of each ASOF JOIN, by its table's place.
+        let mut matches: Vec<Option<Expr>> = vec![None];
         for j in &twj.joins {
             let (kind, c) = match &j.join_operator {
                 sql::JoinOperator::Join(c) | sql::JoinOperator::Inner(c) => (ir::JoinKind::Inner, c),
                 sql::JoinOperator::Left(c) | sql::JoinOperator::LeftOuter(c) => (ir::JoinKind::Left, c),
+                sql::JoinOperator::AsOf { constraint, .. } => (ir::JoinKind::AsOf, constraint),
                 o => return Err(err(unsupported_join(o)))?,
             };
-            let sql::JoinConstraint::On(on) = c else { return Err(err("JOIN needs ON, e.g. JOIN papers b ON a.cites = b.id")) };
+            let sql::JoinConstraint::On(on) = c else {
+                return Err(err(if kind == ir::JoinKind::AsOf {
+                    "ASOF JOIN needs ON, e.g. ASOF JOIN feats f MATCH_CONDITION (s.ts >= f.ts) ON s.usr = f.usr"
+                } else {
+                    "JOIN needs ON, e.g. JOIN papers b ON a.cites = b.id"
+                }));
+            };
+            let on = match &j.join_operator {
+                sql::JoinOperator::AsOf { match_condition, .. } => {
+                    let m = match match_condition {
+                        Expr::Nested(e) => (**e).clone(),
+                        e => e.clone(),
+                    };
+                    // `f.ts <= s.ts` is `s.ts >= f.ts`.
+                    let m = match m {
+                        Expr::BinaryOp { left, op: BinaryOperator::LtEq, right } => Expr::BinaryOp { left: right, op: BinaryOperator::GtEq, right: left },
+                        Expr::BinaryOp { left, op: BinaryOperator::Lt, right } => Expr::BinaryOp { left: right, op: BinaryOperator::Gt, right: left },
+                        m => m,
+                    };
+                    matches.push(Some(m.clone()));
+                    Expr::BinaryOp { left: Box::new(on.clone()), op: BinaryOperator::And, right: Box::new(m) }
+                }
+                _ => {
+                    matches.push(None);
+                    on.clone()
+                }
+            };
             let (alias, src) = self.source(&j.relation)?;
-            srcs.push(Src { alias, kind: src, join: Some((kind, on.clone())) });
+            srcs.push(Src { alias, kind: src, join: Some((kind, on)) });
         }
         let mut seen = HashSet::new();
         for src in &srcs {
@@ -1944,7 +1985,7 @@ impl<'a> Planner<'a> {
         let mut residual: Vec<Expr> = Vec::new();
         for c in s.selection.iter().flat_map(split_and) {
             let at = sides.of(&c)?;
-            let left_join_right = |i: usize| srcs[i].join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Left);
+            let left_join_right = |i: usize| srcs[i].join.as_ref().is_some_and(|(k, _)| matches!(k, ir::JoinKind::Left | ir::JoinKind::AsOf));
             match at.as_slice() {
                 [i] if !in_memory(*i) && !left_join_right(*i) && !of_rows(&c) && !table(*i).is_some_and(|t| of_rows_filter(&c, t)) => pushed[*i].push(c),
                 _ => residual.push(c),
@@ -1976,6 +2017,26 @@ impl<'a> Planner<'a> {
                     return Err(err(format!("ON of {} names a table joined later", srcs[i].alias)));
                 } else {
                     on_rest[i].push(c);
+                }
+            }
+            if let Some(m) = &matches[i] {
+                // The match condition compares a left expression with a
+                // right one, and is the only condition of both sides.
+                let ok = match m {
+                    Expr::BinaryOp { left, op: BinaryOperator::GtEq | BinaryOperator::Gt, right } => {
+                        let (l, r) = (sides.of(left)?, sides.of(right)?);
+                        l.iter().all(|&x| x < i) && !l.is_empty() && r == [i]
+                    }
+                    _ => false,
+                };
+                if !ok {
+                    return Err(err(format!(
+                        "MATCH_CONDITION ({m}) of ASOF JOIN {a}: a time of the tables before, at or after a time of {a} (>= or >), e.g. s.ts >= {a}.ts, so each row takes the latest {a} row at or before it",
+                        a = srcs[i].alias
+                    )));
+                }
+                if on_rest[i].len() != 1 || &on_rest[i][0] != m {
+                    return Err(err(format!("ASOF JOIN {}: ON holds equalities of the two sides and conditions of {} alone; the time goes in MATCH_CONDITION", srcs[i].alias, srcs[i].alias)));
                 }
             }
             if keys[i].is_empty() {

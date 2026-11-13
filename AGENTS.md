@@ -98,6 +98,11 @@ editing their settings by hand.
 - `~/.local/bin/chloectx ui` opens a local inspector of what was stored, per
   project and per session. It prints a URL with an access token; on a remote
   machine, forward the port first (`ssh -L 8765:127.0.0.1:8765 host`).
+- To upgrade it later: `~/.local/bin/chloectx upgrade` (pulls the checkout
+  it was built from, rebuilds and reinstalls; `--check` only says whether a
+  newer version is there). `chloectx stores` lists every store and
+  `chloectx prune` removes those of folders that are gone or temporary; it
+  asks first, so let the user run it or confirm the list with them.
 - To remove it: `~/.local/bin/chloectx uninstall --user` (or
   `chloectx uninstall --project /absolute/path`). Stores are kept under
   `~/.local/share/chloectx/projects/` (or `~/.local/share/engram/projects/`).
@@ -140,6 +145,7 @@ editing their settings by hand.
 | `install.sh` | the installer described above |
 | `packaging/chloedb/` | placeholder packages that hold the name `chloedb` on PyPI, npm and crates.io; `.github/workflows/reserve-names.yml` publishes them, run by hand |
 | `chloedb-swarm/` | simulated users (Node): personas doing tasks with ChloeDB, through its MCP tools or the command center in Chromium (Playwright), each session in a sandbox chloedb-server; checks decide success, a stronger model reviews each session and groups the problems into findings; `serve --local DIR` is its app `swarm` in the command center; `npm test` there (a scripted model, no API calls; CI's server smoke test runs it against this build) ([README](chloedb-swarm/README.md)) |
+| `examples/feature-store/` | a feature store demo (Python, standard library): a shop ranked by a model on features ChloeDB keeps (streaming on write, a batch SQL job, snapshots, ASOF JOIN training sets, models as rows, serving by key; feature workflows defined as rows, chained, mapped and searched by their statistics, in `workflows.py`), shown as the command center app `features`; `featurestore.py serve --local DIR` starts a server with it; `python3 -m pytest tests` there ([README](examples/feature-store/README.md)) |
 | `examples/parley/` | a prototype app on ChloeDB (Python, standard library plus `chloedb`): a social network whose users are LLM agents (`claude -p` sessions with its MCP tools), run on a file, one server or a coordinator; `pytest tests` there runs each test on all three, and `FOUNDER_LOG.md` is the account of building it |
 
 Build and test each crate from its own directory (`chloectx` and
