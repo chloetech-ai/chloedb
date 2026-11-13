@@ -75,7 +75,10 @@ fn a_query_s_steps_are_its_operators_and_segments() {
     let plain = db.query_with(sql, &params, &ExecOptions::default()).unwrap();
     well_formed(&plain.stats.steps);
     assert!(plain.stats.steps.iter().all(|s| s.cpu_us.is_none() && s.thread == 0));
-    let ops = |steps: &[Step]| steps.iter().map(|s| (s.op.clone(), s.depth)).collect::<Vec<_>>();
+    // "open readers" is a step only when opening took 20 µs or more
+    // (db.rs, opened_step), which a slow runner reaches on one query and
+    // not the next: it is left out of the comparison.
+    let ops = |steps: &[Step]| steps.iter().filter(|s| s.op != "open readers").map(|s| (s.op.clone(), s.depth)).collect::<Vec<_>>();
     assert_eq!(ops(&plain.stats.steps), ops(&db.query_with(sql, &params, &ExecOptions { profile: true, ..ExecOptions::default() }).unwrap().stats.steps));
 
     // A fused score: each input's top rows, the candidates, their exact

@@ -18,6 +18,7 @@ once, and a database someone wrote with that version looks the same.
 | `fieldids/` | 3, with `field_ids`, `compact_keys` and `packed_positions`, the same writes as `fieldids-1bd956a/`, and each TEXT field with positions in the packed layout (section `text.<field>.ppos`, bit-packed by block); `seqno/`'s table has no positions, so it does not need the feature | the commit that adds this row | `tests/format_fixtures.rs` |
 | `functions-90091d4/` | 3, with `field_ids`, `compact_keys` and `functions`: table `t` and stored functions in the system table `_functions`, some versions flushed into segments and some in the WAL | 90091d4 | `tests/format_fixtures.rs` |
 | `functions/` | 3, with `field_ids`, `compact_keys`, `functions` and `packed_positions`: the same writes as `functions-90091d4/`, with `_functions`' TEXT fields' positions in the packed layout | the commit that adds this row | `tests/format_fixtures.rs` |
+| `substring/` | 3, with `field_ids`, `compact_keys` and `substring:1`: table `lines` with substring indexes of a KEYWORD and a TEXT field (sections `sub.<field>.meta`, `.p<k>.bwt`, `.p<k>.sa` and `.p<k>.docs`, version 1 of `notes/substring.md`), in two flushed segments, the first's in several parts, and rows in the WAL | the commit that adds this row | `tests/format_fixtures.rs` |
 
 All but `format1/` were written by [`writer.rs`](writer.rs). The sets from
 before field ids (`format1/` to `profiles/`), which named fields by position
@@ -50,7 +51,15 @@ directory layout. `writer.rs` makes the writes:
   and `top` (which returns rows) at version 1, flushed with deletes; left in
   the WAL, `boosted` version 2, `top` dropped (version 2, a tombstone),
   `label` and a transaction on `t`. Each version is written at
-  2026-10-01 by `writer`, so the bytes are the same every time.
+  2026-10-01 by `writer`, so the bytes are the same every time;
+- substring indexes (`substring/`, written by `write_substring`, `cargo run
+  --release --example format_fixtures -- /tmp/fixtures substring`): a table
+  `lines` whose `host` (KEYWORD) and `line` (TEXT, not otherwise indexed)
+  have `substring = true`, 150 rows written and flushed with parts of at
+  most 2 KiB of text and a sample every 8 bytes, so that the indexes have
+  several parts and those of `line` a `docs` section (some rows have no
+  line); then ten deletes and twenty rows, flushed as a second segment;
+  and five rows and a delete left in the WAL.
 
 `tests/format_fixtures.rs` opens copies of every set in both layouts with
 the current code. A set from before field ids must be refused by a plain

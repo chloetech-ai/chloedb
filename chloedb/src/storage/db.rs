@@ -727,7 +727,12 @@ fn merger(db: Weak<Database>, m: Arc<Merger>) {
         while let Some(claim) = (!m.closed()).then(|| db.next_merge(&m)).flatten() {
             let mut stats = MergeStats::default();
             let t0 = Instant::now();
-            let r = db.merge_claimed(&claim, m.pacer.as_ref(), &mut stats);
+            // A panic in a merge (a builder's bug, an input its checks let
+            // through) is that merge's error: the thread goes on merging
+            // after its pause, rather than ending and leaving the segments
+            // to pile up.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.merge_claimed(&claim, m.pacer.as_ref(), &mut stats)))
+                .unwrap_or_else(|p| Err(panicked("a merge", p)));
             let segments = claim.ids.len();
             drop(claim);
             let mut st = lock(&db.merging);
@@ -743,6 +748,13 @@ fn merger(db: Weak<Database>, m: Arc<Merger>) {
         backoff = if failed { (backoff * 2).clamp(Duration::from_secs(1), Duration::from_secs(60)) } else { Duration::ZERO };
         drop(db);
     }
+}
+
+/// The error of work on a background thread that panicked: `what`
+/// panicked, with the panic's message.
+fn panicked(what: &str, p: Box<dyn std::any::Any + Send>) -> Error {
+    let m = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "no message".into());
+    Error::Io(std::io::Error::other(format!("{what} panicked: {m}")))
 }
 
 /// Wakes the flusher thread.
@@ -878,6 +890,21 @@ impl SealedMem {
 
     fn was_deleted(&self, p: usize) -> bool {
         self.deleted[p / 64] >> (p % 64) & 1 == 1
+    }
+
+    /// The [`crate::sid::gone_sections`] of the segments built from the
+    /// live documents: the semantic-ID ties only the documents deleted
+    /// before the seal held, so that none is given again after a reopen.
+    fn gone_codes(&self) -> Vec<(String, Vec<u8>)> {
+        if crate::sid::fields(&self.schema).is_empty() {
+            return Vec::new();
+        }
+        let (mut dropped, mut kept) = (Ties::default(), Ties::default());
+        for (p, d) in self.chunks.iter().flat_map(|c| c.iter()).take(self.len).enumerate() {
+            let t = if self.was_deleted(p) { &mut dropped } else { &mut kept };
+            t.saw_doc(&self.schema, d);
+        }
+        crate::sid::gone_sections(&self.schema, &dropped, &kept)
     }
 
     /// The live documents, with their values written in place, their
@@ -1766,8 +1793,10 @@ impl Database {
     /// It cannot be undone: the database then requires feature `seq_no`
     /// (format 3), so versions of Strata from before it refuse to open it
     /// rather than lose its numbers. Bulk loads and attached segments,
-    /// which skip the WAL, take no sequence number. Starting again is a
-    /// no-op.
+    /// which skip the WAL, take no sequence number and reach no replica:
+    /// they seed a database until its first numbered write or until its
+    /// commits are followed ([`Database::on_commit`]), and are refused
+    /// after. Starting again is a no-op.
     pub fn start_seq_no(&self) -> Result<()> {
         // No background flush may seal the log in between.
         let _one = lock(&self.background);
@@ -2702,18 +2731,34 @@ impl Database {
             }
             (sealed, txn)
         };
-        between();
         let max = self.opts.segment_max_docs.max(1);
-        let mut built = Vec::with_capacity(sealed.len());
-        for s in &sealed {
-            let (live, seqs, docids) = s.live();
-            let images = live
-                .chunks(max)
-                .zip(seqs.chunks(max))
-                .map(|(c, seqs)| Ok((rowseq::build(&s.schema, c, s.numbered.then_some(seqs), &self.opts.build)?, c.len() as u32)))
-                .collect::<Result<Vec<_>>>()?;
-            built.push((images, docids));
-        }
+        // The build holds no lock and changes nothing shared, so a panic in
+        // it (a field builder's bug, or a row it cannot index) is this
+        // flush's error, as a failed build is: the sealed rows stay in the
+        // memtable and the log, the next flush tries again, and the flusher
+        // thread that runs it goes on.
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            between();
+            let mut built = Vec::with_capacity(sealed.len());
+            for s in &sealed {
+                let (live, seqs, docids) = s.live();
+                // The codes of the documents deleted before the seal, which
+                // the segments drop, are kept as the foreground flush keeps
+                // them (rows deleted after it are in the segments, marked
+                // deleted).
+                let mut gone = s.gone_codes();
+                let mut images = Vec::new();
+                if live.is_empty() && !gone.is_empty() {
+                    images.push((rowseq::build_with(&s.schema, &[], s.numbered.then_some(&[]), &self.opts.build, std::mem::take(&mut gone))?, 0));
+                }
+                for (c, seqs) in live.chunks(max).zip(seqs.chunks(max)) {
+                    images.push((rowseq::build_with(&s.schema, c, s.numbered.then_some(seqs), &self.opts.build, std::mem::take(&mut gone))?, c.len() as u32));
+                }
+                built.push((images, docids));
+            }
+            Ok(built)
+        }))
+        .unwrap_or_else(|p| Err(panicked("building a background flush's segments", p)))?;
 
         let mut wal = self.background_writer();
         self.check_poisoned()?;
@@ -2765,7 +2810,9 @@ impl Database {
 
     /// Loads documents into the first table straight into segments of
     /// `segment_max_docs`, in one commit and without the WAL. Keys must be
-    /// new (as with `insert`).
+    /// new (as with `insert`). A database that numbers its writes refuses
+    /// it once it has written or replicates, since a load is not shipped
+    /// to replicas ([`Database::start_seq_no`]).
     pub fn bulk_load(&self, docs: impl IntoIterator<Item = Document>) -> Result<()> {
         self.try_bulk_load(docs.into_iter().map(Ok))
     }
@@ -2788,6 +2835,7 @@ impl Database {
 
     fn bulk_load_table(&self, table: Option<&str>, docs: impl IntoIterator<Item = Result<Document>>) -> Result<()> {
         let mut wal = self.try_writer()?;
+        self.refuse_unshipped("a bulk load")?;
         let t = self.table_ref(table)?;
         // WAL deletes are replayed against the on-disk version; segments
         // written behind the WAL's back must not hold keys it touches.
@@ -2836,6 +2884,28 @@ impl Database {
         })
     }
 
+    /// Refuses `what`, a write that commits segments without a log record
+    /// (a bulk load, attached segments), in a database that numbers its
+    /// writes once it has numbered one or something follows its commits
+    /// ([`Database::on_commit`], which a primary and a replica set): such
+    /// a write takes no number and is not shipped, so the other copies of
+    /// this database would never have its rows. Until then it is a seed,
+    /// which every copy loads the same (a server's `--demo` rows) and a
+    /// replica that joins is sent whole. Later, write the rows in
+    /// transactions, as [`crate::ingest::import`] does in a numbered
+    /// database.
+    fn refuse_unshipped(&self, what: &str) -> Result<()> {
+        let Some(n) = self.numbering() else { return Ok(()) };
+        let followed = self.commit_hook.read().unwrap_or_else(|e| e.into_inner()).is_some();
+        if n.seq > 0 || followed {
+            return Err(Error::Schema(format!(
+                "{what} writes no log record and is not shipped to replicas, and this database numbers its writes ({}): seed it before its first write and before it replicates, or insert the rows in transactions",
+                if followed { "and its commits are followed".to_string() } else { format!("{} so far", n.seq) }
+            )));
+        }
+        Ok(())
+    }
+
     /// Adds a segment of bulk-loaded rows, ordered by the table's
     /// cluster_by field. Rows past its retention stay until a merge.
     fn add_loaded(&self, vw: &mut VersionWriter, t: &TableRef, chunk: Vec<Document>) -> Result<()> {
@@ -2870,9 +2940,11 @@ impl Database {
     /// schema) to the first table in one commit, after flushing the
     /// memtables. Their primary keys must be new. Their rows take no
     /// sequence number: they have number 0, whatever an exported image
-    /// held ([`rowseq`]). Returns the new segments' ids.
+    /// held ([`rowseq`]). Returns the new segments' ids. A database that
+    /// numbers its writes refuses them when it refuses a bulk load.
     pub fn attach_segments(&self, images: &[PathBuf]) -> Result<Vec<u64>> {
         let mut wal = self.try_writer()?;
+        self.refuse_unshipped("attaching segments")?;
         // As for bulk loads: WAL deletes are replayed against the on-disk
         // version, so segments added behind the WAL's back must follow it.
         self.flush_locked(&mut wal)?;
@@ -3610,12 +3682,22 @@ impl Database {
 
     fn write_checkpoint(&self, tmp: &Path, layout: Layout, manifest: &Manifest, handles: &[Arc<SegHandle>], link: Option<(PathBuf, HashMap<String, (u32, u64)>)>) -> Result<CheckpointStats> {
         let o = DbOptions { layout, sync: true, publish_snapshots: false, doc_source: None, ..DbOptions::default() };
-        let out = Database::create(tmp, manifest.tables[0].schema.clone(), o)?;
+        // The copy's tables are made in the source's order, without their
+        // references, which its version gets back below: ALTER TABLE ADD
+        // COLUMN may reference a table created after the column's own,
+        // which the copy would not have yet. The source's references were
+        // checked when they were made.
+        let unlinked = |s: &Schema| {
+            let mut s = s.clone();
+            s.fields.iter_mut().for_each(|f| f.references = None);
+            s
+        };
+        let out = Database::create(tmp, unlinked(&manifest.tables[0].schema), o)?;
         for t in &manifest.tables[1..] {
             match t.id {
                 SOURCES_ID => out.ensure_sources()?,
                 FUNCTIONS_ID => out.ensure_functions()?,
-                _ => out.create_table(t.schema.clone())?,
+                _ => out.create_table(unlinked(&t.schema))?,
             }
         }
         let mut stats = CheckpointStats { tables: manifest.tables.len(), ..CheckpointStats::default() };
@@ -3633,6 +3715,9 @@ impl Database {
             // the transactions a primary ships after a copy of it name.
             for (m, t) in vw.manifest.tables.iter_mut().zip(&manifest.tables) {
                 m.id = t.id;
+                for (f, from) in m.schema.fields.iter_mut().zip(&t.schema.fields) {
+                    f.references.clone_from(&from.references);
+                }
             }
             vw.manifest.next_table_id = manifest.next_table_id;
             for t in &manifest.tables {
@@ -3998,10 +4083,11 @@ impl Database {
                 if db.is_poisoned() {
                     continue;
                 }
-                let mut r = db.evict_cold().map(|_| ());
+                // A panic is a failed round, tried again as an error is.
+                let mut r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.evict_cold().map(|_| ()))).unwrap_or_else(|p| Err(panicked("evicting cold segments", p)));
                 if r.is_ok() && Instant::now() >= next_offload {
                     next_offload = Instant::now() + every;
-                    r = db.offload().map(|_| ());
+                    r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.offload().map(|_| ()))).unwrap_or_else(|p| Err(panicked("offloading segments", p)));
                 }
                 let now = r.err().map(|e| e.to_string());
                 match (&now, &last) {

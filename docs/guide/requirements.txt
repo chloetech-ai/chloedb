@@ -1,0 +1,10 @@
+# What docs/guide/run.py and the pages' examples import, besides chloedb
+# itself (built from chloedb-py with maturin).
+-r ../site/scripts/requirements.txt
+numpy==2.5.4
+pandas==3.1.1
+# frameworks.md
+langchain-core==1.8.0
+langgraph==1.2.20
+langgraph-checkpoint==4.3.1
+llama-index-core==0.14.25

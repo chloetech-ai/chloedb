@@ -1,0 +1,9 @@
+potion-retrieval-32M: 123 MB, 1370 texts/s on one core
+potion-retrieval-32M-int8: 30 MB, 1280 texts/s on one core, cosine to the first: mean 0.99936, min 0.95122
+potion-retrieval-32M-f16: 61 MB, 1331 texts/s on one core, cosine to the first: mean 1.00000, min 1.00000
+potion-retrieval-32M: 123 MB, 1407 texts/s on one core
+potion-retrieval-32M-int8: 30 MB, 1379 texts/s on one core, cosine to the first: mean 0.99936, min 0.95122
+potion-retrieval-32M-f16: 61 MB, 1419 texts/s on one core, cosine to the first: mean 1.00000, min 1.00000
+potion-base-8M: 28 MB, 1346 texts/s on one core
+potion-base-8M-int8: 7 MB, 1603 texts/s on one core, cosine to the first: mean 0.99979, min 0.98736
+potion-base-8M-f16: 14 MB, 1160 texts/s on one core, cosine to the first: mean 1.00000, min 1.00000

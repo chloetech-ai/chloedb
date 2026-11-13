@@ -1,0 +1,39 @@
+{
+  "analyzer": "standard",
+  "collections": {
+    "miracl-ko": {
+      "db_bytes": 644288552,
+      "docs": 1486752,
+      "load_s": 46.304015359,
+      "queries": 213,
+      "variants": {
+        "k09b04_r100": {
+          "failed": 0,
+          "ms_mean": 3.950299408450706,
+          "ms_p50": 3.3646599999999998,
+          "ms_p99": 10.589013,
+          "ndcg10": 0.4236912213597166,
+          "recall10": 0.5031044854988517,
+          "recall100": 0.7915428598527191
+        },
+        "plain_r100": {
+          "failed": 0,
+          "ms_mean": 4.574291910798124,
+          "ms_p50": 3.780004,
+          "ms_p99": 13.04593,
+          "ndcg10": 0.37381693774834485,
+          "recall10": 0.4654262273980584,
+          "recall100": 0.7647839901361027
+        }
+      }
+    }
+  },
+  "machine": {
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": 4,
+    "os": "linux"
+  },
+  "split": "dev",
+  "tag": "ko_standard_params"
+}

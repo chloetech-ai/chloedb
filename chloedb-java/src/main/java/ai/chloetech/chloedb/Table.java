@@ -288,8 +288,9 @@ public final class Table {
      * Trains a semantic-ID codebook on the vectors of {@code field}, saves it
      * as {@code name} under the models directory, and returns its SHA-256.
      * {@code options}: {@code models} (a directory), {@code levels} (3),
-     * {@code k} (256), {@code iterations} (25), {@code sample} and
-     * {@code seed} (0).
+     * {@code k} (256), {@code iterations} (25), {@code sample},
+     * {@code seed} (0) and {@code balanced} (false: true gives a level's
+     * centroids equal shares of the training vectors).
      */
     public String trainCodebook(String field, String name, Map<String, ?> options) {
         return (String) call("trainCodebook", options, "field", field, "name", name);

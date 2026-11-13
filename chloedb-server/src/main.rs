@@ -176,6 +176,12 @@ struct Args {
     /// such query asks every shard first).
     #[arg(long, default_value_t = chloedb_server::coord::STATS_CACHE_TERMS)]
     stats_cache_terms: usize,
+    /// With --shards: send a write to every server of a shard whose servers
+    /// do not replicate (none started with --replicas or --replica), each
+    /// taking it on its own. Without it such a shard serves reads only: its
+    /// copies would diverge, and nothing would ever make them agree again.
+    #[arg(long)]
+    write_every_copy: bool,
     /// With --shards: the StrataCluster (namespace/name) that runs this
     /// coordinator on Kubernetes, read and scaled through the API server as
     /// the pod's service account (the operator sets it).
@@ -480,6 +486,20 @@ struct Args {
     /// stops taking connections; then end the requests under way and stop.
     #[arg(long, env = "CHLOEDB_DRAIN_MS", default_value_t = 0)]
     drain_ms: u64,
+    /// Once the server stops taking connections, how long the requests
+    /// under way have to end (a follower's feed ends at once) before it
+    /// stops anyway: keep the drain time and this within the time a
+    /// supervisor waits (30 s in Kubernetes).
+    #[arg(long, env = "CHLOEDB_STOP_GRACE_MS", default_value_t = 20_000)]
+    stop_grace_ms: u64,
+    /// The connections the HTTP listeners hold open at once; past it, new
+    /// ones wait to be accepted (0: three quarters of the open-file limit).
+    #[arg(long, env = "CHLOEDB_MAX_CONNECTIONS", default_value_t = 0)]
+    max_connections: usize,
+    /// The longest a client may take to send a request's headers, and the
+    /// longest an idle connection stays open, in seconds.
+    #[arg(long, env = "CHLOEDB_HEADER_TIMEOUT_SECS", default_value_t = 30)]
+    header_timeout_secs: u64,
     /// Do not count how often each document is retrieved and each key
     /// asked for (the index inspector's reads; counted in memory by
     /// default, cheaply: see docs/chloedb/server.md).
@@ -526,7 +546,9 @@ struct Args {
     /// $CHLOEDB_APPS): the server forwards /v1/apps/<name>/... to it.
     #[arg(long = "app", env = "CHLOEDB_APPS", value_delimiter = ',')]
     apps: Vec<String>,
-    /// The token the server sends its apps (Authorization: Bearer).
+    /// The token the server sends its apps (Authorization: Bearer), to
+    /// each that has no token of its own ($CHLOEDB_APP_TOKEN_<NAME>, or a
+    /// file of --app-token-dir).
     #[arg(long, env = "CHLOEDB_APP_TOKEN", hide_env_values = true)]
     app_token: Option<String>,
     /// Experimental: serve tenants, databases kept whole in an object
@@ -546,6 +568,11 @@ struct Args {
     /// used are closed.
     #[arg(long, default_value_t = 1000)]
     tenant_open_max: usize,
+    /// A folder that holds each app's own token in a file of the app's
+    /// name, read as it is sent (so a token written there later, as a
+    /// Kubernetes Secret mounted there is, needs no restart).
+    #[arg(long, env = "CHLOEDB_APP_TOKEN_DIR")]
+    app_token_dir: Option<PathBuf>,
 }
 
 #[derive(clap::Subcommand)]
@@ -583,13 +610,31 @@ enum Command {
     },
     /// Download an embedding model from Hugging Face into the models directory.
     FetchModel {
-        /// A known name (potion-retrieval-32M, potion-base-8M, bge-small-en-v1.5,
+        /// A known name (potion-retrieval-32M, potion-base-8M, their int8
+        /// copies potion-retrieval-32M-int8 and potion-base-8M-int8, bge-small-en-v1.5,
         /// snowflake-arctic-embed-m-v1.5, siglip-base-patch16-224,
         /// blip-image-captioning-base, whisper-small, clap-htsat-unfused) or a
         /// repository, owner/name.
         name: String,
         /// Where to put it (default: --models, $CHLOEDB_MODELS, or
         /// ~/.local/share/strata/models).
+        #[arg(long, env = "CHLOEDB_MODELS")]
+        models: Option<PathBuf>,
+    },
+    /// Write a static (Model2Vec) model with its table in int8 (or f16):
+    /// 4x (2x) smaller, ranking within 0.001 nDCG@10 of float32 on BEIR.
+    /// The copy is a model of its own name: give a field that name.
+    QuantizeModel {
+        /// The model's directory (with model.safetensors and tokenizer.json),
+        /// or its name under --models.
+        model: String,
+        /// The directory to write (default: the model's, with -int8 or -f16
+        /// after its name, beside it).
+        #[arg(long)]
+        to: Option<PathBuf>,
+        /// I8 (default) or F16.
+        #[arg(long, default_value = "I8")]
+        to_type: String,
         #[arg(long, env = "CHLOEDB_MODELS")]
         models: Option<PathBuf>,
     },
@@ -964,6 +1009,19 @@ async fn run() {
             }
             return;
         }
+        Some(Command::QuantizeModel { model, to, to_type, models }) => {
+            let from = match std::path::Path::new(model).is_dir() {
+                true => PathBuf::from(model),
+                false => models.clone().unwrap_or_else(chloedb::embed::models_dir).join(model),
+            };
+            let suffix = if to_type.eq_ignore_ascii_case("f16") { "f16" } else { "int8" };
+            let to = to.clone().unwrap_or_else(|| from.with_file_name(format!("{}-{suffix}", from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())));
+            match chloedb::embed::quantize_static(&from, &to, to_type) {
+                Ok(q) => println!("{}: {} rows of {} dimensions, {} MB (was {} MB)", to.display(), q.rows, q.dim, q.bytes_after >> 20, q.bytes_before >> 20),
+                Err(e) => fail(&e.to_string()),
+            }
+            return;
+        }
         Some(Command::Mcp { url, key, ca }) => {
             let ca = match ca.as_ref().map(std::fs::read).transpose() {
                 Ok(c) => c,
@@ -1150,6 +1208,7 @@ async fn run() {
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
             stats_cache_terms: a.stats_cache_terms,
+            write_every_copy: a.write_every_copy,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {
@@ -1222,6 +1281,7 @@ async fn run() {
         tenant_idle_s: Some(a.tenant_idle_s),
         tenant_open_max: Some(a.tenant_open_max),
         app_token: a.app_token.clone(),
+        app_token_dir: a.app_token_dir.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
         image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {
@@ -1289,7 +1349,11 @@ async fn run() {
         }
     };
     let (http, ip) = bind(&a.listen).await;
-    let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls };
+    let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls, limits: auth::Limits {
+        header_read: std::time::Duration::from_secs(a.header_timeout_secs.max(1)),
+        max_connections: a.max_connections,
+        stop_grace: std::time::Duration::from_millis(a.stop_grace_ms),
+    } };
     // fleet: a coordinator names itself to its shards, which tell the others.
     if coordinator {
         let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));

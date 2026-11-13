@@ -9,7 +9,7 @@ answers with Arrow columns (`query_arrow`), which pyarrow, polars and pandas
 read without copying them.
 
 ```sh
-# a release's prebuilt wheel (Linux glibc 2.35+, macOS 11+); no Rust needed
+# a release's prebuilt wheel (Linux glibc 2.28+, macOS 11+); no Rust needed
 pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 pip install ./chloedb-py          # or from source, from the repository's root; needs Rust
 ```
@@ -50,6 +50,13 @@ shop = chloedb.connect("shop.chloedb")      # or a server: chloedb.connect("http
      .group_by("country").agg(revenue=col("amount").sum(), n=chloedb.len())
      .sort("revenue", descending=True).to_polars())
 ```
+
+LangChain, LangGraph and LlamaIndex take ChloeDB as their vector store,
+checkpointer and memory store (`chloedb.langchain`, `chloedb.langgraph`,
+`chloedb.llama_index`, with the extras `[langchain]`, `[langgraph]` and
+`[llama-index]`), and `chloedb.dbapi` is a DB-API 2.0 driver, for
+`pandas.read_sql` and other tools: see
+[the frameworks page](../docs/chloedb/frameworks.md).
 
 The guide is [docs/chloedb/python.md](../docs/chloedb/python.md), and frames
 have [their own page](../docs/chloedb/frames.md). Tests:

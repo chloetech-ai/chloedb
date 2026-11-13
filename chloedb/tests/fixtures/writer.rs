@@ -1,5 +1,6 @@
 //! The writes behind the fixtures of formats 2 and 3, of numbered writes,
-//! of rank profiles and of stored functions in this directory (README.md):
+//! of rank profiles, of stored functions and of substring indexes in this
+//! directory (README.md):
 //! `examples/format_fixtures.rs` writes them with this module,
 //! and `tests/format_fixtures.rs` writes them again to check that Strata
 //! still writes the same bytes. The writes are deterministic: two runs give
@@ -12,6 +13,7 @@
 use std::path::Path;
 
 use chloedb::schema::{Analyzer, Field, FieldType, Schema};
+use chloedb::segment::build::BuildOptions;
 use chloedb::query::function::{self, Change, FunctionSet};
 use chloedb::storage::{Database, DbOptions, Layout, RankProfile, FUNCTIONS};
 use chloedb::value::Value;
@@ -295,6 +297,88 @@ fn functions(path: &Path, layout: Layout) {
         tx.insert(t_doc(i, 1)).unwrap();
     }
     tx.commit().unwrap();
+}
+
+/// A table with substring indexes (`OPTIONS(substring = true)`): of a
+/// KEYWORD field and of a TEXT field that has no other index.
+pub fn lines() -> Schema {
+    Schema::new(
+        "lines",
+        vec![
+            Field::new("id", FieldType::Keyword),
+            Field::new("host", FieldType::Keyword).substring(),
+            Field::new("line", FieldType::Text { positions: false }).stored_only().substring(),
+            Field::new("n", FieldType::Int),
+        ],
+        Some("id"),
+    )
+    .unwrap()
+}
+
+/// Row `i` of [`lines`]: no line for one row in seven and the empty line
+/// for one in eleven, no host for one in five.
+pub fn line(i: u64) -> Vec<Value> {
+    let line = match i {
+        _ if i % 7 == 3 => Value::Null,
+        _ if i % 11 == 5 => Value::Str(String::new()),
+        _ => Value::Str(format!(
+            "{} /api/v{}/{} from 10.0.{}.{} İstanbul été #{i}",
+            ["GET", "POST", "Timeout", "ERROR"][i as usize % 4],
+            i % 3,
+            ["users", "Orders", "東京"][i as usize % 3],
+            i % 5,
+            i * 37 % 256
+        )),
+    };
+    let host = if i % 5 == 1 { Value::Null } else { Value::Str(format!("{}-{:02}.{}", ["web", "WEB", "db"][i as usize % 3], i % 4, ["eu", "us"][i as usize % 2])) };
+    vec![key(i), host, line, Value::Int(i as i64)]
+}
+
+/// The keys [`substring`] deletes: ten in the second flush, one in the
+/// WAL.
+pub fn line_deleted(i: u64) -> bool {
+    (i % 9 == 0 && i < 90) || i == 1
+}
+
+/// Substring indexes: [`lines`] written and flushed with parts of at most
+/// 2 KiB of text and a sample every 8 bytes, so that the first segment's
+/// indexes have several parts, those of `line` with a `docs` section for
+/// the rows without a line between their own; then deletes and more rows,
+/// flushed as a second segment; and rows and a delete left in the WAL.
+fn substring(path: &Path, layout: Layout) {
+    let build = BuildOptions::default().set("substring.part_bytes", "2048").set("substring.sample", "8");
+    let db = Database::create(path, lines(), DbOptions { layout, sync: true, build, ..DbOptions::default() }).unwrap();
+    let mut tx = db.begin().unwrap();
+    for i in 0..150 {
+        tx.insert(line(i)).unwrap();
+    }
+    tx.commit().unwrap();
+    db.flush().unwrap();
+    let mut tx = db.begin().unwrap();
+    for i in (0..90).step_by(9) {
+        tx.delete(&key(i)).unwrap();
+    }
+    for i in 150..170 {
+        tx.insert(line(i)).unwrap();
+    }
+    tx.commit().unwrap();
+    db.flush().unwrap();
+    // Left in the WAL.
+    let mut tx = db.begin().unwrap();
+    for i in 170..175 {
+        tx.insert(line(i)).unwrap();
+    }
+    tx.delete(&key(1)).unwrap();
+    tx.commit().unwrap();
+}
+
+/// Writes the substring indexes' set into `out`: `substring/`, with
+/// `db.strata` (and its WAL) and `db.dir`.
+pub fn write_substring(out: &Path) {
+    let d = out.join("substring");
+    std::fs::create_dir_all(&d).unwrap();
+    substring(&d.join("db.strata"), Layout::SingleFile);
+    substring(&d.join("db.dir"), Layout::Directory);
 }
 
 /// Writes the stored functions' set into `out`: `functions/`, with

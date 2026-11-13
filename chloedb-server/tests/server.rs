@@ -949,8 +949,20 @@ async fn replicas_cover_for_a_shard_down_or_hung() {
     assert_eq!(lenient.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap().missing, vec![hung.clone()]);
     assert!(lenient.query(QueryReq { sql: sql.into(), partial: Some(false), ..Default::default() }).await.is_err());
 
-    // Writes go to every replica of their shard.
+    // Writes to copies that do not replicate are refused (finding E-7:
+    // each would take them on its own, and the copies diverge), unless the
+    // coordinator is told to write to each.
     let c = Coordinator::connect(vec![good[0].join("|"), good[1].join("|")]).await.unwrap();
+    let refused = cluster(c);
+    let e = refused.sql(&Principal::open(), "INSERT INTO products (id, title, category, price, sold) VALUES ('none', 'Tent', 'outdoor', 10.0, 0)", &Params::new(), After::Any, 0).await.err().unwrap();
+    assert!(e.status == 409 && e.message.contains("do not replicate") && e.message.contains("--write-every-copy"), "{}", e.message);
+    for (s, shard) in refused.health().await["shards"].as_array().unwrap().iter().enumerate() {
+        for r in shard["replicas"].as_array().unwrap() {
+            assert_eq!(r["docs"].as_u64(), Some((0..N).filter(|&i| shard_of(&key(i), 2) == s).count() as u64), "no copy took it: {r}");
+        }
+    }
+    // With --write-every-copy, writes go to every replica of their shard.
+    let c = Coordinator::connect_with(vec![good[0].join("|"), good[1].join("|")], CoordOptions { write_every_copy: true, ..Default::default() }).await.unwrap();
     let both = cluster(c);
     let ids: Vec<String> = (0..20).map(|i| format!("rep{i}")).collect();
     let values: Vec<String> = ids.iter().map(|id| format!("('{id}', 'Tent {id}', 'outdoor', 10.0, 0)")).collect();
@@ -1702,7 +1714,7 @@ async fn a_replica_down_at_connect_is_given_the_slot_map_before_it_writes() {
     let (a, first) = recording(create(dir.path(), "a.strata", |_| true), 4).await;
     let (b, second) = recording(create(dir.path(), "b.strata", |_| true), 4).await;
     second.down.store(true, Ordering::Relaxed);
-    let coord = cluster(Coordinator::connect(vec![format!("{a}|{b}")]).await.unwrap());
+    let coord = cluster(Coordinator::connect_with(vec![format!("{a}|{b}")], CoordOptions { write_every_copy: true, ..Default::default() }).await.unwrap());
     assert_eq!((first.inner.0.slot_epoch(), second.inner.0.slot_epoch()), (1, 0));
     // Refused while it has no map, as a write that skipped the handshake
     // would be.
@@ -2391,6 +2403,18 @@ async fn sqlite_files_over_http() {
     assert_eq!(q["rows"], json!([[2, "green lamp"]]), "{q}");
     let (_, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id FROM items ORDER BY similarity(emb, :q) DESC LIMIT 1", "params": {"q": {"embed": "blue kettle", "field": "emb"}}})).await;
     assert_eq!(q["rows"][0][0], json!("b"), "{q}");
+    // The text in the SQL, embedded by the field's model, and by a model named.
+    for sql in ["SELECT id FROM items ORDER BY similarity(emb, 'blue kettle') DESC LIMIT 1", "SELECT id FROM items ORDER BY similarity(emb, embed(:t)) DESC LIMIT 1", "SELECT id FROM items ORDER BY similarity(emb, embed('hash:16', :t)) DESC LIMIT 1"] {
+        let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": sql, "params": {"t": "blue kettle"}})).await;
+        assert_eq!((status, &q["rows"][0][0]), (200, &json!("b")), "{sql}: {q}");
+    }
+    // A query may not name a path, or a model behind an API no field uses.
+    for (model, why) in [("/etc", "named by its directory"), ("../models", "named by its directory"), ("openai/text-embedding-3-small", "named by its directory"), ("no-such-model", "no-such-model")] {
+        let sql = format!("SELECT id FROM items ORDER BY similarity(emb, embed('{model}', 'x')) DESC LIMIT 1");
+        let (status, q) = post(&c, &format!("{base}/v1/query"), json!({ "sql": sql })).await;
+        assert_eq!(status, 400, "{sql}: {q}");
+        assert!(q["error"].as_str().unwrap().contains(why), "{sql}: {q}");
+    }
     // Again: the rows are upserted by key, into tables that now exist.
     let r = c.post(format!("{base}/v1/import?format=sqlite&tables=notes")).header("content-type", "application/octet-stream").body(bytes.clone()).send().await.unwrap();
     let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
@@ -3540,7 +3564,7 @@ async fn conditional_writes_through_a_coordinator() {
         }
         copies.push(group.join("|"));
     }
-    let replicated = cluster(Coordinator::connect(copies).await.unwrap());
+    let replicated = cluster(Coordinator::connect_with(copies, CoordOptions { write_every_copy: true, ..Default::default() }).await.unwrap());
     let e = replicated.write_ops(set("p0000003", 1), None).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("one replica per shard"), "{}", e.message);
     let e = replicated.query(QueryReq { sql: "SELECT id, seq_no() FROM products LIMIT 3".into(), ..Default::default() }).await.err().unwrap();

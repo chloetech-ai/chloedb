@@ -49,6 +49,8 @@ fn page(title: &str) -> axum::response::Response {
 }
 
 async fn serve(app: Router) -> String {
+    // The sites served here are on this machine: reachable only when said.
+    chloedb_crawl::reach::set(chloedb_crawl::reach::Reach::any());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
     tokio::spawn(async move { axum::serve(l, app).await.unwrap() });

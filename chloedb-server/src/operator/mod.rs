@@ -34,9 +34,11 @@
 pub mod apps;
 pub mod autoscale;
 pub mod chloectx;
+pub mod credentials;
 pub mod crawler;
 pub mod follow;
 pub mod kube;
+pub mod lease;
 pub mod sheets;
 pub mod upgrade;
 
@@ -414,6 +416,9 @@ impl Spec {
         let apps = self.apps();
         if !apps.is_empty() {
             j["apps"] = json!(apps);
+            // Each app's own token, a file of a folder mounted from its
+            // credentials ([`credentials`]).
+            j["appTokens"] = json!(credentials::TOKEN_DIR);
         }
         short_hash(&j)
     }
@@ -666,6 +671,13 @@ pub trait Platform {
     /// Deployment of one, its Service and its volume on Kubernetes.
     /// Applied once the coordinators are there.
     async fn apps(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
+    /// Gives each app beside the cluster a key limited to its tables and a
+    /// token of its own, made through the coordinators (`admin`), and
+    /// takes them from an app that went ([`credentials`]). Before the
+    /// apps are applied, which use them once they are there.
+    async fn app_credentials(&self, _spec: &Spec, _admin: &Admin) -> Result<(), String> {
         Ok(())
     }
 }
@@ -1078,6 +1090,11 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
         return Ok(Outcome::new(Phase::Creating, "starting the coordinator, which lays the cluster out"));
     };
     p.follow(spec).await?;
+    // An app without a key of its own yet runs with the admin token, as
+    // before such keys: a failure here is told, and holds nothing up.
+    if let Err(e) = p.app_credentials(spec, admin).await {
+        tracing::warn!(error = %e, "the apps' own keys");
+    }
     p.crawler(spec).await?;
     p.sheets(spec).await?;
     p.chloectx(spec).await?;
@@ -2012,7 +2029,7 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         };
         steps.push(match (&old.apps, &new.apps) {
             (None, Some(a)) => format!(
-                "the app engine starts beside the cluster (chloedb-apps, a Deployment of one, with a {} volume) and the coordinators list it, so the command center shows Apps → App engine; its apps are kept in this cluster's tables; {}",
+                "the app engine starts beside the cluster (chloedb-apps, a Deployment of one, with a {} volume) and the coordinators list it, so the command center shows Apps → App creator; its apps are kept in this cluster's tables; {}",
                 a.storage.size,
                 what(a)
             ),
@@ -2190,7 +2207,7 @@ mod tests {
         let p = plan(&none, &new, 1, 3);
         assert!(p["refused"].is_null(), "{p}");
         let (steps, warnings) = (p["steps"].to_string(), p["warnings"].to_string());
-        for want in ["the coordinators restart", "the app engine starts beside the cluster", "1Gi volume", "Apps → App engine", "may cost $25 before calls are refused"] {
+        for want in ["the coordinators restart", "the app engine starts beside the cluster", "1Gi volume", "Apps → App creator", "may cost $25 before calls are refused"] {
             assert!(steps.contains(want), "{want}: {steps}");
         }
         for want in ["no model key", "publicUrl is not set"] {
@@ -2215,6 +2232,7 @@ mod tests {
         let mut j = json!({"image": none.image, "imagePullPolicy": null, "resources": null, "args": [], "tokenSecret": "t", "clusterTokenSecret": null});
         assert_eq!(none.coordinator_config(), short_hash(&j));
         j["apps"] = json!(["apps"]);
+        j["appTokens"] = json!(credentials::TOKEN_DIR);
         assert_eq!(new.coordinator_config(), short_hash(&j));
         assert!(!serde_json::to_value(&none).unwrap().as_object().unwrap().contains_key("apps"));
     }

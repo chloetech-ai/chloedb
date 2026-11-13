@@ -18,6 +18,12 @@
 //! * [`SiglipEmbedder`] (feature `vision`): SigLIP's image and text
 //!   towers through candle, `siglip-base-patch16-224`. A tenth of a second
 //!   an image on a few cores.
+//! * [`SparseEncoder`] (feature `onnx`): term weights for SPARSE fields,
+//!   a transformer's for documents and an IDF lookup for queries.
+//! * [`OnnxEmbedder`] (feature `onnx`): any encoder exported to ONNX
+//!   (`model.onnx`), run by ONNX Runtime, such as a ModernBERT embedder
+//!   (`granite-embedding-small-english-r2`) quantised to int8: CLS or mean
+//!   pooling as its sentence-transformers configuration says.
 //! * [`HashEmbedder`]: feature hashing of words (`hash:<dim>`), and of an
 //!   image's colours, for tests and demos without model files; it matches
 //!   words and colours, not meanings. For a multi-vector field each word is
@@ -85,6 +91,31 @@ pub trait Embedder: Send + Sync {
     fn usage(&self) -> Option<Usage> {
         None
     }
+    /// Whether it makes term weights for a SPARSE field rather than
+    /// vectors ([`Embedder::embed_sparse`]), as a learned sparse encoder
+    /// ([`SparseEncoder`]) does.
+    fn sparse(&self) -> bool {
+        false
+    }
+    /// Documents' term weights, for a model whose [`Embedder::sparse`] is
+    /// true: a list of (term, weight) a text, the zero weights left out.
+    fn embed_sparse(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
+        let _ = texts;
+        Err(model_err(format!("model {} makes vectors, not term weights: a SPARSE field needs a learned sparse model", self.name())))
+    }
+    /// A search query's term weights ([`Embedder::embed_sparse`]).
+    fn embed_query_sparse(&self, text: &str) -> Result<Vec<(String, f32)>> {
+        Ok(self.embed_sparse(&[text])?.pop().unwrap_or_default())
+    }
+}
+
+/// Term weights as a SPARSE value: a JSON object of term to weight.
+pub fn terms_json(terms: &[(String, f32)]) -> String {
+    // A weight as its shortest decimal as an f32, not the f64 it widens
+    // to (0.011537966, not 0.011537966318428516).
+    let number = |w: f32| w.to_string().parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(serde_json::Value::Null, serde_json::Value::Number);
+    let m: serde_json::Map<String, serde_json::Value> = terms.iter().filter(|(_, w)| w.is_finite()).map(|(t, w)| (t.clone(), number(*w))).collect();
+    serde_json::Value::Object(m).to_string()
 }
 
 /// The model of an embedded field that is not open here, as a write sees
@@ -127,6 +158,12 @@ impl Embedder for NotOpen {
         Err(self.refuse())
     }
     fn embed_tokens(&self, texts: &[&str]) -> Result<Vec<Vec<Vec<f32>>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(self.refuse())
+    }
+    fn embed_sparse(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -292,6 +329,8 @@ pub fn models_dir() -> PathBuf {
 pub const KNOWN_MODELS: &[(&str, &str, &str)] = &[
     ("potion-retrieval-32M", "minishlab/potion-retrieval-32M", "Model2Vec, 512 dimensions, fast (the model ChloeCtx uses)"),
     ("potion-base-8M", "minishlab/potion-base-8M", "Model2Vec, 256 dimensions, smallest"),
+    ("potion-retrieval-32M-int8", "minishlab/potion-retrieval-32M", "potion-retrieval-32M with its table in int8: 4x smaller (30 MB), the same ranking"),
+    ("potion-base-8M-int8", "minishlab/potion-base-8M", "potion-base-8M with its table in int8: 4x smaller (8 MB)"),
     ("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "BERT, 384 dimensions (feature bert)"),
     ("snowflake-arctic-embed-m-v1.5", "Snowflake/snowflake-arctic-embed-m-v1.5", "BERT, 768 dimensions (feature bert)"),
     ("siglip-base-patch16-224", "google/siglip-base-patch16-224", "SigLIP, images and text, 768 dimensions (feature vision)"),
@@ -308,7 +347,7 @@ pub fn known_dim(model: &str) -> Option<usize> {
     if let Some(k) = crate::hosted::known_model(model) {
         return Some(k.dim);
     }
-    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
+    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
     dims.iter().find(|(m, _)| m.eq_ignore_ascii_case(model)).map(|&(_, d)| d)
 }
 
@@ -393,18 +432,107 @@ pub fn catalog(models: &Path) -> Vec<Listed> {
                 None => Err(format!("{}: not JSON", endpoint.display())),
             };
             out.push(Listed { name, dim, hosted: true, what: format!("{api} endpoint ({})", endpoint.display()), ready });
-        } else if dir.join("model.safetensors").exists() {
+        } else if dir.join("model.safetensors").exists() || dir.join(crate::query::cross_encoder::ONNX).exists() {
             let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
             // Ranking models and cross-encoders live here too; only embedders are listed.
-            let kind = config["model_type"].as_str().unwrap_or("model2vec").to_string();
+            let onnx = !dir.join("model.safetensors").exists();
+            let sparse = onnx && dir.join("idf.json").exists();
+            let kind = match sparse {
+                true => format!("learned sparse {} (ONNX)", config["model_type"].as_str().unwrap_or("")).replace("  ", " "),
+                false => format!("{}{}", config["model_type"].as_str().unwrap_or("model2vec"), if onnx { " (ONNX)" } else { "" }),
+            };
             if config["architectures"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str().is_some_and(|s| s.contains("SequenceClassification")))) {
                 continue;
             }
-            let dim = config["hidden_size"].as_u64().map(|d| d as usize);
-            out.push(Listed { name, dim, hosted: false, what: format!("{kind} model in {}", dir.display()), ready: Ok(()) });
+            let dim = if sparse { None } else { config["hidden_size"].as_u64().or(config["hidden_dim"].as_u64()).or_else(|| config["dim"].as_u64()).map(|d| d as usize) };
+            let ready = match onnx && !cfg!(feature = "onnx") {
+                true => Err("built without the `onnx` feature".to_string()),
+                false => Ok(()),
+            };
+            out.push(Listed { name, dim, hosted: false, what: format!("{kind} model in {}", dir.display()), ready });
         }
     }
     out
+}
+
+/// How a model makes its vectors, for a listing ([`describe`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Described {
+    /// `static` (Model2Vec: a table of token vectors, averaged),
+    /// `transformer` (BERT), `late-interaction` (ColBERT: a vector a
+    /// token, for a multi-vector field), `image-text` (SigLIP),
+    /// `sound-text` (CLAP), `hosted` (behind an API), `hash` (a test
+    /// model) or `unknown`.
+    pub technique: &'static str,
+    /// A static model's table: `F32`, `F16`, `BF16` or `I8`.
+    pub precision: Option<String>,
+    /// The bytes of its files here, when it is here.
+    pub bytes: Option<u64>,
+    /// The model a converted copy was made of (`potion-base-8M` of
+    /// `potion-base-8M-int8`), from [`quantized_of`] or its directory.
+    pub made_of: Option<String>,
+}
+
+/// What [`Described`] says of model `name` under `models`: from its files
+/// when it is here, else from its name.
+pub fn describe(name: &str, models: &Path) -> Described {
+    let none = |technique| Described { technique, precision: None, bytes: None, made_of: None };
+    if name.starts_with("hash:") {
+        return none("hash");
+    }
+    if crate::hosted::known_model(name).is_some() {
+        return none("hosted");
+    }
+    let dir = models.join(name);
+    let made_of = quantized_of(name).map(|(base, _)| base.to_string()).or_else(|| {
+        // A copy `quantize-model` wrote, by the name it suggests.
+        let base = name.strip_suffix("-int8").or_else(|| name.strip_suffix("-f16"))?;
+        models.join(base).join("model.safetensors").exists().then(|| base.to_string())
+    });
+    let bytes = std::fs::read_dir(&dir).ok().map(|d| d.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum());
+    if dir.join("endpoint.json").exists() {
+        return Described { technique: "hosted", precision: None, bytes, made_of };
+    }
+    let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    let technique = match config["model_type"].as_str() {
+        Some("bert") if dir.join("artifact.metadata").exists() => "late-interaction",
+        Some("bert") => "transformer",
+        Some("siglip") => "image-text",
+        Some("clap") => "sound-text",
+        Some("model2vec") => "static",
+        Some(_) => "unknown",
+        // Not here: by its name.
+        None if lower.contains("colbert") => "late-interaction",
+        None if lower.starts_with("potion") => "static",
+        None if lower.starts_with("bge") || lower.starts_with("snowflake") => "transformer",
+        None if lower.starts_with("siglip") => "image-text",
+        None if lower.starts_with("clap") => "sound-text",
+        None if dir.join("model.safetensors").exists() => "static",
+        None => "unknown",
+    };
+    let precision = match technique {
+        "static" => safetensors_dtype(&dir.join("model.safetensors"), "embeddings").or_else(|| quantized_of(name).map(|(_, e)| e.to_string())),
+        _ => None,
+    };
+    Described { technique, precision, bytes, made_of }
+}
+
+/// The dtype of tensor `tensor` in safetensors file `path`, from its
+/// header alone.
+fn safetensors_dtype(path: &Path, tensor: &str) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut len = [0u8; 8];
+    f.read_exact(&mut len).ok()?;
+    let n = u64::from_le_bytes(len);
+    if n > 100 << 20 {
+        return None;
+    }
+    let mut head = vec![0u8; n as usize];
+    f.read_exact(&mut head).ok()?;
+    let j: serde_json::Value = serde_json::from_slice(&head).ok()?;
+    j.get(tensor)?.get("dtype")?.as_str().map(str::to_string)
 }
 
 /// The files the model directory of `name` needs: CLAP's repository
@@ -421,7 +549,8 @@ pub fn model_files(name: &str) -> &'static [&'static str] {
 
 /// Opens the model a schema names: `hash:<dim>`, or a directory under
 /// `models` (or an absolute path) holding a Model2Vec, BERT, SigLIP or
-/// CLAP model ([`model_files`]), or a hosted model ([`crate::hosted`]):
+/// CLAP model ([`model_files`]), an ONNX export (`model.onnx`; with an
+/// `idf.json`, a learned sparse model, [`SparseEncoder`]), or a hosted model ([`crate::hosted`]):
 /// `<provider>/<model>` (`openai/text-embedding-3-small`), or a directory
 /// holding an `endpoint.json`. [`open_for`] opens one for a field's
 /// dimensions.
@@ -520,6 +649,17 @@ pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dy
         return Err(model_err(format!("model {model} is a hosted model ({}): build with the `hosted` feature", ep.api.as_str())));
     }
     let _ = dim;
+    if !has_weights && dir.join(crate::query::cross_encoder::ONNX).exists() {
+        // A learned sparse model has the query side's IDF table beside it.
+        #[cfg(feature = "onnx")]
+        if dir.join("idf.json").exists() {
+            return Ok(Arc::new(SparseEncoder::open(&dir)?));
+        }
+        #[cfg(feature = "onnx")]
+        return Ok(Arc::new(OnnxEmbedder::open(&dir)?));
+        #[cfg(not(feature = "onnx"))]
+        return Err(model_err(format!("model {model} is an ONNX model: build with the `onnx` feature")));
+    }
     if !has_weights {
         return Err(model_err(format!("model {model}: no {} (fetch it first)", dir.join("model.safetensors").display())));
     }
@@ -557,10 +697,21 @@ pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dy
 // ---------------------------------------------------------------- static
 
 /// Model2Vec: the embedding of a text is the mean of its tokens' rows.
+///
+/// The table is read as Model2Vec writes it: `embeddings` in F32, F16,
+/// BF16 or I8 (an int8 table has one scale for the whole table, which the
+/// unit length the vector is scaled to cancels: 4 times smaller than F32
+/// and, on BEIR, within 0.002 nDCG@10 of it), and, when the model has them,
+/// `weights` (a factor a token) and `mapping` (the row of each token, for a
+/// model whose vocabulary was quantised to fewer rows than tokens).
 #[cfg(feature = "embed")]
 pub struct StaticEmbedder {
     tokenizer: tokenizers::Tokenizer,
     table: Table,
+    /// A factor a token id (Model2Vec's `weights`).
+    weights: Option<Vec<f32>>,
+    /// The row of a token id (Model2Vec's `mapping`).
+    mapping: Option<Vec<u32>>,
     dim: usize,
     unk: Option<u32>,
     name: String,
@@ -571,22 +722,43 @@ pub struct StaticEmbedder {
 impl StaticEmbedder {
     pub fn open(dir: &Path) -> Result<StaticEmbedder> {
         let tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| model_err(format!("{}: {e}", dir.join("tokenizer.json").display())))?;
-        let table = Table::open(&dir.join("model.safetensors"), "embeddings")?;
+        let path = dir.join("model.safetensors");
+        let table = Table::open(&path, "embeddings")?;
         let (rows, dim) = (table.rows, table.dim);
-        if rows < tokenizer.get_vocab_size(true) {
-            return Err(model_err(format!("{}: embedding table has {rows} rows, tokenizer {} tokens", dir.display(), tokenizer.get_vocab_size(true))));
+        let vocab = tokenizer.get_vocab_size(true);
+        let weights = Table::open_vector(&path, "weights")?.map(|w| w.into_iter().map(|x| x as f32).collect::<Vec<f32>>());
+        let mapping = Table::open_vector(&path, "mapping")?.map(|m| m.into_iter().map(|x| x as u32).collect::<Vec<u32>>());
+        let bad = |m: String| Err(model_err(format!("{}: {m}", dir.display())));
+        match &mapping {
+            Some(m) if m.len() < vocab => return bad(format!("mapping has {} tokens, tokenizer {vocab}", m.len())),
+            Some(m) if m.iter().any(|&r| r as usize >= rows) => return bad(format!("mapping names a row past the table's {rows}")),
+            None if rows < vocab => return bad(format!("embedding table has {rows} rows, tokenizer {vocab} tokens")),
+            _ => {}
+        }
+        if weights.as_ref().is_some_and(|w| w.len() < vocab) {
+            return bad(format!("weights has fewer than the tokenizer's {vocab} tokens"));
         }
         let unk = tokenizer.token_to_id("[UNK]");
         let name = format!("static:{}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-        Ok(StaticEmbedder { tokenizer, table, dim, unk, name, max_tokens: 512 })
+        Ok(StaticEmbedder { tokenizer, table, weights, mapping, dim, unk, name, max_tokens: 512 })
     }
 
     fn embed_ids(&self, ids: &[u32]) -> Vec<f32> {
         let mut v = vec![0f32; self.dim];
         let mut n = 0usize;
         for &id in ids.iter().filter(|&&id| Some(id) != self.unk).take(self.max_tokens) {
-            if self.table.add_row(id as usize, &mut v) {
-                n += 1;
+            let row = match &self.mapping {
+                Some(m) => match m.get(id as usize) {
+                    Some(&r) => r as usize,
+                    None => continue,
+                },
+                None => id as usize,
+            };
+            let w = self.weights.as_ref().map_or(Some(1.0), |w| w.get(id as usize).copied());
+            if let Some(w) = w {
+                if self.table.add_row(row, w, &mut v) {
+                    n += 1;
+                }
             }
         }
         if n > 0 {
@@ -616,7 +788,63 @@ impl Embedder for StaticEmbedder {
     }
 }
 
-/// One F32 tensor of a safetensors file, mapped rather than read: a process
+/// The element types a static table can hold.
+#[cfg(feature = "embed")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elem {
+    F32,
+    F16,
+    BF16,
+    I8,
+}
+
+#[cfg(feature = "embed")]
+impl Elem {
+    fn parse(s: &str) -> Option<Elem> {
+        Some(match s {
+            "F32" => Elem::F32,
+            "F16" => Elem::F16,
+            "BF16" => Elem::BF16,
+            "I8" => Elem::I8,
+            _ => return None,
+        })
+    }
+    /// Its name in a safetensors header.
+    pub fn dtype(self) -> &'static str {
+        match self {
+            Elem::F32 => "F32",
+            Elem::F16 => "F16",
+            Elem::BF16 => "BF16",
+            Elem::I8 => "I8",
+        }
+    }
+    fn bytes(self) -> usize {
+        match self {
+            Elem::F32 => 4,
+            Elem::F16 | Elem::BF16 => 2,
+            Elem::I8 => 1,
+        }
+    }
+}
+
+/// IEEE half precision to single.
+#[cfg(feature = "embed")]
+fn f16_to_f32(h: u16) -> f32 {
+    let (sign, exp, frac) = ((h as u32 & 0x8000) << 16, (h as u32 >> 10) & 0x1f, h as u32 & 0x3ff);
+    let bits = match (exp, frac) {
+        (0, 0) => sign,
+        (0, f) => {
+            // subnormal: normalise it
+            let shift = f.leading_zeros() - 21;
+            sign | ((113 - shift) << 23) | ((f << shift) & 0x3ff) << 13
+        }
+        (0x1f, f) => sign | 0x7f80_0000 | f << 13,
+        (e, f) => sign | (e + 112) << 23 | f << 13,
+    };
+    f32::from_bits(bits)
+}
+
+/// One tensor of a safetensors file, mapped rather than read: a process
 /// starts without loading the table, and only the rows of tokens it meets
 /// are paged in.
 #[cfg(feature = "embed")]
@@ -626,11 +854,13 @@ struct Table {
     start: usize,
     rows: usize,
     dim: usize,
+    elem: Elem,
 }
 
 #[cfg(feature = "embed")]
 impl Table {
-    fn open(path: &Path, tensor: &str) -> Result<Table> {
+    /// The mapped file, its JSON header, and the offset of its data.
+    fn header(path: &Path) -> Result<(memmap2::Mmap, serde_json::Value, usize)> {
         let file = std::fs::File::open(path).map_err(|e| model_err(format!("{}: {e}", path.display())))?;
         // SAFETY: the model file is not modified while mapped (fetching a
         // model writes a new file).
@@ -641,30 +871,417 @@ impl Table {
         }
         let hlen = u64::from_le_bytes(map[..8].try_into().unwrap()) as usize;
         let header: serde_json::Value = serde_json::from_slice(map.get(8..8 + hlen).ok_or_else(|| bad("truncated header".into()))?).map_err(|e| bad(e.to_string()))?;
-        let t = header.get(tensor).ok_or_else(|| bad(format!("no tensor {tensor}")))?;
-        if t["dtype"] != "F32" {
-            return Err(bad(format!("{tensor}: dtype {} (need F32)", t["dtype"])));
-        }
-        let shape: Vec<usize> = t["shape"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
-        let offs: Vec<usize> = t["data_offsets"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
-        let [rows, dim] = shape[..] else { return Err(bad(format!("{tensor}: shape {shape:?}"))) };
-        let (a, b) = (8 + hlen + offs.first().copied().unwrap_or(0), 8 + hlen + offs.get(1).copied().unwrap_or(0));
-        if b > map.len() || b - a != rows * dim * 4 {
-            return Err(bad(format!("{tensor}: {} bytes for shape {rows}x{dim}", b.saturating_sub(a))));
-        }
-        Ok(Table { map, start: a, rows, dim })
+        Ok((map, header, 8 + hlen))
     }
 
-    /// Adds row `id` to `acc`; false if there is no such row.
-    fn add_row(&self, id: usize, acc: &mut [f32]) -> bool {
+    /// A tensor's type, shape and byte range, checked against the file.
+    fn locate(path: &Path, map: &memmap2::Mmap, t: &serde_json::Value, base: usize, tensor: &str) -> Result<(String, Vec<usize>, usize, usize)> {
+        let bad = |m: String| model_err(format!("{}: {m}", path.display()));
+        let dtype = t["dtype"].as_str().unwrap_or_default().to_string();
+        let shape: Vec<usize> = t["shape"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
+        let offs: Vec<usize> = t["data_offsets"].as_array().into_iter().flatten().filter_map(|x| x.as_u64()).map(|x| x as usize).collect();
+        let (a, b) = (base + offs.first().copied().unwrap_or(0), base + offs.get(1).copied().unwrap_or(0));
+        if b > map.len() || a > b {
+            return Err(bad(format!("{tensor}: bytes {a}..{b} past the file's {}", map.len())));
+        }
+        Ok((dtype, shape, a, b))
+    }
+
+    fn open(path: &Path, tensor: &str) -> Result<Table> {
+        let (map, header, base) = Self::header(path)?;
+        let bad = |m: String| model_err(format!("{}: {m}", path.display()));
+        let t = header.get(tensor).ok_or_else(|| bad(format!("no tensor {tensor}")))?;
+        let (dtype, shape, a, b) = Self::locate(path, &map, t, base, tensor)?;
+        let elem = Elem::parse(&dtype).ok_or_else(|| bad(format!("{tensor}: dtype {dtype} (need F32, F16, BF16 or I8)")))?;
+        let [rows, dim] = shape[..] else { return Err(bad(format!("{tensor}: shape {shape:?}"))) };
+        if b - a != rows * dim * elem.bytes() {
+            return Err(bad(format!("{tensor}: {} bytes for shape {rows}x{dim} of {dtype}", b - a)));
+        }
+        Ok(Table { map, start: a, rows, dim, elem })
+    }
+
+    /// A one-dimensional tensor read whole (Model2Vec's `weights` and
+    /// `mapping`), or None if the file has no tensor of that name.
+    fn open_vector(path: &Path, tensor: &str) -> Result<Option<Vec<f64>>> {
+        let (map, header, base) = Self::header(path)?;
+        let Some(t) = header.get(tensor) else { return Ok(None) };
+        let bad = |m: String| model_err(format!("{}: {m}", path.display()));
+        let (dtype, shape, a, b) = Self::locate(path, &map, t, base, tensor)?;
+        let [n] = shape[..] else { return Err(bad(format!("{tensor}: shape {shape:?}"))) };
+        let bytes = &map[a..b];
+        let width = match dtype.as_str() {
+            "F64" | "I64" => 8,
+            "F32" | "I32" => 4,
+            "F16" | "BF16" => 2,
+            _ => return Err(bad(format!("{tensor}: dtype {dtype}"))),
+        };
+        if bytes.len() != n * width {
+            return Err(bad(format!("{tensor}: {} bytes for {n} values of {dtype}", bytes.len())));
+        }
+        let v = bytes
+            .chunks_exact(width)
+            .map(|c| match dtype.as_str() {
+                "F64" => f64::from_le_bytes(c.try_into().unwrap()),
+                "I64" => i64::from_le_bytes(c.try_into().unwrap()) as f64,
+                "F32" => f32::from_le_bytes(c.try_into().unwrap()) as f64,
+                "I32" => i32::from_le_bytes(c.try_into().unwrap()) as f64,
+                "F16" => f16_to_f32(u16::from_le_bytes(c.try_into().unwrap())) as f64,
+                _ => f32::from_bits((u16::from_le_bytes(c.try_into().unwrap()) as u32) << 16) as f64,
+            })
+            .collect();
+        Ok(Some(v))
+    }
+
+    /// Adds `w` times row `id` to `acc`; false if there is no such row.
+    fn add_row(&self, id: usize, w: f32, acc: &mut [f32]) -> bool {
         if id >= self.rows {
             return false;
         }
-        let off = self.start + id * self.dim * 4;
-        for (a, c) in acc.iter_mut().zip(self.map[off..off + self.dim * 4].chunks_exact(4)) {
-            *a += f32::from_le_bytes(c.try_into().unwrap());
+        let width = self.elem.bytes();
+        let off = self.start + id * self.dim * width;
+        let row = &self.map[off..off + self.dim * width];
+        match self.elem {
+            Elem::F32 => acc.iter_mut().zip(row.chunks_exact(4)).for_each(|(a, c)| *a += w * f32::from_le_bytes(c.try_into().unwrap())),
+            Elem::F16 => acc.iter_mut().zip(row.chunks_exact(2)).for_each(|(a, c)| *a += w * f16_to_f32(u16::from_le_bytes([c[0], c[1]]))),
+            Elem::BF16 => acc.iter_mut().zip(row.chunks_exact(2)).for_each(|(a, c)| *a += w * f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)),
+            Elem::I8 => acc.iter_mut().zip(row).for_each(|(a, &c)| *a += w * (c as i8) as f32),
         }
         true
+    }
+}
+
+
+/// Single precision to IEEE half, rounded to nearest even; past half's
+/// range, infinity.
+#[cfg(feature = "embed")]
+fn f32_to_f16(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let frac = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if frac != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        // subnormal, or zero
+        if e < -10 {
+            return sign;
+        }
+        let m = frac | 0x80_0000;
+        let shift = (14 - e) as u32;
+        let half = 1u32 << (shift - 1);
+        let r = m >> shift;
+        let rest = m & ((1 << shift) - 1);
+        let r = if rest > half || (rest == half && r & 1 == 1) { r + 1 } else { r };
+        return sign | r as u16;
+    }
+    let r = frac >> 13;
+    let rest = frac & 0x1fff;
+    let mut out = ((e as u32) << 10) | r;
+    if rest > 0x1000 || (rest == 0x1000 && r & 1 == 1) {
+        out += 1; // may carry into the exponent, as it should
+    }
+    sign | out as u16
+}
+
+/// What [`quantize_static`] wrote.
+#[cfg(feature = "embed")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Quantized {
+    /// The table's rows and dimensions.
+    pub rows: usize,
+    pub dim: usize,
+    /// The weights file's size before and after.
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+}
+
+/// The name of a model [`KNOWN_MODELS`] lists that is another one of them
+/// with its table written in fewer bits (`potion-retrieval-32M-int8`): the
+/// model fetched, and the element type [`quantize_static`] writes.
+pub fn quantized_of(name: &str) -> Option<(&'static str, &'static str)> {
+    let &(known, _, _) = KNOWN_MODELS.iter().find(|m| m.0.eq_ignore_ascii_case(name))?;
+    let base = known.strip_suffix("-int8")?;
+    let &(base, _, _) = KNOWN_MODELS.iter().find(|m| m.0 == base)?;
+    Some((base, "I8"))
+}
+
+/// Writes the static (Model2Vec) model in directory `from` into `to` (the
+/// same directory, or a new one) with its table in `elem`, `I8` or `F16`:
+/// an int8 table is 4 times smaller than F32, and Model2Vec's own format
+/// (one scale for the whole table, which the vector's unit length cancels);
+/// on BEIR its vectors rank within 0.001 nDCG@10 of F32's (SciFact,
+/// NFCorpus and ArguAna, potion-retrieval-32M). Its other tensors
+/// (`weights`, `mapping`) and files are kept as they are. The output is a
+/// function of the input alone, so that every machine that converts a
+/// model gets the same file, and the same [`fingerprint`].
+///
+/// A table embedded by a model keeps the fingerprint of the weights it was
+/// made with, so a converted model is a model of its own name: its vectors
+/// differ from the original's in the third decimal.
+#[cfg(feature = "embed")]
+pub fn quantize_static(from: &Path, to: &Path, elem: &str) -> Result<Quantized> {
+    let elem = match Elem::parse(&elem.to_ascii_uppercase()).or(match elem.to_ascii_lowercase().as_str() {
+        "int8" => Some(Elem::I8),
+        "f16" | "float16" => Some(Elem::F16),
+        _ => None,
+    }) {
+        Some(e @ (Elem::I8 | Elem::F16)) => e,
+        _ => return Err(model_err(format!("a static model's table is written as I8 or F16, not {elem}"))),
+    };
+    let src = from.join("model.safetensors");
+    // Opening it checks it is a model this reads, tokenizer and all.
+    StaticEmbedder::open(from)?;
+    let bytes_before = std::fs::metadata(&src).map(|m| m.len()).map_err(|e| model_err(format!("{}: {e}", src.display())))?;
+    let table = Table::open(&src, "embeddings")?;
+    let (rows, dim) = (table.rows, table.dim);
+    let mut values = vec![0f32; rows * dim];
+    for (r, row) in values.chunks_exact_mut(dim).enumerate() {
+        table.add_row(r, 1.0, row);
+    }
+    if values.iter().any(|x| !x.is_finite()) {
+        return Err(model_err(format!("{}: the table has a value that is not a finite number", src.display())));
+    }
+    // An int8 table stores what the F32 one would times one scale.
+    let bytes: Vec<u8> = match elem {
+        Elem::I8 => {
+            let max = values.iter().fold(0f32, |m, x| m.max(x.abs()));
+            let scale = if max > 0.0 { 127.0 / max } else { 1.0 };
+            values.iter().map(|x| (x * scale).round().clamp(-127.0, 127.0) as i8 as u8).collect()
+        }
+        _ => values.iter().flat_map(|&x| f32_to_f16(x).to_le_bytes()).collect(),
+    };
+    drop(values);
+    drop(table);
+    // The other tensors, as they are.
+    let (map, header, base) = Table::header(&src)?;
+    let mut tensors: Vec<(String, String, serde_json::Value, Vec<u8>)> = vec![("embeddings".into(), elem.dtype().into(), serde_json::json!([rows, dim]), bytes)];
+    let mut names: Vec<&String> = header.as_object().map(|o| o.keys().collect()).unwrap_or_default();
+    names.sort();
+    for name in names {
+        if name == "embeddings" || name == "__metadata__" {
+            continue;
+        }
+        let t = &header[name.as_str()];
+        let (dtype, shape, a, b) = Table::locate(&src, &map, t, base, name)?;
+        tensors.push((name.clone(), dtype, serde_json::json!(shape), map[a..b].to_vec()));
+    }
+    let mut head = serde_json::Map::new();
+    if let Some(m) = header.get("__metadata__") {
+        head.insert("__metadata__".into(), m.clone());
+    }
+    let mut at = 0usize;
+    for (name, dtype, shape, data) in &tensors {
+        head.insert(name.clone(), serde_json::json!({"dtype": dtype, "shape": shape, "data_offsets": [at, at + data.len()]}));
+        at += data.len();
+    }
+    // serde_json's map is ordered by key: the header is the same text on
+    // every machine. Padded with spaces to 8 bytes, as safetensors does.
+    let mut h = serde_json::Value::Object(head).to_string().into_bytes();
+    while h.len() % 8 != 0 {
+        h.push(b' ');
+    }
+    let mut out = Vec::with_capacity(8 + h.len() + at);
+    out.extend_from_slice(&(h.len() as u64).to_le_bytes());
+    out.extend_from_slice(&h);
+    for (_, _, _, data) in &tensors {
+        out.extend_from_slice(data);
+    }
+    drop(map);
+    let io = |p: &Path, e: std::io::Error| model_err(format!("{}: {e}", p.display()));
+    std::fs::create_dir_all(to).map_err(|e| io(to, e))?;
+    let same = to.canonicalize().ok() == from.canonicalize().ok();
+    if !same {
+        for entry in std::fs::read_dir(from).map_err(|e| io(from, e))? {
+            let entry = entry.map_err(|e| io(from, e))?;
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if entry.file_type().map_err(|e| io(&entry.path(), e))?.is_file() && n != "model.safetensors" && !n.ends_with(".sha256") && !n.ends_with(".part") {
+                std::fs::copy(entry.path(), to.join(&name)).map_err(|e| io(&entry.path(), e))?;
+            }
+        }
+    }
+    let dst = to.join("model.safetensors");
+    // Written aside and renamed: a process that has the model open keeps
+    // its mapping of the old file.
+    let tmp = to.join("model.safetensors.part");
+    std::fs::write(&tmp, &out).and_then(|_| std::fs::rename(&tmp, &dst)).map_err(|e| io(&dst, e))?;
+    Ok(Quantized { rows, dim, bytes_before, bytes_after: out.len() as u64 })
+}
+
+#[cfg(all(test, feature = "embed"))]
+mod static_table_tests {
+    use super::*;
+
+    /// A safetensors file of the given tensors: (name, dtype, shape, bytes).
+    fn write(path: &Path, tensors: &[(&str, &str, Vec<usize>, Vec<u8>)]) {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        for (name, dtype, shape, bytes) in tensors {
+            header.insert(name.to_string(), serde_json::json!({"dtype": dtype, "shape": shape, "data_offsets": [data.len(), data.len() + bytes.len()]}));
+            data.extend_from_slice(bytes);
+        }
+        let h = serde_json::Value::Object(header).to_string().into_bytes();
+        let mut out = (h.len() as u64).to_le_bytes().to_vec();
+        out.extend(h);
+        out.extend(data);
+        std::fs::write(path, out).unwrap();
+    }
+
+    fn f16_bits(x: f32) -> u16 {
+        // round to nearest for zero and normal values, which is all the test uses
+        if x == 0.0 {
+            return 0;
+        }
+        let b = x.to_bits();
+        let sign = ((b >> 16) & 0x8000) as u16;
+        let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;
+        let frac = ((b & 0x7f_ffff) + 0x1000) >> 13;
+        sign | ((exp as u16) << 10) + frac as u16
+    }
+
+    /// A static model of a few words, its table F32, in a new directory.
+    pub(crate) fn tiny_model(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        let words = ["[UNK]", "cat", "dog", "fish", "bird", "car", "bus"];
+        let vocab: serde_json::Map<String, serde_json::Value> = words.iter().enumerate().map(|(i, w)| (w.to_string(), serde_json::json!(i))).collect();
+        let tok = serde_json::json!({"version": "1.0", "truncation": null, "padding": null, "added_tokens": [], "normalizer": {"type": "Lowercase"}, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null, "decoder": null, "model": {"type": "WordLevel", "vocab": vocab, "unk_token": "[UNK]"}});
+        std::fs::write(dir.join("tokenizer.json"), tok.to_string()).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type": "model2vec", "hidden_size": 4}"#).unwrap();
+        // animals near each other, vehicles near each other
+        let rows: [[f32; 4]; 7] = [[0.0; 4], [1.0, 0.2, 0.0, 0.01], [0.9, 0.3, 0.1, 0.0], [0.8, 0.1, 0.2, 0.0], [0.7, 0.4, 0.0, 0.1], [0.0, 0.1, 1.0, 0.3], [0.1, 0.0, 0.9, 0.5]];
+        let bytes: Vec<u8> = rows.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
+        write(&dir.join("model.safetensors"), &[("embeddings", "F32", vec![7, 4], bytes), ("weights", "F32", vec![7], [1.0f32, 1.0, 2.0, 1.0, 1.0, 1.0, 0.5].iter().flat_map(|x| x.to_le_bytes()).collect())]);
+    }
+
+    #[test]
+    fn half_precision_rounds_to_nearest_even() {
+        for x in [0.0f32, -0.0, 1.0, -2.5, 0.333, 65504.0, -1e-3, 6.1e-5, 3e-7, 1e-9] {
+            let back = f16_to_f32(f32_to_f16(x));
+            assert!((back - x).abs() <= x.abs() * 1e-3 + 6e-8, "{x}: {back}");
+        }
+        assert_eq!(f32_to_f16(1.0), 0x3c00);
+        assert_eq!(f32_to_f16(65520.0), 0x7c00); // past half's largest: infinity
+        assert_eq!(f32_to_f16(2f32.powi(-24)), 0x0001);
+        assert!(f16_to_f32(f32_to_f16(f32::NAN)).is_nan());
+        // halfway between 1 and the next half rounds to the even one
+        assert_eq!(f32_to_f16(1.0 + 2f32.powi(-11)), 0x3c00);
+        assert_eq!(f32_to_f16(1.0 + 3.0 * 2f32.powi(-11)), 0x3c02);
+    }
+
+    #[test]
+    fn a_quantized_model_embeds_as_the_original_does() {
+        let dir = std::env::temp_dir().join(format!("chloedb-quantize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (f32_dir, i8_dir, f16_dir) = (dir.join("tiny"), dir.join("tiny-int8"), dir.join("tiny-f16"));
+        tiny_model(&f32_dir);
+        let q = quantize_static(&f32_dir, &i8_dir, "I8").unwrap();
+        assert_eq!((q.rows, q.dim), (7, 4));
+        assert!(q.bytes_after < q.bytes_before, "{q:?}");
+        quantize_static(&f32_dir, &f16_dir, "f16").unwrap();
+        assert!(quantize_static(&f32_dir, &dir.join("x"), "I4").is_err());
+        assert!(i8_dir.join("tokenizer.json").exists() && i8_dir.join("config.json").exists());
+        let texts = ["cat dog", "the bus and the car", "fish bird cat", "nothing known"];
+        let base = StaticEmbedder::open(&f32_dir).unwrap().embed(&texts).unwrap();
+        for d in [&i8_dir, &f16_dir] {
+            let e = StaticEmbedder::open(d).unwrap();
+            assert_eq!(e.table.elem, if d == &i8_dir { Elem::I8 } else { Elem::F16 });
+            assert!(e.weights.is_some(), "the weights are kept");
+            for (a, b) in base.iter().zip(e.embed(&texts).unwrap()) {
+                let cos: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+                assert!(a.iter().all(|x| *x == 0.0) && b.iter().all(|x| *x == 0.0) || cos > 0.999, "{}: {a:?} vs {b:?}", d.display());
+            }
+        }
+        // the same input writes the same bytes: the same fingerprint everywhere
+        let again = dir.join("again");
+        quantize_static(&f32_dir, &again, "I8").unwrap();
+        assert_eq!(std::fs::read(again.join("model.safetensors")).unwrap(), std::fs::read(i8_dir.join("model.safetensors")).unwrap());
+        // what a listing says of each
+        let d = describe("tiny-int8", &dir);
+        assert_eq!((d.technique, d.precision.as_deref(), d.made_of.as_deref()), ("static", Some("I8"), Some("tiny")));
+        assert!(d.bytes.unwrap() > 0);
+        assert_eq!(describe("tiny", &dir).precision.as_deref(), Some("F32"));
+        assert_eq!(describe("tiny-f16", &dir).precision.as_deref(), Some("F16"));
+        assert_eq!(describe("answerai-colbert-small-v1", &dir).technique, "late-interaction");
+        assert_eq!(describe("potion-base-8M-int8", &dir).precision.as_deref(), Some("I8"));
+        assert_eq!(describe("openai/text-embedding-3-small", &dir).technique, "hosted");
+        // in place
+        let inplace = dir.join("inplace");
+        tiny_model(&inplace);
+        quantize_static(&inplace, &inplace, "I8").unwrap();
+        assert_eq!(std::fs::read(inplace.join("model.safetensors")).unwrap(), std::fs::read(i8_dir.join("model.safetensors")).unwrap());
+        // an int8 table again in int8 is the same table
+        let twice = dir.join("twice");
+        quantize_static(&i8_dir, &twice, "I8").unwrap();
+        assert_eq!(std::fs::read(twice.join("model.safetensors")).unwrap(), std::fs::read(i8_dir.join("model.safetensors")).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_int8_copies_of_known_models_name_their_originals() {
+        assert_eq!(quantized_of("potion-retrieval-32M-int8"), Some(("potion-retrieval-32M", "I8")));
+        assert_eq!(quantized_of("POTION-BASE-8M-INT8"), Some(("potion-base-8M", "I8")));
+        assert_eq!(quantized_of("potion-base-8M"), None);
+        assert_eq!(quantized_of("mine-int8"), None);
+        assert_eq!(known_dim("potion-retrieval-32M-int8"), Some(512));
+    }
+
+    #[test]
+    fn half_precision_converts() {
+        for x in [0.0f32, 1.0, -2.5, 0.333, 65504.0, -1e-3] {
+            assert!((f16_to_f32(f16_bits(x)) - x).abs() <= x.abs() * 1e-3, "{x}");
+        }
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24)); // smallest subnormal
+        assert_eq!(f16_to_f32(0x03ff), 1023.0 * 2f32.powi(-24)); // largest subnormal
+        assert!(f16_to_f32(0x7c00).is_infinite());
+        assert!(f16_to_f32(0x7e00).is_nan());
+    }
+
+    #[test]
+    fn every_element_type_reads_the_same_rows() {
+        let dir = std::env::temp_dir().join(format!("chloedb-static-table-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rows: Vec<f32> = (0..12).map(|i| (i as f32 - 5.5) / 4.0).collect(); // 3 rows of 4
+        let scale = rows.iter().fold(0f32, |m, x| m.max(x.abs())) / 127.0;
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("F32", rows.iter().flat_map(|x| x.to_le_bytes()).collect()),
+            ("F16", rows.iter().flat_map(|&x| f16_bits(x).to_le_bytes()).collect()),
+            ("BF16", rows.iter().flat_map(|x| ((x.to_bits() >> 16) as u16).to_le_bytes()).collect()),
+            ("I8", rows.iter().map(|x| (x / scale).round() as i8 as u8).collect()),
+        ];
+        for (dtype, bytes) in cases {
+            let path = dir.join(format!("{dtype}.safetensors"));
+            write(&path, &[("embeddings", dtype, vec![3, 4], bytes)]);
+            let t = Table::open(&path, "embeddings").unwrap();
+            assert_eq!((t.rows, t.dim, t.elem), (3, 4, Elem::parse(dtype).unwrap()));
+            let unit = if dtype == "I8" { scale } else { 1.0 };
+            for r in 0..3 {
+                let mut acc = vec![0f32; 4];
+                assert!(t.add_row(r, 2.0, &mut acc));
+                for (c, a) in acc.iter().enumerate() {
+                    let want = 2.0 * rows[r * 4 + c];
+                    assert!((a * unit - want).abs() < 0.02, "{dtype} row {r} col {c}: {} vs {want}", a * unit);
+                }
+            }
+            assert!(!t.add_row(3, 1.0, &mut vec![0f32; 4]));
+        }
+        // a table of the wrong size, and a type it does not read
+        let path = dir.join("bad.safetensors");
+        write(&path, &[("embeddings", "I8", vec![3, 5], vec![0; 12])]);
+        assert!(Table::open(&path, "embeddings").is_err());
+        write(&path, &[("embeddings", "I16", vec![3, 2], vec![0; 12])]);
+        assert!(Table::open(&path, "embeddings").is_err());
+        // weights and a mapping, as Model2Vec writes them
+        let path = dir.join("vectors.safetensors");
+        write(&path, &[("weights", "F32", vec![2], [0.5f32, 2.0].iter().flat_map(|x| x.to_le_bytes()).collect()), ("mapping", "I64", vec![2], [1i64, 0].iter().flat_map(|x| x.to_le_bytes()).collect())]);
+        assert_eq!(Table::open_vector(&path, "weights").unwrap(), Some(vec![0.5, 2.0]));
+        assert_eq!(Table::open_vector(&path, "mapping").unwrap(), Some(vec![1.0, 0.0]));
+        assert_eq!(Table::open_vector(&path, "nothing").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -747,6 +1364,344 @@ pub fn fnv(s: &str) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+// ---------------------------------------------------------------- onnx
+
+/// An encoder exported to ONNX (`model.onnx`, taking `input_ids` and
+/// `attention_mask`, and `token_type_ids` if a BERT's), run by ONNX
+/// Runtime on every core, its vector the first token's output (CLS) or the
+/// mean of its tokens', as the directory's sentence-transformers files
+/// say (`1_Pooling/config.json`; CLS if there are none). A query is
+/// prefixed with the model's query prompt
+/// (`config_sentence_transformers.json`), if it has one, and a text is cut
+/// to `max_seq_length` tokens (`sentence_bert_config.json`; at most 512).
+/// An int8 export
+/// (ONNX Runtime's dynamic quantisation) runs a ModernBERT about twice as
+/// fast as float32, within 0.01 nDCG@10 of it on BEIR.
+#[cfg(feature = "onnx")]
+pub struct OnnxEmbedder {
+    tokenizer: tokenizers::Tokenizer,
+    session: std::sync::Mutex<ort::session::Session>,
+    types: bool,
+    mean: bool,
+    pad: u32,
+    dim: usize,
+    query_prefix: String,
+    name: String,
+}
+
+#[cfg(feature = "onnx")]
+impl OnnxEmbedder {
+    /// Texts in one run, sorted by length so that little of it is padding.
+    const BATCH: usize = 32;
+
+    pub fn open(dir: &Path) -> Result<OnnxEmbedder> {
+        use ort::session::builder::GraphOptimizationLevel;
+        use ort::session::Session;
+        let e = |x: String| model_err(format!("{}: {x}", dir.display()));
+        let json = |f: &str| -> Option<serde_json::Value> { std::fs::read_to_string(dir.join(f)).ok().and_then(|t| serde_json::from_str(&t).ok()) };
+        let config = json("config.json").unwrap_or_default();
+        let pooling = json("1_Pooling/config.json").unwrap_or_default();
+        let mean = pooling["pooling_mode_mean_tokens"].as_bool().unwrap_or(false) && !pooling["pooling_mode_cls_token"].as_bool().unwrap_or(false);
+        let query_prefix = json("config_sentence_transformers.json").and_then(|c| c["prompts"]["query"].as_str().map(String::from)).unwrap_or_default();
+        let pad = config["pad_token_id"].as_u64().unwrap_or(0) as u32;
+        // sentence-transformers' max_seq_length, if set, else the model's
+        // positions, at most 512: fewer tokens run faster (128 tokens embed
+        // about 7 times faster than 512, for 0.01 to 0.04 nDCG@10 on BEIR).
+        let max_tokens = json("sentence_bert_config.json")
+            .and_then(|c| c["max_seq_length"].as_u64())
+            .or_else(|| config["max_position_embeddings"].as_u64())
+            .map_or(512, |n| n as usize)
+            .min(512);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let session = Session::builder(crate::query::cross_encoder::onnx_environment().map_err(|x| e(x.to_string()))?)
+            .map_err(|x| e(x.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|x| e(x.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|x| e(x.to_string()))?
+            .commit_from_file(dir.join(crate::query::cross_encoder::ONNX))
+            .map_err(|x| e(format!("model.onnx: {x}")))?;
+        let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
+        if !names.iter().any(|n| n == "input_ids") || !names.iter().any(|n| n == "attention_mask") {
+            return Err(e("model.onnx does not take input_ids and attention_mask".into()));
+        }
+        let types = names.iter().any(|n| n == "token_type_ids");
+        let dim = config["hidden_size"].as_u64().or_else(|| config["dim"].as_u64()).ok_or_else(|| e("config.json has no hidden_size".into()))? as usize;
+        let mut tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|x| e(x.to_string()))?;
+        tokenizer.with_truncation(Some(tokenizers::TruncationParams { max_length: max_tokens, ..Default::default() })).map_err(|x| e(x.to_string()))?;
+        tokenizer.with_padding(None);
+        let name = format!("onnx:{}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        Ok(OnnxEmbedder { tokenizer, session: std::sync::Mutex::new(session), types, mean, pad, dim, query_prefix, name })
+    }
+
+    fn run(&self, enc: &[&tokenizers::Encoding]) -> Result<Vec<Vec<f32>>> {
+        use ort::value::Tensor;
+        let attempt = || -> std::result::Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+            let (n, len) = (enc.len(), enc.iter().map(|e| e.len()).max().unwrap_or(0).max(1));
+            let (mut ids, mut mask) = (vec![self.pad as i64; n * len], vec![0i64; n * len]);
+            for (k, e) in enc.iter().enumerate() {
+                for (j, &id) in e.get_ids().iter().enumerate() {
+                    ids[k * len + j] = id as i64;
+                    mask[k * len + j] = 1;
+                }
+            }
+            let shape = vec![n as i64, len as i64];
+            let tensor = |v: Vec<i64>| Tensor::from_array((shape.clone(), v));
+            let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+            let outputs = match self.types {
+                true => session.run(ort::inputs!["input_ids" => tensor(ids)?, "attention_mask" => tensor(mask.clone())?, "token_type_ids" => tensor(vec![0i64; n * len])?])?,
+                false => session.run(ort::inputs!["input_ids" => tensor(ids)?, "attention_mask" => tensor(mask.clone())?])?,
+            };
+            let (shape, h) = outputs[0].try_extract_tensor::<f32>()?;
+            let d = *shape.last().ok_or("the model's output has no dimensions")? as usize;
+            if d != self.dim || h.len() != n * len * d {
+                return Err(format!("the model's output is {shape:?}, not [{n}, {len}, {}]", self.dim).into());
+            }
+            Ok((0..n)
+                .map(|k| {
+                    let mut v = vec![0f32; d];
+                    let rows = if self.mean { 0..enc[k].len() } else { 0..1 };
+                    let count = rows.len().max(1) as f32;
+                    for j in rows {
+                        v.iter_mut().zip(&h[(k * len + j) * d..(k * len + j + 1) * d]).for_each(|(a, &x)| *a += x / count);
+                    }
+                    normalize(&mut v);
+                    v
+                })
+                .collect())
+        };
+        attempt().map_err(|e| model_err(format!("{}: {e}", self.name)))
+    }
+}
+
+#[cfg(feature = "onnx")]
+impl Embedder for OnnxEmbedder {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    /// ONNX Runtime runs a batch on every core itself.
+    fn parallel(&self) -> bool {
+        false
+    }
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let enc = self.tokenizer.encode_batch(texts.to_vec(), true).map_err(|e| model_err(format!("{}: {e}", self.name)))?;
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&i| enc[i].len());
+        let mut out = vec![Vec::new(); texts.len()];
+        for chunk in order.chunks(Self::BATCH) {
+            let batch: Vec<&tokenizers::Encoding> = chunk.iter().map(|&i| &enc[i]).collect();
+            for (&i, v) in chunk.iter().zip(self.run(&batch)?) {
+                out[i] = v;
+            }
+        }
+        Ok(out)
+    }
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        Ok(self.embed(&[&format!("{}{text}", self.query_prefix)])?.pop().unwrap_or_default())
+    }
+}
+
+// ---------------------------------------------------------------- learned sparse
+
+/// A learned sparse encoder for SPARSE fields, "inference-free" on the
+/// query side (OpenSearch's neural sparse doc-v3-distill and its kind): a
+/// document's term weights come from a transformer with its masked-language
+/// head, exported to ONNX with the pooling in the graph (its one output is
+/// `[batch, vocabulary]`, the max over tokens of `log(1 + relu(logits))`;
+/// `research/cpu-encoders/sparse_onnx_export.py` writes it), and a query's
+/// are its tokens weighted by the model's IDF table (`idf.json`), a lookup
+/// that runs no model. Terms are the tokenizer's vocabulary entries, so a
+/// document's and a query's weights meet in a SPARSE field's index, which
+/// ranks their dot product with the text index's top-k code.
+///
+/// On BEIR (SciFact, NFCorpus, ArguAna; `examples/sparse_beir.rs`, int8,
+/// 4 cores) its documents fused with BM25 by `rrf` come within 1.2 to 1.8
+/// points of nDCG@10 of granite-small-r2's dense vectors, with a query's
+/// p50 at 0.2 to 2.6 ms against 6 to 50 ms and 50 to 80 times the queries
+/// a second, and documents encode faster than granite's (19 to 34 a
+/// second).
+#[cfg(feature = "onnx")]
+pub struct SparseEncoder {
+    tokenizer: tokenizers::Tokenizer,
+    session: std::sync::Mutex<ort::session::Session>,
+    /// The vocabulary entry of each token id.
+    terms: Vec<String>,
+    /// The query side's weight of each token id (1 where `idf.json` has none).
+    idf: Vec<f32>,
+    /// Token ids that are never terms: the tokenizer's special tokens.
+    special: Vec<bool>,
+    pad: u32,
+    name: String,
+}
+
+#[cfg(feature = "onnx")]
+impl SparseEncoder {
+    /// Tokens in one run, padding included: the head's logits are
+    /// `[batch, tokens, vocabulary]` floats, 2 GB for 32 documents of 512
+    /// tokens, so a run is sized by tokens (4,096: 0.5 GB), not documents.
+    const TOKENS: usize = 4096;
+
+    pub fn open(dir: &Path) -> Result<SparseEncoder> {
+        use ort::session::builder::GraphOptimizationLevel;
+        use ort::session::Session;
+        let e = |x: String| model_err(format!("{}: {x}", dir.display()));
+        let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        // sentence-transformers' max_seq_length, if set, else the model's
+        // positions, at most 512, as OnnxEmbedder reads it
+        let max_tokens = std::fs::read_to_string(dir.join("sentence_bert_config.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|c| c["max_seq_length"].as_u64())
+            .or_else(|| config["max_position_embeddings"].as_u64())
+            .map_or(512, |n| n as usize)
+            .min(512);
+        let mut tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|x| e(x.to_string()))?;
+        tokenizer.with_truncation(Some(tokenizers::TruncationParams { max_length: max_tokens, ..Default::default() })).map_err(|x| e(x.to_string()))?;
+        // tokenizer.json may pad a batch to its longest, and the mask would
+        // then cover the padding: a run pads itself
+        tokenizer.with_padding(None);
+        let vocab = tokenizer.get_vocab_size(true);
+        let terms: Vec<String> = (0..vocab as u32).map(|i| tokenizer.id_to_token(i).unwrap_or_default()).collect();
+        let mut special = vec![false; vocab];
+        for (&id, t) in tokenizer.get_added_tokens_decoder().iter() {
+            if t.special && (id as usize) < vocab {
+                special[id as usize] = true;
+            }
+        }
+        let idf_text = std::fs::read_to_string(dir.join("idf.json")).map_err(|x| e(format!("idf.json: {x}")))?;
+        let idf_map: std::collections::HashMap<String, f64> = serde_json::from_str(&idf_text).map_err(|x| e(format!("idf.json: {x}")))?;
+        let mut idf = vec![1f32; vocab];
+        for (t, w) in idf_map {
+            if let Some(id) = tokenizer.token_to_id(&t) {
+                if let Some(slot) = idf.get_mut(id as usize) {
+                    *slot = w as f32;
+                }
+            }
+        }
+        let pad = config["pad_token_id"].as_u64().unwrap_or(0) as u32;
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let session = Session::builder(crate::query::cross_encoder::onnx_environment().map_err(|x| e(x.to_string()))?)
+            .map_err(|x| e(x.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|x| e(x.to_string()))?
+            .with_intra_threads(threads)
+            .map_err(|x| e(x.to_string()))?
+            .commit_from_file(dir.join(crate::query::cross_encoder::ONNX))
+            .map_err(|x| e(format!("model.onnx: {x}")))?;
+        let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
+        if !names.iter().any(|n| n == "input_ids") || !names.iter().any(|n| n == "attention_mask") {
+            return Err(e("model.onnx does not take input_ids and attention_mask".into()));
+        }
+        let name = format!("sparse:{}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        Ok(SparseEncoder { tokenizer, session: std::sync::Mutex::new(session), terms, idf, special, pad, name })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The documents' term weights, the zero weights left out.
+    pub fn encode_documents(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
+        let enc = self.tokenizer.encode_batch(texts.to_vec(), true).map_err(|e| model_err(format!("{}: {e}", self.name)))?;
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&i| enc[i].len());
+        let mut out = vec![Vec::new(); texts.len()];
+        // runs of documents sorted by length, so that little is padding,
+        // each of at most TOKENS tokens padded
+        let mut start = 0;
+        while start < order.len() {
+            let mut end = start + 1;
+            while end < order.len() && (end - start + 1) * enc[order[end]].len().max(1) <= Self::TOKENS {
+                end += 1;
+            }
+            let chunk = &order[start..end];
+            let batch: Vec<&tokenizers::Encoding> = chunk.iter().map(|&i| &enc[i]).collect();
+            for (&i, v) in chunk.iter().zip(self.run(&batch)?) {
+                out[i] = v;
+            }
+            start = end;
+        }
+        Ok(out)
+    }
+
+    /// A query's term weights: its distinct tokens, each weighted by the
+    /// IDF table. No model runs.
+    pub fn encode_query(&self, text: &str) -> Result<Vec<(String, f32)>> {
+        let enc = self.tokenizer.encode(text, false).map_err(|e| model_err(format!("{}: {e}", self.name)))?;
+        let mut ids: Vec<u32> = enc.get_ids().iter().copied().filter(|&i| !self.special.get(i as usize).copied().unwrap_or(true)).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(ids.into_iter().map(|i| (self.terms[i as usize].clone(), self.idf[i as usize])).collect())
+    }
+
+    fn run(&self, enc: &[&tokenizers::Encoding]) -> Result<Vec<Vec<(String, f32)>>> {
+        use ort::value::Tensor;
+        let attempt = || -> std::result::Result<Vec<Vec<(String, f32)>>, Box<dyn std::error::Error>> {
+            let (n, len) = (enc.len(), enc.iter().map(|e| e.len()).max().unwrap_or(0).max(1));
+            let (mut ids, mut mask) = (vec![self.pad as i64; n * len], vec![0i64; n * len]);
+            for (k, e) in enc.iter().enumerate() {
+                for (j, &id) in e.get_ids().iter().enumerate() {
+                    ids[k * len + j] = id as i64;
+                    mask[k * len + j] = 1;
+                }
+            }
+            let shape = vec![n as i64, len as i64];
+            let tensor = |v: Vec<i64>| Tensor::from_array((shape.clone(), v));
+            let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+            let outputs = session.run(ort::inputs!["input_ids" => tensor(ids)?, "attention_mask" => tensor(mask)?])?;
+            let (shape, w) = outputs[0].try_extract_tensor::<f32>()?;
+            let v = self.terms.len();
+            if shape.len() != 2 || w.len() != n * v {
+                return Err(format!("the model's output is {shape:?}, not [{n}, {v}]: export it with its pooling (sparse_onnx_export.py)").into());
+            }
+            Ok((0..n)
+                .map(|k| {
+                    w[k * v..(k + 1) * v]
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, &x)| x > 0.0 && !self.special[i])
+                        .map(|(i, &x)| (self.terms[i].clone(), x))
+                        .collect()
+                })
+                .collect())
+        };
+        attempt().map_err(|e| model_err(format!("{}: {e}", self.name)))
+    }
+}
+
+/// A SPARSE field embedded by it (`embed`, `model`) gets its documents'
+/// term weights at write, and a query's text its weights by
+/// [`crate::db::Db::embed_query_in`] (a server's `{"embed": "text"}`).
+#[cfg(feature = "onnx")]
+impl Embedder for SparseEncoder {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+    /// It makes no vectors.
+    fn dim(&self) -> usize {
+        0
+    }
+    fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Err(model_err(format!("{} is a learned sparse model: it makes term weights for a SPARSE field, not vectors", self.name)))
+    }
+    /// ONNX Runtime runs a batch on every core itself.
+    fn parallel(&self) -> bool {
+        false
+    }
+    fn sparse(&self) -> bool {
+        true
+    }
+    fn embed_sparse(&self, texts: &[&str]) -> Result<Vec<Vec<(String, f32)>>> {
+        self.encode_documents(texts)
+    }
+    fn embed_query_sparse(&self, text: &str) -> Result<Vec<(String, f32)>> {
+        self.encode_query(text)
+    }
 }
 
 // ---------------------------------------------------------------- bert

@@ -118,7 +118,7 @@ export declare class Database extends Searchable {
   embed(text?: string | null, options?: { field?: string; table?: string; image?: Bytes; audio?: Bytes }): Promise<number[]>;
   embedTokens(text: string, field: string, options?: { table?: string }): Promise<number[][]>;
   sidNext(prefixes: Iterable<string>, options: { field: string; where?: string; params?: Params; table?: string }): Promise<Record<string, Record<string, number>>>;
-  trainCodebook(field: string, name: string, options?: { table?: string; models?: Path; levels?: number; k?: number; iterations?: number; sample?: number; seed?: number }): Promise<string>;
+  trainCodebook(field: string, name: string, options?: { table?: string; models?: Path; levels?: number; k?: number; iterations?: number; sample?: number; seed?: number; balanced?: boolean }): Promise<string>;
 
   /** Writes the rows in memory into segments, merges them into as few as
    * it can, drops deleted rows and returns the freed space to the file
@@ -143,7 +143,7 @@ export declare function planSqlite(sqlitePath: Path, options?: { tables?: Tables
 export declare function fromParquet(parquetPath: Path, path: Path, options?: CreateOptions & { table?: string; schema?: SchemaInput; key?: string; blobsBase64?: boolean }): Promise<Database>;
 export declare function planParquet(parquetPath: Path, options?: { table?: string; schema?: SchemaInput; key?: string; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
 export declare function upgrade(path: Path): Promise<{ old: string; tables: number; rows: number } | null>;
-export declare function trainCodebook(vectors: Iterable<number[] | Float32Array>, name: string, options?: { models?: Path; levels?: number; k?: number; iterations?: number; sample?: number; seed?: number }): Promise<string>;
+export declare function trainCodebook(vectors: Iterable<number[] | Float32Array>, name: string, options?: { models?: Path; levels?: number; k?: number; iterations?: number; sample?: number; seed?: number; balanced?: boolean }): Promise<string>;
 /** The addon's version. */
 export declare const version: string;
 

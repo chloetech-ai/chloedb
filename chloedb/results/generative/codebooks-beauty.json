@@ -1,0 +1,68 @@
+{
+ "data": "beauty",
+ "items": 12101,
+ "dim": 384,
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.30GHz",
+  "cores": 4,
+  "memory_gb": 16.5,
+  "os": "Linux 6.18.44-fc-v378",
+  "torch": "2.15.0+cpu"
+ },
+ "codebooks": {
+  "plain": {
+   "codes": 10126,
+   "largest_group": 12,
+   "levels": [
+    {
+     "fullest": 211,
+     "perplexity": 202.54273126830586,
+     "residual": 0.1849055828176836,
+     "used": 256
+    },
+    {
+     "fullest": 508,
+     "perplexity": 89.97543613264779,
+     "residual": 0.15409936879071304,
+     "used": 256
+    },
+    {
+     "fullest": 630,
+     "perplexity": 56.7474477651523,
+     "residual": 0.1345875207613304,
+     "used": 256
+    }
+   ],
+   "rows": 12101,
+   "shared_rows": 3288,
+   "train_seconds": 8.7
+  },
+  "balanced": {
+   "codes": 10555,
+   "largest_group": 17,
+   "levels": [
+    {
+     "fullest": 82,
+     "perplexity": 251.2725588337289,
+     "residual": 0.18597554717609566,
+     "used": 256
+    },
+    {
+     "fullest": 89,
+     "perplexity": 250.4344579137978,
+     "residual": 0.15203734276925587,
+     "used": 256
+    },
+    {
+     "fullest": 81,
+     "perplexity": 251.1349633412958,
+     "residual": 0.13236429365045163,
+     "used": 256
+    }
+   ],
+   "rows": 12101,
+   "shared_rows": 2601,
+   "train_seconds": 18.0
+  }
+ }
+}

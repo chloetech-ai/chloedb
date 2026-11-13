@@ -12,13 +12,18 @@
 //! 4. **Stem** with Snowball English (Porter 2).
 //!
 //! That is the `english` [`Analyzer`], every TEXT field's unless its schema
-//! names another: `simple` stops after step 2.
+//! names another: `simple` stops after step 2. `standard` and the
+//! language analyzers ([`Language`]) read text in any script
+//! ([`super::standard`]).
 
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use rust_stemmers::{Algorithm, Stemmer};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+pub use super::standard::Language;
+use super::standard;
 
 /// How a TEXT field's text becomes terms, for its documents and the
 /// searches of it alike. A field's schema records its analyzer's name and
@@ -33,19 +38,62 @@ pub enum Analyzer {
     #[default]
     English,
     /// `simple` version 1: words lowercased and folded, nothing removed or
-    /// stemmed, for names, codes and text in other languages.
+    /// stemmed, for names and codes.
     Simple,
+    /// `standard` version 1: text in any script, normalized (NFKC,
+    /// lowercase), its words kept whole with their marks, Chinese,
+    /// Japanese, Thai, Lao, Khmer and Burmese as dictionary words, Korean
+    /// as bigrams, accents folded; nothing removed or stemmed
+    /// ([`super::standard`]).
+    Standard,
+    /// `cjk` version 1: `standard`, with Chinese and Japanese as bigrams
+    /// of characters too, which finds any two characters or more that
+    /// follow each other.
+    Cjk,
+    /// A language's analyzer, version 1 (`french`, `arabic`, `hindi`,
+    /// ...): `standard`, then the language's normalization and stemmer.
+    Language(Language),
 }
 
 impl Analyzer {
-    /// Every analyzer this version of Strata has.
-    pub const ALL: [Analyzer; 2] = [Analyzer::English, Analyzer::Simple];
+    /// Every analyzer this version of ChloeDB has.
+    pub const ALL: [Analyzer; 4 + Language::ALL.len()] = {
+        let mut all = [Analyzer::English; 4 + Language::ALL.len()];
+        all[1] = Analyzer::Simple;
+        all[2] = Analyzer::Standard;
+        all[3] = Analyzer::Cjk;
+        let mut i = 0;
+        while i < Language::ALL.len() {
+            all[4 + i] = Analyzer::Language(Language::ALL[i]);
+            i += 1;
+        }
+        all
+    };
 
     pub fn name(self) -> &'static str {
         match self {
             Analyzer::English => "english",
             Analyzer::Simple => "simple",
+            Analyzer::Standard => "standard",
+            Analyzer::Cjk => "cjk",
+            Analyzer::Language(l) => l.name(),
         }
+    }
+
+    /// The language whose normalization and stemmer follow `standard`'s
+    /// steps; `None` for `standard` itself, and for `english` and
+    /// `simple`, which have their own steps.
+    fn language(self) -> Option<Language> {
+        match self {
+            Analyzer::Language(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Whether the analyzer reads words as `english` and `simple` do
+    /// ([`for_each_word`]); the others read them as `standard` does.
+    fn folds_words(self) -> bool {
+        matches!(self, Analyzer::English | Analyzer::Simple)
     }
 
     pub fn version(self) -> u32 {
@@ -67,18 +115,42 @@ impl Analyzer {
         (self != Analyzer::English).then(|| format!("analyzer:{}:{}", self.name(), self.version()))
     }
 
-    /// The term for a lowercased, folded word, or `None` if it is dropped.
+    /// Calls `f` with every token of `text` in order: its words,
+    /// normalized as the analyzer normalizes them, and for `standard` and
+    /// the languages also the bigrams and dictionary words of the scripts
+    /// written without spaces. [`Analyzer::term_of`] makes a token a term.
+    pub fn for_each_token(self, text: &str, f: impl FnMut(&str)) {
+        if self.folds_words() {
+            for_each_word(text, f)
+        } else {
+            standard::for_each_token(text, self.language(), self == Analyzer::Cjk, f)
+        }
+    }
+
+    /// The term for a token ([`Analyzer::for_each_token`]), or `None` if
+    /// it is dropped.
     pub fn term_of(self, word: &str) -> Option<Cow<'_, str>> {
         match self {
             Analyzer::English => term_of(word),
             Analyzer::Simple => Some(Cow::Borrowed(word)),
+            Analyzer::Standard | Analyzer::Cjk | Analyzer::Language(_) => standard::term_of(word, self.language()),
+        }
+    }
+
+    /// A token as a prefix query (`caf*`) matches it against the field's
+    /// terms: normalized and folded as they are, not stemmed.
+    pub fn prefix_of(self, token: &str) -> String {
+        if self.folds_words() {
+            token.to_string()
+        } else {
+            standard::prefix_of(token)
         }
     }
 
     /// The analysed terms of `text`, in order.
     pub fn analyze(self, text: &str) -> Vec<String> {
         let mut out = Vec::new();
-        for_each_word(text, |w| {
+        self.for_each_token(text, |w| {
             if let Some(t) = self.term_of(w) {
                 out.push(t.into_owned());
             }
@@ -91,6 +163,17 @@ impl Analyzer {
     /// does: [`Analyzer::drops_query_stopwords`]).
     pub fn query_term_seq(self, text: &str, drop_stopwords: bool) -> Vec<String> {
         let mut out = Vec::new();
+        if !self.folds_words() {
+            self.for_each_token(text, |w| {
+                if drop_stopwords && is_query_stopword(w, false) {
+                    return;
+                }
+                if let Some(t) = self.term_of(w) {
+                    out.push(t.into_owned());
+                }
+            });
+            return out;
+        }
         for_each_word_in(text, |w, contraction| {
             if drop_stopwords && is_query_stopword(w, contraction) {
                 return;
@@ -297,7 +380,7 @@ fn fold_into(word: &str, out: &mut String) {
 
 /// ASCII replacement of a lowercase Latin letter with a diacritic or a
 /// ligature (`""` for combining accents); `None` to keep the character.
-fn fold(c: char) -> Option<&'static str> {
+pub(super) fn fold(c: char) -> Option<&'static str> {
     if c.is_ascii() {
         return None;
     }

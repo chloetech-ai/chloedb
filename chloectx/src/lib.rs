@@ -9,7 +9,9 @@
 
 pub mod anchor;
 pub mod app;
+pub mod capsule;
 pub mod benchdata;
+pub mod blame;
 pub mod capture;
 pub mod cluster;
 pub mod consolidate;
@@ -29,8 +31,10 @@ pub mod mcp;
 pub mod next_files;
 pub mod paths;
 pub mod recall;
+pub mod receipt;
 pub mod record;
 pub mod redact;
+pub mod snapshots;
 pub mod sqlguard;
 pub mod store;
 pub mod sync;

@@ -120,7 +120,7 @@ fn through_sql(path: &Path, layout: Layout) {
     assert_eq!(required(path), ["compact_keys", "field_ids", "packed_positions"]);
     assert_eq!(db.storage().table("plain").unwrap().fields[1].analyzer, None);
     for bad in [
-        "CREATE TABLE t (id KEYWORD PRIMARY KEY, body TEXT OPTIONS(analyzer = 'french'))",
+        "CREATE TABLE t (id KEYWORD PRIMARY KEY, body TEXT OPTIONS(analyzer = 'klingon'))",
         "CREATE TABLE t (id KEYWORD PRIMARY KEY, tag KEYWORD OPTIONS(analyzer = 'simple'))",
         "CREATE TABLE t (id KEYWORD PRIMARY KEY, body TEXT OPTIONS(analyzer = 1))",
     ] {

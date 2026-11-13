@@ -333,7 +333,8 @@ impl SegmentWriter {
 }
 
 /// Whether a section is read at random positions: graph hops, float32
-/// re-ranking, dictionary blocks, doc store and key lookups. Everything else
+/// re-ranking, dictionary blocks, doc store and key lookups, and a substring
+/// index, whose every step lands elsewhere. Everything else
 /// (postings, codes, columns, IVF clusters, and document lengths, which
 /// ranking reads densely) is read a run at a time and benefits from the
 /// kernel's read-ahead.
@@ -344,6 +345,7 @@ pub fn random_access(name: &str) -> bool {
         || name.ends_with(".f32")
         || name.contains(".hnsw")
         || name.starts_with("graph.")
+        || name.starts_with("sub.")
 }
 
 /// A read-only segment: zero-copy views of its sections.

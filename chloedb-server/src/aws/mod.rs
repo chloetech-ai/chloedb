@@ -95,10 +95,11 @@ pub struct Catalog {
     pub quota_vcpus: Option<f64>,
     pub spot_quota_vcpus: Option<f64>,
     /// US dollars: an EKS cluster an hour, a GB-month of gp3, a public
-    /// IPv4 address an hour.
+    /// IPv4 address an hour, a NAT gateway an hour.
     pub eks_hour: Option<f64>,
     pub gp3_gb_month: Option<f64>,
     pub ipv4_hour: Option<f64>,
+    pub nat_hour: Option<f64>,
     /// What could not be fetched (a price, a quota), said once each.
     pub missing: Vec<String>,
 }
@@ -371,11 +372,11 @@ impl Aws {
         };
         let quota_vcpus = q(quota, "the on-demand vCPU quota");
         let spot_quota_vcpus = q(spot_quota, "the spot vCPU quota");
-        let (eks_hour, gp3_gb_month, ipv4_hour) = extras.unwrap_or_else(|e| {
-            missing.push(format!("EKS, gp3 and IPv4 prices: {e}"));
-            (None, None, None)
+        let (eks_hour, gp3_gb_month, ipv4_hour, nat_hour) = extras.unwrap_or_else(|e| {
+            missing.push(format!("EKS, gp3, IPv4 and NAT gateway prices: {e}"));
+            (None, None, None, None)
         });
-        let cat = Arc::new(Catalog { region: region.into(), at_ms: now_ms(), machines, quota_vcpus, spot_quota_vcpus, eks_hour, gp3_gb_month, ipv4_hour, missing });
+        let cat = Arc::new(Catalog { region: region.into(), at_ms: now_ms(), machines, quota_vcpus, spot_quota_vcpus, eks_hour, gp3_gb_month, ipv4_hour, nat_hour, missing });
         self.catalogs.lock().unwrap_or_else(|e| e.into_inner()).insert(region.into(), cat.clone());
         Ok(cat)
     }
@@ -450,20 +451,21 @@ impl Aws {
     }
 
     /// An EKS cluster an hour, a GB-month of gp3, a public IPv4 address an
-    /// hour, in `region`.
-    async fn extra_prices(&self, c: &Creds, region: &str) -> Result<(Option<f64>, Option<f64>, Option<f64>), String> {
+    /// hour, a NAT gateway an hour, in `region`.
+    async fn extra_prices(&self, c: &Creds, region: &str) -> Result<(Option<f64>, Option<f64>, Option<f64>, Option<f64>), String> {
         let get = |service: &'static str, filters: Vec<(&'static str, String)>, usage: &'static str| async move {
             let f: Vec<(&str, &str)> = filters.iter().map(|(k, v)| (*k, v.as_str())).collect();
             let page = self.target(c, "pricing", "us-east-1", "AWSPriceListService.GetProducts", "application/x-amz-json-1.1", &price_query(service, &f)).await?;
             Ok::<_, String>(price_with_usage(&page, usage))
         };
         let r = region.to_string();
-        let (eks, gp3, ipv4) = tokio::join!(
+        let (eks, gp3, ipv4, nat) = tokio::join!(
             get("AmazonEKS", vec![("regionCode", r.clone()), ("operation", "CreateOperation".into())], "AmazonEKS-Hours:perCluster"),
             get("AmazonEC2", vec![("regionCode", r.clone()), ("productFamily", "Storage".into()), ("volumeApiName", "gp3".into())], "EBS:VolumeUsage.gp3"),
-            get("AmazonVPC", vec![("regionCode", r), ("group", "VPCPublicIPv4Address".into())], "PublicIPv4:InUseAddress"),
+            get("AmazonVPC", vec![("regionCode", r.clone()), ("group", "VPCPublicIPv4Address".into())], "PublicIPv4:InUseAddress"),
+            get("AmazonEC2", vec![("regionCode", r), ("productFamily", "NAT Gateway".into())], "NatGateway-Hours"),
         );
-        Ok((eks?, gp3?, ipv4?))
+        Ok((eks?, gp3?, ipv4?, nat?))
     }
 
     /// CloudFormation's own check of a template (free; creates nothing).

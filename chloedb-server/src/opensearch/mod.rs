@@ -235,26 +235,91 @@ async fn dispatch(State(os): State<Arc<Os>>, peer: Option<ConnectInfo<std::net::
     let head = method == Method::HEAD;
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    let r = if let Some(why) = crate::auth::browser_check(os.hosts.as_deref(), host, origin, method.is_safe()) {
-        Err(OsError::new(403, "security_exception", why))
+    let caller = crate::http::caller_of(&headers, peer.map(|p| p.0), &os.svc.trusted_proxies);
+    let auth = credential(&headers);
+    let mut who = None;
+    let (r, note, change) = if let Some(why) = crate::auth::browser_check(os.hosts.as_deref(), host, origin, method.is_safe()) {
+        (Err(OsError::new(403, "security_exception", why)), None, crate::keys::Change::default())
     } else {
-        let auth = credential(&headers);
-        match os.svc.keys.resolve(os.token.as_ref(), os.cluster.as_ref(), auth.as_deref()) {
-            None => Err(OsError::new(401, "security_exception", "missing or wrong credentials: send a key or the token as a Bearer token, or as the password of Basic authentication")),
+        who = os.svc.keys.resolve(os.token.as_ref(), os.cluster.as_ref(), auth.as_deref());
+        match who.clone() {
+            None => (Err(OsError::new(401, "security_exception", "missing or wrong credentials: send a key or the token as a Bearer token, or as the password of Basic authentication")), None, crate::keys::Change::default()),
+            // A key limited to tables calls the main listener's routes,
+            // which check its tables ([`crate::scoped`]); this one's do not.
+            Some(who) if who.limited() => (Err(OsError::new(403, "security_exception", format!("the key {:?} is limited to tables: it calls the HTTP API, not the OpenSearch one", who.name))), None, crate::keys::Change::default()),
             Some(who) => {
-                let caller = crate::http::caller_of(&headers, peer.map(|p| p.0), &os.svc.trusted_proxies);
                 let tc = Arc::new(crate::telemetry::Caller::of(&who, Some(caller.clone())));
-                let body = match unzip(&headers, body) {
-                    Ok(b) => b,
-                    Err(e) => return finish(&os, &label, t0, head, &q, Err(e)),
-                };
-                let fut = os.route(&method, &segs, &q, &headers, body, who);
-                let fut = crate::telemetry::calling(tc, crate::keys::calling(caller, fut));
-                crate::service::DEADLINE.scope(Default::default(), fut).await
+                match unzip(&headers, body, os.svc.max_body) {
+                    Err(e) => (Err(e), None, crate::keys::Change::default()),
+                    Ok(body) => {
+                        let fut = os.route(&method, &segs, &q, &headers, body, who);
+                        let fut = crate::telemetry::calling(tc, crate::keys::calling(caller.clone(), crate::keys::noting_change(fut)));
+                        crate::service::DEADLINE.scope(Default::default(), fut).await
+                    }
+                }
             }
         }
     };
+    let status = match &r {
+        Ok(r) => r.status,
+        Err(e) => e.status,
+    };
+    // As the main listener's: refusals, an admin's changes and what the
+    // service noted go to the audit log; reads answered do not.
+    let refusal = status == 401 || status == 403;
+    if refusal || note.is_some() || admin_route(&method, &segs) {
+        let known = match &who {
+            None => os.svc.keys.identify(auth.as_deref()),
+            Some(_) => None,
+        };
+        let detail = match (&known, note) {
+            (Some((_, name, why)), None) => Some(format!("refused: the key {name} is {why}")),
+            (_, n) => n,
+        };
+        let failed = match &r {
+            Err(e) if status >= 400 && !refusal => Some(json!({"error": e.reason})),
+            _ => None,
+        };
+        os.svc.audit_keep(
+            crate::keys::Entry {
+                ts_ms: crate::telemetry::now_ms(),
+                who: who.as_ref().map_or_else(|| known.as_ref().map_or("unknown".into(), |k| k.1.clone()), crate::keys::audit_name),
+                key: who.as_ref().and_then(|w| w.key.clone()).or_else(|| known.as_ref().map(|k| k.0.clone())),
+                scope: who.as_ref().map(|w| w.scope.name()),
+                method: method.to_string(),
+                route: format!("opensearch {label}"),
+                status,
+                ms: t0.elapsed().as_secs_f64() * 1e3,
+                request_id: None,
+                detail,
+                kind: change.kind.unwrap_or(if refusal { crate::keys::REFUSAL } else { crate::keys::CHANGE }).into(),
+                addr: caller.addr.clone(),
+                client: caller.named(),
+                reason: caller.reason.clone(),
+                object: change.object.or_else(|| segs.first().filter(|s| !s.starts_with('_')).map(|ix| format!("index {ix}"))),
+                before: change.before,
+                after: change.after.or(failed),
+                actor: change.actor.unwrap_or("person").into(),
+            },
+            true,
+        );
+    }
     finish(&os, &label, t0, head, &q, r)
+}
+
+/// Whether a request changes indexes, mappings, settings or aliases: what
+/// [`Os::route`] asks the admin scope for.
+fn admin_route(method: &Method, segs: &[String]) -> bool {
+    let s: Vec<&str> = segs.iter().map(String::as_str).collect();
+    use Method as M;
+    matches!(
+        (method, s.as_slice()),
+        (&M::POST, ["_aliases"])
+            | (&M::PUT | &M::POST | &M::DELETE, [_, "_alias" | "_aliases", _])
+            | (&M::PUT | &M::POST, [_, "_mapping", ..])
+            | (&M::PUT, [_, "_settings"])
+            | (&M::PUT | &M::DELETE, [_])
+    )
 }
 
 /// The answer, with `filter_path` applied and counted in the metrics.
@@ -280,15 +345,20 @@ fn finish(os: &Os, label: &str, t0: Instant, head: bool, q: &HashMap<String, Str
     (code, [(header::CONTENT_TYPE, ct)], text).into_response()
 }
 
-/// A request body, gunzipped if it says it is gzip.
-fn unzip(headers: &HeaderMap, body: Bytes) -> Result<Bytes, OsError> {
+/// A request body, gunzipped if it says it is gzip: to `max` bytes at
+/// most, as a body sent as it is (a small body of zeros would otherwise
+/// inflate past the memory the process has).
+fn unzip(headers: &HeaderMap, body: Bytes, max: usize) -> Result<Bytes, OsError> {
     let gz = headers.get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("gzip"));
     if !gz {
         return Ok(body);
     }
     use std::io::Read;
     let mut out = Vec::new();
-    flate2::read::GzDecoder::new(&body[..]).read_to_end(&mut out).map_err(|e| OsError::new(400, "parse_exception", format!("the body is not gzip: {e}")))?;
+    flate2::read::GzDecoder::new(&body[..]).take(max as u64 + 1).read_to_end(&mut out).map_err(|e| OsError::new(400, "parse_exception", format!("the body is not gzip: {e}")))?;
+    if out.len() > max {
+        return Err(OsError::new(413, "content_too_long_exception", format!("the body inflates past {max} bytes, the most a request may send")));
+    }
     Ok(Bytes::from(out))
 }
 
@@ -628,6 +698,13 @@ impl Os {
         let s: Vec<&str> = segs.iter().map(String::as_str).collect();
         let need = |scope: Scope, what: &str| who.may(scope, what).map_err(OsError::from);
         use Method as M;
+        // Whether the server is up is anyone's to ask; every other route
+        // reads documents or what indexes hold, and needs a read key at
+        // least (a feed key reads the change feed alone).
+        let up = matches!((method, s.as_slice()), (&M::GET | &M::HEAD, []) | (&M::GET, ["_cluster", "health", ..]));
+        if !up {
+            need(Scope::Read, "the OpenSearch API")?;
+        }
         let m = method.clone();
         match (m, s.as_slice()) {
             (M::GET | M::HEAD, []) => ok(self.info().await),

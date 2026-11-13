@@ -219,6 +219,9 @@ pub struct Options {
     /// `--tenant-idle-s` and `--tenant-open-max`: when tenants are closed.
     pub tenant_idle_s: Option<f64>,
     pub tenant_open_max: Option<usize>,
+    /// A folder of each app's own token, a file by the app's name
+    /// (`CHLOEDB_APP_TOKEN_DIR`; [`crate::apps`]).
+    pub app_token_dir: Option<std::path::PathBuf>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -431,7 +434,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
-    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
+    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone()).with_token_dir(o.app_token_dir.clone());
     if let Some(url) = given(&o.tenants) {
         let cache = o.tenant_cache.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("chloedb-tenants-{}", std::process::id())));
         let d = crate::tenants::Limits::default();
@@ -452,6 +455,12 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         match crate::operator::kube::Link::new(c) {
             Ok(l) => {
                 tracing::info!(cluster = %c, "run by the Kubernetes operator: the command center shows and scales the StrataCluster");
+                // One coordinator at a time changes the map (finding E-2),
+                // known by its pod's name.
+                if let crate::service::Backend::Cluster(coord) = &svc.backend {
+                    let me = std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| format!("coordinator-{}", std::process::id()));
+                    coord.lease_map_changes(l.map_lease(&me));
+                }
                 svc.kube = Some(l);
             }
             Err(e) => tracing::warn!(cluster = %c, error = %e, "cannot reach the StrataCluster that runs this coordinator"),
@@ -712,14 +721,22 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
             return Err(format!("unknown model {name}: one of {}, or a Hugging Face repository owner/name", names.join(", ")));
         }
     };
-    let out = dir.join(&local);
+    // A model of a table in fewer bits (`potion-retrieval-32M-int8`) is
+    // its original fetched aside, then written into its own directory, so
+    // that a fetch cut short never leaves the original under its name.
+    let quantized = chloedb::embed::quantized_of(&local);
+    let model_dir = dir.join(&local);
+    let out = match quantized {
+        Some(_) => dir.join(format!(".{local}.fetch")),
+        None => model_dir.clone(),
+    };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let client = crate::http_client().build().map_err(|e| e.to_string())?;
     // Each file's path in the repository, and its name here.
     let files: Vec<(&str, &str)> = match (derives, cross_encoder::fetch_files(&local)) {
         (true, _) => chloedb::derive::model_files(&local).iter().map(|&f| (f, f)).collect(),
         (false, Some(f)) => f,
-        (false, None) => chloedb::embed::model_files(&local).iter().map(|&f| (f, f)).collect(),
+        (false, None) => chloedb::embed::model_files(quantized.map_or(local.as_str(), |q| q.0)).iter().map(|&f| (f, f)).collect(),
     };
     // A model ChloeDB knows comes from the commit it was pinned at, each
     // file checked against its SHA-256 ([`chloedb::model_pins`]); another
@@ -742,6 +759,13 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
         let tmp = out.join(format!("{file}.part"));
         std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, out.join(file))).map_err(|e| format!("{}: {e}", out.join(file).display()))?;
         tracing::info!(file, bytes = bytes.len(), "downloaded");
+    }
+    if let Some((_, elem)) = quantized {
+        let q = chloedb::embed::quantize_static(&out, &model_dir, elem).map_err(|e| e.to_string())?;
+        tracing::info!(model = %local, bytes = q.bytes_after, was = q.bytes_before, "wrote the table in {elem}");
+        let _ = std::fs::remove_dir_all(&out);
+        chloedb::embed::open(&local, dir).map_err(|e| e.to_string())?;
+        return Ok(model_dir);
     }
     if derives {
         chloedb::derive::open(&local, dir).map_err(|e| e.to_string())?;
@@ -1274,8 +1298,14 @@ pub fn spawn_watch(svc: &Arc<Service>) {
 
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
+    serve_http_until(svc, listener, access, shutdown()).await
+}
+
+/// [`serve_http`] until `stop` ends (rather than until SIGTERM or Ctrl-C
+/// and the drain time).
+pub async fn serve_http_until(svc: Arc<Service>, listener: TcpListener, access: Access, stop: impl std::future::Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
     let router = http::router(svc, &access);
-    serve_router(router, listener, &access).await
+    serve_router_until(router, listener, &access, stop).await
 }
 
 /// Serves the OpenSearch-compatible API ([`crate::opensearch`]) on its own
@@ -1283,22 +1313,54 @@ pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access
 /// TLS. `version` is the version its root reports.
 pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: Access, version: &str) -> std::io::Result<()> {
     let router = crate::opensearch::router(svc, &access, version);
-    serve_router(router, listener, &access).await
+    serve_router_until(router, listener, &access, shutdown()).await
 }
 
-/// Serves `router` on `listener`, over TLS with `access.tls`.
-async fn serve_router(router: axum::Router, listener: TcpListener, access: &Access) -> std::io::Result<()> {
+/// Serves `router` on `listener`, over TLS with `access.tls`, until `stop`
+/// ends; then waits for the requests under way, up to
+/// [`auth::Limits::stop_grace`], and returns.
+///
+/// Each connection must send a request's headers within
+/// [`auth::Limits::header_read`] (an idle keep-alive one is closed after
+/// it, and a TLS handshake has as long, 10 s at most), and the listener
+/// holds [`auth::Limits::max_connections`] at once: a client that opens
+/// thousands and sends a byte a minute holds neither the process's file
+/// descriptors nor its memory. Every answer says to browsers not to sniff
+/// its type nor be framed by another site ([`security_headers`]). Long
+/// answers that would never end on their own (a follower's feed) watch
+/// [`Stopping`] and end when the listener stops taking connections.
+pub async fn serve_router_until(router: axum::Router, listener: TcpListener, access: &Access, stop: impl std::future::Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+    let (stopping, stopped) = tokio::sync::watch::channel(false);
     // x-chloedb-* headers are read as their x-strata-* names (crate::names).
-    let router = crate::names::http_layer(router);
-    let Some(tls) = &access.tls else {
-        // Each request knows its peer's address (the audit log's `addr`).
-        return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
+    let router = crate::names::http_layer(router).layer(axum::middleware::map_response(security_headers)).layer(axum::Extension(Stopping(stopped)));
+    let tls = match &access.tls {
+        Some(t) => Some(tokio_rustls::TlsAcceptor::from(auth::server_config(t).map_err(std::io::Error::other)?)),
+        None => None,
     };
-    let config = auth::server_config(tls).map_err(std::io::Error::other)?;
-    let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    let stop = shutdown();
+    let limits = access.limits;
+    let permits = match limits.max_connections {
+        0 => connections(),
+        n => Arc::new(tokio::sync::Semaphore::new(n)),
+    };
+    let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    builder.http1().timer(TokioTimer::new()).header_read_timeout(limits.header_read);
+    // HTTP/2 has no header timeout: pings find a peer that went away.
+    builder.http2().timer(TokioTimer::new()).keep_alive_interval(limits.header_read).keep_alive_timeout(limits.header_read.min(Duration::from_secs(20)));
+    let builder = Arc::new(builder);
+    // Each connection's task holds a clone of `open`: once every clone is
+    // dropped, `closed` ends. A connection is told to finish when
+    // `stopping` says true; a listener dropped rather than stopped (its
+    // task aborted) leaves its connections be, as axum's does.
+    let (open, mut closed) = tokio::sync::mpsc::channel::<()>(1);
+    let handshake = limits.header_read.min(Duration::from_secs(10));
     tokio::pin!(stop);
     loop {
+        // Past the cap, wait for a connection to close before taking one.
+        let permit = tokio::select! {
+            p = permits.clone().acquire_owned() => p.map_err(std::io::Error::other)?,
+            _ = &mut stop => break,
+        };
         let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
                 Ok(c) => c,
@@ -1308,19 +1370,105 @@ async fn serve_router(router: axum::Router, listener: TcpListener, access: &Acce
                     continue;
                 }
             },
-            _ = &mut stop => return Ok(()),
+            _ = &mut stop => break,
         };
         let _ = tcp.set_nodelay(true);
+        // Each request knows its peer's address (the audit log's `addr`).
         let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))));
-        let acceptor = acceptor.clone();
+        let (tls, builder, open, mut told) = (tls.clone(), builder.clone(), open.clone(), stopping.subscribe());
         tokio::spawn(async move {
-            // A client that never finishes its handshake holds a task, not
-            // the accept loop.
-            let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else { return };
-            let io = hyper_util::rt::TokioIo::new(stream);
-            let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new()).serve_connection_with_upgrades(io, service).await;
+            let (_permit, _open) = (permit, open);
+            // Serves one connection until it ends, or finishes the
+            // request under way once the listener stops.
+            macro_rules! serve {
+                ($io:expr) => {{
+                    let conn = builder.serve_connection_with_upgrades(TokioIo::new($io), service);
+                    tokio::pin!(conn);
+                    tokio::select! {
+                        _ = conn.as_mut() => {}
+                        Ok(()) = async { told.wait_for(|s| *s).await.map(|_| ()) } => {
+                            conn.as_mut().graceful_shutdown();
+                            let _ = conn.await;
+                        }
+                    }
+                }};
+            }
+            match tls {
+                None => serve!(tcp),
+                Some(acceptor) => {
+                    // A client that never finishes its handshake holds a
+                    // task for a while, not the accept loop.
+                    let Ok(Ok(stream)) = tokio::time::timeout(handshake, acceptor.accept(tcp)).await else { return };
+                    serve!(stream)
+                }
+            }
         });
     }
+    drop(listener);
+    let _ = stopping.send(true);
+    drop(open);
+    if tokio::time::timeout(limits.stop_grace, closed.recv()).await.is_err() {
+        tracing::warn!(grace_ms = limits.stop_grace.as_millis() as u64, "stopping with requests still under way: they had their grace time (--stop-grace-ms)");
+    }
+    Ok(())
+}
+
+/// That the listener a request came in on stopped taking connections, for
+/// an answer that goes on until told to end (a feed): [`Self::wait`].
+#[derive(Clone)]
+pub struct Stopping(tokio::sync::watch::Receiver<bool>);
+
+impl Stopping {
+    /// Ends once the listener stops taking connections (never, when it
+    /// was dropped without stopping).
+    pub async fn wait(mut self) {
+        if self.0.wait_for(|s| *s).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// [`Self::wait`] for `s`, or never without one.
+    pub async fn of(s: Option<Stopping>) {
+        match s {
+            Some(s) => s.wait().await,
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// The connections the HTTP listeners hold at once, all of them together,
+/// when `--max-connections` is 0: three quarters of the process's
+/// open-file limit (the rest for its databases, its shards and the
+/// listeners themselves).
+fn connections() -> Arc<tokio::sync::Semaphore> {
+    static ALL: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut n = 65_536;
+        #[cfg(unix)]
+        {
+            let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // SAFETY: getrlimit writes the struct it is given, and nothing else.
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } == 0 && r.rlim_cur != libc::RLIM_INFINITY {
+                n = (r.rlim_cur as usize / 4 * 3).clamp(64, 1 << 20);
+            }
+        }
+        Arc::new(tokio::sync::Semaphore::new(n))
+    })
+    .clone()
+}
+
+/// Headers every HTTP answer carries unless its handler set its own: no
+/// guessing a type other than the one it says (`nosniff`), no framing by
+/// a page of another site (clicks on a framed command center would run
+/// its queries), and no address of a page sent to other sites.
+async fn security_headers(mut res: axum::response::Response) -> axum::response::Response {
+    use axum::http::header::{self, HeaderValue};
+    let h = res.headers_mut();
+    h.entry(header::X_CONTENT_TYPE_OPTIONS).or_insert(HeaderValue::from_static("nosniff"));
+    h.entry(header::X_FRAME_OPTIONS).or_insert(HeaderValue::from_static("SAMEORIGIN"));
+    h.entry(header::REFERRER_POLICY).or_insert(HeaderValue::from_static("same-origin"));
+    h.entry(header::CONTENT_SECURITY_POLICY).or_insert(HeaderValue::from_static("frame-ancestors 'self'; base-uri 'self'; object-src 'none'"));
+    res
 }
 
 /// Serves gRPC: every call needs `access.cluster`, `access.token` or a key
@@ -1375,6 +1523,13 @@ impl tonic::service::Interceptor for Check {
         // x-chloedb-* metadata is read as its x-strata-* names (crate::names).
         crate::names::alias_metadata(req.metadata_mut());
         match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
+            // A key limited to tables is an app's, over HTTP: its routes
+            // check the tables they touch ([`crate::scoped`]), gRPC's
+            // methods do not.
+            Some(who) if who.limited() => {
+                self.svc.metrics.grpc("any", "PermissionDenied", 0.0);
+                Err(tonic::Status::permission_denied(format!("the key {:?} is limited to tables: it calls the HTTP API, not gRPC", who.name)))
+            }
             Some(who) => {
                 req.extensions_mut().insert(who);
                 Ok(req)

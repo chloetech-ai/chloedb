@@ -144,8 +144,9 @@ pub fn key_value(schema: &Schema, pk: usize, key: &Value) -> Result<Value> {
     }
 }
 
-/// Vectors computed ahead of a write, by embedded field and source text.
-type Known = HashMap<usize, HashMap<String, Arc<[f32]>>>;
+/// Values of embedded fields computed ahead of a write (a VECTOR field's
+/// vectors, a SPARSE field's term weights), by field and source text.
+type Known = HashMap<usize, HashMap<String, Value>>;
 
 /// Text made ahead of a write, by derived field and the MEDIA value it is
 /// made from.
@@ -185,6 +186,9 @@ pub struct Db {
     pub exec: ExecOptions,
     /// Models of embedded VECTOR fields ([`Db::set_embedder_in`]).
     embedders: RwLock<Vec<Model>>,
+    /// Models queries named in `embed('model', ..)`, by name, opened from
+    /// [`Db::models_dir`] at their first query.
+    named_models: RwLock<HashMap<String, Arc<dyn Embedder>>>,
     /// Writes may store rows without the vector of an embedded field whose
     /// model is not open here ([`Db::set_embed_later`]).
     embed_later: std::sync::atomic::AtomicBool,
@@ -280,6 +284,7 @@ impl Db {
                 ..ExecOptions::default()
             },
             embedders: RwLock::new(Vec::new()),
+            named_models: RwLock::new(HashMap::new()),
             embed_later: std::sync::atomic::AtomicBool::new(false),
             derivers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
@@ -805,8 +810,8 @@ impl Db {
         }
     }
 
-    /// Gives embedded VECTOR field `field` ([`crate::schema::Embed`]) of the
-    /// first table its model. Writes through this `Db` that leave the vector
+    /// Gives embedded VECTOR or SPARSE field `field`
+    /// ([`crate::schema::Embed`]) of the first table its model. Writes through this `Db` that leave the vector
     /// out get it computed ([`Db::load`], SQL `INSERT` and `UPDATE`,
     /// [`Db::embed_missing`] before a [`crate::storage::WriteTxn`]).
     pub fn set_embedder(&self, field: &str, e: Arc<dyn Embedder>) -> Result<()> {
@@ -819,9 +824,21 @@ impl Db {
         let schema = self.table(table)?;
         let i = schema.field_index(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
         let f = &schema.fields[i];
+        if let (FieldType::Sparse, Some(spec)) = (&f.ty, &f.embed) {
+            if !e.sparse() {
+                return Err(Error::Schema(format!("model {} makes vectors, and field {field} is a SPARSE field: it needs a learned sparse model, which makes term weights", spec.model)));
+            }
+            let mut all = self.embedders.write().unwrap_or_else(|e| e.into_inner());
+            all.retain(|m| !(m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name)));
+            all.push(Model { table: schema.table.clone(), field: f.name.clone(), embed: spec.clone(), dim: 0, model: e });
+            return Ok(());
+        }
         let (FieldType::Vector { dim, .. }, Some(spec)) = (&f.ty, &f.embed) else {
-            return Err(Error::Schema(format!("field {field} is not an embedded VECTOR field")));
+            return Err(Error::Schema(format!("field {field} is not an embedded VECTOR or SPARSE field")));
         };
+        if e.sparse() {
+            return Err(Error::Schema(format!("model {} is a learned sparse model, which makes term weights: field {field} is a VECTOR field, and a SPARSE field holds its output", spec.model)));
+        }
         if e.dim() != *dim {
             return Err(Error::Schema(format!("model {} makes {}-dimension vectors; field {field} holds {dim}", spec.model, e.dim())));
         }
@@ -850,12 +867,15 @@ impl Db {
     /// `field` of table `table`: the vector of the text as a query by the
     /// field's model, as `similarity` takes it, or for a multi-vector field
     /// (`VECTOR(d)[]`) the list of the vectors of its tokens
-    /// ([`Embedder::embed_query_tokens`]), as `maxsim` takes them.
+    /// ([`Embedder::embed_query_tokens`]), as `maxsim` takes them, or for
+    /// a SPARSE field the query's term weights
+    /// ([`Embedder::embed_query_sparse`]), as `similarity` takes them.
     pub fn embed_query_in(&self, table: &str, field: &str, text: &str) -> Result<Value> {
         let schema = self.table(table)?;
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
         let e = self.embedder_in(table, field).ok_or_else(|| Error::Schema(format!("field {field} has no model here (Db::open_embedders or Db::set_embedder_in)")))?;
         Ok(match f.multi {
+            _ if f.ty == FieldType::Sparse => Value::Str(crate::embed::terms_json(&e.embed_query_sparse(text)?)),
             true => Value::List(e.embed_query_tokens(text)?.into_iter().map(|v| Value::Vector(v.into())).collect()),
             false => Value::Vector(e.embed_query(text)?.into()),
         })
@@ -909,7 +929,12 @@ impl Db {
             .iter()
             .map(|f| {
                 let serves = |m: &&Model| {
-                    m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name) && f.embed.as_ref() == Some(&m.embed) && matches!(f.ty, FieldType::Vector { dim, .. } if dim == m.dim)
+                    let fits = match f.ty {
+                        FieldType::Vector { dim, .. } => dim == m.dim && !m.model.sparse(),
+                        FieldType::Sparse => m.model.sparse(),
+                        _ => false,
+                    };
+                    m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name) && f.embed.as_ref() == Some(&m.embed) && fits
                 };
                 all.iter().find(serves).map(|m| m.model.clone())
             })
@@ -1066,6 +1091,33 @@ impl Db {
     /// it as `name` under `models`, for semantic-ID fields to name. Returns
     /// the SHA-256 of its file.
     pub fn train_codebook(&self, table: &str, field: &str, name: &str, models: &Path, opts: &crate::sid::TrainOptions) -> Result<String> {
+        let (vectors, dim) = self.field_vectors(table, field)?;
+        if vectors.is_empty() {
+            return Err(Error::Schema(format!("{table}.{field} holds no vectors to train a codebook on")));
+        }
+        crate::sid::Codebook::train(&vectors, dim, opts)?.save(name, models)
+    }
+
+    /// What the codebook saved as `name` under `models` makes of the
+    /// vectors of VECTOR field `field` of the table named `table`
+    /// ([`crate::sid::Codebook::report`]): how many rows share a code and
+    /// how evenly each level's numbers are used, before or after a
+    /// semantic-ID field names it.
+    pub fn codebook_report(&self, table: &str, field: &str, name: &str, models: &Path) -> Result<crate::sid::Report> {
+        let (vectors, dim) = self.field_vectors(table, field)?;
+        let (cb, _) = crate::sid::Codebook::open(name, models)?;
+        if cb.dim != dim {
+            return Err(Error::Schema(format!("codebook {name} is of {} dimensions, {table}.{field} of {dim}", cb.dim)));
+        }
+        if vectors.is_empty() {
+            return Err(Error::Schema(format!("{table}.{field} holds no vectors")));
+        }
+        cb.report(&vectors)
+    }
+
+    /// The live rows' vectors of VECTOR field `field` of the table named
+    /// `table`, one after another, and their dimension.
+    fn field_vectors(&self, table: &str, field: &str) -> Result<(Vec<f32>, usize)> {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Schema(format!("no table {table}")))?;
         let schema = snap.schema();
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
@@ -1079,14 +1131,12 @@ impl Db {
                 }
             }
         }
-        if vectors.is_empty() {
-            return Err(Error::Schema(format!("{table}.{field} holds no vectors to train a codebook on")));
-        }
-        crate::sid::Codebook::train(&vectors, dim, opts)?.save(name, models)
+        Ok((vectors, dim))
     }
 
     /// The primary keys of the live rows of the table named `table` whose
-    /// embedded VECTOR field `field` has no vector: rows written while the
+    /// embedded VECTOR field `field` has no vector (or SPARSE field no
+    /// terms): rows written while the
     /// field had no model open here (no API key yet, the model not
     /// fetched), and rows whose sources are all empty, which get none.
     /// [`Db::embed_backfill`] fills in the others.
@@ -1094,11 +1144,24 @@ impl Db {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Schema(format!("no table {table}")))?;
         let schema = snap.schema();
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("{table} has no field {field}")))?;
-        if f.embed.is_none() || !matches!(f.ty, FieldType::Vector { .. }) {
-            return Err(Error::Schema(format!("{table}.{field} is not an embedded VECTOR field")));
+        if f.embed.is_none() || !matches!(f.ty, FieldType::Vector { .. } | FieldType::Sparse) {
+            return Err(Error::Schema(format!("{table}.{field} is not an embedded VECTOR or SPARSE field")));
         }
-        if schema.primary_key.is_none() {
+        let Some(pk) = schema.primary_key else {
             return Err(Error::Schema(format!("{table} has no primary key: rows without {field}'s vector can only be written again")));
+        };
+        // A SPARSE field's terms are a stored value: the rows whose value is
+        // null and that have text to weigh.
+        if f.ty == FieldType::Sparse {
+            let i = schema.field_index(field).expect("the field");
+            let mut keys = Vec::new();
+            for d in self.documents(&snap) {
+                let d = d?;
+                if matches!(d[i], Value::Null) && !schema.embed_text(i, &d).is_empty() {
+                    keys.push(d[pk].clone());
+                }
+            }
+            return Ok(keys);
         }
         let key = f.key();
         let mut keys = Vec::new();
@@ -1229,7 +1292,14 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
+        if crate::query::pack::may_pack(sql) {
+            if let Some(p) = self.pack_at(snap, sql, params, opts)? {
+                return Ok(p.rs);
+            }
+        }
         let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(snap, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
         let functions = self.functions_at(snap)?;
         // Calls of a language model: on the rows the query finds.
         if crate::query::llm::may_call(sql, &functions) {
@@ -1243,10 +1313,68 @@ impl Db {
         self.run_on(snap, &plan, opts)
     }
 
+    /// Runs a query that ends in `PACK n TOKENS` ([`crate::query::pack`]):
+    /// its rows taken to fill the budget, and the receipt of how they were
+    /// chosen. A query without the clause is an error.
+    pub fn pack(&self, sql: &str, params: &Params) -> Result<crate::query::pack::Packed> {
+        self.pack_at(&self.snapshot(), sql, params, &self.exec)?.ok_or_else(|| Error::Query("the query has no PACK n TOKENS clause".into()))
+    }
+
+    /// [`Db::pack`] against a given snapshot, `None` for a query without
+    /// the clause. Every slice of candidates, and every row followed, is
+    /// read from `snap`.
+    pub fn pack_at(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Option<crate::query::pack::Packed>> {
+        let key_of = |t: &str| snap.table(t).and_then(|v| v.schema().primary_key.map(|k| v.schema().fields[k].name.clone()));
+        let Some(mut p) = crate::query::pack::Packer::of_sql(sql, params, &key_of)? else { return Ok(None) };
+        while let Some(q) = p.next_query()? {
+            p.feed(self.query_at(snap, &q, params, opts)?)?;
+        }
+        p.finish(Some(snap.txn()), snap.seq_no()).map(Some)
+    }
+
     /// Where this database's models are: the directory
     /// [`Db::open_embedders`] was given, else [`crate::embed::models_dir`].
     pub fn models_dir(&self) -> std::path::PathBuf {
         self.models.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(crate::embed::models_dir)
+    }
+
+    /// Query `q` (of text `sql`) with the texts it gives where vectors go
+    /// embedded, and the parameters that hold their vectors
+    /// ([`crate::query::embed_sql`]); `q` as it is when it has none.
+    fn embed_texts(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params) -> Result<(Arc<qsql::Parsed>, Option<Params>)> {
+        if !crate::query::embed_sql::may_embed(sql) {
+            return Ok((q, None));
+        }
+        let catalog: Vec<&Schema> = snap.schemas().collect();
+        Ok(match crate::query::embed_sql::rewrite(&q.query, &catalog, params, self)? {
+            Some((query, p)) => (Arc::new(qsql::Parsed { query, profiles: q.profiles }), Some(p)),
+            None => (q, None),
+        })
+    }
+
+    /// The model a query names in `embed('model', ..)`: one an embedded
+    /// field has open, else one opened from [`Db::models_dir`] and kept,
+    /// named as [`crate::query::embed_sql::refuse_model`] allows.
+    pub fn named_model(&self, name: &str) -> Result<Arc<dyn Embedder>> {
+        if let Some(m) = self.embedders.read().unwrap_or_else(|e| e.into_inner()).iter().find(|m| m.embed.model.eq_ignore_ascii_case(name)) {
+            return Ok(m.model.clone());
+        }
+        if let Some(m) = self.named_models.read().unwrap_or_else(|e| e.into_inner()).get(name) {
+            return Ok(m.clone());
+        }
+        let dir = self.models_dir();
+        if let Some(why) = crate::query::embed_sql::refuse_model(name, &dir) {
+            return Err(Error::Query(format!("embed('{name}', ..): {why}")));
+        }
+        let m = crate::embed::open(name, &dir).map_err(|e| match crate::embed::KNOWN_MODELS.iter().any(|k| k.0.eq_ignore_ascii_case(name)) {
+            true => Error::Schema(format!("{} (chloedb-server fetch-model {name} downloads it into {})", match e { Error::Schema(m) => m, e => e.to_string() }, dir.display())),
+            false => e,
+        })?;
+        if !m.single() {
+            return Err(Error::Schema(format!("model {name} embeds a text into a vector a token, not one vector: embed('{name}', ..) needs a model of one vector a text")));
+        }
+        self.named_models.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), m.clone());
+        Ok(m)
     }
 
     /// Runs a query ([`Db::query`]) and logs what it served to a log table
@@ -1264,7 +1392,7 @@ impl Db {
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
         let p = rank_log::prepare(sql, params, log)?;
-        let served = match &log.interleave {
+        let mut served = match &log.interleave {
             None => rank_log::serve(self.query(&p.sql, params)?, &p, log)?,
             Some(il) => {
                 let pb = rank_log::prepare(&il.sql, params, log)?;
@@ -1274,6 +1402,7 @@ impl Db {
                 rank_log::interleave(a, b, &p, il)?
             }
         };
+        rank_log::keep_query(&mut served, &p, &schema);
         let now = crate::timestamp::now();
         let mut t = self.storage.begin()?;
         {
@@ -1284,6 +1413,81 @@ impl Db {
         }
         let seq_no = t.commit_seq()?;
         Ok(Logged { rs: served.rs, request: served.request, seq_no, teams: served.teams })
+    }
+
+    /// Runs the relevance autopilot ([`crate::autopilot`]) on one snapshot:
+    /// the logged queries that rank by a rank profile replayed with the
+    /// profile and with the best numbers its search finds, and the measured
+    /// before and after. Reads only; [`Db::keep_proposal`] keeps the report.
+    pub fn autopilot(&self, o: &crate::autopilot::Options) -> Result<crate::autopilot::Report> {
+        let snap = self.snapshot();
+        crate::autopilot::run(self, &snap, &self.exec, o)
+    }
+
+    /// Keeps a report of [`Db::autopilot`] in the proposals table
+    /// ([`crate::autopilot::PROPOSALS`], made by the first), status
+    /// `open`, and returns its key.
+    pub fn keep_proposal(&self, r: &crate::autopilot::Report) -> Result<String> {
+        use crate::autopilot as ap;
+        self.sql(&ap::proposals_sql(ap::PROPOSALS)?, &Params::new())?;
+        let now = crate::timestamp::now();
+        let id = ap::proposal_id(r, now);
+        self.upsert_json(ap::PROPOSALS, &[r.proposal_doc(&id, now)])?;
+        Ok(id)
+    }
+
+    /// A kept proposal's row: its columns but the proof, or with it.
+    pub fn proposal(&self, id: &str, proof: bool) -> Result<serde_json::Value> {
+        use crate::autopilot as ap;
+        let cols = if proof { "id, target, profile, ts, status, verdict, gain, before, after, baseline_hash, statement, proof" } else { "id, target, profile, ts, status, verdict, gain, before, after, baseline_hash, statement" };
+        if self.storage.table(ap::PROPOSALS).is_none() {
+            return Err(Error::Query(format!("no proposal {id}: none was kept")));
+        }
+        let rs = self.query(&format!("SELECT {cols} FROM {} WHERE id = :id", ap::PROPOSALS), &Params::new().set("id", Value::Str(id.into())))?;
+        let row = rs.rows.first().ok_or_else(|| Error::Query(format!("no proposal {id}")))?;
+        Ok(serde_json::Value::Object(rs.columns.iter().zip(row).map(|(c, v)| (c.clone(), crate::autopilot::cell_json(v))).collect()))
+    }
+
+    /// Applies kept proposal `id` ([`crate::autopilot::check_apply`]): its
+    /// `CREATE OR REPLACE RANK PROFILE`, while the profile is the one it was
+    /// measured against, and marks it `applied`.
+    pub fn apply_proposal(&self, id: &str, force: bool) -> Result<()> {
+        use crate::autopilot as ap;
+        let row = self.proposal(id, false)?;
+        let s = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let now = self.snapshot().table(&s("target")).and_then(|t| t.rank_profile(&s("profile")).map(|p| p.hash()));
+        let statement = ap::check_apply(&row, now.as_deref(), force)?;
+        self.sql(&statement, &Params::new())?;
+        self.set_proposal_status(id, "applied")
+    }
+
+    /// Marks kept proposal `id` `dismissed` (or another status).
+    pub fn set_proposal_status(&self, id: &str, status: &str) -> Result<()> {
+        self.proposal(id, false)?;
+        self.sql(&format!("UPDATE {} SET status = :s WHERE id = :id", crate::autopilot::PROPOSALS), &Params::new().set("s", Value::Str(status.into())).set("id", Value::Str(id.into())))?;
+        Ok(())
+    }
+
+    /// Writes judgments ([`crate::autopilot::judgment_doc`]) to judgments
+    /// table `table`, made by the first write.
+    pub fn add_judgments(&self, table: &str, docs: &[serde_json::Value]) -> Result<()> {
+        self.sql(&crate::autopilot::judgments_sql(table)?, &Params::new())?;
+        self.upsert_json(table, docs)
+    }
+
+    /// Upserts JSON documents to `table` in one transaction.
+    fn upsert_json(&self, table: &str, docs: &[serde_json::Value]) -> Result<()> {
+        let schema = self.table(table)?;
+        let now = crate::timestamp::now();
+        let mut t = self.storage.begin()?;
+        {
+            let mut tt = t.table(&schema.table)?;
+            for d in docs {
+                tt.upsert(crate::ingest::document_at(&schema, d, now)?)?;
+            }
+        }
+        t.commit_seq()?;
+        Ok(())
     }
 
     /// The credit of each pair of interleaved rankings in a log table
@@ -1339,6 +1543,8 @@ impl Db {
             return self.json_paths_at(&snap, &call, params, opts).map(|p| Leaf::Rows(p.to_result()));
         }
         let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(&snap, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
         let plan = plan_of_parsed(&snap, &q, params, &*self.functions_at(&snap)?)?;
         self.run_leaf_on(&snap, &plan, opts, Some(0))
     }
@@ -1524,13 +1730,23 @@ impl Db {
             // The plan names the files of its ranking models.
             let snap = self.snapshot();
             let functions = self.functions_at(&snap)?;
+            // Texts embedded where vectors go, as the query runs them.
+            let text = q.to_string();
+            let embedded = match crate::query::embed_sql::may_embed(&text) {
+                true => crate::query::embed_sql::rewrite(q, &snap.schemas().collect::<Vec<_>>(), params, self)?,
+                false => None,
+            };
+            let (q, params) = match &embedded {
+                Some((q, p)) => (q, p),
+                None => (&**q, params),
+            };
             // A query that calls a language model: the plan of the rows it
             // asks about.
             let split = match crate::query::llm::may_call(&q.to_string(), &functions) {
                 true => crate::query::llm::split(q, &functions, params)?,
                 false => None,
             };
-            let mut plan = plan_of(&snap, split.as_ref().map_or(&**q, |s| &s.first), params, &functions)?;
+            let mut plan = plan_of(&snap, split.as_ref().map_or(q, |s| &s.first), params, &functions)?;
             self.open_ranking_models(&mut plan, false)?;
             return Ok(plan);
         }
@@ -2131,8 +2347,7 @@ impl Db {
     /// numbers. At most [`crate::sid::MAX_PREFIXES`] prefixes.
     pub fn sid_next(&self, table: &str, field: &str, prefixes: &[String], filter: Option<&str>, params: &Params) -> Result<Vec<Vec<(String, u64)>>> {
         let snap = self.snapshot().table(table).ok_or_else(|| Error::Query(format!("no such table: {table}")))?;
-        let sql = format!("SELECT COUNT(*) FROM {}{}", qsql::ident(&snap.schema().table), filter.map(|c| format!(" WHERE {c}")).unwrap_or_default());
-        let select = qsql::bind(&sql, snap.schema(), params)?;
+        let select = qsql::bind_condition(snap.schema(), filter, params)?;
         self.sid_next_with(&snap, &select, field, prefixes, &self.exec)
     }
 
@@ -2167,8 +2382,7 @@ impl Db {
         let snap = snap.table(&call.table).ok_or_else(|| Error::Query(format!("no such table: {}", call.table)))?;
         let schema = snap.schema();
         let f = call.field_of(schema)?;
-        let sql = format!("SELECT COUNT(*) FROM {}{}", qsql::ident(&schema.table), call.filter.as_deref().map(|c| format!(" WHERE {c}")).unwrap_or_default());
-        let select = qsql::bind(&sql, schema, params)?;
+        let select = qsql::bind_condition(schema, call.filter.as_deref(), params)?;
         let readers = self.readers(&snap)?;
         Executor::new(&snap, &readers, opts).json_paths(&select, f, call)
     }
@@ -2366,15 +2580,15 @@ fn embed_known(models: &[Option<Arc<dyn Embedder>>], schema: &Schema, docs: &mut
             if matches!(d[f], Value::Null) {
                 let t = schema.embed_text(f, d);
                 if let Some(v) = ahead.and_then(|a| a.get(&t)) {
-                    d[f] = embedded_value(schema, f, v.clone());
+                    d[f] = v.clone();
                 } else if !t.is_empty() {
                     todo.push(j);
                     texts.push(t);
                 }
             }
         }
-        for (j, v) in todo.into_iter().zip(embed_sources(e.as_ref(), schema, f, &texts, files)?) {
-            docs[j][f] = embedded_value(schema, f, v.into());
+        for (j, v) in todo.into_iter().zip(embedded_values(e.as_ref(), schema, f, &texts, files)?) {
+            docs[j][f] = v;
         }
     }
     Ok(())
@@ -2389,11 +2603,27 @@ fn vectors_of(models: &[Option<Arc<dyn Embedder>>], schema: &Schema, docs: &[Doc
         let mut seen = HashSet::new();
         let texts: Vec<String> = docs.iter().filter(|d| matches!(d[f], Value::Null)).map(|d| schema.embed_text(f, d)).filter(|t| !t.is_empty() && seen.insert(t.clone())).collect();
         if !texts.is_empty() {
-            let vectors = embed_sources(e.as_ref(), schema, f, &texts, files)?;
-            known.insert(f, texts.into_iter().zip(vectors).map(|(t, v)| (t, v.into())).collect());
+            let values = embedded_values(e.as_ref(), schema, f, &texts, files)?;
+            known.insert(f, texts.into_iter().zip(values).collect());
         }
     }
     Ok(known)
+}
+
+/// The values of embedded field `f` of `schema` for `sources` (as
+/// [`Schema::embed_text`] gives them): a VECTOR field's vectors
+/// ([`embed_sources`]), or a SPARSE field's term weights, as the JSON
+/// object a SPARSE value is ([`Embedder::embed_sparse`]).
+fn embedded_values(e: &dyn Embedder, schema: &Schema, f: usize, sources: &[String], files: &Files) -> Result<Vec<Value>> {
+    if schema.fields[f].ty == FieldType::Sparse {
+        let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+        let terms = e.embed_sparse(&refs)?;
+        if terms.len() != sources.len() {
+            return Err(Error::Schema(format!("model {} made the terms of {} texts of {}", e.name(), terms.len(), sources.len())));
+        }
+        return Ok(terms.iter().map(|t| Value::Str(crate::embed::terms_json(t))).collect());
+    }
+    Ok(embed_sources(e, schema, f, sources, files)?.into_iter().map(|v| embedded_value(schema, f, v.into())).collect())
 }
 
 /// The value of embedded field `f` of `schema` from what [`embed_sources`]
@@ -2941,6 +3171,16 @@ impl DocumentSource for StoredSource {
 /// The plan of a SELECT over `snap`'s tables: the executor's query of one
 /// table, or a compound one's operators ([`compound::needs`]) over any
 /// ([`compound::plan_read`]).
+/// Texts a query gives where vectors go, by this database's models.
+impl crate::query::embed_sql::Embeds for Db {
+    fn field_query(&self, table: &str, field: &str, text: &str) -> Result<Value> {
+        self.embed_query_in(table, field, text)
+    }
+    fn model_query(&self, model: &str, text: &str) -> Result<Vec<f32>> {
+        self.named_model(model)?.embed_query(text)
+    }
+}
+
 fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
     compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)

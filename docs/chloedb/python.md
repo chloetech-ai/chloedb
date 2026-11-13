@@ -2,6 +2,8 @@
 
 The `chloedb` package runs a ChloeDB database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [chloedb-server](server.md). Both have the same methods, so a script written against a local file works against a server.
 
+LangChain, LangGraph and LlamaIndex take ChloeDB as a vector store, a checkpointer and a memory store, and `chloedb.dbapi` is a DB-API 2.0 driver: see [frameworks](frameworks.md).
+
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
 ## Install
@@ -10,22 +12,22 @@ The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/m
 
 ### Prebuilt
 
-Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The package is not on PyPI yet, so point pip at the release and it picks the wheel for your machine:
 
 ```sh
 pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v0.2.0
 ```
 
-The package imports as `chloedb`, as the examples here do. `import strata`, its old name, goes on working for a release, as the same package, with a `DeprecationWarning`, and `chloedb.StrataError` is `chloedb.ChloeDBError`. Release 0.1.0, from before the rename, was published as `strata-db` (tag `strata-py-v0.1.0`) and imports as `strata` only.
+The old name, `import strata`, still works for a release, with a `DeprecationWarning`; release 0.1.0 was published as `strata-db` and imports as `strata` only.
 
 | platform | wheel |
 |---|---|
 | macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
 | macOS 11+ on Intel | `chloedb-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
-| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
-| Linux aarch64, glibc 2.35+ | `chloedb-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
+| Linux x86-64, glibc 2.28+ (RHEL 8, Amazon Linux 2023, Debian 10, Ubuntu 20.04 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_28_x86_64.whl` |
+| Linux aarch64, glibc 2.28+ | `chloedb-<version>-cp310-abi3-manylinux_2_28_aarch64.whl` |
 
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8). The same tag publishes them to PyPI once the repository is set up for it (the workflow's header says how), and `pip install chloedb` then takes them; until then the package is not on PyPI. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
 ### Only the client, with no build
 
@@ -295,7 +297,19 @@ items.upsert(rows)                                            # each row gets it
 items.query("SELECT id FROM items WHERE sid = '12.7'")
 ```
 
-It returns the SHA-256 of the file, which the table records. The options are `levels` (1 to 4, default 3), `k` centroids a level (up to 256), `iterations` of k-means a level (25), `sample`, the vectors it trains on (100 a centroid by default, drawn at random), `seed` (the same vectors and options give the same codebook), `table` (a database's first by default) and `models` (the default models directory, as for `Database.create`). Pass the same `models=` to `Database.create` and `Database.open`: a codebook that does not open is listed in `db.embed_errors`, and writes that need a code then fail.
+It returns the SHA-256 of the file, which the table records. The options are `levels` (1 to 4, default 3), `k` centroids a level (up to 256), `iterations` of k-means a level (25), `sample`, the vectors it trains on (100 a centroid by default, drawn at random), `seed` (the same vectors and options give the same codebook), `balanced`, `table` (a database's first by default) and `models` (the default models directory, as for `Database.create`). Pass the same `models=` to `Database.create` and `Database.open`: a codebook that does not open is listed in `db.embed_errors`, and writes that need a code then fail.
+
+`chloedb.train.codebook_report(db, "items-rq", field="emb")` (or of vectors, as above) says what a codebook makes of a set of vectors, before a field names it for good:
+
+```python
+r = chloedb.train.codebook_report(vectors, "items-rq")
+r["rows"], r["codes"], r["shared_rows"], r["largest_group"]   # 12101, 10126, 3288, 12
+r["levels"][2]   # {"used": 256, "fullest": 630, "perplexity": 56.7, "residual": 0.135}
+```
+
+`shared_rows` are the rows whose code another row has too: only the tie number tells them apart, so a decoder that writes codes cannot. A level's `perplexity` is how many of its numbers the rows are spread over when weighed by use (`k` when every number has as many rows as any other), and `residual` the share of the vectors' squared length the code so far leaves unsaid.
+
+Plain k-means uses the later levels' numbers unevenly, as above: what a level leaves of the vectors points every way alike, and there most centroids end on one far vector each while a few near the middle take the rest. `balanced=True` trains each level with every centroid given the same number of the training vectors. On the 12,101 items of Amazon Beauty (text vectors of 384 dimensions, 3 levels of 256) the third level's perplexity goes from 57 to 251 and the rows sharing a code from 3,288 to 2,601; training takes 17 s, not 6 ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/generative#balanced-codebooks)). It holds a distance for every training vector and centroid (8 bytes each: 52 MB at the default `sample`). Rows are coded by their nearest centroid either way.
 
 ## Next items
 
@@ -325,7 +339,7 @@ db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
 ```
 
 - **The histories** come from one of `events` (a table of the database: its columns of users, items, and optionally actions, times, and `order` for events with equal times), `sequences` (a dict from user to a list of `(item, action, time in seconds)`, oldest first) or `records` (the [rank log's export](#the-rank-log) with `history`: each record's history is a training example, and its row the target when its label is positive or missing). The item vectors are the field's, or `vectors` (a dict from key to vector).
-- **What it learns**: every event is the target of the events before it. Each item is scored as `similarity` scores it, the dot product of the model's unit vector with the item's vector, over `temperature` (0.05), and the loss is cross-entropy against the other targets of the batch (`negatives="in_batch"`, the default) or every item (`"all"`, for catalogs that fit). With `learn_items=True` the item vectors are trained too, starting from the field's, and returned normalized in `out["vectors"]`; without it the field keeps its vectors and the model learns to map histories into their space, so a new item is found as soon as it has a vector.
+- **What it learns**: every event is the target of the events before it. Each item is scored as `similarity` scores it, the dot product of the model's unit vector with the item's vector, over `temperature` (0.05), and the loss is cross-entropy against the other targets of the batch (`negatives="in_batch"`, the default) or every item (`"all"`, for catalogs that fit). In a batch, an item that is often a target is a negative as often, which teaches the model to rank what is popular low: `logq=True` takes from each negative's score the log of the chance that the batch holds it, worked out from how often each item is a target (the target of its own row keeps its score), and `uniform_negatives=n` adds `n` items drawn evenly from all of them to every batch, so items that are seldom or never targets are negatives too. Use both for a catalog too large for `"all"`: on Yambda-50M's 629,298 tracks they took Recall@10 on held-out events from 0.0229 to 0.0334 after four epochs ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/recsys#in-batch-negatives-corrected)). With `learn_items=True` the item vectors are trained too, starting from the field's, and returned normalized in `out["vectors"]`; without it the field keeps its vectors and the model learns to map histories into their space, so a new item is found as soon as it has a vector.
 - **The item vectors go with the model**: it is saved with the vectors it was trained with (`items.safetensors`, part of its hash), and `encode` refuses a history whose items have other vectors in the field. `chloedb.train.write_vectors(db, name, models=None)` writes them into the field the model's config names, by an `UPDATE` of that field alone for each item (a `Database` or a `Client`); returns the rows written. `chloedb._sequence.read_items(path)` reads them back.
 - **Options**: `width` (64), `layers` (2), `heads` (1), `ffn` (4 × width), `max_len` (200 events), `gap_buckets` (32), `actions` (the actions seen by default; others count as one more), `epochs` (50), `batch` (128), `lr` (1e-3), `dropout` (0.2), `seed`. With `holdout=True` each user's last event is kept out of training, and training stops when NDCG@10 on those has not risen for `patience` epochs (5), keeping the best epoch. `max_seconds` stops it after the first epoch that ends past that many seconds. `log=print` prints each epoch's loss and metrics, which `out["history"]` also holds.
 - It returns `{"path", "history", "vectors"}`. Pass the same `models=` to `Database.open`, or start the server with `--models`: a coordinator needs the model, its shards don't.

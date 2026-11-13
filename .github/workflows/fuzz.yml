@@ -2,7 +2,8 @@ name: Fuzz
 
 # Every night, `cargo fuzz` runs each of ChloeDB's fuzz targets
 # (chloedb/fuzz/fuzz_targets: damaged segments, WALs, manifests and loom
-# lists, arbitrary SQL, text queries and media) under AddressSanitizer for a
+# lists, arbitrary SQL, text queries, text through the analyzers, media and
+# patterns on damaged substring indexes) under AddressSanitizer for a
 # while, on a corpus kept from night to night, so that each night starts
 # where the last one stopped. CI runs the same targets' bodies over fixed
 # pseudo-random inputs on stable (chloedb/tests/corrupt_input.rs); this is
@@ -67,7 +68,7 @@ jobs:
           MINUTES: ${{ inputs.minutes }}
           EVENT: ${{ github.event_name }}
         run: |
-          all='["loom", "manifest", "media", "segment", "sql", "text_query", "wal"]'
+          all='["analyzer", "loom", "manifest", "media", "segment", "sql", "substring", "text_query", "wal"]'
           if [ -n "$TARGETS" ]; then
             list=$(python3 -c 'import json, sys; print(json.dumps([t.strip() for t in sys.argv[1].split(",") if t.strip()]))' "$TARGETS")
           else
