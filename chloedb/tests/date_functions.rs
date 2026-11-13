@@ -1,5 +1,5 @@
-//! Date functions: `date_trunc`, `date_part` and `EXTRACT`, and
-//! `strftime`, over a TIMESTAMP column. As values of rows they are the row
+//! Date functions: `date_trunc`, `date_bin`, `date_part` and `EXTRACT`,
+//! and `strftime`, over a TIMESTAMP column. As values of rows they are the row
 //! evaluator's; a `GROUP BY` of one over a table's TIMESTAMP field is the
 //! executor's, read from the field's column (a part that is a number from
 //! the columns, with the query's other groups and aggregates), and its
@@ -60,8 +60,12 @@ fn fill(db: &Db, rng: &mut StdRng, from: usize, to: usize, flush: usize) {
     }
 }
 
-const KEYS: [&str; 7] = [
+const KEYS: [&str; 11] = [
     "date_trunc('day', at)",
+    "date_bin('6 hours', at)",
+    "date_bin('90 minutes', at, '2026-08-01T00:17:00Z')",
+    "date_bin('1 day', at)",
+    "date_bin('7d', at, '2026-08-03')",
     "date_trunc('week', at)",
     "date_trunc('MONTH', at)",
     "EXTRACT(dow FROM at)",
@@ -97,6 +101,7 @@ fn check(db: &Db, stage: &str) {
         let got = db.query(&q, &Params::new()).unwrap_or_else(|e| panic!("{stage}: {q}: {e}"));
         let plan = db.explain(&q, &Params::new()).unwrap();
         assert!(plan.features.iter().any(|f| f == "dates"), "{stage}: {q}: {:?}", plan.features);
+        assert_eq!(plan.features.iter().any(|f| f == "date_bin"), q.contains("date_bin"), "{stage}: {q}: {:?}", plan.features);
         assert!(got.stats.plan.iter().any(|l| l.contains("aggregate") && l.contains("rows into groups")), "{stage}: {q}: {:?}", got.stats.plan);
         // A part that is a number is grouped by from the columns; text
         // (strftime) row by row.
@@ -159,6 +164,19 @@ fn values_of_rows() {
     );
     assert_eq!(rows, vec![vec![ts("1969-12-31"), Value::Float(30.0), Value::Float(30.0)], vec![ts("2026-11-05"), Value::Float(10.0), Value::Float(20.0)]]);
 
+    // date_bin: buckets of a fixed width from 1970, or from an origin; a
+    // day's bucket is date_trunc's day.
+    let rows = sql(&db, "SELECT id, date_bin('5 minutes', at), date_bin('15m', at, '2026-11-05T07:20:00Z'), date_bin('1 day', at) = date_trunc('day', at), date_bin('250ms', at) FROM snaps ORDER BY id");
+    assert_eq!(
+        rows,
+        vec![
+            vec![Value::Int(1), ts("2026-11-05T07:30:00Z"), ts("2026-11-05T07:20:00Z"), Value::Bool(true), ts("2026-11-05T07:31:52.25Z")],
+            vec![Value::Int(2), Value::Null, Value::Null, Value::Null, Value::Null],
+            vec![Value::Int(3), ts("1969-12-31T23:00:00Z"), ts("1969-12-31T22:50:00Z"), Value::Bool(true), ts("1969-12-31T23:00:00Z")],
+        ]
+    );
+    assert_eq!(sql(&db, "SELECT id FROM snaps WHERE date_bin('1 hour', at) = '2026-11-05T07:00:00Z'"), vec![vec![Value::Int(1)]]);
+
     // What is wrong, said.
     for (q, says) in [
         ("SELECT date_trunc('fortnight', at) FROM snaps", "no unit \"fortnight\""),
@@ -168,6 +186,13 @@ fn values_of_rows() {
         ("SELECT date_trunc('day') FROM snaps", "two arguments"),
         ("SELECT to_char(at, 'YYYY') FROM snaps", "strftime"),
         ("SELECT date_trunc('fortnight', at) AS g, COUNT(*) FROM snaps GROUP BY g", "no unit \"fortnight\""),
+        ("SELECT date_bin('1 month', at) FROM snaps", "fixed unit"),
+        ("SELECT date_bin('1 month', at) AS g, COUNT(*) FROM snaps GROUP BY g", "fixed unit"),
+        ("SELECT date_bin('0 minutes', at) FROM snaps", "fixed unit"),
+        ("SELECT date_bin('5 minutes', at, 'yesterday') FROM snaps", "not a time"),
+        ("SELECT date_bin('5 minutes', total) FROM snaps", "takes a TIMESTAMP"),
+        ("SELECT date_bin('5 minutes') FROM snaps", "two or three arguments"),
+        ("SELECT time_bucket('5 minutes', at) FROM snaps", "date_bin"),
     ] {
         let e = db.query(q, &Params::new()).err().unwrap_or_else(|| panic!("{q} is an error")).to_string();
         assert!(e.contains(says), "{q}: {e}");

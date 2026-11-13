@@ -1642,6 +1642,8 @@ impl<'a> Binder<'a> {
         let (arg, p) = match (name, args.as_slice()) {
             ("median", [x]) => (*x, 0.5),
             ("median", _) => return Err(err("MEDIAN takes one field: MEDIAN(price)")),
+            ("approx_percentile", [x, p]) => (*x, self.number(p).ok_or_else(|| err(format!("{upper}: the fraction is a number from 0 to 1, not {}", self.described(p))))?),
+            ("approx_percentile", _) => return Err(err("APPROX_PERCENTILE takes a field and a fraction from 0 to 1: approx_percentile(latency, 0.99)")),
             (_, [x, p]) => (*x, self.number(p).ok_or_else(|| err(format!("{upper}: the fraction is a number from 0 to 1, not {}", self.described(p))))?),
             _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY field): p, from 0 to 1, of one field's values"))),
         };
@@ -1649,6 +1651,7 @@ impl<'a> Binder<'a> {
         let field = self.field_of(arg)?;
         let fld = &self.schema.fields[field];
         let cont = name != "percentile_disc";
+        let approx = name == "approx_percentile";
         let numeric = matches!(fld.ty, FieldType::Int | FieldType::Float);
         if !numeric || (cont && fld.logical.is_some()) {
             let nums = hint::fields_where(self.schema, |f| matches!(f.ty, FieldType::Int | FieldType::Float) && f.logical.is_none());
@@ -1657,7 +1660,7 @@ impl<'a> Binder<'a> {
                 fld.name,
                 fld.name,
                 hint::type_of(fld),
-                if cont { "interpolates between" } else { "picks one of" },
+                if approx { "sketches" } else if cont { "interpolates between" } else { "picks one of" },
                 if nums.is_empty() { String::new() } else { format!(": {}", hint::listing(&nums, 6)) },
                 if cont && fld.logical == Some(Logical::Timestamp) { "; PERCENTILE_DISC picks one of a TIMESTAMP's times" } else { "" }
             )));
@@ -1665,7 +1668,13 @@ impl<'a> Binder<'a> {
         if !fld.indexed {
             return Err(err(format!("{}: aggregates read the field's column, and it is not indexed", fld.name)));
         }
-        let func = if cont { AggFn::PercentileCont(p) } else { AggFn::PercentileDisc(p) };
+        let func = if approx {
+            AggFn::ApproxPercentile(p)
+        } else if cont {
+            AggFn::PercentileCont(p)
+        } else {
+            AggFn::PercentileDisc(p)
+        };
         Ok(Projection::Agg { func, of: Col::Field(field) })
     }
 
@@ -1986,7 +1995,7 @@ impl<'a> Binder<'a> {
                         None if matches!(n, "random" | "rand") => Err(err(format!("ORDER BY {n}() is not supported: rows come in the order of a score or a column; for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0"))),
                         // Values of a row that the row evaluator computes,
                         // not a ranking with scores.
-                        None if matches!(n, "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "json_extract") => Err(err(format!(
+                        None if matches!(n, "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "json_extract") => Err(err(format!(
                             "{n}() is a value of each row, which a ranking with scores does not take: order by it on its own (ORDER BY {n}(...), a score after it), or select it and order by its name"
                         ))),
                         None => Err(err(format!(
